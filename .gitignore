@@ -1,0 +1,5 @@
+target
+**/__debug*
+.devbin
+.devlogs
+.devpids
