@@ -1,10 +1,11 @@
 package ai.floedb.metacat.service.error.impl;
 
-import ai.floedb.metacat.common.rpc.Error;
 import com.google.protobuf.Any;
 import com.google.rpc.Code;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
+
+import ai.floedb.metacat.common.rpc.Error;
 
 public final class GrpcErrors {
   public static StatusRuntimeException notFound(String msg, String correlationId) {

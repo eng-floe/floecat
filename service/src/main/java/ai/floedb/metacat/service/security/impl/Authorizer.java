@@ -1,8 +1,9 @@
 package ai.floedb.metacat.service.security.impl;
 
-import ai.floedb.metacat.common.rpc.PrincipalContext;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
+
+import ai.floedb.metacat.common.rpc.PrincipalContext;
 
 @ApplicationScoped
 public class Authorizer {

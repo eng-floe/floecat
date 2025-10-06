@@ -1,21 +1,25 @@
 package ai.floedb.metacat.service.it;
 
-import ai.floedb.metacat.catalog.rpc.*;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
 import com.google.protobuf.Any;
-
+import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.api.*;
-
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.metacat.catalog.rpc.CatalogServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
+import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
+
 @QuarkusTest
-class CatalogServiceTest {
-  @io.quarkus.grpc.GrpcClient("catalog")
+class CatalogServiceIT {
+  @GrpcClient("catalog")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
-  @io.quarkus.grpc.GrpcClient("directory")
+  @GrpcClient("directory")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   @Test

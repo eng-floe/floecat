@@ -1,10 +1,16 @@
 package ai.floedb.metacat.service.context.impl;
 
-import ai.floedb.metacat.common.rpc.PrincipalContext;
-import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import io.grpc.*;
+import io.grpc.Context;
+import io.grpc.Contexts;
+import io.grpc.Metadata;
+import io.grpc.ServerCall;
+import io.grpc.ServerCallHandler;
+import io.grpc.ServerInterceptor;
 import io.quarkus.grpc.GlobalInterceptor;
 import jakarta.enterprise.context.ApplicationScoped;
+
+import ai.floedb.metacat.common.rpc.PrincipalContext;
+import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 
 @ApplicationScoped
 @GlobalInterceptor

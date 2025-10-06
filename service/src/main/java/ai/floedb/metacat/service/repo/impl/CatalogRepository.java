@@ -1,16 +1,17 @@
 package ai.floedb.metacat.service.repo.impl;
 
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Optional;
+
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
 import ai.floedb.metacat.common.rpc.Pointer;
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-
-import java.util.List;
-import java.util.ArrayList;
-import java.util.Optional;
 
 @ApplicationScoped
 public class CatalogRepository {
@@ -49,5 +50,11 @@ public class CatalogRepository {
     long nextVersion = ptr.get(key).map(Pointer::getVersion).orElse(0L) + 1;
     Pointer p = Pointer.newBuilder().setKey(key).setBlobUri(uri).setVersion(nextVersion).build();
     ptr.put(key, p);
+  }
+
+  public int countCatalogs(String tenantId) {
+    String prefix = "/tenants/" + tenantId + "/catalogs/";
+    StringBuilder ignore = new StringBuilder();
+    return ptr.listByPrefix(prefix, Integer.MAX_VALUE, "", ignore).size();
   }
 }

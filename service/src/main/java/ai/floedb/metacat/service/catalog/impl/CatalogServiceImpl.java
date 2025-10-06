@@ -1,5 +1,9 @@
 package ai.floedb.metacat.service.catalog.impl;
 
+import io.quarkus.grpc.GrpcService;
+import io.smallrye.mutiny.Uni;
+import jakarta.inject.Inject;
+
 import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.GetCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
@@ -10,9 +14,6 @@ import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import io.quarkus.grpc.GrpcService;
-import io.smallrye.mutiny.Uni;
-import jakarta.inject.Inject;
 
 @GrpcService
 public class CatalogServiceImpl implements CatalogService {
@@ -42,9 +43,10 @@ public class CatalogServiceImpl implements CatalogService {
 
     return Uni.createFrom().item(() -> {
       var items = repo.listCatalogs(p.getTenantId(), limit, token, next);
+      int total = repo.countCatalogs(p.getTenantId());
       var page = PageResponse.newBuilder()
           .setNextPageToken(next.toString())
-          .setTotalSize(items.size())
+          .setTotalSize(total)
           .build();
       return ListCatalogsResponse.newBuilder()
           .addAllCatalogs(items)

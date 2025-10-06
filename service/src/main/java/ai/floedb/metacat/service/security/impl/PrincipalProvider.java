@@ -1,8 +1,9 @@
 package ai.floedb.metacat.service.security.impl;
 
-import ai.floedb.metacat.common.rpc.PrincipalContext;
 import io.grpc.Context;
 import jakarta.enterprise.context.RequestScoped;
+
+import ai.floedb.metacat.common.rpc.PrincipalContext;
 
 @RequestScoped
 public class PrincipalProvider {

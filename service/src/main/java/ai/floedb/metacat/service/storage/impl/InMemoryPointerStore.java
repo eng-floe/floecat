@@ -1,16 +1,17 @@
 package ai.floedb.metacat.service.storage.impl;
 
-import ai.floedb.metacat.common.rpc.Pointer;
-import ai.floedb.metacat.service.storage.PointerStore;
-import jakarta.enterprise.context.ApplicationScoped;
-import io.quarkus.arc.Unremovable;
-
 import java.util.Optional;
 import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.concurrent.ConcurrentHashMap;
+
+import jakarta.enterprise.context.ApplicationScoped;
+import io.quarkus.arc.Unremovable;
+
+import ai.floedb.metacat.common.rpc.Pointer;
+import ai.floedb.metacat.service.storage.PointerStore;
 
 @ApplicationScoped
 @Unremovable
