@@ -54,6 +54,23 @@ message Namespace {
   fixed64 created_at_ms = 4;
 }
 
+message GetNamespaceRequest { 
+  ai.floedb.metacat.common.ResourceId catalog_id = 1; 
+  ai.floedb.metacat.common.ResourceId resource_id = 2; 
+}
+message GetNamespaceResponse { 
+  Namespace namespace = 1; 
+}
+
+message ListNamespacesRequest {
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;
+  ai.floedb.metacat.common.PageRequest page = 2;
+}
+message ListNamespacesResponse {
+  repeated Namespace namespaces = 1;
+  ai.floedb.metacat.common.PageResponse page = 2;
+}
+
 message ResolveNamespaceRequest { 
   NamespaceRef ref = 1;
 }
@@ -68,7 +85,7 @@ message LookupNamespaceResponse {
   string display_name = 2;
 }
 
-service DirectoryService {
+service Directory {
   rpc ResolveCatalog(ResolveCatalogRequest) returns (ResolveCatalogResponse);
   rpc LookupCatalog(LookupCatalogRequest) returns (LookupCatalogResponse);
 
@@ -76,7 +93,10 @@ service DirectoryService {
   rpc LookupNamespace(LookupNamespaceRequest) returns (LookupNamespaceResponse);
 }
 
-service CatalogService {
+service ResourceAccess {
   rpc GetCatalog(GetCatalogRequest) returns (GetCatalogResponse);
   rpc ListCatalogs(ListCatalogsRequest) returns (ListCatalogsResponse);
+
+  rpc GetNamespace(GetNamespaceRequest) returns (GetNamespaceResponse);
+  rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
 }

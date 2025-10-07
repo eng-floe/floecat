@@ -7,7 +7,7 @@ import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.api.*;
 import static org.junit.jupiter.api.Assertions.*;
 
-import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.NamespaceRef;
@@ -18,7 +18,7 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 @QuarkusTest
 class DirectoryServiceIT {
   @GrpcClient("directory")
-  DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
+  DirectoryGrpc.DirectoryBlockingStub directory;
 
   @Test
   void resolveAndLookupCatalog() {

@@ -10,46 +10,38 @@ import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 
 import ai.floedb.metacat.catalog.rpc.Catalog;
-import ai.floedb.metacat.service.directory.impl.DirectoryServiceImpl;
+import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.NamespaceRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.service.catalog.impl.DirectoryImpl;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
+import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 
 @ApplicationScoped
 public class SeedRunner {
-  private static final Logger LOG = Logger.getLogger(SeedRunner.class.getName());
+  @Inject CatalogRepository catalogs;
+  @Inject NamespaceRepository namespaces;
 
-  @Inject CatalogRepository repo;
+  private static final Logger LOG = Logger.getLogger(SeedRunner.class.getName());
 
   void onStart(@Observes StartupEvent ev) {
     final String tenant = "t-0001";
+    final long now = System.currentTimeMillis();
 
-    seedCatalog(tenant, "sales", "Sales catalog");
-    seedCatalog(tenant, "finance", "Finance catalog");
+    var salesId = seedCatalog(tenant, "sales", "Sales catalog",   now);
+    var financeId = seedCatalog(tenant, "finance", "Finance catalog", now);
+    DirectoryImpl.putIndex("sales", salesId);
+    DirectoryImpl.putIndex("finance", financeId);
 
-    DirectoryServiceImpl.putIndex("sales", uuidFor(tenant + "/catalog:sales"));
-    DirectoryServiceImpl.putIndex("finance", uuidFor(tenant + "/catalog:finance"));
-
-    putNs(tenant,
-      uuidFor(tenant + "/catalog:sales"),
-      List.of("core"),
-      uuidFor(tenant + "/ns:sales/core"));
-
-    putNs(tenant,
-      uuidFor(tenant + "/catalog:sales"),
-      List.of("staging", "2025"),
-      uuidFor(tenant + "/ns:sales/staging/2025"));
-
-    putNs(tenant,
-        uuidFor(tenant + "/catalog:finance"),
-        List.of("core"),
-        uuidFor(tenant + "/ns:finance/core"));
+    seedNamespace(tenant, salesId, List.of("core"), "core", now);
+    seedNamespace(tenant, salesId, List.of("staging","2025"), "staging/2025", now);
+    seedNamespace(tenant, financeId, List.of("core"), "core", now);
 
     LOG.info("Seeded catalogs and namespaces for tenant " + tenant);
   }
 
-  private void seedCatalog(String tenant, String displayName, String description) {
+  private String seedCatalog(String tenant, String displayName, String description, long now) {
     String id = uuidFor(tenant + "/catalog:" + displayName);
     ResourceId rid = ResourceId.newBuilder()
       .setTenantId(tenant)
@@ -61,26 +53,54 @@ public class SeedRunner {
       .setResourceId(rid)
       .setDisplayName(displayName)
       .setDescription(description)
-      .setCreatedAtMs(System.currentTimeMillis())
+      .setCreatedAtMs(now)
       .build();
 
-    repo.putCatalog(cat);
+    catalogs.putCatalog(cat);
+    return id;
   }
 
-  private static void putNs(String tenant, String catalogId, List<String> path, String nsId) {
+  private void seedNamespace(String tenant, String catalogId, List<String> path, String display, long now) {
+    String nsId = uuidFor(tenant + "/ns:" + displayPathKey(catalogId, path));
+
+    var catRid = ResourceId.newBuilder()
+      .setTenantId(tenant)
+      .setId(catalogId)
+      .setKind(ResourceKind.RK_CATALOG)
+      .build();
+
+    var nsRid = ResourceId.newBuilder()
+      .setTenantId(tenant)
+      .setId(nsId)
+      .setKind(ResourceKind.RK_NAMESPACE)
+      .build();
+
+    Namespace ns = Namespace.newBuilder()
+      .setResourceId(nsRid)
+      .setDisplayName(display)
+      .setDescription(display + " namespace")
+      .setCreatedAtMs(now)
+      .build();
+
+    namespaces.put(ns, catRid);
+
     NamespaceRef ref = NamespaceRef.newBuilder()
-      .setCatalogId(ResourceId.newBuilder()
+    .setCatalogId(ResourceId.newBuilder()
         .setTenantId(tenant)
         .setId(catalogId)
         .setKind(ResourceKind.RK_CATALOG)
         .build())
-      .addAllNamespacePath(path)
-      .build();
+    .addAllNamespacePath(path)
+    .build();
 
-    DirectoryServiceImpl.putNamespaceIndex(ref, nsId);
+    DirectoryImpl.putNamespaceIndex(ref, nsId);
   }
 
   private static String uuidFor(String seed) {
     return UUID.nameUUIDFromBytes(seed.getBytes()).toString();
+  }
+
+  private static String displayPathKey(String catalogId, List<String> path) {
+    return catalogId + "/" + String.join("/", path);
   }
 }

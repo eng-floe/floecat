@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.directory.impl;
+package ai.floedb.metacat.service.catalog.impl;
 
 import java.util.List;
 import java.util.Map;
@@ -18,14 +18,14 @@ import ai.floedb.metacat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.LookupNamespaceResponse;
 import ai.floedb.metacat.catalog.rpc.NamespaceRef;
-import ai.floedb.metacat.catalog.rpc.DirectoryService;
+import ai.floedb.metacat.catalog.rpc.Directory;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 
 @GrpcService
-public class DirectoryServiceImpl implements DirectoryService {
+public class DirectoryImpl implements Directory {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
 

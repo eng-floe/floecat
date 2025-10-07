@@ -9,22 +9,22 @@ import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.api.*;
 import static org.junit.jupiter.api.Assertions.*;
 
-import ai.floedb.metacat.catalog.rpc.CatalogServiceGrpc;
-import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.ResourceAccessGrpc;
+import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
 import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
 
 @QuarkusTest
 class CatalogServiceIT {
-  @GrpcClient("catalog")
-  CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
+  @GrpcClient("resource-access")
+  ResourceAccessGrpc.ResourceAccessBlockingStub resourceAccess;
   @GrpcClient("directory")
-  DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
+  DirectoryGrpc.DirectoryBlockingStub directory;
 
   @Test
   void listCatalogs_returnsSeeded() {
-    var resp = catalog.listCatalogs(ListCatalogsRequest.newBuilder().build());
+    var resp = resourceAccess.listCatalogs(ListCatalogsRequest.newBuilder().build());
     assertTrue(resp.getCatalogsCount() >= 2, "Expected seeded catalogs");
   }
 
@@ -32,7 +32,7 @@ class CatalogServiceIT {
   void getCatalog_returnsSeeded() {
     var req = directory.resolveCatalog(ResolveCatalogRequest.newBuilder()
       .setDisplayName("sales").build());
-    var resp = catalog.getCatalog(GetCatalogRequest.newBuilder().setResourceId(req.getResourceId()).build());
+    var resp = resourceAccess.getCatalog(GetCatalogRequest.newBuilder().setResourceId(req.getResourceId()).build());
     assertEquals("sales", resp.getCatalog().getDisplayName());
   }
 
@@ -46,7 +46,7 @@ class CatalogServiceIT {
       .build();
 
     StatusRuntimeException ex = assertThrows(StatusRuntimeException.class, () ->
-      catalog.getCatalog(GetCatalogRequest.newBuilder().setResourceId(missingRid).build()));
+      resourceAccess.getCatalog(GetCatalogRequest.newBuilder().setResourceId(missingRid).build()));
 
     assertEquals(Status.Code.NOT_FOUND, ex.getStatus().getCode());
 

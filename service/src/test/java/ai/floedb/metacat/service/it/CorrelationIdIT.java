@@ -19,22 +19,23 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
-
-import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
+import ai.floedb.metacat.catalog.rpc.ResourceAccessGrpc;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 
 @QuarkusTest
 class CorrelationIdIT {
-  @GrpcClient("catalog")
-  CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
+  @GrpcClient("resource-access")
+  ResourceAccessGrpc.ResourceAccessBlockingStub resourceAccess;
 
   private static final Metadata.Key<String> CORR_KEY =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<byte[]> PRINC_BIN =
       Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
 
-  record StubWithCapture(CatalogServiceGrpc.CatalogServiceBlockingStub stub,
+  record StubWithCapture(ResourceAccessGrpc.ResourceAccessBlockingStub stub,
                          CaptureHeadersInterceptor capture) {}
 
   static final class CaptureHeadersInterceptor implements ClientInterceptor {
@@ -73,7 +74,7 @@ class CorrelationIdIT {
     var attach = MetadataUtils.newAttachHeadersInterceptor(hdrs);
     var capture = new CaptureHeadersInterceptor();
 
-    var stub = catalog.withInterceptors(attach, capture);
+    var stub = resourceAccess.withInterceptors(attach, capture);
     return new StubWithCapture(stub, capture);
   }
 

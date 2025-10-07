@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.catalog.rpc.Catalog;
-import ai.floedb.metacat.catalog.rpc.CatalogServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.ResourceAccessGrpc;
 import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
@@ -23,8 +23,8 @@ import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class CatalogPagingIT {
   @Inject CatalogRepository repo;
-  @GrpcClient("catalog")
-  CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
+  @GrpcClient("resource-access")
+  ResourceAccessGrpc.ResourceAccessBlockingStub resourceAccess;
 
   private static final String TENANT = "t-it-0001";
   private static final int LIMIT = 10;
@@ -64,7 +64,7 @@ class CatalogPagingIT {
     headers.put(PRINC_BIN, pc.toByteArray());
 
     ClientInterceptor attach = MetadataUtils.newAttachHeadersInterceptor(headers);
-    this.catalog = catalog.withInterceptors(attach);
+    this.resourceAccess = resourceAccess.withInterceptors(attach);
   }
 
   @Test
@@ -74,7 +74,7 @@ class CatalogPagingIT {
         .setPageSize(LIMIT))
       .build();
 
-    var page1 = catalog.listCatalogs(page1Req);
+    var page1 = resourceAccess.listCatalogs(page1Req);
     assertEquals(LIMIT, page1.getCatalogsCount(), "first page should return LIMIT items");
     assertFalse(page1.getPage().getNextPageToken().isEmpty(), "next_page_token should be set");
     assertEquals(TOTAL, page1.getPage().getTotalSize(), "total_size should be TOTAL");
@@ -85,7 +85,7 @@ class CatalogPagingIT {
         .setPageToken(page1.getPage().getNextPageToken()))
       .build();
 
-    var page2 = catalog.listCatalogs(page2Req);
+    var page2 = resourceAccess.listCatalogs(page2Req);
     assertEquals(TOTAL - LIMIT, page2.getCatalogsCount(), "second page should have the remainder");
     assertTrue(page2.getPage().getNextPageToken().isEmpty(), "no further pages expected");
     assertEquals(TOTAL, page2.getPage().getTotalSize(), "total_size should remain TOTAL across pages");
