@@ -10,7 +10,7 @@ message Catalog {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
   string description = 3;
-  int64 created_at_ms = 4;
+  fixed64 created_at_ms = 4;
 }
 
 message GetCatalogRequest {
@@ -42,15 +42,20 @@ message ListCatalogsResponse {
   ai.floedb.metacat.common.PageResponse page = 2;
 }
 
+message NamespaceRef {
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;
+  repeated string namespace_path = 2;
+}
+
 message Namespace {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
   string description = 3;
-  int64 created_at_ms = 4;
+  fixed64 created_at_ms = 4;
 }
 
 message ResolveNamespaceRequest { 
-  string display_name = 1; 
+  NamespaceRef ref = 1;
 }
 message ResolveNamespaceResponse { 
   ai.floedb.metacat.common.ResourceId resource_id = 1; 
@@ -59,7 +64,8 @@ message LookupNamespaceRequest {
   ai.floedb.metacat.common.ResourceId resource_id = 1; 
 }
 message LookupNamespaceResponse { 
-  string display_name = 1; 
+  NamespaceRef ref = 1;
+  string display_name = 2;
 }
 
 service DirectoryService {

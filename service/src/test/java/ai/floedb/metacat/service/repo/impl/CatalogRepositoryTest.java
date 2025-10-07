@@ -19,11 +19,11 @@ class CatalogRepositoryTest {
     repo.blobs = new InMemoryBlobStore();
 
     var rid = ResourceId.newBuilder()
-        .setTenantId("t-0001")
-        .setId(UUID.randomUUID().toString())
-        .setKind(ResourceKind.RK_CATALOG).build();
+      .setTenantId("t-0001")
+      .setId(UUID.randomUUID().toString())
+      .setKind(ResourceKind.RK_CATALOG).build();
     var cat = Catalog.newBuilder()
-        .setResourceId(rid).setDisplayName("sales").setDescription("Sales").build();
+      .setResourceId(rid).setDisplayName("sales").setDescription("Sales").build();
 
     repo.putCatalog(cat);
     var fetched = repo.getCatalog(rid).orElseThrow();

@@ -26,9 +26,9 @@ public class CatalogServiceImpl implements CatalogService {
     var p = principal.get();
     authz.require(p, "catalog.read");
     return Uni.createFrom().item(() ->
-        repo.getCatalog(req.getResourceId())
-            .map(c -> GetCatalogResponse.newBuilder().setCatalog(c).build())
-            .orElseThrow(() -> GrpcErrors.notFound("catalog not found", null))
+      repo.getCatalog(req.getResourceId())
+        .map(c -> GetCatalogResponse.newBuilder().setCatalog(c).build())
+        .orElseThrow(() -> GrpcErrors.notFound("catalog not found", null))
     );
   }
 
@@ -45,13 +45,13 @@ public class CatalogServiceImpl implements CatalogService {
       var items = repo.listCatalogs(p.getTenantId(), limit, token, next);
       int total = repo.countCatalogs(p.getTenantId());
       var page = PageResponse.newBuilder()
-          .setNextPageToken(next.toString())
-          .setTotalSize(total)
-          .build();
+        .setNextPageToken(next.toString())
+        .setTotalSize(total)
+        .build();
       return ListCatalogsResponse.newBuilder()
-          .addAllCatalogs(items)
-          .setPage(page)
-          .build();
+        .addAllCatalogs(items)
+        .setPage(page)
+        .build();
     });
   }
 }

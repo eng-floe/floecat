@@ -1,5 +1,6 @@
 package ai.floedb.metacat.service.directory.impl;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,6 +17,7 @@ import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.LookupNamespaceResponse;
+import ai.floedb.metacat.catalog.rpc.NamespaceRef;
 import ai.floedb.metacat.catalog.rpc.DirectoryService;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
@@ -29,8 +31,8 @@ public class DirectoryServiceImpl implements DirectoryService {
 
   private static final Map<String,String> NAME_TO_ID = new ConcurrentHashMap<>();
   private static final Map<String,String> ID_TO_NAME = new ConcurrentHashMap<>();
-  private static final Map<String,String> NS_NAME_TO_ID = new ConcurrentHashMap<>();
-  private static final Map<String,String> NS_ID_TO_NAME = new ConcurrentHashMap<>();
+  private static final Map<String,String> NS_KEY_TO_ID = new ConcurrentHashMap<>();
+  private static final Map<String,NamespaceRef> NS_ID_TO_REF = new ConcurrentHashMap<>();
 
   public static void putIndex(String displayName, String id) {
     NAME_TO_ID.put(displayName, id);
@@ -59,24 +61,77 @@ public class DirectoryServiceImpl implements DirectoryService {
     );
   }
 
-  public static void putNamespaceIndex(String displayName, String id) {
-    NS_NAME_TO_ID.put(displayName, id);
-    NS_ID_TO_NAME.put(id, displayName);
+  private static String joinPath(List<String> path) {
+    return String.join("/", path);
+  }
+
+  private static String nsKey(String tenantId, String catalogId, List<String> path) {
+    return tenantId + "|" + catalogId + "|" + joinPath(path);
+  }
+
+  public static void putNamespaceIndex(NamespaceRef ref, String id) {
+    var key = nsKey(ref.getCatalogId().getTenantId(), ref.getCatalogId().getId(), ref.getNamespacePathList());
+    NS_KEY_TO_ID.put(key, id);
+    NS_ID_TO_REF.put(id, ref);
   }
 
   @Override
   public Uni<ResolveNamespaceResponse> resolveNamespace(ResolveNamespaceRequest req) {
-    var p = principal.get(); authz.require(p, "catalog.read");
-    var id = NS_NAME_TO_ID.getOrDefault(req.getDisplayName(), UUID.randomUUID().toString());
+    var p = principal.get();
+    authz.require(p, "catalog.read");
+
+    var ref = req.getRef();
+    var tenantId = p.getTenantId();
+    var catalogId = ref.getCatalogId().getId();
+    var path = ref.getNamespacePathList();
+
+    var key = nsKey(tenantId, catalogId, path);
+    String nsId = NS_KEY_TO_ID.computeIfAbsent(key, k -> {
+      String gen = UUID.randomUUID().toString();
+      var storedRef = NamespaceRef.newBuilder()
+        .setCatalogId(ResourceId.newBuilder()
+          .setTenantId(tenantId)
+          .setId(catalogId)
+          .setKind(ResourceKind.RK_CATALOG)
+          .build())
+        .addAllNamespacePath(path)
+        .build();
+      NS_ID_TO_REF.put(gen, storedRef);
+      return gen;
+    });
+
     var rid = ResourceId.newBuilder()
-        .setTenantId(p.getTenantId()).setId(id).setKind(ResourceKind.RK_NAMESPACE).build();
-    return Uni.createFrom().item(() -> ResolveNamespaceResponse.newBuilder().setResourceId(rid).build());
+      .setTenantId(tenantId)
+      .setId(nsId)
+      .setKind(ResourceKind.RK_NAMESPACE)
+      .build();
+
+    return Uni.createFrom().item(() ->
+      ResolveNamespaceResponse.newBuilder().setResourceId(rid).build());
   }
 
   @Override
   public Uni<LookupNamespaceResponse> lookupNamespace(LookupNamespaceRequest req) {
-    var p = principal.get(); authz.require(p, "catalog.read");
-    var name = NS_ID_TO_NAME.getOrDefault(req.getResourceId().getId(), "");
-    return Uni.createFrom().item(() -> LookupNamespaceResponse.newBuilder().setDisplayName(name).build());
+    var p = principal.get();
+    authz.require(p, "catalog.read");
+
+    var rid = req.getResourceId();
+    var ref = NS_ID_TO_REF.get(rid.getId());
+
+    String display = (ref == null || ref.getNamespacePathCount() == 0)
+      ? ""
+      : ref.getNamespacePath(ref.getNamespacePathCount() - 1);
+
+    LookupNamespaceResponse.Builder out = LookupNamespaceResponse.newBuilder().setDisplayName(display);
+    if (ref != null) {
+      NamespaceRef adjusted = ref;
+      if (!ref.getCatalogId().getTenantId().equals(p.getTenantId())) {
+        adjusted = ref.toBuilder()
+          .setCatalogId(ref.getCatalogId().toBuilder().setTenantId(p.getTenantId()))
+          .build();
+      }
+      out.setRef(adjusted);
+    }
+    return Uni.createFrom().item(out.build());
   }
 }

@@ -37,32 +37,30 @@ class CatalogPagingIT {
       String id = UUID.nameUUIDFromBytes((TENANT + "/" + name).getBytes()).toString();
 
       var rid = ResourceId.newBuilder()
-          .setTenantId(TENANT)
-          .setId(id)
-          .setKind(ResourceKind.RK_CATALOG)
-          .build();
+        .setTenantId(TENANT)
+        .setId(id)
+        .setKind(ResourceKind.RK_CATALOG)
+        .build();
 
       var cat = Catalog.newBuilder()
-          .setResourceId(rid)
-          .setDisplayName(name)
-          .setDescription("paging test")
-          .setCreatedAtMs(System.currentTimeMillis())
-          .build();
+        .setResourceId(rid)
+        .setDisplayName(name)
+        .setDescription("paging test")
+        .setCreatedAtMs(System.currentTimeMillis())
+        .build();
 
       repo.putCatalog(cat);
     }
 
-    // Build a stub that carries a PrincipalContext for TENANT
     var pc = PrincipalContext.newBuilder()
-        .setTenantId(TENANT)
-        .setSubject("it-user")
-        .addPermissions("catalog.read")
-        .build();
+      .setTenantId(TENANT)
+      .setSubject("it-user")
+      .addPermissions("catalog.read")
+      .build();
 
-    // If your server interceptor expects binary header:
     Metadata headers = new Metadata();
     Metadata.Key<byte[]> PRINC_BIN =
-        Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
+      Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
     headers.put(PRINC_BIN, pc.toByteArray());
 
     ClientInterceptor attach = MetadataUtils.newAttachHeadersInterceptor(headers);
@@ -71,23 +69,21 @@ class CatalogPagingIT {
 
   @Test
   void listCatalogs_pagingAndTotals() {
-    // Page 1
     var page1Req = ListCatalogsRequest.newBuilder()
-        .setPage(ai.floedb.metacat.common.rpc.PageRequest.newBuilder()
-            .setPageSize(LIMIT))
-        .build();
+      .setPage(ai.floedb.metacat.common.rpc.PageRequest.newBuilder()
+        .setPageSize(LIMIT))
+      .build();
 
     var page1 = catalog.listCatalogs(page1Req);
     assertEquals(LIMIT, page1.getCatalogsCount(), "first page should return LIMIT items");
     assertFalse(page1.getPage().getNextPageToken().isEmpty(), "next_page_token should be set");
     assertEquals(TOTAL, page1.getPage().getTotalSize(), "total_size should be TOTAL");
 
-    // Page 2
     var page2Req = ListCatalogsRequest.newBuilder()
-        .setPage(ai.floedb.metacat.common.rpc.PageRequest.newBuilder()
-            .setPageSize(LIMIT)
-            .setPageToken(page1.getPage().getNextPageToken()))
-        .build();
+      .setPage(ai.floedb.metacat.common.rpc.PageRequest.newBuilder()
+        .setPageSize(LIMIT)
+        .setPageToken(page1.getPage().getNextPageToken()))
+      .build();
 
     var page2 = catalog.listCatalogs(page2Req);
     assertEquals(TOTAL - LIMIT, page2.getCatalogsCount(), "second page should have the remainder");

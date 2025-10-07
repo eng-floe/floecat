@@ -39,14 +39,14 @@ class CatalogServiceIT {
   @Test
   void getCatalog_notFound_hasCommonError() throws Exception {
     var resolved = directory.resolveCatalog(
-        ResolveCatalogRequest.newBuilder().setDisplayName("sales").build());
+      ResolveCatalogRequest.newBuilder().setDisplayName("sales").build());
 
     var missingRid = resolved.getResourceId().toBuilder()
-        .setId("00000000-0000-0000-0000-000000000000")
-        .build();
+      .setId("00000000-0000-0000-0000-000000000000")
+      .build();
 
     StatusRuntimeException ex = assertThrows(StatusRuntimeException.class, () ->
-        catalog.getCatalog(GetCatalogRequest.newBuilder().setResourceId(missingRid).build()));
+      catalog.getCatalog(GetCatalogRequest.newBuilder().setResourceId(missingRid).build()));
 
     assertEquals(Status.Code.NOT_FOUND, ex.getStatus().getCode());
 

@@ -25,7 +25,7 @@ public class CorrelationInterceptor implements ServerInterceptor {
 
   @Override
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
-      ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
+    ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
 
     String incoming = headers.get(CORR_ID);
     String corr = (incoming == null || incoming.isBlank()) ? UUID.randomUUID().toString() : incoming;

@@ -8,5 +8,8 @@ import ai.floedb.metacat.common.rpc.PrincipalContext;
 @RequestScoped
 public class PrincipalProvider {
   public static final Context.Key<PrincipalContext> KEY = Context.key("principal");
-  public PrincipalContext get() { return KEY.get() != null ? KEY.get() : PrincipalContext.getDefaultInstance(); }
+  
+  public PrincipalContext get() { 
+    return KEY.get() != null ? KEY.get() : PrincipalContext.getDefaultInstance(); 
+  }
 }

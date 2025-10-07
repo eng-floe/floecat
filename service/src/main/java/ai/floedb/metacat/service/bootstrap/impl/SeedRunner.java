@@ -1,37 +1,86 @@
 package ai.floedb.metacat.service.bootstrap.impl;
 
+import java.util.List;
 import java.util.UUID;
+import java.util.logging.Logger;
 
+import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
-import org.jboss.logging.Logger;
 
 import ai.floedb.metacat.catalog.rpc.Catalog;
+import ai.floedb.metacat.service.directory.impl.DirectoryServiceImpl;
+import ai.floedb.metacat.catalog.rpc.NamespaceRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
-import ai.floedb.metacat.service.directory.impl.DirectoryServiceImpl;
 
 @ApplicationScoped
 public class SeedRunner {
-  private static final Logger LOG = Logger.getLogger(SeedRunner.class);
+  private static final Logger LOG = Logger.getLogger(SeedRunner.class.getName());
 
   @Inject CatalogRepository repo;
 
-  void onStart(@jakarta.enterprise.event.Observes io.quarkus.runtime.StartupEvent ev) {
-    String tenant = "t-0001";
+  void onStart(@Observes StartupEvent ev) {
+    final String tenant = "t-0001";
+
     seedCatalog(tenant, "sales", "Sales catalog");
     seedCatalog(tenant, "finance", "Finance catalog");
-    DirectoryServiceImpl.putNamespaceIndex("sales.core", UUID.nameUUIDFromBytes("t-0001/sales.core".getBytes()).toString());
-    DirectoryServiceImpl.putNamespaceIndex("finance.core", UUID.nameUUIDFromBytes("t-0001/finance.core".getBytes()).toString());
-    LOG.info("Seeded catalogs for tenant " + tenant);
+
+    DirectoryServiceImpl.putIndex("sales", uuidFor(tenant + "/catalog:sales"));
+    DirectoryServiceImpl.putIndex("finance", uuidFor(tenant + "/catalog:finance"));
+
+    putNs(tenant,
+      uuidFor(tenant + "/catalog:sales"),
+      List.of("core"),
+      uuidFor(tenant + "/ns:sales/core"));
+
+    putNs(tenant,
+      uuidFor(tenant + "/catalog:sales"),
+      List.of("staging", "2025"),
+      uuidFor(tenant + "/ns:sales/staging/2025"));
+
+    putNs(tenant,
+        uuidFor(tenant + "/catalog:finance"),
+        List.of("core"),
+        uuidFor(tenant + "/ns:finance/core"));
+
+    LOG.info("Seeded catalogs and namespaces for tenant " + tenant);
   }
 
-  private void seedCatalog(String tenant, String name, String desc) {
-    String id = UUID.nameUUIDFromBytes((tenant+"/"+name).getBytes()).toString();
-    var rid = ResourceId.newBuilder().setTenantId(tenant).setId(id).setKind(ResourceKind.RK_CATALOG).build();
-    var cat = Catalog.newBuilder().setResourceId(rid).setDisplayName(name).setDescription(desc).setCreatedAtMs(System.currentTimeMillis()).build();
+  private void seedCatalog(String tenant, String displayName, String description) {
+    String id = uuidFor(tenant + "/catalog:" + displayName);
+    ResourceId rid = ResourceId.newBuilder()
+      .setTenantId(tenant)
+      .setId(id)
+      .setKind(ResourceKind.RK_CATALOG)
+      .build();
+
+    Catalog cat = Catalog.newBuilder()
+      .setResourceId(rid)
+      .setDisplayName(displayName)
+      .setDescription(description)
+      .setCreatedAtMs(System.currentTimeMillis())
+      .build();
+
     repo.putCatalog(cat);
-    DirectoryServiceImpl.putIndex(name, id);
+  }
+
+  private static void putNs(String tenant, String catalogId, List<String> path, String nsId) {
+    NamespaceRef ref = NamespaceRef.newBuilder()
+      .setCatalogId(ResourceId.newBuilder()
+        .setTenantId(tenant)
+        .setId(catalogId)
+        .setKind(ResourceKind.RK_CATALOG)
+        .build())
+      .addAllNamespacePath(path)
+      .build();
+
+    DirectoryServiceImpl.putNamespaceIndex(ref, nsId);
+  }
+
+  private static String uuidFor(String seed) {
+    return UUID.nameUUIDFromBytes(seed.getBytes()).toString();
   }
 }

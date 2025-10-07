@@ -18,13 +18,27 @@ import ai.floedb.metacat.service.storage.PointerStore;
 public class InMemoryPointerStore implements PointerStore {
   private final Map<String, Pointer> map = new ConcurrentHashMap<>();
 
-  @Override public Optional<Pointer> get(String key) { return Optional.ofNullable(map.get(key)); }
+  @Override public Optional<Pointer> get(String key) { 
+    return Optional.ofNullable(map.get(key)); 
+  }
 
   @Override public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
-    Pointer cur = map.get(key);
-    if (cur == null && expectedVersion == 0L) { map.put(key, next); return true; }
-    if (cur != null && cur.getVersion() == expectedVersion) { map.put(key, next); return true; }
-    return false;
+    final boolean[] updated = { false };
+    map.compute(key, (k, cur) -> {
+      if (cur == null) {
+        if (expectedVersion == 0L) { 
+          updated[0] = true; 
+          return next; 
+        }
+        return null;
+      }
+      if (cur.getVersion() == expectedVersion) { 
+        updated[0] = true; 
+        return next; 
+      }
+      return cur;
+    });
+    return updated[0];
   }
 
   @Override public List<String> listByPrefix(String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
@@ -32,12 +46,15 @@ public class InMemoryPointerStore implements PointerStore {
     for (String k : map.keySet()) if (k.startsWith(prefix)) keys.add(k);
     Collections.sort(keys);
     int start = 0;
-    if (pageToken != null && !pageToken.isEmpty()) start = Math.max(0, Collections.binarySearch(keys, pageToken));
+    if (pageToken != null && !pageToken.isEmpty()) {
+      int idx = Collections.binarySearch(keys, pageToken);
+      start = (idx >= 0) ? idx : -idx - 1;
+    }
     int end = Math.min(keys.size(), start + limit);
     List<String> page = keys.subList(start, end);
-    if (end < keys.size()) nextTokenOut.append(keys.get(end));
+    if (end < keys.size()) {
+      nextTokenOut.append(keys.get(end));
+    }
     return new ArrayList<>(page);
   }
-
-  @Override public void put(String key, Pointer p) { map.put(key, p); }
 }

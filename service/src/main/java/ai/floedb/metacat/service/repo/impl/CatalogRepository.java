@@ -25,7 +25,11 @@ public class CatalogRepository {
   public Optional<Catalog> getCatalog(ResourceId rid) {
     return ptr.get(key(rid)).map(p -> {
       byte[] data = blobs.get(p.getBlobUri());
-      try { return Catalog.parseFrom(data); } catch (Exception e) { throw new RuntimeException(e); }
+      try { 
+        return Catalog.parseFrom(data); 
+      } catch (Exception e) { 
+        throw new RuntimeException(e); 
+      }
     });
   }
 
@@ -46,10 +50,25 @@ public class CatalogRepository {
     ResourceId rid = c.getResourceId();
     String key = key(rid);
     String uri = "mem://" + key + ".pb";
+
     blobs.put(uri, c.toByteArray(), "application/x-protobuf");
-    long nextVersion = ptr.get(key).map(Pointer::getVersion).orElse(0L) + 1;
-    Pointer p = Pointer.newBuilder().setKey(key).setBlobUri(uri).setVersion(nextVersion).build();
-    ptr.put(key, p);
+
+    int maxRetries = 10;
+    for (int i = 0; i < maxRetries; i++) {
+      long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
+      long nextVersion = expected + 1;
+
+      Pointer next = Pointer.newBuilder()
+        .setKey(key)
+        .setBlobUri(uri)
+        .setVersion(nextVersion)
+        .build();
+
+      if (ptr.compareAndSet(key, expected, next)) {
+        return;
+      }
+    }
+    throw new IllegalStateException("putCatalog CAS failed after retries: " + key);
   }
 
   public int countCatalogs(String tenantId) {
