@@ -188,6 +188,22 @@ message GetCurrentSnapshotResponse {
   Snapshot snapshot = 1;
 }
 
+// ----- Name index -----
+
+message CatalogIndexEntry {
+  string display_name = 1;
+  ai.floedb.metacat.common.ResourceId resource_id = 2;
+}
+message NamespaceIndexEntry {
+  ai.floedb.metacat.catalog.NamespaceRef ref = 1;
+  ai.floedb.metacat.common.ResourceId resource_id = 2;
+}
+
+message TableIndexEntry {
+  ai.floedb.metacat.common.NameRef fq_name = 1;
+  ai.floedb.metacat.common.ResourceId resource_id = 2;
+}
+
 // ----- Services -----
 
 service Directory {
