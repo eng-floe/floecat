@@ -3,14 +3,14 @@ package ai.floedb.metacat.service.repo.util;
 public final class Keys {
   private Keys() {}
   public static String catPtr(String tid, String catId) {
-    return "/tenants/" + tid + "/catalogs/" + catId;
+    return "/tenants/" + tid + "/catalogs/by-id/" + catId;
   }
   public static String catBlob(String tid, String catId) {
     return "mem://tenants/" + tid + "/catalogs/" + catId + "/catalog.pb";
   }
 
   public static String nsPtr(String tid, String catId, String nsId) {
-    return "/tenants/" + tid + "/catalogs/" + catId + "/namespaces/" + nsId;
+    return "/tenants/" + tid + "/catalogs/" + catId + "/namespaces/by-id/" + nsId;
   }
   public static String nsBlob(String tid, String catId, String nsId) {
     return "mem://tenants/" + tid + "/catalogs/" + catId + "/namespaces/" + nsId + "/namespace.pb";
@@ -23,11 +23,12 @@ public final class Keys {
     return "mem://tenants/" + tid + "/tables/" + tblId + "/table.pb";
   }
   public static String tblIndexPtr(String tid, String catId, String nsId, String tblId) {
-    return "/tenants/" + tid + "/catalogs/" + catId + "/namespaces/" + nsId + "/tables/" + tblId;
+    return "/tenants/" + tid + "/catalogs/" + catId + "/namespaces/" + nsId + "/tables/by-id/" + tblId;
   }
   public static String nsIndexPrefix(String tid, String catId, String nsId) {
     return tblIndexPtr(tid, catId, nsId, "");
   }
+
   public static String snapPtr(String tenantId, String tableId, long snapshotId) {
     return "/tenants/" + tenantId + "/tables/" + tableId + "/snapshots/" + snapshotId;
   }

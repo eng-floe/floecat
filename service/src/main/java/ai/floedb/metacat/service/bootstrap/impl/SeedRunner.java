@@ -12,6 +12,7 @@ import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.NamespaceRef;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
+import ai.floedb.metacat.catalog.rpc.TableDescriptor;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
@@ -118,7 +119,7 @@ public class SeedRunner {
     // Location of upstream table
     String rootUri = "s3://seed-data/" + tenant + "/" + catalogId + "/" + namespaceId + "/" + name + "/";
 
-    var td = ai.floedb.metacat.catalog.rpc.TableDescriptor.newBuilder()
+    var td = TableDescriptor.newBuilder()
       .setResourceId(tableRid)
       .setDisplayName(name)
       .setDescription(name + " table")
