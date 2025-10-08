@@ -49,7 +49,7 @@ class CatalogPagingIT {
         .setCreatedAtMs(System.currentTimeMillis())
         .build();
 
-      repo.putCatalog(cat);
+      repo.put(cat);
     }
 
     var pc = PrincipalContext.newBuilder()

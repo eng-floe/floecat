@@ -21,11 +21,13 @@ import ai.floedb.metacat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.metacat.catalog.rpc.ListTablesRequest;
 import ai.floedb.metacat.catalog.rpc.ListTablesResponse;
 import ai.floedb.metacat.catalog.rpc.ResourceAccess;
+import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
+import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
@@ -35,6 +37,7 @@ public class ResourceAccessImpl implements ResourceAccess {
   @Inject CatalogRepository repo;
   @Inject NamespaceRepository nsRepo;
   @Inject TableRepository tableRepo;
+  @Inject SnapshotRepository snapshotRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
 
@@ -42,8 +45,8 @@ public class ResourceAccessImpl implements ResourceAccess {
   public Uni<GetCatalogResponse> getCatalog(GetCatalogRequest req) {
     var p = principal.get();
     authz.require(p, "catalog.read");
-    return Uni.createFrom().item(() ->
-      repo.getCatalog(req.getResourceId())
+    return Uni.createFrom().item(
+      repo.get(req.getResourceId())
         .map(c -> GetCatalogResponse.newBuilder().setCatalog(c).build())
         .orElseThrow(() -> GrpcErrors.notFound("catalog not found", null))
     );
@@ -58,18 +61,20 @@ public class ResourceAccessImpl implements ResourceAccess {
     String token = req.hasPage() ? req.getPage().getPageToken() : "";
     StringBuilder next = new StringBuilder();
 
-    return Uni.createFrom().item(() -> {
-      var items = repo.listCatalogs(p.getTenantId(), limit, token, next);
-      int total = repo.countCatalogs(p.getTenantId());
-      var page = PageResponse.newBuilder()
-        .setNextPageToken(next.toString())
-        .setTotalSize(total)
-        .build();
-      return ListCatalogsResponse.newBuilder()
-        .addAllCatalogs(items)
-        .setPage(page)
-        .build();
-    });
+    return Uni.createFrom().deferred(() ->
+      Uni.createFrom().item(() -> {
+        var items = repo.list(p.getTenantId(), limit, token, next);
+        int total = repo.count(p.getTenantId());
+        var page = PageResponse.newBuilder()
+          .setNextPageToken(next.toString())
+          .setTotalSize(total)
+          .build();
+        return ListCatalogsResponse.newBuilder()
+          .addAllCatalogs(items)
+          .setPage(page)
+          .build();
+      })
+    );
   }
 
   @Override
@@ -137,15 +142,14 @@ public class ResourceAccessImpl implements ResourceAccess {
   @Override
   public Uni<ListSnapshotsResponse> listSnapshots(ListSnapshotsRequest req) {
     var p = principal.get(); authz.require(p, "catalog.read");
+
     int limit = req.hasPage() && req.getPage().getPageSize() > 0 ? req.getPage().getPageSize() : 50;
     String token = req.hasPage() ? req.getPage().getPageToken() : "";
     StringBuilder next = new StringBuilder();
 
     return Uni.createFrom().item(() -> {
-      var snaps = tableRepo.listSnapshots(
-        req.getTableId(), limit, token, next);
-      int total = tableRepo.countSnapshots(req.getTableId());
-
+      var snaps = snapshotRepo.list(req.getTableId(), limit, token, next);
+      int total = snapshotRepo.count(req.getTableId());
       var page = PageResponse.newBuilder().setNextPageToken(next.toString()).setTotalSize(total).build();
       return ListSnapshotsResponse.newBuilder().addAllSnapshots(snaps).setPage(page).build();
     });
@@ -154,20 +158,15 @@ public class ResourceAccessImpl implements ResourceAccess {
   @Override
   public Uni<GetCurrentSnapshotResponse> getCurrentSnapshot(GetCurrentSnapshotRequest req) {
     var p = principal.get(); authz.require(p, "catalog.read");
-    return Uni.createFrom().item(() -> {
-      var td = tableRepo.get(
-          ResourceId.newBuilder().setTenantId(p.getTenantId()).build(),
-          req.getCatalogId(), req.getNamespaceId(), req.getTableId())
-        .orElseThrow(() -> GrpcErrors.notFound("table not found", null));
-
-      if (td.getCurrentSnapshotId() == 0) throw GrpcErrors.notFound("snapshot not found", null);
-
-      return GetCurrentSnapshotResponse.newBuilder()
-          .setSnapshot(ai.floedb.metacat.catalog.rpc.Snapshot.newBuilder()
-            .setSnapshotId(td.getCurrentSnapshotId())
-            .setCreatedAtMs(td.getCreatedAtMs())
+    return Uni.createFrom().item(() ->
+      tableRepo.getById(req.getTableId())
+        .filter(t -> t.getCurrentSnapshotId() != 0)
+        .map(t -> GetCurrentSnapshotResponse.newBuilder()
+          .setSnapshot(Snapshot.newBuilder()
+            .setSnapshotId(t.getCurrentSnapshotId())
+            .setCreatedAtMs(t.getCreatedAtMs())
             .build())
-          .build();
-    });
+          .build())
+        .orElseThrow(() -> GrpcErrors.notFound("snapshot not found", null)));
   }
 }

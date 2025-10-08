@@ -6,13 +6,13 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 import jakarta.enterprise.context.ApplicationScoped;
-import io.quarkus.arc.Unremovable;
+import io.quarkus.arc.properties.IfBuildProperty;
 
 import ai.floedb.metacat.common.rpc.BlobHeader;
 import ai.floedb.metacat.service.storage.BlobStore;
 
 @ApplicationScoped
-@Unremovable
+@IfBuildProperty(name = "metacat.kv", stringValue = "memory")
 public class InMemoryBlobStore implements BlobStore {
   
   private static final class Blob { 

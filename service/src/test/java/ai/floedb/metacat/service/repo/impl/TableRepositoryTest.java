@@ -5,6 +5,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.TableDescriptor;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
@@ -14,9 +15,10 @@ import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
 class TableRepositoryTest {
   @Test
   void putAndGetRoundTrip() {
-    var repo = new TableRepository();
-    repo.ptr = new InMemoryPointerStore();
-    repo.blobs = new InMemoryBlobStore();
+    var ptr = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var snapshotRepo = new SnapshotRepository(ptr, blobs);
+    var tableRepo = new TableRepository(ptr, blobs);
 
     var tenant = "t-0001";
     var catalogId = UUID.randomUUID().toString();
@@ -39,16 +41,21 @@ class TableRepositoryTest {
       .setCreatedAtMs(System.currentTimeMillis())
       .setCurrentSnapshotId(42)
       .build();
+    tableRepo.put(td);
 
-    repo.put(td);
+    var snap = Snapshot.newBuilder()
+      .setSnapshotId(42)
+      .setCreatedAtMs(System.currentTimeMillis())
+      .build();
+    snapshotRepo.put(tableRid, snap);
 
-    var fetched = repo.get(tenantRid, catalogRid, nsRid, tableRid).orElseThrow();
+    var fetched = tableRepo.get(tenantRid, catalogRid, nsRid, tableRid).orElseThrow();
     assertEquals("orders", fetched.getDisplayName());
 
-    var list = repo.list(tenant, catalogId, nsId, 50, "", new StringBuilder());
+    var list = tableRepo.list(tenant, catalogId, nsId, 50, "", new StringBuilder());
     assertEquals(1, list.size());
 
-    var cur = repo.getCurrentSnapshot(tableRid).orElseThrow();
+    var cur = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
     assertEquals(42, cur.getSnapshotId());
   }
 }

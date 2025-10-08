@@ -15,9 +15,7 @@ class NamespaceRepositoryTest {
 
   @Test
   void putAndGetRoundTrip() {
-    var repo = new NamespaceRepository();
-    repo.ptr = new InMemoryPointerStore();
-    repo.blobs = new InMemoryBlobStore();
+    var repo = new NamespaceRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
 
     String tenant = "t-0001";
 

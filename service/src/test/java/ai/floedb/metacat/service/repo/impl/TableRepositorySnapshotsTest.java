@@ -16,11 +16,10 @@ import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
 class TableRepositorySnapshotsTest {
   @Test
   void list_count_and_currentSnapshot_fromSeeded() {
-    var repo = new TableRepository();
     var ptr  = new InMemoryPointerStore();
     var blobs= new InMemoryBlobStore();
-    repo.ptr = ptr;
-    repo.blobs = blobs;
+    var snapshotRepo = new SnapshotRepository(ptr, blobs);
+    var tableRepo = new TableRepository(ptr, blobs);
 
     String tenant = "t-0001";
     String catalogId = UUID.randomUUID().toString();
@@ -42,26 +41,26 @@ class TableRepositorySnapshotsTest {
       .setCreatedAtMs(System.currentTimeMillis())
       .setCurrentSnapshotId(200)
       .build();
-    repo.put(td);
+    tableRepo.put(td);
 
     seedSnapshot(ptr, blobs, tenant, tblId, 199, System.currentTimeMillis() - 60_000);
     seedSnapshot(ptr, blobs, tenant, tblId, 200, System.currentTimeMillis());
 
     StringBuilder next = new StringBuilder();
-    var page1 = repo.listSnapshots(tableRid, 1, "", next);
+    var page1 = snapshotRepo.list(tableRid, 1, "", next);
     assertEquals(1, page1.size());
     assertFalse(next.toString().isEmpty(), "should return next_page_token");
 
     String token = next.toString();
     next.setLength(0);
-    var page2 = repo.listSnapshots(tableRid, 10, token, next);
+    var page2 = snapshotRepo.list(tableRid, 10, token, next);
     assertTrue(page2.size() >= 1);
     assertTrue(next.toString().isEmpty(), "no more pages");
 
-    int total = repo.countSnapshots(tableRid);
+    int total = snapshotRepo.count(tableRid);
     assertEquals(2, total);
 
-    var cur = repo.getCurrentSnapshot(tableRid).orElseThrow();
+    var cur = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
     assertEquals(200, cur.getSnapshotId());
   }
 

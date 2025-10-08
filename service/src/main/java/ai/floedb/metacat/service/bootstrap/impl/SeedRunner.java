@@ -93,7 +93,7 @@ public class SeedRunner {
     var rid = ResourceId.newBuilder().setTenantId(tenant).setId(id).setKind(ResourceKind.RK_CATALOG).build();
     var cat = Catalog.newBuilder()
       .setResourceId(rid).setDisplayName(displayName).setDescription(description).setCreatedAtMs(now).build();
-    catalogs.putCatalog(cat);
+    catalogs.put(cat);
     return rid;
   }
 
@@ -153,7 +153,7 @@ public class SeedRunner {
   private static String uuidFor(String seed) {
     return UUID.nameUUIDFromBytes(seed.getBytes()).toString();
   }
-  
+
   private static String displayPathKey(String catalogId, List<String> path) {
     return catalogId + "/" + String.join("/", path);
   }

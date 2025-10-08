@@ -14,9 +14,7 @@ import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
 class CatalogRepositoryTest {
   @Test
   void putAndGetRoundTrip() {
-    var repo = new CatalogRepository();
-    repo.ptr = new InMemoryPointerStore();
-    repo.blobs = new InMemoryBlobStore();
+    var repo = new CatalogRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
 
     var rid = ResourceId.newBuilder()
       .setTenantId("t-0001")
@@ -25,8 +23,8 @@ class CatalogRepositoryTest {
     var cat = Catalog.newBuilder()
       .setResourceId(rid).setDisplayName("sales").setDescription("Sales").build();
 
-    repo.putCatalog(cat);
-    var fetched = repo.getCatalog(rid).orElseThrow();
+    repo.put(cat);
+    var fetched = repo.get(rid).orElseThrow();
     assertEquals("sales", fetched.getDisplayName());
   }
 }

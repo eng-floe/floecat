@@ -8,13 +8,13 @@ import java.util.Collections;
 import java.util.concurrent.ConcurrentHashMap;
 
 import jakarta.enterprise.context.ApplicationScoped;
-import io.quarkus.arc.Unremovable;
+import io.quarkus.arc.properties.IfBuildProperty;
 
 import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.service.storage.PointerStore;
 
 @ApplicationScoped
-@Unremovable
+@IfBuildProperty(name = "metacat.blob", stringValue = "memory")
 public class InMemoryPointerStore implements PointerStore {
   private final Map<String, Pointer> map = new ConcurrentHashMap<>();
 
