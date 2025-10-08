@@ -46,3 +46,16 @@ make integration-test
 |--------|---------|
 | proto/ | Protobuf and gRPC interface definitions (ai.floedb.metacat.*) |
 | service/ | Quarkus service layer, repositories, and tests | 
+
+## Key Concepts
+
+Metacat maintains a canonical resource hierarchy in an immutable object store and a pointer index for fast lookup.
+
+```bash
+tenants/{tenant_id}/catalogs/{catalog_id}/namespaces/{namespace_id}/tables/{table_id}
+tenants/{tenant_id}/tables/{table_id}/snapshots/{snapshot_id}
+```
+
+Each level (Catalog, Namespace, Table, Snapshot) is represented by:
+ - BlobStore → immutable protobuf payloads (catalog.pb, namespace.pb, table.pb, snapshot.pb)
+ - PointerStore → lightweight key→blob mappings with versions for fast enumeration and CAS updates.
