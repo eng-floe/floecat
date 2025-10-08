@@ -2,7 +2,6 @@ package ai.floedb.metacat.service.bootstrap.impl;
 
 import java.util.List;
 import java.util.UUID;
-import java.util.logging.Logger;
 
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -12,94 +11,161 @@ import jakarta.inject.Inject;
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.NamespaceRef;
+import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.catalog.impl.DirectoryImpl;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
+import ai.floedb.metacat.service.repo.impl.TableRepository;
+import ai.floedb.metacat.service.storage.BlobStore;
+import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.common.rpc.NameRef;
+import ai.floedb.metacat.common.rpc.Pointer;
 
 @ApplicationScoped
 public class SeedRunner {
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;
-
-  private static final Logger LOG = Logger.getLogger(SeedRunner.class.getName());
+  @Inject TableRepository tables;
+  @Inject BlobStore blobs;
+  @Inject PointerStore ptr;
 
   void onStart(@Observes StartupEvent ev) {
     final String tenant = "t-0001";
     final long now = System.currentTimeMillis();
 
-    var salesId = seedCatalog(tenant, "sales", "Sales catalog",   now);
+    var salesId = seedCatalog(tenant, "sales", "Sales catalog", now);
     var financeId = seedCatalog(tenant, "finance", "Finance catalog", now);
-    DirectoryImpl.putIndex("sales", salesId);
-    DirectoryImpl.putIndex("finance", financeId);
+    DirectoryImpl.putCatalogIndex("sales", salesId);
+    DirectoryImpl.putCatalogIndex("finance", financeId);
 
-    seedNamespace(tenant, salesId, List.of("core"), "core", now);
-    seedNamespace(tenant, salesId, List.of("staging","2025"), "staging/2025", now);
-    seedNamespace(tenant, financeId, List.of("core"), "core", now);
+    var salesCoreNsId = seedNamespace(tenant, salesId, List.of("core"), "core", now);
+    var salesStg25NsId = seedNamespace(tenant, salesId, List.of("staging","2025"), "staging/2025", now);
+    var financeCoreNsId = seedNamespace(tenant, financeId, List.of("core"), "core", now);
 
-    LOG.info("Seeded catalogs and namespaces for tenant " + tenant);
+    var ordersId = seedTable(tenant, salesId, salesCoreNsId, "orders", 0L, now);
+    var nameRef = NameRef.newBuilder()
+      .setCatalog("sales")
+      .addNamespacePath("core")
+      .setName("orders")
+      .build();
+    DirectoryImpl.putTableIndex(nameRef, ordersId);
+
+    var lineitemId = seedTable(tenant, salesId, salesCoreNsId, "lineitem", 0L, now);
+    nameRef = NameRef.newBuilder()
+      .setCatalog("sales")
+      .addNamespacePath("core")
+      .setName("lineitem")
+      .build();
+    DirectoryImpl.putTableIndex(nameRef, lineitemId);
+
+    seedSnapshot(tenant, ordersId, 101L, now - 60000);
+    seedSnapshot(tenant, ordersId, 102L, now);
+
+    var salesStgOrdersId = seedTable(tenant, salesId, salesStg25NsId, "orders_2025", 0L, now);
+    DirectoryImpl.putTableIndex(
+      NameRef.newBuilder().setCatalog("sales")
+        .addNamespacePath("staging").addNamespacePath("2025")
+        .setName("orders_2025").build(),
+      salesStgOrdersId);
+
+    var salesStgEventsId = seedTable(tenant, salesId, salesStg25NsId, "staging_events", 0L, now);
+    DirectoryImpl.putTableIndex(
+      NameRef.newBuilder().setCatalog("sales")
+        .addNamespacePath("staging").addNamespacePath("2025")
+        .setName("staging_events").build(),
+      salesStgEventsId);
+
+    var glEntriesId = seedTable(tenant, financeId, financeCoreNsId, "gl_entries", 0L, now);
+    DirectoryImpl.putTableIndex(
+      NameRef.newBuilder().setCatalog("finance")
+        .addNamespacePath("core")
+        .setName("gl_entries").build(),
+      glEntriesId);
+
+    seedSnapshot(tenant, glEntriesId, 201L, now - 30_000L);
   }
 
   private String seedCatalog(String tenant, String displayName, String description, long now) {
     String id = uuidFor(tenant + "/catalog:" + displayName);
-    ResourceId rid = ResourceId.newBuilder()
-      .setTenantId(tenant)
-      .setId(id)
-      .setKind(ResourceKind.RK_CATALOG)
-      .build();
+    var rid = ResourceId.newBuilder().setTenantId(tenant).setId(id).setKind(ResourceKind.RK_CATALOG).build();
 
-    Catalog cat = Catalog.newBuilder()
-      .setResourceId(rid)
-      .setDisplayName(displayName)
-      .setDescription(description)
-      .setCreatedAtMs(now)
-      .build();
+    var cat = Catalog.newBuilder()
+      .setResourceId(rid).setDisplayName(displayName).setDescription(description).setCreatedAtMs(now).build();
 
     catalogs.putCatalog(cat);
     return id;
   }
 
-  private void seedNamespace(String tenant, String catalogId, List<String> path, String display, long now) {
+  private String seedNamespace(String tenant, String catalogId, List<String> path, String display, long now) {
     String nsId = uuidFor(tenant + "/ns:" + displayPathKey(catalogId, path));
 
-    var catRid = ResourceId.newBuilder()
-      .setTenantId(tenant)
-      .setId(catalogId)
-      .setKind(ResourceKind.RK_CATALOG)
-      .build();
+    var catRid = ResourceId.newBuilder().setTenantId(tenant).setId(catalogId).setKind(ResourceKind.RK_CATALOG).build();
+    var nsRid  = ResourceId.newBuilder().setTenantId(tenant).setId(nsId).setKind(ResourceKind.RK_NAMESPACE).build();
 
-    var nsRid = ResourceId.newBuilder()
-      .setTenantId(tenant)
-      .setId(nsId)
-      .setKind(ResourceKind.RK_NAMESPACE)
-      .build();
-
-    Namespace ns = Namespace.newBuilder()
-      .setResourceId(nsRid)
-      .setDisplayName(display)
-      .setDescription(display + " namespace")
-      .setCreatedAtMs(now)
-      .build();
+    var ns = Namespace.newBuilder()
+      .setResourceId(nsRid).setDisplayName(display).setDescription(display + " namespace").setCreatedAtMs(now).build();
 
     namespaces.put(ns, catRid);
 
-    NamespaceRef ref = NamespaceRef.newBuilder()
-    .setCatalogId(ResourceId.newBuilder()
-        .setTenantId(tenant)
-        .setId(catalogId)
-        .setKind(ResourceKind.RK_CATALOG)
-        .build())
-    .addAllNamespacePath(path)
-    .build();
-
+    var ref = NamespaceRef.newBuilder().setCatalogId(catRid).addAllNamespacePath(path).build();
     DirectoryImpl.putNamespaceIndex(ref, nsId);
+
+    return nsId;
+  }
+
+  private String seedTable(String tenant, String catalogId, String namespaceId, String name, long snapshotId, long now) {
+    String tableId = uuidFor(tenant + "/tbl:" + name);
+
+    var tableRid = ResourceId.newBuilder()
+        .setTenantId(tenant).setId(tableId).setKind(ResourceKind.RK_TABLE).build();
+
+    var catRid = ResourceId.newBuilder()
+        .setTenantId(tenant).setId(catalogId).setKind(ResourceKind.RK_CATALOG).build();
+
+    var nsRid = ResourceId.newBuilder()
+        .setTenantId(tenant).setId(namespaceId).setKind(ResourceKind.RK_NAMESPACE).build();
+
+    // Location of upstream table
+    String rootUri = "s3://seed-data/" + tenant + "/" + catalogId + "/" + namespaceId + "/" + name + "/";
+
+    var td = ai.floedb.metacat.catalog.rpc.TableDescriptor.newBuilder()
+      .setResourceId(tableRid)
+      .setDisplayName(name)
+      .setDescription(name + " table")
+      .setCatalogId(catRid)
+      .setNamespaceId(nsRid)
+      .setRootUri(rootUri)
+      .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
+      .setCreatedAtMs(now)
+      .setCurrentSnapshotId(snapshotId)
+      .build();
+
+    tables.put(td);
+
+    
+    return tableId;
+  }
+
+  private void seedSnapshot(String tenant, String tableId, long snapshotId, long createdAtMs) {
+    String key = "/tenants/" + tenant + "/tables/" + tableId + "/snapshots/" + snapshotId;
+    String uri = "mem://tenants/" + tenant + "/tables/" + tableId + "/snapshots/" + snapshotId + ".pb";
+
+    var snap = Snapshot.newBuilder().setSnapshotId(snapshotId).setCreatedAtMs(createdAtMs).build();
+    blobs.put(uri, snap.toByteArray(), "application/x-protobuf");
+
+    for (int i = 0; i < 10; i++) {
+      long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
+      Pointer next = Pointer.newBuilder().setKey(key).setBlobUri(uri).setVersion(expected + 1).build();
+      if (ptr.compareAndSet(key, expected, next)) return;
+    }
+    throw new IllegalStateException("seedSnapshot CAS failed: " + key);
   }
 
   private static String uuidFor(String seed) {
     return UUID.nameUUIDFromBytes(seed.getBytes()).toString();
   }
-
   private static String displayPathKey(String catalogId, List<String> path) {
     return catalogId + "/" + String.join("/", path);
   }

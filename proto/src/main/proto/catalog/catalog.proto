@@ -6,11 +6,13 @@ option java_package = "ai.floedb.metacat.catalog.rpc";
 
 import "common/common.proto";
 
+// ----- Catalog -----
+
 message Catalog {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
   string description = 3;
-  fixed64 created_at_ms = 4;
+  int64 created_at_ms = 4;
 }
 
 message GetCatalogRequest {
@@ -42,6 +44,8 @@ message ListCatalogsResponse {
   ai.floedb.metacat.common.PageResponse page = 2;
 }
 
+// ----- Namespace -----
+
 message NamespaceRef {
   ai.floedb.metacat.common.ResourceId catalog_id = 1;
   repeated string namespace_path = 2;
@@ -51,7 +55,7 @@ message Namespace {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
   string description = 3;
-  fixed64 created_at_ms = 4;
+  int64 created_at_ms = 4;
 }
 
 message GetNamespaceRequest { 
@@ -85,12 +89,117 @@ message LookupNamespaceResponse {
   string display_name = 2;
 }
 
+// ----- Table -----
+
+message ResolveTableRequest {
+  ai.floedb.metacat.common.NameRef name = 1;
+}
+message ResolveTableResponse {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+}
+
+message ResolveFQTablesRequest {
+  oneof selector {
+    ResolveList list = 1;
+    ai.floedb.metacat.common.NameRef prefix = 2;
+  }
+  ai.floedb.metacat.common.PageRequest page = 10;
+}
+
+message ResolveList { 
+  repeated ai.floedb.metacat.common.NameRef names = 1; 
+}
+
+message ResolveFQTablesResponse {
+  message Entry {
+    ai.floedb.metacat.common.ResourceId resource_id = 1;
+    ai.floedb.metacat.common.NameRef name = 2;
+  }
+  repeated Entry tables = 1;
+  ai.floedb.metacat.common.PageResponse page = 2;
+}
+
+message LookupTableRequest {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+}
+message LookupTableResponse {
+  ai.floedb.metacat.common.NameRef name = 1;
+}
+
+message TableDescriptor {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  string display_name = 2;
+  string description = 3;
+  ai.floedb.metacat.common.ResourceId catalog_id = 4;
+  ai.floedb.metacat.common.ResourceId namespace_id = 5;
+  string root_uri = 6;
+  int64 created_at_ms = 7;
+  string schema_json = 8;
+  int64 current_snapshot_id = 9;
+}
+
+message Snapshot {
+  int64 snapshot_id = 1;
+  int64 created_at_ms = 2;
+  ai.floedb.metacat.common.ResourceId table_id = 3;
+  int64 parent_snapshot_id = 4; 
+  string metadata_json = 5;
+}
+
+message GetTableDescriptorRequest {
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;
+  ai.floedb.metacat.common.ResourceId namespace_id = 2;
+  ai.floedb.metacat.common.ResourceId resource_id = 3;
+  ai.floedb.metacat.common.SnapshotRef snapshot = 4;
+}
+message GetTableDescriptorResponse { 
+  TableDescriptor table = 1; 
+}
+
+message ListTablesRequest {
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;
+  ai.floedb.metacat.common.ResourceId namespace_id = 2;
+  ai.floedb.metacat.common.PageRequest page = 3;
+}
+message ListTablesResponse {
+  repeated TableDescriptor tables = 1;
+  ai.floedb.metacat.common.PageResponse page = 2;
+}
+
+// ----- Snapshot -----
+
+message ListSnapshotsRequest {
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;
+  ai.floedb.metacat.common.ResourceId namespace_id = 2;
+  ai.floedb.metacat.common.ResourceId table_id = 3;
+  ai.floedb.metacat.common.PageRequest page = 4;
+}
+message ListSnapshotsResponse {
+  repeated Snapshot snapshots = 1;
+  ai.floedb.metacat.common.PageResponse page = 2;
+}
+
+message GetCurrentSnapshotRequest {
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;
+  ai.floedb.metacat.common.ResourceId namespace_id = 2;
+  ai.floedb.metacat.common.ResourceId table_id = 3;
+}
+message GetCurrentSnapshotResponse {
+  Snapshot snapshot = 1;
+}
+
+// ----- Services -----
+
 service Directory {
   rpc ResolveCatalog(ResolveCatalogRequest) returns (ResolveCatalogResponse);
   rpc LookupCatalog(LookupCatalogRequest) returns (LookupCatalogResponse);
 
   rpc ResolveNamespace(ResolveNamespaceRequest) returns (ResolveNamespaceResponse);
   rpc LookupNamespace(LookupNamespaceRequest) returns (LookupNamespaceResponse);
+
+  rpc ResolveTable(ResolveTableRequest) returns (ResolveTableResponse);
+  rpc ResolveFQTables(ResolveFQTablesRequest) returns (ResolveFQTablesResponse);
+  rpc LookupTable(LookupTableRequest) returns (LookupTableResponse);
 }
 
 service ResourceAccess {
@@ -99,4 +208,9 @@ service ResourceAccess {
 
   rpc GetNamespace(GetNamespaceRequest) returns (GetNamespaceResponse);
   rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
+
+  rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
+  rpc GetTableDescriptor(GetTableDescriptorRequest) returns (GetTableDescriptorResponse);
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+  rpc GetCurrentSnapshot(GetCurrentSnapshotRequest) returns (GetCurrentSnapshotResponse);
 }

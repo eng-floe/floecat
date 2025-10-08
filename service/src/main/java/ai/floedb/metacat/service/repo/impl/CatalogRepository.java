@@ -18,12 +18,16 @@ public class CatalogRepository {
   @Inject PointerStore ptr;
   @Inject BlobStore blobs;
 
-  private static String key(ResourceId rid) {
-    return "/tenants/" + rid.getTenantId() + "/catalogs/" + rid.getId();
+  private static String catalogBlobUri(String tenantId, String catalogId) {
+    return "mem://tenants/" + tenantId + "/catalogs/" + catalogId + "/catalog.pb";
+  }
+
+  private static String catalogIndexPtr(String tenantId, String catalogId) {
+    return "/tenants/" + tenantId + "/catalogs/" + catalogId;
   }
 
   public Optional<Catalog> getCatalog(ResourceId rid) {
-    return ptr.get(key(rid)).map(p -> {
+    return ptr.get(catalogIndexPtr(rid.getTenantId(), rid.getId())).map(p -> {
       byte[] data = blobs.get(p.getBlobUri());
       try { 
         return Catalog.parseFrom(data); 
@@ -34,13 +38,17 @@ public class CatalogRepository {
   }
 
   public List<Catalog> listCatalogs(String tenantId, int limit, String pageToken, StringBuilder nextToken) {
-    String prefix = "/tenants/" + tenantId + "/catalogs/";
+    String prefix = catalogIndexPtr(tenantId, "");
     List<String> keys = ptr.listByPrefix(prefix, Math.max(1, limit), pageToken, nextToken);
     List<Catalog> out = new ArrayList<>();
     for (String k : keys) {
       ptr.get(k).ifPresent(p -> {
         byte[] data = blobs.get(p.getBlobUri());
-        try { out.add(Catalog.parseFrom(data)); } catch (Exception e) { throw new RuntimeException(e); }
+        try { 
+          out.add(Catalog.parseFrom(data)); 
+        } catch (Exception e) { 
+          throw new RuntimeException(e); 
+        }
       });
     }
     return out;
@@ -48,32 +56,25 @@ public class CatalogRepository {
 
   public void putCatalog(Catalog c) {
     ResourceId rid = c.getResourceId();
-    String key = key(rid);
-    String uri = "mem://" + key + ".pb";
+    String key = catalogIndexPtr(rid.getTenantId(), rid.getId());
+    String uri = catalogBlobUri(rid.getTenantId(), rid.getId());
 
     blobs.put(uri, c.toByteArray(), "application/x-protobuf");
-
-    int maxRetries = 10;
-    for (int i = 0; i < maxRetries; i++) {
-      long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
-      long nextVersion = expected + 1;
-
-      Pointer next = Pointer.newBuilder()
-        .setKey(key)
-        .setBlobUri(uri)
-        .setVersion(nextVersion)
-        .build();
-
-      if (ptr.compareAndSet(key, expected, next)) {
-        return;
-      }
-    }
-    throw new IllegalStateException("putCatalog CAS failed after retries: " + key);
+    casUpsert(key, uri);
   }
 
   public int countCatalogs(String tenantId) {
-    String prefix = "/tenants/" + tenantId + "/catalogs/";
+    String prefix = catalogIndexPtr(tenantId, "");
     StringBuilder ignore = new StringBuilder();
     return ptr.listByPrefix(prefix, Integer.MAX_VALUE, "", ignore).size();
+  }
+
+  private void casUpsert(String key, String blobUri) {
+    for (int i = 0; i < 10; i++) {
+      long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
+      Pointer next = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(expected + 1).build();
+      if (ptr.compareAndSet(key, expected, next)) return;
+    }
+    throw new IllegalStateException("CAS failed: " + key);
   }
 }

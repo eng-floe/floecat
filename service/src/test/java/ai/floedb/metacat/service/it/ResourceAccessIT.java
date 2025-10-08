@@ -16,7 +16,7 @@ import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
 
 @QuarkusTest
-class CatalogServiceIT {
+class ResourceAccessIT {
   @GrpcClient("resource-access")
   ResourceAccessGrpc.ResourceAccessBlockingStub resourceAccess;
   @GrpcClient("directory")

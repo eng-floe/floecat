@@ -37,6 +37,7 @@ public class PrincipalContextInterceptor implements ServerInterceptor {
       .setTenantId("t-0001")
       .setSubject("dev-user")
       .addPermissions("catalog.read")
+      .addPermissions("table.read")
       .build();
   }
 }

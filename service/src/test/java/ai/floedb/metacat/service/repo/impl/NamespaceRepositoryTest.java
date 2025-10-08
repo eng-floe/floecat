@@ -2,14 +2,14 @@ package ai.floedb.metacat.service.repo.impl;
 
 import java.util.UUID;
 
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
-import org.junit.jupiter.api.Test;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class NamespaceRepositoryTest {
 

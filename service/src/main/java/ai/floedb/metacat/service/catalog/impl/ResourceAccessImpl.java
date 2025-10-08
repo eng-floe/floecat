@@ -4,21 +4,29 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 
-import java.util.Map;
-
 import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.GetCatalogResponse;
+import ai.floedb.metacat.catalog.rpc.GetCurrentSnapshotRequest;
+import ai.floedb.metacat.catalog.rpc.GetCurrentSnapshotResponse;
 import ai.floedb.metacat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.GetNamespaceResponse;
+import ai.floedb.metacat.catalog.rpc.GetTableDescriptorRequest;
+import ai.floedb.metacat.catalog.rpc.GetTableDescriptorResponse;
 import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.metacat.catalog.rpc.ListCatalogsResponse;
 import ai.floedb.metacat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.metacat.catalog.rpc.ListNamespacesResponse;
+import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
+import ai.floedb.metacat.catalog.rpc.ListSnapshotsResponse;
+import ai.floedb.metacat.catalog.rpc.ListTablesRequest;
+import ai.floedb.metacat.catalog.rpc.ListTablesResponse;
 import ai.floedb.metacat.catalog.rpc.ResourceAccess;
 import ai.floedb.metacat.common.rpc.PageResponse;
+import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
+import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 
@@ -26,6 +34,7 @@ import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 public class ResourceAccessImpl implements ResourceAccess {
   @Inject CatalogRepository repo;
   @Inject NamespaceRepository nsRepo;
+  @Inject TableRepository tableRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
 
@@ -96,6 +105,69 @@ public class ResourceAccessImpl implements ResourceAccess {
         .addAllNamespaces(items)
         .setPage(page)
         .build();
+    });
+  }
+
+  @Override
+  public Uni<GetTableDescriptorResponse> getTableDescriptor(GetTableDescriptorRequest req) {
+    var p = principal.get(); authz.require(p, "catalog.read");
+    return Uni.createFrom().item(() ->
+        tableRepo.get(
+            ResourceId.newBuilder().setTenantId(p.getTenantId()).build(),
+            req.getCatalogId(), req.getNamespaceId(), req.getResourceId())
+          .map(t -> GetTableDescriptorResponse.newBuilder().setTable(t).build())
+          .orElseThrow(() -> GrpcErrors.notFound("table not found", null)));
+  }
+
+  @Override
+  public Uni<ListTablesResponse> listTables(ListTablesRequest req) {
+    var p = principal.get(); authz.require(p, "table.read");
+    int limit = req.hasPage() && req.getPage().getPageSize() > 0 ? req.getPage().getPageSize() : 50;
+    String token = req.hasPage() ? req.getPage().getPageToken() : "";
+    StringBuilder next = new StringBuilder();
+
+    return Uni.createFrom().item(() -> {
+      var items = tableRepo.list(p.getTenantId(), req.getCatalogId().getId(), req.getNamespaceId().getId(), limit, token, next);
+      int total = tableRepo.count(p.getTenantId(), req.getCatalogId().getId(), req.getNamespaceId().getId());
+      var page = PageResponse.newBuilder().setNextPageToken(next.toString()).setTotalSize(total).build();
+      return ListTablesResponse.newBuilder().addAllTables(items).setPage(page).build();
+    });
+  }
+
+  @Override
+  public Uni<ListSnapshotsResponse> listSnapshots(ListSnapshotsRequest req) {
+    var p = principal.get(); authz.require(p, "catalog.read");
+    int limit = req.hasPage() && req.getPage().getPageSize() > 0 ? req.getPage().getPageSize() : 50;
+    String token = req.hasPage() ? req.getPage().getPageToken() : "";
+    StringBuilder next = new StringBuilder();
+
+    return Uni.createFrom().item(() -> {
+      var snaps = tableRepo.listSnapshots(
+        req.getTableId(), limit, token, next);
+      int total = tableRepo.countSnapshots(req.getTableId());
+
+      var page = PageResponse.newBuilder().setNextPageToken(next.toString()).setTotalSize(total).build();
+      return ListSnapshotsResponse.newBuilder().addAllSnapshots(snaps).setPage(page).build();
+    });
+  }
+
+  @Override
+  public Uni<GetCurrentSnapshotResponse> getCurrentSnapshot(GetCurrentSnapshotRequest req) {
+    var p = principal.get(); authz.require(p, "catalog.read");
+    return Uni.createFrom().item(() -> {
+      var td = tableRepo.get(
+          ResourceId.newBuilder().setTenantId(p.getTenantId()).build(),
+          req.getCatalogId(), req.getNamespaceId(), req.getTableId())
+        .orElseThrow(() -> GrpcErrors.notFound("table not found", null));
+
+      if (td.getCurrentSnapshotId() == 0) throw GrpcErrors.notFound("snapshot not found", null);
+
+      return GetCurrentSnapshotResponse.newBuilder()
+          .setSnapshot(ai.floedb.metacat.catalog.rpc.Snapshot.newBuilder()
+            .setSnapshotId(td.getCurrentSnapshotId())
+            .setCreatedAtMs(td.getCreatedAtMs())
+            .build())
+          .build();
     });
   }
 }

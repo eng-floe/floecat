@@ -53,7 +53,7 @@ message Pointer {
 }
 
 message BlobHeader {
-  string resource_id = 1;
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
   string schema_version = 2;
   string etag = 3;
   int64 created_at_ms = 4;
