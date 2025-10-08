@@ -16,6 +16,7 @@ import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.ResourceAccessGrpc;
 import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
+import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 
@@ -70,7 +71,7 @@ class CatalogPagingIT {
   @Test
   void listCatalogs_pagingAndTotals() {
     var page1Req = ListCatalogsRequest.newBuilder()
-      .setPage(ai.floedb.metacat.common.rpc.PageRequest.newBuilder()
+      .setPage(PageRequest.newBuilder()
         .setPageSize(LIMIT))
       .build();
 
@@ -80,7 +81,7 @@ class CatalogPagingIT {
     assertEquals(TOTAL, page1.getPage().getTotalSize(), "total_size should be TOTAL");
 
     var page2Req = ListCatalogsRequest.newBuilder()
-      .setPage(ai.floedb.metacat.common.rpc.PageRequest.newBuilder()
+      .setPage(PageRequest.newBuilder()
         .setPageSize(LIMIT)
         .setPageToken(page1.getPage().getNextPageToken()))
       .build();
