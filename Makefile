@@ -51,12 +51,17 @@ build-service:
 	$(MVN) -q -f service/pom.xml -DskipTests package
 
 # ---------- Tests ----------
-.PHONY: test test-java
-test: test-java
-test-java:
+.PHONY: test
+test: unit-test integration-test
+unit-test:
 	@for m in $(JAVA_MODULES); do \
-		echo "==> [TEST] $$m"; \
-		$(MVN) -q -f $$m/pom.xml test; \
+		echo "==> [UNIT TESTS] $$m"; \
+		$(MVN) -f $$m/pom.xml test; \
+	done
+integration-test:
+	@for m in $(JAVA_MODULES); do \
+		echo "==> [UNIT & INTEGRATION TESTS] $$m"; \
+		$(MVN) -f $$m/pom.xml integration-test; \
 	done
 
 # ---------- Clean ----------
