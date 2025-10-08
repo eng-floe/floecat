@@ -5,7 +5,7 @@ It federates metadata from Delta and Iceberg catalogs into a unified, gRPC-based
 
 ## Build and Run
 
-Requires Java 25, Maven, and Make.
+Requires Java 17+, Maven, and Make.
 
 ### Quick Start
 
