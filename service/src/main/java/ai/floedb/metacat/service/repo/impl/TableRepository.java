@@ -35,7 +35,7 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
   public void put(TableDescriptor t) {
     var rid = t.getResourceId();
     var cat = t.getCatalogId();
-    var ns  = t.getNamespaceId();
+    var ns = t.getNamespaceId();
     var tid = rid.getTenantId();
     var tbl = rid.getId();
 
@@ -52,5 +52,21 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
 
   public int count(String tenantId, String catalogId, String nsId) {
     return countByPrefix(Keys.nsIndexPrefix(tenantId, catalogId, nsId));
+  }
+
+  public boolean delete(ResourceId tableId, ResourceId catalogId, ResourceId nsId) {
+    var tid = tableId.getTenantId();
+    var tbl = tableId.getId();
+    var cid = catalogId.getId();
+    var nid = nsId.getId();
+
+    String canonPtr = Keys.tblCanonicalPtr(tid, tbl);
+    String nsPtr    = Keys.tblIndexPtr(tid, cid, nid, tbl);
+    String blobUri  = Keys.tblBlob(tid, tbl);
+
+    boolean okCanon = ptr.delete(canonPtr);
+    boolean okNs    = ptr.delete(nsPtr);
+    boolean okBlob  = blobs.delete(blobUri);
+    return okCanon && okNs && okBlob;
   }
 }

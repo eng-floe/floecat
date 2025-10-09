@@ -8,4 +8,5 @@ public interface BlobStore {
   void put(String uri, byte[] bytes, String contentType);
   byte[] get(String uri);
   Optional<BlobHeader> head(String uri);
+  boolean delete(String uri);
 }

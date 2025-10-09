@@ -1,5 +1,6 @@
 package ai.floedb.metacat.service.repo.impl;
 
+import java.time.Clock;
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
@@ -13,6 +14,9 @@ import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
 
 class TableRepositoryTest {
+
+  private final Clock clock = Clock.systemUTC();
+  
   @Test
   void putAndGetRoundTrip() {
     var ptr = new InMemoryPointerStore();
@@ -38,14 +42,14 @@ class TableRepositoryTest {
       .setNamespaceId(nsRid)
       .setRootUri("s3://upstream/tables/orders")
       .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
-      .setCreatedAtMs(System.currentTimeMillis())
+      .setCreatedAtMs(clock.millis())
       .setCurrentSnapshotId(42)
       .build();
     tableRepo.put(td);
 
     var snap = Snapshot.newBuilder()
       .setSnapshotId(42)
-      .setCreatedAtMs(System.currentTimeMillis())
+      .setCreatedAtMs(clock.millis())
       .build();
     snapshotRepo.put(tableRid, snap);
 

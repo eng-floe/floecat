@@ -15,13 +15,6 @@ message Catalog {
   int64 created_at_ms = 4;
 }
 
-message GetCatalogRequest {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
-}
-message GetCatalogResponse {
-  Catalog catalog = 1;
-}
-
 message ResolveCatalogRequest { 
   string display_name = 1; 
 }
@@ -36,14 +29,6 @@ message LookupCatalogResponse {
   string display_name = 1; 
 }
 
-message ListCatalogsRequest {
-  ai.floedb.metacat.common.PageRequest page = 1;
-}
-message ListCatalogsResponse {
-  repeated Catalog catalogs = 1;
-  ai.floedb.metacat.common.PageResponse page = 2;
-}
-
 // ----- Namespace -----
 
 message NamespaceRef {
@@ -56,23 +41,6 @@ message Namespace {
   string display_name = 2;
   string description = 3;
   int64 created_at_ms = 4;
-}
-
-message GetNamespaceRequest { 
-  ai.floedb.metacat.common.ResourceId catalog_id = 1; 
-  ai.floedb.metacat.common.ResourceId resource_id = 2; 
-}
-message GetNamespaceResponse { 
-  Namespace namespace = 1; 
-}
-
-message ListNamespacesRequest {
-  ai.floedb.metacat.common.ResourceId catalog_id = 1;
-  ai.floedb.metacat.common.PageRequest page = 2;
-}
-message ListNamespacesResponse {
-  repeated Namespace namespaces = 1;
-  ai.floedb.metacat.common.PageResponse page = 2;
 }
 
 message ResolveNamespaceRequest { 
@@ -146,48 +114,6 @@ message Snapshot {
   string metadata_json = 5;
 }
 
-message GetTableDescriptorRequest {
-  ai.floedb.metacat.common.ResourceId catalog_id = 1;
-  ai.floedb.metacat.common.ResourceId namespace_id = 2;
-  ai.floedb.metacat.common.ResourceId resource_id = 3;
-  ai.floedb.metacat.common.SnapshotRef snapshot = 4;
-}
-message GetTableDescriptorResponse { 
-  TableDescriptor table = 1; 
-}
-
-message ListTablesRequest {
-  ai.floedb.metacat.common.ResourceId catalog_id = 1;
-  ai.floedb.metacat.common.ResourceId namespace_id = 2;
-  ai.floedb.metacat.common.PageRequest page = 3;
-}
-message ListTablesResponse {
-  repeated TableDescriptor tables = 1;
-  ai.floedb.metacat.common.PageResponse page = 2;
-}
-
-// ----- Snapshot -----
-
-message ListSnapshotsRequest {
-  ai.floedb.metacat.common.ResourceId catalog_id = 1;
-  ai.floedb.metacat.common.ResourceId namespace_id = 2;
-  ai.floedb.metacat.common.ResourceId table_id = 3;
-  ai.floedb.metacat.common.PageRequest page = 4;
-}
-message ListSnapshotsResponse {
-  repeated Snapshot snapshots = 1;
-  ai.floedb.metacat.common.PageResponse page = 2;
-}
-
-message GetCurrentSnapshotRequest {
-  ai.floedb.metacat.common.ResourceId catalog_id = 1;
-  ai.floedb.metacat.common.ResourceId namespace_id = 2;
-  ai.floedb.metacat.common.ResourceId table_id = 3;
-}
-message GetCurrentSnapshotResponse {
-  Snapshot snapshot = 1;
-}
-
 // ----- Name index -----
 
 message CatalogIndexEntry {
@@ -216,17 +142,4 @@ service Directory {
   rpc ResolveTable(ResolveTableRequest) returns (ResolveTableResponse);
   rpc ResolveFQTables(ResolveFQTablesRequest) returns (ResolveFQTablesResponse);
   rpc LookupTable(LookupTableRequest) returns (LookupTableResponse);
-}
-
-service ResourceAccess {
-  rpc GetCatalog(GetCatalogRequest) returns (GetCatalogResponse);
-  rpc ListCatalogs(ListCatalogsRequest) returns (ListCatalogsResponse);
-
-  rpc GetNamespace(GetNamespaceRequest) returns (GetNamespaceResponse);
-  rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
-
-  rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
-  rpc GetTableDescriptor(GetTableDescriptorRequest) returns (GetTableDescriptorResponse);
-  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
-  rpc GetCurrentSnapshot(GetCurrentSnapshotRequest) returns (GetCurrentSnapshotResponse);
 }

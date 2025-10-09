@@ -1,5 +1,6 @@
 package ai.floedb.metacat.service.bootstrap.impl;
 
+import java.time.Clock;
 import java.util.List;
 import java.util.UUID;
 
@@ -35,7 +36,8 @@ public class SeedRunner {
 
   void onStart(@Observes StartupEvent ev) {
     final String tenant = "t-0001";
-    final long now = System.currentTimeMillis();
+    final Clock clock = Clock.systemUTC();
+    final long now = clock.millis();
 
     var salesId = seedCatalog(tenant, "sales", "Sales catalog", now);
     var financeId = seedCatalog(tenant, "finance", "Finance catalog", now);

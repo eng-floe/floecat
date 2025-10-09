@@ -34,6 +34,17 @@ public class CatalogRepository extends BaseRepository<Catalog> {
         c);
   }
 
+  public boolean delete(ResourceId rid) {
+    var tid = rid.getTenantId();
+    var cid = rid.getId();
+    String ptrKey = Keys.catPtr(tid, cid);
+    String blobUri = Keys.catBlob(tid, cid);
+
+    boolean okPtr = ptr.delete(ptrKey);
+    boolean okBlob = blobs.delete(blobUri);
+    return okPtr && okBlob;
+  }
+
   public List<Catalog> list(String tenantId, int limit, String token, StringBuilder next) {
     return listByPrefix(Keys.catPtr(tenantId, ""), limit, token, next);
   }

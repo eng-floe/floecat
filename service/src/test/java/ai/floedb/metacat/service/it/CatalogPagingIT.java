@@ -1,5 +1,6 @@
 package ai.floedb.metacat.service.it;
 
+import java.time.Clock;
 import java.util.UUID;
 
 import io.grpc.ClientInterceptor;
@@ -31,6 +32,8 @@ class CatalogPagingIT {
   private static final int LIMIT = 10;
   private static final int TOTAL = 13; // > LIMIT, leaves TOTAL-LIMIT on page 2
 
+  private final Clock clock = Clock.systemUTC();
+
   @BeforeAll
   void seedAndClient() {
     for (int i = 1; i <= TOTAL; i++) {
@@ -47,7 +50,7 @@ class CatalogPagingIT {
         .setResourceId(rid)
         .setDisplayName(name)
         .setDescription("paging test")
-        .setCreatedAtMs(System.currentTimeMillis())
+        .setCreatedAtMs(clock.millis())
         .build();
 
       repo.put(cat);

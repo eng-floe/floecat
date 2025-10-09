@@ -57,4 +57,12 @@ public class InMemoryPointerStore implements PointerStore {
     }
     return new ArrayList<>(page);
   }
+
+  @Override public boolean delete(String key) {
+    if (!map.containsKey(key)) {
+      return false;
+    }
+    map.remove(key);
+    return true;
+  }
 }

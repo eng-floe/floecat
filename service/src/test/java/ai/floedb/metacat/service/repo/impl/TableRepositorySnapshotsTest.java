@@ -1,5 +1,6 @@
 package ai.floedb.metacat.service.repo.impl;
 
+import java.time.Clock;
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
@@ -14,6 +15,9 @@ import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
 
 class TableRepositorySnapshotsTest {
+
+  private final Clock clock = Clock.systemUTC();
+
   @Test
   void list_count_and_currentSnapshot_fromSeeded() {
     var ptr  = new InMemoryPointerStore();
@@ -38,13 +42,13 @@ class TableRepositorySnapshotsTest {
       .setNamespaceId(nsRid)
       .setRootUri("s3://upstream/tables/orders/")
       .setSchemaJson("{}")
-      .setCreatedAtMs(System.currentTimeMillis())
+      .setCreatedAtMs(clock.millis())
       .setCurrentSnapshotId(200)
       .build();
     tableRepo.put(td);
 
-    seedSnapshot(ptr, blobs, tenant, tblId, 199, System.currentTimeMillis() - 60_000);
-    seedSnapshot(ptr, blobs, tenant, tblId, 200, System.currentTimeMillis());
+    seedSnapshot(ptr, blobs, tenant, tblId, 199, clock.millis() - 60_000);
+    seedSnapshot(ptr, blobs, tenant, tblId, 200, clock.millis());
 
     StringBuilder next = new StringBuilder();
     var page1 = snapshotRepo.list(tableRid, 1, "", next);

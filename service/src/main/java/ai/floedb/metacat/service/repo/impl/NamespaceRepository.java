@@ -42,4 +42,17 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
   public int count(ResourceId catalogId) {
     return countByPrefix(Keys.nsPtr(catalogId.getTenantId(), catalogId.getId(), ""));
   }
+
+  public boolean delete(ResourceId catalogId, ResourceId nsId) {
+    var tid = nsId.getTenantId();
+    var cid = catalogId.getId();
+    var nid = nsId.getId();
+
+    String ptrKey = Keys.nsPtr(tid, cid, nid);
+    String blobUri = Keys.nsBlob(tid, cid, nid);
+
+    boolean okPtr = ptr.delete(ptrKey);
+    boolean okBlob = blobs.delete(blobUri);
+    return okPtr && okBlob;
+  }
 }

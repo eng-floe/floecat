@@ -1,0 +1,207 @@
+// file: catalog/mutation.proto
+syntax = "proto3";
+
+package ai.floedb.metacat.catalog;
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.catalog.rpc";
+
+import "common/common.proto";
+import "catalog/catalog.proto";
+
+// ---------- Common mutation helpers ----------
+
+message IdempotencyKey {
+  // Opaque, client-generated. Server stores for a short TTL (e.g., 24h)
+  string key = 1;
+}
+
+message Precondition {
+  // Satisfy ANY provided condition; if none provided, no CAS check.
+  // expected_version matches Pointer.version
+  int64 expected_version = 1;
+  // expected_etag matches BlobHeader.etag
+  string expected_etag = 2;
+}
+
+message MutationMeta {
+  // The KV pointer that was updated (authoritative)
+  string pointer_key = 1;
+  // New immutable blob URI that pointer now references
+  string blob_uri = 2;
+  // New pointer version AFTER CAS
+  int64 pointer_version = 3;
+  // ETag of the blob (also present in BlobHeader)
+  string etag = 4;
+  // Server time in ms when the pointer flip succeeded
+  int64 updated_at_ms = 5;
+}
+
+// ---------- Catalog ----------
+
+message CatalogSpec {
+  string display_name = 1;                 // unique within tenant
+  string description = 2;
+  // For metacat-owned catalogs, connector_ref empty; for proxied leave creation disabled
+  string connector_ref = 3;                // MVP: empty = metacat-owned
+  map<string,string> options = 4;          // connector/table options (MVP: passthrough)
+  string policy_ref = 5;                   // security overlay link (optional)
+}
+
+message CreateCatalogRequest {
+  CatalogSpec spec = 1;
+  IdempotencyKey idempotency = 2;
+}
+message CreateCatalogResponse {
+  Catalog catalog = 1;
+  MutationMeta meta = 2;
+}
+
+message UpdateCatalogRequest {
+  ai.floedb.metacat.common.ResourceId resource_id = 1; // kind=RK_CATALOG
+  CatalogSpec spec = 2;                                 // full replacement for MVP
+  Precondition precondition = 3;
+}
+message UpdateCatalogResponse {
+  Catalog catalog = 1;
+  MutationMeta meta = 2;
+}
+
+message DeleteCatalogRequest {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  // If true, require Namespace/Table space to be empty (no cascade).
+  // MVP: default = true; set false to cascade-delete names/ptrs/blobs (careful).
+  bool require_empty = 2;
+  Precondition precondition = 3;
+}
+message DeleteCatalogResponse {
+  MutationMeta meta = 1; // pointer tombstoned; may include last blob_uri for audit
+}
+
+// ---------- Namespace ----------
+
+message NamespaceSpec {
+  // Parent catalog
+  ai.floedb.metacat.common.ResourceId catalog_id = 1; // kind=RK_CATALOG
+  // The “logical” name clients will resolve by; unique within the catalog.
+  string display_name = 2;
+  string description = 3;
+  // Normalized path components (e.g., ["db","schema"]) for future-proofing
+  repeated string path = 4;
+  map<string,string> annotations = 5;
+  string policy_ref = 6;
+}
+
+message CreateNamespaceRequest {
+  NamespaceSpec spec = 1;
+  IdempotencyKey idempotency = 2;
+}
+message CreateNamespaceResponse {
+  Namespace namespace = 1;
+  MutationMeta meta = 2;
+}
+
+message RenameNamespaceRequest {
+  // Existing namespace to rename
+  ai.floedb.metacat.common.ResourceId resource_id = 1; // kind=RK_NAMESPACE
+  // New unique display name (and optional new path)
+  string new_display_name = 2;
+  repeated string new_path = 3; // optional; omit to keep existing path
+  Precondition precondition = 4;
+}
+message RenameNamespaceResponse {
+  Namespace namespace = 1;
+  MutationMeta meta = 2;
+}
+
+message DeleteNamespaceRequest {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  bool require_empty = 2; // true = no tables under it; false = cascade (dangerous)
+  Precondition precondition = 3;
+}
+message DeleteNamespaceResponse {
+  MutationMeta meta = 1;
+}
+
+// ---------- Table ----------
+
+message TableSpec {
+  // Parent
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;   // RK_CATALOG
+  ai.floedb.metacat.common.ResourceId namespace_id = 2; // RK_NAMESPACE
+
+  // Identity
+  string display_name = 3;        // unique within namespace
+  string description = 4;
+
+  // Storage & schema
+  string root_uri = 5;            // e.g., s3://bucket/prefix
+  string schema_json = 6;         // MVP: full schema JSON
+  repeated string partition_keys = 7;
+  string format = 8;              // "metacat" | "iceberg" | "delta" (MVP: "metacat")
+  map<string,string> properties = 9;
+
+  string policy_ref = 10;         // security overlay
+}
+
+message CreateTableRequest {
+  TableSpec spec = 1;
+  IdempotencyKey idempotency = 2;
+}
+message CreateTableResponse {
+  TableDescriptor table = 1;
+  MutationMeta meta = 2;
+}
+
+message UpdateTableSchemaRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1; // RK_TABLE
+  // MVP: full schema replacement; future: patch ops
+  string schema_json = 2;
+  // Optional: also update partition keys/properties atomically
+  repeated string partition_keys = 3;
+  map<string,string> properties = 4;
+  Precondition precondition = 5;
+}
+message UpdateTableSchemaResponse {
+  TableDescriptor table = 1;
+  MutationMeta meta = 2;
+}
+
+message RenameTableRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  string new_display_name = 2; // unique within namespace
+  Precondition precondition = 3;
+}
+message RenameTableResponse {
+  TableDescriptor table = 1;
+  MutationMeta meta = 2;
+}
+
+message DeleteTableRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  bool purge_stats = 2;      // also remove stats blobs
+  bool purge_snapshots = 3;  // also remove table snapshots (if metacat-owned)
+  Precondition precondition = 4;
+}
+message DeleteTableResponse {
+  MutationMeta meta = 1;
+}
+
+// ---------- Service ----------
+
+service ResourceMutation {
+  // Catalog
+  rpc CreateCatalog(CreateCatalogRequest) returns (CreateCatalogResponse);
+  rpc UpdateCatalog(UpdateCatalogRequest) returns (UpdateCatalogResponse);
+  rpc DeleteCatalog(DeleteCatalogRequest) returns (DeleteCatalogResponse);
+
+  // Namespace
+  rpc CreateNamespace(CreateNamespaceRequest) returns (CreateNamespaceResponse);
+  rpc RenameNamespace(RenameNamespaceRequest) returns (RenameNamespaceResponse);
+  rpc DeleteNamespace(DeleteNamespaceRequest) returns (DeleteNamespaceResponse);
+
+  // Table
+  rpc CreateTable(CreateTableRequest) returns (CreateTableResponse);
+  rpc UpdateTableSchema(UpdateTableSchemaRequest) returns (UpdateTableSchemaResponse);
+  rpc RenameTable(RenameTableRequest) returns (RenameTableResponse);
+  rpc DeleteTable(DeleteTableRequest) returns (DeleteTableResponse);
+}

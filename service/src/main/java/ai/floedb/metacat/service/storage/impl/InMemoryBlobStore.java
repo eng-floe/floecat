@@ -1,5 +1,6 @@
 package ai.floedb.metacat.service.storage.impl;
 
+import java.time.Clock;
 import java.util.Map;
 import java.util.UUID;
 import java.util.Optional;
@@ -15,6 +16,8 @@ import ai.floedb.metacat.service.storage.BlobStore;
 @IfBuildProperty(name = "metacat.kv", stringValue = "memory")
 public class InMemoryBlobStore implements BlobStore {
   
+  private final Clock clock = Clock.systemUTC();
+
   private static final class Blob { 
     final byte[] data; 
     final BlobHeader hdr; 
@@ -31,7 +34,7 @@ public class InMemoryBlobStore implements BlobStore {
     BlobHeader hdr = BlobHeader.newBuilder()
       .setSchemaVersion("v1")
       .setEtag(UUID.randomUUID().toString())
-      .setCreatedAtMs(System.currentTimeMillis())
+      .setCreatedAtMs(clock.millis())
       .build();
     map.put(uri, new Blob(bytes, hdr));
   }
@@ -42,5 +45,13 @@ public class InMemoryBlobStore implements BlobStore {
 
   @Override public Optional<BlobHeader> head(String uri) { 
     return Optional.ofNullable(map.get(uri)).map(b -> b.hdr); 
+  }
+
+  @Override public boolean delete(String key) {
+    if (!map.containsKey(key)) {
+      return false;
+    }
+    map.remove(key);
+    return true;
   }
 }

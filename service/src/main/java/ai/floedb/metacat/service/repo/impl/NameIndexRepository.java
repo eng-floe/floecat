@@ -143,7 +143,7 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
     return out;
   }
 
-  private static String fqKey(NameRef n) {
+  public static String fqKey(NameRef n) {
     var sb = new StringBuilder(n.getCatalog());
     for (var part : n.getNamespacePathList()) sb.append('/').append(part);
     if (!n.getName().isEmpty()) {
@@ -155,5 +155,53 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
   private static String fqPrefix(NameRef n) {
     var k = fqKey(n);
     return k.endsWith("/") ? k : k + "/";
+  }
+
+  // Catalog index
+  public boolean deleteCatalogByName(String tenantId, String displayName) {
+    String k = Keys.idxCatByName(tenantId, displayName);
+    var p = ptr.get(k);
+    boolean okPtr = ptr.delete(k);
+    boolean okBlob = p.isPresent() && blobs.delete(p.get().getBlobUri());
+    return okPtr && okBlob;
+  }
+  public boolean deleteCatalogById(String tenantId, String catalogId) {
+    String k = Keys.idxCatById(tenantId, catalogId);
+    var p = ptr.get(k);
+    boolean okPtr = ptr.delete(k);
+    boolean okBlob = p.isPresent() && blobs.delete(p.get().getBlobUri());
+    return okPtr && okBlob;
+  }
+
+  // Namespace index
+  public boolean deleteNamespaceById(String tenantId, String nsId) {
+    String k = Keys.idxNsById(tenantId, nsId);
+    var p = ptr.get(k);
+    boolean okPtr = ptr.delete(k);
+    boolean okBlob = p.isPresent() && blobs.delete(p.get().getBlobUri());
+    return okPtr && okBlob;
+  }
+  public boolean deleteNamespaceByPath(String tenantId, String catalogId, java.util.List<String> path) {
+    String k = Keys.idxNsByPath(tenantId, catalogId, String.join("/", path));
+    var p = ptr.get(k);
+    boolean okPtr = ptr.delete(k);
+    boolean okBlob = p.isPresent() && blobs.delete(p.get().getBlobUri());
+    return okPtr && okBlob;
+  }
+
+  // Table index
+  public boolean deleteTableById(String tenantId, String tableId) {
+    String k = Keys.idxTblById(tenantId, tableId);
+    var p = ptr.get(k);
+    boolean okPtr = ptr.delete(k);
+    boolean okBlob = p.isPresent() && blobs.delete(p.get().getBlobUri());
+    return okPtr && okBlob;
+  }
+  public boolean deleteTableByName(String tenantId, NameRef name) {
+    String k = Keys.idxTblByName(tenantId, fqKey(name));
+    var p = ptr.get(k);
+    boolean okPtr = ptr.delete(k);
+    boolean okBlob = p.isPresent() && blobs.delete(p.get().getBlobUri());
+    return okPtr && okBlob;
   }
 }
