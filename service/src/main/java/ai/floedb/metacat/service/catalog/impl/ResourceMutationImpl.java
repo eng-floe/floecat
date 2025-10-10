@@ -237,12 +237,6 @@ public class ResourceMutationImpl implements ResourceMutation {
     );
   }
 
-  private ResourceId requireCatalogIdByName(String tenantId, String catalogName) {
-    return nameIndex.getCatalogByName(tenantId, catalogName)
-      .map(NameRef::getResourceId)
-      .orElseThrow(() -> new IllegalArgumentException("Unknown catalog: " + catalogName));
-  }
-
   @Override
   public Uni<RenameNamespaceResponse> renameNamespace(RenameNamespaceRequest req) {
     var p = principal.get();
@@ -510,6 +504,12 @@ public class ResourceMutationImpl implements ResourceMutation {
     return nameIndex.getCatalogById(tenantId, catalogId)
       .map(NameRef::getCatalog)
       .orElseThrow(() -> GrpcErrors.notFound("catalog id not found: " + catalogId, null));
+  }
+
+  private ResourceId requireCatalogIdByName(String tenantId, String catalogName) {
+    return nameIndex.getCatalogByName(tenantId, catalogName)
+      .map(NameRef::getResourceId)
+      .orElseThrow(() -> new IllegalArgumentException("Unknown catalog: " + catalogName));
   }
 
   private java.util.List<String> requireNamespacePathById(String tenantId, String nsId) {
