@@ -10,6 +10,7 @@ import org.junit.jupiter.api.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.ResourceAccessGrpc;
+import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
 import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
@@ -30,16 +31,18 @@ class ResourceAccessIT {
 
   @Test
   void getCatalog_returnsSeeded() {
+    var ref = NameRef.newBuilder().setCatalog("sales").build();
     var req = directory.resolveCatalog(ResolveCatalogRequest.newBuilder()
-      .setDisplayName("sales").build());
+      .setRef(ref).build());
     var resp = resourceAccess.getCatalog(GetCatalogRequest.newBuilder().setResourceId(req.getResourceId()).build());
     assertEquals("sales", resp.getCatalog().getDisplayName());
   }
 
   @Test
   void getCatalog_notFound_hasCommonError() throws Exception {
+    var ref = NameRef.newBuilder().setCatalog("sales").build();
     var resolved = directory.resolveCatalog(
-      ResolveCatalogRequest.newBuilder().setDisplayName("sales").build());
+      ResolveCatalogRequest.newBuilder().setRef(ref).build());
 
     var missingRid = resolved.getResourceId().toBuilder()
       .setId("00000000-0000-0000-0000-000000000000")

@@ -48,10 +48,11 @@ public class DirectoryImpl implements Directory {
     authz.require(p, "catalog.read");
 
     return Uni.createFrom().item(() ->
-      nameIndex.getCatalogByName(p.getTenantId(), req.getDisplayName())
+      nameIndex.getCatalogByName(p.getTenantId(), req.getRef().getCatalog())
         .map(NameRef::getResourceId)
         .map(id -> ResolveCatalogResponse.newBuilder().setResourceId(id).build())
-        .orElseThrow(() -> GrpcErrors.notFound("catalog not found: " + req.getDisplayName(), null))
+        .orElseThrow(() -> 
+          GrpcErrors.notFound("catalog not found: " + req.getRef().getCatalog(), null))
     );
   }
 
@@ -75,7 +76,7 @@ public class DirectoryImpl implements Directory {
     var ref = req.getRef();
     return Uni.createFrom().item(() -> {
       var catalogRid = requireCatalogIdByName(p.getTenantId(), ref.getCatalog());
-      return nameIndex.getNamespaceByPath(p.getTenantId(), catalogRid.getId(), ref.getNamespacePathList())
+      return nameIndex.getNamespaceByPath(p.getTenantId(), catalogRid.getId(), ref.getPathList())
         .map(NameRef::getResourceId)
         .map(id -> ResolveNamespaceResponse.newBuilder().setResourceId(id).build())
         .orElseThrow(() -> GrpcErrors.notFound("namespace not found", null));
@@ -90,15 +91,12 @@ public class DirectoryImpl implements Directory {
     return Uni.createFrom().item(() -> {
       var nrOpt = nameIndex.getNamespaceById(p.getTenantId(), req.getResourceId().getId());
       if (nrOpt.isEmpty()) {
-        return LookupNamespaceResponse.newBuilder().setDisplayName("").build();
+        return LookupNamespaceResponse.newBuilder().build();
       }
+      
       var storedRef = nrOpt.get();
-      var path = storedRef.getNamespacePathList();
-      var display = path.isEmpty() ? "" : path.get(path.size() - 1);
-
       return LookupNamespaceResponse.newBuilder()
         .setRef(storedRef)
-        .setDisplayName(display)
         .build();
     });
   }
@@ -109,7 +107,7 @@ public class DirectoryImpl implements Directory {
     authz.require(p, List.of("catalog.read", "table.read"));
 
     return Uni.createFrom().item(() ->
-      nameIndex.getTableByName(p.getTenantId(), req.getName())
+      nameIndex.getTableByName(p.getTenantId(), req.getRef())
         .map(NameRef::getResourceId)
         .map(id -> ResolveTableResponse.newBuilder().setResourceId(id).build())
         .orElseThrow(() -> GrpcErrors.notFound("table not found", null))

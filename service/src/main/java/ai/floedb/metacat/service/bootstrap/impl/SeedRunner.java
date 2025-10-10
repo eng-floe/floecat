@@ -62,7 +62,7 @@ public class SeedRunner {
     var ordersId = seedTable(tenant, salesId, salesCoreNsId, "orders", 0L, now);
     var nameRef = NameRef.newBuilder()
       .setCatalog("sales")
-      .addNamespacePath("core")
+      .addAllPath(List.of("core"))
       .setName("orders")
       .build();
     nameIndex.putTableIndex(tenant, nameRef, ordersId);
@@ -70,7 +70,7 @@ public class SeedRunner {
     var lineitemId = seedTable(tenant, salesId, salesCoreNsId, "lineitem", 0L, now);
     nameRef = NameRef.newBuilder()
       .setCatalog("sales")
-      .addNamespacePath("core")
+      .addAllPath(List.of("core"))
       .setName("lineitem")
       .build();
     nameIndex.putTableIndex(tenant, nameRef, lineitemId);
@@ -81,21 +81,21 @@ public class SeedRunner {
     var salesStgOrdersId = seedTable(tenant, salesId, salesStg25NsId, "orders_2025", 0L, now);
     nameIndex.putTableIndex(tenant,
       NameRef.newBuilder().setCatalog("sales")
-        .addNamespacePath("staging").addNamespacePath("2025")
+        .addAllPath(List.of("staging","2025"))
         .setName("orders_2025").build(),
       salesStgOrdersId);
 
     var salesStgEventsId = seedTable(tenant, salesId, salesStg25NsId, "staging_events", 0L, now);
     nameIndex.putTableIndex(tenant,
       NameRef.newBuilder().setCatalog("sales")
-        .addNamespacePath("staging").addNamespacePath("2025")
+        .addAllPath(List.of("staging","2025"))
         .setName("staging_events").build(),
       salesStgEventsId);
 
     var glEntriesId = seedTable(tenant, financeId, financeCoreNsId, "gl_entries", 0L, now);
     nameIndex.putTableIndex(tenant,
       NameRef.newBuilder().setCatalog("finance")
-        .addNamespacePath("core")
+        .addAllPath(List.of("core"))
         .setName("gl_entries").build(),
       glEntriesId);
 
@@ -143,7 +143,7 @@ public class SeedRunner {
 
     NameRef ref = NameRef.newBuilder()
       .setCatalog(catalogName)
-      .addAllNamespacePath(path)
+      .addAllPath(path)
       .setResourceId(nsRid)
       .build();
 

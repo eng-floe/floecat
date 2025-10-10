@@ -99,7 +99,7 @@ public class ResourceAccessImpl implements ResourceAccess {
     var p = principal.get();
     authz.require(p, "catalog.read");
 
-    var catRid = req.getParentId();
+    var catRid = req.getCatalogId();
     int limit = (req.hasPage() && req.getPage().getPageSize() > 0) ? req.getPage().getPageSize() : 50;
     String token = req.hasPage() ? req.getPage().getPageToken() : "";
     StringBuilder next = new StringBuilder();
@@ -145,8 +145,8 @@ public class ResourceAccessImpl implements ResourceAccess {
     StringBuilder next = new StringBuilder();
 
     return Uni.createFrom().item(() -> {
-      var items = tableRepo.list(req.getParentId(), limit, token, next);
-      int total = tableRepo.count(req.getParentId());
+      var items = tableRepo.list(req.getNamespaceId(), limit, token, next);
+      int total = tableRepo.count(req.getNamespaceId());
       var page = PageResponse.newBuilder().setNextPageToken(next.toString()).setTotalSize(total).build();
       return ListTablesResponse.newBuilder().addAllTables(items).setPage(page).build();
     });

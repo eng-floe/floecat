@@ -90,7 +90,7 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
     byte[] bytes = stored.toByteArray();
 
     ResourceId catId = requireCatalogIdByName(tenantId, ref.getCatalog());
-    String path = joinPath(ref.getNamespacePathList());
+    String path = joinPath(ref.getPathList());
 
     String kByPath = Keys.idxNsByPath(tenantId, catId.getId(), path);
     String kById = Keys.idxNsById(tenantId, ref.getResourceId().getId());
@@ -216,7 +216,7 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
 
   private static String fqKey(NameRef n) {
     var sb = new StringBuilder(n.getCatalog());
-    for (var part : n.getNamespacePathList()) sb.append('/').append(part);
+    for (var part : n.getPathList()) sb.append('/').append(part);
     if (!n.getName().isEmpty()) {
       sb.append('/').append(n.getName());
     }

@@ -50,10 +50,12 @@ class BackendStorageIT {
 
   @Test
   void storageLifecycle_catalog_namespace_table_pointerAndBlob() throws Exception {
-    var seeded = directory.resolveCatalog(ResolveCatalogRequest.newBuilder().setDisplayName("sales").build());
+    var ref = NameRef.newBuilder().setCatalog("sales").build();
+    var seeded = directory.resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(ref).build());
     var tenantId = seeded.getResourceId().getTenantId();
 
     var catName = "it_storage_cat_" + clock.millis();
+    ref = NameRef.newBuilder().setCatalog(catName).build();
     var cResp = mutation.createCatalog(CreateCatalogRequest.newBuilder()
       .setSpec(CatalogSpec.newBuilder().setDisplayName(catName).setDescription("storage cat").build())
       .build());
@@ -71,7 +73,7 @@ class BackendStorageIT {
 
     assertTrue(blobs.head(catBlobUri).isPresent(), "catalog blob header missing");
 
-    var resolved = directory.resolveCatalog(ResolveCatalogRequest.newBuilder().setDisplayName(catName).build());
+    var resolved = directory.resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(ref).build());
     assertEquals(catId, resolved.getResourceId().getId());
 
     var nsName = "it_ns";
@@ -139,9 +141,9 @@ class BackendStorageIT {
       .build());
 
     var tNew = directory.resolveTable(ResolveTableRequest.newBuilder()
-      .setName(NameRef.newBuilder()
+      .setRef(NameRef.newBuilder()
         .setCatalog(catName)
-        .addAllNamespacePath(List.of("db_it", "schema_it"))
+        .addAllPath(List.of("db_it", "schema_it"))
         .setName(newName)
         .build())
       .build());
@@ -149,9 +151,9 @@ class BackendStorageIT {
 
     assertThrows(StatusRuntimeException.class, () ->
       directory.resolveTable(ResolveTableRequest.newBuilder()
-        .setName(NameRef.newBuilder()
+        .setRef(NameRef.newBuilder()
           .setCatalog(catName)
-          .addAllNamespacePath(List.of("db_it", "schema_it"))
+          .addAllPath(List.of("db_it", "schema_it"))
           .setName(tblName)
           .build())
         .build()));

@@ -85,9 +85,9 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
       .map(NameRef::getResourceId)
       .orElseThrow(() -> new IllegalArgumentException("catalog not found: " + tblRef.getCatalog()));
 
-    NameRef nsRef = nameIndex.getNamespaceByPath(tenantId, catalogId.getId(), tblRef.getNamespacePathList())
+    NameRef nsRef = nameIndex.getNamespaceByPath(tenantId, catalogId.getId(), tblRef.getPathList())
       .orElseThrow(() -> new IllegalArgumentException(
-          "namespace not found for path " + tblRef.getNamespacePathList() + " under catalog " + catalogId.getId()));
+          "namespace not found for path " + tblRef.getPathList() + " under catalog " + catalogId.getId()));
 
     return new ParentIds(catalogId, nsRef.getResourceId());
   }

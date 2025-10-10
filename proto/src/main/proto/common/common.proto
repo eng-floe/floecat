@@ -28,7 +28,7 @@ message ResourceId {
 
 message NameRef {
   string catalog = 1;
-  repeated string namespace_path = 2;
+  repeated string path = 2;
   string name = 3;
   optional ResourceId resource_id = 4;
 }

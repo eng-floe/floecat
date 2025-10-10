@@ -48,7 +48,8 @@ class ResourceMutationIT {
 
   @Test
   void fullMutationFlow_catalog_namespace_table_CRUD_and_requireEmpty() throws Exception {
-    var seeded = directory.resolveCatalog(ResolveCatalogRequest.newBuilder().setDisplayName("sales").build());
+    var ref = NameRef.newBuilder().setCatalog("sales").build();
+    var seeded = directory.resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(ref).build());
     var tenantId = seeded.getResourceId().getTenantId();
 
     var catName = "it_mutation_cat_" + clock.millis();
@@ -75,8 +76,9 @@ class ResourceMutationIT {
     var catRid = createCat.getCatalog().getResourceId();
     var catId = catRid.getId();
 
+    ref = NameRef.newBuilder().setCatalog(catName).build();
     var resolvedCat = directory.resolveCatalog(
-      ResolveCatalogRequest.newBuilder().setDisplayName(catName).build());
+      ResolveCatalogRequest.newBuilder().setRef(ref).build());
     assertEquals(catId, resolvedCat.getResourceId().getId());
 
     var gotCat = access.getCatalog(GetCatalogRequest.newBuilder()
@@ -101,7 +103,7 @@ class ResourceMutationIT {
     ResolveNamespaceRequest req = ResolveNamespaceRequest.newBuilder()
       .setRef(NameRef.newBuilder()
         .setCatalog(catName)
-        .addAllNamespacePath(List.of("db_it", "schema_it"))
+        .addAllPath(List.of("db_it", "schema_it"))
         .build())
       .build();
 
@@ -128,9 +130,9 @@ class ResourceMutationIT {
 
     var tResolve = directory.resolveTable(
       ResolveTableRequest.newBuilder()
-        .setName(NameRef.newBuilder()
+        .setRef(NameRef.newBuilder()
           .setCatalog(catName)
-          .addAllNamespacePath(List.of("db_it", "schema_it"))
+          .addAllPath(List.of("db_it", "schema_it"))
           .setName(tblName)
           .build())
         .build());
@@ -160,9 +162,9 @@ class ResourceMutationIT {
 
     var tResolveNew = directory.resolveTable(
       ResolveTableRequest.newBuilder()
-        .setName(NameRef.newBuilder()
+        .setRef(NameRef.newBuilder()
             .setCatalog(catName)
-            .addAllNamespacePath(List.of("db_it", "schema_it"))
+            .addAllPath(List.of("db_it", "schema_it"))
             .setName(newTblName)
             .build())
         .build());
@@ -171,9 +173,9 @@ class ResourceMutationIT {
     StatusRuntimeException exOld = assertThrows(StatusRuntimeException.class, () ->
       directory.resolveTable(
         ResolveTableRequest.newBuilder()
-          .setName(NameRef.newBuilder()
+          .setRef(NameRef.newBuilder()
             .setCatalog(catName)
-            .addAllNamespacePath(List.of("db_it", "schema_it"))
+            .addAllPath(List.of("db_it", "schema_it"))
             .setName(tblName)
             .build())
           .build()));
@@ -197,9 +199,9 @@ class ResourceMutationIT {
     StatusRuntimeException tblGone = assertThrows(StatusRuntimeException.class, () ->
       directory.resolveTable(
         ResolveTableRequest.newBuilder()
-          .setName(NameRef.newBuilder()
+          .setRef(NameRef.newBuilder()
             .setCatalog(catId)
-            .addAllNamespacePath(List.of("db_it","schema_it"))
+            .addAllPath(List.of("db_it","schema_it"))
             .setName(newTblName)
             .build())
           .build()));
@@ -215,8 +217,9 @@ class ResourceMutationIT {
       .setRequireEmpty(true)
       .build());
 
+    var catNameRef = NameRef.newBuilder().setCatalog(catName).build();
     StatusRuntimeException catGone = assertThrows(StatusRuntimeException.class, () ->
-      directory.resolveCatalog(ResolveCatalogRequest.newBuilder().setDisplayName(catName).build()));
+      directory.resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(catNameRef).build()));
     assertEquals(Status.Code.NOT_FOUND, catGone.getStatus().getCode());
   }
 }

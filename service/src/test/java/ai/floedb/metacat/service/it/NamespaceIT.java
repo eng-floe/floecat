@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
 import ai.floedb.metacat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.ResourceAccessGrpc;
+import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
 
@@ -20,11 +21,12 @@ class NamespaceIT {
 
   @Test
   void listAndGetNamespaces() {
+    var ref = NameRef.newBuilder().setCatalog("sales").build();
     var r = directory.resolveCatalog(ResolveCatalogRequest.newBuilder()
-      .setDisplayName("sales").build());
+      .setRef(ref).build());
 
     var list = access.listNamespaces(ListNamespacesRequest.newBuilder()
-      .setParentId(r.getResourceId())
+      .setCatalogId(r.getResourceId())
       .build());
 
     assertTrue(list.getNamespacesCount() >= 2);

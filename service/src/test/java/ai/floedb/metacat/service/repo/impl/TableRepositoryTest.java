@@ -53,7 +53,7 @@ class TableRepositoryTest {
       tenant,
       NameRef.newBuilder()
         .setCatalog(catalogName)
-        .addAllNamespacePath(nsPath)
+        .addAllPath(nsPath)
         .setResourceId(nsRid)
         .build());
 

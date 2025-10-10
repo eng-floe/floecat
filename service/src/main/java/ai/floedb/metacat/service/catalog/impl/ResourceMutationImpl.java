@@ -221,7 +221,7 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     var ref = NameRef.newBuilder()
       .setCatalog(catalogName)
-      .addAllNamespacePath(spec.getPathList())
+      .addAllPath(spec.getPathList())
       .setResourceId(rid)
       .build();
     nameIndex.putNamespaceIndex(tenantId, ref);
@@ -268,11 +268,11 @@ public class ResourceMutationImpl implements ResourceMutation {
     nameIndex.putNamespaceIndex(tenantId, nsRef);
 
     if (!req.getNewPathList().isEmpty()) {
-      nameIndex.deleteNamespaceByPath(tenantId, catalogIdStr, nsRef.getNamespacePathList());
+      nameIndex.deleteNamespaceByPath(tenantId, catalogIdStr, nsRef.getPathList());
 
       var newRef = NameRef.newBuilder(nsRef)
-        .clearNamespacePath()
-        .addAllNamespacePath(req.getNewPathList())
+        .clearPath()
+        .addAllPath(req.getNewPathList())
         .setResourceId(rid)
         .build();
 
@@ -319,7 +319,7 @@ public class ResourceMutationImpl implements ResourceMutation {
     namespaces.delete(catalogRid, rid);
 
     nameIndex.deleteNamespaceById(tenantId, nsId);
-    nameIndex.deleteNamespaceByPath(tenantId, catalogIdStr, nsRef.getNamespacePathList());
+    nameIndex.deleteNamespaceByPath(tenantId, catalogIdStr, nsRef.getPathList());
 
     return Uni.createFrom().item(DeleteNamespaceResponse.newBuilder().build());
   }
@@ -358,7 +358,7 @@ public class ResourceMutationImpl implements ResourceMutation {
     var nsPath = requireNamespacePathById(tenantId, nsId);
     var fq = NameRef.newBuilder()
       .setCatalog(catalogName)
-      .addAllNamespacePath(nsPath)
+      .addAllPath(nsPath)
       .setName(td.getDisplayName())
       .setResourceId(rid)
       .build();
@@ -400,7 +400,7 @@ public class ResourceMutationImpl implements ResourceMutation {
     var nsPath = requireNamespacePathById(tenantId, updated.getNamespaceId().getId());
     var fq = NameRef.newBuilder()
       .setCatalog(catalogName)
-      .addAllNamespacePath(nsPath)
+      .addAllPath(nsPath)
       .setName(updated.getDisplayName())
       .setResourceId(updated.getResourceId())
       .build();
@@ -438,7 +438,7 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     var oldFq = NameRef.newBuilder()
       .setCatalog(catalogName)
-      .addAllNamespacePath(nsPath)
+      .addAllPath(nsPath)
       .setName(cur.getDisplayName())
       .setResourceId(tableId)
       .build();
@@ -451,7 +451,7 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     var newFq = NameRef.newBuilder()
       .setCatalog(catalogName)
-      .addAllNamespacePath(nsPath)
+      .addAllPath(nsPath)
       .setName(updated.getDisplayName())
       .setResourceId(updated.getResourceId())
       .build();
@@ -490,7 +490,7 @@ public class ResourceMutationImpl implements ResourceMutation {
     var nsPath = requireNamespacePathById(tenantId, cur.getNamespaceId().getId());
     var oldFq = NameRef.newBuilder()
       .setCatalog(catalogName)
-      .addAllNamespacePath(nsPath)
+      .addAllPath(nsPath)
       .setName(cur.getDisplayName())
       .setResourceId(tableId)
       .build();
@@ -514,7 +514,7 @@ public class ResourceMutationImpl implements ResourceMutation {
 
   private java.util.List<String> requireNamespacePathById(String tenantId, String nsId) {
     return nameIndex.getNamespaceById(tenantId, nsId)
-      .map(NameRef::getNamespacePathList)
+      .map(NameRef::getPathList)
       .orElseThrow(() -> GrpcErrors.notFound("namespace id not found: " + nsId, null));
   }
 

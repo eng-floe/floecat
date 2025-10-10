@@ -56,7 +56,7 @@ class NamespaceRepositoryTest {
         tenant,
         ai.floedb.metacat.common.rpc.NameRef.newBuilder()
             .setCatalog(catalogName)
-            .addAllNamespacePath(nsPath)
+            .addAllPath(nsPath)
             .setResourceId(nsRid)
             .build());
 
