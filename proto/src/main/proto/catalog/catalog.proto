@@ -31,11 +31,6 @@ message LookupCatalogResponse {
 
 // ----- Namespace -----
 
-message NamespaceRef {
-  ai.floedb.metacat.common.ResourceId catalog_id = 1;
-  repeated string namespace_path = 2;
-}
-
 message Namespace {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
@@ -44,7 +39,7 @@ message Namespace {
 }
 
 message ResolveNamespaceRequest { 
-  NamespaceRef ref = 1;
+  ai.floedb.metacat.common.NameRef ref = 1;
 }
 message ResolveNamespaceResponse { 
   ai.floedb.metacat.common.ResourceId resource_id = 1; 
@@ -53,7 +48,7 @@ message LookupNamespaceRequest {
   ai.floedb.metacat.common.ResourceId resource_id = 1; 
 }
 message LookupNamespaceResponse { 
-  NamespaceRef ref = 1;
+  ai.floedb.metacat.common.NameRef ref = 1;
   string display_name = 2;
 }
 
@@ -112,22 +107,6 @@ message Snapshot {
   ai.floedb.metacat.common.ResourceId table_id = 3;
   int64 parent_snapshot_id = 4; 
   string metadata_json = 5;
-}
-
-// ----- Name index -----
-
-message CatalogIndexEntry {
-  string display_name = 1;
-  ai.floedb.metacat.common.ResourceId resource_id = 2;
-}
-message NamespaceIndexEntry {
-  ai.floedb.metacat.catalog.NamespaceRef ref = 1;
-  ai.floedb.metacat.common.ResourceId resource_id = 2;
-}
-
-message TableIndexEntry {
-  ai.floedb.metacat.common.NameRef fq_name = 1;
-  ai.floedb.metacat.common.ResourceId resource_id = 2;
 }
 
 // ----- Services -----

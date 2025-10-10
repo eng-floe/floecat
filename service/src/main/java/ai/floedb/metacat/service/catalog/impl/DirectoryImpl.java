@@ -15,16 +15,14 @@ import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveNamespaceResponse;
 import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveTableResponse;
-import ai.floedb.metacat.catalog.rpc.TableIndexEntry;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.LookupNamespaceResponse;
 import ai.floedb.metacat.catalog.rpc.LookupTableRequest;
 import ai.floedb.metacat.catalog.rpc.LookupTableResponse;
-import ai.floedb.metacat.catalog.rpc.NamespaceIndexEntry;
-import ai.floedb.metacat.catalog.rpc.CatalogIndexEntry;
 import ai.floedb.metacat.catalog.rpc.Directory;
+import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
@@ -38,6 +36,12 @@ public class DirectoryImpl implements Directory {
   @Inject Authorizer authz;
   @Inject NameIndexRepository nameIndex;
 
+  private ResourceId requireCatalogIdByName(String tenantId, String catalogName) {
+    return nameIndex.getCatalogByName(tenantId, catalogName)
+      .map(NameRef::getResourceId)
+      .orElseThrow(() -> GrpcErrors.notFound("catalog not found: " + catalogName, null));
+  }
+
   @Override
   public Uni<ResolveCatalogResponse> resolveCatalog(ResolveCatalogRequest req) {
     var p = principal.get();
@@ -45,9 +49,10 @@ public class DirectoryImpl implements Directory {
 
     return Uni.createFrom().item(() ->
       nameIndex.getCatalogByName(p.getTenantId(), req.getDisplayName())
-        .map(CatalogIndexEntry::getResourceId)
+        .map(NameRef::getResourceId)
         .map(id -> ResolveCatalogResponse.newBuilder().setResourceId(id).build())
-        .orElseThrow(() -> GrpcErrors.notFound("catalog not found: " + req.getDisplayName(), null)));
+        .orElseThrow(() -> GrpcErrors.notFound("catalog not found: " + req.getDisplayName(), null))
+    );
   }
 
   @Override
@@ -56,8 +61,8 @@ public class DirectoryImpl implements Directory {
     authz.require(p, "catalog.read");
 
     return Uni.createFrom().item(() -> {
-      var entry = nameIndex.getCatalogById(p.getTenantId(), req.getResourceId().getId());
-      var display = entry.map(CatalogIndexEntry::getDisplayName).orElse("");
+      var nr = nameIndex.getCatalogById(p.getTenantId(), req.getResourceId().getId());
+      var display = nr.map(NameRef::getCatalog).orElse("");
       return LookupCatalogResponse.newBuilder().setDisplayName(display).build();
     });
   }
@@ -68,13 +73,13 @@ public class DirectoryImpl implements Directory {
     authz.require(p, "catalog.read");
 
     var ref = req.getRef();
-    return Uni.createFrom().item(() ->
-      nameIndex.getNamespaceByPath(p.getTenantId(),
-                                  ref.getCatalogId().getId(),
-                                  ref.getNamespacePathList())
-        .map(NamespaceIndexEntry::getResourceId)
+    return Uni.createFrom().item(() -> {
+      var catalogRid = requireCatalogIdByName(p.getTenantId(), ref.getCatalog());
+      return nameIndex.getNamespaceByPath(p.getTenantId(), catalogRid.getId(), ref.getNamespacePathList())
+        .map(NameRef::getResourceId)
         .map(id -> ResolveNamespaceResponse.newBuilder().setResourceId(id).build())
-        .orElseThrow(() -> GrpcErrors.notFound("namespace not found", null)));
+        .orElseThrow(() -> GrpcErrors.notFound("namespace not found", null));
+    });
   }
 
   @Override
@@ -83,14 +88,13 @@ public class DirectoryImpl implements Directory {
     authz.require(p, "catalog.read");
 
     return Uni.createFrom().item(() -> {
-      var entry = nameIndex.getNamespaceById(p.getTenantId(), req.getResourceId().getId());
-      if (entry.isEmpty()) {
+      var nrOpt = nameIndex.getNamespaceById(p.getTenantId(), req.getResourceId().getId());
+      if (nrOpt.isEmpty()) {
         return LookupNamespaceResponse.newBuilder().setDisplayName("").build();
       }
-
-      var storedRef = entry.get().getRef();
-      var display = storedRef.getNamespacePathCount() == 0
-        ? "" : storedRef.getNamespacePath(storedRef.getNamespacePathCount() - 1);
+      var storedRef = nrOpt.get();
+      var path = storedRef.getNamespacePathList();
+      var display = path.isEmpty() ? "" : path.get(path.size() - 1);
 
       return LookupNamespaceResponse.newBuilder()
         .setRef(storedRef)
@@ -106,9 +110,10 @@ public class DirectoryImpl implements Directory {
 
     return Uni.createFrom().item(() ->
       nameIndex.getTableByName(p.getTenantId(), req.getName())
-        .map(TableIndexEntry::getResourceId)
+        .map(NameRef::getResourceId)
         .map(id -> ResolveTableResponse.newBuilder().setResourceId(id).build())
-        .orElseThrow(() -> GrpcErrors.notFound("table not found", null)));
+        .orElseThrow(() -> GrpcErrors.notFound("table not found", null))
+    );
   }
 
   @Override
@@ -118,9 +123,9 @@ public class DirectoryImpl implements Directory {
 
     return Uni.createFrom().item(() ->
       nameIndex.getTableById(p.getTenantId(), req.getResourceId().getId())
-        .map(TableIndexEntry::getFqName)
-        .map(n -> LookupTableResponse.newBuilder().setName(n).build())
-        .orElse(LookupTableResponse.newBuilder().build()));
+        .map(nr -> LookupTableResponse.newBuilder().setName(nr).build())
+        .orElse(LookupTableResponse.newBuilder().build())
+    );
   }
 
   @Override
@@ -129,7 +134,7 @@ public class DirectoryImpl implements Directory {
     authz.require(p, List.of("catalog.read", "table.read"));
 
     final int limit = (req.hasPage() && req.getPage().getPageSize() > 0)
-      ? req.getPage().getPageSize() : 50;
+        ? req.getPage().getPageSize() : 50;
     final String token = req.hasPage() ? req.getPage().getPageToken() : "";
 
     return Uni.createFrom().item(() -> {
@@ -137,17 +142,25 @@ public class DirectoryImpl implements Directory {
 
       if (req.hasList()) {
         var names = req.getList().getNamesList();
-        int start = token.isEmpty() ? 0 : Integer.parseInt(token);
-        int end = Math.min(names.size(), start + limit);
+        final int start;
+        if (token == null || token.isEmpty()) {
+          start = 0;
+        } else {
+          try {
+            start = Integer.parseInt(token);
+          } catch (NumberFormatException nfe) {
+            throw Status.INVALID_ARGUMENT.withDescription("invalid page_token").asRuntimeException();
+          }
+        }
+        final int end = Math.min(names.size(), start + Math.max(1, limit));
 
         for (int i = start; i < end; i++) {
-          var n = names.get(i);
-          var id = nameIndex.getTableByName(p.getTenantId(), n)
-            .map(TableIndexEntry::getResourceId)
-            .orElse(ResourceId.getDefaultInstance());
+          NameRef n = names.get(i);
+          var resolved = nameIndex.getTableByName(p.getTenantId(), n);
 
+          var id = resolved.map(NameRef::getResourceId).orElse(ResourceId.getDefaultInstance());
           out.addTables(ResolveFQTablesResponse.Entry.newBuilder()
-            .setName(n)
+            .setName(resolved.orElse(n))
             .setResourceId(id));
         }
 
@@ -159,14 +172,14 @@ public class DirectoryImpl implements Directory {
 
       if (req.hasPrefix()) {
         StringBuilder next = new StringBuilder();
-        var entries = nameIndex.listTablesByPrefix(p.getTenantId(), req.getPrefix(), limit, token, next);
 
-        for (var e : entries) {
-          var id = nameIndex.getTableByName(p.getTenantId(), e.getFqName())
-            .map(TableIndexEntry::getResourceId)
-            .orElse(ResourceId.getDefaultInstance());
+        var entries = nameIndex.listTablesByPrefix(
+          p.getTenantId(), req.getPrefix(), Math.max(1, limit), token, next);
+
+        for (NameRef nr : entries) {
+          var id = nr.hasResourceId() ? nr.getResourceId() : ResourceId.getDefaultInstance();
           out.addTables(ResolveFQTablesResponse.Entry.newBuilder()
-            .setName(e.getFqName())
+            .setName(nr)
             .setResourceId(id));
         }
 

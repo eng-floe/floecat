@@ -24,7 +24,7 @@ import ai.floedb.metacat.service.storage.PointerStore;
 class BackendStorageIT {
 
   @GrpcClient("resource-mutation")
-  ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
+  ai.floedb.metacat.catalog.rpc.ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
 
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;

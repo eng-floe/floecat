@@ -20,8 +20,8 @@ class PlanContextStoreIT {
     @Override
     public Map<String, String> getConfigOverrides() {
       return Map.of(
-          "metacat.plan.default-ttl-ms", "100",   // small default TTL
-          "metacat.plan.ended-grace-ms", "80",    // small grace TTL
+          "metacat.plan.default-ttl-ms", "100",
+          "metacat.plan.ended-grace-ms", "80",
           "metacat.plan.max-size", "1000"
       );
     }
@@ -34,17 +34,17 @@ class PlanContextStoreIT {
 
   private static PrincipalContext pc(String tenant, String planId) {
     var b = PrincipalContext.newBuilder()
-        .setTenantId(tenant)
-        .setSubject("it-user");
+      .setTenantId(tenant)
+      .setSubject("it-user");
     if (planId != null) b.setPlanId(planId);
     return b.build();
   }
 
   private static PlanContext newPlan(String planId, String tenant, long ttlMs) {
     return PlanContext.newActive(
-        planId, tenant, pc(tenant, planId),
-        /*expansion*/null, /*snapshotSet*/null,
-        ttlMs, /*version*/1
+      planId, tenant, pc(tenant, planId),
+      null, null,
+      ttlMs, 1
     );
   }
 
@@ -65,15 +65,12 @@ class PlanContextStoreIT {
   @Test
   void get_afterTtl_marksExpiredSoftly() throws Exception {
     String planId = "p-exp-1";
-    // Very short ttl so we can observe expiry quickly
     var ctx = newPlan(planId, "t-001", 50);
     store.put(ctx);
 
-    // Sleep beyond lease
     Thread.sleep(70);
 
     var got = store.get(planId).orElseThrow();
-    // store.get() will mark ACTIVE→EXPIRED if past expiresAtMs
     assertEquals(PlanContext.State.EXPIRED, got.getState());
   }
 
@@ -86,11 +83,9 @@ class PlanContextStoreIT {
     var before = store.get(planId).orElseThrow();
     long oldExp = before.getExpiresAtMs();
 
-    // Request earlier than current expiry => no change
     var same = store.extendLease(planId, oldExp - 50).orElseThrow();
     assertEquals(oldExp, same.getExpiresAtMs());
 
-    // Request later => should extend
     long requested = oldExp + 250;
     var extended = store.extendLease(planId, requested).orElseThrow();
     assertTrue(extended.getExpiresAtMs() >= requested);
@@ -102,7 +97,7 @@ class PlanContextStoreIT {
     var ctx = newPlan(planId, "t-001", 100);
     store.put(ctx);
 
-    store.end(planId, true).orElseThrow(); // commit
+    store.end(planId, true).orElseThrow();
 
     var after = store.extendLease(planId, clock.millis() + 10_000).orElseThrow();
     assertEquals(PlanContext.State.ENDED_COMMIT, after.getState(), "state should remain ended");
@@ -117,7 +112,6 @@ class PlanContextStoreIT {
     var ended = store.end(planId, /*commit*/true).orElseThrow();
     assertEquals(PlanContext.State.ENDED_COMMIT, ended.getState());
 
-    // Grace TTL should push expiry into the future (relative to now)
     assertTrue(ended.getExpiresAtMs() >= clock.millis());
   }
 

@@ -15,8 +15,8 @@ class PlanContextTest {
 
   private static PrincipalContext pc(String tenant, String subject, String planId) {
     var b = PrincipalContext.newBuilder()
-        .setTenantId(tenant)
-        .setSubject(subject == null ? "test-user" : subject);
+      .setTenantId(tenant)
+      .setSubject(subject == null ? "test-user" : subject);
     if (planId != null) b.setPlanId(planId);
     return b.build();
   }
@@ -25,8 +25,8 @@ class PlanContextTest {
   void newActive_valid() {
     var pc = pc("t-001", "alice", "plan-123");
     var ctx = PlanContext.newActive(
-        "plan-123", "t-001", pc, null, null,
-        /*ttlMs=*/1_000, /*version=*/1);
+      "plan-123", "t-001", pc, null, null,
+      1_000, 1);
 
     assertEquals("plan-123", ctx.getPlanId());
     assertEquals("t-001", ctx.getTenantId());
@@ -49,12 +49,12 @@ class PlanContextTest {
   void builder_rejectsExpiresBeforeCreated() {
     var pc = pc("t-001", "alice", "p1");
     Executable ex = () -> PlanContext.builder()
-        .planId("p1")
-        .tenantId("t-001")
-        .principal(pc)
-        .createdAtMs(2000)
-        .expiresAtMs(1000) // earlier than createdAtMs
-        .build();
+      .planId("p1")
+      .tenantId("t-001")
+      .principal(pc)
+      .createdAtMs(2000)
+      .expiresAtMs(1000) // earlier than createdAtMs
+      .build();
     var err = assertThrows(IllegalArgumentException.class, ex);
     assertTrue(err.getMessage().contains("expiresAtMs must be >="));
   }
@@ -65,12 +65,10 @@ class PlanContextTest {
     var ctx = PlanContext.newActive("p1", "t-001", pc, null, null, 200, 1);
     long originalExp = ctx.getExpiresAtMs();
 
-    // Request an earlier expiry → should not shorten
     var same = ctx.extendLease(originalExp - 50, 2);
     assertEquals(originalExp, same.getExpiresAtMs());
-    assertEquals(ctx, same); // no change
+    assertEquals(ctx, same);
 
-    // Request a later expiry → should extend
     var extended = ctx.extendLease(originalExp + 500, 3);
     assertTrue(extended.getExpiresAtMs() > originalExp);
     assertEquals(3, extended.getVersion());
@@ -97,7 +95,6 @@ class PlanContextTest {
     assertEquals(PlanContext.State.EXPIRED, expired.getState());
     assertEquals(2, expired.getVersion());
 
-    // Calling again on a non-active state should return itself unchanged
     var again = expired.asExpired(3);
     assertSame(expired, again);
   }

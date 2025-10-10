@@ -7,13 +7,38 @@ import java.util.UUID;
 import com.google.protobuf.Any;
 
 import jakarta.inject.Inject;
-
-import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.catalog.rpc.Catalog;
+import ai.floedb.metacat.catalog.rpc.CreateCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.CreateCatalogResponse;
+import ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.CreateNamespaceResponse;
+import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
+import ai.floedb.metacat.catalog.rpc.CreateTableResponse;
+import ai.floedb.metacat.catalog.rpc.DeleteCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.DeleteCatalogResponse;
+import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.DeleteNamespaceResponse;
+import ai.floedb.metacat.catalog.rpc.DeleteTableRequest;
+import ai.floedb.metacat.catalog.rpc.DeleteTableResponse;
+import ai.floedb.metacat.catalog.rpc.MutationMeta;
+import ai.floedb.metacat.catalog.rpc.Namespace;
+import ai.floedb.metacat.catalog.rpc.ResourceMutation;
+import ai.floedb.metacat.catalog.rpc.TableDescriptor;
+import ai.floedb.metacat.catalog.rpc.UpdateCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.UpdateCatalogResponse;
+import ai.floedb.metacat.catalog.rpc.UpdateTableSchemaRequest;
+import ai.floedb.metacat.catalog.rpc.UpdateTableSchemaResponse;
+import ai.floedb.metacat.catalog.rpc.Precondition;
+import ai.floedb.metacat.catalog.rpc.RenameNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.RenameNamespaceResponse;
+import ai.floedb.metacat.catalog.rpc.RenameTableRequest;
+import ai.floedb.metacat.catalog.rpc.RenameTableResponse;
 import ai.floedb.metacat.common.rpc.BlobHeader;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NameIndexRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
@@ -181,8 +206,13 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     namespaces.put(ns, spec.getCatalogId());
 
-    var ref = NamespaceRef.newBuilder()
-      .setCatalogId(spec.getCatalogId())
+    var catalogName = nameIndex.getCatalogById(tenantId, spec.getCatalogId().getId())
+      .map(NameRef::getCatalog)
+      .orElseThrow(() -> GrpcErrors.notFound(
+        "catalog id not found: " + spec.getCatalogId().getId(), null));
+
+    var ref = NameRef.newBuilder()
+      .setCatalog(catalogName)
       .addAllNamespacePath(spec.getPathList())
       .build();
     nameIndex.putNamespaceIndex(tenantId, ref, rid);
@@ -198,6 +228,12 @@ public class ResourceMutationImpl implements ResourceMutation {
     );
   }
 
+  private ResourceId requireCatalogIdByName(String tenantId, String catalogName) {
+    return nameIndex.getCatalogByName(tenantId, catalogName)
+      .map(NameRef::getResourceId)
+      .orElseThrow(() -> new IllegalArgumentException("Unknown catalog: " + catalogName));
+  }
+
   @Override
   public Uni<RenameNamespaceResponse> renameNamespace(RenameNamespaceRequest req) {
     var p = principal.get();
@@ -208,26 +244,34 @@ public class ResourceMutationImpl implements ResourceMutation {
     var tenantId = p.getTenantId();
     var nsId = rid.getId();
 
-    var nsIdx = nameIndex.getNamespaceById(tenantId, nsId)
+    var nsRef = nameIndex.getNamespaceById(tenantId, nsId)
       .orElseThrow(() -> notFound("namespace index missing (by-id): %s", nsId));
-    var catalogId = nsIdx.getRef().getCatalogId().getId();
 
-    var ptrKey = Keys.nsPtr(tenantId, catalogId, nsId);
+    var catalogRid = requireCatalogIdByName(tenantId, nsRef.getCatalog());
+    var catalogIdStr = catalogRid.getId();
+
+    var ptrKey = Keys.nsPtr(tenantId, catalogIdStr, nsId);
     var current = mustGetPointer(ptrKey);
     checkPrecondition(req.getPrecondition(), current);
 
-    var cur = namespaces.get(rid, nsIdx.getRef().getCatalogId())
+    var cur = namespaces.get(rid, catalogRid)
       .orElseThrow(() -> notFound("namespace not found: %s", nsId));
 
     var newName = mustNonEmpty(req.getNewDisplayName(), "new_display_name");
     var updated = cur.toBuilder().setDisplayName(newName).build();
 
-    namespaces.put(updated, nsIdx.getRef().getCatalogId());
+    namespaces.put(updated, catalogRid);
 
-    nameIndex.putNamespaceIndex(tenantId, nsIdx.getRef(), rid);
+    nameIndex.putNamespaceIndex(tenantId, nsRef, rid);
+
     if (!req.getNewPathList().isEmpty()) {
-      nameIndex.deleteNamespaceByPath(tenantId, catalogId, nsIdx.getRef().getNamespacePathList());
-      var newRef = nsIdx.getRef().toBuilder().clearNamespacePath().addAllNamespacePath(req.getNewPathList()).build();
+      nameIndex.deleteNamespaceByPath(tenantId, catalogIdStr, nsRef.getNamespacePathList());
+
+      var newRef = NameRef.newBuilder(nsRef)
+        .clearNamespacePath()
+        .addAllNamespacePath(req.getNewPathList())
+        .build();
+
       nameIndex.putNamespaceIndex(tenantId, newRef, rid);
     }
 
@@ -250,25 +294,28 @@ public class ResourceMutationImpl implements ResourceMutation {
     var rid = req.getResourceId();
     ensureKind(rid, ResourceKind.RK_NAMESPACE, "DeleteNamespace");
     var tenantId = p.getTenantId();
+    var nsId = rid.getId();
 
-    var nsIdx = nameIndex.getNamespaceById(tenantId, rid.getId())
-      .orElseThrow(() -> notFound("namespace index missing (by-id): %s", rid.getId()));
-    var catalogId = nsIdx.getRef().getCatalogId().getId();
+    var nsRef = nameIndex.getNamespaceById(tenantId, nsId)
+      .orElseThrow(() -> notFound("namespace index missing (by-id): %s", nsId));
 
-    var nsPtrKey = Keys.nsPtr(tenantId, catalogId, rid.getId());
+    var catalogRid = requireCatalogIdByName(tenantId, nsRef.getCatalog());
+    var catalogIdStr = catalogRid.getId();
+
+    var nsPtrKey = Keys.nsPtr(tenantId, catalogIdStr, nsId);
     var current = mustGetPointer(nsPtrKey);
     checkPrecondition(req.getPrecondition(), current);
 
     if (req.getRequireEmpty()) {
-      if (tables.count(tenantId, catalogId, rid.getId()) > 0) {
+      if (tables.count(tenantId, catalogIdStr, nsId) > 0) {
         throw conflict("namespace not empty");
       }
     }
 
-    namespaces.delete(nsIdx.getRef().getCatalogId(), rid);
+    namespaces.delete(catalogRid, rid);
 
-    nameIndex.deleteNamespaceById(tenantId, rid.getId());
-    nameIndex.deleteNamespaceByPath(tenantId, catalogId, nsIdx.getRef().getNamespacePathList());
+    nameIndex.deleteNamespaceById(tenantId, nsId);
+    nameIndex.deleteNamespaceByPath(tenantId, catalogIdStr, nsRef.getNamespacePathList());
 
     return Uni.createFrom().item(DeleteNamespaceResponse.newBuilder().build());
   }

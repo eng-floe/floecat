@@ -48,21 +48,16 @@ proto:
 .PHONY: build-service
 build-service:
 	@echo "==> [SERVICE] package"
-	$(MVN) -q -f service/pom.xml -DskipTests package
+	$(MVN) -q -DskipTests -pl service -am package
 
 # ---------- Tests ----------
 .PHONY: test
 test: unit-test integration-test
 unit-test:
-	@for m in $(JAVA_MODULES); do \
-		echo "==> [UNIT TESTS] $$m"; \
-		$(MVN) -f $$m/pom.xml test; \
-	done
+	$(MVN) -pl service -am test
+
 integration-test:
-	@for m in $(JAVA_MODULES); do \
-		echo "==> [UNIT & INTEGRATION TESTS] $$m"; \
-		$(MVN) -f $$m/pom.xml integration-test; \
-	done
+	$(MVN) -pl service -am integration-test
 
 # ---------- Clean ----------
 .PHONY: clean clean-java clean-dev

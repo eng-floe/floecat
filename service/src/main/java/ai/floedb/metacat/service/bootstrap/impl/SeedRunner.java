@@ -11,7 +11,6 @@ import jakarta.inject.Inject;
 
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.Namespace;
-import ai.floedb.metacat.catalog.rpc.NamespaceRef;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.TableDescriptor;
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -100,14 +99,44 @@ public class SeedRunner {
     return rid;
   }
 
-  private String seedNamespace(String tenant, ResourceId catalogId, List<String> path, String display, long now) {
+  private String requireCatalogNameById(String tenantId, String catalogId) {
+    return nameIndex.getCatalogById(tenantId, catalogId)
+      .map(NameRef::getCatalog)
+      .orElseThrow(() -> new IllegalArgumentException("Unknown catalog id: " + catalogId));
+  }
+
+  private String seedNamespace(String tenant,
+                              ResourceId catalogId,
+                              List<String> path,
+                              String display,
+                              long now) {
     String nsId = uuidFor(tenant + "/ns:" + displayPathKey(catalogId.getId(), path));
-    var nsRid  = ResourceId.newBuilder().setTenantId(tenant).setId(nsId).setKind(ResourceKind.RK_NAMESPACE).build();
-    var ns = Namespace.newBuilder()
-      .setResourceId(nsRid).setDisplayName(display).setDescription(display + " namespace").setCreatedAtMs(now).build();
+
+    ResourceId nsRid = ResourceId.newBuilder()
+      .setTenantId(tenant)
+      .setId(nsId)
+      .setKind(ResourceKind.RK_NAMESPACE)
+      .build();
+
+    Namespace ns = Namespace.newBuilder()
+      .setResourceId(nsRid)
+      .setDisplayName(display)
+      .setDescription(display + " namespace")
+      .setCreatedAtMs(now)
+      .build();
+
     namespaces.put(ns, catalogId);
-    var ref = NamespaceRef.newBuilder().setCatalogId(catalogId).addAllNamespacePath(path).build();
+
+    String catalogName = requireCatalogNameById(tenant, catalogId.getId());
+
+    NameRef ref = NameRef.newBuilder()
+      .setCatalog(catalogName)
+      .addAllNamespacePath(path)
+      .setResourceId(nsRid)
+      .build();
+
     nameIndex.putNamespaceIndex(tenant, ref, nsRid);
+
     return nsId;
   }
 

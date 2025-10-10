@@ -11,13 +11,11 @@ import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.LookupTableRequest;
-import ai.floedb.metacat.catalog.rpc.NamespaceRef;
 import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveFQTablesRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.metacat.common.rpc.NameRef;
-import ai.floedb.metacat.common.rpc.ResourceId;
 
 @QuarkusTest
 class DirectoryIT {
@@ -35,18 +33,10 @@ class DirectoryIT {
     assertTrue(l.getDisplayName().equals("sales") || l.getDisplayName().isEmpty());
   }
 
-  private ResourceId resolveCatalogId(String name) {
-    var r = directory.resolveCatalog(
-      ResolveCatalogRequest.newBuilder().setDisplayName(name).build());
-    return r.getResourceId();
-  }
-
   @Test
   void resolveAndLookupNamespace() {
-    var salesCat = resolveCatalogId("sales");
-
-    var ref = NamespaceRef.newBuilder()
-      .setCatalogId(salesCat)
+    var ref = NameRef.newBuilder()
+      .setCatalog("sales")
       .addNamespacePath("staging")
       .addNamespacePath("2025")
       .build();
@@ -57,7 +47,7 @@ class DirectoryIT {
     var lookup = directory.lookupNamespace(
       LookupNamespaceRequest.newBuilder().setResourceId(ns.getResourceId()).build());
 
-    assertEquals(salesCat, lookup.getRef().getCatalogId());
+    assertEquals("sales", lookup.getRef().getCatalog());
     assertEquals(List.of("staging","2025"), lookup.getRef().getNamespacePathList());
   }
 
@@ -75,7 +65,6 @@ class DirectoryIT {
     var lookup = directory.lookupTable(
       LookupTableRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
 
-    assertEquals(nameRef, lookup.getName());
     assertEquals("sales", lookup.getName().getCatalog());
     assertEquals(List.of("core"), lookup.getName().getNamespacePathList());
     assertEquals("orders", lookup.getName().getName());
@@ -150,6 +139,8 @@ class DirectoryIT {
     var lookup = directory.lookupTable(
       LookupTableRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
 
-    assertEquals(name, lookup.getName());
+    assertEquals("finance", lookup.getName().getCatalog());
+    assertEquals(List.of("core"), lookup.getName().getNamespacePathList());
+    assertEquals("gl_entries", lookup.getName().getName());
   }
 }
