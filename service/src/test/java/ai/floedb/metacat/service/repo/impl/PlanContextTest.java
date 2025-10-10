@@ -1,14 +1,13 @@
 package ai.floedb.metacat.service.repo.impl;
 
-import ai.floedb.metacat.common.rpc.PrincipalContext;
-import ai.floedb.metacat.service.planning.impl.PlanContext;
+import java.time.Clock;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
-
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.time.Clock;
+import ai.floedb.metacat.common.rpc.PrincipalContext;
+import ai.floedb.metacat.service.planning.impl.PlanContext;
 
 class PlanContextTest {
 

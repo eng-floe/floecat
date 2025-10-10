@@ -1,9 +1,9 @@
 package ai.floedb.metacat.service.security.impl;
 
+import java.util.List;
+
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
-
-import java.util.List;
 
 import ai.floedb.metacat.common.rpc.PrincipalContext;
 

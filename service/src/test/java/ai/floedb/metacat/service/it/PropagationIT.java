@@ -1,19 +1,17 @@
 package ai.floedb.metacat.service.it;
 
-import static org.junit.jupiter.api.Assertions.*;
-
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
-
 import io.grpc.*;
 import io.grpc.MethodDescriptor;
 import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.PrincipalContext;

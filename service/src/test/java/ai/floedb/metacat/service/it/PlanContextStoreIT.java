@@ -1,17 +1,17 @@
 package ai.floedb.metacat.service.it;
 
-import ai.floedb.metacat.common.rpc.PrincipalContext;
-import ai.floedb.metacat.service.planning.impl.PlanContextStoreImpl;
-import ai.floedb.metacat.service.planning.impl.PlanContext;
+import java.time.Clock;
+import java.util.Map;
+
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
-
-import java.time.Clock;
-import java.util.Map;
-
 import static org.junit.jupiter.api.Assertions.*;
+
+import ai.floedb.metacat.common.rpc.PrincipalContext;
+import ai.floedb.metacat.service.planning.impl.PlanContextStoreImpl;
+import ai.floedb.metacat.service.planning.impl.PlanContext;
 
 @QuarkusTest
 class PlanContextStoreIT {

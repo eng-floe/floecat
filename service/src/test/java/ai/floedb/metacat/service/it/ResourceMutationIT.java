@@ -1,5 +1,8 @@
 package ai.floedb.metacat.service.it;
 
+import java.time.Clock;
+import java.util.List;
+
 import com.google.protobuf.Any;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -7,11 +10,7 @@ import io.grpc.protobuf.StatusProto;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.api.*;
-
 import static org.junit.jupiter.api.Assertions.*;
-
-import java.time.Clock;
-import java.util.List;
 
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.NameRef;

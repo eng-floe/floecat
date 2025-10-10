@@ -103,8 +103,8 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
       if (!isBlank(planIdHdr) && !isBlank(pc.getPlanId()) && !pc.getPlanId().equals(planIdHdr)) {
         throw Status.FAILED_PRECONDITION
-            .withDescription("plan_id mismatch between header and principal")
-            .asRuntimeException();
+          .withDescription("plan_id mismatch between header and principal")
+          .asRuntimeException();
       }
 
       String canonicalPlan = !isBlank(pc.getPlanId()) ? pc.getPlanId() : planIdHdr;
@@ -113,33 +113,33 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
     if (!isBlank(planIdHdr)) {
       PlanContext ctx = planStore.get(planIdHdr)
-          .orElseThrow(() -> Status.UNAUTHENTICATED
-              .withDescription("unknown x-plan-id")
-              .asRuntimeException());
+        .orElseThrow(() -> Status.UNAUTHENTICATED
+          .withDescription("unknown x-plan-id")
+          .asRuntimeException());
 
       long now = clock.millis();
       if (ctx.getState() != PlanContext.State.ACTIVE) {
         throw Status.FAILED_PRECONDITION
-            .withDescription("plan not active")
-            .asRuntimeException();
+          .withDescription("plan not active")
+          .asRuntimeException();
       }
       if (ctx.getExpiresAtMs() < now) {
         throw Status.FAILED_PRECONDITION
-            .withDescription("plan lease expired")
-            .asRuntimeException();
+          .withDescription("plan lease expired")
+          .asRuntimeException();
       }
 
       PrincipalContext pc = ctx.getPrincipal();
       if (!isBlank(pc.getPlanId()) && !pc.getPlanId().equals(planIdHdr)) {
         throw Status.FAILED_PRECONDITION
-            .withDescription("plan_id mismatch (store vs principal)")
-            .asRuntimeException();
+          .withDescription("plan_id mismatch (store vs principal)")
+          .asRuntimeException();
       }
 
       if (!ctx.getTenantId().equals(pc.getTenantId())) {
         throw Status.FAILED_PRECONDITION
-            .withDescription("tenant mismatch (store vs principal)")
-            .asRuntimeException();
+          .withDescription("tenant mismatch (store vs principal)")
+          .asRuntimeException();
       }
 
       return new ResolvedContext(pc, planIdHdr);
@@ -153,9 +153,9 @@ public class InboundContextInterceptor implements ServerInterceptor {
       return PrincipalContext.parseFrom(bin);
     } catch (Exception e) {
       throw Status.UNAUTHENTICATED
-          .withDescription("invalid x-principal-bin")
-          .withCause(e)
-          .asRuntimeException();
+        .withDescription("invalid x-principal-bin")
+        .withCause(e)
+        .asRuntimeException();
     }
   }
 

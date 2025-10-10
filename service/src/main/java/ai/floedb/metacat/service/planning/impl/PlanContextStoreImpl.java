@@ -1,6 +1,10 @@
 package ai.floedb.metacat.service.planning.impl;
 
-import ai.floedb.metacat.service.planning.PlanContextStore;
+import java.time.Clock;
+import java.time.Duration;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
+
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import jakarta.annotation.PostConstruct;
@@ -8,10 +12,7 @@ import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-import java.time.Clock;
-import java.time.Duration;
-import java.util.Optional;
-import java.util.concurrent.atomic.AtomicLong;
+import ai.floedb.metacat.service.planning.PlanContextStore;
 
 @ApplicationScoped
 public class PlanContextStoreImpl implements PlanContextStore {
@@ -29,10 +30,9 @@ public class PlanContextStoreImpl implements PlanContextStore {
   long safetyExpiryMinutes;
 
   private final AtomicLong versionGen = new AtomicLong(1);
+  private final Clock clock = Clock.systemUTC();
 
   private Cache<String, PlanContext> cache;
-
-  private final Clock clock = Clock.systemUTC();
 
   @PostConstruct
   void init() {

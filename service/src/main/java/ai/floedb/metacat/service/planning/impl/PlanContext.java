@@ -16,16 +16,11 @@ public final class PlanContext {
 
   private final String planId;
   private final String tenantId;
-
   private final PrincipalContext principal;
-
   private final byte[] expansionMap;
-
   private final byte[] snapshotSet;
-
   private final long createdAtMs;
   private final long expiresAtMs;
-
   private final State state;
   private final long version;
 

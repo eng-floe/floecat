@@ -26,11 +26,11 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
 
     return new ForwardingClientCall.SimpleForwardingClientCall<>(next.newCall(method, callOptions)) {
       @Override public void start(Listener<RespT> rl, Metadata headers) {
-        var pc    = InboundContextInterceptor.PC_KEY.get();
-        var plan  = Optional.ofNullable(InboundContextInterceptor.PLAN_KEY.get())
-                            .orElseGet(() -> Baggage.current().getEntryValue("plan_id"));
-        var corr  = Optional.ofNullable(InboundContextInterceptor.CORR_KEY.get())
-                            .orElseGet(() -> Baggage.current().getEntryValue("correlation_id"));
+        var pc  = InboundContextInterceptor.PC_KEY.get();
+        var plan = Optional.ofNullable(InboundContextInterceptor.PLAN_KEY.get())
+                           .orElseGet(() -> Baggage.current().getEntryValue("plan_id"));
+        var corr = Optional.ofNullable(InboundContextInterceptor.CORR_KEY.get())
+                           .orElseGet(() -> Baggage.current().getEntryValue("correlation_id"));
 
         if (pc != null) headers.put(PRINC_BIN, pc.toByteArray());
         if (plan != null && !plan.isBlank()) headers.put(PLAN_ID, plan);
