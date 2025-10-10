@@ -37,8 +37,9 @@ class CatalogRepositoryTest {
   void listCatalogs() {
     var ptr = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
+    var nameIndexRepo = new NameIndexRepository(ptr, blobs);
     var catalogRepo = new CatalogRepository(ptr, blobs);
-    var namespaceRepo = new NamespaceRepository(ptr, blobs);
+    var namespaceRepo = new NamespaceRepository(nameIndexRepo, ptr, blobs);
 
     String tenant = "t-0001";
     var catRid = ResourceId.newBuilder()

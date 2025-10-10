@@ -42,8 +42,18 @@ public class SeedRunner {
 
     var salesId = seedCatalog(tenant, "sales", "Sales catalog", now);
     var financeId = seedCatalog(tenant, "finance", "Finance catalog", now);
-    nameIndex.putCatalogIndex(tenant, "sales", salesId);
-    nameIndex.putCatalogIndex(tenant, "finance", financeId);
+
+    var salesRef = NameRef.newBuilder()
+        .setCatalog("sales")
+        .setResourceId(salesId)            // ← add this
+        .build();
+    nameIndex.putCatalogIndex(tenant, salesRef, salesId);
+
+    var financeRef = NameRef.newBuilder()
+        .setCatalog("finance")
+        .setResourceId(financeId)          // ← add this
+        .build();
+    nameIndex.putCatalogIndex(tenant, financeRef, financeId);
 
     var salesCoreNsId = seedNamespace(tenant, salesId, List.of("core"), "core", now);
     var salesStg25NsId = seedNamespace(tenant, salesId, List.of("staging","2025"), "staging/2025", now);
@@ -137,7 +147,7 @@ public class SeedRunner {
       .setResourceId(nsRid)
       .build();
 
-    nameIndex.putNamespaceIndex(tenant, ref, nsRid);
+    nameIndex.putNamespaceIndex(tenant, ref);
 
     return nsId;
   }

@@ -13,6 +13,7 @@ import java.util.Optional;
 
 @ApplicationScoped
 public class CatalogRepository extends BaseRepository<Catalog> {
+
   public CatalogRepository() {
     super(Catalog::parseFrom, Catalog::toByteArray, "application/x-protobuf");
   }
@@ -27,6 +28,14 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     return get(Keys.catPtr(rid.getTenantId(), rid.getId()));
   }
 
+  public List<Catalog> list(String tenantId, int limit, String token, StringBuilder next) {
+    return listByPrefix(Keys.catPtr(tenantId, ""), limit, token, next);
+  }
+
+  public int count(String tenantId) {
+    return countByPrefix(Keys.catPtr(tenantId, ""));
+  }
+
   public void put(Catalog c) {
     var rid = c.getResourceId();
     put(Keys.catPtr(rid.getTenantId(), rid.getId()),
@@ -34,22 +43,14 @@ public class CatalogRepository extends BaseRepository<Catalog> {
         c);
   }
 
-  public boolean delete(ResourceId rid) {
-    var tid = rid.getTenantId();
-    var cid = rid.getId();
+  public boolean delete(ResourceId catalogRid) {
+    var tid = catalogRid.getTenantId();
+    var cid = catalogRid.getId();
     String ptrKey = Keys.catPtr(tid, cid);
     String blobUri = Keys.catBlob(tid, cid);
 
     boolean okPtr = ptr.delete(ptrKey);
     boolean okBlob = blobs.delete(blobUri);
     return okPtr && okBlob;
-  }
-
-  public List<Catalog> list(String tenantId, int limit, String token, StringBuilder next) {
-    return listByPrefix(Keys.catPtr(tenantId, ""), limit, token, next);
-  }
-
-  public int count(String tenantId) {
-    return countByPrefix(Keys.catPtr(tenantId, ""));
   }
 }

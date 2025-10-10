@@ -93,15 +93,8 @@ public Uni<GetNamespaceResponse> getNamespace(GetNamespaceRequest req) {
 
   return Uni.createFrom().item(req)
     .map(r -> {
-      var tenantId = p.getTenantId();
       var nsRid = r.getResourceId();
-      var nsRef = nameIndexRepo.getNamespaceById(tenantId, nsRid.getId())
-        .orElseThrow(() -> GrpcErrors.notFound(
-            "namespace index missing (by-id): " + nsRid.getId(), null));
-
-      var catalogRid = requireCatalogIdByName(tenantId, nsRef.getCatalog());
-
-      var ns = nsRepo.get(nsRid, catalogRid)
+      var ns = nsRepo.get(nsRid)
         .orElseThrow(() -> GrpcErrors.notFound(
             "namespace not found: " + nsRid.getId(), null));
 
@@ -114,7 +107,7 @@ public Uni<GetNamespaceResponse> getNamespace(GetNamespaceRequest req) {
     var p = principal.get();
     authz.require(p, "catalog.read");
 
-    var catRid = req.getCatalogId();
+    var catRid = req.getParentId();
     int limit = (req.hasPage() && req.getPage().getPageSize() > 0) ? req.getPage().getPageSize() : 50;
     String token = req.hasPage() ? req.getPage().getPageToken() : "";
     StringBuilder next = new StringBuilder();
@@ -141,7 +134,7 @@ public Uni<GetNamespaceResponse> getNamespace(GetNamespaceRequest req) {
     return Uni.createFrom().item(req)
       .map(r -> {
         var table = tableRepo
-          .getById(r.getResourceId())
+          .get(r.getResourceId())
           .orElseThrow(() -> GrpcErrors.notFound("table not found", null));
 
         return GetTableDescriptorResponse.newBuilder()
@@ -160,8 +153,8 @@ public Uni<GetNamespaceResponse> getNamespace(GetNamespaceRequest req) {
     StringBuilder next = new StringBuilder();
 
     return Uni.createFrom().item(() -> {
-      var items = tableRepo.list(p.getTenantId(), req.getCatalogId().getId(), req.getNamespaceId().getId(), limit, token, next);
-      int total = tableRepo.count(p.getTenantId(), req.getCatalogId().getId(), req.getNamespaceId().getId());
+      var items = tableRepo.list(req.getParentId(), limit, token, next);
+      int total = tableRepo.count(req.getParentId());
       var page = PageResponse.newBuilder().setNextPageToken(next.toString()).setTotalSize(total).build();
       return ListTablesResponse.newBuilder().addAllTables(items).setPage(page).build();
     });
@@ -187,7 +180,7 @@ public Uni<GetNamespaceResponse> getNamespace(GetNamespaceRequest req) {
   public Uni<GetCurrentSnapshotResponse> getCurrentSnapshot(GetCurrentSnapshotRequest req) {
     var p = principal.get(); authz.require(p, "catalog.read");
     return Uni.createFrom().item(() ->
-      tableRepo.getById(req.getTableId())
+      tableRepo.get(req.getTableId())
         .filter(t -> t.getCurrentSnapshotId() != 0)
         .map(t -> GetCurrentSnapshotResponse.newBuilder()
           .setSnapshot(Snapshot.newBuilder()

@@ -134,19 +134,27 @@ class BackendStorageIT {
 
     var newName = "it_tbl_renamed";
     mutation.renameTable(RenameTableRequest.newBuilder()
-    .setTableId(tblRid)
-    .setNewDisplayName(newName)
-    .build());
+      .setTableId(tblRid)
+      .setNewDisplayName(newName)
+      .build());
 
     var tNew = directory.resolveTable(ResolveTableRequest.newBuilder()
-      .setName(NameRef.newBuilder().setCatalog(catId).addAllNamespacePath(List.of(nsId)).setName(newName).build())
+      .setName(NameRef.newBuilder()
+        .setCatalog(catName)
+        .addAllNamespacePath(List.of("db_it", "schema_it"))
+        .setName(newName)
+        .build())
       .build());
-    assertEquals(tblId, tNew.getResourceId().getId());
+      assertEquals(tblId, tNew.getResourceId().getId());
 
     assertThrows(StatusRuntimeException.class, () ->
       directory.resolveTable(ResolveTableRequest.newBuilder()
-          .setName(NameRef.newBuilder().setCatalog(catId).addAllNamespacePath(List.of(nsId)).setName(tblName).build())
-          .build()));
+        .setName(NameRef.newBuilder()
+          .setCatalog(catName)
+          .addAllNamespacePath(List.of("db_it", "schema_it"))
+          .setName(tblName)
+          .build())
+        .build()));
 
     mutation.deleteTable(DeleteTableRequest.newBuilder().setTableId(tblRid).build());
 

@@ -129,8 +129,8 @@ class ResourceMutationIT {
     var tResolve = directory.resolveTable(
       ResolveTableRequest.newBuilder()
         .setName(NameRef.newBuilder()
-          .setCatalog(catId)
-          .addAllNamespacePath(List.of(nsId))
+          .setCatalog(catName)
+          .addAllNamespacePath(List.of("db_it", "schema_it"))
           .setName(tblName)
           .build())
         .build());
@@ -161,8 +161,8 @@ class ResourceMutationIT {
     var tResolveNew = directory.resolveTable(
       ResolveTableRequest.newBuilder()
         .setName(NameRef.newBuilder()
-            .setCatalog(catId)
-            .addAllNamespacePath(List.of(nsId))
+            .setCatalog(catName)
+            .addAllNamespacePath(List.of("db_it", "schema_it"))
             .setName(newTblName)
             .build())
         .build());
@@ -172,8 +172,8 @@ class ResourceMutationIT {
       directory.resolveTable(
         ResolveTableRequest.newBuilder()
           .setName(NameRef.newBuilder()
-            .setCatalog(catId)
-            .addAllNamespacePath(List.of(nsId))
+            .setCatalog(catName)
+            .addAllNamespacePath(List.of("db_it", "schema_it"))
             .setName(tblName)
             .build())
           .build()));

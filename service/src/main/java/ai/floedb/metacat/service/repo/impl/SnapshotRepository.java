@@ -16,6 +16,7 @@ import ai.floedb.metacat.service.storage.PointerStore;
 
 @ApplicationScoped
 public class SnapshotRepository extends BaseRepository<Snapshot> {
+
   public SnapshotRepository() {
     super(Snapshot::parseFrom, Snapshot::toByteArray, "application/x-protobuf");
   }
@@ -29,17 +30,6 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
   public Optional<Snapshot> get(ResourceId tableId, long snapshotId) {
     String key = Keys.snapPtr(tableId.getTenantId(), tableId.getId(), snapshotId);
     return get(key);
-  }
-
-  public void put(ResourceId tableId, Snapshot snapshot) {
-    var tenantId = tableId.getTenantId();
-    var tableUUID = tableId.getId();
-    long snapshotId = snapshot.getSnapshotId();
-
-    String key = Keys.snapPtr(tenantId, tableUUID, snapshotId);
-    String uri = Keys.snapBlob(tenantId, tableUUID, snapshotId);
-
-    put(key, uri, snapshot);
   }
 
   public List<Snapshot> list(ResourceId tableId, int limit, String pageToken, StringBuilder nextOut) {
@@ -60,5 +50,16 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     if (snapshots.isEmpty()) return Optional.empty();
 
     return snapshots.stream().max((a, b) -> Timestamps.compare(a.getCreatedAtMs(), b.getCreatedAtMs()));
+  }
+  
+  public void put(ResourceId tableId, Snapshot snapshot) {
+    var tenantId = tableId.getTenantId();
+    var tableUUID = tableId.getId();
+    long snapshotId = snapshot.getSnapshotId();
+
+    String key = Keys.snapPtr(tenantId, tableUUID, snapshotId);
+    String uri = Keys.snapBlob(tenantId, tableUUID, snapshotId);
+
+    put(key, uri, snapshot);
   }
 }

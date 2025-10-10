@@ -25,8 +25,9 @@ class TableRepositorySnapshotsTest {
   void list_count_and_currentSnapshot_fromSeeded() {
     var ptr  = new InMemoryPointerStore();
     var blobs= new InMemoryBlobStore();
+    var nameIndexRepo = new NameIndexRepository(ptr, blobs);
     var snapshotRepo = new SnapshotRepository(ptr, blobs);
-    var tableRepo = new TableRepository(ptr, blobs);
+    var tableRepo = new TableRepository(nameIndexRepo, ptr, blobs);
 
     String tenant = "t-0001";
     String catalogId = UUID.randomUUID().toString();

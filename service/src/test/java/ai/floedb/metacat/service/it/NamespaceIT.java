@@ -24,7 +24,7 @@ class NamespaceIT {
       .setDisplayName("sales").build());
 
     var list = access.listNamespaces(ListNamespacesRequest.newBuilder()
-      .setCatalogId(r.getResourceId())
+      .setParentId(r.getResourceId())
       .build());
 
     assertTrue(list.getNamespacesCount() >= 2);

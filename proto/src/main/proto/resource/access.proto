@@ -30,7 +30,7 @@ message GetNamespaceResponse {
 }
 
 message ListNamespacesRequest {
-  ai.floedb.metacat.common.ResourceId catalog_id = 1;
+  ai.floedb.metacat.common.ResourceId parent_id = 1;
   ai.floedb.metacat.common.PageRequest page = 2;
 }
 message ListNamespacesResponse {
@@ -47,9 +47,8 @@ message GetTableDescriptorResponse {
 }
 
 message ListTablesRequest {
-  ai.floedb.metacat.common.ResourceId catalog_id = 1;
-  ai.floedb.metacat.common.ResourceId namespace_id = 2;
-  ai.floedb.metacat.common.PageRequest page = 3;
+  ai.floedb.metacat.common.ResourceId parent_id = 1;
+  ai.floedb.metacat.common.PageRequest page = 2;
 }
 message ListTablesResponse {
   repeated TableDescriptor tables = 1;
