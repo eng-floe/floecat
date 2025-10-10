@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package ai.floedb.metacat.common;
 
+import "google/protobuf/timestamp.proto";
+
 option java_multiple_files = true;
 option java_package = "ai.floedb.metacat.common.rpc";
 option java_outer_classname = "CommonProto";
@@ -39,7 +41,7 @@ enum SpecialSnapshot {
 message SnapshotRef {
   oneof which {
     int64 snapshot_id = 1;
-    int64 as_of_ms = 2;
+    google.protobuf.Timestamp as_of_ms = 2;
     SpecialSnapshot special = 3;
   }
 }
@@ -50,14 +52,14 @@ message Pointer {
   string key = 1;
   string blob_uri = 2;
   int64 version = 3;
-  int64 expires_at_ms = 4;
+  google.protobuf.Timestamp expires_at_ms = 4;
 }
 
 message BlobHeader {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string schema_version = 2;
   string etag = 3;
-  int64 created_at_ms = 4;
+  google.protobuf.Timestamp created_at_ms = 4;
   repeated Tag tags = 5;
 }
 
@@ -78,8 +80,8 @@ message PrincipalContext {
   repeated string scopes = 7;
   string plan_id = 8;
   string correlation_id = 9;
-  int64  issued_at_ms = 10;
-  int64  expires_at_ms = 11;
+  google.protobuf.Timestamp issued_at_ms = 10;
+  google.protobuf.Timestamp expires_at_ms = 11;
   bytes signature = 12;
 }
 
@@ -88,8 +90,6 @@ message PrincipalContext {
 message PageRequest {
   int32 page_size = 1;
   string page_token = 2;
-  string filter = 3;
-  string order_by = 4;
 }
 
 message PageResponse {

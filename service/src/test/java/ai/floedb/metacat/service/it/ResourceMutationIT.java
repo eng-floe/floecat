@@ -138,8 +138,6 @@ class ResourceMutationIT {
     assertEquals(tblId, tResolve.getResourceId().getId());
 
     var gotTbl = access.getTableDescriptor(GetTableDescriptorRequest.newBuilder()
-      .setCatalogId(rid(tenantId, catId, ResourceKind.RK_CATALOG))
-      .setNamespaceId(rid(tenantId, nsId, ResourceKind.RK_NAMESPACE))
       .setResourceId(rid(tenantId, tblId, ResourceKind.RK_TABLE))
       .build());
     assertEquals(tblName, gotTbl.getTable().getDisplayName());

@@ -10,6 +10,9 @@ import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.*;
+
+import com.google.protobuf.util.Timestamps;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -50,7 +53,7 @@ class CatalogPagingIT {
         .setResourceId(rid)
         .setDisplayName(name)
         .setDescription("paging test")
-        .setCreatedAtMs(clock.millis())
+        .setCreatedAtMs(Timestamps.fromMillis(clock.millis()))
         .build();
 
       repo.put(cat);

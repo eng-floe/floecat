@@ -4,6 +4,8 @@ import java.time.Clock;
 import java.util.List;
 import java.util.UUID;
 
+import com.google.protobuf.util.Timestamps;
+
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
@@ -94,7 +96,7 @@ public class SeedRunner {
     String id = uuidFor(tenant + "/catalog:" + displayName);
     var rid = ResourceId.newBuilder().setTenantId(tenant).setId(id).setKind(ResourceKind.RK_CATALOG).build();
     var cat = Catalog.newBuilder()
-      .setResourceId(rid).setDisplayName(displayName).setDescription(description).setCreatedAtMs(now).build();
+      .setResourceId(rid).setDisplayName(displayName).setDescription(description).setCreatedAtMs(Timestamps.fromMillis(now)).build();
     catalogs.put(cat);
     return rid;
   }
@@ -122,7 +124,7 @@ public class SeedRunner {
       .setResourceId(nsRid)
       .setDisplayName(display)
       .setDescription(display + " namespace")
-      .setCreatedAtMs(now)
+      .setCreatedAtMs(Timestamps.fromMillis(now))
       .build();
 
     namespaces.put(ns, catalogId);
@@ -158,7 +160,7 @@ public class SeedRunner {
       .setNamespaceId(nsRid)
       .setRootUri(rootUri)
       .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
-      .setCreatedAtMs(now)
+      .setCreatedAtMs(Timestamps.fromMillis(now))
       .setCurrentSnapshotId(snapshotId)
       .build();
 
@@ -171,7 +173,7 @@ public class SeedRunner {
     String key = "/tenants/" + tenant + "/tables/" + tableId.getId() + "/snapshots/" + snapshotId;
     String uri = "mem://tenants/" + tenant + "/tables/" + tableId.getId() + "/snapshots/" + snapshotId + ".pb";
 
-    var snap = Snapshot.newBuilder().setSnapshotId(snapshotId).setCreatedAtMs(createdAtMs).build();
+    var snap = Snapshot.newBuilder().setSnapshotId(snapshotId).setCreatedAtMs(Timestamps.fromMillis(createdAtMs)).build();
     blobs.put(uri, snap.toByteArray(), "application/x-protobuf");
 
     for (int i = 0; i < 10; i++) {

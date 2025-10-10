@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.UUID;
 
 import com.google.protobuf.Any;
+import com.google.protobuf.util.Timestamps;
 
 import jakarta.inject.Inject;
 import ai.floedb.metacat.catalog.rpc.Catalog;
@@ -93,7 +94,7 @@ public class ResourceMutationImpl implements ResourceMutation {
       .setResourceId(rid)
       .setDisplayName(display)
       .setDescription(spec.getDescription())
-      .setCreatedAtMs(now)
+      .setCreatedAtMs(Timestamps.fromMillis(now))
       .build();
 
     catalogs.put(c);
@@ -111,7 +112,7 @@ public class ResourceMutationImpl implements ResourceMutation {
         .setBlobUri(ptr.getBlobUri())
         .setPointerVersion(ptr.getVersion())
         .setEtag(hdr.getEtag())
-        .setUpdatedAtMs(now)
+        .setUpdatedAtMs(Timestamps.fromMillis(now))
         .build())
       .build());
   }
@@ -201,7 +202,7 @@ public class ResourceMutationImpl implements ResourceMutation {
       .setResourceId(rid)
       .setDisplayName(mustNonEmpty(spec.getDisplayName(), "display_name"))
       .setDescription(spec.getDescription())
-      .setCreatedAtMs(now)
+      .setCreatedAtMs(Timestamps.fromMillis(now))
       .build();
 
     namespaces.put(ns, spec.getCatalogId());
@@ -345,7 +346,7 @@ public class ResourceMutationImpl implements ResourceMutation {
       .setCatalogId(spec.getCatalogId())
       .setNamespaceId(spec.getNamespaceId())
       .setRootUri(mustNonEmpty(spec.getRootUri(), "root_uri"))
-      .setCreatedAtMs(now)
+      .setCreatedAtMs(Timestamps.fromMillis(now))
       .setSchemaJson(mustNonEmpty(spec.getSchemaJson(), "schema_json"))
       .build();
 
@@ -522,7 +523,7 @@ public class ResourceMutationImpl implements ResourceMutation {
       .setBlobUri(p.getBlobUri())
       .setPointerVersion(p.getVersion())
       .setEtag(etag == null ? "" : etag)
-      .setUpdatedAtMs(clock.millis())
+      .setUpdatedAtMs(Timestamps.fromMillis(clock.millis()))
       .build();
   }
 

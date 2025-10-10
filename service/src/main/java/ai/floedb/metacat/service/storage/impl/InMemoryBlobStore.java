@@ -6,6 +6,8 @@ import java.util.UUID;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.google.protobuf.util.Timestamps;
+
 import jakarta.enterprise.context.ApplicationScoped;
 import io.quarkus.arc.properties.IfBuildProperty;
 
@@ -34,7 +36,7 @@ public class InMemoryBlobStore implements BlobStore {
     BlobHeader hdr = BlobHeader.newBuilder()
       .setSchemaVersion("v1")
       .setEtag(UUID.randomUUID().toString())
-      .setCreatedAtMs(clock.millis())
+      .setCreatedAtMs(Timestamps.fromMillis(clock.millis()))
       .build();
     map.put(uri, new Blob(bytes, hdr));
   }

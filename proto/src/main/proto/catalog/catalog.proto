@@ -6,13 +6,15 @@ option java_package = "ai.floedb.metacat.catalog.rpc";
 
 import "common/common.proto";
 
+import "google/protobuf/timestamp.proto";
+
 // ----- Catalog -----
 
 message Catalog {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
   string description = 3;
-  int64 created_at_ms = 4;
+  google.protobuf.Timestamp created_at_ms = 4;
 }
 
 message ResolveCatalogRequest { 
@@ -35,7 +37,7 @@ message Namespace {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
   string description = 3;
-  int64 created_at_ms = 4;
+  google.protobuf.Timestamp created_at_ms = 4;
 }
 
 message ResolveNamespaceRequest { 
@@ -96,14 +98,14 @@ message TableDescriptor {
   ai.floedb.metacat.common.ResourceId catalog_id = 4;
   ai.floedb.metacat.common.ResourceId namespace_id = 5;
   string root_uri = 6;
-  int64 created_at_ms = 7;
+  google.protobuf.Timestamp created_at_ms = 7;
   string schema_json = 8;
   int64 current_snapshot_id = 9;
 }
 
 message Snapshot {
   int64 snapshot_id = 1;
-  int64 created_at_ms = 2;
+  google.protobuf.Timestamp created_at_ms = 2;
   ai.floedb.metacat.common.ResourceId table_id = 3;
   int64 parent_snapshot_id = 4; 
   string metadata_json = 5;

@@ -4,6 +4,9 @@ import java.time.Clock;
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
+
+import com.google.protobuf.util.Timestamps;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.Snapshot;
@@ -42,7 +45,7 @@ class TableRepositorySnapshotsTest {
       .setNamespaceId(nsRid)
       .setRootUri("s3://upstream/tables/orders/")
       .setSchemaJson("{}")
-      .setCreatedAtMs(clock.millis())
+      .setCreatedAtMs(Timestamps.fromMillis(clock.millis()))
       .setCurrentSnapshotId(200)
       .build();
     tableRepo.put(td);
@@ -72,7 +75,7 @@ class TableRepositorySnapshotsTest {
                                    String tenant, String tableId, long snapId, long createdMs) {
     String key = "/tenants/" + tenant + "/tables/" + tableId + "/snapshots/" + snapId;
     String uri = "mem://tenants/" + tenant + "/tables/" + tableId + "/snapshots/" + snapId + ".pb";
-    var snap = Snapshot.newBuilder().setSnapshotId(snapId).setCreatedAtMs(createdMs).build();
+    var snap = Snapshot.newBuilder().setSnapshotId(snapId).setCreatedAtMs(Timestamps.fromMillis(createdMs)).build();
     blobs.put(uri, snap.toByteArray(), "application/x-protobuf");
 
     long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);

@@ -4,6 +4,9 @@ import java.time.Clock;
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
+
+import com.google.protobuf.util.Timestamps;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.Snapshot;
@@ -16,7 +19,7 @@ import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
 class TableRepositoryTest {
 
   private final Clock clock = Clock.systemUTC();
-  
+
   @Test
   void putAndGetRoundTrip() {
     var ptr = new InMemoryPointerStore();
@@ -42,14 +45,14 @@ class TableRepositoryTest {
       .setNamespaceId(nsRid)
       .setRootUri("s3://upstream/tables/orders")
       .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
-      .setCreatedAtMs(clock.millis())
+      .setCreatedAtMs(Timestamps.fromMillis(clock.millis()))
       .setCurrentSnapshotId(42)
       .build();
     tableRepo.put(td);
 
     var snap = Snapshot.newBuilder()
       .setSnapshotId(42)
-      .setCreatedAtMs(clock.millis())
+      .setCreatedAtMs(Timestamps.fromMillis(clock.millis()))
       .build();
     snapshotRepo.put(tableRid, snap);
 

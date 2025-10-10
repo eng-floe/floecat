@@ -22,10 +22,12 @@ import ai.floedb.metacat.catalog.rpc.ListTablesRequest;
 import ai.floedb.metacat.catalog.rpc.ListTablesResponse;
 import ai.floedb.metacat.catalog.rpc.ResourceAccess;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
+import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
+import ai.floedb.metacat.service.repo.impl.NameIndexRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
@@ -36,6 +38,7 @@ import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 public class ResourceAccessImpl implements ResourceAccess {
   @Inject CatalogRepository repo;
   @Inject NamespaceRepository nsRepo;
+  @Inject NameIndexRepository nameIndexRepo;
   @Inject TableRepository tableRepo;
   @Inject SnapshotRepository snapshotRepo;
   @Inject PrincipalProvider principal;
@@ -77,17 +80,34 @@ public class ResourceAccessImpl implements ResourceAccess {
     );
   }
 
-  @Override
-  public Uni<GetNamespaceResponse> getNamespace(GetNamespaceRequest req) {
-    var p = principal.get();
-    authz.require(p, "catalog.read");
-
-    return Uni.createFrom().item(() ->
-      nsRepo.get(req.getResourceId(), req.getCatalogId())
-        .map(n -> GetNamespaceResponse.newBuilder().setNamespace(n).build())
-        .orElseThrow(() -> GrpcErrors.notFound("namespace not found", null))
-  );
+  private ResourceId requireCatalogIdByName(String tenantId, String catalogName) {
+    return nameIndexRepo.getCatalogByName(tenantId, catalogName)
+      .map(NameRef::getResourceId)
+      .orElseThrow(() -> GrpcErrors.notFound("catalog not found: " + catalogName, null));
   }
+
+@Override
+public Uni<GetNamespaceResponse> getNamespace(GetNamespaceRequest req) {
+  var p = principal.get();
+  authz.require(p, "catalog.read");
+
+  return Uni.createFrom().item(req)
+    .map(r -> {
+      var tenantId = p.getTenantId();
+      var nsRid = r.getResourceId();
+      var nsRef = nameIndexRepo.getNamespaceById(tenantId, nsRid.getId())
+        .orElseThrow(() -> GrpcErrors.notFound(
+            "namespace index missing (by-id): " + nsRid.getId(), null));
+
+      var catalogRid = requireCatalogIdByName(tenantId, nsRef.getCatalog());
+
+      var ns = nsRepo.get(nsRid, catalogRid)
+        .orElseThrow(() -> GrpcErrors.notFound(
+            "namespace not found: " + nsRid.getId(), null));
+
+      return GetNamespaceResponse.newBuilder().setNamespace(ns).build();
+    });
+}
 
   @Override
   public Uni<ListNamespacesResponse> listNamespaces(ListNamespacesRequest req) {
@@ -115,18 +135,26 @@ public class ResourceAccessImpl implements ResourceAccess {
 
   @Override
   public Uni<GetTableDescriptorResponse> getTableDescriptor(GetTableDescriptorRequest req) {
-    var p = principal.get(); authz.require(p, "catalog.read");
-    return Uni.createFrom().item(() ->
-        tableRepo.get(
-            ResourceId.newBuilder().setTenantId(p.getTenantId()).build(),
-            req.getCatalogId(), req.getNamespaceId(), req.getResourceId())
-          .map(t -> GetTableDescriptorResponse.newBuilder().setTable(t).build())
-          .orElseThrow(() -> GrpcErrors.notFound("table not found", null)));
+    var p = principal.get();
+    authz.require(p, "catalog.read");
+
+    return Uni.createFrom().item(req)
+      .map(r -> {
+        var table = tableRepo
+          .getById(r.getResourceId())
+          .orElseThrow(() -> GrpcErrors.notFound("table not found", null));
+
+        return GetTableDescriptorResponse.newBuilder()
+          .setTable(table)
+          .build();
+      });
   }
 
   @Override
   public Uni<ListTablesResponse> listTables(ListTablesRequest req) {
-    var p = principal.get(); authz.require(p, "table.read");
+    var p = principal.get(); 
+    authz.require(p, "table.read");
+
     int limit = req.hasPage() && req.getPage().getPageSize() > 0 ? req.getPage().getPageSize() : 50;
     String token = req.hasPage() ? req.getPage().getPageToken() : "";
     StringBuilder next = new StringBuilder();

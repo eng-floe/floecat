@@ -31,7 +31,6 @@ class NamespaceIT {
 
     var any = list.getNamespaces(0);
     var got = access.getNamespace(GetNamespaceRequest.newBuilder()
-      .setCatalogId(r.getResourceId())
       .setResourceId(any.getResourceId())
       .build());
 

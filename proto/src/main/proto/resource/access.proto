@@ -23,8 +23,7 @@ message ListCatalogsResponse {
 }
 
 message GetNamespaceRequest { 
-  ai.floedb.metacat.common.ResourceId catalog_id = 1; 
-  ai.floedb.metacat.common.ResourceId resource_id = 2; 
+  ai.floedb.metacat.common.ResourceId resource_id = 1; 
 }
 message GetNamespaceResponse { 
   Namespace namespace = 1; 
@@ -40,10 +39,8 @@ message ListNamespacesResponse {
 }
 
 message GetTableDescriptorRequest {
-  ai.floedb.metacat.common.ResourceId catalog_id = 1;
-  ai.floedb.metacat.common.ResourceId namespace_id = 2;
-  ai.floedb.metacat.common.ResourceId resource_id = 3;
-  ai.floedb.metacat.common.SnapshotRef snapshot = 4;
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  optional ai.floedb.metacat.common.SnapshotRef snapshot = 2;
 }
 message GetTableDescriptorResponse { 
   TableDescriptor table = 1; 
@@ -60,10 +57,8 @@ message ListTablesResponse {
 }
 
 message ListSnapshotsRequest {
-  ai.floedb.metacat.common.ResourceId catalog_id = 1;
-  ai.floedb.metacat.common.ResourceId namespace_id = 2;
-  ai.floedb.metacat.common.ResourceId table_id = 3;
-  ai.floedb.metacat.common.PageRequest page = 4;
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  ai.floedb.metacat.common.PageRequest page = 2;
 }
 message ListSnapshotsResponse {
   repeated Snapshot snapshots = 1;

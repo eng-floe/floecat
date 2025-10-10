@@ -3,6 +3,8 @@ package ai.floedb.metacat.service.repo.impl;
 import java.util.List;
 import java.util.Optional;
 
+import com.google.protobuf.util.Timestamps;
+
 import jakarta.enterprise.context.ApplicationScoped;
 
 import ai.floedb.metacat.catalog.rpc.Snapshot;
@@ -57,6 +59,6 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     var snapshots = listByPrefix(prefix, Integer.MAX_VALUE, "", ignore);
     if (snapshots.isEmpty()) return Optional.empty();
 
-    return snapshots.stream().max((a, b) -> Long.compare(a.getCreatedAtMs(), b.getCreatedAtMs()));
+    return snapshots.stream().max((a, b) -> Timestamps.compare(a.getCreatedAtMs(), b.getCreatedAtMs()));
   }
 }
