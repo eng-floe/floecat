@@ -39,6 +39,45 @@ You can also run per-module tests:
 make unit-test
 make integration-test
 ```
+## Examples
+
+The Metacat APIs can be accessed with a gRPC client, for example, `grpcurl`. To do so, start the server with `make run`,
+and then issue the following requests:
+
+### ListCatalogs
+
+```bash
+grpcurl -plaintext -d '{}' localhost:9100 ai.floedb.metacat.catalog.ResourceAccess/ListCatalogs
+```
+
+### ListNamespaces
+
+```bash
+grpcurl -plaintext \
+  -d '{
+    "catalog_id": {
+      "tenant_id": "t-0001",
+      "id": "263b28bc-00e6-35bd-9f1a-8f9c13601cb3",
+      "kind": "RK_CATALOG"
+    }
+  }' \
+  localhost:9100 ai.floedb.metacat.catalog.ResourceAccess/ListNamespaces
+```
+### ListTables
+
+```bash
+grpcurl -plaintext \
+  -d '{
+    "namespace_id": {
+      "tenant_id": "t-0001",
+      "id": "4f8ed10e-897d-3113-bae0-076ebcc70871",
+      "kind": "RK_NAMESPACE"
+    }
+  }' \
+  localhost:9100 ai.floedb.metacat.catalog.ResourceAccess/ListTables
+```
+
+This early version of Metacat is seeded with test catalogs, namespaces and tables for testing.
 
 ## Project Structure
 
