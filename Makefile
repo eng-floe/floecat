@@ -74,10 +74,11 @@ clean-dev:
 .PHONY: run
 run:
 	@echo "==> [DEV] quarkus:dev (profile=$(QUARKUS_PROFILE))"
-	cd service && \
-	$(MVN) -Dquarkus.profile=$(QUARKUS_PROFILE) \
-	       $(QUARKUS_DEV_ARGS) \
-	       quarkus:dev
+	$(MVN) -f ./pom.xml \
+	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+	  $(QUARKUS_DEV_ARGS) \
+		-pl service -am \
+	  io.quarkus:quarkus-maven-plugin:${quarkus.platform.version}:dev
 
 # ---------- Dev (background) ----------
 # Start/stop/logs use PID and LOG files for the 'service' module.
@@ -88,7 +89,7 @@ LOG_FILE := $(LOG_DIR)/$(SERVICE_NAME).log
 define _bg_and_pid
 ( \
   set -m; \
-  nohup bash -lc 'cd service && $(MVN) -Dquarkus.profile=$(QUARKUS_PROFILE) $(QUARKUS_DEV_ARGS) quarkus:dev' \
+  nohup bash -lc '$(MVN) -f ./pom.xml -Dquarkus.profile=$(QUARKUS_PROFILE) $(QUARKUS_DEV_ARGS) -pl service -am io.quarkus:quarkus-maven-plugin:${quarkus.platform.version}:dev' \
     >> "$(LOG_FILE)" 2>&1 & \
   echo $$! > "$(PID_FILE)"; \
 )
