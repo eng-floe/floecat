@@ -62,6 +62,7 @@ grpcurl -plaintext \
     }
   }' \
   localhost:9100 ai.floedb.metacat.catalog.ResourceAccess/ListNamespaces
+
 ```
 ### ListTables
 
