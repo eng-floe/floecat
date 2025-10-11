@@ -3,8 +3,6 @@ package ai.floedb.metacat.service.error.impl;
 import java.util.Locale;
 import java.util.Optional;
 
-import javax.management.relation.InvalidRoleInfoException;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import io.grpc.*;
 import io.quarkus.grpc.GlobalInterceptor;
@@ -12,6 +10,7 @@ import com.google.protobuf.Any;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.rpc.Status;
 import io.grpc.protobuf.StatusProto;
+
 import ai.floedb.metacat.common.rpc.Error;
 import ai.floedb.metacat.common.rpc.PrincipalContext;
 

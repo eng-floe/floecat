@@ -1,5 +1,7 @@
 package ai.floedb.metacat.service.error.impl;
 
+import java.util.Map;
+
 import static java.util.Objects.requireNonNullElse;
 
 import com.google.protobuf.Any;
@@ -9,8 +11,6 @@ import io.grpc.protobuf.StatusProto;
 
 import ai.floedb.metacat.common.rpc.Error;
 import ai.floedb.metacat.common.rpc.ErrorCode;
-
-import java.util.Map;
 
 public final class GrpcErrors {
   private GrpcErrors() {}

@@ -52,12 +52,12 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
   
   public Optional<NameRef> getCatalogByName(String tenantId, String displayName) {
     return get(Keys.idxCatByName(tenantId, displayName))
-        .flatMap(bytes -> safeParseNameRef(bytes, "catalog", displayName));
+      .flatMap(bytes -> safeParseNameRef(bytes, "catalog", displayName));
   }
 
   public Optional<NameRef> getCatalogById(String tenantId, String id) {
     return get(Keys.idxCatById(tenantId, id))
-        .flatMap(bytes -> safeParseNameRef(bytes, "catalog id", id));
+      .flatMap(bytes -> safeParseNameRef(bytes, "catalog id", id));
   }
 
   public boolean deleteCatalogByName(String tenantId, String displayName) {

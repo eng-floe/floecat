@@ -4,7 +4,6 @@ import java.time.Clock;
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
-
 import com.google.protobuf.util.Timestamps;
 
 import static org.junit.jupiter.api.Assertions.*;

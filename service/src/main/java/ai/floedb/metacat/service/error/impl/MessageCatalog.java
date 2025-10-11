@@ -1,6 +1,5 @@
 package ai.floedb.metacat.service.error.impl;
 
-import java.text.MessageFormat;
 import java.util.Locale;
 import java.util.Map;
 import java.util.ResourceBundle;

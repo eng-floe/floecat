@@ -1,15 +1,16 @@
 package ai.floedb.metacat.service.repo.impl;
 
+import java.util.List;
+import java.util.Optional;
+
+import jakarta.enterprise.context.ApplicationScoped;
+
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
-import jakarta.enterprise.context.ApplicationScoped;
-
-import java.util.List;
-import java.util.Optional;
 
 @ApplicationScoped
 public class CatalogRepository extends BaseRepository<Catalog> {

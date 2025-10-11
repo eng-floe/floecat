@@ -4,10 +4,11 @@ import java.time.Clock;
 import java.util.Map;
 import java.util.UUID;
 
-import com.google.protobuf.Any;
 import com.google.protobuf.util.Timestamps;
-
+import io.quarkus.grpc.GrpcService;
+import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.CreateCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.CreateCatalogResponse;
@@ -49,10 +50,6 @@ import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
-import io.grpc.StatusRuntimeException;
-import io.grpc.protobuf.StatusProto;
-import io.quarkus.grpc.GrpcService;
-import io.smallrye.mutiny.Uni;
 
 @GrpcService
 public class ResourceMutationImpl implements ResourceMutation {

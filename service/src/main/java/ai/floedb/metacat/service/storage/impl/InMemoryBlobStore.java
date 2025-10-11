@@ -7,7 +7,6 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.google.protobuf.util.Timestamps;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import io.quarkus.arc.properties.IfBuildProperty;
 

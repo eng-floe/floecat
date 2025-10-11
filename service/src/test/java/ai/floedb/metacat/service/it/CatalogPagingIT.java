@@ -10,7 +10,6 @@ import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.*;
-
 import com.google.protobuf.util.Timestamps;
 
 import static org.junit.jupiter.api.Assertions.*;
