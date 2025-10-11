@@ -6,7 +6,7 @@ import java.util.Optional;
 import com.google.protobuf.util.Timestamps;
 
 import jakarta.enterprise.context.ApplicationScoped;
-
+import jakarta.inject.Inject;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
@@ -17,14 +17,11 @@ import ai.floedb.metacat.service.storage.PointerStore;
 @ApplicationScoped
 public class SnapshotRepository extends BaseRepository<Snapshot> {
 
-  public SnapshotRepository() {
-    super(Snapshot::parseFrom, Snapshot::toByteArray, "application/x-protobuf");
-  }
+  protected SnapshotRepository() { super(); }
 
+  @Inject
   public SnapshotRepository(PointerStore ptr, BlobStore blobs) {
-    this();
-    this.ptr = ptr;
-    this.blobs = blobs;
+    super(ptr, blobs, Snapshot::parseFrom, Snapshot::toByteArray, "application/x-protobuf");
   }
 
   public Optional<Snapshot> get(ResourceId tableId, long snapshotId) {

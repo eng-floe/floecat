@@ -3,19 +3,16 @@ package ai.floedb.metacat.service.it;
 import java.time.Clock;
 import java.util.List;
 
-import com.google.protobuf.Any;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import io.grpc.protobuf.StatusProto;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
-import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.ErrorCode;
-import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 
@@ -33,195 +30,70 @@ class ResourceMutationIT {
 
   private final Clock clock = Clock.systemUTC();
 
-  private static ai.floedb.metacat.common.rpc.Error unpackMcError(StatusRuntimeException ex) throws Exception {
-    var st = StatusProto.fromThrowable(ex);
-    if (st == null) return null;
-    for (Any any : st.getDetailsList()) {
-      if (any.is(ai.floedb.metacat.common.rpc.Error.class)) {
-        return any.unpack(ai.floedb.metacat.common.rpc.Error.class);
-      }
-    }
-    return null;
-  }
-
-  private static ResourceId rid(String tenantId, String id, ResourceKind kind) {
-    return ResourceId.newBuilder().setTenantId(tenantId).setId(id).setKind(kind).build();
-  }
-
   @Test
-  void fullMutationFlow_catalog_namespace_table_CRUD_and_requireEmpty() throws Exception {
-    var ref = NameRef.newBuilder().setCatalog("sales").build();
-    var seeded = directory.resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(ref).build());
-    var tenantId = seeded.getResourceId().getTenantId();
+  void fullMutationFlow_crud_rename_update_requireEmpty_and_errors() throws Exception {
+    String tenantId = TestSupport.seedTenantId(directory, "sales");
 
-    var catName = "it_mutation_cat_" + clock.millis();
-    var createCat = mutation.createCatalog(
-    CreateCatalogRequest.newBuilder()
-      .setSpec(CatalogSpec.newBuilder()
-        .setDisplayName(catName)
-        .setDescription("IT cat")
-        .build())
-      .build());
+    String catName = "it_mutation_cat_" + clock.millis();
+    Catalog cat = TestSupport.createCatalog(mutation, catName, "IT cat");
+    ResourceId catId = cat.getResourceId();
 
-    var seededTenant = seeded.getResourceId().getTenantId();
+    assertEquals(ResourceKind.RK_CATALOG, catId.getKind());
+    assertEquals(tenantId, catId.getTenantId());
+    assertTrue(catId.getId().matches("^[0-9a-fA-F-]{36}$"), "id must look like UUID");
 
-    var createdRid = createCat.getCatalog().getResourceId();
+    assertEquals(catId.getId(), TestSupport.resolveCatalogId(directory, catName).getId());
+    assertEquals(catName, access.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(catId).build())
+      .getCatalog().getDisplayName());
 
-    assertEquals(seededTenant, createdRid.getTenantId(), "Create must set tenant_id from PrincipalContext");
+    var nsPath = List.of("db_it","schema_it");
+    Namespace ns = TestSupport.createNamespace(mutation, catId, "it_schema", nsPath, "IT ns");
+    ResourceId nsId = ns.getResourceId();
+    assertEquals(nsId.getId(), TestSupport.resolveNamespaceId(directory, catName, nsPath).getId());
 
-    assertNotEquals(catName, createdRid.getId(), "ResourceId.id must be a UUID, not the display_name");
-    assertTrue(createdRid.getId().matches("^[0-9a-fA-F-]{36}$"), "ResourceId.id should look like a UUID");
+    String schema = """
+        {"type":"struct","fields":[{"name":"id","type":"long"}]}
+        """.trim();
+    TableDescriptor tbl = TestSupport.createTable(
+        mutation, catId, nsId, "orders_it", "s3://bucket/prefix/it", schema, "IT table");
+    ResourceId tblId = tbl.getResourceId();
+    assertEquals(tblId.getId(),
+      TestSupport.resolveTableId(directory, catName, nsPath, "orders_it").getId());
 
-    assertEquals(ResourceKind.RK_CATALOG, createdRid.getKind());
+    String schemaV2 = """
+        {"type":"struct","fields":[{"name":"id","type":"long"},{"name":"amount","type":"double"}]}
+        """.trim();
+    TableDescriptor upd = TestSupport.updateSchema(mutation, tblId, schemaV2);
+    assertEquals(schemaV2, upd.getSchemaJson());
 
-    assertEquals(catName, createCat.getCatalog().getDisplayName());
-    var catRid = createCat.getCatalog().getResourceId();
-    var catId = catRid.getId();
+    String newName = "orders_it_renamed";
+    TableDescriptor renamed = TestSupport.renameTable(mutation, tblId, newName);
+    assertEquals(newName, renamed.getDisplayName());
+    assertEquals(tblId.getId(),
+      TestSupport.resolveTableId(directory, catName, nsPath, newName).getId());
+    
+    StatusRuntimeException oldName404 = assertThrows(StatusRuntimeException.class, () ->
+      TestSupport.resolveTableId(directory, catName, nsPath, "orders_it"));
+    TestSupport.assertGrpcAndMc(oldName404, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, null);
 
-    ref = NameRef.newBuilder().setCatalog(catName).build();
-    var resolvedCat = directory.resolveCatalog(
-      ResolveCatalogRequest.newBuilder().setRef(ref).build());
-    assertEquals(catId, resolvedCat.getResourceId().getId());
-
-    var gotCat = access.getCatalog(GetCatalogRequest.newBuilder()
-      .setCatalogId(catRid)
-      .build());
-    assertEquals(catName, gotCat.getCatalog().getDisplayName());
-
-    var nsName = "it_schema";
-    var nsCreate = mutation.createNamespace(
-      CreateNamespaceRequest.newBuilder()
-        .setSpec(NamespaceSpec.newBuilder()
-          .setCatalogId(rid(tenantId, catId, ResourceKind.RK_CATALOG))
-          .setDisplayName(nsName)
-          .addAllPath(List.of("db_it", "schema_it"))
-          .setDescription("IT ns")
-          .build())
-        .build());
-
-    var nsId = nsCreate.getNamespace().getResourceId().getId();
-    assertEquals(nsName, nsCreate.getNamespace().getDisplayName());
-
-    ResolveNamespaceRequest req = ResolveNamespaceRequest.newBuilder()
-      .setRef(NameRef.newBuilder()
-        .setCatalog(catName)
-        .addAllPath(List.of("db_it", "schema_it"))
-        .build())
-      .build();
-
-    ResolveNamespaceResponse nsResolved = directory.resolveNamespace(req);
-
-    assertEquals(nsId, nsResolved.getResourceId().getId());
-
-    var tblName = "orders_it";
-    var tblCreate = mutation.createTable(
-      CreateTableRequest.newBuilder()
-        .setSpec(TableSpec.newBuilder()
-          .setCatalogId(rid(tenantId, catId, ResourceKind.RK_CATALOG))
-          .setNamespaceId(rid(tenantId, nsId, ResourceKind.RK_NAMESPACE))
-          .setDisplayName(tblName)
-          .setDescription("IT table")
-          .setRootUri("s3://bucket/prefix/it")
-          .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
-          .build())
-        .build());
-
-    var tbl = tblCreate.getTable();
-    var tblId = tbl.getResourceId().getId();
-    assertEquals(tblName, tbl.getDisplayName());
-
-    var tResolve = directory.resolveTable(
-      ResolveTableRequest.newBuilder()
-        .setRef(NameRef.newBuilder()
-          .setCatalog(catName)
-          .addAllPath(List.of("db_it", "schema_it"))
-          .setName(tblName)
-          .build())
-        .build());
-
-    assertEquals(tblId, tResolve.getResourceId().getId());
-
-    var gotTbl = access.getTableDescriptor(GetTableDescriptorRequest.newBuilder()
-      .setTableId(rid(tenantId, tblId, ResourceKind.RK_TABLE))
-      .build());
-    assertEquals(tblName, gotTbl.getTable().getDisplayName());
-
-    var updatedSchema = "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"},{\"name\":\"amount\",\"type\":\"double\"}]}";
-    var upd = mutation.updateTableSchema(
-      UpdateTableSchemaRequest.newBuilder()
-        .setTableId(rid(tenantId, tblId, ResourceKind.RK_TABLE))
-        .setSchemaJson(updatedSchema)
-        .build());
-    assertEquals(updatedSchema, upd.getTable().getSchemaJson());
-
-    var newTblName = "orders_it_renamed";
-    var rn = mutation.renameTable(
-      RenameTableRequest.newBuilder()
-        .setTableId(rid(tenantId, tblId, ResourceKind.RK_TABLE))
-        .setNewDisplayName(newTblName)
-        .build());
-    assertEquals(newTblName, rn.getTable().getDisplayName());
-
-    var tResolveNew = directory.resolveTable(
-      ResolveTableRequest.newBuilder()
-        .setRef(NameRef.newBuilder()
-            .setCatalog(catName)
-            .addAllPath(List.of("db_it", "schema_it"))
-            .setName(newTblName)
-            .build())
-        .build());
-    assertEquals(tblId, tResolveNew.getResourceId().getId());
-
-    StatusRuntimeException exOld = assertThrows(StatusRuntimeException.class, () ->
-      directory.resolveTable(
-        ResolveTableRequest.newBuilder()
-          .setRef(NameRef.newBuilder()
-            .setCatalog(catName)
-            .addAllPath(List.of("db_it", "schema_it"))
-            .setName(tblName)
-            .build())
-          .build()));
-    assertEquals(Status.Code.NOT_FOUND, exOld.getStatus().getCode());
-
-    StatusRuntimeException nsDelFail = assertThrows(StatusRuntimeException.class, () ->
+    StatusRuntimeException nsDelBlocked = assertThrows(StatusRuntimeException.class, () ->
       mutation.deleteNamespace(DeleteNamespaceRequest.newBuilder()
-        .setNamespaceId(rid(tenantId, nsId, ResourceKind.RK_NAMESPACE))
+        .setNamespaceId(nsId)
         .setRequireEmpty(true)
         .build()));
-    assertEquals(Status.Code.ABORTED, nsDelFail.getStatus().getCode());
-    var mcErr = unpackMcError(nsDelFail);
-    assertNotNull(mcErr);
-    assertEquals(ErrorCode.MC_CONFLICT, mcErr.getCode());
-    assertTrue(mcErr.getMessage().contains("Namespace contains tables"));
+    TestSupport.assertGrpcAndMc(nsDelBlocked, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Namespace contains tables");
 
-    mutation.deleteTable(DeleteTableRequest.newBuilder()
-      .setTableId(rid(tenantId, tblId, ResourceKind.RK_TABLE))
-      .build());
+    TestSupport.deleteTable(mutation, tblId);
 
     StatusRuntimeException tblGone = assertThrows(StatusRuntimeException.class, () ->
-      directory.resolveTable(
-        ResolveTableRequest.newBuilder()
-          .setRef(NameRef.newBuilder()
-            .setCatalog(catId)
-            .addAllPath(List.of("db_it","schema_it"))
-            .setName(newTblName)
-            .build())
-          .build()));
-    assertEquals(Status.Code.NOT_FOUND, tblGone.getStatus().getCode());
+      TestSupport.resolveTableId(directory, catName, nsPath, newName));
+    TestSupport.assertGrpcAndMc(tblGone, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, null);
 
-    mutation.deleteNamespace(DeleteNamespaceRequest.newBuilder()
-      .setNamespaceId(rid(tenantId, nsId, ResourceKind.RK_NAMESPACE))
-      .setRequireEmpty(true)
-      .build());
+    TestSupport.deleteNamespace(mutation, nsId, true);
+    TestSupport.deleteCatalog(mutation, catId, true);
 
-    mutation.deleteCatalog(DeleteCatalogRequest.newBuilder()
-      .setCatalogId(rid(tenantId, catId, ResourceKind.RK_CATALOG))
-      .setRequireEmpty(true)
-      .build());
-
-    var catNameRef = NameRef.newBuilder().setCatalog(catName).build();
     StatusRuntimeException catGone = assertThrows(StatusRuntimeException.class, () ->
-      directory.resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(catNameRef).build()));
-    assertEquals(Status.Code.NOT_FOUND, catGone.getStatus().getCode());
+      TestSupport.resolveCatalogId(directory, catName));
+    TestSupport.assertGrpcAndMc(catGone, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Catalog not found");
   }
 }

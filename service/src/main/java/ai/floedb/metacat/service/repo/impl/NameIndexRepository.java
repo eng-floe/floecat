@@ -2,11 +2,12 @@ package ai.floedb.metacat.service.repo.impl;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
 import jakarta.enterprise.context.ApplicationScoped;
-
+import jakarta.inject.Inject;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
@@ -17,14 +18,11 @@ import ai.floedb.metacat.service.storage.PointerStore;
 @ApplicationScoped
 public class NameIndexRepository extends BaseRepository<byte[]> {
 
-  public NameIndexRepository() {
-    super(b -> b, b -> b, "application/x-protobuf");
-  }
+  protected NameIndexRepository() { super(); }
 
+  @Inject
   public NameIndexRepository(PointerStore ptr, BlobStore blobs) {
-    this();
-    this.ptr = ptr;
-    this.blobs = blobs;
+    super(ptr, blobs, b -> b, b -> b, "application/x-protobuf");
   }
 
   public void putCatalogIndex(String tenantId, NameRef catalogRef, ResourceId catId) {
@@ -33,8 +31,8 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
     String kByName = Keys.idxCatByName(tenantId, catalogRef.getCatalog());
     String kById = Keys.idxCatById(tenantId, catId.getId());
 
-    put(kByName, BaseRepository.memUriFor(kByName, "entry.pb"), bytes);
-    put(kById, BaseRepository.memUriFor(kById, "entry.pb"), bytes);
+    put(kByName, Keys.memUriFor(kByName, "entry.pb"), bytes);
+    put(kById, Keys.memUriFor(kById, "entry.pb"), bytes);
   }
 
   private Optional<NameRef> safeParseNameRef(byte[] bytes, String what, String idOrName) {
@@ -90,8 +88,8 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
     String kByPath = Keys.idxNsByPath(tenantId, catId.getId(), path);
     String kById = Keys.idxNsById(tenantId, ref.getResourceId().getId());
 
-    put(kByPath, BaseRepository.memUriFor(kByPath, "entry.pb"), bytes);
-    put(kById, BaseRepository.memUriFor(kById, "entry.pb"), bytes);
+    put(kByPath, Keys.memUriFor(kByPath, "entry.pb"), bytes);
+    put(kById, Keys.memUriFor(kById, "entry.pb"), bytes);
   }
 
   public Optional<NameRef> getNamespaceByPath(String tenantId, String catalogId, List<String> path) {
@@ -145,10 +143,10 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
     String fq = fqKey(name);
 
     String kByName = Keys.idxTblByName(tenantId, fq);
-    put(kByName, BaseRepository.memUriFor(kByName, "entry.pb"), bytes);
+    put(kByName, Keys.memUriFor(kByName, "entry.pb"), bytes);
 
     String kById = Keys.idxTblById(tenantId, tableId.getId());
-    put(kById, BaseRepository.memUriFor(kById, "entry.pb"), bytes);
+    put(kById, Keys.memUriFor(kById, "entry.pb"), bytes);
   }
 
   public Optional<NameRef> getTableByName(String tenantId, NameRef name) {
@@ -177,18 +175,21 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
 
   public List<NameRef> listTablesByPrefix(String tenantId, NameRef prefix, int limit, String token, StringBuilder nextOut) {
     String pfx = Keys.idxTblByName(tenantId, fqPrefix(prefix));
-    List<String> keys = ptr.listByPrefix(pfx, Math.max(1, limit), token, nextOut);
+    List<PointerStore.Row> rows = ptr.listPointersByPrefix(pfx, Math.max(1, limit), token, nextOut);
 
-    List<NameRef> out = new ArrayList<>(keys.size());
-    for (String k : keys) {
-      get(k).ifPresent(bytes -> {
-        try { 
-          out.add(NameRef.parseFrom(bytes)); 
-        }
-        catch (Exception e) { 
-          throw new RuntimeException(e); 
-        }
-      });
+    List<String> uris = new ArrayList<>(rows.size());
+    for (PointerStore.Row r : rows) uris.add(r.blobUri());
+    Map<String, byte[]> blobMap = blobs.getBatch(uris);
+
+    List<NameRef> out = new ArrayList<>(rows.size());
+    for (PointerStore.Row r : rows) {
+      byte[] bytes = blobMap.get(r.blobUri());
+      if (bytes == null) continue;
+      try {
+        out.add(NameRef.parseFrom(bytes));
+      } catch (Exception e) {
+        throw new RuntimeException("Failed to parse NameRef for uri=" + r.blobUri() + ", key=" + r.key(), e);
+      }
     }
     return out;
   }

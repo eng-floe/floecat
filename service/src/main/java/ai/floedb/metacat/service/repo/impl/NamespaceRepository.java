@@ -16,17 +16,14 @@ import ai.floedb.metacat.service.storage.PointerStore;
 
 @ApplicationScoped
 public class NamespaceRepository extends BaseRepository<Namespace> {
-  @Inject NameIndexRepository nameIndex;
+  private NameIndexRepository nameIndex;
 
-  public NamespaceRepository() {
-    super(Namespace::parseFrom, Namespace::toByteArray, "application/x-protobuf");
-  }
+  protected NamespaceRepository() { super(); }
 
+  @Inject
   public NamespaceRepository(NameIndexRepository nameIndex, PointerStore ptr, BlobStore blobs) {
-    this();
+    super(ptr, blobs, Namespace::parseFrom, Namespace::toByteArray, "application/x-protobuf");
     this.nameIndex = nameIndex;
-    this.ptr = ptr;
-    this.blobs = blobs;
   }
 
   public Optional<Namespace> get(ResourceId nsId) {
@@ -72,5 +69,4 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
         .map(NameRef::getResourceId);
     return catIdOpt;
   }
-
 }

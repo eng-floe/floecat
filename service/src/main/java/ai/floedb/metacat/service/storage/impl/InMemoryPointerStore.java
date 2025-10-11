@@ -1,10 +1,10 @@
 package ai.floedb.metacat.service.storage.impl;
 
-import java.util.Optional;
-import java.util.List;
-import java.util.Map;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 import jakarta.enterprise.context.ApplicationScoped;
@@ -18,11 +18,13 @@ import ai.floedb.metacat.service.storage.PointerStore;
 public class InMemoryPointerStore implements PointerStore {
   private final Map<String, Pointer> map = new ConcurrentHashMap<>();
 
-  @Override public Optional<Pointer> get(String key) { 
-    return Optional.ofNullable(map.get(key)); 
+  @Override
+  public Optional<Pointer> get(String key) {
+    return Optional.ofNullable(map.get(key));
   }
 
-  @Override public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
+  @Override
+  public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
     final boolean[] updated = { false };
     map.compute(key, (k, cur) -> {
       if (cur == null) {
@@ -41,28 +43,52 @@ public class InMemoryPointerStore implements PointerStore {
     return updated[0];
   }
 
-  @Override public List<String> listByPrefix(String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+  @Override
+  public List<Row> listPointersByPrefix(String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+    final String pfx = prefix == null ? "" : prefix;
+    final int lim = Math.max(1, limit);
+
     List<String> keys = new ArrayList<>();
-    for (String k : map.keySet()) if (k.startsWith(prefix)) keys.add(k);
+    for (String k : map.keySet()) {
+      if (k.startsWith(pfx)) keys.add(k);
+    }
     Collections.sort(keys);
+
     int start = 0;
     if (pageToken != null && !pageToken.isEmpty()) {
       int idx = Collections.binarySearch(keys, pageToken);
-      start = (idx >= 0) ? idx : -idx - 1;
+      start = (idx >= 0) ? idx + 1 : (-idx - 1);
     }
-    int end = Math.min(keys.size(), start + limit);
-    List<String> page = keys.subList(start, end);
-    if (end < keys.size()) {
-      nextTokenOut.append(keys.get(end));
+    if (start >= keys.size()) {
+      if (nextTokenOut != null) nextTokenOut.setLength(0);
+      return Collections.emptyList();
     }
-    return new ArrayList<>(page);
+
+    int end = Math.min(keys.size(), start + lim);
+    List<Row> page = new ArrayList<>(end - start);
+    for (int i = start; i < end; i++) {
+      String key = keys.get(i);
+      Pointer p = map.get(key);
+      if (p != null) page.add(new Row(key, p.getBlobUri(), p.getVersion()));
+    }
+
+    if (nextTokenOut != null) {
+      nextTokenOut.setLength(0);
+      if (end < keys.size()) nextTokenOut.append(keys.get(end - 1));
+    }
+    return page;
   }
 
-  @Override public boolean delete(String key) {
-    if (!map.containsKey(key)) {
-      return false;
-    }
-    map.remove(key);
-    return true;
+  @Override
+  public int countByPrefix(String prefix) {
+    final String pfx = prefix == null ? "" : prefix;
+    int n = 0;
+    for (String k : map.keySet()) if (k.startsWith(pfx)) n++;
+    return n;
+  }
+
+  @Override
+  public boolean delete(String key) {
+    return map.remove(key) != null;
   }
 }

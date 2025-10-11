@@ -72,9 +72,9 @@ class CatalogRepositoryTest {
     assertEquals(1, catalogs.size());
 
     var catsPrefix = Keys.catPtr(tenant, "");
-    var catKeys = ptr.listByPrefix(catsPrefix, 100, "", new StringBuilder());
+    var catKeys = ptr.listPointersByPrefix(catsPrefix, 100, "", new StringBuilder());
     assertEquals(1, catKeys.size());
-    assertTrue(catKeys.get(0).startsWith(catsPrefix));
+    assertTrue(catKeys.get(0).key().startsWith(catsPrefix));
 
     var nsNext = new StringBuilder();
     var nss = namespaceRepo.list(catRid, 10, "", nsNext);

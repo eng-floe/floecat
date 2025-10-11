@@ -4,7 +4,7 @@ import java.util.List;
 import java.util.Optional;
 
 import jakarta.enterprise.context.ApplicationScoped;
-
+import jakarta.inject.Inject;
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
@@ -15,14 +15,11 @@ import ai.floedb.metacat.service.storage.PointerStore;
 @ApplicationScoped
 public class CatalogRepository extends BaseRepository<Catalog> {
 
-  public CatalogRepository() {
-    super(Catalog::parseFrom, Catalog::toByteArray, "application/x-protobuf");
-  }
+  protected CatalogRepository() { super(); }
 
+  @Inject
   public CatalogRepository(PointerStore ptr, BlobStore blobs) {
-    this();
-    this.ptr = ptr;
-    this.blobs = blobs;
+    super(ptr, blobs, Catalog::parseFrom, Catalog::toByteArray, "application/x-protobuf");
   }
 
   public Optional<Catalog> get(ResourceId rid) {

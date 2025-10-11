@@ -18,16 +18,12 @@ import ai.floedb.metacat.service.storage.PointerStore;
 public class TableRepository extends BaseRepository<TableDescriptor> {
   private NameIndexRepository nameIndex;
 
-  TableRepository() {
-    super(TableDescriptor::parseFrom, TableDescriptor::toByteArray, "application/x-protobuf");
-  }
+  protected TableRepository() { super(); }
 
   @Inject
-  public TableRepository(NameIndexRepository nameIndex, PointerStore ptr, BlobStore blobs) { 
-    this();    
+  public TableRepository(NameIndexRepository nameIndex, PointerStore ptr, BlobStore blobs) {
+    super(ptr, blobs, TableDescriptor::parseFrom, TableDescriptor::toByteArray, "application/x-protobuf");
     this.nameIndex = nameIndex;
-    this.ptr = ptr; 
-    this.blobs = blobs; 
   }
 
   public Optional<TableDescriptor> get(ResourceId tableId) {
@@ -54,7 +50,9 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
     var tbl = rid.getId();
     var uri = Keys.tblBlob(tid, tbl);
 
+    // write canonical first
     put(Keys.tblCanonicalPtr(tid, tbl), uri, t);
+    // then namespace index pointer to same blob
     put(Keys.tblIndexPtr(tid, cat.getId(), ns.getId(), tbl), uri, t);
   }
 

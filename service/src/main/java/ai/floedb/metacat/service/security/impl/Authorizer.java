@@ -17,7 +17,7 @@ public class Authorizer {
   public void require(PrincipalContext p, List<String> permissions) {
     for (String permission : permissions) {
       if (p.getPermissionsList().contains(permission)) {
-          return;
+        return;
       }
     }
     throw Status.PERMISSION_DENIED.withDescription("missing permissions: " + permissions).asRuntimeException();
