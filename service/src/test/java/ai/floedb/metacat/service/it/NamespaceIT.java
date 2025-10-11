@@ -33,7 +33,7 @@ class NamespaceIT {
 
     var any = list.getNamespaces(0);
     var got = access.getNamespace(GetNamespaceRequest.newBuilder()
-      .setResourceId(any.getResourceId())
+      .setNamespaceId(any.getResourceId())
       .build());
 
     assertEquals(any.getResourceId().getId(), got.getNamespace().getResourceId().getId());

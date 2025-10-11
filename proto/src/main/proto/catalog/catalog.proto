@@ -14,7 +14,7 @@ message Catalog {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
   string description = 3;
-  google.protobuf.Timestamp created_at_ms = 4;
+  google.protobuf.Timestamp created_at = 4;
 }
 
 message ResolveCatalogRequest { 
@@ -37,7 +37,7 @@ message Namespace {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
   string description = 3;
-  google.protobuf.Timestamp created_at_ms = 4;
+  google.protobuf.Timestamp created_at = 4;
 }
 
 message ResolveNamespaceRequest { 
@@ -64,13 +64,13 @@ message ResolveTableResponse {
 
 message ResolveFQTablesRequest {
   oneof selector {
-    ResolveList list = 1;
+    NameList list = 1;
     ai.floedb.metacat.common.NameRef prefix = 2;
   }
   ai.floedb.metacat.common.PageRequest page = 10;
 }
 
-message ResolveList { 
+message NameList { 
   repeated ai.floedb.metacat.common.NameRef names = 1; 
 }
 
@@ -97,14 +97,17 @@ message TableDescriptor {
   ai.floedb.metacat.common.ResourceId catalog_id = 4;
   ai.floedb.metacat.common.ResourceId namespace_id = 5;
   string root_uri = 6;
-  google.protobuf.Timestamp created_at_ms = 7;
+  google.protobuf.Timestamp created_at = 7;
   string schema_json = 8;
   int64 current_snapshot_id = 9;
+  repeated string partition_keys = 10;
+  string format = 11;
+  map<string,string> properties = 12;
 }
 
 message Snapshot {
   int64 snapshot_id = 1;
-  google.protobuf.Timestamp created_at_ms = 2;
+  google.protobuf.Timestamp created_at = 2;
   ai.floedb.metacat.common.ResourceId table_id = 3;
   int64 parent_snapshot_id = 4; 
   string metadata_json = 5;

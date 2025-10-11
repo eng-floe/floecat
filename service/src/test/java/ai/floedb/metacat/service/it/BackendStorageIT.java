@@ -177,20 +177,20 @@ class BackendStorageIT {
 
     var nsFail = assertThrows(StatusRuntimeException.class, () ->
       mutation.deleteNamespace(DeleteNamespaceRequest.newBuilder()
-        .setResourceId(nsRid)
+        .setNamespaceId(nsRid)
         .setRequireEmpty(true)
         .build()));
     var mc = unpackMcError(nsFail);
     assertNotNull(mc);
-    assertTrue(mc.getMessage().toLowerCase().contains("not empty"));
+    assertTrue(mc.getMessage().contains("Namespace contains tables"));
 
     mutation.deleteTable(DeleteTableRequest.newBuilder().setTableId(t2.getTable().getResourceId()).build());
 
-    mutation.deleteNamespace(DeleteNamespaceRequest.newBuilder().setResourceId(nsRid).setRequireEmpty(true).build());
+    mutation.deleteNamespace(DeleteNamespaceRequest.newBuilder().setNamespaceId(nsRid).setRequireEmpty(true).build());
     assertTrue(ptr.get(nsPtrKey).isEmpty(), "namespace pointer should be deleted");
     assertTrue(blobs.head(nsBlobUri).isEmpty(), "namespace blob should be deleted");
 
-    mutation.deleteCatalog(DeleteCatalogRequest.newBuilder().setResourceId(catRid).setRequireEmpty(true).build());
+    mutation.deleteCatalog(DeleteCatalogRequest.newBuilder().setCatalogId(catRid).setRequireEmpty(true).build());
     assertTrue(ptr.get(catPtrKey).isEmpty(), "catalog pointer should be deleted");
     assertTrue(blobs.head(catBlobUri).isEmpty(), "catalog blob should be deleted");
   }

@@ -42,17 +42,15 @@ public class SeedRunner {
 
     var salesId = seedCatalog(tenant, "sales", "Sales catalog", now);
     var financeId = seedCatalog(tenant, "finance", "Finance catalog", now);
-
     var salesRef = NameRef.newBuilder()
-        .setCatalog("sales")
-        .setResourceId(salesId)            // ← add this
-        .build();
+      .setCatalog("sales")
+      .setResourceId(salesId)
+      .build();
     nameIndex.putCatalogIndex(tenant, salesRef, salesId);
-
     var financeRef = NameRef.newBuilder()
-        .setCatalog("finance")
-        .setResourceId(financeId)          // ← add this
-        .build();
+      .setCatalog("finance")
+      .setResourceId(financeId) 
+      .build();
     nameIndex.putCatalogIndex(tenant, financeRef, financeId);
 
     var salesCoreNsId = seedNamespace(tenant, salesId, List.of("core"), "core", now);
@@ -106,7 +104,7 @@ public class SeedRunner {
     String id = uuidFor(tenant + "/catalog:" + displayName);
     var rid = ResourceId.newBuilder().setTenantId(tenant).setId(id).setKind(ResourceKind.RK_CATALOG).build();
     var cat = Catalog.newBuilder()
-      .setResourceId(rid).setDisplayName(displayName).setDescription(description).setCreatedAtMs(Timestamps.fromMillis(now)).build();
+      .setResourceId(rid).setDisplayName(displayName).setDescription(description).setCreatedAt(Timestamps.fromMillis(now)).build();
     catalogs.put(cat);
     return rid;
   }
@@ -134,7 +132,7 @@ public class SeedRunner {
       .setResourceId(nsRid)
       .setDisplayName(display)
       .setDescription(display + " namespace")
-      .setCreatedAtMs(Timestamps.fromMillis(now))
+      .setCreatedAt(Timestamps.fromMillis(now))
       .build();
 
     namespaces.put(ns, catalogId);
@@ -170,7 +168,7 @@ public class SeedRunner {
       .setNamespaceId(nsRid)
       .setRootUri(rootUri)
       .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
-      .setCreatedAtMs(Timestamps.fromMillis(now))
+      .setCreatedAt(Timestamps.fromMillis(now))
       .setCurrentSnapshotId(snapshotId)
       .build();
 
@@ -183,7 +181,7 @@ public class SeedRunner {
     String key = "/tenants/" + tenant + "/tables/" + tableId.getId() + "/snapshots/" + snapshotId;
     String uri = "mem://tenants/" + tenant + "/tables/" + tableId.getId() + "/snapshots/" + snapshotId + ".pb";
 
-    var snap = Snapshot.newBuilder().setSnapshotId(snapshotId).setCreatedAtMs(Timestamps.fromMillis(createdAtMs)).build();
+    var snap = Snapshot.newBuilder().setSnapshotId(snapshotId).setCreatedAt(Timestamps.fromMillis(createdAtMs)).build();
     blobs.put(uri, snap.toByteArray(), "application/x-protobuf");
 
     for (int i = 0; i < 10; i++) {

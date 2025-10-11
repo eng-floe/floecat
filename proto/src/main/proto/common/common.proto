@@ -41,7 +41,7 @@ enum SpecialSnapshot {
 message SnapshotRef {
   oneof which {
     int64 snapshot_id = 1;
-    google.protobuf.Timestamp as_of_ms = 2;
+    google.protobuf.Timestamp as_of = 2;
     SpecialSnapshot special = 3;
   }
 }
@@ -52,14 +52,14 @@ message Pointer {
   string key = 1;
   string blob_uri = 2;
   int64 version = 3;
-  google.protobuf.Timestamp expires_at_ms = 4;
+  google.protobuf.Timestamp expires_at = 4;
 }
 
 message BlobHeader {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string schema_version = 2;
   string etag = 3;
-  google.protobuf.Timestamp created_at_ms = 4;
+  google.protobuf.Timestamp created_at = 4;
   repeated Tag tags = 5;
 }
 
@@ -80,9 +80,10 @@ message PrincipalContext {
   repeated string scopes = 7;
   string plan_id = 8;
   string correlation_id = 9;
-  google.protobuf.Timestamp issued_at_ms = 10;
-  google.protobuf.Timestamp expires_at_ms = 11;
-  bytes signature = 12;
+  string locale = 10;
+  google.protobuf.Timestamp issued_at = 11;
+  google.protobuf.Timestamp expires_at = 12;
+  bytes signature = 13;
 }
 
 // ----- Pagination & filtering -----
@@ -99,12 +100,26 @@ message PageResponse {
 
 // ----- Common error -----
 
+enum ErrorCode {
+  MC_UNSPECIFIED = 0;
+  MC_PERMISSION_DENIED = 1;
+  MC_NOT_FOUND = 2;
+  MC_PRECONDITION_FAILED = 3;
+  MC_INVALID_ARGUMENT = 4;
+  MC_CONFLICT = 5;
+  MC_RATE_LIMITED = 6;
+  MC_SNAPSHOT_EXPIRED = 7;
+  MC_UNAUTHENTICATED = 8;
+  MC_INTERNAL = 9;
+  MC_UNAVAILABLE = 10;
+  MC_TIMEOUT = 11;
+}
+
 message Error {
-  // Codes: PERMISSION_DENIED, NOT_FOUND, PRECONDITION_FAILED,
-  // INVALID_ARGUMENT, CONFLICT, RATE_LIMITED, SNAPSHOT_EXPIRED, UNAUTHENTICATED,
-  // INTERNAL, UNAVAILABLE, TIMEOUT
-  string code = 1;
+  ErrorCode code = 1;
   string message = 2;
-  map<string,string> details = 3;
-  string correlation_id = 4;
+  map<string, string> params = 3;
+  map<string, string> context = 4;
+  string message_key = 5;
+  string correlation_id = 6;
 }

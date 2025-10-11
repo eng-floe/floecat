@@ -8,7 +8,7 @@ import "common/common.proto";
 import "catalog/catalog.proto";
 
 message GetCatalogRequest {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;
 }
 message GetCatalogResponse {
   Catalog catalog = 1;
@@ -23,7 +23,7 @@ message ListCatalogsResponse {
 }
 
 message GetNamespaceRequest { 
-  ai.floedb.metacat.common.ResourceId resource_id = 1; 
+  ai.floedb.metacat.common.ResourceId namespace_id = 1; 
 }
 message GetNamespaceResponse { 
   Namespace namespace = 1; 
@@ -42,7 +42,7 @@ message ListNamespacesResponse {
 }
 
 message GetTableDescriptorRequest {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  ai.floedb.metacat.common.ResourceId table_id = 1;
   optional ai.floedb.metacat.common.SnapshotRef snapshot = 2;
 }
 message GetTableDescriptorResponse { 

@@ -36,7 +36,7 @@ public class InMemoryBlobStore implements BlobStore {
     BlobHeader hdr = BlobHeader.newBuilder()
       .setSchemaVersion("v1")
       .setEtag(UUID.randomUUID().toString())
-      .setCreatedAtMs(Timestamps.fromMillis(clock.millis()))
+      .setCreatedAt(Timestamps.fromMillis(clock.millis()))
       .build();
     map.put(uri, new Blob(bytes, hdr));
   }

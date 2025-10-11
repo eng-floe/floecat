@@ -76,7 +76,7 @@ class PropagationIT {
       .withInterceptors(captureErr);
 
     assertThrows(StatusRuntimeException.class,
-      () -> errClient.getCatalog(GetCatalogRequest.newBuilder().setResourceId(rid).build()));
+      () -> errClient.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(rid).build()));
 
     String echoedOnErr =
       Optional.ofNullable(captureErr.responseTrailers.get())

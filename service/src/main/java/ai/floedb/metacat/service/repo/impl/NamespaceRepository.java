@@ -30,8 +30,11 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
   }
 
   public Optional<Namespace> get(ResourceId nsId) {
-    ResourceId catalogRid = requireCatalogIdByNamespaceId(nsId.getTenantId(), nsId.getId());
-    return get(Keys.nsPtr(nsId.getTenantId(), catalogRid.getId(), nsId.getId()));
+    Optional<ResourceId> catalogRid = requireCatalogIdByNamespaceId(nsId.getTenantId(), nsId.getId());
+        if (catalogRid.isEmpty()) {
+      return Optional.empty();
+    }
+    return get(Keys.nsPtr(nsId.getTenantId(), catalogRid.get().getId(), nsId.getId()));
   }
 
   public List<Namespace> list(ResourceId catalogId, int limit, String token, StringBuilder next) {
@@ -62,12 +65,12 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     return okPtr && okBlob;
   }
 
-  private ResourceId requireCatalogIdByNamespaceId(String tenantId, String nsId) {
-    NameRef nsRef = nameIndex.getNamespaceById(tenantId, nsId)
-      .orElseThrow(() -> new IllegalArgumentException("namespace index missing (by-id): " + nsId));
-
-    return nameIndex.getCatalogByName(tenantId, nsRef.getCatalog())
-      .map(NameRef::getResourceId)
-      .orElseThrow(() -> new IllegalArgumentException("catalog not found: " + nsRef.getCatalog()));
+  private Optional<ResourceId> requireCatalogIdByNamespaceId(String tenantId, String nsId) {
+    var nsRefOpt = nameIndex.getNamespaceById(tenantId, nsId);
+    if (nsRefOpt.isEmpty()) return Optional.empty();
+    var catIdOpt = nameIndex.getCatalogByName(tenantId, nsRefOpt.get().getCatalog())
+        .map(NameRef::getResourceId);
+    return catIdOpt;
   }
+
 }

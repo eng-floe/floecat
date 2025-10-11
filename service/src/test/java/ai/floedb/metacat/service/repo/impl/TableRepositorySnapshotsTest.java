@@ -46,7 +46,7 @@ class TableRepositorySnapshotsTest {
       .setNamespaceId(nsRid)
       .setRootUri("s3://upstream/tables/orders/")
       .setSchemaJson("{}")
-      .setCreatedAtMs(Timestamps.fromMillis(clock.millis()))
+      .setCreatedAt(Timestamps.fromMillis(clock.millis()))
       .setCurrentSnapshotId(200)
       .build();
     tableRepo.put(td);
@@ -76,7 +76,7 @@ class TableRepositorySnapshotsTest {
                                    String tenant, String tableId, long snapId, long createdMs) {
     String key = "/tenants/" + tenant + "/tables/" + tableId + "/snapshots/" + snapId;
     String uri = "mem://tenants/" + tenant + "/tables/" + tableId + "/snapshots/" + snapId + ".pb";
-    var snap = Snapshot.newBuilder().setSnapshotId(snapId).setCreatedAtMs(Timestamps.fromMillis(createdMs)).build();
+    var snap = Snapshot.newBuilder().setSnapshotId(snapId).setCreatedAt(Timestamps.fromMillis(createdMs)).build();
     blobs.put(uri, snap.toByteArray(), "application/x-protobuf");
 
     long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);

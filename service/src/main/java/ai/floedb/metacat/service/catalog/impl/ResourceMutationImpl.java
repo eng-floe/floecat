@@ -1,6 +1,7 @@
 package ai.floedb.metacat.service.catalog.impl;
 
 import java.time.Clock;
+import java.util.Map;
 import java.util.UUID;
 
 import com.google.protobuf.Any;
@@ -81,7 +82,11 @@ public class ResourceMutationImpl implements ResourceMutation {
     var display = mustNonEmpty(spec.getDisplayName(), "display_name");
 
     if (nameIndex.getCatalogByName(tenantId, display).isPresent()) {
-      throw conflict("catalog '%s' already exists", display);
+      throw GrpcErrors.conflict(
+        corrId(),
+        "catalog.already_exists",
+        Map.of("display_name", display, "tenant_id", tenantId)
+      );
     }
 
     var catalogId = UUID.randomUUID().toString();
@@ -93,7 +98,7 @@ public class ResourceMutationImpl implements ResourceMutation {
       .setResourceId(rid)
       .setDisplayName(display)
       .setDescription(spec.getDescription())
-      .setCreatedAtMs(Timestamps.fromMillis(now))
+      .setCreatedAt(Timestamps.fromMillis(now))
       .build();
 
     catalogs.put(c);
@@ -115,7 +120,7 @@ public class ResourceMutationImpl implements ResourceMutation {
         .setBlobUri(ptr.getBlobUri())
         .setPointerVersion(ptr.getVersion())
         .setEtag(hdr.getEtag())
-        .setUpdatedAtMs(Timestamps.fromMillis(now))
+        .setUpdatedAt(Timestamps.fromMillis(now))
         .build())
       .build());
   }
@@ -125,7 +130,7 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "catalog.write");
 
-    var rid = req.getResourceId();
+    var rid = req.getCatalogId();
     ensureKind(rid, ResourceKind.RK_CATALOG, "UpdateCatalog");
     var tenantId = p.getTenantId();
     var catalogId = rid.getId();
@@ -134,7 +139,8 @@ public class ResourceMutationImpl implements ResourceMutation {
     var current = mustGetPointer(ptrKey);
     checkPrecondition(req.getPrecondition(), current);
 
-    var prev = catalogs.get(rid).orElseThrow(() -> notFound("catalog not found: %s", catalogId));
+    var prev = catalogs.get(rid).
+      orElseThrow(() -> GrpcErrors.notFound(corrId(), "catalog", Map.of("id", rid.getId())));
     var display = mustNonEmpty(req.getSpec().getDisplayName(), "display_name");
     var updated = prev.toBuilder()
       .setDisplayName(display)
@@ -165,7 +171,7 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "catalog.write");
 
-    var rid = req.getResourceId();
+    var rid = req.getCatalogId();
     ensureKind(rid, ResourceKind.RK_CATALOG, "DeleteCatalog");
     var tenantId = p.getTenantId();
 
@@ -174,7 +180,7 @@ public class ResourceMutationImpl implements ResourceMutation {
     checkPrecondition(req.getPrecondition(), current);
 
     if (req.getRequireEmpty() && namespaces.count(rid) > 0) {
-      throw conflict("catalog not empty");
+      throw GrpcErrors.conflict(corrId(),  "catalog.not_empty", Map.of("catalog", rid.getId()));
     }
 
     var prev = catalogs.get(rid).orElse(null);
@@ -209,15 +215,17 @@ public class ResourceMutationImpl implements ResourceMutation {
       .setResourceId(rid)
       .setDisplayName(mustNonEmpty(spec.getDisplayName(), "display_name"))
       .setDescription(spec.getDescription())
-      .setCreatedAtMs(Timestamps.fromMillis(now))
+      .setCreatedAt(Timestamps.fromMillis(now))
       .build();
 
     namespaces.put(ns, spec.getCatalogId());
 
     var catalogName = nameIndex.getCatalogById(tenantId, spec.getCatalogId().getId())
-      .map(NameRef::getCatalog)
-      .orElseThrow(() -> GrpcErrors.notFound(
-        "catalog id not found: " + spec.getCatalogId().getId(), null));
+        .map(NameRef::getCatalog)
+        .orElseThrow(() -> GrpcErrors.notFound(
+          corrId(),
+          "catalog", Map.of("id", spec.getCatalogId().getId())
+        ));
 
     var ref = NameRef.newBuilder()
       .setCatalog(catalogName)
@@ -242,13 +250,16 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "namespace.write");
 
-    var rid = req.getResourceId();
+    var rid = req.getNamespaceId();
     ensureKind(rid, ResourceKind.RK_NAMESPACE, "RenameNamespace");
     var tenantId = p.getTenantId();
     var nsId = rid.getId();
 
     var nsRef = nameIndex.getNamespaceById(tenantId, nsId)
-      .orElseThrow(() -> notFound("namespace index missing (by-id): %s", nsId));
+      .orElseThrow(() -> GrpcErrors.notFound(
+        corrId(),
+        "namespace", Map.of("id", rid.getId())
+      ));
 
     var catalogRid = requireCatalogIdByName(tenantId, nsRef.getCatalog());
     var catalogIdStr = catalogRid.getId();
@@ -258,8 +269,11 @@ public class ResourceMutationImpl implements ResourceMutation {
     checkPrecondition(req.getPrecondition(), current);
 
     var cur = namespaces.get(rid)
-      .orElseThrow(() -> notFound("namespace not found: %s", nsId));
-
+      .orElseThrow(() -> GrpcErrors.notFound(
+        corrId(),
+        "namespace", Map.of("id", rid.getId())
+      ));
+  
     var newName = mustNonEmpty(req.getNewDisplayName(), "new_display_name");
     var updated = cur.toBuilder().setDisplayName(newName).build();
 
@@ -295,13 +309,16 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "namespace.write");
 
-    var rid = req.getResourceId();
+    var rid = req.getNamespaceId();
     ensureKind(rid, ResourceKind.RK_NAMESPACE, "DeleteNamespace");
     var tenantId = p.getTenantId();
     var nsId = rid.getId();
 
     var nsRef = nameIndex.getNamespaceById(tenantId, nsId)
-      .orElseThrow(() -> notFound("namespace index missing (by-id): %s", nsId));
+      .orElseThrow(() -> GrpcErrors.notFound(
+        corrId(),
+        "namespace", Map.of("id", rid.getId())
+      ));
 
     var catalogRid = requireCatalogIdByName(tenantId, nsRef.getCatalog());
     var catalogIdStr = catalogRid.getId();
@@ -312,7 +329,8 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     if (req.getRequireEmpty()) {
       if (tables.count(rid) > 0) {
-        throw conflict("namespace not empty");
+        throw GrpcErrors.conflict(corrId(), 
+          "namespace.not_empty", Map.of("namespace", nsId));
       }
     }
 
@@ -348,7 +366,7 @@ public class ResourceMutationImpl implements ResourceMutation {
       .setCatalogId(spec.getCatalogId())
       .setNamespaceId(spec.getNamespaceId())
       .setRootUri(mustNonEmpty(spec.getRootUri(), "root_uri"))
-      .setCreatedAtMs(Timestamps.fromMillis(now))
+      .setCreatedAt(Timestamps.fromMillis(now))
       .setSchemaJson(mustNonEmpty(spec.getSchemaJson(), "schema_json"))
       .build();
 
@@ -388,7 +406,10 @@ public class ResourceMutationImpl implements ResourceMutation {
     var current = mustGetPointer(canonPtr);
     checkPrecondition(req.getPrecondition(), current);
 
-    var cur = tables.get(tableId).orElseThrow(() -> notFound("table not found: %s", tblId));
+    var cur = tables.get(tableId).
+      orElseThrow(() -> GrpcErrors.notFound(corrId(), "table",
+        Map.of("id", tableId.getId())));
+
     var updated = cur.toBuilder()
       .setSchemaJson(mustNonEmpty(req.getSchemaJson(), "schema_json"))
       .clearDescription().setDescription(cur.getDescription())
@@ -430,7 +451,10 @@ public class ResourceMutationImpl implements ResourceMutation {
     var current = mustGetPointer(canonPtr);
     checkPrecondition(req.getPrecondition(), current);
 
-    var cur = tables.get(tableId).orElseThrow(() -> notFound("table not found: %s", tableId.getId()));
+    var cur = tables.get(tableId).
+      orElseThrow(() -> GrpcErrors.notFound(corrId(), "table",
+        Map.of("id", tableId.getId())));
+
     var newName = mustNonEmpty(req.getNewDisplayName(), "new_display_name");
 
     var catalogName = requireCatalogNameById(tenantId, cur.getCatalogId().getId());
@@ -480,7 +504,8 @@ public class ResourceMutationImpl implements ResourceMutation {
     var current = mustGetPointer(canonPtrKey);
     checkPrecondition(req.getPrecondition(), current);
 
-    var cur = tables.get(tableId).orElseThrow(() -> notFound("table not found: %s", tableId.getId()));
+    var cur = tables.get(tableId)
+      .orElseThrow(() -> GrpcErrors.notFound(corrId(), "table", Map.of("id", tableId.getId())));
 
     tables.delete(tableId);
 
@@ -503,35 +528,39 @@ public class ResourceMutationImpl implements ResourceMutation {
   private String requireCatalogNameById(String tenantId, String catalogId) {
     return nameIndex.getCatalogById(tenantId, catalogId)
       .map(NameRef::getCatalog)
-      .orElseThrow(() -> GrpcErrors.notFound("catalog id not found: " + catalogId, null));
+      .orElseThrow(() -> GrpcErrors.notFound(corrId(), "catalog", Map.of("id", catalogId)));
   }
 
   private ResourceId requireCatalogIdByName(String tenantId, String catalogName) {
     return nameIndex.getCatalogByName(tenantId, catalogName)
       .map(NameRef::getResourceId)
-      .orElseThrow(() -> new IllegalArgumentException("Unknown catalog: " + catalogName));
+      .orElseThrow(() -> GrpcErrors.notFound(corrId(), "catalog", Map.of("id", catalogName)));
   }
 
   private java.util.List<String> requireNamespacePathById(String tenantId, String nsId) {
     return nameIndex.getNamespaceById(tenantId, nsId)
       .map(NameRef::getPathList)
-      .orElseThrow(() -> GrpcErrors.notFound("namespace id not found: " + nsId, null));
+      .orElseThrow(() -> GrpcErrors.notFound(corrId(), "namespace", Map.of("id", nsId)));
   }
 
   private void ensureKind(ResourceId rid, ResourceKind want, String op) {
-    if (rid == null) throw invalid("%s: missing resource_id", op);
-    if (rid.getKind() != want) throw invalid("%s: wrong resource kind: %s", op, rid.getKind());
+    if (rid == null)
+      throw GrpcErrors.invalidArgument(corrId(), null, Map.of("field", op));
+    if (rid.getKind() != want)
+      throw GrpcErrors.invalidArgument(corrId(), null, Map.of("field", op));
   }
 
   private String requireId(ResourceId rid, ResourceKind kind, String field) {
     if (rid == null || rid.getId().isBlank() || rid.getTenantId().isBlank())
-      throw invalid("missing %s", field);
-    if (rid.getKind() != kind) throw invalid("wrong kind for %s: %s", field, rid.getKind());
+      throw GrpcErrors.invalidArgument(corrId(), null, Map.of("field", field));
+    if (rid.getKind() != kind)
+      throw GrpcErrors.invalidArgument(corrId(), null, Map.of("field", field));
     return rid.getId();
   }
 
   private String mustNonEmpty(String v, String name) {
-    if (v == null || v.isBlank()) throw invalid("missing %s", name);
+    if (v == null || v.isBlank())
+      throw GrpcErrors.invalidArgument(corrId(), null, Map.of("field", name));
     return v;
   }
 
@@ -540,19 +569,34 @@ public class ResourceMutationImpl implements ResourceMutation {
   }
 
   private Pointer mustGetPointer(String key) {
-    return ptr.get(key).orElseThrow(() -> notFound("pointer not found: %s", key));
+    return ptr.get(key)
+      .orElseThrow(() -> GrpcErrors.notFound(corrId(), "pointer", Map.of("id", key)));
   }
 
   private void checkPrecondition(Precondition pre, Pointer current) {
     if (pre == null) return;
+
     if (pre.getExpectedVersion() != 0) {
-      if (current.getVersion() != pre.getExpectedVersion()) {
-        throw precond("expected_version=%d, current=%d", pre.getExpectedVersion(), current.getVersion());
+      long expected = pre.getExpectedVersion();
+      long actual   = current.getVersion();
+      if (actual != expected) {
+        throw GrpcErrors.preconditionFailed(
+            corrId(),
+            "version_mismatch",
+            Map.of("expected", String.valueOf(expected), "actual", String.valueOf(actual)));
       }
-    } else if (!pre.getExpectedEtag().isBlank()) {
+      return;
+    }
+
+    String expectedEtag = pre.getExpectedEtag();
+    if (expectedEtag != null && !expectedEtag.isBlank()) {
       var hdr = blobs.head(current.getBlobUri());
-      if (hdr.isEmpty() || !pre.getExpectedEtag().equals(hdr.get().getEtag())) {
-        throw precond("etag mismatch");
+      String actualEtag = hdr.map(BlobHeader::getEtag).orElse("");
+      if (!expectedEtag.equals(actualEtag)) {
+        throw GrpcErrors.preconditionFailed(
+            corrId(),
+            "etag_mismatch",
+            Map.of("expected", expectedEtag, "actual", actualEtag));
       }
     }
   }
@@ -563,43 +607,12 @@ public class ResourceMutationImpl implements ResourceMutation {
       .setBlobUri(p.getBlobUri())
       .setPointerVersion(p.getVersion())
       .setEtag(etag == null ? "" : etag)
-      .setUpdatedAtMs(Timestamps.fromMillis(clock.millis()))
+      .setUpdatedAt(Timestamps.fromMillis(clock.millis()))
       .build();
   }
 
-  private StatusRuntimeException invalid(String fmt, Object... args) {
-    return withDetails(io.grpc.Status.INVALID_ARGUMENT, "INVALID_ARGUMENT", fmt, args);
-  }
-
-  private StatusRuntimeException notFound(String fmt, Object... args) {
-    return withDetails(io.grpc.Status.NOT_FOUND, "NOT_FOUND", fmt, args);
-  }
-
-  private StatusRuntimeException conflict(String fmt, Object... args) {
-    return withDetails(io.grpc.Status.ABORTED, "ABORTED", fmt, args);
-  }
-
-  private StatusRuntimeException precond(String fmt, Object... args) {
-    return withDetails(io.grpc.Status.FAILED_PRECONDITION, "FAILED_PRECONDITION", fmt, args);
-  }
-
-  private StatusRuntimeException withDetails(io.grpc.Status grpcStatus, String codeStr, String fmt, Object... args) {
-    var message = String.format(fmt, args);
+  private String corrId() {
     var pctx = principal != null ? principal.get() : null;
-
-    var err = ai.floedb.metacat.common.rpc.Error.newBuilder()
-      .setCode(codeStr)
-      .setMessage(message)
-      .putDetails("service", "ResourceMutation")
-      .setCorrelationId(pctx != null ? pctx.getCorrelationId() : "")
-      .build();
-
-    var rpc = com.google.rpc.Status.newBuilder()
-      .setCode(grpcStatus.getCode().value())
-      .setMessage(message)
-      .addDetails(Any.pack(err))
-      .build();
-
-    return StatusProto.toStatusRuntimeException(rpc);
+    return pctx != null ? pctx.getCorrelationId() : "";
   }
 }

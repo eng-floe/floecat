@@ -65,14 +65,14 @@ class TableRepositoryTest {
       .setNamespaceId(nsRid)
       .setRootUri("s3://upstream/tables/orders")
       .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
-      .setCreatedAtMs(Timestamps.fromMillis(clock.millis()))
+      .setCreatedAt(Timestamps.fromMillis(clock.millis()))
       .setCurrentSnapshotId(42)
       .build();
     tableRepo.put(td);
 
     var snap = Snapshot.newBuilder()
       .setSnapshotId(42)
-      .setCreatedAtMs(Timestamps.fromMillis(clock.millis()))
+      .setCreatedAt(Timestamps.fromMillis(clock.millis()))
       .build();
     snapshotRepo.put(tableRid, snap);
 

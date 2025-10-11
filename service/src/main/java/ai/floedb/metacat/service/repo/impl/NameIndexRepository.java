@@ -37,32 +37,27 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
     put(kById, BaseRepository.memUriFor(kById, "entry.pb"), bytes);
   }
 
-  public Optional<NameRef> getCatalogByName(String tenantId, String displayName) {
-    return get(Keys.idxCatByName(tenantId, displayName)).map(bytes -> {
-      try {
-        NameRef ref = NameRef.parseFrom(bytes);
-        if (!ref.hasResourceId()) {
-          throw new IllegalStateException("Stored NameRef missing resource_id for catalog=" + displayName);
-        }
-        return ref;
-      } catch (Exception e) {
-        throw new RuntimeException("Failed to parse NameRef for catalog=" + displayName, e);
+  private Optional<NameRef> safeParseNameRef(byte[] bytes, String what, String idOrName) {
+    if (bytes == null || bytes.length == 0) return Optional.empty();
+    try {
+      var ref = NameRef.parseFrom(bytes);
+      if (!ref.hasResourceId()) {
+        return Optional.empty();
       }
-    });
+      return Optional.of(ref);
+    } catch (Exception e) {
+      return Optional.empty();
+    }
+  }
+  
+  public Optional<NameRef> getCatalogByName(String tenantId, String displayName) {
+    return get(Keys.idxCatByName(tenantId, displayName))
+        .flatMap(bytes -> safeParseNameRef(bytes, "catalog", displayName));
   }
 
   public Optional<NameRef> getCatalogById(String tenantId, String id) {
-    return get(Keys.idxCatById(tenantId, id)).map(bytes -> {
-      try {
-        NameRef ref = NameRef.parseFrom(bytes);
-        if (!ref.hasResourceId()) {
-          throw new IllegalStateException("Stored NameRef missing resource_id for catalog id=" + id);
-        }
-        return ref;
-      } catch (Exception e) {
-        throw new RuntimeException("Failed to parse NameRef for catalog id=" + id, e);
-      }
-    });
+    return get(Keys.idxCatById(tenantId, id))
+        .flatMap(bytes -> safeParseNameRef(bytes, "catalog id", id));
   }
 
   public boolean deleteCatalogByName(String tenantId, String displayName) {

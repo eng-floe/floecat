@@ -10,7 +10,9 @@ import org.junit.jupiter.api.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.ResourceAccessGrpc;
+import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.NameRef;
+import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
 import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
@@ -34,7 +36,7 @@ class ResourceAccessIT {
     var ref = NameRef.newBuilder().setCatalog("sales").build();
     var req = directory.resolveCatalog(ResolveCatalogRequest.newBuilder()
       .setRef(ref).build());
-    var resp = resourceAccess.getCatalog(GetCatalogRequest.newBuilder().setResourceId(req.getResourceId()).build());
+    var resp = resourceAccess.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(req.getResourceId()).build());
     assertEquals("sales", resp.getCatalog().getDisplayName());
   }
 
@@ -49,7 +51,7 @@ class ResourceAccessIT {
       .build();
 
     StatusRuntimeException ex = assertThrows(StatusRuntimeException.class, () ->
-      resourceAccess.getCatalog(GetCatalogRequest.newBuilder().setResourceId(missingRid).build()));
+      resourceAccess.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(missingRid).build()));
 
     assertEquals(Status.Code.NOT_FOUND, ex.getStatus().getCode());
 
@@ -64,7 +66,7 @@ class ResourceAccessIT {
       }
     }
     assertNotNull(mcErr);
-    assertEquals("NOT_FOUND", mcErr.getCode());
-    assertTrue(mcErr.getMessage().contains("catalog"));
+    assertEquals(ErrorCode.MC_NOT_FOUND, mcErr.getCode());
+    assertTrue(mcErr.getMessage().contains("Catalog not found"));
   }
 }

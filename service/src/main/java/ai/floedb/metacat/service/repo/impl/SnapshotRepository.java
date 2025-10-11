@@ -49,9 +49,9 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     var snapshots = listByPrefix(prefix, Integer.MAX_VALUE, "", ignore);
     if (snapshots.isEmpty()) return Optional.empty();
 
-    return snapshots.stream().max((a, b) -> Timestamps.compare(a.getCreatedAtMs(), b.getCreatedAtMs()));
+    return snapshots.stream().max((a, b) -> Timestamps.compare(a.getCreatedAt(), b.getCreatedAt()));
   }
-  
+
   public void put(ResourceId tableId, Snapshot snapshot) {
     var tenantId = tableId.getTenantId();
     var tableUUID = tableId.getId();

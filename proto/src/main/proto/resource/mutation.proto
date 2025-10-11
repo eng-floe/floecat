@@ -25,7 +25,7 @@ message MutationMeta {
   string blob_uri = 2;
   int64 pointer_version = 3;
   string etag = 4;
-  google.protobuf.Timestamp updated_at_ms = 5;
+  google.protobuf.Timestamp updated_at = 5;
 }
 
 // ---------- Catalog ----------
@@ -48,7 +48,7 @@ message CreateCatalogResponse {
 }
 
 message UpdateCatalogRequest {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;
   CatalogSpec spec = 2;
   Precondition precondition = 3;
 }
@@ -58,7 +58,7 @@ message UpdateCatalogResponse {
 }
 
 message DeleteCatalogRequest {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;
   bool require_empty = 2;
   Precondition precondition = 3;
 }
@@ -87,7 +87,7 @@ message CreateNamespaceResponse {
 }
 
 message RenameNamespaceRequest {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  ai.floedb.metacat.common.ResourceId namespace_id = 1;
   string new_display_name = 2;
   repeated string new_path = 3;
   Precondition precondition = 4;
@@ -98,7 +98,7 @@ message RenameNamespaceResponse {
 }
 
 message DeleteNamespaceRequest {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  ai.floedb.metacat.common.ResourceId namespace_id = 1;
   bool require_empty = 2;
   Precondition precondition = 3;
 }

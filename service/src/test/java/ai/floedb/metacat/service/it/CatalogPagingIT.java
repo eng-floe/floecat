@@ -53,7 +53,7 @@ class CatalogPagingIT {
         .setResourceId(rid)
         .setDisplayName(name)
         .setDescription("paging test")
-        .setCreatedAtMs(Timestamps.fromMillis(clock.millis()))
+        .setCreatedAt(Timestamps.fromMillis(clock.millis()))
         .build();
 
       repo.put(cat);

@@ -165,6 +165,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
     return PrincipalContext.newBuilder()
       .setTenantId("t-0001")
       .setSubject("dev-user")
+      .setLocale("en")
       .addPermissions("catalog.read")
       .addPermissions("catalog.write")
       .addPermissions("namespace.read")

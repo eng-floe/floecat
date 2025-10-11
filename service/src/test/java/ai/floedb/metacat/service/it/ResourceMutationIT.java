@@ -13,6 +13,7 @@ import org.junit.jupiter.api.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
@@ -82,7 +83,7 @@ class ResourceMutationIT {
     assertEquals(catId, resolvedCat.getResourceId().getId());
 
     var gotCat = access.getCatalog(GetCatalogRequest.newBuilder()
-      .setResourceId(catRid)
+      .setCatalogId(catRid)
       .build());
     assertEquals(catName, gotCat.getCatalog().getDisplayName());
 
@@ -140,7 +141,7 @@ class ResourceMutationIT {
     assertEquals(tblId, tResolve.getResourceId().getId());
 
     var gotTbl = access.getTableDescriptor(GetTableDescriptorRequest.newBuilder()
-      .setResourceId(rid(tenantId, tblId, ResourceKind.RK_TABLE))
+      .setTableId(rid(tenantId, tblId, ResourceKind.RK_TABLE))
       .build());
     assertEquals(tblName, gotTbl.getTable().getDisplayName());
 
@@ -183,14 +184,14 @@ class ResourceMutationIT {
 
     StatusRuntimeException nsDelFail = assertThrows(StatusRuntimeException.class, () ->
       mutation.deleteNamespace(DeleteNamespaceRequest.newBuilder()
-        .setResourceId(rid(tenantId, nsId, ResourceKind.RK_NAMESPACE))
+        .setNamespaceId(rid(tenantId, nsId, ResourceKind.RK_NAMESPACE))
         .setRequireEmpty(true)
         .build()));
     assertEquals(Status.Code.ABORTED, nsDelFail.getStatus().getCode());
     var mcErr = unpackMcError(nsDelFail);
     assertNotNull(mcErr);
-    assertEquals("ABORTED", mcErr.getCode());
-    assertTrue(mcErr.getMessage().toLowerCase().contains("not empty"));
+    assertEquals(ErrorCode.MC_CONFLICT, mcErr.getCode());
+    assertTrue(mcErr.getMessage().contains("Namespace contains tables"));
 
     mutation.deleteTable(DeleteTableRequest.newBuilder()
       .setTableId(rid(tenantId, tblId, ResourceKind.RK_TABLE))
@@ -208,12 +209,12 @@ class ResourceMutationIT {
     assertEquals(Status.Code.NOT_FOUND, tblGone.getStatus().getCode());
 
     mutation.deleteNamespace(DeleteNamespaceRequest.newBuilder()
-      .setResourceId(rid(tenantId, nsId, ResourceKind.RK_NAMESPACE))
+      .setNamespaceId(rid(tenantId, nsId, ResourceKind.RK_NAMESPACE))
       .setRequireEmpty(true)
       .build());
 
     mutation.deleteCatalog(DeleteCatalogRequest.newBuilder()
-      .setResourceId(rid(tenantId, catId, ResourceKind.RK_CATALOG))
+      .setCatalogId(rid(tenantId, catId, ResourceKind.RK_CATALOG))
       .setRequireEmpty(true)
       .build());
 

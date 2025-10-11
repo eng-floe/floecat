@@ -4,6 +4,8 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 
+import java.util.Map;
+
 import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.GetCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.GetCurrentSnapshotRequest;
@@ -46,10 +48,12 @@ public class ResourceAccessImpl implements ResourceAccess {
   public Uni<GetCatalogResponse> getCatalog(GetCatalogRequest req) {
     var p = principal.get();
     authz.require(p, "catalog.read");
+
     return Uni.createFrom().item(
-      repo.get(req.getResourceId())
+      repo.get(req.getCatalogId())
         .map(c -> GetCatalogResponse.newBuilder().setCatalog(c).build())
-        .orElseThrow(() -> GrpcErrors.notFound("catalog not found", null))
+        .orElseThrow(() -> GrpcErrors.notFound(corrId(), "catalog",
+          Map.of("id", req.getCatalogId().getId())))
     );
   }
 
@@ -85,10 +89,10 @@ public class ResourceAccessImpl implements ResourceAccess {
 
     return Uni.createFrom().item(req)
       .map(r -> {
-        var nsRid = r.getResourceId();
+        var nsRid = r.getNamespaceId();
         var ns = nsRepo.get(nsRid)
-          .orElseThrow(() -> GrpcErrors.notFound(
-              "namespace not found: " + nsRid.getId(), null));
+          .orElseThrow(() -> GrpcErrors.notFound(corrId(), "namespace",
+            Map.of("id", nsRid.getId())));
 
         return GetNamespaceResponse.newBuilder().setNamespace(ns).build();
       });
@@ -100,6 +104,12 @@ public class ResourceAccessImpl implements ResourceAccess {
     authz.require(p, "catalog.read");
 
     var catRid = req.getCatalogId();
+
+    repo.get(catRid).orElseThrow(() -> GrpcErrors.notFound(
+      corrId(),
+      "catalog", Map.of("id", catRid.getId())
+    ));
+
     int limit = (req.hasPage() && req.getPage().getPageSize() > 0) ? req.getPage().getPageSize() : 50;
     String token = req.hasPage() ? req.getPage().getPageToken() : "";
     StringBuilder next = new StringBuilder();
@@ -126,8 +136,9 @@ public class ResourceAccessImpl implements ResourceAccess {
     return Uni.createFrom().item(req)
       .map(r -> {
         var table = tableRepo
-          .get(r.getResourceId())
-          .orElseThrow(() -> GrpcErrors.notFound("table not found", null));
+          .get(r.getTableId())
+          .orElseThrow(() -> GrpcErrors.notFound(corrId(), "table",
+            Map.of("id", req.getTableId().getId())));
 
         return GetTableDescriptorResponse.newBuilder()
           .setTable(table)
@@ -139,6 +150,11 @@ public class ResourceAccessImpl implements ResourceAccess {
   public Uni<ListTablesResponse> listTables(ListTablesRequest req) {
     var p = principal.get(); 
     authz.require(p, "table.read");
+
+    nsRepo.get(req.getNamespaceId()).orElseThrow(() -> GrpcErrors.notFound(
+      corrId(),
+      "namespace", Map.of("id", req.getNamespaceId().getId())
+    ));
 
     int limit = req.hasPage() && req.getPage().getPageSize() > 0 ? req.getPage().getPageSize() : 50;
     String token = req.hasPage() ? req.getPage().getPageToken() : "";
@@ -155,6 +171,11 @@ public class ResourceAccessImpl implements ResourceAccess {
   @Override
   public Uni<ListSnapshotsResponse> listSnapshots(ListSnapshotsRequest req) {
     var p = principal.get(); authz.require(p, "catalog.read");
+
+    tableRepo.get(req.getTableId()).orElseThrow(() -> GrpcErrors.notFound(
+      corrId(),
+      "table", Map.of("id", req.getTableId().getId())
+    ));
 
     int limit = req.hasPage() && req.getPage().getPageSize() > 0 ? req.getPage().getPageSize() : 50;
     String token = req.hasPage() ? req.getPage().getPageToken() : "";
@@ -177,9 +198,15 @@ public class ResourceAccessImpl implements ResourceAccess {
         .map(t -> GetCurrentSnapshotResponse.newBuilder()
           .setSnapshot(Snapshot.newBuilder()
             .setSnapshotId(t.getCurrentSnapshotId())
-            .setCreatedAtMs(t.getCreatedAtMs())
+            .setCreatedAt(t.getCreatedAt())
             .build())
           .build())
-        .orElseThrow(() -> GrpcErrors.notFound("snapshot not found", null)));
+          .orElseThrow(() -> GrpcErrors.notFound(corrId(), "snapshot",
+            Map.of("id", req.getTableId().getId()))));
+  }
+
+  private String corrId() {
+    var pctx = principal != null ? principal.get() : null;
+    return pctx != null ? pctx.getCorrelationId() : "";
   }
 }

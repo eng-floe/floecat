@@ -1,6 +1,7 @@
 package ai.floedb.metacat.service.catalog.impl;
 
 import java.util.List;
+import java.util.Map;
 
 import io.grpc.Status;
 import io.quarkus.grpc.GrpcService;
@@ -39,7 +40,8 @@ public class DirectoryImpl implements Directory {
   private ResourceId requireCatalogIdByName(String tenantId, String catalogName) {
     return nameIndex.getCatalogByName(tenantId, catalogName)
       .map(NameRef::getResourceId)
-      .orElseThrow(() -> GrpcErrors.notFound("catalog not found: " + catalogName, null));
+      .orElseThrow(() -> GrpcErrors.notFound(corrId(), "catalog",
+        Map.of("id", catalogName)));
   }
 
   @Override
@@ -51,9 +53,8 @@ public class DirectoryImpl implements Directory {
       nameIndex.getCatalogByName(p.getTenantId(), req.getRef().getCatalog())
         .map(NameRef::getResourceId)
         .map(id -> ResolveCatalogResponse.newBuilder().setResourceId(id).build())
-        .orElseThrow(() -> 
-          GrpcErrors.notFound("catalog not found: " + req.getRef().getCatalog(), null))
-    );
+        .orElseThrow(() -> GrpcErrors.notFound(corrId(), "catalog",
+          Map.of("id", req.getRef().getCatalog()))));
   }
 
   @Override
@@ -74,13 +75,20 @@ public class DirectoryImpl implements Directory {
     authz.require(p, "catalog.read");
 
     var ref = req.getRef();
-    return Uni.createFrom().item(() -> {
-      var catalogRid = requireCatalogIdByName(p.getTenantId(), ref.getCatalog());
-      return nameIndex.getNamespaceByPath(p.getTenantId(), catalogRid.getId(), ref.getPathList())
-        .map(NameRef::getResourceId)
-        .map(id -> ResolveNamespaceResponse.newBuilder().setResourceId(id).build())
-        .orElseThrow(() -> GrpcErrors.notFound("namespace not found", null));
-    });
+    var tenantId = p.getTenantId();
+    var catalogRid = requireCatalogIdByName(tenantId, ref.getCatalog());
+    var id = nameIndex.getNamespaceByPath(tenantId, catalogRid.getId(), ref.getPathList())
+      .map(NameRef::getResourceId)
+      .orElseThrow(() -> GrpcErrors.notFound(
+        corrId(),
+        "namespace.by_path_missing",
+        Map.of(
+          "catalog_id", catalogRid.getId(),
+          "path", String.join("/", ref.getPathList())
+        )));
+
+    var resp = ResolveNamespaceResponse.newBuilder().setResourceId(id).build();
+    return Uni.createFrom().item(resp);
   }
 
   @Override
@@ -106,12 +114,22 @@ public class DirectoryImpl implements Directory {
     var p = principal.get();
     authz.require(p, List.of("catalog.read", "table.read"));
 
-    return Uni.createFrom().item(() ->
-      nameIndex.getTableByName(p.getTenantId(), req.getRef())
-        .map(NameRef::getResourceId)
-        .map(id -> ResolveTableResponse.newBuilder().setResourceId(id).build())
-        .orElseThrow(() -> GrpcErrors.notFound("table not found", null))
-    );
+    var ref = req.getRef();
+    var tenantId = p.getTenantId();
+
+    var id = nameIndex.getTableByName(tenantId, ref)
+      .map(NameRef::getResourceId)
+      .orElseThrow(() -> GrpcErrors.notFound(
+        corrId(),
+        "table.by_name_missing",
+        Map.of(
+          "catalog", ref.getCatalog(),
+          "path", String.join("/", ref.getPathList()),
+          "name", ref.getName()
+        )));
+
+    var resp = ResolveTableResponse.newBuilder().setResourceId(id).build();
+    return Uni.createFrom().item(resp);
   }
 
   @Override
@@ -189,5 +207,10 @@ public class DirectoryImpl implements Directory {
 
       throw Status.INVALID_ARGUMENT.withDescription("selector is required").asRuntimeException();
     });
+  }
+
+  private String corrId() {
+    var pctx = principal != null ? principal.get() : null;
+    return pctx != null ? pctx.getCorrelationId() : "";
   }
 }
