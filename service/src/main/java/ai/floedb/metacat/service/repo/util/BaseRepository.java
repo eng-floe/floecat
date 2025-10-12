@@ -1,9 +1,12 @@
 package ai.floedb.metacat.service.repo.util;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Function;
 
 import ai.floedb.metacat.common.rpc.Pointer;
@@ -36,50 +39,53 @@ public abstract class BaseRepository<T> implements Repository<T> {
 
   @Override
   public Optional<T> get(String key) {
-    return ptr.get(key).map(p -> {
-      var bytes = blobs.get(p.getBlobUri());
-      try { 
-        return parser.parse(bytes); 
-      }
-      catch (Exception e) {
+    Optional<Pointer> pOpt = ptr.get(key);
+    if (pOpt.isEmpty()) {
+      return Optional.empty();
+    }
+
+    Pointer p = pOpt.get();
+
+    var hdr = blobs.head(p.getBlobUri());
+    if (hdr.isEmpty()) {
+      return Optional.empty();
+    }
+
+    try {
+      byte[] bytes = blobs.get(p.getBlobUri());
+      return Optional.of(parser.parse(bytes));
+    } catch (Exception e) {
         throw new RuntimeException("parse failed: " + p.getBlobUri(), e);
-      }
-    });
+    }
   }
 
   @Override
   public void put(String key, String blobUri, T value) {
-    final byte[] bytes = toBytes.apply(value);
-    final String newEtag = sha256B64(bytes);
+    putMulti(List.of(key), blobUri, value);
+  }
 
+  protected void putMulti(Collection<String> keys, String blobUri, T value) {
+    byte[] bytes = toBytes.apply(value);
+    String newEtag = sha256B64(bytes);
+    var hdr = blobs.head(blobUri);
+
+    if (hdr.isPresent() && newEtag.equals(hdr.get().getEtag())) {
+      return;
+    }
+
+    blobs.put(blobUri, bytes, contentType);
+
+    for (String key : keys) {
+      putCas(key, blobUri);
+    }
+  }
+
+  private void putCas(String key, String blobUri) {
     for (int attempt = 0; attempt < CAS_MAX; attempt++) {
-      final Optional<Pointer> cur = ptr.get(key);
-
-      if (cur.isPresent() && blobUri.equals(cur.get().getBlobUri())) {
-        var hdr = blobs.head(blobUri);
-        if (hdr.isPresent() && newEtag.equals(hdr.get().getEtag())) {
-          return;
-        }
-      }
-
-      blobs.put(blobUri, bytes, contentType);
-
-      long expected = cur.map(Pointer::getVersion).orElse(0L);
+      long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
       var next = Pointer.newBuilder()
-        .setKey(key)
-        .setBlobUri(blobUri)
-        .setVersion(expected + 1)
-        .build();
-
+        .setKey(key).setBlobUri(blobUri).setVersion(expected + 1).build();
       if (ptr.compareAndSet(key, expected, next)) return;
-
-      try {
-        Thread.sleep((1L << attempt) + ThreadLocalRandom.current().nextInt(4));
-      }
-      catch (InterruptedException ie) {
-        Thread.currentThread().interrupt();
-        break;
-      }
     }
     throw new IllegalStateException("CAS failed: " + key);
   }
@@ -112,10 +118,10 @@ public abstract class BaseRepository<T> implements Repository<T> {
 
   private static String sha256B64(byte[] data) {
     try {
-      var md = java.security.MessageDigest.getInstance("SHA-256");
+      var md = MessageDigest.getInstance("SHA-256");
       byte[] digest = md.digest(data);
       return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(digest);
-    } catch (java.security.NoSuchAlgorithmException e) {
+    } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException(e);
     }
   }

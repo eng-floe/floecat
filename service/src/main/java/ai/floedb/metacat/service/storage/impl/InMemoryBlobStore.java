@@ -64,7 +64,7 @@ public class InMemoryBlobStore implements BlobStore {
   @Override
   public byte[] get(String uri) {
     Blob b = map.get(uri);
-    if (b == null) throw new IllegalArgumentException("Blob not found: " + uri);
+    if (b == null) return null;
     return Arrays.copyOf(b.data, b.data.length);
   }
 

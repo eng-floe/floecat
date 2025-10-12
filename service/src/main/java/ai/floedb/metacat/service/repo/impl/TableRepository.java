@@ -45,15 +45,18 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
   public void put(TableDescriptor t) {
     var rid = t.getResourceId();
     var cat = t.getCatalogId();
-    var ns  = t.getNamespaceId();
+    var ns = t.getNamespaceId();
     var tid = rid.getTenantId();
     var tbl = rid.getId();
-    var uri = Keys.tblBlob(tid, tbl);
 
-    // write canonical first
-    put(Keys.tblCanonicalPtr(tid, tbl), uri, t);
-    // then namespace index pointer to same blob
-    put(Keys.tblIndexPtr(tid, cat.getId(), ns.getId(), tbl), uri, t);
+    String uri = Keys.tblBlob(tid, tbl);
+
+    List<String> keys = List.of(
+      Keys.tblCanonicalPtr(tid, tbl),
+      Keys.tblIndexPtr(tid, cat.getId(), ns.getId(), tbl)
+    );
+
+    putMulti(keys, uri, t);
   }
 
   public boolean delete(ResourceId tableId) {

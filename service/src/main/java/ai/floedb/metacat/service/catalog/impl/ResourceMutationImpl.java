@@ -2,6 +2,7 @@ package ai.floedb.metacat.service.catalog.impl;
 
 import java.time.Clock;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import com.google.protobuf.util.Timestamps;
@@ -493,31 +494,44 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "table.write");
 
-    var tableId = req.getTableId();
+    var tableId  = req.getTableId();
     ensureKind(tableId, ResourceKind.RK_TABLE, "DeleteTable");
     var tenantId = p.getTenantId();
 
-    var canonPtrKey = Keys.tblCanonicalPtr(tenantId, tableId.getId());
-    var current = mustGetPointer(canonPtrKey);
-    checkPrecondition(req.getPrecondition(), current);
+    final String canonPtrKey = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    final Optional<Pointer> curPtr = ptr.get(canonPtrKey);
 
-    var cur = tables.get(tableId)
-      .orElseThrow(() -> GrpcErrors.notFound(corrId(), "table", Map.of("id", tableId.getId())));
+    if (req.hasPrecondition()) {
+      if (curPtr.isEmpty()) {
+        throw GrpcErrors.notFound(corrId(), "table", Map.of("id", tableId.getId()));
+      }
+      checkPrecondition(req.getPrecondition(), curPtr.get());
+    }
 
-    tables.delete(tableId);
+    var nameById = nameIndex.getTableById(tenantId, tableId.getId());
 
-    nameIndex.deleteTableById(tenantId, tableId.getId());
+    ptr.delete(canonPtrKey);
+    blobs.delete(Keys.tblBlob(tenantId, tableId.getId()));
 
-    var catalogName = requireCatalogNameById(tenantId, cur.getCatalogId().getId());
-    var nsPath = requireNamespacePathById(tenantId, cur.getNamespaceId().getId());
-    var oldFq = NameRef.newBuilder()
-      .setCatalog(catalogName)
-      .addAllPath(nsPath)
-      .setName(cur.getDisplayName())
-      .setResourceId(tableId)
-      .build();
+    if (nameById.isPresent()) {
+      var ref = nameById.get();
 
-    nameIndex.deleteTableByName(tenantId, oldFq);
+      var catalogIdOpt = nameIndex.getCatalogByName(tenantId, ref.getCatalog())
+          .map(ai.floedb.metacat.common.rpc.NameRef::getResourceId);
+      var nsRefOpt = catalogIdOpt.flatMap(cid ->
+          nameIndex.getNamespaceByPath(tenantId, cid.getId(), ref.getPathList()));
+
+      if (catalogIdOpt.isPresent() && nsRefOpt.isPresent()) {
+        var nsId = nsRefOpt.get().getResourceId();
+        var nsIdxPtrKey = Keys.tblIndexPtr(tenantId, catalogIdOpt.get().getId(), nsId.getId(), tableId.getId());
+        ptr.delete(nsIdxPtrKey);
+      }
+
+      nameIndex.deleteTableByName(tenantId, ref);
+      nameIndex.deleteTableById(tenantId, tableId.getId());
+    } else {
+      nameIndex.deleteTableById(tenantId, tableId.getId());
+    }
 
     return Uni.createFrom().item(DeleteTableResponse.newBuilder().build());
   }
