@@ -44,13 +44,13 @@ public final class TestSupport {
 
   public static Namespace createNamespace(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
                                           ResourceId catalogId, String displayName, List<String> path, String desc) {
-    var resp = mutation.createNamespace(CreateNamespaceRequest.newBuilder()
-      .setSpec(NamespaceSpec.newBuilder()
-        .setCatalogId(catalogId)
-        .setDisplayName(displayName)
-        .addAllPath(path)
-        .setDescription(desc))
-      .build());
+    var specB = NamespaceSpec.newBuilder()
+      .setCatalogId(catalogId)
+      .setDisplayName(displayName)
+      .setDescription(desc);
+    if (path != null) specB.addAllPath(path);
+    var resp = mutation.createNamespace(
+      CreateNamespaceRequest.newBuilder().setSpec(specB).build());
     return resp.getNamespace();
   }
 

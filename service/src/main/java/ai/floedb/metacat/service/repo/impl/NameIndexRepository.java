@@ -55,7 +55,7 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
                               List<String> parentPathSegments,
                               String nsDisplayName) {
     List<String> parents = parentPathSegments;
-    var full = new java.util.ArrayList<>(parents);
+    var full = new ArrayList<>(parents);
     if (nsDisplayName != null && !nsDisplayName.isBlank()) {
       full.addAll(List.of(nsDisplayName));
     }
@@ -99,12 +99,9 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
                           String catalogDisplayName,
                           List<String> namespacePathSegments,
                           String tableDisplayName) {
-    NameRef tableNameRef = NameRef.newBuilder()
-      .setResourceId(tableId)
-      .setCatalog(catalogDisplayName)
-      .addAllPath(namespacePathSegments)
-      .setName(tableDisplayName)
-      .build();
+    NameRef tableNameRef = 
+      buildTableNameRef(tableId, catalogDisplayName, namespacePathSegments, tableDisplayName);
+
     byte[] bytes = tableNameRef.toByteArray();
 
     String kByName = Keys.idxTblByName(tenantId, fqKey(tableNameRef));
@@ -127,21 +124,13 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
     var prevFullOpt = getTableById(tenantId, td.getResourceId().getId());
 
     if (catRef != null && nsRef != null) {
-      var nsFull = nsRef.getPathList();
-      List<String> nsParents =
-          (nsFull == null || nsFull.isEmpty()) ? List.of() : nsFull.subList(0, nsFull.size() - 1);
-
-      NameRef newFull = NameRef.newBuilder()
-        .setResourceId(td.getResourceId())
-        .setCatalog(catRef.getCatalog())
-        .addAllPath(nsParents)
-        .setName(td.getDisplayName())
-        .build();
+      var nsFullPath = nsRef.getPathList();
+      NameRef newFull = 
+        buildTableNameRef(td.getResourceId(), catRef.getCatalog(), nsFullPath, td.getDisplayName());
       byte[] fullBytes = newFull.toByteArray();
 
       String kByName = Keys.idxTblByName(tenantId, fqKey(newFull));
       put(kByName, Keys.memUriFor(kByName, "entry.pb"), fullBytes);
-
       put(kByNs, Keys.memUriFor(kByNs, "entry.pb"), fullBytes);
       put(kById, Keys.memUriFor(kById, "entry.pb"), fullBytes);
 
@@ -157,6 +146,18 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
       put(kByNs, Keys.memUriFor(kByNs, "entry.pb"), minimal);
       put(kById, Keys.memUriFor(kById, "entry.pb"), minimal);
     }
+  }
+
+  private static NameRef buildTableNameRef(ResourceId tableId,
+                                          String catalogDisplayName,
+                                          List<String> namespaceFullPath,
+                                          String tableDisplayName) {
+    return NameRef.newBuilder()
+      .setResourceId(tableId)
+      .setCatalog(catalogDisplayName)
+      .addAllPath(namespaceFullPath == null ? java.util.List.of() : namespaceFullPath)
+      .setName(tableDisplayName)
+      .build();
   }
 
   public boolean removeTable(String tenantId, TableDescriptor td) {

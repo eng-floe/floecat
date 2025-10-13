@@ -55,17 +55,17 @@ class ResourceMutationIT {
     assertEquals(nsId.getId(), TestSupport.resolveNamespaceId(directory, catName, nsFullPath).getId());
 
     String schema = """
-        {"type":"struct","fields":[{"name":"id","type":"long"}]}
-        """.trim();
+      {"type":"struct","fields":[{"name":"id","type":"long"}]}
+      """.trim();
     TableDescriptor tbl = TestSupport.createTable(
-        mutation, catId, nsId, "orders_it", "s3://bucket/prefix/it", schema, "IT table");
+      mutation, catId, nsId, "orders_it", "s3://bucket/prefix/it", schema, "IT table");
     ResourceId tblId = tbl.getResourceId();
     assertEquals(tblId.getId(),
-      TestSupport.resolveTableId(directory, catName, nsPath, "orders_it").getId());
+      TestSupport.resolveTableId(directory, catName, nsFullPath, "orders_it").getId());
 
     String schemaV2 = """
-        {"type":"struct","fields":[{"name":"id","type":"long"},{"name":"amount","type":"double"}]}
-        """.trim();
+      {"type":"struct","fields":[{"name":"id","type":"long"},{"name":"amount","type":"double"}]}
+      """.trim();
     TableDescriptor upd = TestSupport.updateSchema(mutation, tblId, schemaV2);
     assertEquals(schemaV2, upd.getSchemaJson());
 
@@ -73,10 +73,10 @@ class ResourceMutationIT {
     TableDescriptor renamed = TestSupport.renameTable(mutation, tblId, newName);
     assertEquals(newName, renamed.getDisplayName());
     assertEquals(tblId.getId(),
-      TestSupport.resolveTableId(directory, catName, nsPath, newName).getId());
+      TestSupport.resolveTableId(directory, catName, nsFullPath, newName).getId());
     
     StatusRuntimeException oldName404 = assertThrows(StatusRuntimeException.class, () ->
-      TestSupport.resolveTableId(directory, catName, nsPath, "orders_it"));
+      TestSupport.resolveTableId(directory, catName, nsFullPath, "orders_it"));
     TestSupport.assertGrpcAndMc(oldName404, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, null);
 
     StatusRuntimeException nsDelBlocked = assertThrows(StatusRuntimeException.class, () ->
@@ -90,7 +90,7 @@ class ResourceMutationIT {
     TestSupport.deleteTable(mutation, nsId, tblId);
 
     StatusRuntimeException tblGone = assertThrows(StatusRuntimeException.class, () ->
-      TestSupport.resolveTableId(directory, catName, nsPath, newName));
+      TestSupport.resolveTableId(directory, catName, nsFullPath, newName));
     TestSupport.assertGrpcAndMc(tblGone, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, null);
 
     TestSupport.deleteNamespace(mutation, nsId, true);

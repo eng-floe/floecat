@@ -1,7 +1,10 @@
 package ai.floedb.metacat.service.catalog.impl;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+
+import com.google.common.collect.Table;
 
 import io.grpc.Status;
 import io.quarkus.grpc.GrpcService;
@@ -68,6 +71,7 @@ public class DirectoryImpl implements Directory {
     authz.require(p, "catalog.read");
 
     var ref = req.getRef();
+    validateNameRefOrThrow(ref);
     var tenantId = p.getTenantId();
     var catalogRid = nameIndex.getCatalogByName(tenantId, ref.getCatalog())
       .map(NameRef::getResourceId)
@@ -76,12 +80,12 @@ public class DirectoryImpl implements Directory {
     var normPath = ref.getPathList();
 
     var id = nameIndex.getNamespaceByPath(tenantId, catalogRid.getId(), normPath)
-        .map(NameRef::getResourceId)
-        .orElseThrow(() -> GrpcErrors.notFound(
-            corrId(),
-            "namespace.by_path_missing",
-            Map.of("catalog_id", catalogRid.getId(), "path", String.join("/", normPath))
-        ));
+      .map(NameRef::getResourceId)
+      .orElseThrow(() -> GrpcErrors.notFound(
+        corrId(),
+        "namespace.by_path_missing",
+        Map.of("catalog_id", catalogRid.getId(), "path", String.join("/", normPath))
+      ));
 
     return Uni.createFrom().item(
         ResolveNamespaceResponse.newBuilder().setResourceId(id).build());
@@ -110,24 +114,22 @@ public class DirectoryImpl implements Directory {
     var p = principal.get();
     authz.require(p, List.of("catalog.read", "table.read"));
 
-    var tableRef = NameRef.newBuilder()
-      .setCatalog(req.getRef().getCatalog())
-      .addAllPath(req.getRef().getPathList())
-      .setName(req.getRef().getName())
-      .build();
+    var ref = req.getRef();
+    validateNameRefOrThrow(ref);
+    validateTableNameOrThrow(ref);
 
-    var id = nameIndex.getTableByName(p.getTenantId(), tableRef)
-        .map(NameRef::getResourceId)
-        .orElseThrow(() -> GrpcErrors.notFound(
-            corrId(),
-            "table.by_name_missing",
-            Map.of("catalog", req.getRef().getCatalog(), 
-              "path", String.join("/", req.getRef().getPathList()), 
-              "name", req.getRef().getName())
-        ));
+    var id = nameIndex.getTableByName(p.getTenantId(), ref)
+      .map(NameRef::getResourceId)
+      .orElseThrow(() -> GrpcErrors.notFound(
+        corrId(),
+        "table.by_name_missing",
+        Map.of("catalog", ref.getCatalog(), 
+          "path", String.join("/", ref.getPathList()), 
+          "name", req.getRef().getName())
+      ));
 
     return Uni.createFrom().item(
-        ResolveTableResponse.newBuilder().setResourceId(id).build());
+      ResolveTableResponse.newBuilder().setResourceId(id).build());
   }
 
   @Override
@@ -163,7 +165,7 @@ public class DirectoryImpl implements Directory {
           try {
             start = Integer.parseInt(token);
           } catch (NumberFormatException nfe) {
-            throw Status.INVALID_ARGUMENT.withDescription("invalid page_token").asRuntimeException();
+            throw GrpcErrors.invalidArgument(corrId(), "page_token.invalid", Map.of("page_token", token));
           }
         }
         final int end = Math.min(names.size(), start + Math.max(1, limit));
@@ -206,12 +208,32 @@ public class DirectoryImpl implements Directory {
         return out.build();
       }
 
-      throw Status.INVALID_ARGUMENT.withDescription("selector is required").asRuntimeException();
+      throw GrpcErrors.invalidArgument(corrId(), "selector.required", Map.of());
     });
   }
 
   private String corrId() {
     var pctx = principal != null ? principal.get() : null;
     return pctx != null ? pctx.getCorrelationId() : "";
+  }
+
+  private void validateNameRefOrThrow(NameRef ref) {
+    if (ref.getCatalog() == null || ref.getCatalog().isBlank()) {
+      throw GrpcErrors.invalidArgument(corrId(), "catalog.missing", Map.of());
+    }
+    for (String s : ref.getPathList()) {
+      if (s == null || s.isBlank()) {
+        throw GrpcErrors.invalidArgument(corrId(), "path.segment.blank", Map.of());
+      }
+      if (s.contains("/")) {
+        throw GrpcErrors.invalidArgument(corrId(), "path.segment.contains_slash", Map.of("segment", s));
+      }
+    }
+  }
+
+  private void validateTableNameOrThrow(NameRef ref) {
+    if (ref.getName() == null || ref.getName().isBlank()) {
+      throw GrpcErrors.invalidArgument(corrId(), "table.name.missing", Map.of());
+    }
   }
 }

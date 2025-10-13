@@ -48,7 +48,7 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
     var catalogId = td.getCatalogId().getId();
     var namespaceId = td.getNamespaceId().getId();
 
-    putMulti(List.of(
+    putAll(List.of(
         Keys.tblCanonicalPtr(tenantId, tableId.getId()),
         Keys.tblPtr(tenantId, catalogId, namespaceId, tableId.getId())
       ), Keys.tblBlob(tenantId, tableId.getId()), td);

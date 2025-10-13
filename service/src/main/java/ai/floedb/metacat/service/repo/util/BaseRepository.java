@@ -61,20 +61,17 @@ public abstract class BaseRepository<T> implements Repository<T> {
 
   @Override
   public void put(String key, String blobUri, T value) {
-    putMulti(List.of(key), blobUri, value);
+    putAll(List.of(key), blobUri, value);
   }
 
-  protected void putMulti(Collection<String> keys, String blobUri, T value) {
+  protected void putAll(Collection<String> keys, String blobUri, T value) {
     byte[] bytes = toBytes.apply(value);
     String newEtag = sha256B64(bytes);
     var hdr = blobs.head(blobUri);
 
-    if (hdr.isPresent() && newEtag.equals(hdr.get().getEtag())) {
-      return;
+    if (hdr.isEmpty() || !newEtag.equals(hdr.get().getEtag())) {
+      blobs.put(blobUri, bytes, contentType);
     }
-
-    blobs.put(blobUri, bytes, contentType);
-
     for (String key : keys) {
       putCas(key, blobUri);
     }

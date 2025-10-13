@@ -168,7 +168,7 @@ public class ResourceMutationImpl implements ResourceMutation {
     var tenantId = p.getTenantId();
 
     var parents = spec.getPathList();
-    var full = new java.util.ArrayList<>(parents);
+    var full = new ArrayList<>(parents);
     full.addAll(List.of(spec.getDisplayName()));
 
     var existing = nameIndex.getNamespaceByPath(
@@ -401,7 +401,7 @@ public class ResourceMutationImpl implements ResourceMutation {
   private long nowMs() { 
     return clock.millis(); 
   }
-  
+
   private String corrId() {
     var pctx = principal != null ? principal.get() : null;
     return pctx != null ? pctx.getCorrelationId() : "";
