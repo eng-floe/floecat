@@ -1,10 +1,10 @@
 package ai.floedb.metacat.service.catalog.impl;
 
+import java.util.Map;
+
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-
-import java.util.Map;
 
 import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.GetCatalogResponse;

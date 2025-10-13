@@ -5,6 +5,7 @@ import java.util.Optional;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
@@ -14,12 +15,14 @@ import ai.floedb.metacat.service.storage.PointerStore;
 
 @ApplicationScoped
 public class CatalogRepository extends BaseRepository<Catalog> {
+  private NameIndexRepository nameIndex;
 
   protected CatalogRepository() { super(); }
 
   @Inject
-  public CatalogRepository(PointerStore ptr, BlobStore blobs) {
+  public CatalogRepository(NameIndexRepository nameIndex, PointerStore ptr, BlobStore blobs) {
     super(ptr, blobs, Catalog::parseFrom, Catalog::toByteArray, "application/x-protobuf");
+    this.nameIndex = nameIndex;
   }
 
   public Optional<Catalog> get(ResourceId rid) {
@@ -34,18 +37,23 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     return countByPrefix(Keys.catPtr(tenantId, ""));
   }
 
-  public void put(Catalog c) {
-    var rid = c.getResourceId();
-    put(Keys.catPtr(rid.getTenantId(), rid.getId()),
-        Keys.catBlob(rid.getTenantId(), rid.getId()),
-        c);
+  public void put(Catalog catalog) {
+    var catalogId = catalog.getResourceId();
+
+    delete(catalogId);
+    put(Keys.catPtr(catalogId.getTenantId(), catalogId.getId()),
+        Keys.catBlob(catalogId.getTenantId(), catalogId.getId()),
+        catalog);
+
+    nameIndex.upsertCatalog(catalogId.getTenantId(), catalogId, catalog.getDisplayName());
   }
 
-  public boolean delete(ResourceId catalogRid) {
-    var tid = catalogRid.getTenantId();
-    var cid = catalogRid.getId();
-    String ptrKey = Keys.catPtr(tid, cid);
-    String blobUri = Keys.catBlob(tid, cid);
+  public boolean delete(ResourceId catalogId) {
+    var tenantId = catalogId.getTenantId();
+    String ptrKey = Keys.catPtr(tenantId, catalogId.getId());
+    String blobUri = Keys.catBlob(tenantId, catalogId.getId());
+
+    nameIndex.removeCatalog(tenantId, catalogId);
 
     boolean okPtr = ptr.delete(ptrKey);
     boolean okBlob = blobs.delete(blobUri);

@@ -29,20 +29,17 @@ public final class Keys {
   public static String tblCanonicalPtr(String tid, String tblId) {
     return "/tenants/" + normTenant(tid) + "/tables/" + enc(tblId);
   }
-  public static String tblBlob(String tid, String tblId) {
-    return "mem://tenants/" + normTenant(tid) + "/tables/" + enc(tblId) + "/table.pb";
-  }
-  public static String tblIndexPtr(String tid, String catId, String nsId, String tblId) {
+  public static String tblPtr(String tid, String catId, String nsId, String tblId) {
     return "/tenants/" + normTenant(tid) + "/catalogs/" + enc(catId) + "/namespaces/" + enc(nsId) + "/tables/by-id/" + enc(tblId);
   }
-  public static String nsIndexPrefix(String tid, String catId, String nsId) {
-    return tblIndexPtr(tid, catId, nsId, "");
+  public static String tblBlob(String tid, String tblId) {
+    return "mem://tenants/" + normTenant(tid) + "/tables/" + enc(tblId) + "/table.pb";
   }
 
   public static String snapPtr(String tid, String tblId, long snapshotId) {
     return "/tenants/" + normTenant(tid) + "/tables/" + enc(tblId) + "/snapshots/" + snapshotId;
   }
-  public static String snapPrefix(String tid, String tblId) {
+  public static String snapPtr(String tid, String tblId) {
     return "/tenants/" + normTenant(tid) + "/tables/" + enc(tblId) + "/snapshots/";
   }
   public static String snapBlob(String tid, String tblId, long snapshotId) {
@@ -64,6 +61,12 @@ public final class Keys {
   }
   public static String idxNsById(String tid, String id) {
     return "/tenants/" + normTenant(tid) + "/_index/namespaces/by-id/" + enc(id);
+  }
+  public static String idxNsOwnerById(String tid, String nsId) {
+    return "/tenants/" + normTenant(tid) + "/_index/namespaces/owner/by-id/" + enc(nsId);
+  }
+  public static String idxTblByNamespace(String tid, String nsId, String tableId) {
+    return "/tenants/" + normTenant(tid) + "/_index/tables/by-namespace/" + enc(nsId) + "/" + enc(tableId);
   }
   public static String idxTblByName(String tid, String fq) {
     String[] parts = fq.split("/");

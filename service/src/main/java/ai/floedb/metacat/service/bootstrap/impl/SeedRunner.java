@@ -5,7 +5,6 @@ import java.util.List;
 import java.util.UUID;
 
 import com.google.protobuf.util.Timestamps;
-
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
@@ -23,7 +22,6 @@ import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
-import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.Pointer;
 
 @ApplicationScoped
@@ -42,60 +40,30 @@ public class SeedRunner {
 
     var salesId = seedCatalog(tenant, "sales", "Sales catalog", now);
     var financeId = seedCatalog(tenant, "finance", "Finance catalog", now);
-    var salesRef = NameRef.newBuilder()
-      .setCatalog("sales")
-      .setResourceId(salesId)
-      .build();
-    nameIndex.putCatalogIndex(tenant, salesRef, salesId);
-    var financeRef = NameRef.newBuilder()
-      .setCatalog("finance")
-      .setResourceId(financeId) 
-      .build();
-    nameIndex.putCatalogIndex(tenant, financeRef, financeId);
+    nameIndex.upsertCatalog(tenant, salesId, "sales");
+    nameIndex.upsertCatalog(tenant, financeId, "finance");
 
     var salesCoreNsId = seedNamespace(tenant, salesId, List.of("core"), "core", now);
-    var salesStg25NsId = seedNamespace(tenant, salesId, List.of("staging","2025"), "staging/2025", now);
+    var salesStg25NsId = seedNamespace(tenant, salesId, List.of("staging","2025"), "2025", now);
     var financeCoreNsId = seedNamespace(tenant, financeId, List.of("core"), "core", now);
 
-    var ordersId = seedTable(tenant, salesId, salesCoreNsId, "orders", 0L, now);
-    var nameRef = NameRef.newBuilder()
-      .setCatalog("sales")
-      .addAllPath(List.of("core"))
-      .setName("orders")
-      .build();
-    nameIndex.putTableIndex(tenant, nameRef, ordersId);
+    var ordersId = seedTable(tenant, salesId, salesCoreNsId.getId(), "orders", 0L, now);
+    nameIndex.upsertTable(tenant, ordersId, salesCoreNsId, "sales", List.of("core"), "orders");
 
-    var lineitemId = seedTable(tenant, salesId, salesCoreNsId, "lineitem", 0L, now);
-    nameRef = NameRef.newBuilder()
-      .setCatalog("sales")
-      .addAllPath(List.of("core"))
-      .setName("lineitem")
-      .build();
-    nameIndex.putTableIndex(tenant, nameRef, lineitemId);
+    var lineitemId = seedTable(tenant, salesId, salesCoreNsId.getId(), "lineitem", 0L, now);
+    nameIndex.upsertTable(tenant, lineitemId, salesCoreNsId, "sales", List.of("core"), "lineitem");
 
     seedSnapshot(tenant, ordersId, 101L, now - 60000);
     seedSnapshot(tenant, ordersId, 102L, now);
 
-    var salesStgOrdersId = seedTable(tenant, salesId, salesStg25NsId, "orders_2025", 0L, now);
-    nameIndex.putTableIndex(tenant,
-      NameRef.newBuilder().setCatalog("sales")
-        .addAllPath(List.of("staging","2025"))
-        .setName("orders_2025").build(),
-      salesStgOrdersId);
+    var salesStgOrdersId = seedTable(tenant, salesId, salesStg25NsId.getId(), "orders_2025", 0L, now);
+    nameIndex.upsertTable(tenant, salesStgOrdersId, salesStg25NsId, "sales", List.of("staging","2025"), "orders_2025");
 
-    var salesStgEventsId = seedTable(tenant, salesId, salesStg25NsId, "staging_events", 0L, now);
-    nameIndex.putTableIndex(tenant,
-      NameRef.newBuilder().setCatalog("sales")
-        .addAllPath(List.of("staging","2025"))
-        .setName("staging_events").build(),
-      salesStgEventsId);
+    var salesStgEventsId = seedTable(tenant, salesId, salesStg25NsId.getId(), "staging_events", 0L, now);
+    nameIndex.upsertTable(tenant, salesStgEventsId, salesStg25NsId, "sales", List.of("staging","2025"), "staging_events");
 
-    var glEntriesId = seedTable(tenant, financeId, financeCoreNsId, "gl_entries", 0L, now);
-    nameIndex.putTableIndex(tenant,
-      NameRef.newBuilder().setCatalog("finance")
-        .addAllPath(List.of("core"))
-        .setName("gl_entries").build(),
-      glEntriesId);
+    var glEntriesId = seedTable(tenant, financeId, financeCoreNsId.getId(), "gl_entries", 0L, now);
+    nameIndex.upsertTable(tenant, glEntriesId, financeCoreNsId, "finance", List.of("core"), "gl_entries");
 
     seedSnapshot(tenant, glEntriesId, 201L, now - 30_000L);
   }
@@ -109,18 +77,16 @@ public class SeedRunner {
     return rid;
   }
 
-  private String requireCatalogNameById(String tenantId, String catalogId) {
-    return nameIndex.getCatalogById(tenantId, catalogId)
-      .map(NameRef::getCatalog)
-      .orElseThrow(() -> new IllegalArgumentException("Unknown catalog id: " + catalogId));
-  }
+  private ResourceId seedNamespace(String tenant,
+                                   ResourceId catalogId,
+                                   List<String> path,
+                                   String display,
+                                   long now) {
+    List<String> clean = (path == null) ? List.of() : path;
+    List<String> parents = clean.isEmpty() ? List.of() : clean.subList(0, clean.size() - 1);
+    String leaf = clean.isEmpty() ? display : clean.get(clean.size() - 1);
 
-  private String seedNamespace(String tenant,
-                              ResourceId catalogId,
-                              List<String> path,
-                              String display,
-                              long now) {
-    String nsId = uuidFor(tenant + "/ns:" + displayPathKey(catalogId.getId(), path));
+    String nsId = uuidFor(tenant + "/ns:" + displayPathKey(catalogId.getId(), clean));
 
     ResourceId nsRid = ResourceId.newBuilder()
       .setTenantId(tenant)
@@ -130,34 +96,22 @@ public class SeedRunner {
 
     Namespace ns = Namespace.newBuilder()
       .setResourceId(nsRid)
-      .setDisplayName(display)
-      .setDescription(display + " namespace")
+      .setDisplayName(leaf)
+      .setDescription(leaf + " namespace")
       .setCreatedAt(Timestamps.fromMillis(now))
       .build();
 
-    namespaces.put(ns, catalogId);
-
-    String catalogName = requireCatalogNameById(tenant, catalogId.getId());
-
-    NameRef ref = NameRef.newBuilder()
-      .setCatalog(catalogName)
-      .addAllPath(path)
-      .setResourceId(nsRid)
-      .build();
-
-    nameIndex.putNamespaceIndex(tenant, ref);
-
-    return nsId;
+    namespaces.put(ns, catalogId, parents);
+    return nsRid;
   }
 
   private ResourceId seedTable(String tenant, ResourceId catalogId, String namespaceId, String name, long snapshotId, long now) {
     String tableId = uuidFor(tenant + "/tbl:" + name);
     var tableRid = ResourceId.newBuilder()
-        .setTenantId(tenant).setId(tableId).setKind(ResourceKind.RK_TABLE).build();
+      .setTenantId(tenant).setId(tableId).setKind(ResourceKind.RK_TABLE).build();
     var nsRid = ResourceId.newBuilder()
-        .setTenantId(tenant).setId(namespaceId).setKind(ResourceKind.RK_NAMESPACE).build();
+      .setTenantId(tenant).setId(namespaceId).setKind(ResourceKind.RK_NAMESPACE).build();
 
-    // Location of upstream table
     String rootUri = "s3://seed-data/" + tenant + "/" + catalogId + "/" + namespaceId + "/" + name + "/";
 
     var td = TableDescriptor.newBuilder()
@@ -173,7 +127,6 @@ public class SeedRunner {
       .build();
 
     tables.put(td);
-
     return tableRid;
   }
 

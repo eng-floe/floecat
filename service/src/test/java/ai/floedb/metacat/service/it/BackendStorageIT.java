@@ -53,7 +53,7 @@ class BackendStorageIT {
     ResourceId tblId = tbl.getResourceId();
 
     String canonPtrKey = Keys.tblCanonicalPtr(tenantId, tblId.getId());
-    String nsIdxPtrKey = Keys.tblIndexPtr(tenantId, catId.getId(), nsId.getId(), tblId.getId());
+    String nsIdxPtrKey = Keys.tblPtr(tenantId, catId.getId(), nsId.getId(), tblId.getId());
     String tblBlobUri  = Keys.tblBlob(tenantId, tblId.getId());
 
     Pointer tpCanon = ptr.get(canonPtrKey).orElseThrow(() -> new AssertionError("canonical pointer missing"));
@@ -90,7 +90,7 @@ class BackendStorageIT {
     assertTrue(ptr.get(idxNewKey).isPresent(), "new name-index pointer must exist");
     assertTrue(ptr.get(idxOldKey).isEmpty(), "old name-index pointer must be removed");
 
-    TestSupport.deleteTable(mutation, tblId);
+    TestSupport.deleteTable(mutation, nsId, tblId);
     assertTrue(ptr.get(canonPtrKey).isEmpty(), "canonical pointer should be deleted");
     assertTrue(ptr.get(nsIdxPtrKey).isEmpty(), "ns-index pointer should be deleted");
     assertTrue(blobs.head(tblBlobUri).isEmpty(), "table blob should be deleted");
@@ -166,7 +166,7 @@ class BackendStorageIT {
     var tbl = TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(), "t", "s3://b/p", "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}", "d");
     var tid = tbl.getResourceId(); var tenant = tid.getTenantId();
     var canon = Keys.tblCanonicalPtr(tenant, tid.getId());
-    var nsIdx = Keys.tblIndexPtr(tenant, cat.getResourceId().getId(), ns.getResourceId().getId(), tid.getId());
+    var nsIdx = Keys.tblPtr(tenant, cat.getResourceId().getId(), ns.getResourceId().getId(), tid.getId());
 
     long vCanon = ptr.get(canon).orElseThrow().getVersion();
     long vIdx   = ptr.get(nsIdx).orElseThrow().getVersion();
@@ -207,7 +207,7 @@ class BackendStorageIT {
     String blob = Keys.tblBlob(tenantId, tid.getId());
 
     assertTrue(blobs.delete(blob));
-    TestSupport.deleteTable(mutation, tid);
+    TestSupport.deleteTable(mutation, ns.getResourceId(), tid);
     assertTrue(ptr.get(canon).isEmpty());
 
     var tbl2 = TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(), "t2", "s3://b/p", "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}", "d");
@@ -215,7 +215,7 @@ class BackendStorageIT {
     String canon2 = Keys.tblCanonicalPtr(tenantId, tid2.getId());
     String blob2  = Keys.tblBlob(tenantId, tid2.getId());
     assertTrue(ptr.delete(canon2));
-    TestSupport.deleteTable(mutation, tid2);
+    TestSupport.deleteTable(mutation, ns.getResourceId(), tid2);
     assertTrue(blobs.head(blob2).isEmpty());
   }
 
@@ -261,7 +261,7 @@ class BackendStorageIT {
     int mid = ptr.countByPrefix(prefix);
     assertEquals(before + 2, mid);
 
-    TestSupport.deleteTable(mutation, tA.getResourceId());
+    TestSupport.deleteTable(mutation, ns.getResourceId(), tA.getResourceId());
     int after = ptr.countByPrefix(prefix);
     assertEquals(before + 1, after);
   }

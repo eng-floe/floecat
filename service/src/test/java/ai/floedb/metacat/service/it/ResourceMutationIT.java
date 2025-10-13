@@ -1,6 +1,7 @@
 package ai.floedb.metacat.service.it;
 
 import java.time.Clock;
+import java.util.ArrayList;
 import java.util.List;
 
 import io.grpc.Status;
@@ -47,9 +48,11 @@ class ResourceMutationIT {
       .getCatalog().getDisplayName());
 
     var nsPath = List.of("db_it","schema_it");
-    Namespace ns = TestSupport.createNamespace(mutation, catId, "it_schema", nsPath, "IT ns");
+    String nsLeaf = "it_schema";
+    Namespace ns = TestSupport.createNamespace(mutation, catId, nsLeaf, nsPath, "IT ns");
     ResourceId nsId = ns.getResourceId();
-    assertEquals(nsId.getId(), TestSupport.resolveNamespaceId(directory, catName, nsPath).getId());
+    var nsFullPath = new ArrayList<>(nsPath); nsFullPath.add(nsLeaf);
+    assertEquals(nsId.getId(), TestSupport.resolveNamespaceId(directory, catName, nsFullPath).getId());
 
     String schema = """
         {"type":"struct","fields":[{"name":"id","type":"long"}]}
@@ -81,9 +84,10 @@ class ResourceMutationIT {
         .setNamespaceId(nsId)
         .setRequireEmpty(true)
         .build()));
-    TestSupport.assertGrpcAndMc(nsDelBlocked, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Namespace contains tables");
+    TestSupport.assertGrpcAndMc(nsDelBlocked, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, 
+      "Namespace \"db_it/schema_it/it_schema\" contains tables and/or children.");
 
-    TestSupport.deleteTable(mutation, tblId);
+    TestSupport.deleteTable(mutation, nsId, tblId);
 
     StatusRuntimeException tblGone = assertThrows(StatusRuntimeException.class, () ->
       TestSupport.resolveTableId(directory, catName, nsPath, newName));

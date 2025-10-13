@@ -90,7 +90,8 @@ message RenameNamespaceRequest {
   ai.floedb.metacat.common.ResourceId namespace_id = 1;
   string new_display_name = 2;
   repeated string new_path = 3;
-  Precondition precondition = 4;
+  ai.floedb.metacat.common.ResourceId new_catalog_id = 4;
+  Precondition precondition = 5;
 }
 message RenameNamespaceResponse {
   Namespace namespace = 1;
@@ -154,9 +155,11 @@ message RenameTableResponse {
 
 message DeleteTableRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
-  bool purge_stats = 2;
-  bool purge_snapshots = 3;
-  Precondition precondition = 4;
+  ai.floedb.metacat.common.ResourceId catalog_id = 2;
+  ai.floedb.metacat.common.ResourceId namespace_id = 3;
+  bool purge_stats = 4;
+  bool purge_snapshots = 5;
+  Precondition precondition = 6;
 }
 message DeleteTableResponse {
   MutationMeta meta = 1;

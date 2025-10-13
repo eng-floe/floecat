@@ -37,13 +37,6 @@ public class DirectoryImpl implements Directory {
   @Inject Authorizer authz;
   @Inject NameIndexRepository nameIndex;
 
-  private ResourceId requireCatalogIdByName(String tenantId, String catalogName) {
-    return nameIndex.getCatalogByName(tenantId, catalogName)
-      .map(NameRef::getResourceId)
-      .orElseThrow(() -> GrpcErrors.notFound(corrId(), "catalog",
-        Map.of("id", catalogName)));
-  }
-
   @Override
   public Uni<ResolveCatalogResponse> resolveCatalog(ResolveCatalogRequest req) {
     var p = principal.get();
@@ -76,19 +69,22 @@ public class DirectoryImpl implements Directory {
 
     var ref = req.getRef();
     var tenantId = p.getTenantId();
-    var catalogRid = requireCatalogIdByName(tenantId, ref.getCatalog());
-    var id = nameIndex.getNamespaceByPath(tenantId, catalogRid.getId(), ref.getPathList())
+    var catalogRid = nameIndex.getCatalogByName(tenantId, ref.getCatalog())
       .map(NameRef::getResourceId)
-      .orElseThrow(() -> GrpcErrors.notFound(
-        corrId(),
-        "namespace.by_path_missing",
-        Map.of(
-          "catalog_id", catalogRid.getId(),
-          "path", String.join("/", ref.getPathList())
-        )));
+      .orElseThrow(() -> GrpcErrors.notFound(corrId(), "catalog",
+        Map.of("id", ref.getCatalog())));
+    var normPath = ref.getPathList();
 
-    var resp = ResolveNamespaceResponse.newBuilder().setResourceId(id).build();
-    return Uni.createFrom().item(resp);
+    var id = nameIndex.getNamespaceByPath(tenantId, catalogRid.getId(), normPath)
+        .map(NameRef::getResourceId)
+        .orElseThrow(() -> GrpcErrors.notFound(
+            corrId(),
+            "namespace.by_path_missing",
+            Map.of("catalog_id", catalogRid.getId(), "path", String.join("/", normPath))
+        ));
+
+    return Uni.createFrom().item(
+        ResolveNamespaceResponse.newBuilder().setResourceId(id).build());
   }
 
   @Override
@@ -114,22 +110,24 @@ public class DirectoryImpl implements Directory {
     var p = principal.get();
     authz.require(p, List.of("catalog.read", "table.read"));
 
-    var ref = req.getRef();
-    var tenantId = p.getTenantId();
+    var tableRef = NameRef.newBuilder()
+      .setCatalog(req.getRef().getCatalog())
+      .addAllPath(req.getRef().getPathList())
+      .setName(req.getRef().getName())
+      .build();
 
-    var id = nameIndex.getTableByName(tenantId, ref)
-      .map(NameRef::getResourceId)
-      .orElseThrow(() -> GrpcErrors.notFound(
-        corrId(),
-        "table.by_name_missing",
-        Map.of(
-          "catalog", ref.getCatalog(),
-          "path", String.join("/", ref.getPathList()),
-          "name", ref.getName()
-        )));
+    var id = nameIndex.getTableByName(p.getTenantId(), tableRef)
+        .map(NameRef::getResourceId)
+        .orElseThrow(() -> GrpcErrors.notFound(
+            corrId(),
+            "table.by_name_missing",
+            Map.of("catalog", req.getRef().getCatalog(), 
+              "path", String.join("/", req.getRef().getPathList()), 
+              "name", req.getRef().getName())
+        ));
 
-    var resp = ResolveTableResponse.newBuilder().setResourceId(id).build();
-    return Uni.createFrom().item(resp);
+    return Uni.createFrom().item(
+        ResolveTableResponse.newBuilder().setResourceId(id).build());
   }
 
   @Override
@@ -187,10 +185,13 @@ public class DirectoryImpl implements Directory {
       }
 
       if (req.hasPrefix()) {
-        StringBuilder next = new StringBuilder();
+        var norm = NameRef.newBuilder()
+          .setCatalog(req.getPrefix().getCatalog())
+          .addAllPath(req.getPrefix().getPathList())
+          .build();
 
-        var entries = nameIndex.listTablesByPrefix(
-          p.getTenantId(), req.getPrefix(), Math.max(1, limit), token, next);
+        StringBuilder next = new StringBuilder();
+        var entries = nameIndex.listTablesByPrefix(p.getTenantId(), norm, Math.max(1, limit), token, next);
 
         for (NameRef nr : entries) {
           var id = nr.hasResourceId() ? nr.getResourceId() : ResourceId.getDefaultInstance();

@@ -6,8 +6,8 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.Namespace;
-import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
@@ -21,6 +21,7 @@ class NamespaceRepositoryTest {
     var blob = new InMemoryBlobStore();
     var nameIndexRepo = new NameIndexRepository(ptr, blob);
     var repo = new NamespaceRepository(nameIndexRepo, ptr, blob);
+    var catRepo = new CatalogRepository(nameIndexRepo, ptr, blob);
 
     String tenant = "t-0001";
 
@@ -29,6 +30,12 @@ class NamespaceRepositoryTest {
       .setId(UUID.randomUUID().toString())
       .setKind(ResourceKind.RK_CATALOG)
       .build();
+
+    Catalog cat = Catalog.newBuilder()
+      .setResourceId(catRid)
+      .setDisplayName("sales")
+      .build();
+    catRepo.put(cat);
 
     var nsRid = ResourceId.newBuilder()
       .setTenantId(tenant)
@@ -42,26 +49,7 @@ class NamespaceRepositoryTest {
       .setDescription("Core namespace")
       .build();
 
-    String catalogName = "cat_ut";
-    var nsPath = java.util.List.of("core");
-
-    nameIndexRepo.putCatalogIndex(
-      tenant,
-      NameRef.newBuilder()
-        .setCatalog(catalogName)
-        .setResourceId(catRid)
-        .build(),
-        catRid);
-
-    nameIndexRepo.putNamespaceIndex(
-        tenant,
-        ai.floedb.metacat.common.rpc.NameRef.newBuilder()
-            .setCatalog(catalogName)
-            .addAllPath(nsPath)
-            .setResourceId(nsRid)
-            .build());
-
-    repo.put(ns, catRid);
+    repo.put(ns, catRid, null);
 
     var fetched = repo.get(nsRid).orElseThrow();
     assertEquals("core", fetched.getDisplayName());

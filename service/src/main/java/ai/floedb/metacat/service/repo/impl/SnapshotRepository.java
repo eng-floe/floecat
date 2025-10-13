@@ -30,17 +30,17 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
   }
 
   public List<Snapshot> list(ResourceId tableId, int limit, String pageToken, StringBuilder nextOut) {
-    String prefix = Keys.snapPrefix(tableId.getTenantId(), tableId.getId());
+    String prefix = Keys.snapPtr(tableId.getTenantId(), tableId.getId());
     return listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
   public int count(ResourceId tableId) {
-    String prefix = Keys.snapPrefix(tableId.getTenantId(), tableId.getId());
+    String prefix = Keys.snapPtr(tableId.getTenantId(), tableId.getId());
     return countByPrefix(prefix);
   }
 
   public Optional<Snapshot> getCurrentSnapshot(ResourceId tableId) {
-    String prefix = Keys.snapPrefix(tableId.getTenantId(), tableId.getId());
+    String prefix = Keys.snapPtr(tableId.getTenantId(), tableId.getId());
     StringBuilder ignore = new StringBuilder();
 
     var snapshots = listByPrefix(prefix, Integer.MAX_VALUE, "", ignore);

@@ -20,7 +20,8 @@ class CatalogRepositoryTest {
   void putAndGetRoundTrip() {
     var ptr = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
-    var catalogRepo = new CatalogRepository(ptr, blobs);
+    var nameIndexRepo = new NameIndexRepository(ptr, blobs);
+    var catalogRepo = new CatalogRepository(nameIndexRepo, ptr, blobs);
 
     var rid = ResourceId.newBuilder()
       .setTenantId("t-0001")
@@ -39,7 +40,7 @@ class CatalogRepositoryTest {
     var ptr = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
     var nameIndexRepo = new NameIndexRepository(ptr, blobs);
-    var catalogRepo = new CatalogRepository(ptr, blobs);
+    var catalogRepo = new CatalogRepository(nameIndexRepo, ptr, blobs);
     var namespaceRepo = new NamespaceRepository(nameIndexRepo, ptr, blobs);
 
     String tenant = "t-0001";
@@ -57,7 +58,7 @@ class CatalogRepositoryTest {
     var ns = Namespace.newBuilder().
       setResourceId(nsRid).setDisplayName("eu").
       setDescription("EU namespace").build();
-    namespaceRepo.put(ns, catRid);
+    namespaceRepo.put(ns, catRid, null);
 
     nsRid = ResourceId.newBuilder().
       setTenantId(tenant).setId(UUID.randomUUID().toString()).
@@ -65,7 +66,7 @@ class CatalogRepositoryTest {
     ns = Namespace.newBuilder().
       setResourceId(nsRid).setDisplayName("us").
       setDescription("US namespace").build();
-    namespaceRepo.put(ns, catRid);
+    namespaceRepo.put(ns, catRid, null);
 
     var next = new StringBuilder();
     List<Catalog> catalogs = catalogRepo.list(tenant, 10, "", next);

@@ -10,9 +10,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.TableDescriptor;
-import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
 
@@ -36,26 +36,7 @@ class TableRepositoryTest {
     var catalogRid = ResourceId.newBuilder().setTenantId(tenant).setId(catalogId).setKind(ResourceKind.RK_CATALOG).build();
     var nsRid = ResourceId.newBuilder().setTenantId(tenant).setId(nsId).setKind(ResourceKind.RK_NAMESPACE).build();
     var tableRid = ResourceId.newBuilder().setTenantId(tenant).setId(tblId).setKind(ResourceKind.RK_TABLE).build();
-
-    String catalogName = "cat_it";
-    var nsPath = java.util.List.of("db_it", "schema_it");
-
-    nameIndexRepo.putCatalogIndex(
-      tenant,
-      NameRef.newBuilder()
-        .setCatalog(catalogName)
-        .setResourceId(catalogRid)
-        .build(),
-      catalogRid);
-
-    nameIndexRepo.putNamespaceIndex(
-      tenant,
-      NameRef.newBuilder()
-        .setCatalog(catalogName)
-        .addAllPath(nsPath)
-        .setResourceId(nsRid)
-        .build());
-
+    
     var td = TableDescriptor.newBuilder()
       .setResourceId(tableRid)
       .setDisplayName("orders")
@@ -68,6 +49,20 @@ class TableRepositoryTest {
       .setCurrentSnapshotId(42)
       .build();
     tableRepo.put(td);
+
+    String nsKeyRow  = Keys.idxTblByNamespace(tenant, nsRid.getId(), tableRid.getId());
+    String nsKeyPfx  = Keys.idxTblByNamespace(tenant, nsRid.getId(), "");
+    var pRow = ptr.get(nsKeyRow);
+    assertTrue(pRow.isPresent(), "by-namespace ROW pointer missing");
+
+    var rowsUnderPfx = ptr.listPointersByPrefix(nsKeyPfx, 100, "", new StringBuilder());
+    assertTrue(rowsUnderPfx.stream().anyMatch(r -> r.key().equals(nsKeyRow)),
+      "prefix scan doesn't see the row key you just wrote");
+
+    String uri = pRow.get().getBlobUri();
+    assertNotNull(uri);
+    assertNotNull(blobs.head(uri).orElse(null), "blob header missing for by-namespace row");
+    assertNotNull(blobs.get(uri), "blob bytes missing for by-namespace row");
 
     var snap = Snapshot.newBuilder()
       .setSnapshotId(42)

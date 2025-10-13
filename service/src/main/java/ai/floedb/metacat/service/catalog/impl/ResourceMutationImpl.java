@@ -1,8 +1,9 @@
 package ai.floedb.metacat.service.catalog.impl;
 
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 
 import com.google.protobuf.util.Timestamps;
@@ -31,12 +32,10 @@ import ai.floedb.metacat.catalog.rpc.UpdateCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.UpdateTableSchemaRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateTableSchemaResponse;
-import ai.floedb.metacat.catalog.rpc.Precondition;
 import ai.floedb.metacat.catalog.rpc.RenameNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.RenameNamespaceResponse;
 import ai.floedb.metacat.catalog.rpc.RenameTableRequest;
 import ai.floedb.metacat.catalog.rpc.RenameTableResponse;
-import ai.floedb.metacat.common.rpc.BlobHeader;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -46,11 +45,8 @@ import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NameIndexRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
-import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import ai.floedb.metacat.service.storage.BlobStore;
-import ai.floedb.metacat.service.storage.PointerStore;
 
 @GrpcService
 public class ResourceMutationImpl implements ResourceMutation {
@@ -61,8 +57,6 @@ public class ResourceMutationImpl implements ResourceMutation {
   @Inject NameIndexRepository nameIndex;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
-  @Inject PointerStore ptr;
-  @Inject BlobStore blobs;
 
   private final Clock clock;
 
@@ -77,49 +71,34 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     var spec = req.getSpec();
     var tenantId = p.getTenantId();
-    var display = mustNonEmpty(spec.getDisplayName(), "display_name");
 
-    if (nameIndex.getCatalogByName(tenantId, display).isPresent()) {
+    if (catalogs.get(spec.getDisplayName()).isPresent()) {
       throw GrpcErrors.conflict(
         corrId(),
         "catalog.already_exists",
-        Map.of("display_name", display, "tenant_id", tenantId)
+        Map.of("display_name", spec.getDisplayName())
       );
     }
 
-    var catalogId = UUID.randomUUID().toString();
-    var rid = ResourceId.newBuilder()
-      .setTenantId(tenantId).setId(catalogId).setKind(ResourceKind.RK_CATALOG).build();
+    var catalogId = ResourceId.newBuilder()
+      .setTenantId(tenantId)
+      .setId(UUID.randomUUID().toString())
+      .setKind(ResourceKind.RK_CATALOG)
+      .build();
 
     var now = nowMs();
     var c = Catalog.newBuilder()
-      .setResourceId(rid)
-      .setDisplayName(display)
+      .setResourceId(catalogId)
+      .setDisplayName(spec.getDisplayName())
       .setDescription(spec.getDescription())
       .setCreatedAt(Timestamps.fromMillis(now))
       .build();
 
     catalogs.put(c);
 
-    var ref = NameRef.newBuilder()
-      .setCatalog(display)
-      .setResourceId(rid)
-      .build();
-    nameIndex.putCatalogIndex(tenantId, ref, rid);
-
-    var ptr = mustGetPointer(Keys.catPtr(tenantId, catalogId));
-    var hdr = blobs.head(Keys.catBlob(tenantId, catalogId)).orElse(BlobHeader.newBuilder().build());
-
     return Uni.createFrom().item(
       CreateCatalogResponse.newBuilder()
       .setCatalog(c)
-      .setMeta(MutationMeta.newBuilder()
-        .setPointerKey(ptr.getKey())
-        .setBlobUri(ptr.getBlobUri())
-        .setPointerVersion(ptr.getVersion())
-        .setEtag(hdr.getEtag())
-        .setUpdatedAt(Timestamps.fromMillis(now))
-        .build())
       .build());
   }
 
@@ -128,38 +107,27 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "catalog.write");
 
-    var rid = req.getCatalogId();
-    ensureKind(rid, ResourceKind.RK_CATALOG, "UpdateCatalog");
-    var tenantId = p.getTenantId();
-    var catalogId = rid.getId();
-    var ptrKey = Keys.catPtr(tenantId, catalogId);
-
-    var current = mustGetPointer(ptrKey);
-    checkPrecondition(req.getPrecondition(), current);
-
-    var prev = catalogs.get(rid).
-      orElseThrow(() -> GrpcErrors.notFound(corrId(), "catalog", Map.of("id", rid.getId())));
-    var display = mustNonEmpty(req.getSpec().getDisplayName(), "display_name");
+    var catalogId = req.getCatalogId();
+    ensureKind(catalogId, ResourceKind.RK_CATALOG, "UpdateCatalog");
+ 
+    var prev = catalogs.get(catalogId)
+      .orElseThrow(() -> GrpcErrors.notFound(
+        corrId(), 
+        "catalog", 
+        Map.of("id", 
+        catalogId.getId()))
+    );
+    
     var updated = prev.toBuilder()
-      .setDisplayName(display)
+      .setDisplayName(req.getSpec().getDisplayName())
       .setDescription(req.getSpec().getDescription())
       .build();
 
     catalogs.put(updated);
 
-    var ref = NameRef.newBuilder()
-      .setCatalog(display)
-      .setResourceId(rid)
-      .build();
-    nameIndex.putCatalogIndex(tenantId, ref, rid);
-
-    var ptr = mustGetPointer(ptrKey);
-    var hdr = blobs.head(ptr.getBlobUri()).orElse(BlobHeader.newBuilder().build());
-
     return Uni.createFrom().item(
       UpdateCatalogResponse.newBuilder()
         .setCatalog(updated)
-        .setMeta(meta(ptr, hdr.getEtag()))
         .build()
     );
   }
@@ -169,26 +137,24 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "catalog.write");
 
-    var rid = req.getCatalogId();
-    ensureKind(rid, ResourceKind.RK_CATALOG, "DeleteCatalog");
-    var tenantId = p.getTenantId();
-
-    var catPtrKey = Keys.catPtr(tenantId, rid.getId());
-    var current = mustGetPointer(catPtrKey);
-    checkPrecondition(req.getPrecondition(), current);
-
-    if (req.getRequireEmpty() && namespaces.count(rid) > 0) {
-      throw GrpcErrors.conflict(corrId(),  "catalog.not_empty", Map.of("catalog", rid.getId()));
+    var catalogId = req.getCatalogId();
+    ensureKind(catalogId, ResourceKind.RK_CATALOG, "DeleteCatalog");
+    if (req.getRequireEmpty() && namespaces.count(catalogId) > 0) {
+      var catalogNameRef = nameIndex.getCatalogById(p.getTenantId(), catalogId.getId());
+      if (catalogNameRef.isPresent()) {
+        throw GrpcErrors.conflict(
+          corrId(),
+          "catalog.not_empty",
+          Map.of("display_name", catalogNameRef.get().getCatalog()));
+      } else {
+        throw GrpcErrors.conflict(
+          corrId(),
+          "catalog.not_empty",
+          Map.of("display_name", catalogId.getId()));
+      }
     }
 
-    var prev = catalogs.get(rid).orElse(null);
-
-    catalogs.delete(rid);
-
-    if (prev != null) {
-      nameIndex.deleteCatalogByName(tenantId, prev.getDisplayName());
-    }
-    nameIndex.deleteCatalogById(tenantId, rid.getId());
+    catalogs.delete(catalogId);
 
     return Uni.createFrom().item(DeleteCatalogResponse.newBuilder().build());
   }
@@ -199,46 +165,40 @@ public class ResourceMutationImpl implements ResourceMutation {
     authz.require(p, "namespace.write");
 
     var spec = req.getSpec();
-    var catId = requireId(spec.getCatalogId(), ResourceKind.RK_CATALOG, "NamespaceSpec.catalog_id");
     var tenantId = p.getTenantId();
 
-    mustGetPointer(Keys.catPtr(tenantId, catId));
+    var parents = spec.getPathList();
+    var full = new java.util.ArrayList<>(parents);
+    full.addAll(List.of(spec.getDisplayName()));
 
-    var nsId = UUID.randomUUID().toString();
-    var rid = ResourceId.newBuilder()
-      .setTenantId(tenantId).setId(nsId).setKind(ResourceKind.RK_NAMESPACE).build();
+    var existing = nameIndex.getNamespaceByPath(
+      p.getTenantId(), spec.getCatalogId().getId(), full);
+
+    if (existing.isPresent()) {
+      throw GrpcErrors.conflict(corrId(), "namespace.already_exists",
+        Map.of("catalog", spec.getCatalogId().getId(),
+          "path", String.join("/", full)));
+    }
+
+    var namespaceId = ResourceId.newBuilder()
+      .setTenantId(tenantId)
+      .setId(UUID.randomUUID().toString())
+      .setKind(ResourceKind.RK_NAMESPACE)
+      .build();
 
     var now = nowMs();
-    var ns = Namespace.newBuilder()
-      .setResourceId(rid)
-      .setDisplayName(mustNonEmpty(spec.getDisplayName(), "display_name"))
+    var namespace = Namespace.newBuilder()
+      .setResourceId(namespaceId)
+      .setDisplayName(spec.getDisplayName())
       .setDescription(spec.getDescription())
       .setCreatedAt(Timestamps.fromMillis(now))
       .build();
 
-    namespaces.put(ns, spec.getCatalogId());
-
-    var catalogName = nameIndex.getCatalogById(tenantId, spec.getCatalogId().getId())
-        .map(NameRef::getCatalog)
-        .orElseThrow(() -> GrpcErrors.notFound(
-          corrId(),
-          "catalog", Map.of("id", spec.getCatalogId().getId())
-        ));
-
-    var ref = NameRef.newBuilder()
-      .setCatalog(catalogName)
-      .addAllPath(spec.getPathList())
-      .setResourceId(rid)
-      .build();
-    nameIndex.putNamespaceIndex(tenantId, ref);
-
-    var ptr = mustGetPointer(Keys.nsPtr(tenantId, catId, nsId));
-    var hdr = blobs.head(ptr.getBlobUri()).orElse(BlobHeader.newBuilder().build());
+    namespaces.put(namespace, spec.getCatalogId(), spec.getPathList());
 
     return Uni.createFrom().item(
       CreateNamespaceResponse.newBuilder()
-        .setNamespace(ns)
-        .setMeta(meta(ptr, hdr.getEtag()))
+        .setNamespace(namespace)
         .build()
     );
   }
@@ -247,57 +207,41 @@ public class ResourceMutationImpl implements ResourceMutation {
   public Uni<RenameNamespaceResponse> renameNamespace(RenameNamespaceRequest req) {
     var p = principal.get();
     authz.require(p, "namespace.write");
-
-    var rid = req.getNamespaceId();
-    ensureKind(rid, ResourceKind.RK_NAMESPACE, "RenameNamespace");
     var tenantId = p.getTenantId();
-    var nsId = rid.getId();
 
-    var nsRef = nameIndex.getNamespaceById(tenantId, nsId)
+    var namespaceId = req.getNamespaceId();
+    ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "RenameNamespace");
+
+    Namespace namespace = namespaces.get(namespaceId)
       .orElseThrow(() -> GrpcErrors.notFound(
         corrId(),
-        "namespace", Map.of("id", rid.getId())
+        "namespace", Map.of("id", namespaceId.getId())
       ));
 
-    var catalogRid = requireCatalogIdByName(tenantId, nsRef.getCatalog());
-    var catalogIdStr = catalogRid.getId();
+    var newName = req.getNewDisplayName();
+    var updated = namespace.toBuilder().setDisplayName(newName).build();
 
-    var ptrKey = Keys.nsPtr(tenantId, catalogIdStr, nsId);
-    var current = mustGetPointer(ptrKey);
-    checkPrecondition(req.getPrecondition(), current);
-
-    var cur = namespaces.get(rid)
+    NameRef namespaceNameRef  = nameIndex.getNamespaceById(tenantId, namespaceId.getId())
       .orElseThrow(() -> GrpcErrors.notFound(
         corrId(),
-        "namespace", Map.of("id", rid.getId())
+        "namespace", Map.of("id", namespaceId.getId())
       ));
-  
-    var newName = mustNonEmpty(req.getNewDisplayName(), "new_display_name");
-    var updated = cur.toBuilder().setDisplayName(newName).build();
 
-    namespaces.put(updated, catalogRid);
+    NameRef catalogNameRef = nameIndex.getCatalogByName(tenantId, namespaceNameRef.getCatalog())
+      .orElseThrow(() -> GrpcErrors.notFound(
+        corrId(),
+        "catalog", Map.of("id", namespaceId.getId())
+      ));
+      
+    var path = new ArrayList<>(namespaceNameRef.getPathList());
+    if (!path.isEmpty()) path.remove(path.size() - 1);
 
-    nameIndex.putNamespaceIndex(tenantId, nsRef);
-
-    if (!req.getNewPathList().isEmpty()) {
-      nameIndex.deleteNamespaceByPath(tenantId, catalogIdStr, nsRef.getPathList());
-
-      var newRef = NameRef.newBuilder(nsRef)
-        .clearPath()
-        .addAllPath(req.getNewPathList())
-        .setResourceId(rid)
-        .build();
-
-      nameIndex.putNamespaceIndex(tenantId, newRef);
-    }
-
-    var ptr = mustGetPointer(ptrKey);
-    var hdr = blobs.head(ptr.getBlobUri()).orElse(BlobHeader.newBuilder().build());
+    namespaces.delete(catalogNameRef.getResourceId(), namespaceId);
+    namespaces.put(updated, catalogNameRef.getResourceId(), path);
 
     return Uni.createFrom().item(
       RenameNamespaceResponse.newBuilder()
         .setNamespace(updated)
-        .setMeta(meta(ptr, hdr.getEtag()))
         .build()
     );
   }
@@ -307,35 +251,39 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "namespace.write");
 
-    var rid = req.getNamespaceId();
-    ensureKind(rid, ResourceKind.RK_NAMESPACE, "DeleteNamespace");
+    var namespaceId = req.getNamespaceId();
+    ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "DeleteNamespace");
     var tenantId = p.getTenantId();
-    var nsId = rid.getId();
 
-    var nsRef = nameIndex.getNamespaceById(tenantId, nsId)
-      .orElseThrow(() -> GrpcErrors.notFound(
-        corrId(),
-        "namespace", Map.of("id", rid.getId())
-      ));
-
-    var catalogRid = requireCatalogIdByName(tenantId, nsRef.getCatalog());
-    var catalogIdStr = catalogRid.getId();
-
-    var nsPtrKey = Keys.nsPtr(tenantId, catalogIdStr, nsId);
-    var current = mustGetPointer(nsPtrKey);
-    checkPrecondition(req.getPrecondition(), current);
-
-    if (req.getRequireEmpty()) {
-      if (tables.count(rid) > 0) {
-        throw GrpcErrors.conflict(corrId(), 
-          "namespace.not_empty", Map.of("namespace", nsId));
+    if (req.getRequireEmpty() && tables.count(namespaceId) > 0) {
+      var namespaceNameRef = nameIndex.getNamespaceById(p.getTenantId(), namespaceId.getId());
+      if (namespaceNameRef.isPresent()) {
+        throw GrpcErrors.conflict(
+          corrId(),
+          "namespace.not_empty",
+          Map.of("display_name", NameIndexRepository.joinPath(namespaceNameRef.get().getPathList())));
+      } else {
+        throw GrpcErrors.conflict(
+          corrId(),
+          "namespace.not_empty",
+          Map.of("display_name", namespaceId.getId())
+        );
       }
     }
 
-    namespaces.delete(catalogRid, rid);
+    NameRef namespaceNameRef = nameIndex.getNamespaceById(tenantId, namespaceId.getId())
+      .orElseThrow(() -> GrpcErrors.notFound(
+        corrId(),
+        "namespace", Map.of("id", namespaceId.getId())
+      ));
 
-    nameIndex.deleteNamespaceById(tenantId, nsId);
-    nameIndex.deleteNamespaceByPath(tenantId, catalogIdStr, nsRef.getPathList());
+    NameRef catalogNameRef = nameIndex.getCatalogByName(tenantId, namespaceNameRef.getCatalog())
+      .orElseThrow(() -> GrpcErrors.notFound(
+        corrId(),
+        "catalog", Map.of("id", namespaceId.getId())
+      ));
+
+    namespaces.delete(catalogNameRef.getResourceId(), namespaceId);
 
     return Uni.createFrom().item(DeleteNamespaceResponse.newBuilder().build());
   }
@@ -347,18 +295,16 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     var spec = req.getSpec();
     var tenantId = p.getTenantId();
-    var catalogId = requireId(spec.getCatalogId(), ResourceKind.RK_CATALOG, "TableSpec.catalog_id");
-    var nsId = requireId(spec.getNamespaceId(), ResourceKind.RK_NAMESPACE, "TableSpec.namespace_id");
 
-    mustGetPointer(Keys.catPtr(tenantId, catalogId));
-    mustGetPointer(Keys.nsPtr(tenantId, catalogId, nsId));
-
-    var tblId = UUID.randomUUID().toString();
-    var rid = ResourceId.newBuilder().setTenantId(tenantId).setId(tblId).setKind(ResourceKind.RK_TABLE).build();
+    var tableId = ResourceId.newBuilder()
+      .setTenantId(tenantId)
+      .setId(UUID.randomUUID().toString())
+      .setKind(ResourceKind.RK_TABLE)
+      .build();
 
     var now = nowMs();
     var td = TableDescriptor.newBuilder()
-      .setResourceId(rid)
+      .setResourceId(tableId)
       .setDisplayName(mustNonEmpty(spec.getDisplayName(), "display_name"))
       .setDescription(spec.getDescription())
       .setCatalogId(spec.getCatalogId())
@@ -370,23 +316,9 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     tables.put(td);
 
-    var catalogName = requireCatalogNameById(tenantId, catalogId);
-    var nsPath = requireNamespacePathById(tenantId, nsId);
-    var fq = NameRef.newBuilder()
-      .setCatalog(catalogName)
-      .addAllPath(nsPath)
-      .setName(td.getDisplayName())
-      .setResourceId(rid)
-      .build();
-    nameIndex.putTableIndex(tenantId, fq, rid);
-
-    var ptr = mustGetPointer(Keys.tblCanonicalPtr(tenantId, tblId));
-    var hdr = blobs.head(ptr.getBlobUri()).orElse(BlobHeader.newBuilder().build());
-
     return Uni.createFrom().item(
       CreateTableResponse.newBuilder()
         .setTable(td)
-        .setMeta(meta(ptr, hdr.getEtag()))
         .build());
   }
 
@@ -397,42 +329,22 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     var tableId = req.getTableId();
     ensureKind(tableId, ResourceKind.RK_TABLE, "UpdateTableSchema");
-    var tenantId = p.getTenantId();
-    var tblId = tableId.getId();
 
-    var canonPtr = Keys.tblCanonicalPtr(tenantId, tblId);
-    var current = mustGetPointer(canonPtr);
-    checkPrecondition(req.getPrecondition(), current);
-
-    var cur = tables.get(tableId).
-      orElseThrow(() -> GrpcErrors.notFound(corrId(), "table",
+    var cur = tables.get(tableId)
+      .orElseThrow(() -> GrpcErrors.notFound(corrId(), "table",
         Map.of("id", tableId.getId())));
 
     var updated = cur.toBuilder()
-      .setSchemaJson(mustNonEmpty(req.getSchemaJson(), "schema_json"))
-      .clearDescription().setDescription(cur.getDescription())
+      .setSchemaJson(req.getSchemaJson())
+      .clearDescription()
+      .setDescription(cur.getDescription())
       .build();
 
     tables.put(updated);
 
-    var catalogName = requireCatalogNameById(tenantId, updated.getCatalogId().getId());
-    var nsPath = requireNamespacePathById(tenantId, updated.getNamespaceId().getId());
-    var fq = NameRef.newBuilder()
-      .setCatalog(catalogName)
-      .addAllPath(nsPath)
-      .setName(updated.getDisplayName())
-      .setResourceId(updated.getResourceId())
-      .build();
-
-    nameIndex.putTableIndex(tenantId, fq, updated.getResourceId());
-
-    var ptr = mustGetPointer(canonPtr);
-    var hdr = blobs.head(ptr.getBlobUri()).orElse(BlobHeader.newBuilder().build());
-
     return Uni.createFrom().item(
       UpdateTableSchemaResponse.newBuilder()
         .setTable(updated)
-        .setMeta(meta(ptr, hdr.getEtag()))
         .build());
   }
 
@@ -444,48 +356,17 @@ public class ResourceMutationImpl implements ResourceMutation {
     var tableId = req.getTableId();
     ensureKind(tableId, ResourceKind.RK_TABLE, "RenameTable");
 
-    var tenantId = p.getTenantId();
-    var canonPtr = Keys.tblCanonicalPtr(tenantId, tableId.getId());
-    var current = mustGetPointer(canonPtr);
-    checkPrecondition(req.getPrecondition(), current);
-
     var cur = tables.get(tableId).
       orElseThrow(() -> GrpcErrors.notFound(corrId(), "table",
         Map.of("id", tableId.getId())));
 
-    var newName = mustNonEmpty(req.getNewDisplayName(), "new_display_name");
-
-    var catalogName = requireCatalogNameById(tenantId, cur.getCatalogId().getId());
-    var nsPath = requireNamespacePathById(tenantId, cur.getNamespaceId().getId());
-
-    var oldFq = NameRef.newBuilder()
-      .setCatalog(catalogName)
-      .addAllPath(nsPath)
-      .setName(cur.getDisplayName())
-      .setResourceId(tableId)
-      .build();
-
-    nameIndex.deleteTableByName(tenantId, oldFq);
-
-    var updated = cur.toBuilder().setDisplayName(newName).build();
+    var updated = cur.toBuilder().setDisplayName(req.getNewDisplayName()).build();
 
     tables.put(updated);
-
-    var newFq = NameRef.newBuilder()
-      .setCatalog(catalogName)
-      .addAllPath(nsPath)
-      .setName(updated.getDisplayName())
-      .setResourceId(updated.getResourceId())
-      .build();
-    nameIndex.putTableIndex(tenantId, newFq, updated.getResourceId());
-
-    var ptr = mustGetPointer(canonPtr);
-    var hdr = blobs.head(ptr.getBlobUri()).orElse(BlobHeader.newBuilder().build());
 
     return Uni.createFrom().item(
       RenameTableResponse.newBuilder()
         .setTable(updated)
-        .setMeta(meta(ptr, hdr.getEtag()))
         .build());
   }
 
@@ -496,62 +377,12 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     var tableId  = req.getTableId();
     ensureKind(tableId, ResourceKind.RK_TABLE, "DeleteTable");
-    var tenantId = p.getTenantId();
 
-    final String canonPtrKey = Keys.tblCanonicalPtr(tenantId, tableId.getId());
-    final Optional<Pointer> curPtr = ptr.get(canonPtrKey);
-
-    if (req.hasPrecondition()) {
-      if (curPtr.isEmpty()) {
-        throw GrpcErrors.notFound(corrId(), "table", Map.of("id", tableId.getId()));
-      }
-      checkPrecondition(req.getPrecondition(), curPtr.get());
-    }
-
-    var nameById = nameIndex.getTableById(tenantId, tableId.getId());
-
-    ptr.delete(canonPtrKey);
-    blobs.delete(Keys.tblBlob(tenantId, tableId.getId()));
-
-    if (nameById.isPresent()) {
-      var ref = nameById.get();
-
-      var catalogIdOpt = nameIndex.getCatalogByName(tenantId, ref.getCatalog())
-          .map(ai.floedb.metacat.common.rpc.NameRef::getResourceId);
-      var nsRefOpt = catalogIdOpt.flatMap(cid ->
-          nameIndex.getNamespaceByPath(tenantId, cid.getId(), ref.getPathList()));
-
-      if (catalogIdOpt.isPresent() && nsRefOpt.isPresent()) {
-        var nsId = nsRefOpt.get().getResourceId();
-        var nsIdxPtrKey = Keys.tblIndexPtr(tenantId, catalogIdOpt.get().getId(), nsId.getId(), tableId.getId());
-        ptr.delete(nsIdxPtrKey);
-      }
-
-      nameIndex.deleteTableByName(tenantId, ref);
-      nameIndex.deleteTableById(tenantId, tableId.getId());
-    } else {
-      nameIndex.deleteTableById(tenantId, tableId.getId());
+    if (!tables.delete(tableId)) {
+      throw GrpcErrors.internal(corrId(), "table.delete_failed", Map.of("id", tableId.getId()));
     }
 
     return Uni.createFrom().item(DeleteTableResponse.newBuilder().build());
-  }
-
-  private String requireCatalogNameById(String tenantId, String catalogId) {
-    return nameIndex.getCatalogById(tenantId, catalogId)
-      .map(NameRef::getCatalog)
-      .orElseThrow(() -> GrpcErrors.notFound(corrId(), "catalog", Map.of("id", catalogId)));
-  }
-
-  private ResourceId requireCatalogIdByName(String tenantId, String catalogName) {
-    return nameIndex.getCatalogByName(tenantId, catalogName)
-      .map(NameRef::getResourceId)
-      .orElseThrow(() -> GrpcErrors.notFound(corrId(), "catalog", Map.of("id", catalogName)));
-  }
-
-  private java.util.List<String> requireNamespacePathById(String tenantId, String nsId) {
-    return nameIndex.getNamespaceById(tenantId, nsId)
-      .map(NameRef::getPathList)
-      .orElseThrow(() -> GrpcErrors.notFound(corrId(), "namespace", Map.of("id", nsId)));
   }
 
   private void ensureKind(ResourceId rid, ResourceKind want, String op) {
@@ -559,14 +390,6 @@ public class ResourceMutationImpl implements ResourceMutation {
       throw GrpcErrors.invalidArgument(corrId(), null, Map.of("field", op));
     if (rid.getKind() != want)
       throw GrpcErrors.invalidArgument(corrId(), null, Map.of("field", op));
-  }
-
-  private String requireId(ResourceId rid, ResourceKind kind, String field) {
-    if (rid == null || rid.getId().isBlank() || rid.getTenantId().isBlank())
-      throw GrpcErrors.invalidArgument(corrId(), null, Map.of("field", field));
-    if (rid.getKind() != kind)
-      throw GrpcErrors.invalidArgument(corrId(), null, Map.of("field", field));
-    return rid.getId();
   }
 
   private String mustNonEmpty(String v, String name) {
@@ -578,50 +401,7 @@ public class ResourceMutationImpl implements ResourceMutation {
   private long nowMs() { 
     return clock.millis(); 
   }
-
-  private Pointer mustGetPointer(String key) {
-    return ptr.get(key)
-      .orElseThrow(() -> GrpcErrors.notFound(corrId(), "pointer", Map.of("id", key)));
-  }
-
-  private void checkPrecondition(Precondition pre, Pointer current) {
-    if (pre == null) return;
-
-    if (pre.getExpectedVersion() != 0) {
-      long expected = pre.getExpectedVersion();
-      long actual   = current.getVersion();
-      if (actual != expected) {
-        throw GrpcErrors.preconditionFailed(
-            corrId(),
-            "version_mismatch",
-            Map.of("expected", String.valueOf(expected), "actual", String.valueOf(actual)));
-      }
-      return;
-    }
-
-    String expectedEtag = pre.getExpectedEtag();
-    if (expectedEtag != null && !expectedEtag.isBlank()) {
-      var hdr = blobs.head(current.getBlobUri());
-      String actualEtag = hdr.map(BlobHeader::getEtag).orElse("");
-      if (!expectedEtag.equals(actualEtag)) {
-        throw GrpcErrors.preconditionFailed(
-            corrId(),
-            "etag_mismatch",
-            Map.of("expected", expectedEtag, "actual", actualEtag));
-      }
-    }
-  }
-
-  private MutationMeta meta(Pointer p, String etag) {
-    return MutationMeta.newBuilder()
-      .setPointerKey(p.getKey())
-      .setBlobUri(p.getBlobUri())
-      .setPointerVersion(p.getVersion())
-      .setEtag(etag == null ? "" : etag)
-      .setUpdatedAt(Timestamps.fromMillis(clock.millis()))
-      .build();
-  }
-
+  
   private String corrId() {
     var pctx = principal != null ? principal.get() : null;
     return pctx != null ? pctx.getCorrelationId() : "";

@@ -1,5 +1,6 @@
 package ai.floedb.metacat.service.repo.impl;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -27,11 +28,8 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
   }
 
   public Optional<Namespace> get(ResourceId nsId) {
-    Optional<ResourceId> catalogRid = requireCatalogIdByNamespaceId(nsId.getTenantId(), nsId.getId());
-        if (catalogRid.isEmpty()) {
-      return Optional.empty();
-    }
-    return get(Keys.nsPtr(nsId.getTenantId(), catalogRid.get().getId(), nsId.getId()));
+    return nameIndex.getNamespaceOwner(nsId.getTenantId(), nsId.getId())
+      .flatMap(catRid -> get(Keys.nsPtr(nsId.getTenantId(), catRid.getId(), nsId.getId())));
   }
 
   public List<Namespace> list(ResourceId catalogId, int limit, String token, StringBuilder next) {
@@ -42,11 +40,23 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     return countByPrefix(Keys.nsPtr(catalogId.getTenantId(), catalogId.getId(), ""));
   }
 
-  public void put(Namespace ns, ResourceId catalogId) {
-    var rid = ns.getResourceId();
-    put(Keys.nsPtr(rid.getTenantId(), catalogId.getId(), rid.getId()),
-      Keys.nsBlob(rid.getTenantId(), catalogId.getId(), rid.getId()),
-      ns);
+  public void put(Namespace ns, ResourceId catalogId, List<String> parentPathSegments) {
+    var nsRid = ns.getResourceId();
+    var tid = nsRid.getTenantId();
+
+    delete(catalogId, nsRid);
+    put(Keys.nsPtr(tid, catalogId.getId(), nsRid.getId()),
+        Keys.nsBlob(tid, catalogId.getId(), nsRid.getId()),
+        ns);
+
+    List<String> parents = (parentPathSegments == null)
+      ? Collections.emptyList()
+      : parentPathSegments;
+
+    var catName = nameIndex.getCatalogById(tid, catalogId.getId())
+      .map(NameRef::getCatalog).orElse("");
+
+    nameIndex.upsertNamespace(tid, catalogId, catName, nsRid, parents, ns.getDisplayName());
   }
 
   public boolean delete(ResourceId catalogId, ResourceId nsId) {
@@ -54,19 +64,13 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     var cid = catalogId.getId();
     var nid = nsId.getId();
 
+    nameIndex.removeNamespace(tid, nsId);
+
     String ptrKey = Keys.nsPtr(tid, cid, nid);
     String blobUri = Keys.nsBlob(tid, cid, nid);
 
     boolean okPtr = ptr.delete(ptrKey);
     boolean okBlob = blobs.delete(blobUri);
     return okPtr && okBlob;
-  }
-
-  private Optional<ResourceId> requireCatalogIdByNamespaceId(String tenantId, String nsId) {
-    var nsRefOpt = nameIndex.getNamespaceById(tenantId, nsId);
-    if (nsRefOpt.isEmpty()) return Optional.empty();
-    var catIdOpt = nameIndex.getCatalogByName(tenantId, nsRefOpt.get().getCatalog())
-        .map(NameRef::getResourceId);
-    return catIdOpt;
   }
 }

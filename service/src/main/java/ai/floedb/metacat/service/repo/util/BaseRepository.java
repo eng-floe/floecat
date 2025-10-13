@@ -91,7 +91,7 @@ public abstract class BaseRepository<T> implements Repository<T> {
   }
 
   @Override
-  public java.util.List<T> listByPrefix(String prefix, int limit, String token, StringBuilder nextOut) {
+  public List<T> listByPrefix(String prefix, int limit, String token, StringBuilder nextOut) {
     var rows = ptr.listPointersByPrefix(prefix, Math.max(1, limit), token, nextOut);
     var uris = new ArrayList<String>(rows.size());
     for (var r : rows) uris.add(r.blobUri());

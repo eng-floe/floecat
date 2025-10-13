@@ -30,76 +30,60 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
     return get(Keys.tblCanonicalPtr(tableId.getTenantId(), tableId.getId()));
   }
 
-  public List<TableDescriptor> list(ResourceId nsId, int limit, String token, StringBuilder next) {
+  public List<NameRef> list(ResourceId nsId, int limit, String token, StringBuilder next) {
     String tenant = nsId.getTenantId();
-    String catalogId = requireCatalogIdByNamespaceId(tenant, nsId.getId()).getId();
-    return listByPrefix(Keys.nsIndexPrefix(tenant, catalogId, nsId.getId()), limit, token, next);
+    String idxPrefix = Keys.idxTblByNamespace(tenant, nsId.getId(), "");
+    return nameIndex.listTablesByPrefix(tenant, idxPrefix, limit, token, next);
   }
 
   public int count(ResourceId nsId) {
     String tenant = nsId.getTenantId();
-    String catalogId = requireCatalogIdByNamespaceId(tenant, nsId.getId()).getId();
-    return countByPrefix(Keys.nsIndexPrefix(tenant, catalogId, nsId.getId()));
+    String idxPrefix = Keys.idxTblByNamespace(tenant, nsId.getId(), "");
+    return countByPrefix(idxPrefix);
   }
 
-  public void put(TableDescriptor t) {
-    var rid = t.getResourceId();
-    var cat = t.getCatalogId();
-    var ns = t.getNamespaceId();
-    var tid = rid.getTenantId();
-    var tbl = rid.getId();
+  public void put(TableDescriptor td) {
+    var tableId = td.getResourceId();
+    var tenantId = tableId.getTenantId();
+    var catalogId = td.getCatalogId().getId();
+    var namespaceId = td.getNamespaceId().getId();
 
-    String uri = Keys.tblBlob(tid, tbl);
+    putMulti(List.of(
+        Keys.tblCanonicalPtr(tenantId, tableId.getId()),
+        Keys.tblPtr(tenantId, catalogId, namespaceId, tableId.getId())
+      ), Keys.tblBlob(tenantId, tableId.getId()), td);
 
-    List<String> keys = List.of(
-      Keys.tblCanonicalPtr(tid, tbl),
-      Keys.tblIndexPtr(tid, cat.getId(), ns.getId(), tbl)
-    );
-
-    putMulti(keys, uri, t);
+    nameIndex.upsertTable(tenantId, td);
   }
 
   public boolean delete(ResourceId tableId) {
-    String tenant = tableId.getTenantId();
-    String tblId = tableId.getId();
+    final String tenant = tableId.getTenantId();
+    final String canonPtr = Keys.tblCanonicalPtr(tenant, tableId.getId());
+    final String blobUri  = Keys.tblBlob(tenant, tableId.getId());
 
-    ParentIds parents = requireParentsForTable(tenant, tblId);
-    String cid = parents.catalogId().getId();
-    String nid = parents.namespaceId().getId();
+    var tdOpt = get(tableId);
 
-    String canonPtr = Keys.tblCanonicalPtr(tenant, tblId);
-    String nsPtr = Keys.tblIndexPtr(tenant, cid, nid, tblId);
-    String blobUri = Keys.tblBlob(tenant, tblId);
+    if (tdOpt.isEmpty()) {
+      try { ptr.delete(canonPtr); } catch (Throwable ignore) {}
+      try { blobs.delete(blobUri); } catch (Throwable ignore) {}
 
-    boolean okCanon = ptr.delete(canonPtr);
-    boolean okNs = ptr.delete(nsPtr);
-    boolean okBlob = blobs.delete(blobUri);
-    return okCanon && okNs && okBlob;
-  }
+      boolean goneCanon = ptr.get(canonPtr).isEmpty();
+      boolean goneBlob  = blobs.head(blobUri).isEmpty();
+      return goneCanon && goneBlob;
+    }
 
-  private record ParentIds(ResourceId catalogId, ResourceId namespaceId) {}
+    var td = tdOpt.get();
+    String nsPtr = Keys.tblPtr(
+        tenant, td.getCatalogId().getId(), td.getNamespaceId().getId(), tableId.getId());
 
-  private ParentIds requireParentsForTable(String tenantId, String tableId) {
-    NameRef tblRef = nameIndex.getTableById(tenantId, tableId)
-      .orElseThrow(() -> new IllegalArgumentException("table index missing (by-id): " + tableId));
+    try { nameIndex.removeTable(tenant, td); } catch (Throwable ignore) {}
+    try { ptr.delete(canonPtr); } catch (Throwable ignore) {}
+    try { ptr.delete(nsPtr); }   catch (Throwable ignore) {}
+    try { blobs.delete(blobUri);} catch (Throwable ignore) {}
 
-    ResourceId catalogId = nameIndex.getCatalogByName(tenantId, tblRef.getCatalog())
-      .map(NameRef::getResourceId)
-      .orElseThrow(() -> new IllegalArgumentException("catalog not found: " + tblRef.getCatalog()));
-
-    NameRef nsRef = nameIndex.getNamespaceByPath(tenantId, catalogId.getId(), tblRef.getPathList())
-      .orElseThrow(() -> new IllegalArgumentException(
-          "namespace not found for path " + tblRef.getPathList() + " under catalog " + catalogId.getId()));
-
-    return new ParentIds(catalogId, nsRef.getResourceId());
-  }
-
-  private ResourceId requireCatalogIdByNamespaceId(String tenantId, String nsId) {
-    NameRef nsRef = nameIndex.getNamespaceById(tenantId, nsId)
-      .orElseThrow(() -> new IllegalArgumentException("namespace index missing (by-id): " + nsId));
-
-    return nameIndex.getCatalogByName(tenantId, nsRef.getCatalog())
-      .map(NameRef::getResourceId)
-      .orElseThrow(() -> new IllegalArgumentException("catalog not found: " + nsRef.getCatalog()));
+    boolean goneCanon = ptr.get(canonPtr).isEmpty();
+    boolean goneNs    = ptr.get(nsPtr).isEmpty();
+    boolean goneBlob  = blobs.head(blobUri).isEmpty();
+    return goneCanon && goneNs && goneBlob;
   }
 }

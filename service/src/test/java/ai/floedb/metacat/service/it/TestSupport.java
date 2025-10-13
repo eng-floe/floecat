@@ -101,8 +101,8 @@ public final class TestSupport {
       .setTableId(tableId).setNewDisplayName(newName).build()).getTable();
   }
 
-  public static void deleteTable(ResourceMutationGrpc.ResourceMutationBlockingStub mutation, ResourceId tableId) {
-    mutation.deleteTable(DeleteTableRequest.newBuilder().setTableId(tableId).build());
+  public static void deleteTable(ResourceMutationGrpc.ResourceMutationBlockingStub mutation, ResourceId namespaceId, ResourceId tableId) {
+    mutation.deleteTable(DeleteTableRequest.newBuilder().setNamespaceId(namespaceId).setTableId(tableId).build());
   }
 
   public static void deleteNamespace(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
