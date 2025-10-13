@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package ai.floedb.metacat.storage;
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.storage.rpc";
+
+import "common/common.proto";
+import "resource/mutation.proto";
+
+import "google/protobuf/timestamp.proto";
+
+message IdempotencyRecord {
+  enum Status {
+    STATUS_UNKNOWN = 0;
+    PENDING = 1;
+    SUCCEEDED = 2;
+  }
+
+  string op_name = 1;
+  string request_hash = 2;
+
+  Status status = 3;
+
+  ai.floedb.metacat.common.ResourceId resource_id = 4;
+  ai.floedb.metacat.catalog.MutationMeta meta = 5;
+
+  bytes payload = 6;
+
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp expires_at = 8;
+}

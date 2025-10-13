@@ -5,6 +5,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
@@ -49,7 +51,9 @@ import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import ai.floedb.metacat.service.storage.BlobStore;
+import ai.floedb.metacat.service.storage.IdempotencyStore;
 import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 
 @GrpcService
 public class ResourceMutationImpl implements ResourceMutation {
@@ -62,6 +66,7 @@ public class ResourceMutationImpl implements ResourceMutation {
   @Inject Authorizer authz;
   @Inject PointerStore ptr;
   @Inject BlobStore blobs;
+  @Inject IdempotencyStore idempotencyStore;
 
   private final Clock clock;
 
@@ -74,38 +79,68 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "catalog.write");
 
-    var spec = req.getSpec();
-    var tenantId = p.getTenantId();
+    var tenant = p.getTenantId();
+    var nowMs = clock.millis();
+    var nowTs = Timestamps.fromMillis(nowMs);
+    var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
 
-    if (catalogs.get(spec.getDisplayName()).isPresent()) {
-      throw GrpcErrors.conflict(
-        corrId(),
-        "catalog.already_exists",
-        Map.of("display_name", spec.getDisplayName())
-      );
+    var existing = nameIndex.getCatalogByName(tenant, req.getSpec().getDisplayName());
+    if (idemKey.isBlank() && existing.isPresent()) {
+      throw GrpcErrors.conflict(corrId(), "catalog.already_exists",
+        Map.of("display_name", req.getSpec().getDisplayName()));
     }
 
-    var catalogId = ResourceId.newBuilder()
-      .setTenantId(tenantId)
-      .setId(UUID.randomUUID().toString())
-      .setKind(ResourceKind.RK_CATALOG)
-      .build();
+    byte[] fp = req.getSpec().toBuilder()
+      .clearDescription()
+      .build()
+      .toByteArray();
 
-    var now = nowMs();
-    var c = Catalog.newBuilder()
-      .setResourceId(catalogId)
-      .setDisplayName(spec.getDisplayName())
-      .setDescription(spec.getDescription())
-      .setCreatedAt(Timestamps.fromMillis(now))
-      .build();
+    Catalog cat = IdempotencyGuard.runOnce(
+      tenant,
+      "CreateCatalog",
+      idemKey,
+      fp,
+      (Supplier<IdempotencyGuard.CreateResult<Catalog>>) () -> {
+        var catalogId = ResourceId.newBuilder()
+          .setTenantId(tenant)
+          .setId(UUID.randomUUID().toString())
+          .setKind(ResourceKind.RK_CATALOG)
+          .build();
 
-    catalogs.put(c);
+        var built = Catalog.newBuilder()
+          .setResourceId(catalogId)
+          .setDisplayName(req.getSpec().getDisplayName())
+          .setDescription(req.getSpec().getDescription())
+          .setCreatedAt(nowTs)
+          .build();
+
+        catalogs.put(built);
+
+        return new IdempotencyGuard.CreateResult<>(built, catalogId);
+      },
+      (Function<Catalog, MutationMeta>)
+        (c) -> catalogs.metaFor(c.getResourceId()),
+      (Function<Catalog, byte[]>) Catalog::toByteArray,
+      (Function<byte[], Catalog>) bytes -> {
+        try {
+          return Catalog.parseFrom(bytes);
+        }
+        catch (Exception e) {
+          throw new IllegalStateException(e);
+        }
+      },
+      idempotencyStore,
+      86_400L,
+      nowTs,
+      this::corrId
+    );
 
     return Uni.createFrom().item(
       CreateCatalogResponse.newBuilder()
-      .setCatalog(c)
-      .setMeta(metaForCatalog(catalogId))
-      .build());
+        .setCatalog(cat)
+        .setMeta(metaForCatalog(cat.getResourceId()))
+        .build()
+    );
   }
 
   @Override
@@ -172,42 +207,69 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "namespace.write");
 
-    var spec = req.getSpec();
-    var tenantId = p.getTenantId();
+    var tenant = p.getTenantId();
+    var nowMs = clock.millis();
+    var nowTs = Timestamps.fromMillis(nowMs);
+    var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
 
-    var parents = spec.getPathList();
+    var parents = req.getSpec().getPathList();
     var full = new ArrayList<>(parents);
-    full.addAll(List.of(spec.getDisplayName()));
-
-    var existing = nameIndex.getNamespaceByPath(
-      p.getTenantId(), spec.getCatalogId().getId(), full);
-
-    if (existing.isPresent()) {
+    full.add(req.getSpec().getDisplayName());
+    var nsExists = nameIndex.getNamespaceByPath(tenant, req.getSpec().getCatalogId().getId(), full);
+    if (idemKey.isBlank() && nsExists.isPresent()) {
       throw GrpcErrors.conflict(corrId(), "namespace.already_exists",
-        Map.of("catalog", spec.getCatalogId().getId(),
-          "path", String.join("/", full)));
+        Map.of("catalog", req.getSpec().getCatalogId().getId(), "path", String.join("/", full)));
     }
 
-    var namespaceId = ResourceId.newBuilder()
-      .setTenantId(tenantId)
-      .setId(UUID.randomUUID().toString())
-      .setKind(ResourceKind.RK_NAMESPACE)
-      .build();
+    byte[] fp = req.getSpec().toBuilder()
+      .clearDescription()
+      .build()
+      .toByteArray();
 
-    var now = nowMs();
-    var namespace = Namespace.newBuilder()
-      .setResourceId(namespaceId)
-      .setDisplayName(spec.getDisplayName())
-      .setDescription(spec.getDescription())
-      .setCreatedAt(Timestamps.fromMillis(now))
-      .build();
+    Namespace ns = IdempotencyGuard.runOnce(
+      tenant,
+      "CreateNamespace",
+      idemKey,
+      fp,
+      (Supplier<IdempotencyGuard.CreateResult<Namespace>>) () -> {
+        var namespaceId = ResourceId.newBuilder()
+          .setTenantId(tenant)
+          .setId(UUID.randomUUID().toString())
+          .setKind(ResourceKind.RK_NAMESPACE)
+          .build();
 
-    namespaces.put(namespace, spec.getCatalogId(), spec.getPathList());
+        var built = Namespace.newBuilder()
+          .setResourceId(namespaceId)
+          .setDisplayName(req.getSpec().getDisplayName())
+          .setDescription(req.getSpec().getDescription())
+          .setCreatedAt(nowTs)
+          .build();
+
+        namespaces.put(built, req.getSpec().getCatalogId(), req.getSpec().getPathList());
+
+        return new IdempotencyGuard.CreateResult<>(built, namespaceId);
+      },
+      (Function<Namespace, MutationMeta>)
+        (n) -> namespaces.metaFor(req.getSpec().getCatalogId(), n.getResourceId()),
+      (Function<Namespace, byte[]>) Namespace::toByteArray,
+      (Function<byte[], Namespace>) bytes -> {
+        try {
+          return Namespace.parseFrom(bytes);
+        }
+        catch (Exception e) {
+          throw new IllegalStateException(e);
+        }
+      },
+      idempotencyStore,
+      86_400L,
+      nowTs,
+      this::corrId
+    );
 
     return Uni.createFrom().item(
       CreateNamespaceResponse.newBuilder()
-        .setNamespace(namespace)
-        .setMeta(metaForNamespace(spec.getCatalogId(), namespaceId))
+        .setNamespace(ns)
+        .setMeta(metaForNamespace(req.getSpec().getCatalogId(), ns.getResourceId()))
         .build()
     );
   }
@@ -304,34 +366,89 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "table.write");
 
-    var spec = req.getSpec();
-    var tenantId = p.getTenantId();
+    var tenant = p.getTenantId();
+    var nowMs = clock.millis();
+    var nowTs = Timestamps.fromMillis(nowMs);
+    var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
 
-    var tableId = ResourceId.newBuilder()
-      .setTenantId(tenantId)
-      .setId(UUID.randomUUID().toString())
-      .setKind(ResourceKind.RK_TABLE)
+    var catName = nameIndex.getCatalogById(tenant, req.getSpec().getCatalogId().getId())
+    .map(NameRef::getCatalog)
+    .orElseThrow(() -> GrpcErrors.notFound(
+      corrId(), "catalog", Map.of("id", req.getSpec().getCatalogId().getId())));
+
+    var nsOpt = nameIndex.getNamespaceById(tenant, req.getSpec().getNamespaceId().getId());
+    var nsPaths = nsOpt.map(NameRef::getPathList)
+      .map(List::copyOf)
+      .orElse(List.of());
+
+    var tableRef = NameRef.newBuilder()
+      .setCatalog(catName)
+      .addAllPath(nsPaths)
+      .setName(req.getSpec().getDisplayName())
       .build();
 
-    var now = nowMs();
-    var td = TableDescriptor.newBuilder()
-      .setResourceId(tableId)
-      .setDisplayName(mustNonEmpty(spec.getDisplayName(), "display_name"))
-      .setDescription(spec.getDescription())
-      .setCatalogId(spec.getCatalogId())
-      .setNamespaceId(spec.getNamespaceId())
-      .setRootUri(mustNonEmpty(spec.getRootUri(), "root_uri"))
-      .setCreatedAt(Timestamps.fromMillis(now))
-      .setSchemaJson(mustNonEmpty(spec.getSchemaJson(), "schema_json"))
-      .build();
+    if (idemKey.isBlank() && nameIndex.getTableByName(tenant, tableRef).isPresent()) {
+      throw GrpcErrors.conflict(
+        corrId(),
+        "table.already_exists",
+        Map.of("name", tableRef.getName(),
+              "path", String.join("/", tableRef.getPathList())));
+    }
 
-    tables.put(td);
+    byte[] fp = req.getSpec().toBuilder()
+      .clearDescription()
+      .build()
+      .toByteArray();
+
+    TableDescriptor td = IdempotencyGuard.runOnce(
+      tenant,
+      "CreateTable",
+      idemKey,
+      fp,
+      (Supplier<IdempotencyGuard.CreateResult<TableDescriptor>>) () -> {
+        var tableId = ResourceId.newBuilder()
+          .setTenantId(tenant)
+          .setId(UUID.randomUUID().toString())
+          .setKind(ResourceKind.RK_TABLE)
+          .build();
+
+        var built = TableDescriptor.newBuilder()
+          .setResourceId(tableId)
+          .setDisplayName(mustNonEmpty(req.getSpec().getDisplayName(), "display_name"))
+          .setDescription(req.getSpec().getDescription())
+          .setCatalogId(req.getSpec().getCatalogId())
+          .setNamespaceId(req.getSpec().getNamespaceId())
+          .setRootUri(mustNonEmpty(req.getSpec().getRootUri(), "root_uri"))
+          .setSchemaJson(mustNonEmpty(req.getSpec().getSchemaJson(), "schema_json"))
+          .setCreatedAt(nowTs)
+          .build();
+
+        tables.put(built);
+        return new IdempotencyGuard.CreateResult<>(built, tableId);
+      },
+      (Function<TableDescriptor, MutationMeta>)
+        (t) -> tables.metaFor(t.getResourceId()),
+      (Function<TableDescriptor, byte[]>) TableDescriptor::toByteArray,
+      (Function<byte[], TableDescriptor>) bytes -> {
+        try {
+          return TableDescriptor.parseFrom(bytes);
+        }
+        catch (Exception e) {
+          throw new IllegalStateException(e);
+        }
+      },
+      idempotencyStore,
+      86_400L,
+      nowTs,
+      this::corrId
+    );
 
     return Uni.createFrom().item(
       CreateTableResponse.newBuilder()
         .setTable(td)
-        .setMeta(metaForTable(tableId))
-        .build());
+        .setMeta(tables.metaFor(td.getResourceId()))
+        .build()
+    );
   }
 
   @Override

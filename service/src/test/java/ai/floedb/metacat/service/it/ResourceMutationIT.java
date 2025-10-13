@@ -32,6 +32,28 @@ class ResourceMutationIT {
   private final Clock clock = Clock.systemUTC();
 
   @Test
+  void Resources_exist() throws Exception {
+    var cat = TestSupport.createCatalog(mutation, "cat1", "cat1");
+    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
+    var tbl = TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(), "events", "s3://events", "{}", "none");
+
+    StatusRuntimeException catExists = assertThrows(StatusRuntimeException.class, () ->
+      TestSupport.createCatalog(mutation, "cat1", "cat1"));
+    TestSupport.assertGrpcAndMc(catExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, 
+      "Catalog \"cat1\" already exists");
+
+    StatusRuntimeException nsExists = assertThrows(StatusRuntimeException.class, () ->
+      TestSupport.createNamespace(mutation, cat.getResourceId(), "2025", List.of("staging"), "2025 ns"));
+    TestSupport.assertGrpcAndMc(nsExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, 
+      "Namespace \"staging/2025\" already exists");
+
+    StatusRuntimeException tblExists = assertThrows(StatusRuntimeException.class, () ->
+      TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(), "events", "s3://events", "{}", "none"));
+    TestSupport.assertGrpcAndMc(tblExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, 
+      "Table \"events\" already exists");
+  }
+
+  @Test
   void fullMutationFlow_crud_rename_update_requireEmpty_and_errors() throws Exception {
     String tenantId = TestSupport.seedTenantId(directory, "sales");
 

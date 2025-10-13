@@ -79,6 +79,10 @@ public final class Keys {
     return "/tenants/" + normTenant(tid) + "/_index/tables/by-id/" + enc(id);
   }
 
+  public static String idemKey(String tid, String op, String key) {
+    return "/tenants/" + normTenant(tid) + "/idempotency/" + enc(op) + "/" + enc(key);
+  }
+
   public static String memUriFor(String pointerKey, String leaf) {
     String base = pointerKey.startsWith("/") ? pointerKey.substring(1) : pointerKey;
     return "mem://" + base + (leaf.startsWith("/") ? leaf : "/" + leaf);

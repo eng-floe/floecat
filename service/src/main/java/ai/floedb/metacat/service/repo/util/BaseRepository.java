@@ -2,6 +2,7 @@ package ai.floedb.metacat.service.repo.util;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -9,6 +10,11 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
 
+import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
+
+import ai.floedb.metacat.catalog.rpc.MutationMeta;
+import ai.floedb.metacat.common.rpc.BlobHeader;
 import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.service.repo.Repository;
 import ai.floedb.metacat.service.storage.BlobStore;
@@ -20,8 +26,9 @@ public abstract class BaseRepository<T> implements Repository<T> {
   protected ProtoParser<T> parser;
   protected Function<T, byte[]> toBytes;
   protected String contentType;
+  protected Clock clock = Clock.systemUTC();
 
-  private static final int CAS_MAX = 10;
+  public static final int CAS_MAX = 10;
 
   protected BaseRepository() { }
 
@@ -111,6 +118,24 @@ public abstract class BaseRepository<T> implements Repository<T> {
   @Override
   public int countByPrefix(String prefix) {
     return ptr.countByPrefix(prefix);
+  }
+
+  protected MutationMeta buildMeta(
+    String pointerKey,
+    Pointer p,
+    Optional<BlobHeader> hdrOpt,
+    Clock clock
+  ) {
+    var b = MutationMeta.newBuilder()
+      .setPointerKey(pointerKey)
+      .setBlobUri(p.getBlobUri())
+      .setPointerVersion(p.getVersion());
+
+    hdrOpt.ifPresent(h -> b.setEtag(h.getEtag()));
+    Timestamp updatedAt = hdrOpt.map(BlobHeader::getLastModifiedAt)
+                          .orElse(Timestamps.fromMillis(clock.millis()));
+    b.setUpdatedAt(updatedAt);
+    return b.build();
   }
 
   private static String sha256B64(byte[] data) {

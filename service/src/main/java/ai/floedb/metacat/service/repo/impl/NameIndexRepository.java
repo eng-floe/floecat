@@ -119,7 +119,7 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
     String kById = Keys.idxTblById(tenantId, td.getResourceId().getId());
 
     var catRef = getCatalogById(tenantId, td.getCatalogId().getId()).orElse(null);
-    var nsRef  = getNamespaceById(tenantId, td.getNamespaceId().getId()).orElse(null);
+    var nsRef = getNamespaceById(tenantId, td.getNamespaceId().getId()).orElse(null);
 
     var prevFullOpt = getTableById(tenantId, td.getResourceId().getId());
 

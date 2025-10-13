@@ -7,6 +7,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
 import ai.floedb.metacat.catalog.rpc.Catalog;
+import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
@@ -40,7 +41,6 @@ public class CatalogRepository extends BaseRepository<Catalog> {
   public void put(Catalog catalog) {
     var catalogId = catalog.getResourceId();
 
-    delete(catalogId);
     put(Keys.catPtr(catalogId.getTenantId(), catalogId.getId()),
         Keys.catBlob(catalogId.getTenantId(), catalogId.getId()),
         catalog);
@@ -58,5 +58,16 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     boolean okPtr = ptr.delete(ptrKey);
     boolean okBlob = blobs.delete(blobUri);
     return okPtr && okBlob;
+  }
+
+  public MutationMeta metaFor(ResourceId catalogId) {
+    String tenant = catalogId.getTenantId();
+    String key = Keys.catPtr(tenant, catalogId.getId());
+
+    var p = ptr.get(key).orElseThrow(() ->
+      new IllegalStateException("Pointer missing for catalog: " + catalogId.getId()));
+
+    var hdr = blobs.head(p.getBlobUri());
+    return buildMeta(key, p, hdr, clock);
   }
 }

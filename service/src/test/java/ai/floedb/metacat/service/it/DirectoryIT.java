@@ -156,7 +156,7 @@ class DirectoryIT {
 
   @Test
   void renameTable_reflectedInDirectory() {
-    var cat = TestSupport.createCatalog(mutation, "barf", "barf cat");
+    var cat = TestSupport.createCatalog(mutation, "barf1", "barf cat");
     var ns  = TestSupport.createNamespace(mutation, cat.getResourceId(), "core", null, "core ns");
     var tbl = TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(), "t0", "s3://barf", "{}", "none");
     var path = List.of("core");
@@ -177,7 +177,7 @@ class DirectoryIT {
 
   @Test
   void renameNamespace_reflectedInDirectory() {
-    var cat = TestSupport.createCatalog(mutation, "barf", "barf cat");
+    var cat = TestSupport.createCatalog(mutation, "barf2", "barf cat");
     var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "a", List.of("p"), "core ns");
     var id = ns.getResourceId();
     var oldRef = NameRef.newBuilder().setCatalog(cat.getDisplayName()).addPath("p").addPath("a").build();
@@ -222,12 +222,12 @@ class DirectoryIT {
 
   @Test
   void resolveAndLookup_unicodeAndSpaces() {
-    var cat = TestSupport.createCatalog(mutation, "barf", "barf cat");
+    var cat = TestSupport.createCatalog(mutation, "barf3", "barf cat");
     var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
     var tbl = TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(), "staging events 🧪", "s3://barf", "{}", "none");
     
     var nameRef = NameRef.newBuilder()
-      .setCatalog("barf").addPath("staging").addPath("2025").setName("staging events 🧪").build();
+      .setCatalog("barf3").addPath("staging").addPath("2025").setName("staging events 🧪").build();
 
     var resolved = directory.resolveTable(ResolveTableRequest.newBuilder().setRef(nameRef).build());
     var lookup = directory.lookupTable(LookupTableRequest.newBuilder().setResourceId(resolved.getResourceId()).build());

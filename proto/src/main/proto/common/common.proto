@@ -60,7 +60,8 @@ message BlobHeader {
   string schema_version = 2;
   string etag = 3;
   google.protobuf.Timestamp created_at = 4;
-  repeated Tag tags = 5;
+  google.protobuf.Timestamp last_modified_at = 5;
+  repeated Tag tags = 6;
 }
 
 message Tag {

@@ -6,7 +6,7 @@ import java.util.Optional;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-
+import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -72,5 +72,17 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     boolean okPtr = ptr.delete(ptrKey);
     boolean okBlob = blobs.delete(blobUri);
     return okPtr && okBlob;
+  }
+
+  public MutationMeta metaFor(ResourceId catalogId, ResourceId namespaceId) {
+    String tenant = namespaceId.getTenantId();
+    String key = Keys.nsPtr(
+      tenant, catalogId.getId(), namespaceId.getId());
+
+    var p = ptr.get(key).orElseThrow(() ->
+      new IllegalStateException("Pointer missing for namespace: " + namespaceId.getId()));
+
+    var hdr = blobs.head(p.getBlobUri());
+    return buildMeta(key, p, hdr, clock);
   }
 }

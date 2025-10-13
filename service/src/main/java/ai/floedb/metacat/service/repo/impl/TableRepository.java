@@ -5,7 +5,7 @@ import java.util.Optional;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-
+import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.catalog.rpc.TableDescriptor;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -64,11 +64,15 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
     var tdOpt = get(tableId);
 
     if (tdOpt.isEmpty()) {
-      try { ptr.delete(canonPtr); } catch (Throwable ignore) {}
-      try { blobs.delete(blobUri); } catch (Throwable ignore) {}
+      try { 
+        ptr.delete(canonPtr); 
+      } catch (Throwable ignore) {}
+      try { 
+        blobs.delete(blobUri); 
+      } catch (Throwable ignore) {}
 
       boolean goneCanon = ptr.get(canonPtr).isEmpty();
-      boolean goneBlob  = blobs.head(blobUri).isEmpty();
+      boolean goneBlob = blobs.head(blobUri).isEmpty();
       return goneCanon && goneBlob;
     }
 
@@ -82,8 +86,19 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
     try { blobs.delete(blobUri);} catch (Throwable ignore) {}
 
     boolean goneCanon = ptr.get(canonPtr).isEmpty();
-    boolean goneNs    = ptr.get(nsPtr).isEmpty();
-    boolean goneBlob  = blobs.head(blobUri).isEmpty();
+    boolean goneNs = ptr.get(nsPtr).isEmpty();
+    boolean goneBlob = blobs.head(blobUri).isEmpty();
     return goneCanon && goneNs && goneBlob;
+  }
+
+  public MutationMeta metaFor(ResourceId tableId) {
+    String tenant = tableId.getTenantId();
+    String key = Keys.tblCanonicalPtr(tenant, tableId.getId());
+
+    var p = ptr.get(key).orElseThrow(() ->
+      new IllegalStateException("Pointer missing for table: " + tableId.getId()));
+
+    var hdr = blobs.head(p.getBlobUri());
+    return buildMeta(key, p, hdr, clock);
   }
 }

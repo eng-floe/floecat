@@ -327,4 +327,125 @@ class BackendStorageIT {
     int after = ptr.countByPrefix(prefix);
     assertEquals(before + 1, after);
   }
+
+  @Test
+  void createTable_idempotent_sameKeySameSpec_returnsSameId_and_singleWrite() {
+    var tenantId = TestSupport.seedTenantId(directory, "sales");
+    var cat = TestSupport.createCatalog(mutation, "cat_idem_" + System.currentTimeMillis(), "idem");
+    var ns  = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns", List.of("db","sch"), "idem");
+
+    var spec = TableSpec.newBuilder()
+      .setCatalogId(cat.getResourceId())
+      .setNamespaceId(ns.getResourceId())
+      .setDisplayName("t0")
+      .setRootUri("s3://b/p")
+      .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
+      .setDescription("desc")
+      .build();
+
+    var key = IdempotencyKey.newBuilder().setKey("k-123").build();
+
+    var req = CreateTableRequest.newBuilder()
+      .setSpec(spec)
+      .setIdempotency(key)
+      .build();
+
+    var resp1 = mutation.createTable(req);
+    var resp2 = mutation.createTable(req);
+
+    var idemKey = Keys.idemKey(tenantId, "CreateTable", "k-123");
+    var idemPtr = ptr.get(idemKey);
+    assertTrue(idemPtr.isPresent(), "idempotency pointer missing");
+
+    var t1 = resp1.getTable().getResourceId();
+    var t2 = resp2.getTable().getResourceId();
+    assertEquals(t1.getId(), t2.getId(), "idempotent create must return the same table id");
+
+    var canonPtrKey = Keys.tblCanonicalPtr(tenantId, t1.getId());
+    var blobUri = Keys.tblBlob(tenantId, t1.getId());
+    assertTrue(ptr.get(canonPtrKey).isPresent(), "canonical pointer missing");
+    assertTrue(blobs.head(blobUri).isPresent(), "blob missing");
+
+    var fq = String.join("/", cat.getDisplayName(), "db", "sch", "ns", "t0");
+    var idxByName = Keys.idxTblByName(tenantId, fq);
+    assertTrue(ptr.get(idxByName).isPresent(), "by-name index missing");
+
+    assertEquals(resp1.getMeta().getPointerKey(), resp2.getMeta().getPointerKey());
+    assertEquals(resp1.getMeta().getPointerVersion(), resp2.getMeta().getPointerVersion());
+    assertEquals(resp1.getMeta().getEtag(), resp2.getMeta().getEtag());
+  }
+
+  @Test
+  void createTable_idempotent_mismatchSameKey_conflict() {
+    var cat = TestSupport.createCatalog(mutation, "cat_idem_conf_" + System.currentTimeMillis(), "idem");
+    var ns  = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns", List.of("db","sch"), "idem");
+    var idem = ai.floedb.metacat.catalog.rpc.IdempotencyKey.newBuilder().setKey("k-XYZ").build();
+
+    var specA = ai.floedb.metacat.catalog.rpc.TableSpec.newBuilder()
+        .setCatalogId(cat.getResourceId()).setNamespaceId(ns.getResourceId())
+        .setDisplayName("tA").setRootUri("s3://b/p").setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
+        .build();
+
+    var specB = ai.floedb.metacat.catalog.rpc.TableSpec.newBuilder()
+        .setCatalogId(cat.getResourceId()).setNamespaceId(ns.getResourceId())
+        .setDisplayName("tB")  // <-- different display_name so different fingerprint
+        .setRootUri("s3://b/p").setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
+        .build();
+
+    var reqA = ai.floedb.metacat.catalog.rpc.CreateTableRequest.newBuilder().setSpec(specA).setIdempotency(idem).build();
+    var reqB = ai.floedb.metacat.catalog.rpc.CreateTableRequest.newBuilder().setSpec(specB).setIdempotency(idem).build();
+
+    var r1 = mutation.createTable(reqA);
+
+    var ex = assertThrows(io.grpc.StatusRuntimeException.class, () -> mutation.createTable(reqB));
+    // Expect MC_CONFLICT.idempotency.mismatch
+    assertEquals(io.grpc.Status.Code.ABORTED, ex.getStatus().getCode()); // or Code.FAILED_PRECONDITION/ALREADY_EXISTS based on your mapping
+  }
+
+  @Test
+  void createTable_idempotent_concurrent_twoWriters_singleCreate() throws InterruptedException {
+    var tenantId = TestSupport.seedTenantId(directory, "sales");
+    var cat = TestSupport.createCatalog(mutation, "cat_idem_cc_" + System.currentTimeMillis(), "idem");
+    var ns  = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns", List.of("db","sch"), "idem");
+
+    var spec = ai.floedb.metacat.catalog.rpc.TableSpec.newBuilder()
+        .setCatalogId(cat.getResourceId())
+        .setNamespaceId(ns.getResourceId())
+        .setDisplayName("tcc")
+        .setRootUri("s3://b/p")
+        .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
+        .build();
+
+    var key = ai.floedb.metacat.catalog.rpc.IdempotencyKey.newBuilder().setKey("k-CC").build();
+    var req = ai.floedb.metacat.catalog.rpc.CreateTableRequest.newBuilder().setSpec(spec).setIdempotency(key).build();
+
+    var latch = new java.util.concurrent.CountDownLatch(1);
+    var out1 = new java.util.concurrent.atomic.AtomicReference<ai.floedb.metacat.catalog.rpc.CreateTableResponse>();
+    var out2 = new java.util.concurrent.atomic.AtomicReference<ai.floedb.metacat.catalog.rpc.CreateTableResponse>();
+    var err  = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+
+    Runnable r = () -> {
+      try { latch.await(); out1.compareAndSet(null, mutation.createTable(req)); }
+      catch (Throwable t) { err.set(t); }
+    };
+    Runnable s = () -> {
+      try { latch.await(); out2.compareAndSet(null, mutation.createTable(req)); }
+      catch (Throwable t) { err.set(t); }
+    };
+
+    var t1 = new Thread(r); var t2 = new Thread(s);
+    t1.start(); t2.start(); latch.countDown(); t1.join(); t2.join();
+    assertNull(err.get(), "unexpected error in concurrent writers");
+
+    var a = out1.get(); var b = out2.get();
+    assertNotNull(a); assertNotNull(b);
+    assertEquals(a.getTable().getResourceId().getId(), b.getTable().getResourceId().getId(), "should be same table id");
+
+    // Only one canonical pointer & blob exist
+    var tid = a.getTable().getResourceId();
+    var canonPtrKey = ai.floedb.metacat.service.repo.util.Keys.tblCanonicalPtr(tenantId, tid.getId());
+    var blobUri     = ai.floedb.metacat.service.repo.util.Keys.tblBlob(tenantId, tid.getId());
+    assertTrue(ptr.get(canonPtrKey).isPresent());
+    assertTrue(blobs.head(blobUri).isPresent());
+  }
 }
