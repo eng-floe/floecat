@@ -9,8 +9,6 @@ public interface BlobStore {
   void put(String uri, byte[] bytes, String contentType);
   public Optional<BlobHeader> head(String uri);
   boolean delete(String uri);
-
-  // New: batch read to reduce round-trips
   default Map<String, byte[]> getBatch(List<String> uris) {
     Map<String, byte[]> out = new HashMap<>(uris.size());
     for (String u : uris) out.put(u, get(u));

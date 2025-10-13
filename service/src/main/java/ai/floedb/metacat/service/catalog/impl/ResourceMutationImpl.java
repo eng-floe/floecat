@@ -45,8 +45,11 @@ import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NameIndexRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
+import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
+import ai.floedb.metacat.service.storage.BlobStore;
+import ai.floedb.metacat.service.storage.PointerStore;
 
 @GrpcService
 public class ResourceMutationImpl implements ResourceMutation {
@@ -57,6 +60,8 @@ public class ResourceMutationImpl implements ResourceMutation {
   @Inject NameIndexRepository nameIndex;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
+  @Inject PointerStore ptr;
+  @Inject BlobStore blobs;
 
   private final Clock clock;
 
@@ -99,6 +104,7 @@ public class ResourceMutationImpl implements ResourceMutation {
     return Uni.createFrom().item(
       CreateCatalogResponse.newBuilder()
       .setCatalog(c)
+      .setMeta(metaForCatalog(catalogId))
       .build());
   }
 
@@ -128,6 +134,7 @@ public class ResourceMutationImpl implements ResourceMutation {
     return Uni.createFrom().item(
       UpdateCatalogResponse.newBuilder()
         .setCatalog(updated)
+        .setMeta(metaForCatalog(catalogId))
         .build()
     );
   }
@@ -154,9 +161,10 @@ public class ResourceMutationImpl implements ResourceMutation {
       }
     }
 
+    var m = metaForCatalog(catalogId);
     catalogs.delete(catalogId);
 
-    return Uni.createFrom().item(DeleteCatalogResponse.newBuilder().build());
+    return Uni.createFrom().item(DeleteCatalogResponse.newBuilder().setMeta(m).build());
   }
 
   @Override
@@ -199,6 +207,7 @@ public class ResourceMutationImpl implements ResourceMutation {
     return Uni.createFrom().item(
       CreateNamespaceResponse.newBuilder()
         .setNamespace(namespace)
+        .setMeta(metaForNamespace(spec.getCatalogId(), namespaceId))
         .build()
     );
   }
@@ -242,6 +251,7 @@ public class ResourceMutationImpl implements ResourceMutation {
     return Uni.createFrom().item(
       RenameNamespaceResponse.newBuilder()
         .setNamespace(updated)
+        .setMeta(metaForNamespace(catalogNameRef.getResourceId(), namespaceId))
         .build()
     );
   }
@@ -283,9 +293,10 @@ public class ResourceMutationImpl implements ResourceMutation {
         "catalog", Map.of("id", namespaceId.getId())
       ));
 
+    var m = metaForNamespace(catalogNameRef.getResourceId(), namespaceId);
     namespaces.delete(catalogNameRef.getResourceId(), namespaceId);
 
-    return Uni.createFrom().item(DeleteNamespaceResponse.newBuilder().build());
+    return Uni.createFrom().item(DeleteNamespaceResponse.newBuilder().setMeta(m).build());
   }
 
   @Override
@@ -319,6 +330,7 @@ public class ResourceMutationImpl implements ResourceMutation {
     return Uni.createFrom().item(
       CreateTableResponse.newBuilder()
         .setTable(td)
+        .setMeta(metaForTable(tableId))
         .build());
   }
 
@@ -345,6 +357,7 @@ public class ResourceMutationImpl implements ResourceMutation {
     return Uni.createFrom().item(
       UpdateTableSchemaResponse.newBuilder()
         .setTable(updated)
+        .setMeta(metaForTable(tableId))
         .build());
   }
 
@@ -367,6 +380,7 @@ public class ResourceMutationImpl implements ResourceMutation {
     return Uni.createFrom().item(
       RenameTableResponse.newBuilder()
         .setTable(updated)
+        .setMeta(metaForTable(tableId))
         .build());
   }
 
@@ -378,11 +392,12 @@ public class ResourceMutationImpl implements ResourceMutation {
     var tableId  = req.getTableId();
     ensureKind(tableId, ResourceKind.RK_TABLE, "DeleteTable");
 
+    var m = metaForTable(tableId);
     if (!tables.delete(tableId)) {
       throw GrpcErrors.internal(corrId(), "table.delete_failed", Map.of("id", tableId.getId()));
     }
 
-    return Uni.createFrom().item(DeleteTableResponse.newBuilder().build());
+    return Uni.createFrom().item(DeleteTableResponse.newBuilder().setMeta(m).build());
   }
 
   private void ensureKind(ResourceId rid, ResourceKind want, String op) {
@@ -405,5 +420,38 @@ public class ResourceMutationImpl implements ResourceMutation {
   private String corrId() {
     var pctx = principal != null ? principal.get() : null;
     return pctx != null ? pctx.getCorrelationId() : "";
+  }
+
+  private MutationMeta meta(String pointerKey, String blobUri) {
+    long version = ptr.get(pointerKey).map(Pointer::getVersion).orElse(0L);
+    var etag = blobs.head(blobUri).map(h -> h.getEtag()).orElse("");
+    return MutationMeta.newBuilder()
+      .setPointerKey(pointerKey)
+      .setBlobUri(blobUri)
+      .setPointerVersion(version)
+      .setEtag(etag)
+      .setUpdatedAt(Timestamps.fromMillis(nowMs()))
+      .build();
+  }
+
+  private MutationMeta metaForCatalog(ResourceId catId) {
+    String tenant = catId.getTenantId();
+    String ptrKey = Keys.catPtr(tenant, catId.getId());
+    String blob = Keys.catBlob(tenant, catId.getId());
+    return meta(ptrKey, blob);
+  }
+
+  private MutationMeta metaForNamespace(ResourceId catId, ResourceId nsId) {
+    String tenant = nsId.getTenantId();
+    String ptrKey = Keys.nsPtr(tenant, catId.getId(), nsId.getId());
+    String blob = Keys.nsBlob(tenant, catId.getId(), nsId.getId());
+    return meta(ptrKey, blob);
+  }
+
+  private MutationMeta metaForTable(ResourceId tblId) {
+    String tenant = tblId.getTenantId();
+    String ptrKey = Keys.tblCanonicalPtr(tenant, tblId.getId());
+    String blob = Keys.tblBlob(tenant, tblId.getId());
+    return meta(ptrKey, blob);
   }
 }
