@@ -1,0 +1,51 @@
+syntax = "proto3";
+package ai.floedb.metacat.statistic;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.statistic.rpc";
+
+import "common/common.proto";
+
+import "google/protobuf/timestamp.proto";
+
+message ListJobsRequest {
+
+}
+
+message ListJobsResponse {
+
+}
+
+message AnalyzeRequest {
+
+}
+
+message AnalyzeResponse {
+
+}
+
+message GetJobRequest {
+
+}
+
+message GetJobResponse {
+
+}
+
+message CancelJobRequest {
+
+}
+
+message CancelJobResponse {
+
+}
+
+
+// ----- Services -----
+
+service StatsCapture {
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+  rpc Analyze(AnalyzeRequest) returns (AnalyzeResponse);
+  rpc GetJob(GetJobRequest) returns (GetJobResponse);
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+}
