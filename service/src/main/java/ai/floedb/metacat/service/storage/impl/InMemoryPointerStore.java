@@ -44,13 +44,20 @@ public class InMemoryPointerStore implements PointerStore {
   }
 
   @Override
-  public List<Row> listPointersByPrefix(String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+  public List<Row> listPointersByPrefix(
+      String prefix,
+      int limit,
+      String pageToken,
+      StringBuilder nextTokenOut) {
     final String pfx = prefix == null ? "" : prefix;
     final int lim = Math.max(1, limit);
 
     List<String> keys = new ArrayList<>();
     for (String k : map.keySet()) {
-      if (k.startsWith(pfx)) keys.add(k);
+      if (k.startsWith(pfx)) 
+      {
+        keys.add(k);
+      }
     }
     Collections.sort(keys);
 
@@ -69,12 +76,16 @@ public class InMemoryPointerStore implements PointerStore {
     for (int i = start; i < end; i++) {
       String key = keys.get(i);
       Pointer p = map.get(key);
-      if (p != null) page.add(new Row(key, p.getBlobUri(), p.getVersion()));
+      if (p != null) {
+        page.add(new Row(key, p.getBlobUri(), p.getVersion()));
+      }
     }
 
     if (nextTokenOut != null) {
       nextTokenOut.setLength(0);
-      if (end < keys.size()) nextTokenOut.append(keys.get(end - 1));
+      if (end < keys.size()) {
+        nextTokenOut.append(keys.get(end - 1));
+      }
     }
     return page;
   }
@@ -83,12 +94,32 @@ public class InMemoryPointerStore implements PointerStore {
   public int countByPrefix(String prefix) {
     final String pfx = prefix == null ? "" : prefix;
     int n = 0;
-    for (String k : map.keySet()) if (k.startsWith(pfx)) n++;
+    for (String k : map.keySet()) {
+      if (k.startsWith(pfx)) {
+        n++;
+      }
+    }
     return n;
   }
 
   @Override
   public boolean delete(String key) {
     return map.remove(key) != null;
+  }
+
+  @Override
+  public boolean compareAndDelete(String key, long expectedVersion) {
+    final boolean[] deleted = { false };
+    map.compute(key, (k, cur) -> {
+      if (cur == null) {
+        return null;
+      }
+      if (cur.getVersion() == expectedVersion) {
+        deleted[0] = true;
+        return null;
+      }
+      return cur;
+    });
+    return deleted[0];
   }
 }

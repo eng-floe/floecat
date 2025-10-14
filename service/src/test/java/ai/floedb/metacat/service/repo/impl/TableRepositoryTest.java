@@ -38,16 +38,16 @@ class TableRepositoryTest {
     var tableRid = ResourceId.newBuilder().setTenantId(tenant).setId(tblId).setKind(ResourceKind.RK_TABLE).build();
     
     var td = TableDescriptor.newBuilder()
-      .setResourceId(tableRid)
-      .setDisplayName("orders")
-      .setDescription("Orders table")
-      .setCatalogId(catalogRid)
-      .setNamespaceId(nsRid)
-      .setRootUri("s3://upstream/tables/orders")
-      .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
-      .setCreatedAt(Timestamps.fromMillis(clock.millis()))
-      .setCurrentSnapshotId(42)
-      .build();
+        .setResourceId(tableRid)
+        .setDisplayName("orders")
+        .setDescription("Orders table")
+        .setCatalogId(catalogRid)
+        .setNamespaceId(nsRid)
+        .setRootUri("s3://upstream/tables/orders")
+        .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
+        .setCreatedAt(Timestamps.fromMillis(clock.millis()))
+        .setCurrentSnapshotId(42)
+        .build();
     tableRepo.put(td);
 
     String nsKeyRow  = Keys.idxTblByNamespace(tenant, nsRid.getId(), tableRid.getId());
@@ -57,7 +57,7 @@ class TableRepositoryTest {
 
     var rowsUnderPfx = ptr.listPointersByPrefix(nsKeyPfx, 100, "", new StringBuilder());
     assertTrue(rowsUnderPfx.stream().anyMatch(r -> r.key().equals(nsKeyRow)),
-      "prefix scan doesn't see the row key you just wrote");
+        "prefix scan doesn't see the row key you just wrote");
 
     String uri = pRow.get().getBlobUri();
     assertNotNull(uri);
@@ -65,9 +65,9 @@ class TableRepositoryTest {
     assertNotNull(blobs.get(uri), "blob bytes missing for by-namespace row");
 
     var snap = Snapshot.newBuilder()
-      .setSnapshotId(42)
-      .setCreatedAt(Timestamps.fromMillis(clock.millis()))
-      .build();
+        .setSnapshotId(42)
+        .setCreatedAt(Timestamps.fromMillis(clock.millis()))
+        .build();
     snapshotRepo.put(tableRid, snap);
 
     var fetched = tableRepo.get(tableRid).orElseThrow();

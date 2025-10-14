@@ -30,16 +30,16 @@ class PropagationIT {
   @Inject PlanContextStore planStore;
 
   private static final Metadata.Key<byte[]> PRINCIPAL_BIN =
-    Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
+      Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
   private static final Metadata.Key<String> PLAN_ID =
-    Metadata.Key.of("x-plan-id", Metadata.ASCII_STRING_MARSHALLER);
+      Metadata.Key.of("x-plan-id", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORR =
-    Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
+      Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
 
   private static PrincipalContext pc(String tenant) {
     return PrincipalContext.newBuilder()
-      .setTenantId(tenant).setSubject("it-user")
-      .addPermissions("catalog.read").build();
+        .setTenantId(tenant).setSubject("it-user")
+        .addPermissions("catalog.read").build();
   }
 
   @Test
@@ -52,36 +52,38 @@ class PropagationIT {
 
     RespHeadersCaptureInterceptor capture = new RespHeadersCaptureInterceptor();
     var client = resourceAccess
-      .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
-      .withInterceptors(capture);
+        .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
+        .withInterceptors(capture);
 
     client.listCatalogs(ListCatalogsRequest.getDefaultInstance());
 
     String echoed =
       Optional.ofNullable(capture.responseHeaders.get())
-        .map(h -> h.get(CORR))
-        .orElseGet(() -> Optional.ofNullable(capture.responseTrailers.get())
-                                  .map(t -> t.get(CORR)).orElse(null));
+          .map(h -> h.get(CORR))
+          .orElseGet(() -> Optional.ofNullable(capture.responseTrailers.get())
+              .map(t -> t.get(CORR)).orElse(null));
 
     assertEquals(corr, echoed, "server should echo x-correlation-id");
 
     var rid = ResourceId.newBuilder()
-      .setTenantId("t-7777")
-      .setKind(ResourceKind.RK_CATALOG)
-      .setId("00000000-0000-0000-0000-000000000000")
-      .build();
+        .setTenantId("t-7777")
+        .setKind(ResourceKind.RK_CATALOG)
+        .setId("00000000-0000-0000-0000-000000000000")
+        .build();
 
     RespHeadersCaptureInterceptor captureErr = new RespHeadersCaptureInterceptor();
     var errClient = resourceAccess
-      .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
-      .withInterceptors(captureErr);
+        .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
+        .withInterceptors(captureErr);
 
-    assertThrows(StatusRuntimeException.class,
-      () -> errClient.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(rid).build()));
+    assertThrows(
+        StatusRuntimeException.class,
+        () -> errClient.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(rid).build()));
 
     String echoedOnErr =
       Optional.ofNullable(captureErr.responseTrailers.get())
-        .map(t -> t.get(CORR)).orElse(null);
+          .map(t -> t.get(CORR))
+          .orElse(null);
     assertEquals(corr, echoedOnErr, "server should echo x-correlation-id in trailers on error");
   }
 
@@ -91,12 +93,12 @@ class PropagationIT {
     var seededPc = pc("t-4242").toBuilder().setPlanId(planId).build();
 
     planStore.put(PlanContext.newActive(
-      planId,
-      "t-4242",
-      seededPc,
-      null, null,
-      60_000L,
-      1L
+        planId,
+        "t-4242",
+        seededPc,
+        null, null,
+        60_000L,
+        1L
     ));
 
     String corr = "it-corr-" + UUID.randomUUID();
@@ -107,8 +109,8 @@ class PropagationIT {
 
     RespHeadersCaptureInterceptor capture = new RespHeadersCaptureInterceptor();
     var client = resourceAccess
-      .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
-      .withInterceptors(capture);
+        .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
+        .withInterceptors(capture);
 
     client.listCatalogs(ListCatalogsRequest.getDefaultInstance());
 
@@ -116,7 +118,7 @@ class PropagationIT {
       Optional.ofNullable(capture.responseHeaders.get())
         .map(h -> h.get(CORR))
         .orElseGet(() -> Optional.ofNullable(capture.responseTrailers.get())
-                                  .map(t -> t.get(CORR)).orElse(null));
+            .map(t -> t.get(CORR)).orElse(null));
     assertEquals(corr, echoed, "server should echo x-correlation-id");
   }
 

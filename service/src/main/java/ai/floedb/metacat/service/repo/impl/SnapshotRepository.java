@@ -4,7 +4,6 @@ import java.util.List;
 import java.util.Optional;
 
 import com.google.protobuf.util.Timestamps;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
@@ -45,9 +44,12 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     StringBuilder ignore = new StringBuilder();
 
     var snapshots = listByPrefix(prefix, Integer.MAX_VALUE, "", ignore);
-    if (snapshots.isEmpty()) return Optional.empty();
+    if (snapshots.isEmpty()) {
+      return Optional.empty();
+    }
 
-    return snapshots.stream().max((a, b) -> Timestamps.compare(a.getCreatedAt(), b.getCreatedAt()));
+    return snapshots.stream().max(
+        (a, b) -> Timestamps.compare(a.getCreatedAt(), b.getCreatedAt()));
   }
 
   public void put(ResourceId tableId, Snapshot snapshot) {

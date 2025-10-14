@@ -35,7 +35,7 @@ class ResourceAccessIT {
     var missingRid = salesId.toBuilder().setId("00000000-0000-0000-0000-000000000000").build();
 
     StatusRuntimeException ex = assertThrows(StatusRuntimeException.class, () ->
-      resourceAccess.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(missingRid).build()));
+        resourceAccess.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(missingRid).build()));
 
     TestSupport.assertGrpcAndMc(ex, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Catalog not found");
   }

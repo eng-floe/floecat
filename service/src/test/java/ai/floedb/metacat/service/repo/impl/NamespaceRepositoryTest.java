@@ -26,28 +26,28 @@ class NamespaceRepositoryTest {
     String tenant = "t-0001";
 
     var catRid = ResourceId.newBuilder()
-      .setTenantId(tenant)
-      .setId(UUID.randomUUID().toString())
-      .setKind(ResourceKind.RK_CATALOG)
-      .build();
+        .setTenantId(tenant)
+        .setId(UUID.randomUUID().toString())
+        .setKind(ResourceKind.RK_CATALOG)
+        .build();
 
     Catalog cat = Catalog.newBuilder()
-      .setResourceId(catRid)
-      .setDisplayName("sales")
-      .build();
+        .setResourceId(catRid)
+        .setDisplayName("sales")
+        .build();
     catRepo.put(cat);
 
     var nsRid = ResourceId.newBuilder()
-      .setTenantId(tenant)
-      .setId(UUID.randomUUID().toString())
-      .setKind(ResourceKind.RK_NAMESPACE)
-      .build();
+        .setTenantId(tenant)
+        .setId(UUID.randomUUID().toString())
+        .setKind(ResourceKind.RK_NAMESPACE)
+        .build();
 
     var ns = Namespace.newBuilder()
-      .setResourceId(nsRid)
-      .setDisplayName("core")
-      .setDescription("Core namespace")
-      .build();
+        .setResourceId(nsRid)
+        .setDisplayName("core")
+        .setDescription("Core namespace")
+        .build();
 
     repo.put(ns, catRid, null);
 

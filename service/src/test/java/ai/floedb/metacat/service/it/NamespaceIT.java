@@ -24,18 +24,18 @@ class NamespaceIT {
   void listAndGetNamespaces() {
     var ref = NameRef.newBuilder().setCatalog("sales").build();
     var r = directory.resolveCatalog(ResolveCatalogRequest.newBuilder()
-      .setRef(ref).build());
+        .setRef(ref).build());
 
     var list = access.listNamespaces(ListNamespacesRequest.newBuilder()
-      .setCatalogId(r.getResourceId())
-      .build());
+        .setCatalogId(r.getResourceId())
+        .build());
 
     assertTrue(list.getNamespacesCount() >= 2);
 
     var any = list.getNamespaces(0);
     var got = access.getNamespace(GetNamespaceRequest.newBuilder()
-      .setNamespaceId(any.getResourceId())
-      .build());
+        .setNamespaceId(any.getResourceId())
+        .build());
 
     assertEquals(any.getResourceId().getId(), got.getNamespace().getResourceId().getId());
   }

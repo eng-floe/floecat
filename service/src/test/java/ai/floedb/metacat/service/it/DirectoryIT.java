@@ -35,27 +35,27 @@ class DirectoryIT {
   void resolveAndLookupCatalog() {
     var ref = NameRef.newBuilder().setCatalog("sales").build();
     var r = directory.resolveCatalog(ResolveCatalogRequest.newBuilder()
-      .setRef(ref).build());
+        .setRef(ref).build());
     assertEquals("t-0001", r.getResourceId().getTenantId());
 
     var l = directory.lookupCatalog(LookupCatalogRequest.newBuilder()
-      .setResourceId(r.getResourceId()).build());
+        .setResourceId(r.getResourceId()).build());
     assertTrue(l.getDisplayName().equals("sales") || l.getDisplayName().isEmpty());
   }
 
   @Test
   void resolveAndLookupNamespace() {
     var ref = NameRef.newBuilder()
-      .setCatalog("sales")
-      .addPath("staging")
-      .addPath("2025")
-      .build();
+        .setCatalog("sales")
+        .addPath("staging")
+        .addPath("2025")
+        .build();
 
     var ns = directory.resolveNamespace(
-      ResolveNamespaceRequest.newBuilder().setRef(ref).build());
+        ResolveNamespaceRequest.newBuilder().setRef(ref).build());
 
     var lookup = directory.lookupNamespace(
-      LookupNamespaceRequest.newBuilder().setResourceId(ns.getResourceId()).build());
+        LookupNamespaceRequest.newBuilder().setResourceId(ns.getResourceId()).build());
 
     assertEquals("sales", lookup.getRef().getCatalog());
     assertEquals(List.of("staging","2025"), lookup.getRef().getPathList());
@@ -64,16 +64,16 @@ class DirectoryIT {
   @Test
   void resolveAndLookupTable() {
     var nameRef = NameRef.newBuilder()
-      .setCatalog("sales")
-      .addPath("core")
-      .setName("orders")
-      .build();
+        .setCatalog("sales")
+        .addPath("core")
+        .setName("orders")
+        .build();
 
     var resolved = directory.resolveTable(
-      ResolveTableRequest.newBuilder().setRef(nameRef).build());
+        ResolveTableRequest.newBuilder().setRef(nameRef).build());
 
     var lookup = directory.lookupTable(
-      LookupTableRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
+        LookupTableRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
 
     assertEquals("sales", lookup.getName().getCatalog());
     assertEquals(List.of("core"), lookup.getName().getPathList());
@@ -83,13 +83,13 @@ class DirectoryIT {
   @Test
   void resolveTable_notFound_yieldsNotFound() {
     var missing = NameRef.newBuilder()
-      .setCatalog("sales")
-      .addPath("core")
-      .setName("does_not_exist")
-      .build();
+        .setCatalog("sales")
+        .addPath("core")
+        .setName("does_not_exist")
+        .build();
 
     var ex = assertThrows(io.grpc.StatusRuntimeException.class, () ->
-      directory.resolveTable(ResolveTableRequest.newBuilder().setRef(missing).build()));
+        directory.resolveTable(ResolveTableRequest.newBuilder().setRef(missing).build()));
 
     assertEquals(io.grpc.Status.NOT_FOUND.getCode(), ex.getStatus().getCode());
   }
@@ -97,12 +97,12 @@ class DirectoryIT {
   @Test
   void resolveFQTables_prefix_salesCore_returnsOrdersAndLineitem() {
     var prefix = NameRef.newBuilder()
-      .setCatalog("sales")
-      .addPath("core")
-      .build();
+        .setCatalog("sales")
+        .addPath("core")
+        .build();
 
     var resp = directory.resolveFQTables(
-      ResolveFQTablesRequest.newBuilder().setPrefix(prefix).build());
+        ResolveFQTablesRequest.newBuilder().setPrefix(prefix).build());
 
     assertTrue(resp.getTablesCount() == 2);
     var names = resp.getTablesList().stream().map(e -> e.getName().getName()).toList();
@@ -119,11 +119,11 @@ class DirectoryIT {
   @Test
   void resolveFQTables_prefix_salesStaging2025_returnsTwo() {
     var prefix = NameRef.newBuilder()
-      .setCatalog("sales").addPath("staging").addPath("2025")
-      .build();
+        .setCatalog("sales").addPath("staging").addPath("2025")
+        .build();
 
     var resp = directory.resolveFQTables(
-      ResolveFQTablesRequest.newBuilder().setPrefix(prefix).build());
+        ResolveFQTablesRequest.newBuilder().setPrefix(prefix).build());
 
     assertTrue(resp.getTablesCount() == 2);
     for (var e : resp.getTablesList()) {
@@ -137,17 +137,17 @@ class DirectoryIT {
   @Test
   void resolve_and_lookup_financeCore_glEntries_roundtrip() {
     var name = NameRef.newBuilder()
-      .setCatalog("finance").addPath("core").setName("gl_entries")
-      .build();
+        .setCatalog("finance").addPath("core").setName("gl_entries")
+        .build();
 
     var resolved = directory.resolveTable(
-      ResolveTableRequest.newBuilder().setRef(name).build());
+        ResolveTableRequest.newBuilder().setRef(name).build());
 
     assertEquals("t-0001", resolved.getResourceId().getTenantId());
     assertFalse(resolved.getResourceId().getId().isEmpty());
 
     var lookup = directory.lookupTable(
-      LookupTableRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
+        LookupTableRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
 
     assertEquals("finance", lookup.getName().getCatalog());
     assertEquals(List.of("core"), lookup.getName().getPathList());
@@ -166,8 +166,10 @@ class DirectoryIT {
 
     TestSupport.renameTable(mutation, id, "t1");
 
-    assertThrows(io.grpc.StatusRuntimeException.class, () ->
-      directory.resolveTable(ResolveTableRequest.newBuilder().setRef(oldRef).build()));
+    assertThrows(
+      io.grpc.StatusRuntimeException.class, 
+      () -> directory.resolveTable(
+          ResolveTableRequest.newBuilder().setRef(oldRef).build()));
 
     var newRef = NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(path).setName("t1").build();
     var resolved = directory.resolveTable(ResolveTableRequest.newBuilder().setRef(newRef).build());
@@ -183,9 +185,9 @@ class DirectoryIT {
     var oldRef = NameRef.newBuilder().setCatalog(cat.getDisplayName()).addPath("p").addPath("a").build();
 
     var renamed = mutation.renameNamespace(RenameNamespaceRequest.newBuilder()
-      .setNamespaceId(id)
-      .setNewDisplayName("b")
-      .build()).getNamespace();
+        .setNamespaceId(id)
+        .setNewDisplayName("b")
+        .build()).getNamespace();
 
     assertThrows(io.grpc.StatusRuntimeException.class, () ->
       directory.resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(oldRef).build()));
@@ -200,24 +202,24 @@ class DirectoryIT {
   @Test
   void resolveFQTables_list_selector_paging_and_errors() {
     var names = List.of(
-      NameRef.newBuilder().setCatalog("sales").addPath("core").setName("orders").build(),
-      NameRef.newBuilder().setCatalog("sales").addPath("core").setName("lineitem").build()
+        NameRef.newBuilder().setCatalog("sales").addPath("core").setName("orders").build(),
+        NameRef.newBuilder().setCatalog("sales").addPath("core").setName("lineitem").build()
     );
     var req = ResolveFQTablesRequest.newBuilder().setList(
-      NameList.newBuilder().addAllNames(names)).build();
+        NameList.newBuilder().addAllNames(names)).build();
 
     var page1 = directory.resolveFQTables(ResolveFQTablesRequest.newBuilder(req)
-      .setPage(PageRequest.newBuilder().setPageSize(1)).build());
+      . setPage(PageRequest.newBuilder().setPageSize(1)).build());
     assertEquals(1, page1.getTablesCount());
     var token = page1.getPage().getNextPageToken();
 
     var page2 = directory.resolveFQTables(ResolveFQTablesRequest.newBuilder(req)
-      .setPage(PageRequest.newBuilder().setPageToken(token).setPageSize(1)).build());
+        .setPage(PageRequest.newBuilder().setPageToken(token).setPageSize(1)).build());
     assertEquals(1, page2.getTablesCount());
 
     assertThrows(StatusRuntimeException.class, () ->
-      directory.resolveFQTables(ResolveFQTablesRequest.newBuilder(req)
-        .setPage(PageRequest.newBuilder().setPageToken("not-an-int")).build()));
+        directory.resolveFQTables(ResolveFQTablesRequest.newBuilder(req)
+            .setPage(PageRequest.newBuilder().setPageToken("not-an-int")).build()));
   }
 
   @Test
@@ -227,7 +229,7 @@ class DirectoryIT {
     var tbl = TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(), "staging events 🧪", "s3://barf", "{}", "none");
     
     var nameRef = NameRef.newBuilder()
-      .setCatalog("barf3").addPath("staging").addPath("2025").setName("staging events 🧪").build();
+        .setCatalog("barf3").addPath("staging").addPath("2025").setName("staging events 🧪").build();
 
     var resolved = directory.resolveTable(ResolveTableRequest.newBuilder().setRef(nameRef).build());
     var lookup = directory.lookupTable(LookupTableRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
@@ -254,6 +256,6 @@ class DirectoryIT {
   void pathSegments_are_not_split_and_case_is_preserved() {
     var bad = NameRef.newBuilder().setCatalog("Sales").addPath("core/extra").setName("orders").build();
     assertThrows(StatusRuntimeException.class, () ->
-      directory.resolveTable(ResolveTableRequest.newBuilder().setRef(bad).build()));
+        directory.resolveTable(ResolveTableRequest.newBuilder().setRef(bad).build()));
   }
 }

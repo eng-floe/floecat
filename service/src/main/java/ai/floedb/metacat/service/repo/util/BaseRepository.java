@@ -32,11 +32,12 @@ public abstract class BaseRepository<T> implements Repository<T> {
 
   protected BaseRepository() { }
 
-  protected BaseRepository(PointerStore ptr,
-                           BlobStore blobs,
-                           ProtoParser<T> parser,
-                           Function<T, byte[]> toBytes,
-                           String contentType) {
+  protected BaseRepository(
+      PointerStore ptr,
+      BlobStore blobs,
+      ProtoParser<T> parser,
+      Function<T, byte[]> toBytes,
+      String contentType) {
     this.ptr = Objects.requireNonNull(ptr, "ptr");
     this.blobs = Objects.requireNonNull(blobs, "blobs");
     this.parser = Objects.requireNonNull(parser, "parser");
@@ -71,6 +72,22 @@ public abstract class BaseRepository<T> implements Repository<T> {
     putAll(List.of(key), blobUri, value);
   }
 
+  @Override
+  public boolean putWithPrecondition(String key, String blobUri, T value, long expectedVersion) {
+    byte[] bytes = toBytes.apply(value);
+    String newEtag = sha256B64(bytes);
+
+    var hdr = blobs.head(blobUri);
+    if (hdr.isEmpty() || !newEtag.equals(hdr.get().getEtag())) {
+      blobs.put(blobUri, bytes, contentType);
+    }
+
+    var next = Pointer.newBuilder()
+        .setKey(key).setBlobUri(blobUri).setVersion(expectedVersion + 1).build();
+
+    return ptr.compareAndSet(key, expectedVersion, next);
+  }
+
   protected void putAll(Collection<String> keys, String blobUri, T value) {
     byte[] bytes = toBytes.apply(value);
     String newEtag = sha256B64(bytes);
@@ -88,7 +105,7 @@ public abstract class BaseRepository<T> implements Repository<T> {
     for (int attempt = 0; attempt < CAS_MAX; attempt++) {
       long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
       var next = Pointer.newBuilder()
-        .setKey(key).setBlobUri(blobUri).setVersion(expected + 1).build();
+          .setKey(key).setBlobUri(blobUri).setVersion(expected + 1).build();
       if (ptr.compareAndSet(key, expected, next)) return;
     }
     throw new IllegalStateException("CAS failed: " + key);
@@ -121,24 +138,23 @@ public abstract class BaseRepository<T> implements Repository<T> {
   }
 
   protected MutationMeta buildMeta(
-    String pointerKey,
-    Pointer p,
-    Optional<BlobHeader> hdrOpt,
-    Clock clock
-  ) {
+      String pointerKey,
+      Pointer p,
+      Optional<BlobHeader> hdrOpt,
+      Clock clock) {
     var b = MutationMeta.newBuilder()
-      .setPointerKey(pointerKey)
-      .setBlobUri(p.getBlobUri())
-      .setPointerVersion(p.getVersion());
+        .setPointerKey(pointerKey)
+        .setBlobUri(p.getBlobUri())
+        .setPointerVersion(p.getVersion());
 
     hdrOpt.ifPresent(h -> b.setEtag(h.getEtag()));
     Timestamp updatedAt = hdrOpt.map(BlobHeader::getLastModifiedAt)
-                          .orElse(Timestamps.fromMillis(clock.millis()));
+        .orElse(Timestamps.fromMillis(clock.millis()));
     b.setUpdatedAt(updatedAt);
     return b.build();
   }
 
-  private static String sha256B64(byte[] data) {
+  protected static String sha256B64(byte[] data) {
     try {
       var md = MessageDigest.getInstance("SHA-256");
       byte[] digest = md.digest(data);
@@ -146,5 +162,30 @@ public abstract class BaseRepository<T> implements Repository<T> {
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException(e);
     }
+  }
+
+  protected MutationMeta toMeta(String pointerKey, Pointer p, Optional<BlobHeader> hdr, Clock clock) {
+    var etag = hdr.map(BlobHeader::getEtag).orElse("");
+    return MutationMeta.newBuilder()
+        .setPointerKey(pointerKey)
+        .setBlobUri(p.getBlobUri())
+        .setPointerVersion(p.getVersion())
+        .setEtag(etag)
+        .setUpdatedAt(Timestamps.fromMillis(clock.millis()))
+        .build();
+  }
+
+  protected MutationMeta safeMetaOrDefault(String pointerKey, String blobUri, Clock clock) {
+    var pOpt = ptr.get(pointerKey);
+    var hdr = blobs.head(blobUri);
+    long ver = pOpt.map(Pointer::getVersion).orElse(0L);
+    String etag = hdr.map(BlobHeader::getEtag).orElse("");
+    return MutationMeta.newBuilder()
+        .setPointerKey(pointerKey)
+        .setBlobUri(blobUri)
+        .setPointerVersion(ver)
+        .setEtag(etag)
+        .setUpdatedAt(Timestamps.fromMillis(clock.millis()))
+        .build();
   }
 }

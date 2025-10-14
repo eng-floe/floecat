@@ -4,8 +4,8 @@ import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
-import java.util.function.Function;
 import java.util.function.Supplier;
 
 import com.google.protobuf.util.Timestamps;
@@ -28,6 +28,7 @@ import ai.floedb.metacat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteTableResponse;
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.catalog.rpc.Namespace;
+import ai.floedb.metacat.catalog.rpc.Precondition;
 import ai.floedb.metacat.catalog.rpc.ResourceMutation;
 import ai.floedb.metacat.catalog.rpc.TableDescriptor;
 import ai.floedb.metacat.catalog.rpc.UpdateCatalogRequest;
@@ -42,6 +43,7 @@ import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.service.catalog.util.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NameIndexRepository;
@@ -80,66 +82,55 @@ public class ResourceMutationImpl implements ResourceMutation {
     authz.require(p, "catalog.write");
 
     var tenant = p.getTenantId();
-    var nowMs = clock.millis();
-    var nowTs = Timestamps.fromMillis(nowMs);
     var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
 
-    var existing = nameIndex.getCatalogByName(tenant, req.getSpec().getDisplayName());
-    if (idemKey.isBlank() && existing.isPresent()) {
-      throw GrpcErrors.conflict(corrId(), "catalog.already_exists",
-        Map.of("display_name", req.getSpec().getDisplayName()));
+    if (idemKey.isBlank()) {
+      var existing = nameIndex.getCatalogByName(tenant, req.getSpec().getDisplayName());
+      if (existing.isPresent()) {
+        throw GrpcErrors.conflict(corrId(), "catalog.already_exists",
+            Map.of("display_name", req.getSpec().getDisplayName()));
+      }
     }
 
-    byte[] fp = req.getSpec().toBuilder()
-      .clearDescription()
-      .build()
-      .toByteArray();
+    var nowTs = Timestamps.fromMillis(clock.millis());
+    byte[] fp = req.getSpec().toBuilder().clearDescription().build().toByteArray();
 
-    Catalog cat = IdempotencyGuard.runOnce(
+    var out = MutationOps.createProto(
       tenant,
       "CreateCatalog",
       idemKey,
-      fp,
-      (Supplier<IdempotencyGuard.CreateResult<Catalog>>) () -> {
+      () -> fp,
+      () -> {
         var catalogId = ResourceId.newBuilder()
-          .setTenantId(tenant)
-          .setId(UUID.randomUUID().toString())
-          .setKind(ResourceKind.RK_CATALOG)
-          .build();
+            .setTenantId(tenant)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
 
         var built = Catalog.newBuilder()
-          .setResourceId(catalogId)
-          .setDisplayName(req.getSpec().getDisplayName())
-          .setDescription(req.getSpec().getDescription())
-          .setCreatedAt(nowTs)
-          .build();
+            .setResourceId(catalogId)
+            .setDisplayName(mustNonEmpty(req.getSpec().getDisplayName(), "display_name"))
+            .setDescription(req.getSpec().getDescription())
+            .setCreatedAt(nowTs)
+            .build();
 
         catalogs.put(built);
 
         return new IdempotencyGuard.CreateResult<>(built, catalogId);
       },
-      (Function<Catalog, MutationMeta>)
-        (c) -> catalogs.metaFor(c.getResourceId()),
-      (Function<Catalog, byte[]>) Catalog::toByteArray,
-      (Function<byte[], Catalog>) bytes -> {
-        try {
-          return Catalog.parseFrom(bytes);
-        }
-        catch (Exception e) {
-          throw new IllegalStateException(e);
-        }
-      },
+      (c) -> catalogs.metaFor(c.getResourceId()),
       idempotencyStore,
-      86_400L,
       nowTs,
-      this::corrId
+      86_400L,
+      this::corrId,
+      Catalog::parseFrom
     );
 
     return Uni.createFrom().item(
-      CreateCatalogResponse.newBuilder()
-        .setCatalog(cat)
-        .setMeta(metaForCatalog(cat.getResourceId()))
-        .build()
+        CreateCatalogResponse.newBuilder()
+            .setCatalog(out.body)
+            .setMeta(out.meta)
+            .build()
     );
   }
 
@@ -148,29 +139,49 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "catalog.write");
 
+    var tenantId = p.getTenantId();
+    var corr = corrId();
+
     var catalogId = req.getCatalogId();
     ensureKind(catalogId, ResourceKind.RK_CATALOG, "UpdateCatalog");
- 
+
     var prev = catalogs.get(catalogId)
       .orElseThrow(() -> GrpcErrors.notFound(
-        corrId(), 
-        "catalog", 
-        Map.of("id", 
-        catalogId.getId()))
-    );
-    
-    var updated = prev.toBuilder()
-      .setDisplayName(req.getSpec().getDisplayName())
-      .setDescription(req.getSpec().getDescription())
-      .build();
+          corr,
+          "catalog",
+          Map.of("id", catalogId.getId())
+      ));
 
-    catalogs.put(updated);
+    var newName = mustNonEmpty(req.getSpec().getDisplayName(), "display_name");
+    if (!newName.isBlank() && !newName.equals(prev.getDisplayName())) {
+      var exists = nameIndex.getCatalogByName(tenantId, newName);
+      if (exists.isPresent() && !exists.get().getResourceId().getId().equals(catalogId.getId())) {
+        throw GrpcErrors.conflict(corr, "catalog.already_exists",
+            Map.of("display_name", newName));
+      }
+    }
+
+    var curMeta = catalogs.metaFor(catalogId);
+    enforcePreconditions(corr, curMeta, req.getPrecondition());
+
+    var updated = prev.toBuilder()
+        .setDisplayName(req.getSpec().getDisplayName())
+        .setDescription(req.getSpec().getDescription())
+        .build();
+
+    boolean ok = catalogs.putWithPrecondition(updated, curMeta.getPointerVersion());
+    if (!ok) {
+      var nowMeta = catalogs.metaFor(catalogId);
+      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+        Map.of("expected", Long.toString(curMeta.getPointerVersion()),
+            "actual", Long.toString(nowMeta.getPointerVersion())));
+    }
 
     return Uni.createFrom().item(
-      UpdateCatalogResponse.newBuilder()
-        .setCatalog(updated)
-        .setMeta(metaForCatalog(catalogId))
-        .build()
+        UpdateCatalogResponse.newBuilder()
+            .setCatalog(updated)
+            .setMeta(catalogs.metaFor(catalogId))
+            .build()
     );
   }
 
@@ -179,27 +190,32 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "catalog.write");
 
+    var corr = corrId();
+
     var catalogId = req.getCatalogId();
     ensureKind(catalogId, ResourceKind.RK_CATALOG, "DeleteCatalog");
+
     if (req.getRequireEmpty() && namespaces.count(catalogId) > 0) {
-      var catalogNameRef = nameIndex.getCatalogById(p.getTenantId(), catalogId.getId());
-      if (catalogNameRef.isPresent()) {
-        throw GrpcErrors.conflict(
-          corrId(),
-          "catalog.not_empty",
-          Map.of("display_name", catalogNameRef.get().getCatalog()));
-      } else {
-        throw GrpcErrors.conflict(
-          corrId(),
-          "catalog.not_empty",
-          Map.of("display_name", catalogId.getId()));
-      }
+      var display = nameIndex.getCatalogById(p.getTenantId(), catalogId.getId())
+          .map(NameRef::getCatalog)
+          .orElse(catalogId.getId());
+      throw GrpcErrors.conflict(corrId(), "catalog.not_empty",
+          Map.of("display_name", display));
     }
 
-    var m = metaForCatalog(catalogId);
-    catalogs.delete(catalogId);
+    var meta = catalogs.metaFor(catalogId);
+    enforcePreconditions(corr, meta, req.getPrecondition());
 
-    return Uni.createFrom().item(DeleteCatalogResponse.newBuilder().setMeta(m).build());
+    boolean ok = catalogs.deleteWithPrecondition(catalogId, meta.getPointerVersion());
+    if (!ok) {
+      var cur = catalogs.metaForSafe(catalogId);
+        throw GrpcErrors.preconditionFailed(
+          corr, "version_mismatch",
+          Map.of("expected", Long.toString(meta.getPointerVersion()),
+              "actual", Long.toString(cur.getPointerVersion())));
+    }
+
+    return Uni.createFrom().item(DeleteCatalogResponse.newBuilder().setMeta(meta).build());
   }
 
   @Override
@@ -208,74 +224,166 @@ public class ResourceMutationImpl implements ResourceMutation {
     authz.require(p, "namespace.write");
 
     var tenant = p.getTenantId();
-    var nowMs = clock.millis();
-    var nowTs = Timestamps.fromMillis(nowMs);
     var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
 
-    var parents = req.getSpec().getPathList();
-    var full = new ArrayList<>(parents);
-    full.add(req.getSpec().getDisplayName());
-    var nsExists = nameIndex.getNamespaceByPath(tenant, req.getSpec().getCatalogId().getId(), full);
-    if (idemKey.isBlank() && nsExists.isPresent()) {
-      throw GrpcErrors.conflict(corrId(), "namespace.already_exists",
-        Map.of("catalog", req.getSpec().getCatalogId().getId(), "path", String.join("/", full)));
+    if (idemKey.isBlank()) {
+      var parents = req.getSpec().getPathList();
+      var full = new ArrayList<>(parents);
+      full.add(req.getSpec().getDisplayName());
+      var nsExists = nameIndex.getNamespaceByPath(tenant, req.getSpec().getCatalogId().getId(), full);
+      if (nsExists.isPresent()) {
+        throw GrpcErrors.conflict(corrId(), "namespace.already_exists",
+            Map.of("catalog", req.getSpec().getCatalogId().getId(),
+                "path", String.join("/", full)));
+      }
     }
 
-    byte[] fp = req.getSpec().toBuilder()
-      .clearDescription()
-      .build()
-      .toByteArray();
+    var nowTs = Timestamps.fromMillis(clock.millis());
+    byte[] fp = req.getSpec().toBuilder().clearDescription().build().toByteArray();
 
-    Namespace ns = IdempotencyGuard.runOnce(
+    var out = MutationOps.createProto(
       tenant,
       "CreateNamespace",
       idemKey,
-      fp,
-      (Supplier<IdempotencyGuard.CreateResult<Namespace>>) () -> {
+      () -> fp,
+      () -> {
         var namespaceId = ResourceId.newBuilder()
-          .setTenantId(tenant)
-          .setId(UUID.randomUUID().toString())
-          .setKind(ResourceKind.RK_NAMESPACE)
-          .build();
+            .setTenantId(tenant)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
 
         var built = Namespace.newBuilder()
-          .setResourceId(namespaceId)
-          .setDisplayName(req.getSpec().getDisplayName())
-          .setDescription(req.getSpec().getDescription())
-          .setCreatedAt(nowTs)
-          .build();
+            .setResourceId(namespaceId)
+            .setDisplayName(req.getSpec().getDisplayName())
+            .setDescription(req.getSpec().getDescription())
+            .setCreatedAt(nowTs)
+            .build();
 
         namespaces.put(built, req.getSpec().getCatalogId(), req.getSpec().getPathList());
 
         return new IdempotencyGuard.CreateResult<>(built, namespaceId);
       },
-      (Function<Namespace, MutationMeta>)
-        (n) -> namespaces.metaFor(req.getSpec().getCatalogId(), n.getResourceId()),
-      (Function<Namespace, byte[]>) Namespace::toByteArray,
-      (Function<byte[], Namespace>) bytes -> {
-        try {
-          return Namespace.parseFrom(bytes);
-        }
-        catch (Exception e) {
-          throw new IllegalStateException(e);
-        }
-      },
+      (n) -> namespaces.metaFor(req.getSpec().getCatalogId(), n.getResourceId()),
       idempotencyStore,
-      86_400L,
       nowTs,
-      this::corrId
+      86_400L,
+      this::corrId,
+      Namespace::parseFrom
     );
 
     return Uni.createFrom().item(
-      CreateNamespaceResponse.newBuilder()
-        .setNamespace(ns)
-        .setMeta(metaForNamespace(req.getSpec().getCatalogId(), ns.getResourceId()))
-        .build()
+        CreateNamespaceResponse.newBuilder()
+            .setNamespace(out.body)
+            .setMeta(out.meta)
+            .build()
     );
   }
 
   @Override
   public Uni<RenameNamespaceResponse> renameNamespace(RenameNamespaceRequest req) {
+    var p = principal.get();
+    authz.require(p, "namespace.write");
+
+    var tenant = p.getTenantId();
+    var corr = corrId();
+
+    var nsId = req.getNamespaceId();
+    ensureKind(nsId, ResourceKind.RK_NAMESPACE, "RenameNamespace");
+
+    Namespace cur = namespaces.get(nsId).orElseThrow(() ->
+        GrpcErrors.notFound(corr, "namespace", Map.of("id", nsId.getId())));
+
+    var curNameRef = nameIndex.getNamespaceById(tenant, nsId.getId()).orElseThrow(() ->
+        GrpcErrors.notFound(corr, "namespace", Map.of("id", nsId.getId())));
+
+    var curCatalogName = curNameRef.getCatalog();
+    var curCatalogId = nameIndex.getCatalogByName(tenant, curCatalogName)
+        .map(NameRef::getResourceId)
+        .orElseThrow(() -> GrpcErrors.notFound(corr, "catalog", Map.of("id", curCatalogName)));
+
+    var targetCatalogId = req.hasNewCatalogId() && !req.getNewCatalogId().getId().isBlank()
+        ? req.getNewCatalogId()
+        : curCatalogId;
+
+    nameIndex.getCatalogById(tenant, targetCatalogId.getId())
+        .orElseThrow(() -> GrpcErrors.notFound(
+            corr, "catalog", Map.of("id", targetCatalogId.getId())));
+
+    var curParents = ((Supplier<List<String>>) () -> {
+      var c = new ArrayList<>(curNameRef.getPathList());
+      if (!c.isEmpty()) c.remove(c.size() - 1);
+      return c;
+    }).get();
+
+    final boolean pathProvided = !req.getNewPathList().isEmpty();
+
+    final String newLeaf;
+    if (pathProvided) {
+      newLeaf = req.getNewPath(req.getNewPathCount() - 1);
+    } else {
+      if (req.getNewDisplayName().isBlank()) {
+        newLeaf = cur.getDisplayName();
+      } else {
+        newLeaf = req.getNewDisplayName();
+      }
+    }
+
+    final List<String> newParents = pathProvided
+        ? List.copyOf(req.getNewPathList().subList(0, req.getNewPathCount() - 1))
+        : curParents;
+
+    boolean sameCatalog = targetCatalogId.getId().equals(curCatalogId.getId());
+    boolean sameLeaf = newLeaf.equals(cur.getDisplayName());
+    boolean sameParents = Objects.equals(curParents, newParents);
+
+    var curMeta = namespaces.metaFor(curCatalogId, nsId);
+    enforcePreconditions(corr, curMeta, req.getPrecondition());
+
+    if (sameCatalog && sameLeaf && sameParents) {
+      return Uni.createFrom().item(
+        RenameNamespaceResponse.newBuilder().setNamespace(cur).setMeta(curMeta).build());
+      }
+
+    {
+      var targetFull = new ArrayList<>(newParents);
+      targetFull.add(newLeaf);
+      var exists = nameIndex.getNamespaceByPath(tenant, targetCatalogId.getId(), targetFull);
+      if (exists.isPresent() && !exists.get().getResourceId().getId().equals(nsId.getId())) {
+        var pretty = NameIndexRepository.joinPath(targetFull);
+        throw GrpcErrors.conflict(corr, "namespace.already_exists",
+            Map.of("display_name", pretty));
+      }
+    }
+
+    var updated = cur.toBuilder().setDisplayName(newLeaf).build();
+
+    boolean ok = namespaces.renameWithPrecondition(
+        updated, 
+        curCatalogId,
+        curParents,
+        targetCatalogId, 
+        newParents,
+        curMeta.getPointerVersion());
+
+    if (!ok) {
+      var nowMeta = namespaces.metaFor(targetCatalogId, nsId);
+      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+        Map.of("expected", Long.toString(curMeta.getPointerVersion()),
+            "actual", Long.toString(nowMeta.getPointerVersion())));
+    }
+
+    var outMeta = namespaces.metaFor(targetCatalogId, nsId);
+
+    return Uni.createFrom().item(
+        RenameNamespaceResponse.newBuilder()
+            .setNamespace(updated)
+            .setMeta(outMeta)
+            .build());
+  }
+
+  //@Override
+  public Uni<RenameNamespaceResponse> renameNamespace2(RenameNamespaceRequest req) {
     var p = principal.get();
     authz.require(p, "namespace.write");
     var tenantId = p.getTenantId();
@@ -284,25 +392,25 @@ public class ResourceMutationImpl implements ResourceMutation {
     ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "RenameNamespace");
 
     Namespace namespace = namespaces.get(namespaceId)
-      .orElseThrow(() -> GrpcErrors.notFound(
-        corrId(),
-        "namespace", Map.of("id", namespaceId.getId())
-      ));
+        .orElseThrow(() -> GrpcErrors.notFound(
+            corrId(),
+            "namespace", Map.of("id", namespaceId.getId())
+        ));
 
     var newName = req.getNewDisplayName();
     var updated = namespace.toBuilder().setDisplayName(newName).build();
 
     NameRef namespaceNameRef  = nameIndex.getNamespaceById(tenantId, namespaceId.getId())
-      .orElseThrow(() -> GrpcErrors.notFound(
-        corrId(),
-        "namespace", Map.of("id", namespaceId.getId())
-      ));
+        .orElseThrow(() -> GrpcErrors.notFound(
+            corrId(),
+            "namespace", Map.of("id", namespaceId.getId())
+        ));
 
     NameRef catalogNameRef = nameIndex.getCatalogByName(tenantId, namespaceNameRef.getCatalog())
-      .orElseThrow(() -> GrpcErrors.notFound(
-        corrId(),
-        "catalog", Map.of("id", namespaceId.getId())
-      ));
+        .orElseThrow(() -> GrpcErrors.notFound(
+            corrId(),
+            "catalog", Map.of("id", namespaceId.getId())
+        ));
       
     var path = new ArrayList<>(namespaceNameRef.getPathList());
     if (!path.isEmpty()) path.remove(path.size() - 1);
@@ -311,10 +419,10 @@ public class ResourceMutationImpl implements ResourceMutation {
     namespaces.put(updated, catalogNameRef.getResourceId(), path);
 
     return Uni.createFrom().item(
-      RenameNamespaceResponse.newBuilder()
-        .setNamespace(updated)
-        .setMeta(metaForNamespace(catalogNameRef.getResourceId(), namespaceId))
-        .build()
+        RenameNamespaceResponse.newBuilder()
+            .setNamespace(updated)
+            .setMeta(metaForNamespace(catalogNameRef.getResourceId(), namespaceId))
+            .build()
     );
   }
 
@@ -331,29 +439,30 @@ public class ResourceMutationImpl implements ResourceMutation {
       var namespaceNameRef = nameIndex.getNamespaceById(p.getTenantId(), namespaceId.getId());
       if (namespaceNameRef.isPresent()) {
         throw GrpcErrors.conflict(
-          corrId(),
-          "namespace.not_empty",
-          Map.of("display_name", NameIndexRepository.joinPath(namespaceNameRef.get().getPathList())));
+            corrId(),
+            "namespace.not_empty",
+            Map.of("display_name", 
+                NameIndexRepository.joinPath(namespaceNameRef.get().getPathList())));
       } else {
         throw GrpcErrors.conflict(
-          corrId(),
-          "namespace.not_empty",
-          Map.of("display_name", namespaceId.getId())
+            corrId(),
+            "namespace.not_empty",
+            Map.of("display_name", namespaceId.getId())
         );
       }
     }
 
     NameRef namespaceNameRef = nameIndex.getNamespaceById(tenantId, namespaceId.getId())
-      .orElseThrow(() -> GrpcErrors.notFound(
-        corrId(),
-        "namespace", Map.of("id", namespaceId.getId())
-      ));
+        .orElseThrow(() -> GrpcErrors.notFound(
+            corrId(),
+            "namespace", Map.of("id", namespaceId.getId())
+        ));
 
     NameRef catalogNameRef = nameIndex.getCatalogByName(tenantId, namespaceNameRef.getCatalog())
-      .orElseThrow(() -> GrpcErrors.notFound(
-        corrId(),
-        "catalog", Map.of("id", namespaceId.getId())
-      ));
+        .orElseThrow(() -> GrpcErrors.notFound(
+            corrId(),
+            "catalog", Map.of("id", namespaceId.getId())
+        ));
 
     var m = metaForNamespace(catalogNameRef.getResourceId(), namespaceId);
     namespaces.delete(catalogNameRef.getResourceId(), namespaceId);
@@ -367,87 +476,74 @@ public class ResourceMutationImpl implements ResourceMutation {
     authz.require(p, "table.write");
 
     var tenant = p.getTenantId();
-    var nowMs = clock.millis();
-    var nowTs = Timestamps.fromMillis(nowMs);
     var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
 
-    var catName = nameIndex.getCatalogById(tenant, req.getSpec().getCatalogId().getId())
-    .map(NameRef::getCatalog)
-    .orElseThrow(() -> GrpcErrors.notFound(
-      corrId(), "catalog", Map.of("id", req.getSpec().getCatalogId().getId())));
+    if (idemKey.isBlank()) {
+      var catName = nameIndex.getCatalogById(tenant, req.getSpec().getCatalogId().getId())
+          .map(NameRef::getCatalog)
+          .orElseThrow(() -> GrpcErrors.notFound(corrId(), "catalog",
+              Map.of("id", req.getSpec().getCatalogId().getId())));
 
-    var nsOpt = nameIndex.getNamespaceById(tenant, req.getSpec().getNamespaceId().getId());
-    var nsPaths = nsOpt.map(NameRef::getPathList)
-      .map(List::copyOf)
-      .orElse(List.of());
+      var nsOpt = nameIndex.getNamespaceById(tenant, req.getSpec().getNamespaceId().getId());
+        var nsPaths = nsOpt.map(NameRef::getPathList)
+            .map(List::copyOf)
+            .orElse(List.of());
 
-    var tableRef = NameRef.newBuilder()
-      .setCatalog(catName)
-      .addAllPath(nsPaths)
-      .setName(req.getSpec().getDisplayName())
-      .build();
+      var tableRef = NameRef.newBuilder()
+          .setCatalog(catName)
+          .addAllPath(nsPaths)
+          .setName(req.getSpec().getDisplayName())
+          .build();
 
-    if (idemKey.isBlank() && nameIndex.getTableByName(tenant, tableRef).isPresent()) {
-      throw GrpcErrors.conflict(
-        corrId(),
-        "table.already_exists",
-        Map.of("name", tableRef.getName(),
-              "path", String.join("/", tableRef.getPathList())));
+      if (nameIndex.getTableByName(tenant, tableRef).isPresent()) {
+        throw GrpcErrors.conflict(corrId(), "table.already_exists",
+            Map.of("name", tableRef.getName(),
+                "path", String.join("/", tableRef.getPathList())));
+      }
     }
 
-    byte[] fp = req.getSpec().toBuilder()
-      .clearDescription()
-      .build()
-      .toByteArray();
+    var nowTs = Timestamps.fromMillis(clock.millis());
+    byte[] fp = req.getSpec().toBuilder().clearDescription().build().toByteArray();
 
-    TableDescriptor td = IdempotencyGuard.runOnce(
+    var out = MutationOps.createProto(
       tenant,
       "CreateTable",
       idemKey,
-      fp,
-      (Supplier<IdempotencyGuard.CreateResult<TableDescriptor>>) () -> {
+      () -> fp,
+      () -> {
         var tableId = ResourceId.newBuilder()
-          .setTenantId(tenant)
-          .setId(UUID.randomUUID().toString())
-          .setKind(ResourceKind.RK_TABLE)
-          .build();
+            .setTenantId(tenant)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
 
-        var built = TableDescriptor.newBuilder()
-          .setResourceId(tableId)
-          .setDisplayName(mustNonEmpty(req.getSpec().getDisplayName(), "display_name"))
-          .setDescription(req.getSpec().getDescription())
-          .setCatalogId(req.getSpec().getCatalogId())
-          .setNamespaceId(req.getSpec().getNamespaceId())
-          .setRootUri(mustNonEmpty(req.getSpec().getRootUri(), "root_uri"))
-          .setSchemaJson(mustNonEmpty(req.getSpec().getSchemaJson(), "schema_json"))
-          .setCreatedAt(nowTs)
-          .build();
+        var td = TableDescriptor.newBuilder()
+            .setResourceId(tableId)
+            .setDisplayName(mustNonEmpty(req.getSpec().getDisplayName(), "display_name"))
+            .setDescription(req.getSpec().getDescription())
+            .setCatalogId(req.getSpec().getCatalogId())
+            .setNamespaceId(req.getSpec().getNamespaceId())
+            .setRootUri(mustNonEmpty(req.getSpec().getRootUri(), "root_uri"))
+            .setSchemaJson(mustNonEmpty(req.getSpec().getSchemaJson(), "schema_json"))
+            .setCreatedAt(nowTs)
+            .build();
 
-        tables.put(built);
-        return new IdempotencyGuard.CreateResult<>(built, tableId);
+        tables.put(td);
+        return new IdempotencyGuard.CreateResult<>(td, tableId);
       },
-      (Function<TableDescriptor, MutationMeta>)
-        (t) -> tables.metaFor(t.getResourceId()),
-      (Function<TableDescriptor, byte[]>) TableDescriptor::toByteArray,
-      (Function<byte[], TableDescriptor>) bytes -> {
-        try {
-          return TableDescriptor.parseFrom(bytes);
-        }
-        catch (Exception e) {
-          throw new IllegalStateException(e);
-        }
-      },
+      (t) -> tables.metaFor(t.getResourceId()),
       idempotencyStore,
-      86_400L,
       nowTs,
-      this::corrId
+      86_400L,
+      this::corrId,
+      TableDescriptor::parseFrom
     );
 
     return Uni.createFrom().item(
-      CreateTableResponse.newBuilder()
-        .setTable(td)
-        .setMeta(tables.metaFor(td.getResourceId()))
-        .build()
+        CreateTableResponse.newBuilder()
+            .setTable(out.body)
+            .setMeta(out.meta)
+            .build()
     );
   }
 
@@ -460,22 +556,22 @@ public class ResourceMutationImpl implements ResourceMutation {
     ensureKind(tableId, ResourceKind.RK_TABLE, "UpdateTableSchema");
 
     var cur = tables.get(tableId)
-      .orElseThrow(() -> GrpcErrors.notFound(corrId(), "table",
-        Map.of("id", tableId.getId())));
+        .orElseThrow(() -> GrpcErrors.notFound(corrId(), "table",
+            Map.of("id", tableId.getId())));
 
     var updated = cur.toBuilder()
-      .setSchemaJson(req.getSchemaJson())
-      .clearDescription()
-      .setDescription(cur.getDescription())
-      .build();
+        .setSchemaJson(req.getSchemaJson())
+        .clearDescription()
+        .setDescription(cur.getDescription())
+        .build();
 
     tables.put(updated);
 
     return Uni.createFrom().item(
-      UpdateTableSchemaResponse.newBuilder()
-        .setTable(updated)
-        .setMeta(metaForTable(tableId))
-        .build());
+        UpdateTableSchemaResponse.newBuilder()
+            .setTable(updated)
+            .setMeta(metaForTable(tableId))
+            .build());
   }
 
   @Override
@@ -487,18 +583,18 @@ public class ResourceMutationImpl implements ResourceMutation {
     ensureKind(tableId, ResourceKind.RK_TABLE, "RenameTable");
 
     var cur = tables.get(tableId).
-      orElseThrow(() -> GrpcErrors.notFound(corrId(), "table",
-        Map.of("id", tableId.getId())));
+        orElseThrow(() -> GrpcErrors.notFound(corrId(), "table",
+            Map.of("id", tableId.getId())));
 
     var updated = cur.toBuilder().setDisplayName(req.getNewDisplayName()).build();
 
     tables.put(updated);
 
     return Uni.createFrom().item(
-      RenameTableResponse.newBuilder()
-        .setTable(updated)
-        .setMeta(metaForTable(tableId))
-        .build());
+        RenameTableResponse.newBuilder()
+            .setTable(updated)
+            .setMeta(metaForTable(tableId))
+            .build());
   }
 
   @Override
@@ -543,20 +639,13 @@ public class ResourceMutationImpl implements ResourceMutation {
     long version = ptr.get(pointerKey).map(Pointer::getVersion).orElse(0L);
     var etag = blobs.head(blobUri).map(h -> h.getEtag()).orElse("");
     return MutationMeta.newBuilder()
-      .setPointerKey(pointerKey)
-      .setBlobUri(blobUri)
-      .setPointerVersion(version)
-      .setEtag(etag)
-      .setUpdatedAt(Timestamps.fromMillis(nowMs()))
-      .build();
-  }
-
-  private MutationMeta metaForCatalog(ResourceId catId) {
-    String tenant = catId.getTenantId();
-    String ptrKey = Keys.catPtr(tenant, catId.getId());
-    String blob = Keys.catBlob(tenant, catId.getId());
-    return meta(ptrKey, blob);
-  }
+        .setPointerKey(pointerKey)
+        .setBlobUri(blobUri)
+        .setPointerVersion(version)
+        .setEtag(etag)
+        .setUpdatedAt(Timestamps.fromMillis(nowMs()))
+        .build();
+    }
 
   private MutationMeta metaForNamespace(ResourceId catId, ResourceId nsId) {
     String tenant = nsId.getTenantId();
@@ -570,5 +659,29 @@ public class ResourceMutationImpl implements ResourceMutation {
     String ptrKey = Keys.tblCanonicalPtr(tenant, tblId.getId());
     String blob = Keys.tblBlob(tenant, tblId.getId());
     return meta(ptrKey, blob);
+  }
+
+  private void enforcePreconditions(String corrId, 
+                                    MutationMeta cur, 
+                                    Precondition pc) {
+    if (pc == null) return;
+
+    boolean checkVer = pc.getExpectedVersion() > 0;
+    boolean checkTag = pc.getExpectedEtag() != null && !pc.getExpectedEtag().isBlank();
+
+    if (!checkVer && !checkTag) return;
+
+    if (checkVer && cur.getPointerVersion() != pc.getExpectedVersion()) {
+      throw GrpcErrors.preconditionFailed(
+        corrId, "version_mismatch",
+        Map.of("expected", Long.toString(pc.getExpectedVersion()),
+            "actual", Long.toString(cur.getPointerVersion())));
+    }
+    if (checkTag && !cur.getEtag().equals(pc.getExpectedEtag())) {
+      throw GrpcErrors.preconditionFailed(
+        corrId, "etag_mismatch",
+        Map.of("expected", pc.getExpectedEtag(),
+            "actual", cur.getEtag()));
+    }
   }
 }

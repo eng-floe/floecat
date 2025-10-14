@@ -31,6 +31,7 @@ public class InMemoryBlobStore implements BlobStore {
   private static final class Blob {
     final byte[] data; 
     final BlobHeader hdr;
+
     Blob(byte[] d, BlobHeader h) {
       this.data = d;
       this.hdr = h;
@@ -50,9 +51,9 @@ public class InMemoryBlobStore implements BlobStore {
     String etag = sha256B64(copy);
     long now = clock.millis();
     BlobHeader.Builder hb = BlobHeader.newBuilder()
-      .setSchemaVersion("v1")
-      .setEtag(etag)
-      .setCreatedAt(Timestamps.fromMillis(now));
+        .setSchemaVersion("v1")
+        .setEtag(etag)
+        .setCreatedAt(Timestamps.fromMillis(now));
 
     addTag(hb, TAG_CONTENT_TYPE, contentType);
     addTag(hb, TAG_CONTENT_LENGTH, Integer.toString(copy.length));
@@ -64,7 +65,9 @@ public class InMemoryBlobStore implements BlobStore {
   @Override
   public byte[] get(String uri) {
     Blob b = map.get(uri);
-    if (b == null) return null;
+    if (b == null) {
+      return null;
+    }
     return Arrays.copyOf(b.data, b.data.length);
   }
 
@@ -84,7 +87,9 @@ public class InMemoryBlobStore implements BlobStore {
     Map<String, byte[]> out = new HashMap<>(uris.size());
     for (String u : uris) {
       Blob b = map.get(u);
-      if (b != null) out.put(u, Arrays.copyOf(b.data, b.data.length));
+      if (b != null) {
+        out.put(u, Arrays.copyOf(b.data, b.data.length));
+      }
     }
     return out;
   }

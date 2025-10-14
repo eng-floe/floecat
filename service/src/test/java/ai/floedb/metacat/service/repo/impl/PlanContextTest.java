@@ -41,7 +41,8 @@ class PlanContextTest {
   @Test
   void newActive_rejectsTenantMismatch() {
     var pc = pc("t-002", "alice", "plan-123");
-    Executable ex = () -> PlanContext.newActive("plan-123", "t-001", pc, null, null, 1000, 1);
+    Executable ex = () -> PlanContext.newActive(
+        "plan-123", "t-001", pc, null, null, 1000, 1);
     var err = assertThrows(IllegalArgumentException.class, ex);
     assertTrue(err.getMessage().contains("tenantId must match"));
   }
@@ -54,7 +55,7 @@ class PlanContextTest {
       .tenantId("t-001")
       .principal(pc)
       .createdAtMs(2000)
-      .expiresAtMs(1000) // earlier than createdAtMs
+      .expiresAtMs(1000)
       .build();
     var err = assertThrows(IllegalArgumentException.class, ex);
     assertTrue(err.getMessage().contains("expiresAtMs must be >="));
@@ -63,7 +64,8 @@ class PlanContextTest {
   @Test
   void extendLease_isMonotonic() {
     var pc = pc("t-001", "alice", "p1");
-    var ctx = PlanContext.newActive("p1", "t-001", pc, null, null, 200, 1);
+    var ctx = PlanContext.newActive(
+        "p1", "t-001", pc, null, null, 200, 1);
     long originalExp = ctx.getExpiresAtMs();
 
     var same = ctx.extendLease(originalExp - 50, 2);
@@ -78,7 +80,8 @@ class PlanContextTest {
   @Test
   void end_commit_setsStateAndGrace() {
     var pc = pc("t-001", "alice", "p1");
-    var ctx = PlanContext.newActive("p1", "t-001", pc, null, null, 100, 1);
+    var ctx = PlanContext.newActive(
+        "p1", "t-001", pc, null, null, 100, 1);
     long targetGrace = clock.millis() + 500;
     var ended = ctx.end(true, targetGrace, 2);
 

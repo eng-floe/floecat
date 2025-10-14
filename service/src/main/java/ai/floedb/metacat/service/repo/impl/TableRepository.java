@@ -5,6 +5,7 @@ import java.util.Optional;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.catalog.rpc.TableDescriptor;
 import ai.floedb.metacat.common.rpc.NameRef;
@@ -22,7 +23,12 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
 
   @Inject
   public TableRepository(NameIndexRepository nameIndex, PointerStore ptr, BlobStore blobs) {
-    super(ptr, blobs, TableDescriptor::parseFrom, TableDescriptor::toByteArray, "application/x-protobuf");
+    super(
+        ptr, 
+        blobs,
+        TableDescriptor::parseFrom,
+        TableDescriptor::toByteArray,
+        "application/x-protobuf");
     this.nameIndex = nameIndex;
   }
 
@@ -48,10 +54,13 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
     var catalogId = td.getCatalogId().getId();
     var namespaceId = td.getNamespaceId().getId();
 
-    putAll(List.of(
-        Keys.tblCanonicalPtr(tenantId, tableId.getId()),
-        Keys.tblPtr(tenantId, catalogId, namespaceId, tableId.getId())
-      ), Keys.tblBlob(tenantId, tableId.getId()), td);
+    putAll(
+        List.of(
+            Keys.tblCanonicalPtr(tenantId, tableId.getId()),
+            Keys.tblPtr(tenantId, catalogId, namespaceId, tableId.getId())
+        ),
+        Keys.tblBlob(tenantId, tableId.getId()),
+        td);
 
     nameIndex.upsertTable(tenantId, td);
   }

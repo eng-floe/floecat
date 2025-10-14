@@ -24,11 +24,11 @@ class CatalogRepositoryTest {
     var catalogRepo = new CatalogRepository(nameIndexRepo, ptr, blobs);
 
     var rid = ResourceId.newBuilder()
-      .setTenantId("t-0001")
-      .setId(UUID.randomUUID().toString())
-      .setKind(ResourceKind.RK_CATALOG).build();
+        .setTenantId("t-0001")
+        .setId(UUID.randomUUID().toString())
+        .setKind(ResourceKind.RK_CATALOG).build();
     var cat = Catalog.newBuilder()
-      .setResourceId(rid).setDisplayName("sales").setDescription("Sales").build();
+        .setResourceId(rid).setDisplayName("sales").setDescription("Sales").build();
 
     catalogRepo.put(cat);
     var fetched = catalogRepo.get(rid).orElseThrow();
@@ -45,27 +45,27 @@ class CatalogRepositoryTest {
 
     String tenant = "t-0001";
     var catRid = ResourceId.newBuilder()
-      .setTenantId(tenant)
-      .setId(UUID.randomUUID().toString())
-      .setKind(ResourceKind.RK_CATALOG).build();
+        .setTenantId(tenant)
+        .setId(UUID.randomUUID().toString())
+        .setKind(ResourceKind.RK_CATALOG).build();
     var cat = Catalog.newBuilder()
-      .setResourceId(catRid).setDisplayName("sales").setDescription("Sales").build();
+        .setResourceId(catRid).setDisplayName("sales").setDescription("Sales").build();
     catalogRepo.put(cat);
 
-    var nsRid = ResourceId.newBuilder().
-      setTenantId(tenant).setId(UUID.randomUUID().toString()).
-      setKind(ResourceKind.RK_NAMESPACE).build();
-    var ns = Namespace.newBuilder().
-      setResourceId(nsRid).setDisplayName("eu").
-      setDescription("EU namespace").build();
+    var nsRid = ResourceId.newBuilder()
+      .setTenantId(tenant).setId(UUID.randomUUID().toString())
+      .setKind(ResourceKind.RK_NAMESPACE).build();
+    var ns = Namespace.newBuilder()
+      .setResourceId(nsRid).setDisplayName("eu")
+      .setDescription("EU namespace").build();
     namespaceRepo.put(ns, catRid, null);
 
-    nsRid = ResourceId.newBuilder().
-      setTenantId(tenant).setId(UUID.randomUUID().toString()).
-      setKind(ResourceKind.RK_NAMESPACE).build();
-    ns = Namespace.newBuilder().
-      setResourceId(nsRid).setDisplayName("us").
-      setDescription("US namespace").build();
+    nsRid = ResourceId.newBuilder()
+      .setTenantId(tenant).setId(UUID.randomUUID().toString())
+      .setKind(ResourceKind.RK_NAMESPACE).build();
+    ns = Namespace.newBuilder()
+      .setResourceId(nsRid).setDisplayName("us")
+      .setDescription("US namespace").build();
     namespaceRepo.put(ns, catRid, null);
 
     var next = new StringBuilder();

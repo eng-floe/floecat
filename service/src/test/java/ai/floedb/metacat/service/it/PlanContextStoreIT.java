@@ -35,17 +35,19 @@ class PlanContextStoreIT {
 
   private static PrincipalContext pc(String tenant, String planId) {
     var b = PrincipalContext.newBuilder()
-      .setTenantId(tenant)
-      .setSubject("it-user");
-    if (planId != null) b.setPlanId(planId);
+        .setTenantId(tenant)
+        .setSubject("it-user");
+    if (planId != null) {
+      b.setPlanId(planId);
+    }
     return b.build();
   }
 
   private static PlanContext newPlan(String planId, String tenant, long ttlMs) {
     return PlanContext.newActive(
-      planId, tenant, pc(tenant, planId),
-      null, null,
-      ttlMs, 1
+        planId, tenant, pc(tenant, planId),
+        null, null,
+        ttlMs, 1
     );
   }
 

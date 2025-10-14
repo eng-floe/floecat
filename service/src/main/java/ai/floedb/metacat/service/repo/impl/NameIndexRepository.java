@@ -28,32 +28,35 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
 
     public void upsertCatalog(String tenantId, ResourceId catalogId, String displayName) {
     NameRef catalogRef = NameRef.newBuilder()
-      .setResourceId(catalogId)
-      .setCatalog(displayName)
-      .build();
+        .setResourceId(catalogId)
+        .setCatalog(displayName)
+        .build();
     byte[] bytes = catalogRef.toByteArray();
 
     String kByName = Keys.idxCatByName(tenantId, displayName);
     String kById = Keys.idxCatById(tenantId, catalogId.getId());
     put(kByName, Keys.memUriFor(kByName, "entry.pb"), bytes);
-    put(kById, Keys.memUriFor(kById,   "entry.pb"), bytes);
+    put(kById, Keys.memUriFor(kById, "entry.pb"), bytes);
   }
 
   public boolean removeCatalog(String tenantId, ResourceId catalogId) {
     var catalogRefOpt = getCatalogById(tenantId, catalogId.getId());
-    if (catalogRefOpt.isEmpty()) return false;
+    if (catalogRefOpt.isEmpty()) {
+      return false;
+    }
 
     boolean ok1 = deletePtrAndBlob(Keys.idxCatByName(tenantId, catalogRefOpt.get().getCatalog()));
     boolean ok2 = deletePtrAndBlob(Keys.idxCatById(tenantId, catalogId.getId()));
     return ok1 && ok2;
   }
 
-  public void upsertNamespace(String tenantId,
-                              ResourceId catalogId,
-                              String catalogDisplayName,
-                              ResourceId nsId,
-                              List<String> parentPathSegments,
-                              String nsDisplayName) {
+  public void upsertNamespace(
+      String tenantId,
+      ResourceId catalogId,
+      String catalogDisplayName,
+      ResourceId nsId,
+      List<String> parentPathSegments,
+      String nsDisplayName) {
     List<String> parents = parentPathSegments;
     var full = new ArrayList<>(parents);
     if (nsDisplayName != null && !nsDisplayName.isBlank()) {
@@ -61,10 +64,10 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
     }
 
     NameRef nsRef = NameRef.newBuilder()
-      .setResourceId(nsId)
-      .setCatalog(catalogDisplayName)
-      .addAllPath(full)
-      .build();
+        .setResourceId(nsId)
+        .setCatalog(catalogDisplayName)
+        .addAllPath(full)
+        .build();
     byte[] bytes = nsRef.toByteArray();
 
     String kByPath = Keys.idxNsByPath(tenantId, catalogId.getId(), String.join("/", full));
@@ -84,21 +87,22 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
     if (catIdOpt.isEmpty()) return false;
 
     String fullPathKey = Keys.idxNsByPath(
-      tenantId, catIdOpt.get().getId(), String.join("/", nsRefOpt.get().getPathList()));
+        tenantId, catIdOpt.get().getId(), String.join("/", nsRefOpt.get().getPathList()));
 
-    boolean okId   = deletePtrAndBlob(Keys.idxNsById(tenantId, nsId.getId()));
+    boolean okId = deletePtrAndBlob(Keys.idxNsById(tenantId, nsId.getId()));
     boolean okFull = deletePtrAndBlob(fullPathKey);
-    boolean okOwn  = deleteNamespaceOwner(tenantId, nsId.getId());
+    boolean okOwn = deleteNamespaceOwner(tenantId, nsId.getId());
 
     return okId && okFull && okOwn;
   }
 
-  public void upsertTable(String tenantId,
-                          ResourceId tableId,
-                          ResourceId namespaceId,
-                          String catalogDisplayName,
-                          List<String> namespacePathSegments,
-                          String tableDisplayName) {
+  public void upsertTable(
+      String tenantId,
+      ResourceId tableId,
+      ResourceId namespaceId,
+      String catalogDisplayName,
+      List<String> namespacePathSegments,
+      String tableDisplayName) {
     NameRef tableNameRef = 
       buildTableNameRef(tableId, catalogDisplayName, namespacePathSegments, tableDisplayName);
 
@@ -125,8 +129,11 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
 
     if (catRef != null && nsRef != null) {
       var nsFullPath = nsRef.getPathList();
-      NameRef newFull = 
-        buildTableNameRef(td.getResourceId(), catRef.getCatalog(), nsFullPath, td.getDisplayName());
+      NameRef newFull = buildTableNameRef(
+          td.getResourceId(),
+          catRef.getCatalog(),
+          nsFullPath,
+          td.getDisplayName());
       byte[] fullBytes = newFull.toByteArray();
 
       String kByName = Keys.idxTblByName(tenantId, fqKey(newFull));
@@ -136,7 +143,7 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
 
       if (prevFullOpt.isPresent() && !prevFullOpt.get().getName().isBlank()) {
         String prevFq = fqKey(prevFullOpt.get());
-        String newFq  = fqKey(newFull);
+        String newFq = fqKey(newFull);
         if (!prevFq.equals(newFq)) {
           deletePtrAndBlob(Keys.idxTblByName(tenantId, prevFq));
         }
@@ -148,16 +155,17 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
     }
   }
 
-  private static NameRef buildTableNameRef(ResourceId tableId,
-                                          String catalogDisplayName,
-                                          List<String> namespaceFullPath,
-                                          String tableDisplayName) {
+  private static NameRef buildTableNameRef(
+      ResourceId tableId,
+      String catalogDisplayName,
+      List<String> namespaceFullPath,
+      String tableDisplayName) {
     return NameRef.newBuilder()
-      .setResourceId(tableId)
-      .setCatalog(catalogDisplayName)
-      .addAllPath(namespaceFullPath == null ? java.util.List.of() : namespaceFullPath)
-      .setName(tableDisplayName)
-      .build();
+        .setResourceId(tableId)
+        .setCatalog(catalogDisplayName)
+        .addAllPath(namespaceFullPath == null ? java.util.List.of() : namespaceFullPath)
+        .setName(tableDisplayName)
+        .build();
   }
 
   public boolean removeTable(String tenantId, TableDescriptor td) {
@@ -167,7 +175,10 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
     }
     boolean okId = deletePtrAndBlob(Keys.idxTblById(tenantId, td.getResourceId().getId()));
     boolean okNs = deletePtrAndBlob(Keys.idxTblByNamespace(
-      tenantId, td.getNamespaceId().getId(), td.getResourceId().getId()));
+        tenantId,
+        td.getNamespaceId().getId(),
+        td.getResourceId().getId()));
+
     return okId && okNs;
   }
 
@@ -179,8 +190,12 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
   public Optional<ResourceId> getNamespaceOwner(String tenantId, String nsId) {
     String k = Keys.idxNsOwnerById(tenantId, nsId);
     return get(k).map(bytes -> {
-      try { return ResourceId.parseFrom(bytes); }
-      catch (Exception e) { throw new RuntimeException(e); }
+      try { 
+        return ResourceId.parseFrom(bytes); 
+      }
+      catch (Exception e) { 
+        throw new RuntimeException(e); 
+      }
     });
   }
 
@@ -210,20 +225,24 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
   
   public Optional<NameRef> getCatalogByName(String tenantId, String displayName) {
     return get(Keys.idxCatByName(tenantId, displayName))
-      .flatMap(bytes -> safeParseNameRef(bytes, "catalog", displayName));
+        .flatMap(bytes -> safeParseNameRef(bytes, "catalog", displayName));
   }
 
   public Optional<NameRef> getCatalogById(String tenantId, String id) {
     return get(Keys.idxCatById(tenantId, id))
-      .flatMap(bytes -> safeParseNameRef(bytes, "catalog id", id));
+        .flatMap(bytes -> safeParseNameRef(bytes, "catalog id", id));
   }
 
   public Optional<NameRef> getNamespaceByPath(String tenantId, String catalogId, List<String> path) {
     List<String> normalized = path;//(path);
     String k = Keys.idxNsByPath(tenantId, catalogId, String.join("/", normalized));
     return get(k).map(bytes -> {
-      try { return NameRef.parseFrom(bytes); }
-      catch (Exception e) { throw new RuntimeException(e); }
+      try { 
+        return NameRef.parseFrom(bytes); 
+      }
+      catch (Exception e) { 
+        throw new RuntimeException(e); 
+      }
     });
   }
 
@@ -278,14 +297,21 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
       try {
         out.add(NameRef.parseFrom(bytes));
       } catch (Exception e) {
-        throw new RuntimeException("Failed to parse NameRef for uri=" + r.blobUri() + ", key=" + r.key(), e);
+        throw new RuntimeException(
+            "Failed to parse NameRef for uri=" + r.blobUri() + ", key=" + r.key(), e);
       }
     }
     return out;
   }
 
-  public List<NameRef> listTablesByPrefix(String tenantId, String prefix, int limit, String token, StringBuilder nextOut) {
-    List<PointerStore.Row> rows = ptr.listPointersByPrefix(prefix, Math.max(1, limit), token, nextOut);
+  public List<NameRef> listTablesByPrefix(
+      String tenantId,
+      String prefix,
+      int limit,
+      String token,
+      StringBuilder nextOut) {
+    List<PointerStore.Row> rows = ptr.listPointersByPrefix(
+        prefix, Math.max(1, limit), token, nextOut);
 
     List<String> uris = new ArrayList<>(rows.size());
     for (PointerStore.Row r : rows) uris.add(r.blobUri());
@@ -298,7 +324,8 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
       try {
         out.add(NameRef.parseFrom(bytes));
       } catch (Exception e) {
-        throw new RuntimeException("Failed to parse NameRef for uri=" + r.blobUri() + ", key=" + r.key(), e);
+        throw new RuntimeException(
+            "Failed to parse NameRef for uri=" + r.blobUri() + ", key=" + r.key(), e);
       }
     }
     return out;
@@ -306,9 +333,9 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
 
   public boolean deleteTableByNamespace(String tenantId, TableDescriptor descriptor) {
     String k = Keys.idxTblByNamespace(
-      tenantId,
-      descriptor.getNamespaceId().getId(),
-      descriptor.getResourceId().getId());
+        tenantId,
+        descriptor.getNamespaceId().getId(),
+        descriptor.getResourceId().getId());
     var p = ptr.get(k);
     boolean okPtr = ptr.delete(k);
     boolean okBlob = p.isPresent() && blobs.delete(p.get().getBlobUri());

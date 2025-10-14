@@ -40,12 +40,26 @@ public class CatalogRepository extends BaseRepository<Catalog> {
 
   public void put(Catalog catalog) {
     var catalogId = catalog.getResourceId();
+    var tid = catalogId.getTenantId();
+    var key = Keys.catPtr(tid, catalogId.getId());
+    var uri = Keys.catBlob(tid, catalogId.getId());
 
-    put(Keys.catPtr(catalogId.getTenantId(), catalogId.getId()),
-        Keys.catBlob(catalogId.getTenantId(), catalogId.getId()),
-        catalog);
+    put(key, uri, catalog);
 
-    nameIndex.upsertCatalog(catalogId.getTenantId(), catalogId, catalog.getDisplayName());
+    nameIndex.upsertCatalog(tid, catalogId, catalog.getDisplayName());
+  }
+
+  public boolean putWithPrecondition(Catalog catalog, long expectedPointerVersion) {
+    var catalogId = catalog.getResourceId();
+    var tid = catalogId.getTenantId();
+    var key = Keys.catPtr(tid, catalogId.getId());
+    var uri = Keys.catBlob(tid, catalogId.getId());
+
+    boolean ok = putWithPrecondition(key, uri, catalog, expectedPointerVersion);
+    if (ok) {
+      nameIndex.upsertCatalog(tid, catalogId, catalog.getDisplayName());
+    }
+    return ok;
   }
 
   public boolean delete(ResourceId catalogId) {
@@ -60,14 +74,35 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     return okPtr && okBlob;
   }
 
+  public boolean deleteWithPrecondition(ResourceId catalogId, long expectedVersion) {
+    var tid = catalogId.getTenantId();
+    var key = Keys.catPtr(tid, catalogId.getId());
+    var uri = Keys.catBlob(tid, catalogId.getId());
+
+    boolean removed = ptr.compareAndDelete(key, expectedVersion);
+    if (!removed) {
+      return false;
+    }
+
+    blobs.delete(uri);
+    nameIndex.removeCatalog(tid, catalogId);
+
+    return true;
+  }
+
   public MutationMeta metaFor(ResourceId catalogId) {
     String tenant = catalogId.getTenantId();
     String key = Keys.catPtr(tenant, catalogId.getId());
-
     var p = ptr.get(key).orElseThrow(() ->
       new IllegalStateException("Pointer missing for catalog: " + catalogId.getId()));
-
     var hdr = blobs.head(p.getBlobUri());
-    return buildMeta(key, p, hdr, clock);
+    return toMeta(key, p, hdr, clock);
+  }
+
+  public MutationMeta metaForSafe(ResourceId catalogId) {
+    String tenant = catalogId.getTenantId();
+    String key = Keys.catPtr(tenant, catalogId.getId());
+    String blob = Keys.catBlob(tenant, catalogId.getId());
+    return safeMetaOrDefault(key, blob, clock);
   }
 }

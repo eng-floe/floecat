@@ -38,16 +38,16 @@ class TableRepositorySnapshotsTest {
     var tableRid = ResourceId.newBuilder().setTenantId(tenant).setId(tblId).setKind(ResourceKind.RK_TABLE).build();
 
     var td = TableDescriptor.newBuilder()
-      .setResourceId(tableRid)
-      .setDisplayName("orders")
-      .setDescription("Orders table")
-      .setCatalogId(catalogRid)
-      .setNamespaceId(nsRid)
-      .setRootUri("s3://upstream/tables/orders/")
-      .setSchemaJson("{}")
-      .setCreatedAt(Timestamps.fromMillis(clock.millis()))
-      .setCurrentSnapshotId(200)
-      .build();
+        .setResourceId(tableRid)
+        .setDisplayName("orders")
+        .setDescription("Orders table")
+        .setCatalogId(catalogRid)
+        .setNamespaceId(nsRid)
+        .setRootUri("s3://upstream/tables/orders/")
+        .setSchemaJson("{}")
+        .setCreatedAt(Timestamps.fromMillis(clock.millis()))
+        .setCurrentSnapshotId(200)
+        .build();
     tableRepo.put(td);
 
     seedSnapshot(ptr, blobs, tenant, tblId, 199, clock.millis() - 60_000);

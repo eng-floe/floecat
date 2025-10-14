@@ -32,19 +32,25 @@ public final class IdempotencyStoreImpl implements IdempotencyStore {
       var bytes = blobs.get(p.get().getBlobUri());
       return Optional.of(IdempotencyRecord.parseFrom(bytes));
     } catch (Exception e) {
-      throw new IllegalStateException("failed to parse idempotency record: " + p.get().getBlobUri(), e);
+      throw new IllegalStateException(
+          "failed to parse idempotency record: " + p.get().getBlobUri(), e);
     }
   }
 
   @Override
-  public boolean createPending(String key, String opName, String requestHash, Timestamp createdAt, Timestamp expiresAt) {
+  public boolean createPending(
+      String key,
+      String opName,
+      String requestHash,
+      Timestamp createdAt,
+      Timestamp expiresAt) {
     var rec = IdempotencyRecord.newBuilder()
-      .setOpName(opName)
-      .setRequestHash(requestHash)
-      .setStatus(IdempotencyRecord.Status.PENDING)
-      .setCreatedAt(createdAt)
-      .setExpiresAt(expiresAt)
-      .build();
+        .setOpName(opName)
+        .setRequestHash(requestHash)
+        .setStatus(IdempotencyRecord.Status.PENDING)
+        .setCreatedAt(createdAt)
+        .setExpiresAt(expiresAt)
+        .build();
 
     String uri = Keys.memUriFor(key, "record.pb");
 
@@ -60,24 +66,25 @@ public final class IdempotencyStoreImpl implements IdempotencyStore {
   }
 
   @Override
-  public void finalizeSuccess(String key,
-                              String opName,
-                              String requestHash,
-                              ResourceId resourceId,
-                              MutationMeta meta,
-                              byte[] payloadBytes,
-                              Timestamp createdAt,
-                              Timestamp expiresAt) {
+  public void finalizeSuccess(
+      String key,
+      String opName,
+      String requestHash,
+      ResourceId resourceId,
+      MutationMeta meta,
+      byte[] payloadBytes,
+      Timestamp createdAt,
+      Timestamp expiresAt) {
     var rec = IdempotencyRecord.newBuilder()
-      .setOpName(opName)
-      .setRequestHash(requestHash)
-      .setStatus(IdempotencyRecord.Status.SUCCEEDED)
-      .setResourceId(resourceId)
-      .setMeta(meta)
-      .setPayload(ByteString.copyFrom(payloadBytes))
-      .setCreatedAt(createdAt)
-      .setExpiresAt(expiresAt)
-      .build();
+        .setOpName(opName)
+        .setRequestHash(requestHash)
+        .setStatus(IdempotencyRecord.Status.SUCCEEDED)
+        .setResourceId(resourceId)
+        .setMeta(meta)
+        .setPayload(ByteString.copyFrom(payloadBytes))
+        .setCreatedAt(createdAt)
+        .setExpiresAt(expiresAt)
+        .build();
 
     String uri = Keys.memUriFor(key, "record.pb");
     blobs.put(uri, rec.toByteArray(), "application/x-protobuf");
