@@ -162,12 +162,21 @@ public class ResourceMutationImpl implements ResourceMutation {
     }
 
     var curMeta = catalogs.metaFor(catalogId);
-    enforcePreconditions(corr, curMeta, req.getPrecondition());
-
     var updated = prev.toBuilder()
         .setDisplayName(req.getSpec().getDisplayName())
         .setDescription(req.getSpec().getDescription())
         .build();
+
+    if (updated.equals(prev)) {
+      enforcePreconditions(corr, curMeta, req.getPrecondition());
+      return Uni.createFrom().item(
+          UpdateCatalogResponse.newBuilder()
+              .setCatalog(prev)
+              .setMeta(curMeta)
+              .build());
+    }
+
+    enforcePreconditions(corr, curMeta, req.getPrecondition());
 
     boolean ok = catalogs.update(updated, curMeta.getPointerVersion());
     if (!ok) {
@@ -594,7 +603,7 @@ public class ResourceMutationImpl implements ResourceMutation {
       throw GrpcErrors.preconditionFailed(
           corr, "version_mismatch",
           Map.of("expected", Long.toString(meta.getPointerVersion()),
-                "actual",   Long.toString(now.getPointerVersion())));
+                "actual", Long.toString(now.getPointerVersion())));
     }
 
     var outMeta = tables.metaFor(tableId);

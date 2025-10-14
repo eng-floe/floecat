@@ -130,15 +130,20 @@ class TableMutationIT {
     TestSupport.assertGrpcAndMc(staleSchema, Status.Code.FAILED_PRECONDITION,
         ErrorCode.MC_PRECONDITION_FAILED, "mismatch");
 
-    var currentMeta = TestSupport.metaForTable(ptr, blob, tblId);
+    var before = TestSupport.metaForTable(ptr, blob, tblId);
     var noop = mutation.renameTable(RenameTableRequest.newBuilder()
         .setTableId(tblId)
         .setNewDisplayName("orders_v2") // same name
         .setPrecondition(Precondition.newBuilder()
-            .setExpectedVersion(currentMeta.getPointerVersion())
-            .setExpectedEtag(currentMeta.getEtag())
+            .setExpectedVersion(before.getPointerVersion())
+            .setExpectedEtag(before.getEtag())
             .build())
         .build());
     assertNotNull(noop.getMeta().getPointerKey());
+
+    assertEquals(before.getPointerVersion(), noop.getMeta().getPointerVersion(),
+    "version should not bump on identical rename");
+    assertEquals(before.getEtag(), noop.getMeta().getEtag(),
+        "etag should not change on identical rename");
   }
 }
