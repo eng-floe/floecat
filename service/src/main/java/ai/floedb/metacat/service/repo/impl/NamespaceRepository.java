@@ -62,7 +62,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     nameIndex.upsertNamespace(tid, catalogId, catName, nsRid, parents, ns.getDisplayName());
   }
 
-  public boolean putWithPrecondition(
+  public boolean update(
       Namespace namespace, 
       ResourceId catalogId,
       List<String> parentPathSegments,
@@ -75,7 +75,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     var catName = nameIndex.getCatalogById(tId, catalogId.getId())
         .map(NameRef::getCatalog).orElse("");
 
-    boolean ok = putWithPrecondition(key, uri, namespace, expectedPointerVersion);
+    boolean ok = update(key, uri, namespace, expectedPointerVersion);
     if (ok) {
       nameIndex.upsertNamespace(
           tId,
@@ -109,7 +109,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
             .orElse("");
 
     if (sameCatalog) {
-      boolean ok = putWithPrecondition(newKey, newUri, updated, expectedVersion);
+      boolean ok = update(newKey, newUri, updated, expectedVersion);
       if (!ok) {
         return false;
       }
@@ -153,19 +153,48 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     return true;
   }
 
-  public boolean delete(ResourceId catalogId, ResourceId nsId) {
-    var tId = nsId.getTenantId();
+  public boolean delete(ResourceId catalogId, ResourceId namespaceId) {
+    var tId = namespaceId.getTenantId();
     var cId = catalogId.getId();
-    var nId = nsId.getId();
+    var nId = namespaceId.getId();
 
-    nameIndex.removeNamespace(tId, nsId);
+    nameIndex.removeNamespace(tId, namespaceId);
 
-    String ptrKey = Keys.nsPtr(tId, cId, nId);
-    String blobUri = Keys.nsBlob(tId, cId, nId);
+    var ptrKey = Keys.nsPtr(tId, cId, nId);
+    var blobUri = Keys.nsBlob(tId, cId, nId);
 
     boolean okPtr = ptr.delete(ptrKey);
     boolean okBlob = blobs.delete(blobUri);
     return okPtr && okBlob;
+  }
+
+  public boolean deleteWithPrecondition(
+      ResourceId catalogId,
+      ResourceId namespaceId,
+      long expectedVersion) {
+    var tId = namespaceId.getTenantId();
+    var cId = catalogId.getId();
+    var nId = namespaceId.getId();
+    
+    String ptrkey = Keys.nsPtr(tId, cId, nId);
+    var blobUri = Keys.nsBlob(tId, cId, nId);
+
+    var p = ptr.get(ptrkey);
+    if (p.isEmpty() || p.get().getVersion() != expectedVersion) {
+      return false;
+    }
+
+    boolean deleted = ptr.delete(ptrkey);
+    if (!deleted) 
+    {
+        return false;
+    }
+
+    nameIndex.removeNamespace(tId, namespaceId);
+
+    blobs.delete(blobUri);
+
+    return true;
   }
 
   public MutationMeta metaFor(ResourceId catalogId, ResourceId namespaceId) {

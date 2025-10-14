@@ -73,7 +73,7 @@ public abstract class BaseRepository<T> implements Repository<T> {
   }
 
   @Override
-  public boolean putWithPrecondition(String key, String blobUri, T value, long expectedVersion) {
+  public boolean update(String key, String blobUri, T value, long expectedVersion) {
     byte[] bytes = toBytes.apply(value);
     String newEtag = sha256B64(bytes);
 

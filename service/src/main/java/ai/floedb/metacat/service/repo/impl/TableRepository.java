@@ -3,6 +3,8 @@ package ai.floedb.metacat.service.repo.impl;
 import java.util.List;
 import java.util.Optional;
 
+import com.google.common.collect.Table;
+
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
@@ -63,6 +65,40 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
         td);
 
     nameIndex.upsertTable(tenantId, td);
+  }
+
+  public boolean update(TableDescriptor updated, long expectedVersion) {
+    var tableId = updated.getResourceId();
+    var tenantId = tableId.getTenantId();
+    var catalogId = updated.getCatalogId().getId();
+    var namespaceId = updated.getNamespaceId().getId();
+
+    var canTblKey = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    var tblKey = Keys.tblPtr(tenantId, catalogId, namespaceId, tableId.getId());
+    var uri = Keys.tblBlob(tenantId, tableId.getId());
+
+    var curCan = ptr.get(canTblKey);
+    var curTbl = ptr.get(tblKey);
+    if (curCan.isEmpty() || curCan.get().getVersion() != expectedVersion) {
+      return false;
+    }
+    if (curTbl.isEmpty() || curTbl.get().getVersion() != expectedVersion) {
+      return false;
+    }
+
+    byte[] bytes = toBytes.apply(updated);
+    var hdr = blobs.head(uri);
+    String etag = sha256B64(bytes);
+    if (hdr.isEmpty() || !etag.equals(hdr.get().getEtag())) {
+      blobs.put(uri, bytes, contentType);
+    }
+
+    putAll(List.of(canTblKey, tblKey), uri, updated);
+
+    nameIndex.removeTable(tenantId, updated);
+    nameIndex.upsertTable(tenantId, updated);
+
+    return true;
   }
 
   public boolean delete(ResourceId tableId) {

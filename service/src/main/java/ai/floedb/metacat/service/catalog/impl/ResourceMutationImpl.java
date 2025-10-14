@@ -169,7 +169,7 @@ public class ResourceMutationImpl implements ResourceMutation {
         .setDescription(req.getSpec().getDescription())
         .build();
 
-    boolean ok = catalogs.putWithPrecondition(updated, curMeta.getPointerVersion());
+    boolean ok = catalogs.update(updated, curMeta.getPointerVersion());
     if (!ok) {
       var nowMeta = catalogs.metaFor(catalogId);
       throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
@@ -312,7 +312,9 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     var curParents = ((Supplier<List<String>>) () -> {
       var c = new ArrayList<>(curNameRef.getPathList());
-      if (!c.isEmpty()) c.remove(c.size() - 1);
+      if (!c.isEmpty()) {
+        c.remove(c.size() - 1);
+      }
       return c;
     }).get();
 
@@ -342,7 +344,7 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     if (sameCatalog && sameLeaf && sameParents) {
       return Uni.createFrom().item(
-        RenameNamespaceResponse.newBuilder().setNamespace(cur).setMeta(curMeta).build());
+          RenameNamespaceResponse.newBuilder().setNamespace(cur).setMeta(curMeta).build());
       }
 
     {
@@ -382,92 +384,53 @@ public class ResourceMutationImpl implements ResourceMutation {
             .build());
   }
 
-  //@Override
-  public Uni<RenameNamespaceResponse> renameNamespace2(RenameNamespaceRequest req) {
-    var p = principal.get();
-    authz.require(p, "namespace.write");
-    var tenantId = p.getTenantId();
-
-    var namespaceId = req.getNamespaceId();
-    ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "RenameNamespace");
-
-    Namespace namespace = namespaces.get(namespaceId)
-        .orElseThrow(() -> GrpcErrors.notFound(
-            corrId(),
-            "namespace", Map.of("id", namespaceId.getId())
-        ));
-
-    var newName = req.getNewDisplayName();
-    var updated = namespace.toBuilder().setDisplayName(newName).build();
-
-    NameRef namespaceNameRef  = nameIndex.getNamespaceById(tenantId, namespaceId.getId())
-        .orElseThrow(() -> GrpcErrors.notFound(
-            corrId(),
-            "namespace", Map.of("id", namespaceId.getId())
-        ));
-
-    NameRef catalogNameRef = nameIndex.getCatalogByName(tenantId, namespaceNameRef.getCatalog())
-        .orElseThrow(() -> GrpcErrors.notFound(
-            corrId(),
-            "catalog", Map.of("id", namespaceId.getId())
-        ));
-      
-    var path = new ArrayList<>(namespaceNameRef.getPathList());
-    if (!path.isEmpty()) path.remove(path.size() - 1);
-
-    namespaces.delete(catalogNameRef.getResourceId(), namespaceId);
-    namespaces.put(updated, catalogNameRef.getResourceId(), path);
-
-    return Uni.createFrom().item(
-        RenameNamespaceResponse.newBuilder()
-            .setNamespace(updated)
-            .setMeta(metaForNamespace(catalogNameRef.getResourceId(), namespaceId))
-            .build()
-    );
-  }
-
   @Override
   public Uni<DeleteNamespaceResponse> deleteNamespace(DeleteNamespaceRequest req) {
     var p = principal.get();
     authz.require(p, "namespace.write");
 
-    var namespaceId = req.getNamespaceId();
+    final var corr = corrId();
+
+    final var namespaceId = req.getNamespaceId();
     ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "DeleteNamespace");
-    var tenantId = p.getTenantId();
+
+    final var tenantId = p.getTenantId();
 
     if (req.getRequireEmpty() && tables.count(namespaceId) > 0) {
-      var namespaceNameRef = nameIndex.getNamespaceById(p.getTenantId(), namespaceId.getId());
-      if (namespaceNameRef.isPresent()) {
-        throw GrpcErrors.conflict(
-            corrId(),
-            "namespace.not_empty",
-            Map.of("display_name", 
-                NameIndexRepository.joinPath(namespaceNameRef.get().getPathList())));
-      } else {
-        throw GrpcErrors.conflict(
-            corrId(),
-            "namespace.not_empty",
-            Map.of("display_name", namespaceId.getId())
-        );
-      }
+      var nameRefOpt = nameIndex.getNamespaceById(tenantId, namespaceId.getId());
+      var display = nameRefOpt
+          .map(nr -> NameIndexRepository.joinPath(nr.getPathList()))
+          .orElse(namespaceId.getId());
+      throw GrpcErrors.conflict(
+          corr, "namespace.not_empty",
+          Map.of("display_name", display));
     }
 
-    NameRef namespaceNameRef = nameIndex.getNamespaceById(tenantId, namespaceId.getId())
+    NameRef nsNameRef = nameIndex.getNamespaceById(tenantId, namespaceId.getId())
         .orElseThrow(() -> GrpcErrors.notFound(
-            corrId(),
-            "namespace", Map.of("id", namespaceId.getId())
-        ));
+            corr, "namespace", Map.of("id", namespaceId.getId())));
 
-    NameRef catalogNameRef = nameIndex.getCatalogByName(tenantId, namespaceNameRef.getCatalog())
+    NameRef catNameRef = nameIndex.getCatalogByName(tenantId, nsNameRef.getCatalog())
         .orElseThrow(() -> GrpcErrors.notFound(
-            corrId(),
-            "catalog", Map.of("id", namespaceId.getId())
-        ));
+            corr, "catalog", Map.of("id", nsNameRef.getCatalog())));
 
-    var m = metaForNamespace(catalogNameRef.getResourceId(), namespaceId);
-    namespaces.delete(catalogNameRef.getResourceId(), namespaceId);
+    var meta = namespaces.metaFor(catNameRef.getResourceId(), namespaceId);
 
-    return Uni.createFrom().item(DeleteNamespaceResponse.newBuilder().setMeta(m).build());
+    enforcePreconditions(corr, meta, req.getPrecondition());
+
+    boolean ok = namespaces.deleteWithPrecondition(
+        catNameRef.getResourceId(), namespaceId, meta.getPointerVersion());
+
+    if (!ok) {
+      var cur = namespaces.metaFor(catNameRef.getResourceId(), namespaceId);
+      throw GrpcErrors.preconditionFailed(
+          corr, "version_mismatch",
+          Map.of("expected", Long.toString(meta.getPointerVersion()),
+                "actual",   Long.toString(cur.getPointerVersion())));
+    }
+
+    return Uni.createFrom().item(
+        DeleteNamespaceResponse.newBuilder().setMeta(meta).build());
   }
 
   @Override
@@ -552,12 +515,13 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "table.write");
 
+    var corr = corrId();
+
     var tableId = req.getTableId();
     ensureKind(tableId, ResourceKind.RK_TABLE, "UpdateTableSchema");
 
-    var cur = tables.get(tableId)
-        .orElseThrow(() -> GrpcErrors.notFound(corrId(), "table",
-            Map.of("id", tableId.getId())));
+    var cur = tables.get(tableId).orElseThrow(() ->
+        GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
 
     var updated = cur.toBuilder()
         .setSchemaJson(req.getSchemaJson())
@@ -565,12 +529,33 @@ public class ResourceMutationImpl implements ResourceMutation {
         .setDescription(cur.getDescription())
         .build();
 
-    tables.put(updated);
+    if (updated.equals(cur)) {
+      var metaNoop = tables.metaFor(tableId);
+      enforcePreconditions(corr, metaNoop, req.getPrecondition());
+      return Uni.createFrom().item(
+          UpdateTableSchemaResponse.newBuilder()
+              .setTable(cur)
+              .setMeta(metaNoop)
+              .build());
+    }
 
+    var meta = tables.metaFor(tableId);
+    enforcePreconditions(corr, meta, req.getPrecondition());
+
+    boolean ok = tables.update(updated, meta.getPointerVersion());
+    if (!ok) {
+      var now = tables.metaFor(tableId);
+      throw GrpcErrors.preconditionFailed(
+          corr, "version_mismatch",
+          Map.of("expected", Long.toString(meta.getPointerVersion()),
+                "actual", Long.toString(now.getPointerVersion())));
+    }
+
+    var outMeta = tables.metaFor(tableId);
     return Uni.createFrom().item(
         UpdateTableSchemaResponse.newBuilder()
             .setTable(updated)
-            .setMeta(metaForTable(tableId))
+            .setMeta(outMeta)
             .build());
   }
 
@@ -579,21 +564,44 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "table.write");
 
+    var corr = corrId();
+
     var tableId = req.getTableId();
     ensureKind(tableId, ResourceKind.RK_TABLE, "RenameTable");
 
-    var cur = tables.get(tableId).
-        orElseThrow(() -> GrpcErrors.notFound(corrId(), "table",
-            Map.of("id", tableId.getId())));
+    var cur = tables.get(tableId).orElseThrow(() ->
+        GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
 
-    var updated = cur.toBuilder().setDisplayName(req.getNewDisplayName()).build();
+    var newName = req.getNewDisplayName();
+    var updated = cur.toBuilder().setDisplayName(mustNonEmpty(newName, "display_name")).build();
 
-    tables.put(updated);
+    if (updated.getDisplayName().equals(cur.getDisplayName())) {
+      var metaNoop = tables.metaFor(tableId);
+      enforcePreconditions(corr, metaNoop, req.getPrecondition());
+      return Uni.createFrom().item(
+          RenameTableResponse.newBuilder()
+              .setTable(cur)
+              .setMeta(metaNoop)
+              .build());
+    }
 
+    var meta = tables.metaFor(tableId);
+    enforcePreconditions(corr, meta, req.getPrecondition());
+
+    boolean ok = tables.update(updated, meta.getPointerVersion());
+    if (!ok) {
+      var now = tables.metaFor(tableId);
+      throw GrpcErrors.preconditionFailed(
+          corr, "version_mismatch",
+          Map.of("expected", Long.toString(meta.getPointerVersion()),
+                "actual",   Long.toString(now.getPointerVersion())));
+    }
+
+    var outMeta = tables.metaFor(tableId);
     return Uni.createFrom().item(
         RenameTableResponse.newBuilder()
             .setTable(updated)
-            .setMeta(metaForTable(tableId))
+            .setMeta(outMeta)
             .build());
   }
 
@@ -646,13 +654,6 @@ public class ResourceMutationImpl implements ResourceMutation {
         .setUpdatedAt(Timestamps.fromMillis(nowMs()))
         .build();
     }
-
-  private MutationMeta metaForNamespace(ResourceId catId, ResourceId nsId) {
-    String tenant = nsId.getTenantId();
-    String ptrKey = Keys.nsPtr(tenant, catId.getId(), nsId.getId());
-    String blob = Keys.nsBlob(tenant, catId.getId(), nsId.getId());
-    return meta(ptrKey, blob);
-  }
 
   private MutationMeta metaForTable(ResourceId tblId) {
     String tenant = tblId.getTenantId();

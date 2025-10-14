@@ -49,13 +49,13 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     nameIndex.upsertCatalog(tid, catalogId, catalog.getDisplayName());
   }
 
-  public boolean putWithPrecondition(Catalog catalog, long expectedPointerVersion) {
+  public boolean update(Catalog catalog, long expectedPointerVersion) {
     var catalogId = catalog.getResourceId();
     var tid = catalogId.getTenantId();
     var key = Keys.catPtr(tid, catalogId.getId());
     var uri = Keys.catBlob(tid, catalogId.getId());
 
-    boolean ok = putWithPrecondition(key, uri, catalog, expectedPointerVersion);
+    boolean ok = update(key, uri, catalog, expectedPointerVersion);
     if (ok) {
       nameIndex.upsertCatalog(tid, catalogId, catalog.getDisplayName());
     }

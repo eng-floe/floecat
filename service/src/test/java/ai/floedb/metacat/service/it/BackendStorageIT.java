@@ -118,7 +118,7 @@ class BackendStorageIT {
     long vBeforeIdempotent = tpCanonAfter.getVersion();
     TestSupport.updateSchema(mutation, tblId, schemaV2);
     Pointer tpCanonAfterIdem = ptr.get(canonPtrKey).orElseThrow();
-    assertTrue(tpCanonAfterIdem.getVersion() > vBeforeIdempotent, "version must bump on identical content");
+    assertEquals(tpCanonAfterIdem.getVersion(), vBeforeIdempotent, "version must not bump on identical content");
 
     String oldName = tbl.getDisplayName();
     String newName = "it_tbl_renamed";

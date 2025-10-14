@@ -206,6 +206,29 @@ public final class TestSupport {
         .build();
   }
 
+  public static MutationMeta metaForTable(
+      PointerStore ptr,
+      BlobStore blobs,
+      ResourceId tableId) {
+
+    var tenant = tableId.getTenantId();
+    var tblPtrKey = Keys.tblCanonicalPtr(tenant, tableId.getId());
+    var tblBlob   = Keys.tblBlob(tenant, tableId.getId());
+
+    var tblPtr = ptr.get(tblPtrKey).orElseThrow(
+        () -> new AssertionError("table pointer missing: " + tblPtrKey));
+    var hdr = blobs.head(tblBlob).orElseThrow(
+        () -> new AssertionError("table blob header missing: " + tblBlob));
+
+    return MutationMeta.newBuilder()
+        .setPointerKey(tblPtrKey)
+        .setBlobUri(tblBlob)
+        .setPointerVersion(tblPtr.getVersion())
+        .setEtag(hdr.getEtag())
+        .setUpdatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
+        .build();
+  }
+
   private static NameRef readNameRef(BlobStore blobs, String uri) {
     try {
       return NameRef.parseFrom(blobs.get(uri));
