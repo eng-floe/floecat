@@ -36,8 +36,9 @@ message LookupCatalogResponse {
 message Namespace {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
-  string description = 3;
-  google.protobuf.Timestamp created_at = 4;
+  repeated string parents = 3;
+  string description = 4;
+  google.protobuf.Timestamp created_at = 5;
 }
 
 message ResolveNamespaceRequest { 

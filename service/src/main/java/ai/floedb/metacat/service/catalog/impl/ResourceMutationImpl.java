@@ -239,10 +239,10 @@ public class ResourceMutationImpl implements ResourceMutation {
     authz.require(p, "namespace.write");
 
     var tenant = p.getTenantId();
+    var parents = req.getSpec().getPathList();
     var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
 
     if (idemKey.isBlank()) {
-      var parents = req.getSpec().getPathList();
       var full = new ArrayList<>(parents);
       full.add(req.getSpec().getDisplayName());
       var nsExists = nameIndex.getNamespaceByPath(tenant, req.getSpec().getCatalogId().getId(), full);
@@ -271,6 +271,7 @@ public class ResourceMutationImpl implements ResourceMutation {
         var built = Namespace.newBuilder()
             .setResourceId(namespaceId)
             .setDisplayName(req.getSpec().getDisplayName())
+            .addAllParents(parents)
             .setDescription(req.getSpec().getDescription())
             .setCreatedAt(nowTs)
             .build();
@@ -373,7 +374,7 @@ public class ResourceMutationImpl implements ResourceMutation {
       }
     }
 
-    var updated = cur.toBuilder().setDisplayName(newLeaf).build();
+    var updated = cur.toBuilder().setDisplayName(newLeaf).addAllParents(newParents).build();
 
     boolean ok = namespaces.renameWithPrecondition(
         updated, 
