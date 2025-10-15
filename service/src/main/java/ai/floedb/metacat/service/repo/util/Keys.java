@@ -3,6 +3,7 @@ package ai.floedb.metacat.service.repo.util;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.List;
 
 public final class Keys {
   private Keys() {}
@@ -68,12 +69,26 @@ public final class Keys {
   public static String idxTblByNamespace(String tid, String nsId, String tableId) {
     return "/tenants/" + normTenant(tid) + "/_index/tables/by-namespace/" + enc(nsId) + "/" + enc(tableId);
   }
-  public static String idxTblByName(String tid, String fq) {
-    String[] parts = fq.split("/");
-    String joined = String.join("/", Arrays.stream(parts)
-      .map(Keys::enc)
-      .toArray(String[]::new));
-    return "/tenants/" + normTenant(tid) + "/_index/tables/by-name/" + joined;
+  public static String idxTblByName(String tid, String catalogId, List<String> nsPath, String leaf) {
+    String joined = String.join("/", nsPath.stream().map(Keys::enc).toArray(String[]::new));
+    return "/tenants/" + normTenant(tid) + "/_index/tables/by-name/" + enc(catalogId)
+          + (joined.isEmpty() ? "" : "/" + joined) + "/" + enc(leaf);
+  }
+  // List all tables under a namespace (no leaf)
+  public static String idxTblByNamespaceLeafPrefix(String tid, String nsId) {
+    return "/tenants/" + normTenant(tid) + "/_index/tables/by-namespace/" + enc(nsId) + "/";
+  }
+
+  // List all tables by-name under a catalogId + nsPath (no leaf)
+  public static String idxTblByNamePrefix(String tid, String catalogId, List<String> nsPath) {
+    String joined = String.join("/", nsPath.stream().map(Keys::enc).toArray(String[]::new));
+    return "/tenants/" + normTenant(tid) + "/_index/tables/by-name/" + enc(catalogId)
+        + (joined.isEmpty() ? "/" : "/" + joined + "/");
+  }
+
+  // NEW: by namespace + leaf (no tableId in key)
+  public static String idxTblByNamespaceLeaf(String tid, String nsId, String leaf) {
+    return "/tenants/" + normTenant(tid) + "/_index/tables/by-namespace/" + enc(nsId) + "/" + enc(leaf);
   }
   public static String idxTblById(String tid, String id) {
     return "/tenants/" + normTenant(tid) + "/_index/tables/by-id/" + enc(id);

@@ -79,9 +79,8 @@ class BackendStorageIT {
         schemaV1,
         "storage table");
     ResourceId tblId = tbl.getResourceId();
-    String fq = String.join("/", cat.getDisplayName(), fullPath, tbl.getDisplayName());
-    String kTblByName = Keys.idxTblByName(tenantId, fq);
-    String kTblByNs = Keys.idxTblByNamespace(tenantId, nsId.getId(), tblId.getId());
+    String kTblByName = Keys.idxTblByName(tenantId, catId.getId(), fullListPath, "it_tbl");
+    String kTblByNs = Keys.idxTblByNamespaceLeaf(tenantId, nsId.getId(), "it_tbl");
     String kTblById = Keys.idxTblById(tenantId, tblId.getId());
 
     assertTrue(ptr.get(kTblByName).isPresent(), "table by-name index missing");
@@ -123,13 +122,11 @@ class BackendStorageIT {
     String oldName = tbl.getDisplayName();
     String newName = "it_tbl_renamed";
     TestSupport.renameTable(mutation, tblId, newName);
-    String oldFq = String.join("/", catName, String.join("/", fullListPath), oldName);
-    String newFq = String.join("/", catName, String.join("/", fullListPath), newName);
-    String idxOldKey = Keys.idxTblByName(tenantId, oldFq);
-    String idxNewKey = Keys.idxTblByName(tenantId, newFq);
+    String idxOldKey = Keys.idxTblByName(tenantId, catId.getId(), fullListPath, oldName);
+    String idxNewKey = Keys.idxTblByName(tenantId, catId.getId(), fullListPath, newName);
     assertTrue(ptr.get(idxNewKey).isPresent(), "new name-index pointer must exist");
     assertTrue(ptr.get(idxOldKey).isEmpty(), "old name-index pointer must be removed");
-    assertTrue(ptr.get(Keys.idxTblByNamespace(tenantId, nsId.getId(), tblId.getId())).isPresent());
+    assertTrue(ptr.get(Keys.idxTblByNamespaceLeaf(tenantId, nsId.getId(), newName)).isPresent());
     assertTrue(ptr.get(Keys.idxTblById(tenantId, tblId.getId())).isPresent());
 
     TestSupport.deleteTable(mutation, nsId, tblId);
@@ -244,7 +241,7 @@ class BackendStorageIT {
     var page = nameIndex.listTablesByPrefix(tenantId, prefixRef, 100, "", next);
     assertTrue(page.size() >= 2);
     var fq = String.join("/", cat.getDisplayName(), String.join("/", nsPath), "α");
-    String key = ai.floedb.metacat.service.repo.util.Keys.idxTblByName(tenantId, fq);
+    String key = Keys.idxTblByName(tenantId, cat.getResourceId().getId(), nsPath, "α");
     assertTrue(key.contains("/by-name/"), "hierarchy should be preserved in keyspace");
   }
 
@@ -390,7 +387,7 @@ class BackendStorageIT {
         List.of("db","sch"),
         "cnt");
 
-    var prefix = Keys.idxTblByName(tenantId, String.join("/", cat.getDisplayName(), "db","sch",""));
+    var prefix = Keys.idxTblByNamePrefix(tenantId, cat.getResourceId().getId(), List.of("db","sch", "ns"));
     int before = ptr.countByPrefix(prefix);
 
     var tA = TestSupport.createTable(
@@ -461,8 +458,7 @@ class BackendStorageIT {
     assertTrue(ptr.get(canonPtrKey).isPresent(), "canonical pointer missing");
     assertTrue(blobs.head(blobUri).isPresent(), "blob missing");
 
-    var fq = String.join("/", cat.getDisplayName(), "db", "sch", "ns", "t0");
-    var idxByName = Keys.idxTblByName(tenantId, fq);
+    var idxByName = Keys.idxTblByName(tenantId, cat.getResourceId().getId(), List.of("db","sch", "ns"), "t0");
     assertTrue(ptr.get(idxByName).isPresent(), "by-name index missing");
 
     assertEquals(resp1.getMeta().getPointerKey(), resp2.getMeta().getPointerKey());

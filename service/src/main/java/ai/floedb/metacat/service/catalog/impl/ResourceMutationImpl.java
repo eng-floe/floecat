@@ -139,11 +139,11 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "catalog.write");
 
-    var tenantId = p.getTenantId();
-    var corr = corrId();
-
     var catalogId = req.getCatalogId();
     ensureKind(catalogId, ResourceKind.RK_CATALOG, "UpdateCatalog");
+
+    var tenantId = p.getTenantId();
+    var corr = corrId();
 
     var prev = catalogs.get(catalogId)
       .orElseThrow(() -> GrpcErrors.notFound(
@@ -196,20 +196,25 @@ public class ResourceMutationImpl implements ResourceMutation {
 
   @Override
   public Uni<DeleteCatalogResponse> deleteCatalog(DeleteCatalogRequest req) {
-    var p = principal.get();
-    authz.require(p, "catalog.write");
-
-    var corr = corrId();
+    authz.require(principal.get(), "catalog.write");
 
     var catalogId = req.getCatalogId();
     ensureKind(catalogId, ResourceKind.RK_CATALOG, "DeleteCatalog");
 
+    var corr = corrId();
+
+    var key = Keys.catPtr(catalogId.getTenantId(), catalogId.getId());
+    var ptrOpt = ptr.get(key);
+    if (ptrOpt.isEmpty()) {
+      catalogs.delete(catalogId);
+      var safe = catalogs.metaForSafe(catalogId);
+      return Uni.createFrom().item(DeleteCatalogResponse.newBuilder().setMeta(safe).build());
+    }
+
     if (req.getRequireEmpty() && namespaces.count(catalogId) > 0) {
-      var display = nameIndex.getCatalogById(p.getTenantId(), catalogId.getId())
-          .map(NameRef::getCatalog)
-          .orElse(catalogId.getId());
-      throw GrpcErrors.conflict(corrId(), "catalog.not_empty",
-          Map.of("display_name", display));
+      var display = nameIndex.getCatalogById(principal.get().getTenantId(), catalogId.getId())
+          .map(NameRef::getCatalog).orElse(catalogId.getId());
+      throw GrpcErrors.conflict(corr, "catalog.not_empty", Map.of("display_name", display));
     }
 
     var meta = catalogs.metaFor(catalogId);
@@ -218,12 +223,11 @@ public class ResourceMutationImpl implements ResourceMutation {
     boolean ok = catalogs.deleteWithPrecondition(catalogId, meta.getPointerVersion());
     if (!ok) {
       var cur = catalogs.metaForSafe(catalogId);
-        throw GrpcErrors.preconditionFailed(
+      throw GrpcErrors.preconditionFailed(
           corr, "version_mismatch",
           Map.of("expected", Long.toString(meta.getPointerVersion()),
-              "actual", Long.toString(cur.getPointerVersion())));
+                "actual",   Long.toString(cur.getPointerVersion())));
     }
-
     return Uni.createFrom().item(DeleteCatalogResponse.newBuilder().setMeta(meta).build());
   }
 
@@ -294,11 +298,11 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "namespace.write");
 
-    var tenant = p.getTenantId();
-    var corr = corrId();
-
     var nsId = req.getNamespaceId();
     ensureKind(nsId, ResourceKind.RK_NAMESPACE, "RenameNamespace");
+
+    var tenant = p.getTenantId();
+    var corr = corrId();
 
     Namespace cur = namespaces.get(nsId).orElseThrow(() ->
         GrpcErrors.notFound(corr, "namespace", Map.of("id", nsId.getId())));
@@ -398,33 +402,36 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "namespace.write");
 
-    final var corr = corrId();
-
+    final var tenantId = p.getTenantId();
     final var namespaceId = req.getNamespaceId();
     ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "DeleteNamespace");
 
-    final var tenantId = p.getTenantId();
+    final var corr = corrId();
 
     if (req.getRequireEmpty() && tables.count(namespaceId) > 0) {
       var nameRefOpt = nameIndex.getNamespaceById(tenantId, namespaceId.getId());
       var display = nameRefOpt
           .map(nr -> NameIndexRepository.joinPath(nr.getPathList()))
           .orElse(namespaceId.getId());
-      throw GrpcErrors.conflict(
-          corr, "namespace.not_empty",
+      throw GrpcErrors.conflict(corr, "namespace.not_empty",
           Map.of("display_name", display));
     }
 
     NameRef nsNameRef = nameIndex.getNamespaceById(tenantId, namespaceId.getId())
         .orElseThrow(() -> GrpcErrors.notFound(
             corr, "namespace", Map.of("id", namespaceId.getId())));
-
     NameRef catNameRef = nameIndex.getCatalogByName(tenantId, nsNameRef.getCatalog())
         .orElseThrow(() -> GrpcErrors.notFound(
             corr, "catalog", Map.of("id", nsNameRef.getCatalog())));
 
-    var meta = namespaces.metaFor(catNameRef.getResourceId(), namespaceId);
+    var ptrKey = Keys.nsPtr(tenantId, catNameRef.getResourceId().getId(), namespaceId.getId());
+    if (ptr.get(ptrKey).isEmpty()) {
+      namespaces.delete(catNameRef.getResourceId(), namespaceId);
+      var safe = namespaces.metaForSafe(catNameRef.getResourceId(), namespaceId);
+      return Uni.createFrom().item(DeleteNamespaceResponse.newBuilder().setMeta(safe).build());
+    }
 
+    var meta = namespaces.metaFor(catNameRef.getResourceId(), namespaceId);
     enforcePreconditions(corr, meta, req.getPrecondition());
 
     boolean ok = namespaces.deleteWithPrecondition(
@@ -438,8 +445,7 @@ public class ResourceMutationImpl implements ResourceMutation {
                 "actual",   Long.toString(cur.getPointerVersion())));
     }
 
-    return Uni.createFrom().item(
-        DeleteNamespaceResponse.newBuilder().setMeta(meta).build());
+    return Uni.createFrom().item(DeleteNamespaceResponse.newBuilder().setMeta(meta).build());
   }
 
   @Override
@@ -524,10 +530,10 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "table.write");
 
-    var corr = corrId();
-
     var tableId = req.getTableId();
     ensureKind(tableId, ResourceKind.RK_TABLE, "UpdateTableSchema");
+
+    var corr = corrId();
 
     var cur = tables.get(tableId).orElseThrow(() ->
         GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
@@ -573,10 +579,10 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "table.write");
 
-    var corr = corrId();
-
     var tableId = req.getTableId();
     ensureKind(tableId, ResourceKind.RK_TABLE, "RenameTable");
+
+    var corr = corrId();
 
     var cur = tables.get(tableId).orElseThrow(() ->
         GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
@@ -619,15 +625,33 @@ public class ResourceMutationImpl implements ResourceMutation {
     var p = principal.get();
     authz.require(p, "table.write");
 
-    var tableId  = req.getTableId();
+    var tableId = req.getTableId();
     ensureKind(tableId, ResourceKind.RK_TABLE, "DeleteTable");
 
-    var m = metaForTable(tableId);
-    if (!tables.delete(tableId)) {
-      throw GrpcErrors.internal(corrId(), "table.delete_failed", Map.of("id", tableId.getId()));
+    var corr = corrId();
+    var tenant = tableId.getTenantId();
+    var canonKey = Keys.tblCanonicalPtr(tenant, tableId.getId());
+    var canonPtr = ptr.get(canonKey);
+
+    if (canonPtr.isEmpty()) {
+      tables.delete(tableId);
+      var safe = tables.metaForSafe(tableId);
+      return Uni.createFrom().item(DeleteTableResponse.newBuilder().setMeta(safe).build());
     }
 
-    return Uni.createFrom().item(DeleteTableResponse.newBuilder().setMeta(m).build());
+    var meta = tables.metaFor(tableId);
+    enforcePreconditions(corr, meta, req.getPrecondition());
+
+    boolean ok = tables.deleteWithPrecondition(tableId, meta.getPointerVersion());
+    if (!ok) {
+      var nowPtr = ptr.get(canonKey).orElse(null);
+      var actual = (nowPtr == null) ? 0L : nowPtr.getVersion();
+      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+          java.util.Map.of("expected", Long.toString(meta.getPointerVersion()),
+              "actual", Long.toString(actual)));
+    }
+
+    return Uni.createFrom().item(DeleteTableResponse.newBuilder().setMeta(meta).build());
   }
 
   private void ensureKind(ResourceId rid, ResourceKind want, String op) {
@@ -643,43 +667,23 @@ public class ResourceMutationImpl implements ResourceMutation {
     return v;
   }
 
-  private long nowMs() { 
-    return clock.millis(); 
-  }
-
   private String corrId() {
     var pctx = principal != null ? principal.get() : null;
     return pctx != null ? pctx.getCorrelationId() : "";
   }
 
-  private MutationMeta meta(String pointerKey, String blobUri) {
-    long version = ptr.get(pointerKey).map(Pointer::getVersion).orElse(0L);
-    var etag = blobs.head(blobUri).map(h -> h.getEtag()).orElse("");
-    return MutationMeta.newBuilder()
-        .setPointerKey(pointerKey)
-        .setBlobUri(blobUri)
-        .setPointerVersion(version)
-        .setEtag(etag)
-        .setUpdatedAt(Timestamps.fromMillis(nowMs()))
-        .build();
-    }
-
-  private MutationMeta metaForTable(ResourceId tblId) {
-    String tenant = tblId.getTenantId();
-    String ptrKey = Keys.tblCanonicalPtr(tenant, tblId.getId());
-    String blob = Keys.tblBlob(tenant, tblId.getId());
-    return meta(ptrKey, blob);
-  }
-
-  private void enforcePreconditions(String corrId, 
-                                    MutationMeta cur, 
-                                    Precondition pc) {
+  private void enforcePreconditions(
+      String corrId,
+      MutationMeta cur,
+      Precondition pc) {
     if (pc == null) return;
 
     boolean checkVer = pc.getExpectedVersion() > 0;
     boolean checkTag = pc.getExpectedEtag() != null && !pc.getExpectedEtag().isBlank();
 
-    if (!checkVer && !checkTag) return;
+    if (!checkVer && !checkTag) {
+      return;
+    }
 
     if (checkVer && cur.getPointerVersion() != pc.getExpectedVersion()) {
       throw GrpcErrors.preconditionFailed(

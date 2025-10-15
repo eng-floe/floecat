@@ -44,6 +44,8 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
   }
 
   public void put(Namespace ns, ResourceId catalogId, List<String> parentPathSegments) {
+    requireCatalogId(catalogId);
+
     var nsRid = ns.getResourceId();
     var tid = nsRid.getTenantId();
 
@@ -57,7 +59,9 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
         : parentPathSegments;
 
     var catName = nameIndex.getCatalogById(tid, catalogId.getId())
-        .map(NameRef::getCatalog).orElse("");
+        .map(NameRef::getCatalog)
+        .orElseThrow(() -> new IllegalStateException(
+            "catalog by-id index missing for " + catalogId.getId()));
 
     nameIndex.upsertNamespace(tid, catalogId, catName, nsRid, parents, ns.getDisplayName());
   }
@@ -67,6 +71,8 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
       ResourceId catalogId,
       List<String> parentPathSegments,
       long expectedPointerVersion) {
+    requireCatalogId(catalogId);
+
     var nsId = namespace.getResourceId();
     var tId = catalogId.getTenantId();
     var key = Keys.nsPtr(tId, catalogId.getId(), nsId.getId());
@@ -95,6 +101,8 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
       ResourceId newCatalogId,
       List<String> newParents,
       long expectedVersion) {
+    requireCatalogId(oldCatalogId);
+    requireCatalogId(newCatalogId);
 
     final var nsId = updated.getResourceId();
     final var tenant = nsId.getTenantId();
@@ -125,7 +133,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
       return false;
     }
 
-    boolean deleted = ptr.delete(oldKey);
+    boolean deleted = ptr.compareAndDelete(oldKey, expectedVersion);
     if (!deleted) {
       return false;
     }
@@ -154,18 +162,19 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
   }
 
   public boolean delete(ResourceId catalogId, ResourceId namespaceId) {
-    var tId = namespaceId.getTenantId();
-    var cId = catalogId.getId();
-    var nId = namespaceId.getId();
+    var t = namespaceId.getTenantId();
+    var c = catalogId.getId();
+    var n = namespaceId.getId();
+    var key = Keys.nsPtr(t, c, n);
+    var uri = Keys.nsBlob(t, c, n);
 
-    nameIndex.removeNamespace(tId, namespaceId);
+    try { nameIndex.removeNamespace(t, namespaceId); } catch (Throwable ignore) {}
+    try { ptr.delete(key); } catch (Throwable ignore) {}
+    try { blobs.delete(uri); } catch (Throwable ignore) {}
 
-    var ptrKey = Keys.nsPtr(tId, cId, nId);
-    var blobUri = Keys.nsBlob(tId, cId, nId);
-
-    boolean okPtr = ptr.delete(ptrKey);
-    boolean okBlob = blobs.delete(blobUri);
-    return okPtr && okBlob;
+    boolean gonePtr  = ptr.get(key).isEmpty();
+    boolean goneBlob = blobs.head(uri).isEmpty();
+    return gonePtr && goneBlob;
   }
 
   public boolean deleteWithPrecondition(
@@ -184,7 +193,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
       return false;
     }
 
-    boolean deleted = ptr.delete(ptrkey);
+    boolean deleted = ptr.compareAndDelete(ptrkey, expectedVersion);
     if (!deleted) 
     {
         return false;
@@ -209,5 +218,17 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
 
     var hdr = blobs.head(p.getBlobUri());
     return buildMeta(key, p, hdr, clock);
+  }
+
+  public MutationMeta metaForSafe(ResourceId catalogId, ResourceId namespaceId) {
+    var t = namespaceId.getTenantId();
+    var key = Keys.nsPtr(t, catalogId.getId(), namespaceId.getId());
+    var uri = Keys.nsBlob(t, catalogId.getId(), namespaceId.getId());
+    return safeMetaOrDefault(key, uri, clock);
+  }
+
+  private static void requireCatalogId(ResourceId catalogId) {
+    if (catalogId == null || catalogId.getId() == null || catalogId.getId().isBlank())
+      throw new IllegalArgumentException("namespace requires non-empty catalog_id");
   }
 }

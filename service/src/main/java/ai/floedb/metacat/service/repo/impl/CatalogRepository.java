@@ -63,15 +63,17 @@ public class CatalogRepository extends BaseRepository<Catalog> {
   }
 
   public boolean delete(ResourceId catalogId) {
-    var tenantId = catalogId.getTenantId();
-    String ptrKey = Keys.catPtr(tenantId, catalogId.getId());
-    String blobUri = Keys.catBlob(tenantId, catalogId.getId());
+    var tenant = catalogId.getTenantId();
+    var key = Keys.catPtr(tenant, catalogId.getId());
+    var uri = Keys.catBlob(tenant, catalogId.getId());
 
-    nameIndex.removeCatalog(tenantId, catalogId);
+    try { nameIndex.removeCatalog(tenant, catalogId); } catch (Throwable ignore) {}
+    try { ptr.delete(key); } catch (Throwable ignore) {}
+    try { blobs.delete(uri); } catch (Throwable ignore) {}
 
-    boolean okPtr = ptr.delete(ptrKey);
-    boolean okBlob = blobs.delete(blobUri);
-    return okPtr && okBlob;
+    boolean gonePtr  = ptr.get(key).isEmpty();
+    boolean goneBlob = blobs.head(uri).isEmpty();
+    return gonePtr && goneBlob;
   }
 
   public boolean deleteWithPrecondition(ResourceId catalogId, long expectedVersion) {

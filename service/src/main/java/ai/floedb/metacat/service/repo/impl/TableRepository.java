@@ -1,9 +1,10 @@
 package ai.floedb.metacat.service.repo.impl;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-
-import com.google.common.collect.Table;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -40,17 +41,19 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
 
   public List<NameRef> list(ResourceId nsId, int limit, String token, StringBuilder next) {
     String tenant = nsId.getTenantId();
-    String idxPrefix = Keys.idxTblByNamespace(tenant, nsId.getId(), "");
-    return nameIndex.listTablesByPrefix(tenant, idxPrefix, limit, token, next);
+    String pfx = Keys.idxTblByNamespaceLeafPrefix(tenant, nsId.getId());
+    return nameIndex.listTablesByPrefix(tenant, pfx, limit, token, next);
   }
 
   public int count(ResourceId nsId) {
     String tenant = nsId.getTenantId();
-    String idxPrefix = Keys.idxTblByNamespace(tenant, nsId.getId(), "");
-    return countByPrefix(idxPrefix);
+    String pfx = Keys.idxTblByNamespaceLeafPrefix(tenant, nsId.getId());
+    return countByPrefix(pfx);
   }
 
   public void put(TableDescriptor td) {
+    requireOwnerIds(td);
+
     var tableId = td.getResourceId();
     var tenantId = tableId.getTenantId();
     var catalogId = td.getCatalogId().getId();
@@ -68,6 +71,8 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
   }
 
   public boolean update(TableDescriptor updated, long expectedVersion) {
+    requireOwnerIds(updated);
+
     var tableId = updated.getResourceId();
     var tenantId = tableId.getTenantId();
     var catalogId = updated.getCatalogId().getId();
@@ -127,13 +132,107 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
 
     try { nameIndex.removeTable(tenant, td); } catch (Throwable ignore) {}
     try { ptr.delete(canonPtr); } catch (Throwable ignore) {}
-    try { ptr.delete(nsPtr); }   catch (Throwable ignore) {}
+    try { ptr.delete(nsPtr); } catch (Throwable ignore) {}
     try { blobs.delete(blobUri);} catch (Throwable ignore) {}
 
     boolean goneCanon = ptr.get(canonPtr).isEmpty();
     boolean goneNs = ptr.get(nsPtr).isEmpty();
     boolean goneBlob = blobs.head(blobUri).isEmpty();
     return goneCanon && goneNs && goneBlob;
+  }
+
+  public boolean deleteWithPrecondition(ResourceId tableId, long expectedVersion) {
+    final String tenant = tableId.getTenantId();
+    final String canonKey = Keys.tblCanonicalPtr(tenant, tableId.getId());
+
+    var pCanonOpt = ptr.get(canonKey);
+    if (pCanonOpt.isEmpty()) {
+      bestEffortPurge(tenant, tableId.getId(), null);
+      return true;
+    }
+
+    TableDescriptor td = null;
+    try { 
+      td = TableDescriptor.parseFrom(blobs.get(pCanonOpt.get().getBlobUri())); 
+    } catch (Throwable ignore) {}
+
+    if (pCanonOpt.get().getVersion() != expectedVersion) {
+      return false;
+    }
+
+    if (!ptr.compareAndDelete(canonKey, expectedVersion)) {
+      return false;
+    }
+
+    if (td != null) {
+      var nsKey = Keys.tblPtr(
+          tenant, td.getCatalogId().getId(), td.getNamespaceId().getId(), tableId.getId());
+      try { ptr.delete(nsKey); } catch (Throwable ignore) {}
+    } else {
+      sweepNamespaceTablePointers(tenant, tableId.getId());
+    }
+
+    bestEffortPurge(tenant, tableId.getId(), td);
+    return true;
+  }
+
+  private void bestEffortPurge(String tenant, String tableId, TableDescriptor td) {
+    try { blobs.delete(Keys.tblBlob(tenant, tableId)); } catch (Throwable ignore) {}
+    if (td != null) {
+      try { nameIndex.removeTable(tenant, td); } catch (Throwable ignore) {}
+    } else {
+      sweepNameRefsByTableId(tenant, tableId);
+    }
+
+    var kById = Keys.idxTblById(tenant, tableId);
+    try { ptr.delete(kById); }  catch (Throwable ignore) {}
+    try { blobs.delete(Keys.memUriFor(kById, "entry.pb")); } catch (Throwable ignore) {}
+
+    sweepNamespaceTablePointers(tenant, tableId);
+  }
+
+  private void sweepNameRefsByTableId(String tenant, String tableId) {
+    sweepNameRefPrefix("/tenants/" + tenant.toLowerCase() + "/_index/tables/by-name/", tableId);
+    sweepNameRefPrefix("/tenants/" + tenant.toLowerCase() + "/_index/tables/by-namespace/", tableId);
+  }
+
+  private void sweepNameRefPrefix(String prefix, String tableId) {
+    String token = ""; 
+    var next = new StringBuilder();
+    do {
+      var rows = ptr.listPointersByPrefix(prefix, 200, token, next);
+      var uris = new ArrayList<String>(rows.size());
+      for (var r : rows) uris.add(r.blobUri());
+      var blobMap = blobs.getBatch(uris);
+      for (var r : rows) {
+        var bytes = blobMap.get(r.blobUri());
+        if (bytes == null) continue;
+        try {
+          var ref = NameRef.parseFrom(bytes);
+          if (ref.hasResourceId() && tableId.equals(ref.getResourceId().getId())) {
+            try { ptr.delete(r.key()); } catch (Throwable ignore) {}
+            try { blobs.delete(r.blobUri()); } catch (Throwable ignore) {}
+          }
+        } catch (Throwable ignore) {}
+      }
+      token = next.toString(); next.setLength(0);
+    } while (!token.isEmpty());
+  }
+
+  private void sweepNamespaceTablePointers(String tenant, String tableId) {
+    String root = "/tenants/" + tenant.toLowerCase() + "/catalogs/";
+    String encTbl = URLEncoder.encode(tableId, StandardCharsets.UTF_8);
+    String token = ""; var next = new StringBuilder();
+    do {
+      var rows = ptr.listPointersByPrefix(root, 200, token, next);
+      for (var r : rows) {
+        if (r.key().endsWith("/tables/by-id/" + encTbl)) {
+          try { ptr.delete(r.key()); } catch (Throwable ignore) {}
+          try { blobs.delete(r.blobUri()); } catch (Throwable ignore) {}
+        }
+      }
+      token = next.toString(); next.setLength(0);
+    } while (!token.isEmpty());
   }
 
   public MutationMeta metaFor(ResourceId tableId) {
@@ -145,5 +244,19 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
 
     var hdr = blobs.head(p.getBlobUri());
     return buildMeta(key, p, hdr, clock);
+  }
+
+  public MutationMeta metaForSafe(ResourceId tableId) {
+    String tenant = tableId.getTenantId();
+    String key = Keys.tblCanonicalPtr(tenant, tableId.getId());
+    String blob = Keys.tblBlob(tenant, tableId.getId());
+    return safeMetaOrDefault(key, blob, clock);
+  }
+
+  private static void requireOwnerIds(TableDescriptor td) {
+    if (!td.hasCatalogId() || td.getCatalogId().getId().isBlank()
+    || !td.hasNamespaceId() || td.getNamespaceId().getId().isBlank()) {
+      throw new IllegalArgumentException("table requires catalog_id and namespace_id");
+    }
   }
 }

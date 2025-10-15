@@ -48,22 +48,17 @@ public class SeedRunner {
     var financeCoreNsId = seedNamespace(tenant, financeId, List.of("core"), "core", now);
 
     var ordersId = seedTable(tenant, salesId, salesCoreNsId.getId(), "orders", 0L, now);
-    nameIndex.upsertTable(tenant, ordersId, salesCoreNsId, "sales", List.of("core"), "orders");
 
     var lineitemId = seedTable(tenant, salesId, salesCoreNsId.getId(), "lineitem", 0L, now);
-    nameIndex.upsertTable(tenant, lineitemId, salesCoreNsId, "sales", List.of("core"), "lineitem");
 
     seedSnapshot(tenant, ordersId, 101L, now - 60000);
     seedSnapshot(tenant, ordersId, 102L, now);
 
     var salesStgOrdersId = seedTable(tenant, salesId, salesStg25NsId.getId(), "orders_2025", 0L, now);
-    nameIndex.upsertTable(tenant, salesStgOrdersId, salesStg25NsId, "sales", List.of("staging","2025"), "orders_2025");
 
     var salesStgEventsId = seedTable(tenant, salesId, salesStg25NsId.getId(), "staging_events", 0L, now);
-    nameIndex.upsertTable(tenant, salesStgEventsId, salesStg25NsId, "sales", List.of("staging","2025"), "staging_events");
 
     var glEntriesId = seedTable(tenant, financeId, financeCoreNsId.getId(), "gl_entries", 0L, now);
-    nameIndex.upsertTable(tenant, glEntriesId, financeCoreNsId, "finance", List.of("core"), "gl_entries");
 
     seedSnapshot(tenant, glEntriesId, 201L, now - 30_000L);
   }

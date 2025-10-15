@@ -8,6 +8,8 @@ import com.google.protobuf.util.Timestamps;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.metacat.catalog.rpc.Catalog;
+import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.TableDescriptor;
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -27,21 +29,46 @@ class TableRepositoryTest {
     var nameIndexRepo = new NameIndexRepository(ptr, blobs);
     var snapshotRepo = new SnapshotRepository(ptr, blobs);
     var tableRepo = new TableRepository(nameIndexRepo, ptr, blobs);
+    var repo = new NamespaceRepository(nameIndexRepo, ptr, blobs);
+    var catRepo = new CatalogRepository(nameIndexRepo, ptr, blobs);
 
     var tenant = "t-0001";
-    var catalogId = UUID.randomUUID().toString();
-    var nsId = UUID.randomUUID().toString();
-    var tblId = UUID.randomUUID().toString();
+    var catRid = ResourceId.newBuilder()
+        .setTenantId(tenant)
+        .setId(UUID.randomUUID().toString())
+        .setKind(ResourceKind.RK_CATALOG)
+        .build();
 
-    var catalogRid = ResourceId.newBuilder().setTenantId(tenant).setId(catalogId).setKind(ResourceKind.RK_CATALOG).build();
-    var nsRid = ResourceId.newBuilder().setTenantId(tenant).setId(nsId).setKind(ResourceKind.RK_NAMESPACE).build();
-    var tableRid = ResourceId.newBuilder().setTenantId(tenant).setId(tblId).setKind(ResourceKind.RK_TABLE).build();
-    
+    Catalog cat = Catalog.newBuilder()
+        .setResourceId(catRid)
+        .setDisplayName("sales")
+        .build();
+    catRepo.put(cat);
+
+    var nsRid = ResourceId.newBuilder()
+        .setTenantId(tenant)
+        .setId(UUID.randomUUID().toString())
+        .setKind(ResourceKind.RK_NAMESPACE)
+        .build();
+
+    var ns = Namespace.newBuilder()
+        .setResourceId(nsRid)
+        .setDisplayName("core")
+        .setDescription("Core namespace")
+        .build();
+    repo.put(ns, catRid, null);
+
+    var tableRid = ResourceId.newBuilder()
+        .setTenantId(tenant)
+        .setId(UUID.randomUUID().toString())
+        .setKind(ResourceKind.RK_TABLE)
+        .build();
+
     var td = TableDescriptor.newBuilder()
         .setResourceId(tableRid)
         .setDisplayName("orders")
         .setDescription("Orders table")
-        .setCatalogId(catalogRid)
+        .setCatalogId(catRid)
         .setNamespaceId(nsRid)
         .setRootUri("s3://upstream/tables/orders")
         .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
@@ -50,8 +77,8 @@ class TableRepositoryTest {
         .build();
     tableRepo.put(td);
 
-    String nsKeyRow  = Keys.idxTblByNamespace(tenant, nsRid.getId(), tableRid.getId());
-    String nsKeyPfx  = Keys.idxTblByNamespace(tenant, nsRid.getId(), "");
+    String nsKeyRow = Keys.idxTblByNamespaceLeaf(tenant, nsRid.getId(), "orders");
+    String nsKeyPfx = Keys.idxTblByNamespaceLeafPrefix(tenant, nsRid.getId());
     var pRow = ptr.get(nsKeyRow);
     assertTrue(pRow.isPresent(), "by-namespace ROW pointer missing");
 
