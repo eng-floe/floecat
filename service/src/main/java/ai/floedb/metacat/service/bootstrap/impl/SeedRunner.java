@@ -92,11 +92,12 @@ public class SeedRunner {
     Namespace ns = Namespace.newBuilder()
       .setResourceId(nsRid)
       .setDisplayName(leaf)
+      .addAllParents(parents)
       .setDescription(leaf + " namespace")
       .setCreatedAt(Timestamps.fromMillis(now))
       .build();
 
-    namespaces.put(ns, catalogId, parents);
+    namespaces.put(ns, catalogId);
     return nsRid;
   }
 

@@ -59,7 +59,7 @@ class CatalogRepositoryTest {
     var ns = Namespace.newBuilder()
       .setResourceId(nsRid).setDisplayName("eu")
       .setDescription("EU namespace").build();
-    namespaceRepo.put(ns, catRid, null);
+    namespaceRepo.put(ns, catRid);
 
     nsRid = ResourceId.newBuilder()
       .setTenantId(tenant).setId(UUID.randomUUID().toString())
@@ -67,7 +67,7 @@ class CatalogRepositoryTest {
     ns = Namespace.newBuilder()
       .setResourceId(nsRid).setDisplayName("us")
       .setDescription("US namespace").build();
-    namespaceRepo.put(ns, catRid, null);
+    namespaceRepo.put(ns, catRid);
 
     var next = new StringBuilder();
     List<NameRef> catalogs = catalogRepo.list(tenant, 10, "", next);

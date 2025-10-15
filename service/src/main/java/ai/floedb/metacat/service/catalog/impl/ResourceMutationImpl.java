@@ -276,7 +276,7 @@ public class ResourceMutationImpl implements ResourceMutation {
             .setCreatedAt(nowTs)
             .build();
 
-        namespaces.put(built, req.getSpec().getCatalogId(), req.getSpec().getPathList());
+        namespaces.put(built, req.getSpec().getCatalogId());
 
         return new IdempotencyGuard.CreateResult<>(built, namespaceId);
       },

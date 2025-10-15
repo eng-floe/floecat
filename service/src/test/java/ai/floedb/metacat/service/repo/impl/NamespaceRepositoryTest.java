@@ -48,7 +48,7 @@ class NamespaceRepositoryTest {
         .setDisplayName("core")
         .setDescription("Core namespace")
         .build();
-    repo.put(ns, catRid, null);
+    repo.put(ns, catRid);
 
     var fetched = repo.get(nsRid).orElseThrow();
     assertEquals("core", fetched.getDisplayName());

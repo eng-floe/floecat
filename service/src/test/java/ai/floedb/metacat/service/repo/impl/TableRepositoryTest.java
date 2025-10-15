@@ -56,7 +56,7 @@ class TableRepositoryTest {
         .setDisplayName("core")
         .setDescription("Core namespace")
         .build();
-    repo.put(ns, catRid, null);
+    repo.put(ns, catRid);
 
     var tableRid = ResourceId.newBuilder()
         .setTenantId(tenant)

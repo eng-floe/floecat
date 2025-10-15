@@ -45,7 +45,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     return countByPrefix(Keys.nsPtr(catalogId.getTenantId(), catalogId.getId(), ""));
   }
 
-  public void put(Namespace ns, ResourceId catalogId, List<String> parentPathSegments) {
+  public void put(Namespace ns, ResourceId catalogId) {
     requireCatalogId(catalogId);
 
     var nsRid = ns.getResourceId();
@@ -56,9 +56,9 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
         Keys.nsBlob(tid, catalogId.getId(), nsRid.getId()),
         ns);
 
-    List<String> parents = (parentPathSegments == null)
+    List<String> parents = (ns.getParentsList() == null)
         ? Collections.emptyList()
-        : parentPathSegments;
+        : ns.getParentsList();
 
     var catName = nameIndex.getCatalogById(tid, catalogId.getId())
         .map(NameRef::getCatalog)
@@ -71,7 +71,6 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
   public boolean update(
       Namespace namespace, 
       ResourceId catalogId,
-      List<String> parentPathSegments,
       long expectedPointerVersion) {
     requireCatalogId(catalogId);
 
@@ -90,7 +89,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
           catalogId,
           catName,
           nsId,
-          parentPathSegments,
+          namespace.getParentsList(),
           namespace.getDisplayName());
     }
     return ok;
