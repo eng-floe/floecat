@@ -101,20 +101,24 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
       ResourceId newCatalogId,
       List<String> newParents,
       long expectedVersion) {
+
     requireCatalogId(oldCatalogId);
     requireCatalogId(newCatalogId);
 
     final var nsId = updated.getResourceId();
     final var tenant = nsId.getTenantId();
+
     final String oldKey = Keys.nsPtr(tenant, oldCatalogId.getId(), nsId.getId());
     final String oldUri = Keys.nsBlob(tenant, oldCatalogId.getId(), nsId.getId());
     final String newKey = Keys.nsPtr(tenant, newCatalogId.getId(), nsId.getId());
     final String newUri = Keys.nsBlob(tenant, newCatalogId.getId(), nsId.getId());
+
     final boolean sameCatalog = oldCatalogId.getId().equals(newCatalogId.getId());
     final String newCatalogName =
         nameIndex.getCatalogById(tenant, newCatalogId.getId())
             .map(NameRef::getCatalog)
-            .orElse("");
+            .orElseThrow(() -> new IllegalStateException(
+                "catalog by-id index missing for " + newCatalogId.getId()));
 
     if (sameCatalog) {
       boolean ok = update(newKey, newUri, updated, expectedVersion);
@@ -133,26 +137,39 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
       return false;
     }
 
-    boolean deleted = ptr.compareAndDelete(oldKey, expectedVersion);
-    if (!deleted) {
-      return false;
-    }
-
     byte[] bytes = toBytes.apply(updated);
-    var hdr = blobs.head(newUri);
     String etag = sha256B64(bytes);
+    var hdr = blobs.head(newUri);
     if (hdr.isEmpty() || !etag.equals(hdr.get().getEtag())) {
       blobs.put(newUri, bytes, contentType);
     }
 
-    var next = Pointer.newBuilder()
-        .setKey(newKey)
-        .setBlobUri(newUri)
-        .setVersion(1L).build();
-    boolean created = ptr.compareAndSet(newKey, 0L, next);
-    if (!created) {
+    var newPtr = Pointer.newBuilder()
+        .setKey(newKey).setBlobUri(newUri).setVersion(1L).build();
+
+    var existingNew = ptr.get(newKey);
+    if (existingNew.isPresent()) {
+      if (!newUri.equals(existingNew.get().getBlobUri())) {
+        return false;
+      }
+    } else {
+      if (!ptr.compareAndSet(newKey, 0L, newPtr)) {
+        var nowNew = ptr.get(newKey);
+        if (nowNew.isEmpty() || !newUri.equals(nowNew.get().getBlobUri())) {
+          return false;
+        }
+      }
+    }
+
+    if (!ptr.compareAndDelete(oldKey, expectedVersion)) {
+      if (existingNew.isEmpty()) {
+        try { ptr.delete(newKey); } catch (Throwable ignore) {}
+        try { blobs.delete(newUri); } catch (Throwable ignore) {}
+      }
       return false;
     }
+
+    try { blobs.delete(oldUri); } catch (Throwable ignore) {}
 
     nameIndex.removeNamespace(tenant, nsId);
     nameIndex.upsertNamespace(
@@ -208,16 +225,11 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
 
   public MutationMeta metaFor(ResourceId catalogId, ResourceId namespaceId) {
     String tenant = namespaceId.getTenantId();
-    String key = Keys.nsPtr(
-      tenant, catalogId.getId(), namespaceId.getId());
-
-    var p = ptr.get(key)
-        .orElseThrow(
-            () -> new IllegalStateException(
-                "Pointer missing for namespace: " + namespaceId.getId()));
-
-    var hdr = blobs.head(p.getBlobUri());
-    return buildMeta(key, p, hdr, clock);
+    String key = Keys.nsPtr(tenant, catalogId.getId(), namespaceId.getId());
+    String blob = Keys.nsBlob(tenant, catalogId.getId(), namespaceId.getId());
+    ptr.get(key).orElseThrow(() -> new IllegalStateException(
+        "Pointer missing for namespace: " + namespaceId.getId()));
+    return safeMetaOrDefault(key, blob, clock);
   }
 
   public MutationMeta metaForSafe(ResourceId catalogId, ResourceId namespaceId) {

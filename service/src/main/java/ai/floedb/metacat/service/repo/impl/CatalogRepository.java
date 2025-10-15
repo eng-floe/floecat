@@ -1,5 +1,6 @@
 package ai.floedb.metacat.service.repo.impl;
 
+import java.time.Clock;
 import java.util.List;
 import java.util.Optional;
 
@@ -95,10 +96,10 @@ public class CatalogRepository extends BaseRepository<Catalog> {
   public MutationMeta metaFor(ResourceId catalogId) {
     String tenant = catalogId.getTenantId();
     String key = Keys.catPtr(tenant, catalogId.getId());
-    var p = ptr.get(key).orElseThrow(() ->
-      new IllegalStateException("Pointer missing for catalog: " + catalogId.getId()));
-    var hdr = blobs.head(p.getBlobUri());
-    return toMeta(key, p, hdr, clock);
+    String blob = Keys.catBlob(tenant, catalogId.getId());
+    ptr.get(key).orElseThrow(() -> new IllegalStateException(
+        "Pointer missing for catalog: " + catalogId.getId()));
+    return safeMetaOrDefault(key, blob, clock);
   }
 
   public MutationMeta metaForSafe(ResourceId catalogId) {

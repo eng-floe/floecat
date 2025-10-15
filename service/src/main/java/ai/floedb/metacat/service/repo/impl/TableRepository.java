@@ -12,6 +12,7 @@ import jakarta.inject.Inject;
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.catalog.rpc.TableDescriptor;
 import ai.floedb.metacat.common.rpc.NameRef;
+import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
@@ -82,26 +83,72 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
     var tblKey = Keys.tblPtr(tenantId, catalogId, namespaceId, tableId.getId());
     var uri = Keys.tblBlob(tenantId, tableId.getId());
 
-    var curCan = ptr.get(canTblKey);
-    var curTbl = ptr.get(tblKey);
-    if (curCan.isEmpty() || curCan.get().getVersion() != expectedVersion) {
+    boolean okCanon = update(canTblKey, uri, updated, expectedVersion);
+    if (!okCanon) return false;
+
+    boolean okNs = update(tblKey, uri, updated, expectedVersion);
+    if (!okNs) {
       return false;
     }
-    if (curTbl.isEmpty() || curTbl.get().getVersion() != expectedVersion) {
-      return false;
-    }
-
-    byte[] bytes = toBytes.apply(updated);
-    var hdr = blobs.head(uri);
-    String etag = sha256B64(bytes);
-    if (hdr.isEmpty() || !etag.equals(hdr.get().getEtag())) {
-      blobs.put(uri, bytes, contentType);
-    }
-
-    putAll(List.of(canTblKey, tblKey), uri, updated);
 
     nameIndex.removeTable(tenantId, updated);
     nameIndex.upsertTable(tenantId, updated);
+    return true;
+  }
+
+  public boolean moveWithPrecondition(
+      TableDescriptor updated,
+      ResourceId oldCatalogId,
+      ResourceId oldNamespaceId,
+      ResourceId newCatalogId,
+      ResourceId newNamespaceId,
+      long expectedVersion) {
+    requireOwnerIds(updated);
+
+    var tableId = updated.getResourceId();
+    var tenantId = tableId.getTenantId();
+    var catalogId = updated.getCatalogId().getId();
+    var namespaceId = updated.getNamespaceId().getId();
+
+    if (!updated.getCatalogId().getId().equals(newCatalogId.getId())
+        || !updated.getNamespaceId().getId().equals(newNamespaceId.getId())) {
+      throw new IllegalArgumentException("updated descriptor owner ids must match newCatalogId/newNamespaceId");
+    }
+
+    final String tlbKey = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    final String tlbUri = Keys.tblBlob(tenantId, tableId.getId());
+    final String oldNsKey = Keys.tblPtr(tenantId, oldCatalogId.getId(), oldNamespaceId.getId(), tableId.getId());
+    final String newNsKey = Keys.tblPtr(tenantId, newCatalogId.getId(), newNamespaceId.getId(), tableId.getId());
+
+    final byte[] bytes = toBytes.apply(updated);
+    final String etag  = sha256B64(bytes);
+    var hdr = blobs.head(tlbUri);
+    if (hdr.isEmpty() || !etag.equals(hdr.get().getEtag())) {
+      blobs.put(tlbUri, bytes, contentType);
+    }
+
+    var curPtr = ptr.get(tlbKey);
+    if (curPtr.isEmpty() || curPtr.get().getVersion() != expectedVersion) {
+      return false;
+    }
+    var nextPtr = Pointer.newBuilder()
+        .setKey(tlbKey)
+        .setBlobUri(tlbUri)
+        .setVersion(expectedVersion + 1)
+        .build();
+
+    if (!ptr.compareAndSet(tlbKey, expectedVersion, nextPtr)) {
+      return false;
+    }
+      
+    try {
+      putAll(List.of(newNsKey), tlbUri, updated);
+    } catch (Throwable ignore) { }
+
+    try { ptr.delete(oldNsKey); } catch (Throwable ignore) {}
+
+    try { nameIndex.removeTable(tenantId, updated); } catch (Throwable ignore) {}
+    try { nameIndex.upsertTable(tenantId, updated); } catch (Throwable ignore) {}
 
     return true;
   }
@@ -238,12 +285,10 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
   public MutationMeta metaFor(ResourceId tableId) {
     String tenant = tableId.getTenantId();
     String key = Keys.tblCanonicalPtr(tenant, tableId.getId());
-
-    var p = ptr.get(key).orElseThrow(() ->
-      new IllegalStateException("Pointer missing for table: " + tableId.getId()));
-
-    var hdr = blobs.head(p.getBlobUri());
-    return buildMeta(key, p, hdr, clock);
+    String blob = Keys.tblBlob(tenant, tableId.getId()); 
+    ptr.get(key).orElseThrow(() -> new IllegalStateException(
+        "Pointer missing for table: " + tableId.getId()));
+    return safeMetaOrDefault(key, blob, clock);
   }
 
   public MutationMeta metaForSafe(ResourceId tableId) {

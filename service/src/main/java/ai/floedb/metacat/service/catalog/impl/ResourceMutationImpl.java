@@ -26,6 +26,8 @@ import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteNamespaceResponse;
 import ai.floedb.metacat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteTableResponse;
+import ai.floedb.metacat.catalog.rpc.MoveTableRequest;
+import ai.floedb.metacat.catalog.rpc.MoveTableResponse;
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.Precondition;
@@ -618,6 +620,109 @@ public class ResourceMutationImpl implements ResourceMutation {
             .setTable(updated)
             .setMeta(outMeta)
             .build());
+  }
+
+  @Override
+  public Uni<MoveTableResponse> moveTable(MoveTableRequest req) {
+    final var p = principal.get();
+    authz.require(p, "table.write");
+
+    final var tableId = req.getTableId();
+    ensureKind(tableId, ResourceKind.RK_TABLE, "MoveTable");
+
+    final var corr = corrId();
+    final var tenant = p.getTenantId();
+
+    final var cur = tables.get(tableId).orElseThrow(() ->
+        GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
+
+    if (!req.hasNewNamespaceId() || req.getNewNamespaceId().getId().isBlank()) {
+      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "new_namespace_id"));
+    }
+
+    final var newNsId = req.getNewNamespaceId();
+    ensureKind(newNsId, ResourceKind.RK_NAMESPACE, "MoveTable.new_namespace_id");
+
+    final var newNsRef = nameIndex.getNamespaceById(tenant, newNsId.getId()).orElseThrow(
+        () -> GrpcErrors.notFound(corr, "namespace", Map.of("id", newNsId.getId()))
+    );
+
+    final var newCatId = nameIndex.getNamespaceOwner(tenant, newNsId.getId()).orElseThrow(
+        () -> GrpcErrors.notFound(corr, "catalog",
+            Map.of("reason", "namespace_owner_missing", "namespace_id", newNsId.getId()))
+    );
+    ensureKind(newCatId, ResourceKind.RK_CATALOG, "MoveTable.new_catalog_id");
+
+    final var targetName =
+        (req.getNewDisplayName() != null && !req.getNewDisplayName().isBlank())
+            ? req.getNewDisplayName()
+            : cur.getDisplayName();
+
+    final boolean sameNs = cur.getNamespaceId().getId().equals(newNsId.getId());
+    final boolean sameName = cur.getDisplayName().equals(targetName);
+    if (sameNs && sameName) {
+      final var metaNoop = tables.metaFor(tableId);
+      enforcePreconditions(corr, metaNoop, req.getPrecondition());
+      return Uni.createFrom().item(
+          MoveTableResponse.newBuilder()
+              .setTable(cur)
+              .setMeta(metaNoop)
+              .build()
+      );
+    }
+
+    final var newCatDisplay = nameIndex.getCatalogById(tenant, newCatId.getId())
+        .map(NameRef::getCatalog)
+        .orElseThrow(() -> GrpcErrors.notFound(
+            corr, "catalog", Map.of("id", newCatId.getId())));
+
+    final var targetNameRef = NameRef.newBuilder()
+        .setCatalog(newCatDisplay)
+        .addAllPath(newNsRef.getPathList())
+        .setName(targetName)
+        .build();
+
+    final var existingAtTarget = nameIndex.getTableByName(tenant, targetNameRef);
+    if (existingAtTarget.isPresent()
+        && existingAtTarget.get().hasResourceId()
+        && !existingAtTarget.get().getResourceId().getId().equals(tableId.getId())) {
+      throw GrpcErrors.conflict(
+          corr, "table.already_exists",
+          Map.of("name", targetName, "path", String.join("/", newNsRef.getPathList())));
+    }
+
+    final var updated = cur.toBuilder()
+        .setDisplayName(targetName)
+        .setCatalogId(newCatId)
+        .setNamespaceId(newNsId)
+        .build();
+
+    final var meta = tables.metaFor(tableId);
+    enforcePreconditions(corr, meta, req.getPrecondition());
+
+    final boolean ok = tables.moveWithPrecondition(
+        updated,
+        cur.getCatalogId(),
+        cur.getNamespaceId(),
+        newCatId,
+        newNsId,
+        meta.getPointerVersion());
+
+    if (!ok) {
+      final var now = tables.metaFor(tableId);
+      throw GrpcErrors.preconditionFailed(
+          corr, "version_mismatch",
+          Map.of("expected", Long.toString(meta.getPointerVersion()),
+                "actual", Long.toString(now.getPointerVersion())));
+    }
+
+    final var outMeta = tables.metaFor(tableId);
+    return Uni.createFrom().item(
+        MoveTableResponse.newBuilder()
+            .setTable(updated)
+            .setMeta(outMeta)
+            .build()
+    );
   }
 
   @Override

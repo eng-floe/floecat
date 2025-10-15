@@ -153,6 +153,19 @@ message RenameTableResponse {
   MutationMeta meta = 2;
 }
 
+message MoveTableRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  string new_display_name = 2;
+
+  ai.floedb.metacat.common.ResourceId new_namespace_id = 3;
+
+  Precondition precondition = 5;
+}
+message MoveTableResponse {
+  TableDescriptor table = 1;
+  MutationMeta meta = 2;
+}
+
 message DeleteTableRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
   ai.floedb.metacat.common.ResourceId catalog_id = 2;
@@ -179,5 +192,6 @@ service ResourceMutation {
   rpc CreateTable(CreateTableRequest) returns (CreateTableResponse);
   rpc UpdateTableSchema(UpdateTableSchemaRequest) returns (UpdateTableSchemaResponse);
   rpc RenameTable(RenameTableRequest) returns (RenameTableResponse);
+  rpc MoveTable(MoveTableRequest) returns (MoveTableResponse);
   rpc DeleteTable(DeleteTableRequest) returns (DeleteTableResponse);
 }

@@ -137,23 +137,6 @@ public abstract class BaseRepository<T> implements Repository<T> {
     return ptr.countByPrefix(prefix);
   }
 
-  protected MutationMeta buildMeta(
-      String pointerKey,
-      Pointer p,
-      Optional<BlobHeader> hdrOpt,
-      Clock clock) {
-    var b = MutationMeta.newBuilder()
-        .setPointerKey(pointerKey)
-        .setBlobUri(p.getBlobUri())
-        .setPointerVersion(p.getVersion());
-
-    hdrOpt.ifPresent(h -> b.setEtag(h.getEtag()));
-    Timestamp updatedAt = hdrOpt.map(BlobHeader::getLastModifiedAt)
-        .orElse(Timestamps.fromMillis(clock.millis()));
-    b.setUpdatedAt(updatedAt);
-    return b.build();
-  }
-
   protected static String sha256B64(byte[] data) {
     try {
       var md = MessageDigest.getInstance("SHA-256");
@@ -162,17 +145,6 @@ public abstract class BaseRepository<T> implements Repository<T> {
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException(e);
     }
-  }
-
-  protected MutationMeta toMeta(String pointerKey, Pointer p, Optional<BlobHeader> hdr, Clock clock) {
-    var etag = hdr.map(BlobHeader::getEtag).orElse("");
-    return MutationMeta.newBuilder()
-        .setPointerKey(pointerKey)
-        .setBlobUri(p.getBlobUri())
-        .setPointerVersion(p.getVersion())
-        .setEtag(etag)
-        .setUpdatedAt(Timestamps.fromMillis(clock.millis()))
-        .build();
   }
 
   protected MutationMeta safeMetaOrDefault(String pointerKey, String blobUri, Clock clock) {

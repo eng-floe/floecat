@@ -146,4 +146,99 @@ class TableMutationIT {
     assertEquals(before.getEtag(), noop.getMeta().getEtag(),
         "etag should not change on identical rename");
   }
+
+  @Test
+  void Table_move_with_preconditions() throws Exception {
+    String tenantId = TestSupport.seedTenantId(directory, "sales");
+    var cat = TestSupport.createCatalog(mutation, T_PREFIX + "cat2", "tcat2");
+    assertEquals(tenantId, cat.getResourceId().getTenantId());
+
+    var parents = List.of("db_tbl","schema_tbl");
+    var nsLeaf = "it_ns";
+    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), nsLeaf, parents, "ns for tables");
+    var nsId = ns.getResourceId();
+    assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
+
+    var parents2 = List.of("db_tbl","schema_tbl");
+    var nsLeaf2 = "it_ns2";
+    var ns2 = TestSupport.createNamespace(mutation, cat.getResourceId(), nsLeaf2, parents2, "ns for tables");
+    var nsId2 = ns2.getResourceId();
+    assertEquals(ResourceKind.RK_NAMESPACE, nsId2.getKind());
+
+    var nsPath = new ArrayList<>(parents);
+    nsPath.add(nsLeaf);
+    var nsResolved = directory.resolveNamespace(ResolveNamespaceRequest.newBuilder()
+        .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath))
+        .build());
+    assertEquals(nsId.getId(), nsResolved.getResourceId().getId());
+
+    var nsPath2 = new ArrayList<>(parents2);
+    nsPath2.add(nsLeaf2);
+    var nsResolved2 = directory.resolveNamespace(ResolveNamespaceRequest.newBuilder()
+        .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath2))
+        .build());
+    assertEquals(nsId2.getId(), nsResolved2.getResourceId().getId());
+
+    var tbl = TestSupport.createTable(
+        mutation, cat.getResourceId(), nsId,
+            "orders", "s3://bucket/orders",
+                "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}", "none");
+    var tblId = tbl.getResourceId();
+    assertEquals(ResourceKind.RK_TABLE, tblId.getKind());
+
+    var tblResolved = directory.resolveTable(ResolveTableRequest.newBuilder()
+        .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath).setName("orders"))
+        .build());
+    assertEquals(tblId.getId(), tblResolved.getResourceId().getId());
+
+    var beforeRename = TestSupport.metaForTable(ptr, blob, tblId);
+    var r1 = mutation.moveTable(MoveTableRequest.newBuilder()
+        .setTableId(tblId)
+        .setNewNamespaceId(nsId2)
+        .setPrecondition(Precondition.newBuilder()
+            .setExpectedVersion(beforeRename.getPointerVersion())
+            .setExpectedEtag(beforeRename.getEtag())
+            .build())
+        .build());
+    var m1 = r1.getMeta();
+    assertTrue(m1.getPointerVersion() > beforeRename.getPointerVersion());
+
+    // New resolve must succeed
+    var resolvedRenamed = directory.resolveTable(ResolveTableRequest.newBuilder()
+        .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath2).setName("orders"))
+        .build());
+    assertEquals(tblId.getId(), resolvedRenamed.getResourceId().getId());
+
+    // Old path must be NOT_FOUND
+    var nfOld = assertThrows(StatusRuntimeException.class, () ->
+        directory.resolveTable(ResolveTableRequest.newBuilder()
+            .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath).setName("orders"))
+            .build()));
+    TestSupport.assertGrpcAndMc(nfOld, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
+
+    beforeRename = TestSupport.metaForTable(ptr, blob, tblId);
+    var r2 = mutation.moveTable(MoveTableRequest.newBuilder()
+        .setTableId(tblId)
+        .setNewDisplayName("orders_v2")
+        .setNewNamespaceId(nsId2)
+        .setPrecondition(Precondition.newBuilder()
+            .setExpectedVersion(beforeRename.getPointerVersion())
+            .setExpectedEtag(beforeRename.getEtag())
+            .build())
+        .build());
+    var m2 = r2.getMeta();
+    assertTrue(m2.getPointerVersion() > beforeRename.getPointerVersion());
+
+    resolvedRenamed = directory.resolveTable(ResolveTableRequest.newBuilder()
+        .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath2).setName("orders_v2"))
+        .build());
+    assertEquals(tblId.getId(), resolvedRenamed.getResourceId().getId());
+
+    // Old path must be NOT_FOUND
+    nfOld = assertThrows(StatusRuntimeException.class, () ->
+        directory.resolveTable(ResolveTableRequest.newBuilder()
+            .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath).setName("orders"))
+            .build()));
+    TestSupport.assertGrpcAndMc(nfOld, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
+  }
 }
