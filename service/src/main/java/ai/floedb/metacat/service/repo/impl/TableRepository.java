@@ -43,7 +43,7 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
   public List<NameRef> list(ResourceId nsId, int limit, String token, StringBuilder next) {
     String tenant = nsId.getTenantId();
     String pfx = Keys.idxTblByNamespaceLeafPrefix(tenant, nsId.getId());
-    return nameIndex.listTablesByPrefix(tenant, pfx, limit, token, next);
+    return nameIndex.listRefsByPrefix(pfx, limit, token, next);
   }
 
   public int count(ResourceId nsId) {

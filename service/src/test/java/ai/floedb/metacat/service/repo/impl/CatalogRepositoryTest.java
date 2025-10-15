@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.Namespace;
+import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.util.Keys;
@@ -69,7 +70,7 @@ class CatalogRepositoryTest {
     namespaceRepo.put(ns, catRid, null);
 
     var next = new StringBuilder();
-    List<Catalog> catalogs = catalogRepo.list(tenant, 10, "", next);
+    List<NameRef> catalogs = catalogRepo.list(tenant, 10, "", next);
     assertEquals(1, catalogs.size());
 
     var catsPrefix = Keys.catPtr(tenant, "");
@@ -78,7 +79,7 @@ class CatalogRepositoryTest {
     assertTrue(catKeys.get(0).key().startsWith(catsPrefix));
 
     var nsNext = new StringBuilder();
-    var nss = namespaceRepo.list(catRid, 10, "", nsNext);
+    var nss = namespaceRepo.list(catRid, null, 10, "", nsNext);
     assertEquals(2, nss.size());
   }
 }

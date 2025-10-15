@@ -35,12 +35,15 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
             catRid -> get(Keys.nsPtr(nsId.getTenantId(), catRid.getId(), nsId.getId())));
   }
 
-  public List<Namespace> list(ResourceId catalogId, int limit, String token, StringBuilder next) {
-    return listByPrefix(Keys.nsPtr(catalogId.getTenantId(), catalogId.getId(), ""), limit, token, next);
+  public List<NameRef> list(ResourceId catalogId, List<String> pathPrefix,
+                                int limit, String token, StringBuilder next) {
+    return nameIndex.listNamespaceRefsByCatalog(
+        catalogId.getTenantId(), catalogId, pathPrefix, limit, token, next);
   }
 
   public int count(ResourceId catalogId) {
-    return countByPrefix(Keys.nsPtr(catalogId.getTenantId(), catalogId.getId(), ""));
+    return ptr.countByPrefix(Keys.idxNsByPathPrefix(
+        catalogId.getTenantId(), catalogId.getId()));
   }
 
   public void put(Namespace ns, ResourceId catalogId, List<String> parentPathSegments) {

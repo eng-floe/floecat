@@ -1,11 +1,13 @@
 package ai.floedb.metacat.service.catalog.impl;
 
+import java.util.ArrayList;
 import java.util.Map;
 
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 
+import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.GetCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.GetCurrentSnapshotRequest;
@@ -22,8 +24,10 @@ import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.metacat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.metacat.catalog.rpc.ListTablesRequest;
 import ai.floedb.metacat.catalog.rpc.ListTablesResponse;
+import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.ResourceAccess;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
+import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
@@ -50,10 +54,10 @@ public class ResourceAccessImpl implements ResourceAccess {
     authz.require(p, "catalog.read");
 
     return Uni.createFrom().item(
-      repo.get(req.getCatalogId())
-        .map(c -> GetCatalogResponse.newBuilder().setCatalog(c).build())
-        .orElseThrow(() -> GrpcErrors.notFound(corrId(), "catalog",
-          Map.of("id", req.getCatalogId().getId())))
+        repo.get(req.getCatalogId())
+            .map(c -> GetCatalogResponse.newBuilder().setCatalog(c).build())
+            .orElseThrow(() -> GrpcErrors.notFound(corrId(), "catalog",
+                Map.of("id", req.getCatalogId().getId())))
     );
   }
 
@@ -70,14 +74,18 @@ public class ResourceAccessImpl implements ResourceAccess {
       Uni.createFrom().item(() -> {
         var items = repo.list(p.getTenantId(), limit, token, next);
         int total = repo.count(p.getTenantId());
+        var catalogs = new ArrayList<Catalog>(items.size());
+        for (NameRef item : items) {
+          repo.get(item.getResourceId()).ifPresent(catalogs::add);
+        }
         var page = PageResponse.newBuilder()
-          .setNextPageToken(next.toString())
-          .setTotalSize(total)
-          .build();
+            .setNextPageToken(next.toString())
+            .setTotalSize(total)
+            .build();
         return ListCatalogsResponse.newBuilder()
-          .addAllCatalogs(items)
-          .setPage(page)
-          .build();
+            .addAllCatalogs(catalogs)
+            .setPage(page)
+            .build();
       })
     );
   }
@@ -88,11 +96,11 @@ public class ResourceAccessImpl implements ResourceAccess {
     authz.require(p, "catalog.read");
 
     return Uni.createFrom().item(req)
-      .map(r -> {
-        var nsRid = r.getNamespaceId();
-        var ns = nsRepo.get(nsRid)
-          .orElseThrow(() -> GrpcErrors.notFound(corrId(), "namespace",
-            Map.of("id", nsRid.getId())));
+        .map(r -> {
+          var nsRid = r.getNamespaceId();
+          var ns = nsRepo.get(nsRid)
+              .orElseThrow(() -> GrpcErrors.notFound(corrId(), "namespace",
+                  Map.of("id", nsRid.getId())));
 
         return GetNamespaceResponse.newBuilder().setNamespace(ns).build();
       });
@@ -106,8 +114,8 @@ public class ResourceAccessImpl implements ResourceAccess {
     var catRid = req.getCatalogId();
 
     repo.get(catRid).orElseThrow(() -> GrpcErrors.notFound(
-      corrId(),
-      "catalog", Map.of("id", catRid.getId())
+        corrId(),
+        "catalog", Map.of("id", catRid.getId())
     ));
 
     int limit = (req.hasPage() && req.getPage().getPageSize() > 0) ? req.getPage().getPageSize() : 50;
@@ -115,16 +123,20 @@ public class ResourceAccessImpl implements ResourceAccess {
     StringBuilder next = new StringBuilder();
 
     return Uni.createFrom().item(() -> {
-      var items = nsRepo.list(catRid, limit, token, next);
-      int total = nsRepo.count(catRid);
-      var page = PageResponse.newBuilder()
-        .setNextPageToken(next.toString())
-        .setTotalSize(total)
-        .build();
-      return ListNamespacesResponse.newBuilder()
-        .addAllNamespaces(items)
-        .setPage(page)
-        .build();
+        var items = nsRepo.list(catRid, null, limit, token, next);
+        int total = nsRepo.count(catRid);
+        var namespaces = new ArrayList<Namespace>(items.size());
+        for (NameRef item : items) {
+          nsRepo.get(item.getResourceId()).ifPresent(namespaces::add);
+        }
+        var page = PageResponse.newBuilder()
+            .setNextPageToken(next.toString())
+            .setTotalSize(total)
+            .build();
+        return ListNamespacesResponse.newBuilder()
+            .addAllNamespaces(namespaces)
+            .setPage(page)
+            .build();
     });
   }
 
@@ -134,15 +146,15 @@ public class ResourceAccessImpl implements ResourceAccess {
     authz.require(p, "catalog.read");
 
     return Uni.createFrom().item(req)
-      .map(r -> {
-        var table = tableRepo
-          .get(r.getTableId())
-          .orElseThrow(() -> GrpcErrors.notFound(corrId(), "table",
-            Map.of("id", req.getTableId().getId())));
+        .map(r -> {
+            var table = tableRepo
+                .get(r.getTableId())
+                .orElseThrow(() -> GrpcErrors.notFound(corrId(), "table",
+                    Map.of("id", req.getTableId().getId())));
 
         return GetTableDescriptorResponse.newBuilder()
-          .setTable(table)
-          .build();
+            .setTable(table)
+            .build();
       });
   }
 
@@ -152,8 +164,8 @@ public class ResourceAccessImpl implements ResourceAccess {
     authz.require(p, "table.read");
 
     nsRepo.get(req.getNamespaceId()).orElseThrow(() -> GrpcErrors.notFound(
-      corrId(),
-      "namespace", Map.of("id", req.getNamespaceId().getId())
+        corrId(),
+        "namespace", Map.of("id", req.getNamespaceId().getId())
     ));
 
     int limit = req.hasPage() && req.getPage().getPageSize() > 0 ? req.getPage().getPageSize() : 50;
@@ -173,8 +185,8 @@ public class ResourceAccessImpl implements ResourceAccess {
     var p = principal.get(); authz.require(p, "catalog.read");
 
     tableRepo.get(req.getTableId()).orElseThrow(() -> GrpcErrors.notFound(
-      corrId(),
-      "table", Map.of("id", req.getTableId().getId())
+        corrId(),
+        "table", Map.of("id", req.getTableId().getId())
     ));
 
     int limit = req.hasPage() && req.getPage().getPageSize() > 0 ? req.getPage().getPageSize() : 50;
@@ -193,16 +205,16 @@ public class ResourceAccessImpl implements ResourceAccess {
   public Uni<GetCurrentSnapshotResponse> getCurrentSnapshot(GetCurrentSnapshotRequest req) {
     var p = principal.get(); authz.require(p, "catalog.read");
     return Uni.createFrom().item(() ->
-      tableRepo.get(req.getTableId())
-        .filter(t -> t.getCurrentSnapshotId() != 0)
-        .map(t -> GetCurrentSnapshotResponse.newBuilder()
-          .setSnapshot(Snapshot.newBuilder()
-            .setSnapshotId(t.getCurrentSnapshotId())
-            .setCreatedAt(t.getCreatedAt())
-            .build())
-          .build())
-          .orElseThrow(() -> GrpcErrors.notFound(corrId(), "snapshot",
-            Map.of("id", req.getTableId().getId()))));
+        tableRepo.get(req.getTableId())
+            .filter(t -> t.getCurrentSnapshotId() != 0)
+            .map(t -> GetCurrentSnapshotResponse.newBuilder()
+                .setSnapshot(Snapshot.newBuilder()
+                    .setSnapshotId(t.getCurrentSnapshotId())
+                    .setCreatedAt(t.getCreatedAt())
+                    .build())
+                .build())
+                .orElseThrow(() -> GrpcErrors.notFound(corrId(), "snapshot",
+                    Map.of("id", req.getTableId().getId()))));
   }
 
   private String corrId() {

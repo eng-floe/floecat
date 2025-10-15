@@ -10,7 +10,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
 
-import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 
 import ai.floedb.metacat.catalog.rpc.MutationMeta;

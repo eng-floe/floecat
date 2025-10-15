@@ -1,12 +1,8 @@
 package ai.floedb.metacat.service.catalog.impl;
 
-import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
-import com.google.common.collect.Table;
-
-import io.grpc.Status;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;

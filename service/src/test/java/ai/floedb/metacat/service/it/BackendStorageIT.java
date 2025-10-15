@@ -1,6 +1,7 @@
 package ai.floedb.metacat.service.it;
 
 import java.time.Clock;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 import io.quarkus.grpc.GrpcClient;
@@ -205,8 +206,9 @@ class BackendStorageIT {
     var p3 = nameIndex.listTablesByPrefix(tenantId, prefixRef, 2, t2, next);
     String t3 = next.toString();
 
-    var all = new java.util.LinkedHashSet<>(p1);
-    all.addAll(p2); all.addAll(p3);
+    var all = new LinkedHashSet<>(p1);
+    all.addAll(p2);
+    all.addAll(p3);
     assertEquals(5, all.size());
     assertTrue(t3.isEmpty(), "final page should clear nextToken");
   }

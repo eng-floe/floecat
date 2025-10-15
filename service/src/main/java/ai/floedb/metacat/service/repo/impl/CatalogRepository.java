@@ -1,6 +1,5 @@
 package ai.floedb.metacat.service.repo.impl;
 
-import java.time.Clock;
 import java.util.List;
 import java.util.Optional;
 
@@ -9,6 +8,7 @@ import jakarta.inject.Inject;
 
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
+import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
@@ -31,8 +31,8 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     return get(Keys.catPtr(rid.getTenantId(), rid.getId()));
   }
 
-  public List<Catalog> list(String tenantId, int limit, String token, StringBuilder next) {
-    return listByPrefix(Keys.catPtr(tenantId, ""), limit, token, next);
+  public List<NameRef> list(String tenantId, int limit, String token, StringBuilder next) {
+    return nameIndex.listCatalogRefsByName(tenantId, limit, token, next);
   }
 
   public int count(String tenantId) {

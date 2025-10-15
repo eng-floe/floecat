@@ -2,7 +2,6 @@ package ai.floedb.metacat.service.repo.impl;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 import jakarta.enterprise.context.ApplicationScoped;
@@ -249,38 +248,57 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
     });
   }
 
-  public List<NameRef> listTablesByPrefix(String tenantId, NameRef prefix, int limit, String token, StringBuilder nextOut) {
-    var cat = getCatalogByName(tenantId, prefix.getCatalog()).orElse(null);
-    if (cat == null) return List.of();
-    String pfx = Keys.idxTblByNamePrefix(tenantId, cat.getResourceId().getId(), prefix.getPathList());
-    return listTablesByPrefix(tenantId, pfx, limit, token, nextOut);
-  }
-
   public List<NameRef> listTablesByPrefix(
       String tenantId,
-      String prefix,
+      NameRef prefix,
       int limit,
       String token,
       StringBuilder nextOut) {
-    List<PointerStore.Row> rows = ptr.listPointersByPrefix(
-        prefix, Math.max(1, limit), token, nextOut);
 
-    List<String> uris = new ArrayList<>(rows.size());
-    for (PointerStore.Row r : rows) uris.add(r.blobUri());
-    Map<String, byte[]> blobMap = blobs.getBatch(uris);
+    var cat = getCatalogByName(tenantId, prefix.getCatalog()).orElse(null);
+    if (cat == null) return List.of();
 
-    List<NameRef> out = new ArrayList<>(rows.size());
-    for (PointerStore.Row r : rows) {
-      byte[] bytes = blobMap.get(r.blobUri());
+    String pfx = Keys.idxTblByNamePrefix(tenantId, cat.getResourceId().getId(), prefix.getPathList());
+    return listRefsByPrefix(pfx, limit, token, nextOut);
+  }
+
+  public List<NameRef> listRefsByPrefix(String prefix, int limit, String token, StringBuilder nextOut) {
+    var rows = ptr.listPointersByPrefix(prefix, Math.max(1, limit), token, nextOut);
+    var uris = new ArrayList<String>(rows.size());
+    for (var r : rows) uris.add(r.blobUri());
+    var blobMap = blobs.getBatch(uris);
+
+    var out = new java.util.ArrayList<NameRef>(rows.size());
+    for (var r : rows) {
+      var bytes = blobMap.get(r.blobUri());
       if (bytes == null) continue;
       try {
         out.add(NameRef.parseFrom(bytes));
-      } catch (Exception e) {
-        throw new RuntimeException(
-            "Failed to parse NameRef for uri=" + r.blobUri() + ", key=" + r.key(), e);
+      }
+      catch (Exception e) {
+        throw new RuntimeException("Failed to parse NameRef: " + r.blobUri(), e);
       }
     }
     return out;
+  }
+
+  public List<NameRef> listCatalogRefsByName(String tenantId, int limit, String token, StringBuilder nextOut) {
+    String pfx = Keys.idxCatByNamePrefix(tenantId);
+    return listRefsByPrefix(pfx, limit, token, nextOut);
+  }
+
+  public List<NameRef> listNamespaceRefsByCatalog(
+      String tenantId,
+      ResourceId catalogId,
+      List<String> pathPrefix,
+      int limit,
+      String token,
+      StringBuilder nextOut) {
+
+    String pfx = (pathPrefix == null || pathPrefix.isEmpty())
+        ? Keys.idxNsByPathPrefix(tenantId, catalogId.getId())
+        : Keys.idxNsByPathPrefix(tenantId, catalogId.getId(), pathPrefix);
+    return listRefsByPrefix(pfx, limit, token, nextOut);
   }
 
   public static String joinPath(List<String> parts) {
