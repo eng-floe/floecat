@@ -263,23 +263,14 @@ public class NameIndexRepository extends BaseRepository<byte[]> {
   }
 
   public List<NameRef> listRefsByPrefix(String prefix, int limit, String token, StringBuilder nextOut) {
-    var rows = ptr.listPointersByPrefix(prefix, Math.max(1, limit), token, nextOut);
-    var uris = new ArrayList<String>(rows.size());
-    for (var r : rows) uris.add(r.blobUri());
-    var blobMap = blobs.getBatch(uris);
-
-    var out = new java.util.ArrayList<NameRef>(rows.size());
-    for (var r : rows) {
-      var bytes = blobMap.get(r.blobUri());
-      if (bytes == null) continue;
+    return listByPrefixParsed(prefix, limit, token, nextOut, bytes -> {
       try {
-        out.add(NameRef.parseFrom(bytes));
+        return NameRef.parseFrom(bytes);
       }
       catch (Exception e) {
-        throw new RuntimeException("Failed to parse NameRef: " + r.blobUri(), e);
+        throw new RuntimeException("Failed to parse NameRef", e);
       }
-    }
-    return out;
+    });
   }
 
   public List<NameRef> listCatalogRefsByName(String tenantId, int limit, String token, StringBuilder nextOut) {

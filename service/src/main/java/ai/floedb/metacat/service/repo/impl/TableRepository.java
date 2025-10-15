@@ -74,25 +74,47 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
   public boolean update(TableDescriptor updated, long expectedVersion) {
     requireOwnerIds(updated);
 
-    var tableId = updated.getResourceId();
-    var tenantId = tableId.getTenantId();
-    var catalogId = updated.getCatalogId().getId();
-    var namespaceId = updated.getNamespaceId().getId();
+    final var tableId = updated.getResourceId();
+    final var tenantId = tableId.getTenantId();
+    final var catalogId = updated.getCatalogId().getId();
+    final var namespaceId = updated.getNamespaceId().getId();
 
-    var canTblKey = Keys.tblCanonicalPtr(tenantId, tableId.getId());
-    var tblKey = Keys.tblPtr(tenantId, catalogId, namespaceId, tableId.getId());
-    var uri = Keys.tblBlob(tenantId, tableId.getId());
+    final var canonKey = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    final var nsKey = Keys.tblPtr(tenantId, catalogId, namespaceId, tableId.getId());
+    final var blobUri = Keys.tblBlob(tenantId, tableId.getId());
 
-    boolean okCanon = update(canTblKey, uri, updated, expectedVersion);
-    if (!okCanon) return false;
-
-    boolean okNs = update(tblKey, uri, updated, expectedVersion);
-    if (!okNs) {
+    var canPtr = ptr.get(canonKey);
+    if (canPtr.isEmpty() || canPtr.get().getVersion() != expectedVersion)
       return false;
+
+    byte[] bytes = toBytes.apply(updated);
+    String etag = sha256B64(bytes);
+    var hdr = blobs.head(blobUri);
+    if (hdr.isEmpty() || !etag.equals(hdr.get().getEtag())) {
+      blobs.put(blobUri, bytes, contentType);
     }
 
-    nameIndex.removeTable(tenantId, updated);
-    nameIndex.upsertTable(tenantId, updated);
+    long nextVersion = expectedVersion + 1L;
+
+    var canNext = Pointer.newBuilder()
+        .setKey(canonKey)
+        .setBlobUri(blobUri)
+        .setVersion(nextVersion)
+        .build();
+    if (!ptr.compareAndSet(canonKey, expectedVersion, canNext))
+      return false;
+
+    var nsNext = Pointer.newBuilder()
+        .setKey(nsKey)
+        .setBlobUri(blobUri)
+        .setVersion(nextVersion)
+        .build();
+    ptr.compareAndSet(nsKey, expectedVersion, nsNext);
+    ptr.compareAndSet(nsKey, 0L, nsNext);
+
+    try { nameIndex.removeTable(tenantId, updated); } catch (Throwable ignore) {}
+    try { nameIndex.upsertTable(tenantId, updated); } catch (Throwable ignore) {}
+
     return true;
   }
 
@@ -103,49 +125,56 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
       ResourceId newCatalogId,
       ResourceId newNamespaceId,
       long expectedVersion) {
+
     requireOwnerIds(updated);
 
-    var tableId = updated.getResourceId();
-    var tenantId = tableId.getTenantId();
-    var catalogId = updated.getCatalogId().getId();
-    var namespaceId = updated.getNamespaceId().getId();
-
-    if (!updated.getCatalogId().getId().equals(newCatalogId.getId())
-        || !updated.getNamespaceId().getId().equals(newNamespaceId.getId())) {
-      throw new IllegalArgumentException("updated descriptor owner ids must match newCatalogId/newNamespaceId");
+    if (!updated.getCatalogId().getId().equals(newCatalogId.getId()) ||
+        !updated.getNamespaceId().getId().equals(newNamespaceId.getId())) {
+      throw new IllegalArgumentException(
+          "updated descriptor owner ids must match newCatalogId/newNamespaceId");
     }
 
-    final String tlbKey = Keys.tblCanonicalPtr(tenantId, tableId.getId());
-    final String tlbUri = Keys.tblBlob(tenantId, tableId.getId());
+    final var tableId = updated.getResourceId();
+    final var tenantId = tableId.getTenantId();
+
+    final String canonKey = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    final String blobUri = Keys.tblBlob(tenantId, tableId.getId());
     final String oldNsKey = Keys.tblPtr(tenantId, oldCatalogId.getId(), oldNamespaceId.getId(), tableId.getId());
     final String newNsKey = Keys.tblPtr(tenantId, newCatalogId.getId(), newNamespaceId.getId(), tableId.getId());
 
-    final byte[] bytes = toBytes.apply(updated);
-    final String etag  = sha256B64(bytes);
-    var hdr = blobs.head(tlbUri);
+    var canPtr = ptr.get(canonKey);
+    if (canPtr.isEmpty() || canPtr.get().getVersion() != expectedVersion)
+      return false;
+
+    var bytes = toBytes.apply(updated);
+    var etag = sha256B64(bytes);
+    var hdr = blobs.head(blobUri);
     if (hdr.isEmpty() || !etag.equals(hdr.get().getEtag())) {
-      blobs.put(tlbUri, bytes, contentType);
+      blobs.put(blobUri, bytes, contentType);
     }
 
-    var curPtr = ptr.get(tlbKey);
-    if (curPtr.isEmpty() || curPtr.get().getVersion() != expectedVersion) {
-      return false;
-    }
+    final long nextVersion = expectedVersion + 1L;
+
     var nextPtr = Pointer.newBuilder()
-        .setKey(tlbKey)
-        .setBlobUri(tlbUri)
-        .setVersion(expectedVersion + 1)
+        .setKey(canonKey)
+        .setBlobUri(blobUri)
+        .setVersion(nextVersion)
         .build();
-
-    if (!ptr.compareAndSet(tlbKey, expectedVersion, nextPtr)) {
+    if (!ptr.compareAndSet(canonKey, expectedVersion, nextPtr))
       return false;
-    }
-      
-    try {
-      putAll(List.of(newNsKey), tlbUri, updated);
-    } catch (Throwable ignore) { }
 
-    try { ptr.delete(oldNsKey); } catch (Throwable ignore) {}
+    var newNsPtr = Pointer.newBuilder()
+        .setKey(newNsKey)
+        .setBlobUri(blobUri)
+        .setVersion(nextVersion)
+        .build();
+    ptr.compareAndSet(newNsKey, 0L, newNsPtr);
+    ptr.compareAndSet(newNsKey, expectedVersion, newNsPtr);
+
+    try {
+      ptr.compareAndDelete(oldNsKey, expectedVersion);
+      ptr.delete(oldNsKey);
+    } catch (Throwable ignore) {}
 
     try { nameIndex.removeTable(tenantId, updated); } catch (Throwable ignore) {}
     try { nameIndex.upsertTable(tenantId, updated); } catch (Throwable ignore) {}
@@ -198,11 +227,6 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
       return true;
     }
 
-    TableDescriptor td = null;
-    try { 
-      td = TableDescriptor.parseFrom(blobs.get(pCanonOpt.get().getBlobUri())); 
-    } catch (Throwable ignore) {}
-
     if (pCanonOpt.get().getVersion() != expectedVersion) {
       return false;
     }
@@ -211,13 +235,10 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
       return false;
     }
 
-    if (td != null) {
-      var nsKey = Keys.tblPtr(
-          tenant, td.getCatalogId().getId(), td.getNamespaceId().getId(), tableId.getId());
-      try { ptr.delete(nsKey); } catch (Throwable ignore) {}
-    } else {
-      sweepNamespaceTablePointers(tenant, tableId.getId());
-    }
+    TableDescriptor td = null;
+    try {
+      td = TableDescriptor.parseFrom(blobs.get(pCanonOpt.get().getBlobUri()));
+    } catch (Throwable ignore) {}
 
     bestEffortPurge(tenant, tableId.getId(), td);
     return true;
@@ -225,22 +246,26 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
 
   private void bestEffortPurge(String tenant, String tableId, TableDescriptor td) {
     try { blobs.delete(Keys.tblBlob(tenant, tableId)); } catch (Throwable ignore) {}
+
     if (td != null) {
-      try { nameIndex.removeTable(tenant, td); } catch (Throwable ignore) {}
+      try {
+        nameIndex.removeTable(tenant, td);
+      } catch (Throwable ignore) {}
     } else {
-      sweepNameRefsByTableId(tenant, tableId);
+      sweepNameRefPrefix(tenant, tableId);
     }
 
     var kById = Keys.idxTblById(tenant, tableId);
     try { ptr.delete(kById); }  catch (Throwable ignore) {}
     try { blobs.delete(Keys.memUriFor(kById, "entry.pb")); } catch (Throwable ignore) {}
 
-    sweepNamespaceTablePointers(tenant, tableId);
-  }
-
-  private void sweepNameRefsByTableId(String tenant, String tableId) {
-    sweepNameRefPrefix("/tenants/" + tenant.toLowerCase() + "/_index/tables/by-name/", tableId);
-    sweepNameRefPrefix("/tenants/" + tenant.toLowerCase() + "/_index/tables/by-namespace/", tableId);
+    if (td != null) {
+      var nsKey = Keys.tblPtr(
+          tenant, td.getCatalogId().getId(), td.getNamespaceId().getId(), tableId);
+      try { ptr.delete(nsKey); } catch (Throwable ignore) {}
+    } else {
+      sweepNamespaceTablePointers(tenant, tableId);
+    }
   }
 
   private void sweepNameRefPrefix(String prefix, String tableId) {
@@ -285,10 +310,9 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
   public MutationMeta metaFor(ResourceId tableId) {
     String tenant = tableId.getTenantId();
     String key = Keys.tblCanonicalPtr(tenant, tableId.getId());
-    String blob = Keys.tblBlob(tenant, tableId.getId()); 
-    ptr.get(key).orElseThrow(() -> new IllegalStateException(
+    var p = ptr.get(key).orElseThrow(() -> new IllegalStateException(
         "Pointer missing for table: " + tableId.getId()));
-    return safeMetaOrDefault(key, blob, clock);
+    return safeMetaOrDefault(key, p.getBlobUri(), clock);
   }
 
   public MutationMeta metaForSafe(ResourceId tableId) {

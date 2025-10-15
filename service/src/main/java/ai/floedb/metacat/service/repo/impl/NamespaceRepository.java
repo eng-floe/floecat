@@ -42,8 +42,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
   }
 
   public int count(ResourceId catalogId) {
-    return ptr.countByPrefix(Keys.idxNsByPathPrefix(
-        catalogId.getTenantId(), catalogId.getId()));
+    return countByPrefix(Keys.nsPtr(catalogId.getTenantId(), catalogId.getId(), ""));
   }
 
   public void put(Namespace ns, ResourceId catalogId, List<String> parentPathSegments) {
@@ -192,7 +191,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     try { ptr.delete(key); } catch (Throwable ignore) {}
     try { blobs.delete(uri); } catch (Throwable ignore) {}
 
-    boolean gonePtr  = ptr.get(key).isEmpty();
+    boolean gonePtr = ptr.get(key).isEmpty();
     boolean goneBlob = blobs.head(uri).isEmpty();
     return gonePtr && goneBlob;
   }
@@ -229,10 +228,9 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
   public MutationMeta metaFor(ResourceId catalogId, ResourceId namespaceId) {
     String tenant = namespaceId.getTenantId();
     String key = Keys.nsPtr(tenant, catalogId.getId(), namespaceId.getId());
-    String blob = Keys.nsBlob(tenant, catalogId.getId(), namespaceId.getId());
-    ptr.get(key).orElseThrow(() -> new IllegalStateException(
+    var p = ptr.get(key).orElseThrow(() -> new IllegalStateException(
         "Pointer missing for namespace: " + namespaceId.getId()));
-    return safeMetaOrDefault(key, blob, clock);
+    return safeMetaOrDefault(key, p.getBlobUri(), clock);
   }
 
   public MutationMeta metaForSafe(ResourceId catalogId, ResourceId namespaceId) {

@@ -710,10 +710,15 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     if (!ok) {
       final var now = tables.metaFor(tableId);
+      if (now.getPointerVersion() != meta.getPointerVersion()) {
+        throw GrpcErrors.preconditionFailed(
+            corr, "version_mismatch",
+            Map.of("expected", Long.toString(meta.getPointerVersion()),
+                  "actual", Long.toString(now.getPointerVersion())));
+      }
       throw GrpcErrors.preconditionFailed(
-          corr, "version_mismatch",
-          Map.of("expected", Long.toString(meta.getPointerVersion()),
-                "actual", Long.toString(now.getPointerVersion())));
+          corr, "move_conflict",
+          Map.of("reason", "target_namespace_busy_or_old_namespace_cas_failed"));
     }
 
     final var outMeta = tables.metaFor(tableId);

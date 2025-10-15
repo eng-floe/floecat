@@ -131,6 +131,24 @@ public abstract class BaseRepository<T> implements Repository<T> {
     return out;
   }
 
+  protected <R> List<R> listByPrefixParsed(
+      String prefix, int limit, String token, StringBuilder nextOut,
+      java.util.function.Function<byte[], R> parse) {
+
+    var rows = ptr.listPointersByPrefix(prefix, Math.max(1, limit), token, nextOut);
+    var uris = new ArrayList<String>(rows.size());
+    for (var r : rows) uris.add(r.blobUri());
+    var blobMap = blobs.getBatch(uris);
+
+    var out = new ArrayList<R>(rows.size());
+    for (var r : rows) {
+      var bytes = blobMap.get(r.blobUri());
+      if (bytes == null) continue;
+      out.add(parse.apply(bytes));
+    }
+    return out;
+  }
+
   @Override
   public int countByPrefix(String prefix) {
     return ptr.countByPrefix(prefix);

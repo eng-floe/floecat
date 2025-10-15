@@ -96,10 +96,9 @@ public class CatalogRepository extends BaseRepository<Catalog> {
   public MutationMeta metaFor(ResourceId catalogId) {
     String tenant = catalogId.getTenantId();
     String key = Keys.catPtr(tenant, catalogId.getId());
-    String blob = Keys.catBlob(tenant, catalogId.getId());
-    ptr.get(key).orElseThrow(() -> new IllegalStateException(
+    var p = ptr.get(key).orElseThrow(() -> new IllegalStateException(
         "Pointer missing for catalog: " + catalogId.getId()));
-    return safeMetaOrDefault(key, blob, clock);
+    return safeMetaOrDefault(key, p.getBlobUri(), clock);
   }
 
   public MutationMeta metaForSafe(ResourceId catalogId) {
