@@ -1,9 +1,5 @@
 package ai.floedb.metacat.service.it;
 
-import java.time.Clock;
-import java.util.ArrayList;
-import java.util.List;
-
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;

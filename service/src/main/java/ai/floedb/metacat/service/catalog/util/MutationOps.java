@@ -69,7 +69,6 @@ public final class MutationOps {
     return new OpResult<>(body, metaOf.apply(body));
   }
 
-  // Convenience for protobuf messages when you already have a parser/serializer:
   public static <T extends Message> OpResult<T> createProto(
       String tenant,
       String opName,

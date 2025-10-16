@@ -19,9 +19,8 @@ class NamespaceRepositoryTest {
   void putAndGetRoundTrip() {
     var ptr = new InMemoryPointerStore();
     var blob = new InMemoryBlobStore();
-    var nameIndexRepo = new NameIndexRepository(ptr, blob);
-    var repo = new NamespaceRepository(nameIndexRepo, ptr, blob);
-    var catRepo = new CatalogRepository(nameIndexRepo, ptr, blob);
+    var repo = new NamespaceRepository(ptr, blob);
+    var catRepo = new CatalogRepository(ptr, blob);
 
     String tenant = "t-0001";
 
@@ -35,7 +34,7 @@ class NamespaceRepositoryTest {
         .setResourceId(catRid)
         .setDisplayName("sales")
         .build();
-    catRepo.put(cat);
+    catRepo.create(cat);
 
     var nsRid = ResourceId.newBuilder()
         .setTenantId(tenant)
@@ -48,9 +47,9 @@ class NamespaceRepositoryTest {
         .setDisplayName("core")
         .setDescription("Core namespace")
         .build();
-    repo.put(ns, catRid);
+    repo.create(ns, catRid);
 
-    var fetched = repo.get(nsRid).orElseThrow();
+    var fetched = repo.get(catRid, nsRid).orElseThrow();
     assertEquals("core", fetched.getDisplayName());
   }
 }

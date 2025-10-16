@@ -24,9 +24,8 @@ class TableRepositorySnapshotsTest {
   void list_count_and_currentSnapshot_fromSeeded() {
     var ptr  = new InMemoryPointerStore();
     var blobs= new InMemoryBlobStore();
-    var nameIndexRepo = new NameIndexRepository(ptr, blobs);
     var snapshotRepo = new SnapshotRepository(ptr, blobs);
-    var tableRepo = new TableRepository(nameIndexRepo, ptr, blobs);
+    var tableRepo = new TableRepository(ptr, blobs);
 
     String tenant = "t-0001";
     String catalogId = UUID.randomUUID().toString();
@@ -48,7 +47,7 @@ class TableRepositorySnapshotsTest {
         .setCreatedAt(Timestamps.fromMillis(clock.millis()))
         .setCurrentSnapshotId(200)
         .build();
-    tableRepo.put(td);
+    tableRepo.create(td);
 
     seedSnapshot(ptr, blobs, tenant, tblId, 199, clock.millis() - 60_000);
     seedSnapshot(ptr, blobs, tenant, tblId, 200, clock.millis());

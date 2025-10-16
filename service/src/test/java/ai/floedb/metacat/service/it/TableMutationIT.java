@@ -37,8 +37,8 @@ class TableMutationIT {
 
   @Test
   void Table_rename_and_updateSchema_with_preconditions() throws Exception {
-    String tenantId = TestSupport.seedTenantId(directory, "sales");
     var cat = TestSupport.createCatalog(mutation, T_PREFIX + "cat1", "tcat1");
+    String tenantId = TestSupport.seedTenantId(directory, T_PREFIX + "cat1");
     assertEquals(tenantId, cat.getResourceId().getTenantId());
 
     var parents = List.of("db_tbl","schema_tbl");

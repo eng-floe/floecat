@@ -56,10 +56,9 @@ class ResourceMutationIT {
 
   @Test
   void EndtoEnd_CRUD() throws Exception {
-    String tenantId = TestSupport.seedTenantId(directory, "sales");
-
     String catName = "it_mutation_cat_" + clock.millis();
     Catalog cat = TestSupport.createCatalog(mutation, catName, "IT cat");
+    String tenantId = TestSupport.seedTenantId(directory, catName);
     ResourceId catId = cat.getResourceId();
 
     assertEquals(ResourceKind.RK_CATALOG, catId.getKind());

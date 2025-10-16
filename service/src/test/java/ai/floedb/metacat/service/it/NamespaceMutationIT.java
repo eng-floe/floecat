@@ -55,8 +55,8 @@ class NamespaceMutationIT {
 
   @Test
   void Namespace_create_rename_move_delete_with_preconditions() throws Exception {
-    String tenantId = TestSupport.seedTenantId(directory, "sales");
     var cat = TestSupport.createCatalog(mutation, NS_PREFIX + "cat2", "cat2");
+    String tenantId = TestSupport.seedTenantId(directory, NS_PREFIX + "cat2");
     assertEquals(tenantId, cat.getResourceId().getTenantId());
 
     var parents = List.of("db_it","schema_it");
@@ -66,7 +66,8 @@ class NamespaceMutationIT {
     ResourceId nsId = ns.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
 
-    var full = new ArrayList<>(parents); full.add(leaf);
+    var full = new ArrayList<>(parents);
+    full.add(leaf);
     var resolved = directory.resolveNamespace(ResolveNamespaceRequest.newBuilder()
         .setRef(NameRef.newBuilder()
             .setCatalog(cat.getDisplayName())
@@ -74,13 +75,12 @@ class NamespaceMutationIT {
         .build());
     assertEquals(nsId.getId(), resolved.getResourceId().getId());
 
-
     var m1 = mutation.renameNamespace(RenameNamespaceRequest.newBuilder()
         .setNamespaceId(nsId)
         .setNewDisplayName(leaf + "_ren")
         .setPrecondition(Precondition.newBuilder()
-            .setExpectedVersion(TestSupport.metaForNamespace(ptr, blob, cat.getDisplayName(), full).getPointerVersion())
-            .setExpectedEtag(TestSupport.metaForNamespace(ptr, blob, cat.getDisplayName(), full).getEtag())
+            .setExpectedVersion(TestSupport.metaForNamespace(ptr, blob, tenantId, cat.getDisplayName(), full).getPointerVersion())
+            .setExpectedEtag(TestSupport.metaForNamespace(ptr, blob, tenantId, cat.getDisplayName(), full).getEtag())
             .build())
         .build()).getMeta();
 
@@ -124,7 +124,7 @@ class NamespaceMutationIT {
           ErrorCode.MC_PRECONDITION_FAILED, "mismatch");
 
     var before = TestSupport.metaForNamespace(
-        ptr, blob, cat.getDisplayName(), List.of(leaf + "_root"));
+        ptr, blob, tenantId, cat.getDisplayName(), List.of(leaf + "_root"));
 
     // Bump the version
     var m3Resp = mutation.renameNamespace(RenameNamespaceRequest.newBuilder()
@@ -167,7 +167,7 @@ class NamespaceMutationIT {
           .build()));
     TestSupport.assertGrpcAndMc(
         nsDelBlocked, Status.Code.ABORTED, ErrorCode.MC_CONFLICT,
-        "Namespace \"" + (leaf + "_root3") + "\" contains tables and/or children.");
+        "Namespace \"" + leaf + "_root3" + "\" contains tables and/or children.");
 
     TestSupport.deleteTable(mutation, nsId, tbl.getResourceId());
 
@@ -195,6 +195,7 @@ class NamespaceMutationIT {
   @Test
   void Namespace_create_is_idempotent_sameKey_sameSpec() throws Exception {
     var cat = TestSupport.createCatalog(mutation, NS_PREFIX + "cat3", "cat3");
+    TestSupport.seedTenantId(directory,  cat.getDisplayName());
 
     var key = IdempotencyKey.newBuilder().setKey(NS_PREFIX + "k-ns-1").build();
     var spec = NamespaceSpec.newBuilder()

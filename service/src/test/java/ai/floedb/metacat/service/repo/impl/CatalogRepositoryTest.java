@@ -21,8 +21,7 @@ class CatalogRepositoryTest {
   void putAndGetRoundTrip() {
     var ptr = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
-    var nameIndexRepo = new NameIndexRepository(ptr, blobs);
-    var catalogRepo = new CatalogRepository(nameIndexRepo, ptr, blobs);
+    var catalogRepo = new CatalogRepository(ptr, blobs);
 
     var rid = ResourceId.newBuilder()
         .setTenantId("t-0001")
@@ -31,8 +30,8 @@ class CatalogRepositoryTest {
     var cat = Catalog.newBuilder()
         .setResourceId(rid).setDisplayName("sales").setDescription("Sales").build();
 
-    catalogRepo.put(cat);
-    var fetched = catalogRepo.get(rid).orElseThrow();
+    catalogRepo.create(cat);
+    var fetched = catalogRepo.getById(rid).orElseThrow();
     assertEquals("sales", fetched.getDisplayName());
   }
 
@@ -40,9 +39,8 @@ class CatalogRepositoryTest {
   void listCatalogs() {
     var ptr = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
-    var nameIndexRepo = new NameIndexRepository(ptr, blobs);
-    var catalogRepo = new CatalogRepository(nameIndexRepo, ptr, blobs);
-    var namespaceRepo = new NamespaceRepository(nameIndexRepo, ptr, blobs);
+    var catalogRepo = new CatalogRepository(ptr, blobs);
+    var namespaceRepo = new NamespaceRepository(ptr, blobs);
 
     String tenant = "t-0001";
     var catRid = ResourceId.newBuilder()
@@ -51,7 +49,7 @@ class CatalogRepositoryTest {
         .setKind(ResourceKind.RK_CATALOG).build();
     var cat = Catalog.newBuilder()
         .setResourceId(catRid).setDisplayName("sales").setDescription("Sales").build();
-    catalogRepo.put(cat);
+    catalogRepo.create(cat);
 
     var nsRid = ResourceId.newBuilder()
       .setTenantId(tenant).setId(UUID.randomUUID().toString())
@@ -59,7 +57,7 @@ class CatalogRepositoryTest {
     var ns = Namespace.newBuilder()
       .setResourceId(nsRid).setDisplayName("eu")
       .setDescription("EU namespace").build();
-    namespaceRepo.put(ns, catRid);
+    namespaceRepo.create(ns, catRid);
 
     nsRid = ResourceId.newBuilder()
       .setTenantId(tenant).setId(UUID.randomUUID().toString())
@@ -67,10 +65,10 @@ class CatalogRepositoryTest {
     ns = Namespace.newBuilder()
       .setResourceId(nsRid).setDisplayName("us")
       .setDescription("US namespace").build();
-    namespaceRepo.put(ns, catRid);
+    namespaceRepo.create(ns, catRid);
 
     var next = new StringBuilder();
-    List<NameRef> catalogs = catalogRepo.list(tenant, 10, "", next);
+    List<Catalog> catalogs = catalogRepo.listByName(tenant, 10, "", next);
     assertEquals(1, catalogs.size());
 
     var catsPrefix = Keys.catPtr(tenant, "");

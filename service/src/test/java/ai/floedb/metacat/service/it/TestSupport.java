@@ -171,38 +171,53 @@ public final class TestSupport {
   public static MutationMeta metaForNamespace(
       PointerStore ptr,
       BlobStore blobs,
+      String tenant,
       String catalogDisplayName,
       List<String> fullPath) {
 
-    String tenant = "t-0001";
-
-    var catIdxKey = Keys.idxCatByName(tenant, catalogDisplayName);
+    // 1) Resolve catalogId from the by-name catalog pointer (blob is a Catalog)
+    var catIdxKey = Keys.catByNamePtr(tenant, catalogDisplayName);
     var catPtr = ptr.get(catIdxKey).orElseThrow(
-        () -> new AssertionError("catalog by-name index pointer missing: " + catIdxKey));
-    var catRef = readNameRef(blobs, catPtr.getBlobUri());
-    var catalogId = catRef.getResourceId().getId();
+        () -> new AssertionError("catalog by-name pointer missing: " + catIdxKey));
 
-    var nsIdxKey = Keys.idxNsByPath(tenant, catalogId, String.join("/", fullPath));
+    ai.floedb.metacat.catalog.rpc.Catalog cat;
+    try {
+      cat = ai.floedb.metacat.catalog.rpc.Catalog.parseFrom(blobs.get(catPtr.getBlobUri()));
+    } catch (Exception e) {
+      throw new AssertionError("failed to parse Catalog blob: " + catPtr.getBlobUri(), e);
+    }
+    var catalogId = cat.getResourceId().getId();
+
+    // 2) Resolve namespace via by-path pointer (blob is a Namespace)
+    var nsIdxKey = Keys.nsByPathPtr(tenant, catalogId, fullPath);
     var nsIdxPtr = ptr.get(nsIdxKey).orElseThrow(
-        () -> new AssertionError("namespace by-path index pointer missing: " + nsIdxKey));
-    var nsRef = readNameRef(blobs, nsIdxPtr.getBlobUri());
-    var nsRid = nsRef.getResourceId();
-    tenant = nsRid.getTenantId();
+        () -> new AssertionError("namespace by-path pointer missing: " + nsIdxKey));
 
-    var nsPtrKey = Keys.nsPtr(tenant, catalogId, nsRid.getId());
-    var nsBlob = Keys.nsBlob(tenant, catalogId, nsRid.getId());
+    ai.floedb.metacat.catalog.rpc.Namespace ns;
+    try {
+      ns = ai.floedb.metacat.catalog.rpc.Namespace.parseFrom(blobs.get(nsIdxPtr.getBlobUri()));
+    } catch (Exception e) {
+      throw new AssertionError("failed to parse Namespace blob: " + nsIdxPtr.getBlobUri(), e);
+    }
+
+    var nsRid = ns.getResourceId();
+    var nsTenant = nsRid.getTenantId(); // authoritative tenant from the object
+
+    // 3) Build canonical keys and return meta for the canonical pointer/blob
+    var nsPtrKey = Keys.nsPtr(nsTenant, catalogId, nsRid.getId());
+    var nsBlob = Keys.nsBlob(nsTenant, catalogId, nsRid.getId());
 
     var nsPtr = ptr.get(nsPtrKey).orElseThrow(
-        () -> new AssertionError("namespace pointer missing: " + nsPtrKey));
+        () -> new AssertionError("namespace canonical pointer missing: " + nsPtrKey));
     var hdr = blobs.head(nsBlob).orElseThrow(
         () -> new AssertionError("namespace blob header missing: " + nsBlob));
 
-    return MutationMeta.newBuilder()
+    return ai.floedb.metacat.catalog.rpc.MutationMeta.newBuilder()
         .setPointerKey(nsPtrKey)
         .setBlobUri(nsBlob)
         .setPointerVersion(nsPtr.getVersion())
         .setEtag(hdr.getEtag())
-        .setUpdatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
+        .setUpdatedAt(com.google.protobuf.util.Timestamps.fromMillis(System.currentTimeMillis()))
         .build();
   }
 
@@ -227,13 +242,5 @@ public final class TestSupport {
         .setEtag(hdr.getEtag())
         .setUpdatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
         .build();
-  }
-
-  private static NameRef readNameRef(BlobStore blobs, String uri) {
-    try {
-      return NameRef.parseFrom(blobs.get(uri));
-    } catch (Exception e) {
-      throw new AssertionError("failed to parse NameRef from " + uri, e);
-    }
   }
 }

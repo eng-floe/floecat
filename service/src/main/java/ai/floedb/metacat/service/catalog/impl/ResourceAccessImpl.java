@@ -1,13 +1,11 @@
 package ai.floedb.metacat.service.catalog.impl;
 
-import java.util.ArrayList;
 import java.util.Map;
 
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 
-import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.GetCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.GetCurrentSnapshotRequest;
@@ -24,14 +22,11 @@ import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.metacat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.metacat.catalog.rpc.ListTablesRequest;
 import ai.floedb.metacat.catalog.rpc.ListTablesResponse;
-import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.ResourceAccess;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
-import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
-import ai.floedb.metacat.service.repo.impl.NameIndexRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
@@ -40,9 +35,8 @@ import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 
 @GrpcService
 public class ResourceAccessImpl implements ResourceAccess {
-  @Inject CatalogRepository repo;
+  @Inject CatalogRepository catalogRepo;
   @Inject NamespaceRepository nsRepo;
-  @Inject NameIndexRepository nameIndexRepo;
   @Inject TableRepository tableRepo;
   @Inject SnapshotRepository snapshotRepo;
   @Inject PrincipalProvider principal;
@@ -54,11 +48,10 @@ public class ResourceAccessImpl implements ResourceAccess {
     authz.require(p, "catalog.read");
 
     return Uni.createFrom().item(
-        repo.get(req.getCatalogId())
+        catalogRepo.getById(req.getCatalogId())
             .map(c -> GetCatalogResponse.newBuilder().setCatalog(c).build())
-            .orElseThrow(() -> GrpcErrors.notFound(corrId(), "catalog",
-                Map.of("id", req.getCatalogId().getId())))
-    );
+            .orElseThrow(() -> GrpcErrors.notFound(
+                corrId(), "catalog", Map.of("id", req.getCatalogId().getId()))));
   }
 
   @Override
@@ -66,28 +59,25 @@ public class ResourceAccessImpl implements ResourceAccess {
     var p = principal.get();
     authz.require(p, "catalog.read");
 
-    int limit = (req.hasPage() && req.getPage().getPageSize() > 0) ? req.getPage().getPageSize() : 50;
-    String token = req.hasPage() ? req.getPage().getPageToken() : "";
-    StringBuilder next = new StringBuilder();
+    final int limit = (req.hasPage() && req.getPage().getPageSize() > 0)
+        ? req.getPage().getPageSize() : 50;
+    final String token = req.hasPage() ? req.getPage().getPageToken() : "";
+    final StringBuilder next = new StringBuilder();
 
-    return Uni.createFrom().deferred(() ->
-      Uni.createFrom().item(() -> {
-        var items = repo.list(p.getTenantId(), limit, token, next);
-        int total = repo.count(p.getTenantId());
-        var catalogs = new ArrayList<Catalog>(items.size());
-        for (NameRef item : items) {
-          repo.get(item.getResourceId()).ifPresent(catalogs::add);
-        }
-        var page = PageResponse.newBuilder()
-            .setNextPageToken(next.toString())
-            .setTotalSize(total)
-            .build();
-        return ListCatalogsResponse.newBuilder()
-            .addAllCatalogs(catalogs)
-            .setPage(page)
-            .build();
-      })
-    );
+    return Uni.createFrom().item(() -> {
+      var catalogs = catalogRepo.listByName(p.getTenantId(), Math.max(1, limit), token, next);
+      int total = catalogRepo.countAll(p.getTenantId());
+
+      var page = PageResponse.newBuilder()
+          .setNextPageToken(next.toString())
+          .setTotalSize(total)
+          .build();
+
+      return ListCatalogsResponse.newBuilder()
+          .addAllCatalogs(catalogs)
+          .setPage(page)
+          .build();
+    });
   }
 
   @Override
@@ -95,15 +85,19 @@ public class ResourceAccessImpl implements ResourceAccess {
     var p = principal.get();
     authz.require(p, "catalog.read");
 
-    return Uni.createFrom().item(req)
-        .map(r -> {
-          var nsRid = r.getNamespaceId();
-          var ns = nsRepo.get(nsRid)
-              .orElseThrow(() -> GrpcErrors.notFound(corrId(), "namespace",
-                  Map.of("id", nsRid.getId())));
+    return Uni.createFrom().item(() -> {
+      var nsRid = req.getNamespaceId();
 
-        return GetNamespaceResponse.newBuilder().setNamespace(ns).build();
-      });
+      var catId = nsRepo.findOwnerCatalog(p.getTenantId(), nsRid.getId())
+          .orElseThrow(() -> GrpcErrors.notFound(
+              corrId(), "namespace", Map.of("id", nsRid.getId())));
+
+      var ns = nsRepo.get(catId, nsRid)
+          .orElseThrow(() -> GrpcErrors.notFound(
+              corrId(), "namespace", Map.of("id", nsRid.getId())));
+
+      return GetNamespaceResponse.newBuilder().setNamespace(ns).build();
+    });
   }
 
   @Override
@@ -112,31 +106,27 @@ public class ResourceAccessImpl implements ResourceAccess {
     authz.require(p, "catalog.read");
 
     var catRid = req.getCatalogId();
+    catalogRepo.getById(catRid).orElseThrow(() -> GrpcErrors.notFound(
+        corrId(), "catalog", Map.of("id", catRid.getId())));
 
-    repo.get(catRid).orElseThrow(() -> GrpcErrors.notFound(
-        corrId(),
-        "catalog", Map.of("id", catRid.getId())
-    ));
-
-    int limit = (req.hasPage() && req.getPage().getPageSize() > 0) ? req.getPage().getPageSize() : 50;
-    String token = req.hasPage() ? req.getPage().getPageToken() : "";
-    StringBuilder next = new StringBuilder();
+    final int limit = (req.hasPage() && req.getPage().getPageSize() > 0)
+        ? req.getPage().getPageSize() : 50;
+    final String token = req.hasPage() ? req.getPage().getPageToken() : "";
+    final StringBuilder next = new StringBuilder();
 
     return Uni.createFrom().item(() -> {
-        var items = nsRepo.list(catRid, null, limit, token, next);
-        int total = nsRepo.count(catRid);
-        var namespaces = new ArrayList<Namespace>(items.size());
-        for (NameRef item : items) {
-          nsRepo.get(item.getResourceId()).ifPresent(namespaces::add);
-        }
-        var page = PageResponse.newBuilder()
-            .setNextPageToken(next.toString())
-            .setTotalSize(total)
-            .build();
-        return ListNamespacesResponse.newBuilder()
-            .addAllNamespaces(namespaces)
-            .setPage(page)
-            .build();
+      var namespaces = nsRepo.list(catRid, null, Math.max(1, limit), token, next);
+      int total = nsRepo.countUnderCatalog(catRid);
+
+      var page = PageResponse.newBuilder()
+          .setNextPageToken(next.toString())
+          .setTotalSize(total)
+          .build();
+
+      return ListNamespacesResponse.newBuilder()
+          .addAllNamespaces(namespaces)
+          .setPage(page)
+          .build();
     });
   }
 
@@ -145,65 +135,82 @@ public class ResourceAccessImpl implements ResourceAccess {
     var p = principal.get();
     authz.require(p, "catalog.read");
 
-    return Uni.createFrom().item(req)
-        .map(r -> {
-            var table = tableRepo
-                .get(r.getTableId())
-                .orElseThrow(() -> GrpcErrors.notFound(corrId(), "table",
-                    Map.of("id", req.getTableId().getId())));
-
-        return GetTableDescriptorResponse.newBuilder()
-            .setTable(table)
-            .build();
-      });
+    return Uni.createFrom().item(() -> {
+      var table = tableRepo.get(req.getTableId())
+          .orElseThrow(() -> GrpcErrors.notFound(
+              corrId(), "table", Map.of("id", req.getTableId().getId())));
+      return GetTableDescriptorResponse.newBuilder().setTable(table).build();
+    });
   }
 
   @Override
   public Uni<ListTablesResponse> listTables(ListTablesRequest req) {
-    var p = principal.get(); 
+    var p = principal.get();
     authz.require(p, "table.read");
 
-    nsRepo.get(req.getNamespaceId()).orElseThrow(() -> GrpcErrors.notFound(
-        corrId(),
-        "namespace", Map.of("id", req.getNamespaceId().getId())
-    ));
+    var nsId = req.getNamespaceId();
+    var catId = nsRepo.findOwnerCatalog(p.getTenantId(), nsId.getId())
+        .orElseThrow(() -> GrpcErrors.notFound(
+            corrId(), "namespace", Map.of("id", nsId.getId())));
 
-    int limit = req.hasPage() && req.getPage().getPageSize() > 0 ? req.getPage().getPageSize() : 50;
-    String token = req.hasPage() ? req.getPage().getPageToken() : "";
-    StringBuilder next = new StringBuilder();
+    nsRepo.get(catId, nsId).orElseThrow(() -> GrpcErrors.notFound(
+        corrId(), "namespace", Map.of("id", nsId.getId())));
+
+    final int limit = (req.hasPage() && req.getPage().getPageSize() > 0)
+        ? req.getPage().getPageSize() : 50;
+    final String token = req.hasPage() ? req.getPage().getPageToken() : "";
+    final StringBuilder next = new StringBuilder();
 
     return Uni.createFrom().item(() -> {
-      var items = tableRepo.list(req.getNamespaceId(), limit, token, next);
-      int total = tableRepo.count(req.getNamespaceId());
-      var page = PageResponse.newBuilder().setNextPageToken(next.toString()).setTotalSize(total).build();
-      return ListTablesResponse.newBuilder().addAllTables(items).setPage(page).build();
+      var items = tableRepo.listByNamespace(catId, nsId, Math.max(1, limit), token, next);
+      int total = tableRepo.countUnderNamespace(catId, nsId);
+
+      var page = PageResponse.newBuilder()
+          .setNextPageToken(next.toString())
+          .setTotalSize(total)
+          .build();
+
+      return ListTablesResponse.newBuilder()
+          .addAllTables(items)
+          .setPage(page)
+          .build();
     });
   }
 
   @Override
   public Uni<ListSnapshotsResponse> listSnapshots(ListSnapshotsRequest req) {
-    var p = principal.get(); authz.require(p, "catalog.read");
+    var p = principal.get();
+    authz.require(p, "catalog.read");
 
     tableRepo.get(req.getTableId()).orElseThrow(() -> GrpcErrors.notFound(
-        corrId(),
-        "table", Map.of("id", req.getTableId().getId())
-    ));
+        corrId(), "table", Map.of("id", req.getTableId().getId())));
 
-    int limit = req.hasPage() && req.getPage().getPageSize() > 0 ? req.getPage().getPageSize() : 50;
-    String token = req.hasPage() ? req.getPage().getPageToken() : "";
-    StringBuilder next = new StringBuilder();
+    final int limit = (req.hasPage() && req.getPage().getPageSize() > 0)
+        ? req.getPage().getPageSize() : 50;
+    final String token = req.hasPage() ? req.getPage().getPageToken() : "";
+    final StringBuilder next = new StringBuilder();
 
     return Uni.createFrom().item(() -> {
-      var snaps = snapshotRepo.list(req.getTableId(), limit, token, next);
+      var snaps = snapshotRepo.list(req.getTableId(), Math.max(1, limit), token, next);
       int total = snapshotRepo.count(req.getTableId());
-      var page = PageResponse.newBuilder().setNextPageToken(next.toString()).setTotalSize(total).build();
-      return ListSnapshotsResponse.newBuilder().addAllSnapshots(snaps).setPage(page).build();
+
+      var page = PageResponse.newBuilder()
+          .setNextPageToken(next.toString())
+          .setTotalSize(total)
+          .build();
+
+      return ListSnapshotsResponse.newBuilder()
+          .addAllSnapshots(snaps)
+          .setPage(page)
+          .build();
     });
   }
 
   @Override
   public Uni<GetCurrentSnapshotResponse> getCurrentSnapshot(GetCurrentSnapshotRequest req) {
-    var p = principal.get(); authz.require(p, "catalog.read");
+    var p = principal.get();
+    authz.require(p, "catalog.read");
+
     return Uni.createFrom().item(() ->
         tableRepo.get(req.getTableId())
             .filter(t -> t.getCurrentSnapshotId() != 0)
@@ -213,8 +220,8 @@ public class ResourceAccessImpl implements ResourceAccess {
                     .setCreatedAt(t.getCreatedAt())
                     .build())
                 .build())
-                .orElseThrow(() -> GrpcErrors.notFound(corrId(), "snapshot",
-                    Map.of("id", req.getTableId().getId()))));
+            .orElseThrow(() -> GrpcErrors.notFound(
+                corrId(), "snapshot", Map.of("id", req.getTableId().getId()))));
   }
 
   private String corrId() {

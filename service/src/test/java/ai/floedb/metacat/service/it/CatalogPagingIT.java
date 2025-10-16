@@ -55,7 +55,7 @@ class CatalogPagingIT {
           .setCreatedAt(Timestamps.fromMillis(clock.millis()))
           .build();
 
-      repo.put(cat);
+      repo.create(cat);
     }
 
     var pc = PrincipalContext.newBuilder()

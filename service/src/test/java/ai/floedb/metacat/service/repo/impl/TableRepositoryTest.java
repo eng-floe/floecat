@@ -26,11 +26,10 @@ class TableRepositoryTest {
   void putAndGetRoundTrip() {
     var ptr = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
-    var nameIndexRepo = new NameIndexRepository(ptr, blobs);
     var snapshotRepo = new SnapshotRepository(ptr, blobs);
-    var tableRepo = new TableRepository(nameIndexRepo, ptr, blobs);
-    var repo = new NamespaceRepository(nameIndexRepo, ptr, blobs);
-    var catRepo = new CatalogRepository(nameIndexRepo, ptr, blobs);
+    var tableRepo = new TableRepository(ptr, blobs);
+    var repo = new NamespaceRepository(ptr, blobs);
+    var catRepo = new CatalogRepository(ptr, blobs);
 
     var tenant = "t-0001";
     var catRid = ResourceId.newBuilder()
@@ -43,7 +42,7 @@ class TableRepositoryTest {
         .setResourceId(catRid)
         .setDisplayName("sales")
         .build();
-    catRepo.put(cat);
+    catRepo.create(cat);
 
     var nsRid = ResourceId.newBuilder()
         .setTenantId(tenant)
@@ -56,7 +55,7 @@ class TableRepositoryTest {
         .setDisplayName("core")
         .setDescription("Core namespace")
         .build();
-    repo.put(ns, catRid);
+    repo.create(ns, catRid);
 
     var tableRid = ResourceId.newBuilder()
         .setTenantId(tenant)
@@ -75,13 +74,13 @@ class TableRepositoryTest {
         .setCreatedAt(Timestamps.fromMillis(clock.millis()))
         .setCurrentSnapshotId(42)
         .build();
-    tableRepo.put(td);
+    tableRepo.create(td);
 
-    String nsKeyRow = Keys.idxTblByNamespaceLeaf(tenant, nsRid.getId(), "orders");
-    String nsKeyPfx = Keys.idxTblByNamespaceLeafPrefix(tenant, nsRid.getId());
+    String nsKeyRow = Keys.tblByNamePtr(tenant, catRid.getId(), nsRid.getId(), "orders");
     var pRow = ptr.get(nsKeyRow);
     assertTrue(pRow.isPresent(), "by-namespace ROW pointer missing");
 
+    String nsKeyPfx = Keys.tblByNamePrefix(tenant, catRid.getId(), nsRid.getId());
     var rowsUnderPfx = ptr.listPointersByPrefix(nsKeyPfx, 100, "", new StringBuilder());
     assertTrue(rowsUnderPfx.stream().anyMatch(r -> r.key().equals(nsKeyRow)),
         "prefix scan doesn't see the row key you just wrote");
@@ -100,7 +99,7 @@ class TableRepositoryTest {
     var fetched = tableRepo.get(tableRid).orElseThrow();
     assertEquals("orders", fetched.getDisplayName());
 
-    var list = tableRepo.list(nsRid, 50, "", new StringBuilder());
+    var list = tableRepo.listByNamespace(catRid, nsRid, 50, "", new StringBuilder());
     assertEquals(1, list.size());
 
     var cur = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();

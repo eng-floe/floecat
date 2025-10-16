@@ -17,7 +17,6 @@ import ai.floedb.metacat.catalog.rpc.TableDescriptor;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
-import ai.floedb.metacat.service.repo.impl.NameIndexRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.storage.BlobStore;
@@ -28,7 +27,6 @@ import ai.floedb.metacat.common.rpc.Pointer;
 public class SeedRunner {
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;
-  @Inject NameIndexRepository nameIndex;
   @Inject TableRepository tables;
   @Inject BlobStore blobs;
   @Inject PointerStore ptr;
@@ -40,12 +38,10 @@ public class SeedRunner {
 
     var salesId = seedCatalog(tenant, "sales", "Sales catalog", now);
     var financeId = seedCatalog(tenant, "finance", "Finance catalog", now);
-    nameIndex.upsertCatalog(tenant, salesId, "sales");
-    nameIndex.upsertCatalog(tenant, financeId, "finance");
 
-    var salesCoreNsId = seedNamespace(tenant, salesId, List.of("core"), "core", now);
-    var salesStg25NsId = seedNamespace(tenant, salesId, List.of("staging","2025"), "2025", now);
-    var financeCoreNsId = seedNamespace(tenant, financeId, List.of("core"), "core", now);
+    var salesCoreNsId = seedNamespace(tenant, salesId, null, "core", now);
+    var salesStg25NsId = seedNamespace(tenant, salesId, List.of("staging"), "2025", now);
+    var financeCoreNsId = seedNamespace(tenant, financeId, null, "core", now);
 
     var ordersId = seedTable(tenant, salesId, salesCoreNsId.getId(), "orders", 0L, now);
 
@@ -68,7 +64,7 @@ public class SeedRunner {
     var rid = ResourceId.newBuilder().setTenantId(tenant).setId(id).setKind(ResourceKind.RK_CATALOG).build();
     var cat = Catalog.newBuilder()
       .setResourceId(rid).setDisplayName(displayName).setDescription(description).setCreatedAt(Timestamps.fromMillis(now)).build();
-    catalogs.put(cat);
+    catalogs.create(cat);
     return rid;
   }
 
@@ -97,7 +93,7 @@ public class SeedRunner {
       .setCreatedAt(Timestamps.fromMillis(now))
       .build();
 
-    namespaces.put(ns, catalogId);
+    namespaces.create(ns, catalogId);
     return nsRid;
   }
 
@@ -122,7 +118,7 @@ public class SeedRunner {
       .setCurrentSnapshotId(snapshotId)
       .build();
 
-    tables.put(td);
+    tables.create(td);
     return tableRid;
   }
 

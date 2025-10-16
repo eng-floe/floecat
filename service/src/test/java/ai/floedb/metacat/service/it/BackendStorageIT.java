@@ -1,8 +1,9 @@
 package ai.floedb.metacat.service.it;
 
 import java.time.Clock;
-import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
@@ -14,8 +15,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.NameRef;
+import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.Pointer;
-import ai.floedb.metacat.service.repo.impl.NameIndexRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
@@ -31,43 +32,42 @@ class BackendStorageIT {
 
   @Inject PointerStore ptr;
   @Inject BlobStore blobs;
-  @Inject NameIndexRepository nameIndex;
 
   private final Clock clock = Clock.systemUTC();
 
   @Test
   void storage_invariants_pointerBlobVersion_indexKeys_idempotence_and_deletes() {
-    String tenantId = TestSupport.seedTenantId(directory, "sales");
-
     String catName = "it_storage_cat_" + clock.millis();
     Catalog cat = TestSupport.createCatalog(mutation, catName, "storage cat");
+    String tenantId = TestSupport.seedTenantId(directory, catName);
+
     ResourceId catId = cat.getResourceId();
-    String kCatByName = Keys.idxCatByName(tenantId, cat.getDisplayName());
-    String kCatById = Keys.idxCatById(tenantId, catId.getId());
+    String kCatByName = Keys.catByNamePtr(tenantId, cat.getDisplayName());
+    String kCatById = Keys.catPtr(tenantId, catId.getId());
     assertTrue(ptr.get(kCatByName).isPresent());
     assertTrue(ptr.get(kCatById).isPresent());
-    var nrById = nameIndex.getCatalogById(tenantId, catId.getId()).orElseThrow();
-    assertEquals(cat.getDisplayName(), nrById.getCatalog());
-    assertEquals(catId.getId(), nrById.getResourceId().getId());
+    var catLookup = directory.lookupCatalog(
+        LookupCatalogRequest.newBuilder().setResourceId(catId).build());
+    assertEquals(cat.getDisplayName(), catLookup.getDisplayName());
 
     var nsPath = List.of("db_it", "schema_it");
     Namespace ns = TestSupport.createNamespace(
         mutation, catId, "it_ns", nsPath, "storage ns");
     ResourceId nsId = ns.getResourceId();
-    String fullPath = String.join("/", nsPath) + "/it_ns";
-    var fullListPath =  List.of("db_it", "schema_it", "it_ns");
-    String kNsByPath = Keys.idxNsByPath(tenantId, catId.getId(), fullPath);
-    String kNsById = Keys.idxNsById(tenantId, nsId.getId());
-    String kOwner = Keys.idxNsOwnerById(tenantId, nsId.getId());
+    var fullPath = List.of("db_it", "schema_it", "it_ns");
+    String kNsByPath = Keys.nsByPathPtr(tenantId, catId.getId(), fullPath);
+    String kNsPtr = Keys.nsPtr(tenantId, catId.getId(), nsId.getId());
+    String kNsBlob = Keys.nsBlob(tenantId, catId.getId(), nsId.getId());
+    assertTrue(ptr.get(kNsByPath).isPresent(), "namespace by-path pointer missing");
+    assertTrue(ptr.get(kNsPtr).isPresent(), "namespace canonical pointer missing");
+    assertTrue(blobs.head(kNsBlob).isPresent(), "namespace blob missing");
     assertTrue(ptr.get(kNsByPath).isPresent(), "namespace by-path (parents) index missing");
-    assertTrue(ptr.get(kNsById).isPresent(), "namespace by-id index missing");
-    assertTrue(ptr.get(kOwner).isPresent(), "namespace owner index missing");
-    var nsRef = nameIndex.getNamespaceById(tenantId, nsId.getId()).orElseThrow();
-    assertEquals(List.of("db_it","schema_it","it_ns"), nsRef.getPathList());
-    assertEquals(cat.getDisplayName(), nsRef.getCatalog());
-    assertEquals(nsId.getId(), nsRef.getResourceId().getId());
-    var ownerRid = nameIndex.getNamespaceOwner(tenantId, nsId.getId()).orElseThrow();
-    assertEquals(catId.getId(), ownerRid.getId());
+
+    var nsLookup = directory.lookupNamespace(
+        LookupNamespaceRequest.newBuilder().setResourceId(nsId).build());
+    assertEquals(cat.getDisplayName(), nsLookup.getRef().getCatalog());
+    assertEquals(List.of("db_it","schema_it"), nsLookup.getRef().getPathList());
+    assertEquals("it_ns", nsLookup.getRef().getName());
 
     String schemaV1 = """
         {"type":"struct","fields":[{"name":"id","type":"long"}]}
@@ -80,29 +80,24 @@ class BackendStorageIT {
         schemaV1,
         "storage table");
     ResourceId tblId = tbl.getResourceId();
-    String kTblByName = Keys.idxTblByName(tenantId, catId.getId(), fullListPath, "it_tbl");
-    String kTblByNs = Keys.idxTblByNamespaceLeaf(tenantId, nsId.getId(), "it_tbl");
-    String kTblById = Keys.idxTblById(tenantId, tblId.getId());
-
-    assertTrue(ptr.get(kTblByName).isPresent(), "table by-name index missing");
-    assertTrue(ptr.get(kTblByNs).isPresent(), "table by-namespace index missing");
-    assertTrue(ptr.get(kTblById).isPresent(), "table by-id index missing");
-    var tblRefById = nameIndex.getTableById(tenantId, tblId.getId()).orElseThrow();
-    assertEquals(cat.getDisplayName(), tblRefById.getCatalog());
-    assertEquals(fullListPath, tblRefById.getPathList());
-    assertEquals(tbl.getDisplayName(), tblRefById.getName());
-    assertEquals(tblId.getId(), tblRefById.getResourceId().getId());
-
-    String canonPtrKey = Keys.tblCanonicalPtr(tenantId, tblId.getId());
-    String nsIdxPtrKey = Keys.tblPtr(tenantId, catId.getId(), nsId.getId(), tblId.getId());
+    String kTblByName = Keys.tblByNamePtr(tenantId, catId.getId(), nsId.getId(), "it_tbl");
+    String kTblCanon  = Keys.tblCanonicalPtr(tenantId, tblId.getId());
     String tblBlobUri = Keys.tblBlob(tenantId, tblId.getId());
 
+    assertTrue(ptr.get(kTblByName).isPresent(), "table by-name pointer missing");
+    assertTrue(ptr.get(kTblCanon).isPresent(), "table canonical pointer missing");
+    assertTrue(blobs.head(tblBlobUri).isPresent(), "table blob header missing");
+
+    var tblLookup = directory.lookupTable(
+        LookupTableRequest.newBuilder().setResourceId(tblId).build());
+    assertEquals(cat.getDisplayName(), tblLookup.getName().getCatalog());
+    assertEquals(List.of("db_it", "schema_it", "it_ns"), tblLookup.getName().getPathList());
+    assertEquals("it_tbl", tblLookup.getName().getName());
+
+    String canonPtrKey = Keys.tblCanonicalPtr(tenantId, tblId.getId());
     Pointer tpCanon = ptr.get(canonPtrKey)
         .orElseThrow(() -> new AssertionError("canonical pointer missing"));
-    Pointer tpNsIdx = ptr.get(nsIdxPtrKey)
-        .orElseThrow(() -> new AssertionError("ns-index pointer missing"));
     assertEquals(tblBlobUri, tpCanon.getBlobUri());
-    assertEquals(tblBlobUri, tpNsIdx.getBlobUri());
     assertTrue(blobs.head(tblBlobUri).isPresent(), "table blob header missing");
 
     long vCanonBefore = tpCanon.getVersion();
@@ -123,63 +118,42 @@ class BackendStorageIT {
     String oldName = tbl.getDisplayName();
     String newName = "it_tbl_renamed";
     TestSupport.renameTable(mutation, tblId, newName);
-    String idxOldKey = Keys.idxTblByName(tenantId, catId.getId(), fullListPath, oldName);
-    String idxNewKey = Keys.idxTblByName(tenantId, catId.getId(), fullListPath, newName);
-    assertTrue(ptr.get(idxNewKey).isPresent(), "new name-index pointer must exist");
-    assertTrue(ptr.get(idxOldKey).isEmpty(), "old name-index pointer must be removed");
-    assertTrue(ptr.get(Keys.idxTblByNamespaceLeaf(tenantId, nsId.getId(), newName)).isPresent());
-    assertTrue(ptr.get(Keys.idxTblById(tenantId, tblId.getId())).isPresent());
-
+    String idxOldKey = Keys.tblByNamePtr(tenantId, catId.getId(), nsId.getId(), oldName);
+    String idxNewKey = Keys.tblByNamePtr(tenantId, catId.getId(), nsId.getId(), newName);
+    assertTrue(ptr.get(idxNewKey).isPresent(), "new by-name pointer must exist");
+    assertTrue(ptr.get(idxOldKey).isEmpty(),   "old by-name pointer must be removed");
+ 
     TestSupport.deleteTable(mutation, nsId, tblId);
-    assertTrue(ptr.get(idxNewKey).isEmpty(), "table by-name index should be deleted after table delete");
-    assertTrue(ptr.get(canonPtrKey).isEmpty(), "canonical pointer should be deleted");
-    assertTrue(ptr.get(nsIdxPtrKey).isEmpty(), "ns-index pointer should be deleted");
-    assertTrue(blobs.head(tblBlobUri).isEmpty(), "table blob should be deleted");
+    TestSupport.deleteTable(mutation, nsId, tblId);
+    assertTrue(ptr.get(kTblCanon).isEmpty());
+    assertTrue(ptr.get(kTblByName).isEmpty()); // use the current name’s key
+    assertTrue(blobs.head(tblBlobUri).isEmpty());
     // Call again
     TestSupport.deleteTable(mutation, nsId, tblId);
-    assertTrue(ptr.get(idxNewKey).isEmpty());
-    assertTrue(ptr.get(canonPtrKey).isEmpty());
-    assertTrue(ptr.get(nsIdxPtrKey).isEmpty());
+    assertTrue(ptr.get(kTblCanon).isEmpty());
+    assertTrue(ptr.get(kTblByName).isEmpty()); // use the current name’s key
     assertTrue(blobs.head(tblBlobUri).isEmpty());
 
     TestSupport.deleteNamespace(mutation, nsId, true);
-    String nsByIdKey = Keys.idxNsById(tenantId, nsId.getId());
-    String nsOwnerKey = Keys.idxNsOwnerById(tenantId, nsId.getId());
-    String nsByPathKey = Keys.idxNsByPath(tenantId, catId.getId(), fullPath);
-    String nsPtrKey = Keys.nsPtr(tenantId, catId.getId(), nsId.getId());
-    String nsBlobUri = Keys.nsBlob(tenantId, catId.getId(), nsId.getId());
-    assertTrue(ptr.get(nsByIdKey).isEmpty(), "ns by-id index should be deleted");
-    assertTrue(ptr.get(nsOwnerKey).isEmpty(), "ns owner index should be deleted");
-    assertTrue(ptr.get(nsByPathKey).isEmpty(), "ns by-path index should be deleted");
-    assertTrue(ptr.get(nsPtrKey).isEmpty(), "namespace pointer should be deleted");
-    assertTrue(blobs.head(nsBlobUri).isEmpty(), "namespace blob should be deleted");
-    // Again
-    assertTrue(ptr.get(nsByIdKey).isEmpty());
-    assertTrue(ptr.get(nsOwnerKey).isEmpty());
-    assertTrue(ptr.get(nsByPathKey).isEmpty());
-    assertTrue(ptr.get(nsPtrKey).isEmpty());
-    assertTrue(blobs.head(nsBlobUri).isEmpty());
+    assertTrue(ptr.get(kNsByPath).isEmpty(), "ns by-path pointer should be deleted");
+    assertTrue(ptr.get(kNsPtr).isEmpty(),    "ns canonical pointer should be deleted");
+    assertTrue(blobs.head(kNsBlob).isEmpty(), "ns blob should be deleted");
 
     TestSupport.deleteCatalog(mutation, catId, true);
-    String catByIdKey = Keys.idxCatById(tenantId, catId.getId());
-    String catByNameKey = Keys.idxCatByName(tenantId, catName);
-    String catPtrKey = Keys.catPtr(tenantId, catId.getId());
-    String catBlobUri = Keys.catBlob(tenantId, catId.getId());
-    assertTrue(ptr.get(catByIdKey).isEmpty(), "catalog by-id index should be deleted");
-    assertTrue(ptr.get(catByNameKey).isEmpty(), "catalog by-name index should be deleted");
-    assertTrue(ptr.get(catPtrKey).isEmpty(), "catalog pointer should be deleted");
-    assertTrue(blobs.head(catBlobUri).isEmpty(), "catalog blob should be deleted");
-    // Again
+    String catByIdKey   = Keys.catPtr(tenantId, catId.getId());
+    String catByNameKey = Keys.catByNamePtr(tenantId, catName);
+    String catBlobUri   = Keys.catBlob(tenantId, catId.getId());
     assertTrue(ptr.get(catByIdKey).isEmpty());
     assertTrue(ptr.get(catByNameKey).isEmpty());
-    assertTrue(ptr.get(catPtrKey).isEmpty());
     assertTrue(blobs.head(catBlobUri).isEmpty());
   }
 
   @Test
   void listTables_pagination_noRepeatsNoSkips() {
-    String tenantId = TestSupport.seedTenantId(directory, "sales");
-    var cat = TestSupport.createCatalog(mutation, "cat_pg_" + System.currentTimeMillis(), "pg");
+    var catName = "cat_pg_" + System.currentTimeMillis();
+    var cat = TestSupport.createCatalog(mutation,  catName, "pag");
+    String tenantId = TestSupport.seedTenantId(directory, catName);
+
     var nsPath = List.of("db","sch");
     var ns  = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns_pg", nsPath, "pg");
     for (int i=0;i<5;i++) TestSupport.createTable(
@@ -191,34 +165,55 @@ class BackendStorageIT {
         "d");
 
     var prefixRef = NameRef.newBuilder()
-        .setCatalog(cat.getDisplayName()).addAllPath(nsPath).build();
+        .setCatalog(cat.getDisplayName())
+        .addAllPath(nsPath).addPath("ns_pg")
+        .build();
 
+    int pageSize = 2;
     String token = "";
-    StringBuilder next = new StringBuilder();
-    var p1 = nameIndex.listTablesByPrefix(tenantId, prefixRef, 2, token, next);
-    String t1 = next.toString();
+    var p1 = directory.resolveFQTables(
+        ResolveFQTablesRequest.newBuilder()
+            .setPrefix(prefixRef)
+            .setPage(PageRequest.newBuilder()
+                .setPageSize(pageSize)
+                .setPageToken(token))
+            .build());
+    String t1 = p1.getPage().getNextPageToken();
 
-    next.setLength(0);
-    var p2 = nameIndex.listTablesByPrefix(tenantId, prefixRef, 2, t1, next);
-    String t2 = next.toString();
+    var p2 = directory.resolveFQTables(
+        ResolveFQTablesRequest.newBuilder()
+            .setPrefix(prefixRef)
+            .setPage(ai.floedb.metacat.common.rpc.PageRequest.newBuilder()
+                .setPageSize(pageSize)
+                .setPageToken(t1))
+            .build());
+    String t2 = p2.getPage().getNextPageToken();
 
-    next.setLength(0);
-    var p3 = nameIndex.listTablesByPrefix(tenantId, prefixRef, 2, t2, next);
-    String t3 = next.toString();
+    var p3 = directory.resolveFQTables(
+        ResolveFQTablesRequest.newBuilder()
+            .setPrefix(prefixRef)
+            .setPage(ai.floedb.metacat.common.rpc.PageRequest.newBuilder()
+                .setPageSize(pageSize)
+                .setPageToken(t2))
+            .build());
+    String t3 = p3.getPage().getNextPageToken();
 
-    var all = new LinkedHashSet<>(p1);
-    all.addAll(p2);
-    all.addAll(p3);
+    var all = new java.util.LinkedHashSet<String>();
+    p1.getTablesList().forEach(e -> all.add(e.getName().getName()));
+    p2.getTablesList().forEach(e -> all.add(e.getName().getName()));
+    p3.getTablesList().forEach(e -> all.add(e.getName().getName()));
     assertEquals(5, all.size());
     assertTrue(t3.isEmpty(), "final page should clear nextToken");
   }
 
   @Test
   void encodedNames_preservePrefixScan() {
-    String tenantId = TestSupport.seedTenantId(directory, "sales");
-    var cat = TestSupport.createCatalog(mutation, "cat_enc_" + System.currentTimeMillis(), "enc");
+    var catName = "cat_enc_" + System.currentTimeMillis();
+    var cat = TestSupport.createCatalog(mutation, catName, "enc");
+    String tenantId = TestSupport.seedTenantId(directory, catName);
+
     var nsPath = List.of("db it", "sch🧪", "Q4 Europe");
-    var ns  = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns_enc", nsPath, "enc");
+    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns_enc", nsPath, "enc");
 
     TestSupport.createTable(
         mutation,
@@ -236,39 +231,45 @@ class BackendStorageIT {
         "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
         "d");
 
-    var prefixRef = ai.floedb.metacat.common.rpc.NameRef.newBuilder()
-        .setCatalog(cat.getDisplayName()).addAllPath(nsPath).build();
+    var prefixRef = NameRef.newBuilder()
+        .setCatalog(cat.getDisplayName())
+        .addAllPath(nsPath).addPath("ns_enc")
+        .build();
 
-    StringBuilder next = new StringBuilder();
-    var page = nameIndex.listTablesByPrefix(tenantId, prefixRef, 100, "", next);
-    assertTrue(page.size() >= 2);
-    var fq = String.join("/", cat.getDisplayName(), String.join("/", nsPath), "α");
-    String key = Keys.idxTblByName(tenantId, cat.getResourceId().getId(), nsPath, "α");
+    var page = directory.resolveFQTables(
+        ResolveFQTablesRequest.newBuilder()
+            .setPrefix(prefixRef)
+            .setPage(PageRequest.newBuilder()
+                .setPageSize(100))
+            .build());
+    assertTrue(page.getTablesCount() >= 2);
+
+    String key = Keys.tblByNamePtr(tenantId, cat.getResourceId().getId(), ns.getResourceId().getId(), "α");
     assertTrue(key.contains("/by-name/"), "hierarchy should be preserved in keyspace");
   }
 
   @Test
   void update_bumpsBothPointers() {
-    var cat = TestSupport.createCatalog(mutation, "cat_ver_" + System.currentTimeMillis(), "ver");
+    var catName = "cat_ver_" + System.currentTimeMillis() + System.currentTimeMillis();
+    var cat = TestSupport.createCatalog(mutation, catName, "ver");
+    String tenantId = TestSupport.seedTenantId(directory, catName);
     var ns  = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns", List.of("db","sch"), "ver");
     var tbl = TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(), "t", "s3://b/p", "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}", "d");
     var tid = tbl.getResourceId(); var tenant = tid.getTenantId();
-    var canon = Keys.tblCanonicalPtr(tenant, tid.getId());
-    var nsIdx = Keys.tblPtr(tenant, cat.getResourceId().getId(), ns.getResourceId().getId(), tid.getId());
-
+    String canon = Keys.tblCanonicalPtr(tenant, tid.getId());
     long vCanon = ptr.get(canon).orElseThrow().getVersion();
-    long vIdx   = ptr.get(nsIdx).orElseThrow().getVersion();
 
     TestSupport.updateSchema(mutation, tid, "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"},{\"name\":\"x\",\"type\":\"double\"}]}");
 
     assertTrue(ptr.get(canon).orElseThrow().getVersion() > vCanon);
-    assertTrue(ptr.get(nsIdx).orElseThrow().getVersion() > vIdx);
   }
 
   @Test
   void etag_changesOnlyOnContentChange() {
-    var tenantId = TestSupport.seedTenantId(directory, "sales");
-    var cat = TestSupport.createCatalog(mutation, "cat_etag_" + System.currentTimeMillis(), "etag");
+    var catName = "cat_etag_" + System.currentTimeMillis();
+    var cat = TestSupport.createCatalog(mutation, catName, "etag");
+    var tenantId = TestSupport.seedTenantId(directory, catName);
+
     var ns  = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns", List.of("db","sch"), "etag");
     var tbl = TestSupport.createTable(
         mutation,
@@ -299,8 +300,10 @@ class BackendStorageIT {
 
   @Test
   void delete_skewTolerance() {
-    var tenantId = TestSupport.seedTenantId(directory, "sales");
-    var cat = TestSupport.createCatalog(mutation, "cat_del_" + System.currentTimeMillis(), "del");
+    var catName = "cat_del_" + System.currentTimeMillis();
+    var cat = TestSupport.createCatalog(mutation, catName, "del");
+    var tenantId = TestSupport.seedTenantId(directory, catName);
+
     var ns  = TestSupport.createNamespace(
         mutation,
         cat.getResourceId(),
@@ -315,12 +318,11 @@ class BackendStorageIT {
         "s3://b/p",
         "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
         "d");
-    var tid = tbl.getResourceId();
-    String canon = Keys.tblCanonicalPtr(tenantId, tid.getId());
-    String blob = Keys.tblBlob(tenantId, tid.getId());
+        String canon = Keys.tblCanonicalPtr(tenantId, tbl.getResourceId().getId());
 
-    assertTrue(blobs.delete(blob));
-    TestSupport.deleteTable(mutation, ns.getResourceId(), tid);
+    // Simulate blob missing
+    assertTrue(blobs.delete(Keys.tblBlob(tenantId, tbl.getResourceId().getId())));
+    TestSupport.deleteTable(mutation, ns.getResourceId(), tbl.getResourceId());
     assertTrue(ptr.get(canon).isEmpty());
 
     var tbl2 = TestSupport.createTable(
@@ -334,6 +336,8 @@ class BackendStorageIT {
     var tid2 = tbl2.getResourceId();
     String canon2 = Keys.tblCanonicalPtr(tenantId, tid2.getId());
     String blob2  = Keys.tblBlob(tenantId, tid2.getId());
+
+    // Simulate cannonical ptr missing
     assertTrue(ptr.delete(canon2));
     TestSupport.deleteTable(mutation, ns.getResourceId(), tid2);
     assertTrue(blobs.head(blob2).isEmpty());
@@ -341,9 +345,11 @@ class BackendStorageIT {
 
   @Test
   void casContention_twoConcurrentUpdates() throws InterruptedException {
-    var tenantId = TestSupport.seedTenantId(directory, "sales");
-    var cat = TestSupport.createCatalog(mutation, "cat_cas_" + System.currentTimeMillis(), "cas");
-    var ns  = TestSupport.createNamespace(
+    var catName = "cat_cas_" + System.currentTimeMillis();
+    var cat = TestSupport.createCatalog(mutation, catName, "cas");
+    var tenantId = TestSupport.seedTenantId(directory, catName);
+
+    var ns = TestSupport.createNamespace(
         mutation,
         cat.getResourceId(),
         "ns",
@@ -380,8 +386,10 @@ class BackendStorageIT {
 
   @Test
   void countByPrefix_matchesInsertsDeletes() {
-    String tenantId = TestSupport.seedTenantId(directory, "sales");
-    var cat = TestSupport.createCatalog(mutation, "cat_cnt_" + System.currentTimeMillis(), "cnt");
+    var catName = "cat_cnt_" + System.currentTimeMillis();
+    var cat = TestSupport.createCatalog(mutation, catName, "cnt");
+    String tenantId = TestSupport.seedTenantId(directory, catName);
+
     var ns  = TestSupport.createNamespace(
         mutation,
         cat.getResourceId(),
@@ -389,8 +397,8 @@ class BackendStorageIT {
         List.of("db","sch"),
         "cnt");
 
-    var prefix = Keys.idxTblByNamePrefix(tenantId, cat.getResourceId().getId(), List.of("db","sch", "ns"));
-    int before = ptr.countByPrefix(prefix);
+        var prefix = Keys.tblByNamePrefix(tenantId, cat.getResourceId().getId(), ns.getResourceId().getId());
+        int before = ptr.countByPrefix(prefix);
 
     var tA = TestSupport.createTable(
         mutation,
@@ -419,9 +427,11 @@ class BackendStorageIT {
 
   @Test
   void createTable_idempotent_sameKeySameSpec_returnsSameId_and_singleWrite() {
-    var tenantId = TestSupport.seedTenantId(directory, "sales");
-    var cat = TestSupport.createCatalog(mutation, "cat_idem_" + System.currentTimeMillis(), "idem");
-    var ns  = TestSupport.createNamespace(
+    var catName = "cat_idem_" + System.currentTimeMillis();
+    var cat = TestSupport.createCatalog(mutation, catName, "idem");
+    var tenantId = TestSupport.seedTenantId(directory, catName);
+
+    var ns = TestSupport.createNamespace(
         mutation, 
         cat.getResourceId(), 
         "ns", 
@@ -460,8 +470,8 @@ class BackendStorageIT {
     assertTrue(ptr.get(canonPtrKey).isPresent(), "canonical pointer missing");
     assertTrue(blobs.head(blobUri).isPresent(), "blob missing");
 
-    var idxByName = Keys.idxTblByName(tenantId, cat.getResourceId().getId(), List.of("db","sch", "ns"), "t0");
-    assertTrue(ptr.get(idxByName).isPresent(), "by-name index missing");
+    var idxByName = Keys.tblByNamePtr(tenantId, cat.getResourceId().getId(), ns.getResourceId().getId(), "t0");
+    assertTrue(ptr.get(idxByName).isPresent(), "by-name pointer missing");
 
     assertEquals(resp1.getMeta().getPointerKey(), resp2.getMeta().getPointerKey());
     assertEquals(resp1.getMeta().getPointerVersion(), resp2.getMeta().getPointerVersion());
@@ -470,7 +480,10 @@ class BackendStorageIT {
 
   @Test
   void createTable_idempotent_mismatchSameKey_conflict() {
-    var cat = TestSupport.createCatalog(mutation, "cat_idem_conf_" + System.currentTimeMillis(), "idem");
+    var catName = "cat_idem_conf_" + System.currentTimeMillis();
+    var cat = TestSupport.createCatalog(mutation, catName, "idem");
+    var tenantId = TestSupport.seedTenantId(directory, catName);
+
     var ns  = TestSupport.createNamespace(
         mutation,
         cat.getResourceId(),
@@ -501,8 +514,10 @@ class BackendStorageIT {
 
   @Test
   void createTable_idempotent_concurrent_twoWriters_singleCreate() throws InterruptedException {
-    var tenantId = TestSupport.seedTenantId(directory, "sales");
-    var cat = TestSupport.createCatalog(mutation, "cat_idem_cc_" + System.currentTimeMillis(), "idem");
+    var catName = "cat_idem_cc_" + System.currentTimeMillis();
+    var cat = TestSupport.createCatalog(mutation, catName, "idem");
+    var tenantId = TestSupport.seedTenantId(directory, catName);
+
     var ns  = TestSupport.createNamespace(
         mutation,
         cat.getResourceId(),
@@ -510,7 +525,7 @@ class BackendStorageIT {
         List.of("db","sch"),
         "idem");
 
-    var spec = ai.floedb.metacat.catalog.rpc.TableSpec.newBuilder()
+    var spec = TableSpec.newBuilder()
         .setCatalogId(cat.getResourceId())
         .setNamespaceId(ns.getResourceId())
         .setDisplayName("tcc")
@@ -518,13 +533,13 @@ class BackendStorageIT {
         .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
         .build();
 
-    var key = ai.floedb.metacat.catalog.rpc.IdempotencyKey.newBuilder().setKey("k-CC").build();
-    var req = ai.floedb.metacat.catalog.rpc.CreateTableRequest.newBuilder().setSpec(spec).setIdempotency(key).build();
+    var key = IdempotencyKey.newBuilder().setKey("k-CC").build();
+    var req = CreateTableRequest.newBuilder().setSpec(spec).setIdempotency(key).build();
 
-    var latch = new java.util.concurrent.CountDownLatch(1);
-    var out1 = new java.util.concurrent.atomic.AtomicReference<ai.floedb.metacat.catalog.rpc.CreateTableResponse>();
-    var out2 = new java.util.concurrent.atomic.AtomicReference<ai.floedb.metacat.catalog.rpc.CreateTableResponse>();
-    var err  = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+    var latch = new CountDownLatch(1);
+    var out1 = new AtomicReference<CreateTableResponse>();
+    var out2 = new AtomicReference<CreateTableResponse>();
+    var err  = new AtomicReference<Throwable>();
 
     Runnable r = () -> {
       try { latch.await(); out1.compareAndSet(null, mutation.createTable(req)); }
@@ -545,7 +560,7 @@ class BackendStorageIT {
 
     var tid = a.getTable().getResourceId();
     var canonPtrKey = Keys.tblCanonicalPtr(tenantId, tid.getId());
-    var blobUri     = Keys.tblBlob(tenantId, tid.getId());
+    var blobUri = Keys.tblBlob(tenantId, tid.getId());
     assertTrue(ptr.get(canonPtrKey).isPresent());
     assertTrue(blobs.head(blobUri).isPresent());
   }
