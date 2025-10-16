@@ -108,6 +108,27 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     return true;
   }
 
+  public boolean delete(ResourceId catalogId) {
+    var catOpt = getById(catalogId);
+    var tid = catalogId.getTenantId();
+    var byId = Keys.catPtr(tid, catalogId.getId());
+    var blob = Keys.catBlob(tid, catalogId.getId());
+    String byName = null;
+
+    if (catOpt.isPresent()) {
+      var cat = catOpt.get();
+      byName = Keys.catByNamePtr(tid, cat.getDisplayName());
+    }
+
+    try { ptr.delete(byId); } catch (Throwable ignore) {}
+    try { blobs.delete(blob); } catch (Throwable ignore) {}
+
+    if (byName != null) {
+      try { ptr.delete(byName); } catch (Throwable ignore) {}
+    }
+    return ptr.get(byId).isEmpty() && blobs.head(blob).isEmpty();
+  }
+
   public boolean deleteWithPrecondition(ResourceId catalogId, long expectedVersion) {
     var catOpt = getById(catalogId);
     var tid = catalogId.getTenantId();
@@ -127,15 +148,6 @@ public class CatalogRepository extends BaseRepository<Catalog> {
       try { ptr.delete(byName); } catch (Throwable ignore) {}
     }
     return true;
-  }
-
-  public boolean delete(ResourceId catalogId) {
-    var tid = catalogId.getTenantId();
-    var byId = Keys.catPtr(tid, catalogId.getId());
-    var blob = Keys.catBlob(tid, catalogId.getId());
-    try { ptr.delete(byId); } catch (Throwable ignore) {}
-    try { blobs.delete(blob); } catch (Throwable ignore) {}
-    return ptr.get(byId).isEmpty() && blobs.head(blob).isEmpty();
   }
 
   public MutationMeta metaFor(ResourceId catalogId) {

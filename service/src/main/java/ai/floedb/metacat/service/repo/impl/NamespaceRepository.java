@@ -164,6 +164,29 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     return true;
   }
 
+  public boolean delete(ResourceId catalogId, ResourceId namespaceId) {
+    var nsOpt = get(catalogId, namespaceId);
+    var tid = namespaceId.getTenantId();
+    var byId = Keys.nsPtr(tid, catalogId.getId(), namespaceId.getId());
+    var blob = Keys.nsBlob(tid, catalogId.getId(), namespaceId.getId());
+    String byPath = null;
+
+    if (nsOpt.isPresent()) {
+      var ns = nsOpt.get();
+      var full = new ArrayList<>(ns.getParentsList());
+      full.add(ns.getDisplayName());
+      byPath = Keys.nsByPathPtr(tid, catalogId.getId(), full);
+    }
+
+    try { ptr.delete(byId); } catch (Throwable ignore) {}
+    try { blobs.delete(blob); } catch (Throwable ignore) {}
+
+    if (byPath != null) {
+      try { ptr.delete(byPath); } catch (Throwable ignore) {}
+    }
+    return true;
+  }
+
   public boolean deleteWithPrecondition(ResourceId catalogId, ResourceId namespaceId, long expectedVersion) {
     var nsOpt = get(catalogId, namespaceId);
     var tid = namespaceId.getTenantId();

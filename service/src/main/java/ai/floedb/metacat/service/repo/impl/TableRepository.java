@@ -120,6 +120,31 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
     return true;
   }
 
+  public boolean delete(ResourceId tableId) {
+    var tdOpt = get(tableId);
+    var tid = tableId.getTenantId();
+    var canon = Keys.tblCanonicalPtr(tid, tableId.getId());
+    var blob = Keys.tblBlob(tid, tableId.getId());
+    String byName = null;
+
+    if (tdOpt.isPresent()) {
+      var td = tdOpt.get();
+      byName = Keys.tblByNamePtr(
+          tid,
+          td.getCatalogId().getId(),
+          td.getNamespaceId().getId(),
+          td.getDisplayName());
+    }
+
+    try { ptr.delete(canon); } catch (Throwable ignore) {}
+    try { blobs.delete(blob); } catch (Throwable ignore) {}
+
+    if (byName != null) {
+      try { ptr.delete(byName); } catch (Throwable ignore) {}
+    }
+    return true;
+  }
+
   public boolean deleteWithPrecondition(ResourceId tableId, long expectedVersion) {
     var tdOpt = get(tableId);
     var tid = tableId.getTenantId();
@@ -146,16 +171,6 @@ public class TableRepository extends BaseRepository<TableDescriptor> {
       try { ptr.delete(byName); } catch (Throwable ignore) {}
     }
     return true;
-  }
-
-  public boolean delete(ResourceId tableId) {
-    var tid = tableId.getTenantId();
-    var canon = Keys.tblCanonicalPtr(tid, tableId.getId());
-    var blob  = Keys.tblBlob(tid, tableId.getId());
-
-    try { ptr.delete(canon); } catch (Throwable ignore) {}
-    try { blobs.delete(blob); } catch (Throwable ignore) {}
-    return ptr.get(canon).isEmpty() && blobs.head(blob).isEmpty();
   }
 
   public MutationMeta metaFor(ResourceId tableId) {
