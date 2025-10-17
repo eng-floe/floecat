@@ -44,7 +44,6 @@ class TableRepositorySnapshotsTest {
         .setRootUri("s3://upstream/tables/orders/")
         .setSchemaJson("{}")
         .setCreatedAt(Timestamps.fromMillis(clock.millis()))
-        .setCurrentSnapshotId(200)
         .build();
     tableRepo.create(td);
 

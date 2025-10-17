@@ -23,7 +23,6 @@ import ai.floedb.metacat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.metacat.catalog.rpc.ListTablesRequest;
 import ai.floedb.metacat.catalog.rpc.ListTablesResponse;
 import ai.floedb.metacat.catalog.rpc.ResourceAccess;
-import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
@@ -211,17 +210,16 @@ public class ResourceAccessImpl implements ResourceAccess {
     var p = principal.get();
     authz.require(p, "catalog.read");
 
-    return Uni.createFrom().item(() ->
-        tableRepo.get(req.getTableId())
-            .filter(t -> t.getCurrentSnapshotId() != 0)
-            .map(t -> GetCurrentSnapshotResponse.newBuilder()
-                .setSnapshot(Snapshot.newBuilder()
-                    .setSnapshotId(t.getCurrentSnapshotId())
-                    .setIngestedAt(t.getCreatedAt())
-                    .build())
-                .build())
-            .orElseThrow(() -> GrpcErrors.notFound(
-                corrId(), "snapshot", Map.of("id", req.getTableId().getId()))));
+    return Uni.createFrom().item(() -> {
+      tableRepo.get(req.getTableId()).orElseThrow(() -> GrpcErrors.notFound(
+          corrId(), "table", Map.of("id", req.getTableId().getId())));
+
+      var snap = snapshotRepo.getCurrentSnapshot(req.getTableId())
+          .orElseThrow(() -> GrpcErrors.notFound(
+              corrId(), "snapshot", Map.of("reason", "no_snapshots", "table_id", req.getTableId().getId())));
+
+      return GetCurrentSnapshotResponse.newBuilder().setSnapshot(snap).build();
+    });
   }
 
   private String corrId() {

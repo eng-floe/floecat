@@ -118,7 +118,6 @@ public class SeedRunner {
       .setRootUri(rootUri)
       .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
       .setCreatedAt(Timestamps.fromMillis(now))
-      .setCurrentSnapshotId(snapshotId)
       .build();
 
     tables.create(td);

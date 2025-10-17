@@ -100,10 +100,9 @@ message Table {
   string root_uri = 6;
   google.protobuf.Timestamp created_at = 7;
   string schema_json = 8;
-  int64 current_snapshot_id = 9;
-  repeated string partition_keys = 10;
-  string format = 11;
-  map<string,string> properties = 12;
+  repeated string partition_keys = 9;
+  string format = 10;
+  map<string,string> properties = 11;
 }
 
 message Snapshot {

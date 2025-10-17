@@ -72,7 +72,6 @@ class TableRepositoryTest {
         .setRootUri("s3://upstream/tables/orders")
         .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
         .setCreatedAt(Timestamps.fromMillis(clock.millis()))
-        .setCurrentSnapshotId(42)
         .build();
     tableRepo.create(td);
 

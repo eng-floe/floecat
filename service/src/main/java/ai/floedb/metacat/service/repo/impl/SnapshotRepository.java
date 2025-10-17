@@ -42,14 +42,21 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
   }
 
   public Optional<Snapshot> getCurrentSnapshot(ResourceId tableId) {
-    String prefix = Keys.snapPtrByIdPrefix(tableId.getTenantId(), tableId.getId());
-    StringBuilder ignore = new StringBuilder();
-    var snapshots = listByPrefix(prefix, Integer.MAX_VALUE, "", ignore);
-    if (snapshots.isEmpty()) {
+    final String pfx = Keys.snapPtrByTimePrefix(tableId.getTenantId(), tableId.getId());
+    final String token = "";
+    final StringBuilder next = new StringBuilder();
+
+    var rows = ptr.listPointersByPrefix(pfx, 1, token, next);
+    if (rows.isEmpty()) {
       return Optional.empty();
     }
-    return snapshots.stream().max((a, b) -> Timestamps.compare(
-        a.getUpstreamCreatedAt(), b.getUpstreamCreatedAt()));
+
+    var latest = rows.get(0);
+    try {
+      return Optional.of(Snapshot.parseFrom(blobs.get(latest.blobUri())));
+    } catch (Exception e) {
+      throw new RuntimeException("parse failed: " + latest.blobUri(), e);
+    }
   }
 
   public void create(Snapshot snapshot) {

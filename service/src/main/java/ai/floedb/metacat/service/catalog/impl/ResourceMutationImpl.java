@@ -157,24 +157,25 @@ public class ResourceMutationImpl implements ResourceMutation {
     var curMeta = catalogs.metaFor(catalogId, nowTs);
     enforcePreconditions(corr, curMeta, req.getPrecondition());
 
-    if (desiredName.equals(prev.getDisplayName()) && Objects.equals(desiredDesc, prev.getDescription())) {
+    if (desiredName.equals(prev.getDisplayName()) &&
+        Objects.equals(desiredDesc, prev.getDescription())) {
       return Uni.createFrom().item(
           UpdateCatalogResponse.newBuilder().setCatalog(prev).setMeta(curMeta).build());
     }
 
     if (!desiredName.equals(prev.getDisplayName())) {
-      boolean renamed;
+      final boolean renamed;
       try {
         renamed = catalogs.rename(p.getTenantId(), catalogId, desiredName, curMeta.getPointerVersion());
       } catch (IllegalStateException e) {
-        throw GrpcErrors.conflict(
-            corr, "catalog.already_exists", Map.of("display_name", desiredName));
+        throw GrpcErrors.conflict(corr, "catalog.already_exists",
+            Map.of("display_name", desiredName));
       }
       if (!renamed) {
         var nowMeta = catalogs.metaFor(catalogId, nowTs);
         throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
             Map.of("expected", Long.toString(curMeta.getPointerVersion()),
-                  "actual", Long.toString(nowMeta.getPointerVersion())));
+                "actual",   Long.toString(nowMeta.getPointerVersion())));
       }
       if (!Objects.equals(desiredDesc, prev.getDescription())) {
         var afterMeta = catalogs.metaFor(catalogId, nowTs);
@@ -184,7 +185,7 @@ public class ResourceMutationImpl implements ResourceMutation {
           var nowMeta = catalogs.metaFor(catalogId, nowTs);
           throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
               Map.of("expected", Long.toString(afterMeta.getPointerVersion()),
-                    "actual", Long.toString(nowMeta.getPointerVersion())));
+                  "actual",   Long.toString(nowMeta.getPointerVersion())));
         }
       }
     } else {
@@ -193,7 +194,7 @@ public class ResourceMutationImpl implements ResourceMutation {
         var nowMeta = catalogs.metaFor(catalogId, nowTs);
         throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
             Map.of("expected", Long.toString(curMeta.getPointerVersion()),
-                  "actual",   Long.toString(nowMeta.getPointerVersion())));
+                "actual",   Long.toString(nowMeta.getPointerVersion())));
       }
     }
 
@@ -280,11 +281,13 @@ public class ResourceMutationImpl implements ResourceMutation {
           try {
             namespaces.create(built, req.getSpec().getCatalogId());
           } catch (IllegalStateException e) {
-            var pretty = String.join("/", new ArrayList<>(req.getSpec().getPathList()) {{
-              add(req.getSpec().getDisplayName());
-            }});
-            throw GrpcErrors.conflict(corrId(), "namespace.already_exists",
-                Map.of("catalog", req.getSpec().getCatalogId().getId(), "path", pretty));
+            {
+              var parts = new java.util.ArrayList<>(req.getSpec().getPathList());
+              parts.add(req.getSpec().getDisplayName());
+              var pretty = String.join("/", parts);
+              throw GrpcErrors.conflict(corrId(), "namespace.already_exists",
+                  Map.of("catalog", req.getSpec().getCatalogId().getId(), "path", pretty));
+            }
           }
 
           return new IdempotencyGuard.CreateResult<>(built, namespaceId);
@@ -401,15 +404,16 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     if (req.getRequireEmpty() && tables.countUnderNamespace(catId, namespaceId) > 0) {
       var cur = namespaces.get(catId, namespaceId).orElse(null);
-      String display;
+      final String display;
       if (cur != null) {
-        var full = new java.util.ArrayList<>(cur.getParentsList());
-        full.add(cur.getDisplayName());
-        display = String.join("/", full);
+        var parts = new ArrayList<>(cur.getParentsList());
+        parts.add(cur.getDisplayName());
+        display = String.join("/", parts);
       } else {
         display = namespaceId.getId();
       }
-      throw GrpcErrors.conflict(corr, "namespace.not_empty", Map.of("display_name", display));
+      throw GrpcErrors.conflict(
+          corr, "namespace.not_empty", Map.of("display_name", display));
     }
 
     var meta = namespaces.metaFor(catId, namespaceId, nowTs);
@@ -506,8 +510,6 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     var updated = cur.toBuilder()
         .setSchemaJson(req.getSchemaJson())
-        .clearDescription()
-        .setDescription(cur.getDescription())
         .build();
 
     if (updated.equals(cur)) {
