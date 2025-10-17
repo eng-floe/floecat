@@ -206,7 +206,7 @@ class DirectoryIT {
     var cat = TestSupport.createCatalog(mutation, "barf1", "barf cat");
     TestSupport.seedTenantId(directory, cat.getDisplayName());
 
-    var ns  = TestSupport.createNamespace(
+    var ns = TestSupport.createNamespace(
         mutation, cat.getResourceId(), "core", null, "core ns");
     var tbl = TestSupport.createTable(
         mutation, cat.getResourceId(), ns.getResourceId(), "t0", "s3://barf", "{}", "none");
@@ -325,7 +325,7 @@ class DirectoryIT {
     var lcat = directory.lookupCatalog(LookupCatalogRequest.newBuilder().setResourceId(bogus).build());
     assertTrue(lcat.getDisplayName().isEmpty());
 
-    var lns  = directory.lookupNamespace(LookupNamespaceRequest.newBuilder().setResourceId(bogus).build());
+    var lns = directory.lookupNamespace(LookupNamespaceRequest.newBuilder().setResourceId(bogus).build());
     assertFalse(lns.hasRef());
 
     var ltbl = directory.lookupTable(LookupTableRequest.newBuilder().setResourceId(bogus).build());

@@ -5,7 +5,8 @@ import java.util.Optional;
 
 public interface Repository<T> {
   Optional<T> get(String key);
-  void put(String key, String blobUri, T value);
+  void putBlob(String blobUri, T value);
+  void putCas(String key, String blobUri);
   boolean update(String key, String blobUri, T value, long expectedVersion);
   List<T> listByPrefix(String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
   int countByPrefix(String prefix);

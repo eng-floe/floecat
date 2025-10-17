@@ -91,7 +91,7 @@ message LookupTableResponse {
   ai.floedb.metacat.common.NameRef name = 1;
 }
 
-message TableDescriptor {
+message Table {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
   string description = 3;
@@ -107,11 +107,11 @@ message TableDescriptor {
 }
 
 message Snapshot {
-  int64 snapshot_id = 1;
-  google.protobuf.Timestamp created_at = 2;
-  ai.floedb.metacat.common.ResourceId table_id = 3;
-  int64 parent_snapshot_id = 4; 
-  string metadata_json = 5;
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  google.protobuf.Timestamp upstream_created_at = 3;
+  google.protobuf.Timestamp ingested_at = 4;
+  int64 parent_snapshot_id = 5;
 }
 
 // ----- Services -----

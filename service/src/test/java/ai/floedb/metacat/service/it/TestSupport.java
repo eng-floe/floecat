@@ -59,7 +59,7 @@ public final class TestSupport {
     return resp.getNamespace();
   }
 
-  public static TableDescriptor createTable(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+  public static Table createTable(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
                                             ResourceId catalogId, ResourceId namespaceId,
                                             String displayName, String rootUri, String schemaJson, String desc) {
     var resp = mutation.createTable(CreateTableRequest.newBuilder()
@@ -71,6 +71,16 @@ public final class TestSupport {
           .setRootUri(rootUri)
           .setSchemaJson(schemaJson)).build());
     return resp.getTable();
+  }
+
+  public static Snapshot createSnapshot(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+                                        ResourceId tableId, long snapshotId) {
+    var resp = mutation.createSnapshot(CreateSnapshotRequest.newBuilder()
+        .setSpec(SnapshotSpec.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId))
+            .build());
+    return resp.getSnapshot();
   }
 
   public static ResourceId resolveCatalogId(DirectoryGrpc.DirectoryBlockingStub directory, String catalogName) {
@@ -93,20 +103,27 @@ public final class TestSupport {
     return r.getResourceId();
   }
 
-  public static TableDescriptor updateSchema(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+  public static Table updateSchema(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
                                              ResourceId tableId, String newSchemaJson) {
     return mutation.updateTableSchema(UpdateTableSchemaRequest.newBuilder()
         .setTableId(tableId).setSchemaJson(newSchemaJson).build()).getTable();
   }
 
-  public static TableDescriptor renameTable(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+  public static Table renameTable(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
                                             ResourceId tableId, String newName) {
     return mutation.renameTable(RenameTableRequest.newBuilder()
         .setTableId(tableId).setNewDisplayName(newName).build()).getTable();
   }
 
   public static void deleteTable(ResourceMutationGrpc.ResourceMutationBlockingStub mutation, ResourceId namespaceId, ResourceId tableId) {
-    mutation.deleteTable(DeleteTableRequest.newBuilder().setNamespaceId(namespaceId).setTableId(tableId).build());
+    mutation.deleteTable(DeleteTableRequest.newBuilder().setTableId(tableId).build());
+  }
+
+  public static void deleteSnapshot(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+                                        ResourceId tableId, long snapshotId) {
+    mutation.deleteSnapshot(DeleteSnapshotRequest.newBuilder()
+        .setTableId(tableId)
+        .setSnapshotId(snapshotId).build());
   }
 
   public static void deleteNamespace(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
@@ -212,7 +229,7 @@ public final class TestSupport {
     var hdr = blobs.head(nsBlob).orElseThrow(
         () -> new AssertionError("namespace blob header missing: " + nsBlob));
 
-    return ai.floedb.metacat.catalog.rpc.MutationMeta.newBuilder()
+    return MutationMeta.newBuilder()
         .setPointerKey(nsPtrKey)
         .setBlobUri(nsBlob)
         .setPointerVersion(nsPtr.getVersion())
@@ -228,7 +245,7 @@ public final class TestSupport {
 
     var tenant = tableId.getTenantId();
     var tblPtrKey = Keys.tblCanonicalPtr(tenant, tableId.getId());
-    var tblBlob   = Keys.tblBlob(tenant, tableId.getId());
+    var tblBlob = Keys.tblBlob(tenant, tableId.getId());
 
     var tblPtr = ptr.get(tblPtrKey).orElseThrow(
         () -> new AssertionError("table pointer missing: " + tblPtrKey));

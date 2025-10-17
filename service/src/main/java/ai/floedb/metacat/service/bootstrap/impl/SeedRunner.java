@@ -13,12 +13,14 @@ import jakarta.inject.Inject;
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
-import ai.floedb.metacat.catalog.rpc.TableDescriptor;
+import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
+import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
+import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
 import ai.floedb.metacat.common.rpc.Pointer;
@@ -28,6 +30,7 @@ public class SeedRunner {
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;
   @Inject TableRepository tables;
+  @Inject SnapshotRepository snapshots;
   @Inject BlobStore blobs;
   @Inject PointerStore ptr;
 
@@ -47,8 +50,8 @@ public class SeedRunner {
 
     var lineitemId = seedTable(tenant, salesId, salesCoreNsId.getId(), "lineitem", 0L, now);
 
-    seedSnapshot(tenant, ordersId, 101L, now - 60000);
-    seedSnapshot(tenant, ordersId, 102L, now);
+    seedSnapshot(tenant, ordersId, 101L, now - 60_000L, now - 100_000L);
+    seedSnapshot(tenant, ordersId, 102L, now, now - 80_000L);
 
     var salesStgOrdersId = seedTable(tenant, salesId, salesStg25NsId.getId(), "orders_2025", 0L, now);
 
@@ -56,7 +59,7 @@ public class SeedRunner {
 
     var glEntriesId = seedTable(tenant, financeId, financeCoreNsId.getId(), "gl_entries", 0L, now);
 
-    seedSnapshot(tenant, glEntriesId, 201L, now - 30_000L);
+    seedSnapshot(tenant, glEntriesId, 201L, now, now - 20_000L);
   }
 
   private ResourceId seedCatalog(String tenant, String displayName, String description, long now) {
@@ -106,7 +109,7 @@ public class SeedRunner {
 
     String rootUri = "s3://seed-data/" + tenant + "/" + catalogId + "/" + namespaceId + "/" + name + "/";
 
-    var td = TableDescriptor.newBuilder()
+    var td = Table.newBuilder()
       .setResourceId(tableRid)
       .setDisplayName(name)
       .setDescription(name + " table")
@@ -122,19 +125,16 @@ public class SeedRunner {
     return tableRid;
   }
 
-  private void seedSnapshot(String tenant, ResourceId tableId, long snapshotId, long createdAtMs) {
-    String key = "/tenants/" + tenant + "/tables/" + tableId.getId() + "/snapshots/" + snapshotId;
-    String uri = "mem://tenants/" + tenant + "/tables/" + tableId.getId() + "/snapshots/" + snapshotId + ".pb";
+  private void seedSnapshot(String tenant, ResourceId tableId,
+      long snapshotId, long ingestedAtMs, long upstreamCreatedAt) {
+    var snap = Snapshot.newBuilder()
+      .setTableId(tableId)
+      .setSnapshotId(snapshotId)
+      .setIngestedAt(Timestamps.fromMillis(ingestedAtMs))
+      .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedAt))
+      .build();
 
-    var snap = Snapshot.newBuilder().setSnapshotId(snapshotId).setCreatedAt(Timestamps.fromMillis(createdAtMs)).build();
-    blobs.put(uri, snap.toByteArray(), "application/x-protobuf");
-
-    for (int i = 0; i < 10; i++) {
-      long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
-      Pointer next = Pointer.newBuilder().setKey(key).setBlobUri(uri).setVersion(expected + 1).build();
-      if (ptr.compareAndSet(key, expected, next)) return;
-    }
-    throw new IllegalStateException("seedSnapshot CAS failed: " + key);
+    snapshots.create(snap);
   }
 
   private static String uuidFor(String seed) {

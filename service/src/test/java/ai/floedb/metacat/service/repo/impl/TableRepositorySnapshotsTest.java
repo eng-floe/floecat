@@ -9,8 +9,7 @@ import com.google.protobuf.util.Timestamps;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.Snapshot;
-import ai.floedb.metacat.catalog.rpc.TableDescriptor;
-import ai.floedb.metacat.common.rpc.Pointer;
+import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
@@ -22,7 +21,7 @@ class TableRepositorySnapshotsTest {
 
   @Test
   void list_count_and_currentSnapshot_fromSeeded() {
-    var ptr  = new InMemoryPointerStore();
+    var ptr = new InMemoryPointerStore();
     var blobs= new InMemoryBlobStore();
     var snapshotRepo = new SnapshotRepository(ptr, blobs);
     var tableRepo = new TableRepository(ptr, blobs);
@@ -36,7 +35,7 @@ class TableRepositorySnapshotsTest {
     var nsRid = ResourceId.newBuilder().setTenantId(tenant).setId(nsId).setKind(ResourceKind.RK_NAMESPACE).build();
     var tableRid = ResourceId.newBuilder().setTenantId(tenant).setId(tblId).setKind(ResourceKind.RK_TABLE).build();
 
-    var td = TableDescriptor.newBuilder()
+    var td = Table.newBuilder()
         .setResourceId(tableRid)
         .setDisplayName("orders")
         .setDescription("Orders table")
@@ -49,8 +48,8 @@ class TableRepositorySnapshotsTest {
         .build();
     tableRepo.create(td);
 
-    seedSnapshot(ptr, blobs, tenant, tblId, 199, clock.millis() - 60_000);
-    seedSnapshot(ptr, blobs, tenant, tblId, 200, clock.millis());
+    seedSnapshot(snapshotRepo, tenant, tableRid, 199, clock.millis() - 20_000, clock.millis() - 60_000);
+    seedSnapshot(snapshotRepo, tenant, tableRid, 200, clock.millis() - 10_000, clock.millis() - 50_000);
 
     StringBuilder next = new StringBuilder();
     var page1 = snapshotRepo.list(tableRid, 1, "", next);
@@ -70,17 +69,22 @@ class TableRepositorySnapshotsTest {
     assertEquals(200, cur.getSnapshotId());
   }
 
-  private static void seedSnapshot(InMemoryPointerStore ptr, InMemoryBlobStore blobs,
-                                   String tenant, String tableId, long snapId, long createdMs) {
-    String key = "/tenants/" + tenant + "/tables/" + tableId + "/snapshots/" + snapId;
-    String uri = "mem://tenants/" + tenant + "/tables/" + tableId + "/snapshots/" + snapId + ".pb";
-    var snap = Snapshot.newBuilder().setSnapshotId(snapId).setCreatedAt(Timestamps.fromMillis(createdMs)).build();
-    blobs.put(uri, snap.toByteArray(), "application/x-protobuf");
+  private void seedSnapshot(
+      SnapshotRepository snapshotRepo,
+      String tenant,
+      ResourceId tableId,
+      long snapshotId,
+      long ingestedAtMs,
+      long upstreamCreatedAt) {
+    var snap = Snapshot.newBuilder()
+      .setTableId(tableId)
+      .setSnapshotId(snapshotId)
+      .setIngestedAt(Timestamps.fromMillis(ingestedAtMs))
+      .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedAt))
+      .build();
+      
 
-    long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
-    boolean ok = ptr.compareAndSet(key, expected,
-        Pointer.newBuilder().setKey(key).setBlobUri(uri).setVersion(expected + 1).build());
-    assertTrue(ok, "snapshot CAS should succeed for " + key);
+    snapshotRepo.create(snap);
   }
 }
 

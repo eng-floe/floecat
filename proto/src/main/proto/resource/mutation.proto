@@ -127,7 +127,7 @@ message CreateTableRequest {
   IdempotencyKey idempotency = 2;
 }
 message CreateTableResponse {
-  TableDescriptor table = 1;
+  Table table = 1;
   MutationMeta meta = 2;
 }
 
@@ -139,7 +139,7 @@ message UpdateTableSchemaRequest {
   Precondition precondition = 5;
 }
 message UpdateTableSchemaResponse {
-  TableDescriptor table = 1;
+  Table table = 1;
   MutationMeta meta = 2;
 }
 
@@ -149,7 +149,7 @@ message RenameTableRequest {
   Precondition precondition = 3;
 }
 message RenameTableResponse {
-  TableDescriptor table = 1;
+  Table table = 1;
   MutationMeta meta = 2;
 }
 
@@ -162,19 +162,45 @@ message MoveTableRequest {
   Precondition precondition = 5;
 }
 message MoveTableResponse {
-  TableDescriptor table = 1;
+  Table table = 1;
   MutationMeta meta = 2;
 }
 
 message DeleteTableRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
-  ai.floedb.metacat.common.ResourceId catalog_id = 2;
-  ai.floedb.metacat.common.ResourceId namespace_id = 3;
-  bool purge_stats = 4;
-  bool purge_snapshots = 5;
-  Precondition precondition = 6;
+  bool purge_stats = 2;
+  bool purge_snapshots = 3;
+  Precondition precondition = 4;
 }
 message DeleteTableResponse {
+  MutationMeta meta = 1;
+}
+
+// ---------- Snapshot ----------
+
+message SnapshotSpec {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  google.protobuf.Timestamp upstream_created_at = 3;
+  google.protobuf.Timestamp ingested_at = 4;
+  int64 parent_snapshot_id = 5;
+}
+
+message CreateSnapshotRequest {
+  SnapshotSpec spec = 1;
+  IdempotencyKey idempotency = 2;
+}
+message CreateSnapshotResponse {
+  Snapshot snapshot = 1;
+  MutationMeta meta = 2;
+}
+
+message DeleteSnapshotRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  Precondition precondition = 3;
+}
+message DeleteSnapshotResponse {
   MutationMeta meta = 1;
 }
 
@@ -194,4 +220,6 @@ service ResourceMutation {
   rpc RenameTable(RenameTableRequest) returns (RenameTableResponse);
   rpc MoveTable(MoveTableRequest) returns (MoveTableResponse);
   rpc DeleteTable(DeleteTableRequest) returns (DeleteTableResponse);
+  rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
+  rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
 }

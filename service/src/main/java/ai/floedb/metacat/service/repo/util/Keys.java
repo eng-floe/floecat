@@ -59,15 +59,27 @@ public final class Keys {
   }
 
   // ========= Snapshots =========
-  public static String snapPtr(String tid, String tblId, long snapshotId) {
-    return "/tenants/" + normTenant(tid) + "/tables/" + enc(tblId) + "/snapshots/" + snapshotId;
+  public static String snapPtrById(String tid, String tblId, long sid) {
+      return String.format(
+          "/tenants/%s/tables/%s/snapshots/by-id/%019d",
+          normTenant(tid), enc(tblId), sid);
   }
-  public static String snapPtr(String tid, String tblId) {
-    return "/tenants/" + normTenant(tid) + "/tables/" + enc(tblId) + "/snapshots/";
+  public static String snapPtrByIdPrefix(String tid, String tblId) {
+    return String.format("/tenants/%s/tables/%s/snapshots/by-id/", normTenant(tid), enc(tblId));
   }
-  public static String snapBlob(String tid, String tblId, long snapshotId) {
-    return "mem://tenants/" + normTenant(tid) + "/tables/" + enc(tblId)
-        + "/snapshots/" + snapshotId + "/snapshot.pb";
+  public static String snapPtrByTime(String tid, String tblId, long sid, long upstreamCreatedAtMs) {
+      long inv = Long.MAX_VALUE - upstreamCreatedAtMs;
+      return String.format(
+          "/tenants/%s/tables/%s/snapshots/by-time/%019d-%019d",
+          normTenant(tid), enc(tblId), inv, sid);
+  }
+  public static String snapPtrByTimePrefix(String tid, String tblId) {
+    return String.format("/tenants/%s/tables/%s/snapshots/by-time/", normTenant(tid), enc(tblId));
+  }
+  public static String snapBlob(String tid, String tblId, long sid) {
+      return String.format(
+          "mem://tenants/%s/tables/%s/snapshots/%019d/snapshot.pb",
+          normTenant(tid), enc(tblId), sid);
   }
 
   // ========= Idempotency key =========

@@ -217,7 +217,7 @@ public class ResourceAccessImpl implements ResourceAccess {
             .map(t -> GetCurrentSnapshotResponse.newBuilder()
                 .setSnapshot(Snapshot.newBuilder()
                     .setSnapshotId(t.getCurrentSnapshotId())
-                    .setCreatedAt(t.getCreatedAt())
+                    .setIngestedAt(t.getCreatedAt())
                     .build())
                 .build())
             .orElseThrow(() -> GrpcErrors.notFound(

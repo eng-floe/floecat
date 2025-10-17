@@ -72,7 +72,7 @@ class BackendStorageIT {
     String schemaV1 = """
         {"type":"struct","fields":[{"name":"id","type":"long"}]}
         """.trim();
-    TableDescriptor tbl = TestSupport.createTable(
+    Table tbl = TestSupport.createTable(
         mutation,
         catId, nsId,
         "it_tbl",
@@ -81,7 +81,7 @@ class BackendStorageIT {
         "storage table");
     ResourceId tblId = tbl.getResourceId();
     String kTblByName = Keys.tblByNamePtr(tenantId, catId.getId(), nsId.getId(), "it_tbl");
-    String kTblCanon  = Keys.tblCanonicalPtr(tenantId, tblId.getId());
+    String kTblCanon = Keys.tblCanonicalPtr(tenantId, tblId.getId());
     String tblBlobUri = Keys.tblBlob(tenantId, tblId.getId());
 
     assertTrue(ptr.get(kTblByName).isPresent(), "table by-name pointer missing");
@@ -140,9 +140,9 @@ class BackendStorageIT {
     assertTrue(blobs.head(kNsBlob).isEmpty(), "ns blob should be deleted");
 
     TestSupport.deleteCatalog(mutation, catId, true);
-    String catByIdKey   = Keys.catPtr(tenantId, catId.getId());
+    String catByIdKey = Keys.catPtr(tenantId, catId.getId());
     String catByNameKey = Keys.catByNamePtr(tenantId, catName);
-    String catBlobUri   = Keys.catBlob(tenantId, catId.getId());
+    String catBlobUri = Keys.catBlob(tenantId, catId.getId());
     assertTrue(ptr.get(catByIdKey).isEmpty());
     assertTrue(ptr.get(catByNameKey).isEmpty());
     assertTrue(blobs.head(catBlobUri).isEmpty());
@@ -155,7 +155,7 @@ class BackendStorageIT {
     String tenantId = TestSupport.seedTenantId(directory, catName);
 
     var nsPath = List.of("db","sch");
-    var ns  = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns_pg", nsPath, "pg");
+    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns_pg", nsPath, "pg");
     for (int i=0;i<5;i++) TestSupport.createTable(
         mutation,
         cat.getResourceId(),
@@ -253,7 +253,7 @@ class BackendStorageIT {
     var catName = "cat_ver_" + System.currentTimeMillis() + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation, catName, "ver");
     String tenantId = TestSupport.seedTenantId(directory, catName);
-    var ns  = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns", List.of("db","sch"), "ver");
+    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns", List.of("db","sch"), "ver");
     var tbl = TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(), "t", "s3://b/p", "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}", "d");
     var tid = tbl.getResourceId(); var tenant = tid.getTenantId();
     String canon = Keys.tblCanonicalPtr(tenant, tid.getId());
@@ -270,7 +270,7 @@ class BackendStorageIT {
     var cat = TestSupport.createCatalog(mutation, catName, "etag");
     var tenantId = TestSupport.seedTenantId(directory, catName);
 
-    var ns  = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns", List.of("db","sch"), "etag");
+    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns", List.of("db","sch"), "etag");
     var tbl = TestSupport.createTable(
         mutation,
         cat.getResourceId(),
@@ -304,7 +304,7 @@ class BackendStorageIT {
     var cat = TestSupport.createCatalog(mutation, catName, "del");
     var tenantId = TestSupport.seedTenantId(directory, catName);
 
-    var ns  = TestSupport.createNamespace(
+    var ns = TestSupport.createNamespace(
         mutation,
         cat.getResourceId(),
         "ns",
@@ -335,7 +335,7 @@ class BackendStorageIT {
         "d");
     var tid2 = tbl2.getResourceId();
     String canon2 = Keys.tblCanonicalPtr(tenantId, tid2.getId());
-    String blob2  = Keys.tblBlob(tenantId, tid2.getId());
+    String blob2 = Keys.tblBlob(tenantId, tid2.getId());
 
     // Simulate cannonical ptr missing
     assertTrue(ptr.delete(canon2));
@@ -390,7 +390,7 @@ class BackendStorageIT {
     var cat = TestSupport.createCatalog(mutation, catName, "cnt");
     String tenantId = TestSupport.seedTenantId(directory, catName);
 
-    var ns  = TestSupport.createNamespace(
+    var ns = TestSupport.createNamespace(
         mutation,
         cat.getResourceId(),
         "ns",
@@ -484,7 +484,7 @@ class BackendStorageIT {
     var cat = TestSupport.createCatalog(mutation, catName, "idem");
     var tenantId = TestSupport.seedTenantId(directory, catName);
 
-    var ns  = TestSupport.createNamespace(
+    var ns = TestSupport.createNamespace(
         mutation,
         cat.getResourceId(),
         "ns",
@@ -518,7 +518,7 @@ class BackendStorageIT {
     var cat = TestSupport.createCatalog(mutation, catName, "idem");
     var tenantId = TestSupport.seedTenantId(directory, catName);
 
-    var ns  = TestSupport.createNamespace(
+    var ns = TestSupport.createNamespace(
         mutation,
         cat.getResourceId(),
         "ns",
@@ -539,7 +539,7 @@ class BackendStorageIT {
     var latch = new CountDownLatch(1);
     var out1 = new AtomicReference<CreateTableResponse>();
     var out2 = new AtomicReference<CreateTableResponse>();
-    var err  = new AtomicReference<Throwable>();
+    var err = new AtomicReference<Throwable>();
 
     Runnable r = () -> {
       try { latch.await(); out1.compareAndSet(null, mutation.createTable(req)); }

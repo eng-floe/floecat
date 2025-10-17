@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
+import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
@@ -35,7 +36,8 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
   }
 
   public List<Namespace> list(ResourceId catalogId, List<String> pathPrefix, int limit, String token, StringBuilder next) {
-    var pfx = Keys.nsByPathPrefix(catalogId.getTenantId(), catalogId.getId(), pathPrefix == null ? List.of() : pathPrefix);
+    var pfx = Keys.nsByPathPrefix(
+        catalogId.getTenantId(), catalogId.getId(), pathPrefix == null ? List.of() : pathPrefix);
     return listByPrefix(pfx, limit, token, next);
   }
 
@@ -67,14 +69,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
 
   public Optional<ResourceId> getByPath(String tenantId, ResourceId catalogId, List<String> path) {
     var key = Keys.nsByPathPtr(tenantId, catalogId.getId(), path);
-    var p = ptr.get(key);
-    if (p.isEmpty()) return Optional.empty();
-    try {
-      var ns = Namespace.parseFrom(blobs.get(p.get().getBlobUri()));
-      return Optional.of(ns.getResourceId());
-    } catch (Exception e) {
-      return Optional.empty();
-    }
+    return get(key).map(Namespace::getResourceId);
   }
 
   public void create(Namespace ns, ResourceId catalogId) {
@@ -84,20 +79,18 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
 
     var byId = Keys.nsPtr(tid, catalogId.getId(), nsRid.getId());
     var blob = Keys.nsBlob(tid, catalogId.getId(), nsRid.getId());
-
     var full = new ArrayList<>(ns.getParentsList());
     if (!ns.getDisplayName().isBlank()) full.add(ns.getDisplayName());
     var byPath = Keys.nsByPathPtr(tid, catalogId.getId(), full);
 
-    var pathPtr = Pointer.newBuilder().setKey(byPath).setBlobUri(blob).setVersion(1L).build();
-    if (!ptr.compareAndSet(byPath, 0L, pathPtr)) {
-      var ex = ptr.get(byPath).orElse(null);
-      if (ex == null || !blob.equals(ex.getBlobUri())) {
-        throw new IllegalStateException("namespace already exists at path: " + String.join("/", full));
-      }
+    putCas(byPath, blob);
+    try {
+      putBlob(blob, ns);
+      putCas(byId, blob);
+    } catch (RuntimeException e) {
+      deleteQuietly(() -> ptr.delete(byPath));
+      throw e;
     }
-
-    put(byId, blob, ns);
   }
 
   public boolean update(Namespace updated, ResourceId catalogId, long expectedVersion) {
@@ -105,7 +98,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     var tid = updated.getResourceId().getTenantId();
     var byId = Keys.nsPtr(tid, catalogId.getId(), updated.getResourceId().getId());
     var blob = Keys.nsBlob(tid, catalogId.getId(), updated.getResourceId().getId());
-    return update(byId, blob, updated, expectedVersion);
+    return updateCanonical(byId, blob, updated, expectedVersion);
   }
 
   public boolean renameOrMove(
@@ -137,30 +130,22 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     var oldBlob = Keys.nsBlob(tid, oldCatalogId.getId(), nsId);
     var newBlob = Keys.nsBlob(tid, newCatalogId.getId(), nsId);
 
-    var reserve = Pointer.newBuilder().setKey(newByPath).setBlobUri(newBlob).setVersion(1L).build();
-    if (!ptr.compareAndSet(newByPath, 0L, reserve)) {
-      var ex = ptr.get(newByPath).orElse(null);
-      if (ex == null || !newBlob.equals(ex.getBlobUri())) return false;
-    }
-
-    var bytes = toBytes.apply(updated);
-    var etag = sha256B64(bytes);
-    var hdr = blobs.head(newBlob);
-    if (hdr.isEmpty() || !etag.equals(hdr.get().getEtag())) blobs.put(newBlob, bytes, contentType);
+    reserveIndexOrIdempotent(newByPath, newBlob);
+    putBlob(newBlob, updated);
 
     if (oldCatalogId.getId().equals(newCatalogId.getId())) {
-      if (!update(oldById, newBlob, updated, expectedVersion)) return false;
+      if (!updateCanonical(oldById, newBlob, updated, expectedVersion)) return false;
     } else {
       var newPtr = Pointer.newBuilder().setKey(newById).setBlobUri(newBlob).setVersion(1L).build();
       if (!ptr.compareAndSet(newById, 0L, newPtr)) {
         var ex = ptr.get(newById).orElse(null);
         if (ex == null || !newBlob.equals(ex.getBlobUri())) return false;
       }
-      if (!ptr.compareAndDelete(oldById, expectedVersion)) return false;
-      try { blobs.delete(oldBlob); } catch (Throwable ignore) {}
+      if (!compareAndDeleteOrFalse(ptr, oldById, expectedVersion)) return false;
+      deleteQuietly(() -> blobs.delete(oldBlob));
     }
 
-    try { ptr.delete(oldByPath); } catch (Throwable ignore) {}
+    deleteQuietly(() -> ptr.delete(oldByPath));
     return true;
   }
 
@@ -169,21 +154,15 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     var tid = namespaceId.getTenantId();
     var byId = Keys.nsPtr(tid, catalogId.getId(), namespaceId.getId());
     var blob = Keys.nsBlob(tid, catalogId.getId(), namespaceId.getId());
-    String byPath = null;
-
-    if (nsOpt.isPresent()) {
-      var ns = nsOpt.get();
-      var full = new ArrayList<>(ns.getParentsList());
+    final String byPath = nsOpt.map(ns -> {
+      var full = new java.util.ArrayList<>(ns.getParentsList());
       full.add(ns.getDisplayName());
-      byPath = Keys.nsByPathPtr(tid, catalogId.getId(), full);
-    }
+      return Keys.nsByPathPtr(tid, catalogId.getId(), full);
+    }).orElse(null);
 
-    try { ptr.delete(byId); } catch (Throwable ignore) {}
-    try { blobs.delete(blob); } catch (Throwable ignore) {}
-
-    if (byPath != null) {
-      try { ptr.delete(byPath); } catch (Throwable ignore) {}
-    }
+    deleteQuietly(() -> ptr.delete(byId));
+    deleteQuietly(() -> blobs.delete(blob));
+    if (byPath != null) deleteQuietly(() -> ptr.delete(byPath));
     return true;
   }
 
@@ -192,36 +171,31 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     var tid = namespaceId.getTenantId();
     var byId = Keys.nsPtr(tid, catalogId.getId(), namespaceId.getId());
     var blob = Keys.nsBlob(tid, catalogId.getId(), namespaceId.getId());
-    String byPath = null;
-
-    if (nsOpt.isPresent()) {
-      var ns = nsOpt.get();
+    final String byPath = nsOpt.map(ns -> {
       var full = new ArrayList<>(ns.getParentsList());
       full.add(ns.getDisplayName());
-      byPath = Keys.nsByPathPtr(tid, catalogId.getId(), full);
-    }
-    
-    if (!ptr.compareAndDelete(byId, expectedVersion)) return false;
-    try { blobs.delete(blob); } catch (Throwable ignore) {}
+      return Keys.nsByPathPtr(tid, catalogId.getId(), full);
+    }).orElse(null);
 
-    if (byPath != null) {
-      try { ptr.delete(byPath); } catch (Throwable ignore) {}
-    }
+    if (!compareAndDeleteOrFalse(ptr, byId, expectedVersion)) return false;
+    deleteQuietly(() -> blobs.delete(blob));
+    if (byPath != null) deleteQuietly(() -> ptr.delete(byPath));
     return true;
   }
 
-  public MutationMeta metaFor(ResourceId catalogId, ResourceId namespaceId) {
+  public MutationMeta metaFor(ResourceId catalogId, ResourceId namespaceId, Timestamp nowTs) {
     var t = namespaceId.getTenantId();
     var key = Keys.nsPtr(t, catalogId.getId(), namespaceId.getId());
-    var p = ptr.get(key).orElseThrow(() -> new IllegalStateException("Pointer missing for namespace: " + namespaceId.getId()));
-    return safeMetaOrDefault(key, p.getBlobUri(), clock);
+    var p = ptr.get(key).orElseThrow(() -> new IllegalStateException(
+        "Pointer missing for namespace: " + namespaceId.getId()));
+    return safeMetaOrDefault(key, p.getBlobUri(), nowTs);
   }
 
-  public MutationMeta metaForSafe(ResourceId catalogId, ResourceId namespaceId) {
+  public MutationMeta metaForSafe(ResourceId catalogId, ResourceId namespaceId, Timestamp nowTs) {
     var t = namespaceId.getTenantId();
     var key = Keys.nsPtr(t, catalogId.getId(), namespaceId.getId());
     var blob = Keys.nsBlob(t, catalogId.getId(), namespaceId.getId());
-    return safeMetaOrDefault(key, blob, clock);
+    return safeMetaOrDefault(key, blob, nowTs);
   }
 
   private static void requireCatalogId(ResourceId catalogId) {

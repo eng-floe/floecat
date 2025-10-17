@@ -79,7 +79,7 @@ class ResourceMutationIT {
     String schema = """
         {"type":"struct","fields":[{"name":"id","type":"long"}]}
         """.trim();
-    TableDescriptor tbl = TestSupport.createTable(
+    Table tbl = TestSupport.createTable(
         mutation, catId, nsId, "orders_it", "s3://bucket/prefix/it", schema, "IT table");
     ResourceId tblId = tbl.getResourceId();
     assertEquals(tblId.getId(),
@@ -88,11 +88,11 @@ class ResourceMutationIT {
     String schemaV2 = """
         {"type":"struct","fields":[{"name":"id","type":"long"},{"name":"amount","type":"double"}]}
         """.trim();
-    TableDescriptor upd = TestSupport.updateSchema(mutation, tblId, schemaV2);
+    Table upd = TestSupport.updateSchema(mutation, tblId, schemaV2);
     assertEquals(schemaV2, upd.getSchemaJson());
 
     String newName = "orders_it_renamed";
-    TableDescriptor renamed = TestSupport.renameTable(mutation, tblId, newName);
+    Table renamed = TestSupport.renameTable(mutation, tblId, newName);
     assertEquals(newName, renamed.getDisplayName());
     assertEquals(tblId.getId(),
         TestSupport.resolveTableId(directory, catName, nsFullPath, newName).getId());

@@ -15,6 +15,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.NameRef;
+import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
@@ -43,7 +44,7 @@ class TableMutationIT {
 
     var parents = List.of("db_tbl","schema_tbl");
     var nsLeaf = "it_ns";
-    var ns   = TestSupport.createNamespace(mutation, cat.getResourceId(), nsLeaf, parents, "ns for tables");
+    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), nsLeaf, parents, "ns for tables");
     var nsId = ns.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
 
@@ -149,8 +150,9 @@ class TableMutationIT {
 
   @Test
   void Table_move_with_preconditions() throws Exception {
-    String tenantId = TestSupport.seedTenantId(directory, "sales");
-    var cat = TestSupport.createCatalog(mutation, T_PREFIX + "cat2", "tcat2");
+    var catName = T_PREFIX + "cat2";
+    var cat = TestSupport.createCatalog(mutation, catName, "tcat2");
+    String tenantId = TestSupport.seedTenantId(directory, catName);
     assertEquals(tenantId, cat.getResourceId().getTenantId());
 
     var parents = List.of("db_tbl","schema_tbl");
@@ -240,5 +242,44 @@ class TableMutationIT {
             .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath).setName("orders"))
             .build()));
     TestSupport.assertGrpcAndMc(nfOld, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
+  }
+
+  @Test
+  void Snapshot_create_delete() throws Exception {
+    var catName = T_PREFIX + "snap1";
+    var cat = TestSupport.createCatalog(mutation, catName, "snap1");
+    String tenantId = TestSupport.seedTenantId(directory, catName);
+    assertEquals(tenantId, cat.getResourceId().getTenantId());
+
+    var parents = List.of("db_tbl","schema_tbl");
+    var nsLeaf = "it_ns";
+    var ns = TestSupport.createNamespace(
+        mutation, cat.getResourceId(), nsLeaf, parents, "ns for tables");
+    var nsId = ns.getResourceId();
+    assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
+
+    var tbl = TestSupport.createTable(
+        mutation, cat.getResourceId(), nsId,
+            "orders", "s3://bucket/orders",
+                "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}", "none");
+    var tblId = tbl.getResourceId();
+    assertEquals(ResourceKind.RK_TABLE, tblId.getKind());
+
+    for (int i = 0; i < 100; i++) {
+        TestSupport.createSnapshot(mutation, tbl.getResourceId(), i);
+    }  
+    
+    ListSnapshotsRequest req = ListSnapshotsRequest.newBuilder()
+            .setTableId(tblId)
+            .setPage(PageRequest.newBuilder().setPageSize(1000).build())
+            .build();
+    ListSnapshotsResponse resp = access.listSnapshots(req);
+    assertEquals(100, resp.getSnapshotsCount());
+    assertTrue(resp.getPage().getNextPageToken().isEmpty());
+
+    List<Snapshot> snaps = resp.getSnapshotsList();
+    for (int i = 0; i < 100; i++) {
+        assertEquals(i, snaps.get(i).getSnapshotId());
+    }  
   }
 }

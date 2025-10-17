@@ -27,7 +27,7 @@ import ai.floedb.metacat.catalog.rpc.Directory;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
-import ai.floedb.metacat.catalog.rpc.TableDescriptor;
+import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
@@ -161,7 +161,7 @@ public class DirectoryImpl implements Directory {
               Map.of("catalog_id", cat.getResourceId().getId(),
                      "path", String.join("/", ref.getPathList()))));
 
-      TableDescriptor td = tables.listByNamespace(
+      Table td = tables.listByNamespace(
           cat.getResourceId(),
           nsId,
           Integer.MAX_VALUE,
@@ -264,7 +264,7 @@ public class DirectoryImpl implements Directory {
                 .orElseThrow();
 
             // Resolve by scanning tables under ns (see note above)
-            Optional<TableDescriptor> tdOpt = tables
+            Optional<Table> tdOpt = tables
                 .listByNamespace(
                       cat.getResourceId(),
                       nsId,
@@ -275,7 +275,7 @@ public class DirectoryImpl implements Directory {
                           .filter(t -> t.getDisplayName().equals(n.getName()))
                           .findFirst();
 
-            var id = tdOpt.map(TableDescriptor::getResourceId).orElse(ResourceId.getDefaultInstance());
+            var id = tdOpt.map(Table::getResourceId).orElse(ResourceId.getDefaultInstance());
             var outName = tdOpt.isPresent()
                 ? NameRef.newBuilder()
                     .setCatalog(cat.getDisplayName())
@@ -320,7 +320,7 @@ public class DirectoryImpl implements Directory {
         var entries = tables.listByNamespace(cat.getResourceId(), nsId, Math.max(1, limit), token, next);
         int total = tables.countUnderNamespace(cat.getResourceId(), nsId);
 
-        for (TableDescriptor td : entries) {
+        for (Table td : entries) {
           var nr = NameRef.newBuilder()
               .setCatalog(cat.getDisplayName())
               .addAllPath(pref.getPathList())

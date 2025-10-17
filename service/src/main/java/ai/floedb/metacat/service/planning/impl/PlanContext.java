@@ -2,8 +2,14 @@ package ai.floedb.metacat.service.planning.impl;
 
 import java.time.Clock;
 import java.util.Objects;
+import java.util.Optional;
+
+import com.github.benmanes.caffeine.cache.Cache;
+import com.google.protobuf.InvalidProtocolBufferException;
 
 import ai.floedb.metacat.common.rpc.PrincipalContext;
+import ai.floedb.metacat.planning.rpc.ExpansionMap;
+import ai.floedb.metacat.planning.rpc.SnapshotSet;
 
 public final class PlanContext {
 

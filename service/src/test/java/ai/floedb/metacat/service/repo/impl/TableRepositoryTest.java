@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
-import ai.floedb.metacat.catalog.rpc.TableDescriptor;
+import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.util.Keys;
@@ -63,7 +63,7 @@ class TableRepositoryTest {
         .setKind(ResourceKind.RK_TABLE)
         .build();
 
-    var td = TableDescriptor.newBuilder()
+    var td = Table.newBuilder()
         .setResourceId(tableRid)
         .setDisplayName("orders")
         .setDescription("Orders table")
@@ -91,10 +91,11 @@ class TableRepositoryTest {
     assertNotNull(blobs.get(uri), "blob bytes missing for by-namespace row");
 
     var snap = Snapshot.newBuilder()
+        .setTableId(tableRid)
         .setSnapshotId(42)
-        .setCreatedAt(Timestamps.fromMillis(clock.millis()))
+        .setIngestedAt(Timestamps.fromMillis(clock.millis()))
         .build();
-    snapshotRepo.put(tableRid, snap);
+    snapshotRepo.create(snap);
 
     var fetched = tableRepo.get(tableRid).orElseThrow();
     assertEquals("orders", fetched.getDisplayName());

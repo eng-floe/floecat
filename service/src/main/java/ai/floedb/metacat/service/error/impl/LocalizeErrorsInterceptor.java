@@ -45,7 +45,7 @@ public class LocalizeErrorsInterceptor implements ServerInterceptor {
             if (app != null) {
               String rendered = new MessageCatalog(locale).render(app);
               var newErr = Error.newBuilder(app).setMessage(rendered).build();
-              var newSt  = com.google.rpc.Status.newBuilder(st)
+              var newSt = com.google.rpc.Status.newBuilder(st)
                 .setMessage(rendered)
                 .clearDetails().addDetails(Any.pack(newErr))
                 .build();

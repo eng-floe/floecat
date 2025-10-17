@@ -3,12 +3,12 @@ package ai.floedb.metacat.service.repo.impl;
 import java.util.List;
 import java.util.Optional;
 
+import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
-import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
@@ -54,27 +54,13 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     var byId = Keys.catPtr(tid, rid.getId());
     var blob = Keys.catBlob(tid, rid.getId());
 
-    var namePtr = Pointer.newBuilder().setKey(byName).setBlobUri(blob).setVersion(1L).build();
-    if (!ptr.compareAndSet(byName, 0L, namePtr)) {
-      var existing = ptr.get(byName).orElse(null);
-      if (existing == null || !blob.equals(existing.getBlobUri()))
-        throw new IllegalStateException("catalog name already exists");
-    }
-
-    var bytes = toBytes.apply(cat);
-    var hdr = blobs.head(blob);
-    var etag = sha256B64(bytes);
-    if (hdr.isEmpty() || !etag.equals(hdr.get().getEtag())) {
-      blobs.put(blob, bytes, contentType);
-    }
-
-    var canPtr = Pointer.newBuilder().setKey(byId).setBlobUri(blob).setVersion(1L).build();
-    if (!ptr.compareAndSet(byId, 0L, canPtr)) {
-      var ex = ptr.get(byId).orElse(null);
-      if (ex == null || !blob.equals(ex.getBlobUri())) {
-        try { ptr.delete(byName); } catch (Throwable ignore) {}
-        throw new IllegalStateException("catalog id collision on create");
-      }
+    putCas(byName, blob);
+    try {
+      putBlob(blob, cat);
+      putCas(byId, blob);
+    } catch (RuntimeException e) {
+      deleteQuietly(() -> ptr.delete(byName));
+      throw e;
     }
   }
 
@@ -83,28 +69,26 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     var tid = rid.getTenantId();
     var byId = Keys.catPtr(tid, rid.getId());
     var blob = Keys.catBlob(tid, rid.getId());
-    return update(byId, blob, updated, expectedPointerVersion);
+    return updateCanonical(byId, blob, updated, expectedPointerVersion);
   }
 
   public boolean rename(String tenant, ResourceId catId, String newDisplayName, long expectedVersion) {
     var byId = Keys.catPtr(tenant, catId.getId());
     var cur = get(byId).orElseThrow(() -> new IllegalStateException("catalog not found"));
-    if (newDisplayName.equals(cur.getDisplayName())) return true;
+    if (newDisplayName.equals(cur.getDisplayName())) {
+      return true;
+    }
 
     var blob = Keys.catBlob(tenant, catId.getId());
     var newByName = Keys.catByNamePtr(tenant, newDisplayName);
     var oldByName = Keys.catByNamePtr(tenant, cur.getDisplayName());
 
-    var reserve = Pointer.newBuilder().setKey(newByName).setBlobUri(blob).setVersion(1L).build();
-    if (!ptr.compareAndSet(newByName, 0L, reserve)) {
-      var ex = ptr.get(newByName).orElse(null);
-      if (ex == null || !blob.equals(ex.getBlobUri())) return false;
-    }
-
+    reserveIndexOrIdempotent(newByName, blob);
     var updated = cur.toBuilder().setDisplayName(newDisplayName).build();
-    if (!update(byId, blob, updated, expectedVersion)) return false;
-
-    try { ptr.delete(oldByName); } catch (Throwable ignore) {}
+    if (!updateCanonical(byId, blob, updated, expectedVersion)) {
+      return false;
+    }
+    deleteQuietly(() -> ptr.delete(oldByName));
     return true;
   }
 
@@ -113,19 +97,13 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     var tid = catalogId.getTenantId();
     var byId = Keys.catPtr(tid, catalogId.getId());
     var blob = Keys.catBlob(tid, catalogId.getId());
-    String byName = null;
+    final String byName = catOpt.map(cat -> {
+      return Keys.catByNamePtr(tid, cat.getDisplayName());
+    }).orElse(null);
 
-    if (catOpt.isPresent()) {
-      var cat = catOpt.get();
-      byName = Keys.catByNamePtr(tid, cat.getDisplayName());
-    }
-
-    try { ptr.delete(byId); } catch (Throwable ignore) {}
-    try { blobs.delete(blob); } catch (Throwable ignore) {}
-
-    if (byName != null) {
-      try { ptr.delete(byName); } catch (Throwable ignore) {}
-    }
+    deleteQuietly(() -> ptr.delete(byId));
+    deleteQuietly(() -> blobs.delete(blob));
+    if (byName != null) deleteQuietly(() -> ptr.delete(byName));
     return ptr.get(byId).isEmpty() && blobs.head(blob).isEmpty();
   }
 
@@ -134,34 +112,28 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     var tid = catalogId.getTenantId();
     var byId = Keys.catPtr(tid, catalogId.getId());
     var blob = Keys.catBlob(tid, catalogId.getId());
-    String byName = null;
+    final String byName = catOpt.map(cat -> {
+      return Keys.catByNamePtr(tid, cat.getDisplayName());
+    }).orElse(null);
 
-    if (catOpt.isPresent()) {
-      var cat = catOpt.get();
-      byName = Keys.catByNamePtr(tid, cat.getDisplayName());
-    }
-
-    if (!ptr.compareAndDelete(byId, expectedVersion)) return false;
-    try { blobs.delete(blob); } catch (Throwable ignore) {}
-
-    if (byName != null) {
-      try { ptr.delete(byName); } catch (Throwable ignore) {}
-    }
+    if (!compareAndDeleteOrFalse(ptr, byId, expectedVersion)) return false;
+    deleteQuietly(() -> blobs.delete(blob));
+    if (byName != null) deleteQuietly(() -> ptr.delete(byName));
     return true;
   }
 
-  public MutationMeta metaFor(ResourceId catalogId) {
+  public MutationMeta metaFor(ResourceId catalogId, Timestamp nowTs) {
     var t = catalogId.getTenantId();
     var key = Keys.catPtr(t, catalogId.getId());
-    var p = ptr.get(key).orElseThrow(
-        () -> new IllegalStateException("Pointer missing for catalog: " + catalogId.getId()));
-    return safeMetaOrDefault(key, p.getBlobUri(), clock);
+    var p = ptr.get(key).orElseThrow(() -> new IllegalStateException(
+        "Pointer missing for catalog: " + catalogId.getId()));
+    return safeMetaOrDefault(key, p.getBlobUri(), nowTs);
   }
 
-  public MutationMeta metaForSafe(ResourceId catalogId) {
+  public MutationMeta metaForSafe(ResourceId catalogId, Timestamp nowTs) {
     var t = catalogId.getTenantId();
     var key = Keys.catPtr(t, catalogId.getId());
     var blob = Keys.catBlob(t, catalogId.getId());
-    return safeMetaOrDefault(key, blob, clock);
+    return safeMetaOrDefault(key, blob, nowTs);
   }
 }
