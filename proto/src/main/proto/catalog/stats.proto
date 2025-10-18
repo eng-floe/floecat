@@ -1,0 +1,125 @@
+syntax = "proto3";
+package ai.floedb.metacat.catalog;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.catalog.rpc";
+
+import "common/common.proto";
+import "resource/mutation.proto";
+
+import "google/protobuf/timestamp.proto";
+
+enum UpstreamSystem {
+  US_UNSPECIFIED = 0;
+  US_ICEBERG = 1;
+  US_DELTA = 2;
+}
+
+message UpstreamStamp {
+  UpstreamSystem system = 1;
+  string table_native_id = 2;
+  string commit_ref = 3;
+  google.protobuf.Timestamp fetched_at = 4;
+  map<string,string> extras = 99;
+}
+
+enum NdvKind {
+  NK_UNSPECIFIED = 0;
+  NK_EXACT = 1;
+  NK_HLL = 2;
+}
+
+message Ndv {
+  NdvKind kind = 1;
+
+  oneof value {
+    int64 exact = 10;
+    bytes hll_sketch = 11;
+  }
+
+  map<string,string> params = 20;
+}
+
+// ---------- Table-level stats ----------
+
+message TableStats {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  UpstreamStamp upstream = 3;
+  int64 row_count = 10;
+  int64 data_file_count = 11;
+  int64 total_size_bytes = 12;
+  Ndv ndv = 20;
+  map<string, string> extras = 99;
+}
+
+// ---------- Column-level stats  ----------
+
+message ColumnStats {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  string column_id = 3;
+  string column_name = 4;
+  string logical_type = 5;
+  UpstreamStamp upstream = 6;
+  int64 null_count = 10;
+  Ndv ndv = 11;
+  string min = 20;
+  string max = 21;
+  bytes histogram = 30;
+  bytes tdigest = 31;
+  map<string, string> extras = 99;
+}
+
+// ---------- Requests/Responses ----------
+
+message PutTableStatsRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  TableStats stats = 3;
+  IdempotencyKey idempotency = 4;
+}
+message PutTableStatsResponse {
+  TableStats stats = 1;
+  MutationMeta meta = 2;
+}
+
+message PutColumnStatsBatchRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  repeated ColumnStats columns = 3;
+  IdempotencyKey idempotency = 4;
+}
+message PutColumnStatsBatchResponse {
+  int32 upserted = 1;
+}
+
+message GetTableStatsRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  ai.floedb.metacat.common.SnapshotRef snapshot = 2;
+}
+message GetTableStatsResponse {
+  TableStats stats = 1;
+}
+
+message ListColumnStatsRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  ai.floedb.metacat.common.SnapshotRef snapshot = 2;
+  ai.floedb.metacat.common.PageRequest page = 3;
+}
+message ListColumnStatsResponse {
+  repeated ColumnStats columns = 1;
+  ai.floedb.metacat.common.PageResponse page = 2;
+}
+
+// ---------- Services ----------
+
+service StatsAccess {
+  rpc GetTableStats(GetTableStatsRequest) returns (GetTableStatsResponse);
+  rpc ListColumnStats(ListColumnStatsRequest) returns (ListColumnStatsResponse);
+}
+
+service StatsMutation {
+  rpc PutTableStats(PutTableStatsRequest) returns (PutTableStatsResponse);
+  rpc PutColumnStatsBatch(PutColumnStatsBatchRequest) returns (PutColumnStatsBatchResponse);
+}

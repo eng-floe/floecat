@@ -74,11 +74,12 @@ public final class TestSupport {
   }
 
   public static Snapshot createSnapshot(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
-                                        ResourceId tableId, long snapshotId) {
+                                        ResourceId tableId, long snapshotId, long upstreamCreatedAtMs) {
     var resp = mutation.createSnapshot(CreateSnapshotRequest.newBuilder()
         .setSpec(SnapshotSpec.newBuilder()
             .setTableId(tableId)
-            .setSnapshotId(snapshotId))
+            .setSnapshotId(snapshotId)
+            .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedAtMs)))
             .build());
     return resp.getSnapshot();
   }

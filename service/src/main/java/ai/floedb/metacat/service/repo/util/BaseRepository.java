@@ -66,70 +66,72 @@ public abstract class BaseRepository<T> implements Repository<T> {
     }
   }
 
-  protected boolean updateCanonical(String key, String blobUri, T value, long expectedVersion) {
-    putBlob(blobUri, value);
-    var next = Pointer.newBuilder()
-        .setKey(key).setBlobUri(blobUri).setVersion(expectedVersion + 1).build();
-    return ptr.compareAndSet(key, expectedVersion, next);
-  }
-
-  @Override
-  public boolean update(String key, String blobUri, T value, long expectedVersion) {
-    return updateCanonical(key, blobUri, value, expectedVersion);
-  }
-
   @Override
   public void putBlob(String blobUri, T value) {
     byte[] bytes = toBytes.apply(value);
-    String etag = sha256B64(bytes);
-    var hdr = blobs.head(blobUri);
-    if (hdr.isEmpty() || !etag.equals(hdr.get().getEtag())) {
-      blobs.put(blobUri, bytes, contentType);
+    String want = sha256B64(bytes);
+    var before = blobs.head(blobUri);
+    if (before.isPresent() && want.equals(before.get().getEtag())) return;
+
+    blobs.put(blobUri, bytes, contentType);
+
+    var after = blobs.head(blobUri);
+    if (after.isEmpty() || !want.equals(after.get().getEtag())) {
+      throw new IllegalStateException("blob write verification failed: " + blobUri);
     }
   }
 
-  enum PointerKind { CREATE_ONLY, ADVANCING }
+  protected void putBlobStrictBytes(String blobUri, byte[] bytes) {
+    String want = sha256B64(bytes);
+    var before = blobs.head(blobUri);
+    if (before.isPresent() && want.equals(before.get().getEtag())) return;
 
-  private PointerKind classifyPointer(String key) {
-    if (key.contains("/snapshots/by-time/")
-        || key.contains("/namespaces/by-path/")
-        || key.contains("/catalogs/by-name/")
-        || key.contains("/tables/by-name/")) {
-      return PointerKind.CREATE_ONLY;
+    blobs.put(blobUri, bytes, contentType);
+
+    var after = blobs.head(blobUri);
+    if (after.isEmpty() || !want.equals(after.get().getEtag())) {
+      throw new IllegalStateException("blob write verification failed: " + blobUri);
     }
-    return PointerKind.ADVANCING;
   }
 
   @Override
-  public void putCas(String key, String blobUri) {
-    var kind = classifyPointer(key);
-
-    for (int attempt = 0; attempt < CAS_MAX; attempt++) {
+  public void advancePointer(String key, String blobUri) {
+    for (int i = 0; i < CAS_MAX; i++) {
       var cur = ptr.get(key).orElse(null);
-
-      if (cur == null) {
-        var created = Pointer.newBuilder()
-            .setKey(key).setBlobUri(blobUri).setVersion(1L).build();
-        if (ptr.compareAndSet(key, 0L, created)) return;
-        continue;
-      }
-
-      if (blobUri.equals(cur.getBlobUri())) return;
-
-      if (kind == PointerKind.CREATE_ONLY) {
-        throw new IllegalStateException("pointer exists with different blob: " + key);
-      }
-
-      var next = Pointer.newBuilder()
-          .setKey(key)
-          .setBlobUri(blobUri)
-          .setVersion(cur.getVersion() + 1)
-          .setExpiresAt(cur.hasExpiresAt() ? cur.getExpiresAt() : Timestamp.getDefaultInstance())
-          .build();
-
-      if (ptr.compareAndSet(key, cur.getVersion(), next)) return;
+      var next = (cur == null)
+          ? Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build()
+          : cur.toBuilder().setBlobUri(blobUri).setVersion(cur.getVersion() + 1).build();
+      if (ptr.compareAndSet(key, cur == null ? 0L : cur.getVersion(), next)) return;
+      backoff(i);
     }
-    throw new IllegalStateException("CAS failed: " + key);
+    throw new IllegalStateException("CAS failed after retries: " + key);
+  }
+
+  @Override
+  public void advancePointer(String key, String blobUri, long expectedVersion) {
+    for (int i = 0; i < CAS_MAX; i++) {
+      var cur = ptr.get(key).orElse(null);
+      if (cur == null) {
+        if (expectedVersion != 0L) throw new IllegalStateException("precondition failed: " + key);
+        var created = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
+        if (ptr.compareAndSet(key, 0L, created)) return;
+      } else {
+        if (cur.getVersion() != expectedVersion) {
+          throw new IllegalStateException("precondition failed: " + key
+              + " expected=" + expectedVersion + " actual=" + cur.getVersion());
+        }
+        var next = cur.toBuilder().setBlobUri(blobUri).setVersion(cur.getVersion() + 1).build();
+        if (ptr.compareAndSet(key, expectedVersion, next)) return;
+      }
+      backoff(i);
+    }
+    throw new IllegalStateException("CAS failed after retries: " + key);
+  }
+
+  private static void backoff(int attempt) {
+    try {
+      Thread.sleep(Math.min(5L * (1 << attempt), 50L));
+    } catch (InterruptedException ignored) {}
   }
 
   @Override

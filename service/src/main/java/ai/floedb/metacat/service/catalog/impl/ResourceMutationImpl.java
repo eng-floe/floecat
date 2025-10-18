@@ -56,7 +56,6 @@ import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.IdempotencyStore;
 import ai.floedb.metacat.service.storage.PointerStore;
 import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
@@ -71,7 +70,6 @@ public class ResourceMutationImpl implements ResourceMutation {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject PointerStore ptr;
-  @Inject BlobStore blobs;
   @Inject IdempotencyStore idempotencyStore;
 
   private final Clock clock;

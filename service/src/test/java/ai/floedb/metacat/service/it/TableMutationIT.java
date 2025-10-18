@@ -266,7 +266,7 @@ class TableMutationIT {
     assertEquals(ResourceKind.RK_TABLE, tblId.getKind());
 
     for (int i = 0; i < 100; i++) {
-        TestSupport.createSnapshot(mutation, tbl.getResourceId(), i);
+        TestSupport.createSnapshot(mutation, tbl.getResourceId(), i, System.currentTimeMillis() + i * 1_000L);
     }  
     
     ListSnapshotsRequest req = ListSnapshotsRequest.newBuilder()

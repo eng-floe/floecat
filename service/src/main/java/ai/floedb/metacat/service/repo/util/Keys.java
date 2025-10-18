@@ -82,8 +82,36 @@ public final class Keys {
           normTenant(tid), enc(tblId), sid);
   }
 
-  // ========= Idempotency key =========
+  // ========= Stats =========
+  public static String snapStatsRoot(String tid, String tblId, long snapId) {
+    return String.format("/tenants/%s/tables/%s/snapshots/%d/stats/",
+        normTenant(tid), enc(tblId), snapId);
+  }
+  public static String snapTableStatsPtr(String tid, String tblId, long snapId) {
+    return snapStatsRoot(tid, tblId, snapId) + "table";
+  }
+  public static String snapColStatsDir(String tid, String tblId, long snapId) {
+    return snapStatsRoot(tid, tblId, snapId) + "columns/";
+  }
+  public static String snapColStatsPtr(String tid, String tblId, long snapId, String colId) {
+    return snapColStatsDir(tid, tblId, snapId) + enc(colId);
+  }
+  public static String snapTableStatsBlob(String tid, String tblId, long snapId) {
+    return String.format("mem://tenants/%s/tables/%s/snapshots/%d/stats/table.pb",
+        normTenant(tid), enc(tblId), snapId);
+  }
+  public static String snapColStatsBlob(String tid, String tblId, long snapId, String colId) {
+    return String.format("mem://tenants/%s/tables/%s/snapshots/%d/stats/columns/%s/column.pb",
+        normTenant(tid), enc(tblId), snapId, enc(colId));
+  }
+  public static String snapStatsPrefix(String tid, String tblId, long snapId) {
+    return snapStatsRoot(tid, tblId, snapId);
+  }
+  public static String snapColStatsPrefix(String tid, String tblId, long snapId) {
+    return snapColStatsDir(tid, tblId, snapId);
+  }
 
+  // ========= Idempotency key =========
   public static String idemKey(String tid, String op, String key) {
     return "/tenants/" + normTenant(tid) + "/idempotency/" + enc(op) + "/" + enc(key);
   }

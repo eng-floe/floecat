@@ -80,17 +80,14 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     var byId = Keys.nsPtr(tid, catalogId.getId(), nsRid.getId());
     var blob = Keys.nsBlob(tid, catalogId.getId(), nsRid.getId());
     var full = new ArrayList<>(ns.getParentsList());
-    if (!ns.getDisplayName().isBlank()) full.add(ns.getDisplayName());
+    if (!ns.getDisplayName().isBlank()) {
+      full.add(ns.getDisplayName());
+    }
     var byPath = Keys.nsByPathPtr(tid, catalogId.getId(), full);
 
-    putCas(byPath, blob);
-    try {
-      putBlob(blob, ns);
-      putCas(byId, blob);
-    } catch (RuntimeException e) {
-      deleteQuietly(() -> ptr.delete(byPath));
-      throw e;
-    }
+    reserveIndexOrIdempotent(byId, blob);
+    reserveIndexOrIdempotent(byPath, blob);
+    putBlob(blob, ns);
   }
 
   public boolean update(Namespace updated, ResourceId catalogId, long expectedVersion) {
@@ -98,7 +95,10 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     var tid = updated.getResourceId().getTenantId();
     var byId = Keys.nsPtr(tid, catalogId.getId(), updated.getResourceId().getId());
     var blob = Keys.nsBlob(tid, catalogId.getId(), updated.getResourceId().getId());
-    return updateCanonical(byId, blob, updated, expectedVersion);
+
+    putBlob(blob, updated);
+    advancePointer(byId, blob, expectedVersion);
+    return true;
   }
 
   public boolean renameOrMove(
@@ -116,13 +116,13 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     var tid = updated.getResourceId().getTenantId();
     var nsId = updated.getResourceId().getId();
 
+    var sameCatalog = oldCatalogId.getId().equals(newCatalogId.getId());
+
     var oldById = Keys.nsPtr(tid, oldCatalogId.getId(), nsId);
     var newById = Keys.nsPtr(tid, newCatalogId.getId(), nsId);
 
-    var oldPath = new ArrayList<>(oldParents);
-    oldPath.add(oldLeaf);
-    var newPath = new ArrayList<>(newParents);
-    newPath.add(updated.getDisplayName());
+    var oldPath = new ArrayList<>(oldParents); oldPath.add(oldLeaf);
+    var newPath = new ArrayList<>(newParents); newPath.add(updated.getDisplayName());
 
     var oldByPath = Keys.nsByPathPtr(tid, oldCatalogId.getId(), oldPath);
     var newByPath = Keys.nsByPathPtr(tid, newCatalogId.getId(), newPath);
@@ -130,56 +130,65 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     var oldBlob = Keys.nsBlob(tid, oldCatalogId.getId(), nsId);
     var newBlob = Keys.nsBlob(tid, newCatalogId.getId(), nsId);
 
-    reserveIndexOrIdempotent(newByPath, newBlob);
     putBlob(newBlob, updated);
-
-    if (oldCatalogId.getId().equals(newCatalogId.getId())) {
-      if (!updateCanonical(oldById, newBlob, updated, expectedVersion)) return false;
-    } else {
-      var newPtr = Pointer.newBuilder().setKey(newById).setBlobUri(newBlob).setVersion(1L).build();
-      if (!ptr.compareAndSet(newById, 0L, newPtr)) {
-        var ex = ptr.get(newById).orElse(null);
-        if (ex == null || !newBlob.equals(ex.getBlobUri())) return false;
+    reserveIndexOrIdempotent(newByPath, newBlob);
+    try {
+      if (sameCatalog) {
+        advancePointer(oldById, newBlob, expectedVersion);
+      } else {
+        reserveIndexOrIdempotent(newById, newBlob);
+        if (!compareAndDeleteOrFalse(ptr, oldById, expectedVersion)) {
+          ptr.get(newById).ifPresent(p -> compareAndDeleteOrFalse(ptr, newById, p.getVersion()));
+          ptr.get(newByPath).ifPresent(p -> compareAndDeleteOrFalse(ptr, newByPath, p.getVersion()));
+          return false;
+        }
+        deleteQuietly(() -> blobs.delete(oldBlob));
       }
-      if (!compareAndDeleteOrFalse(ptr, oldById, expectedVersion)) return false;
-      deleteQuietly(() -> blobs.delete(oldBlob));
+    } catch (RuntimeException e) {
+      ptr.get(newByPath).ifPresent(p -> compareAndDeleteOrFalse(ptr, newByPath, p.getVersion()));
+      throw e;
     }
 
-    deleteQuietly(() -> ptr.delete(oldByPath));
+    ptr.get(oldByPath).ifPresent(p -> compareAndDeleteOrFalse(ptr, oldByPath, p.getVersion()));
     return true;
   }
 
   public boolean delete(ResourceId catalogId, ResourceId namespaceId) {
-    var nsOpt = get(catalogId, namespaceId);
     var tid = namespaceId.getTenantId();
     var byId = Keys.nsPtr(tid, catalogId.getId(), namespaceId.getId());
     var blob = Keys.nsBlob(tid, catalogId.getId(), namespaceId.getId());
-    final String byPath = nsOpt.map(ns -> {
-      var full = new java.util.ArrayList<>(ns.getParentsList());
+
+    var nsOpt = get(catalogId, namespaceId);
+    var byPath = nsOpt.map(ns -> {
+      var full = new ArrayList<>(ns.getParentsList());
       full.add(ns.getDisplayName());
       return Keys.nsByPathPtr(tid, catalogId.getId(), full);
     }).orElse(null);
 
-    deleteQuietly(() -> ptr.delete(byId));
+    if (byPath != null) {
+      ptr.get(byPath).ifPresent(p -> compareAndDeleteOrFalse(ptr, byPath, p.getVersion()));
+    }
+    ptr.get(byId).ifPresent(p -> compareAndDeleteOrFalse(ptr, byId, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
-    if (byPath != null) deleteQuietly(() -> ptr.delete(byPath));
     return true;
   }
 
   public boolean deleteWithPrecondition(ResourceId catalogId, ResourceId namespaceId, long expectedVersion) {
-    var nsOpt = get(catalogId, namespaceId);
     var tid = namespaceId.getTenantId();
     var byId = Keys.nsPtr(tid, catalogId.getId(), namespaceId.getId());
     var blob = Keys.nsBlob(tid, catalogId.getId(), namespaceId.getId());
-    final String byPath = nsOpt.map(ns -> {
+
+    var nsOpt = get(catalogId, namespaceId);
+    var byPath = nsOpt.map(ns -> {
       var full = new ArrayList<>(ns.getParentsList());
       full.add(ns.getDisplayName());
       return Keys.nsByPathPtr(tid, catalogId.getId(), full);
     }).orElse(null);
 
     if (!compareAndDeleteOrFalse(ptr, byId, expectedVersion)) return false;
+    if (byPath != null) ptr.get(byPath).ifPresent(
+        p -> compareAndDeleteOrFalse(ptr, byPath, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
-    if (byPath != null) deleteQuietly(() -> ptr.delete(byPath));
     return true;
   }
 

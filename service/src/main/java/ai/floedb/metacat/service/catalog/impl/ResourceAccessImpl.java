@@ -28,6 +28,7 @@ import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
+import ai.floedb.metacat.service.repo.impl.StatsRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
@@ -38,6 +39,7 @@ public class ResourceAccessImpl implements ResourceAccess {
   @Inject NamespaceRepository nsRepo;
   @Inject TableRepository tableRepo;
   @Inject SnapshotRepository snapshotRepo;
+  @Inject StatsRepository stats;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
 

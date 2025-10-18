@@ -50,14 +50,9 @@ public class TableRepository extends BaseRepository<Table> {
     var byName = Keys.tblByNamePtr(tid, catId, nsId, table.getDisplayName());
     var blob = Keys.tblBlob(tid, tblId);
 
-    putCas(byName, blob);
-    try {
-      putBlob(blob, table);
-      putCas(canon, blob);
-    } catch (RuntimeException e) {
-      deleteQuietly(() -> ptr.delete(byName));
-      throw e;
-    }
+    reserveIndexOrIdempotent(canon,  blob);
+    reserveIndexOrIdempotent(byName, blob);
+    putBlob(blob, table);
   }
 
   public boolean update(Table updated, long expectedVersion) {
@@ -65,7 +60,10 @@ public class TableRepository extends BaseRepository<Table> {
     var tid = updated.getResourceId().getTenantId();
     var canon = Keys.tblCanonicalPtr(tid, updated.getResourceId().getId());
     var blob = Keys.tblBlob(tid, updated.getResourceId().getId());
-    return updateCanonical(canon, blob, updated, expectedVersion);
+
+    putBlob(blob, updated);
+    advancePointer(canon, blob, expectedVersion);
+    return true;
   }
 
   public boolean rename(ResourceId tableId, String newDisplayName, long expectedVersion) {
@@ -81,12 +79,19 @@ public class TableRepository extends BaseRepository<Table> {
     var newByName = Keys.tblByNamePtr(tid, cur.getCatalogId().getId(), cur.getNamespaceId().getId(), newDisplayName);
     var oldByName = Keys.tblByNamePtr(tid, cur.getCatalogId().getId(), cur.getNamespaceId().getId(), cur.getDisplayName());
 
-    reserveIndexOrIdempotent(newByName, blob);
     var updated = cur.toBuilder().setDisplayName(newDisplayName).build();
-    if (!updateCanonical(canon, blob, updated, expectedVersion)) {
-      return false;
+
+    putBlob(blob, updated);
+
+    reserveIndexOrIdempotent(newByName, blob);
+    try {
+      advancePointer(canon, blob, expectedVersion);
+    } catch (RuntimeException e) {
+      ptr.get(newByName).ifPresent(p -> compareAndDeleteOrFalse(ptr, newByName, p.getVersion()));
+      throw e;
     }
-    deleteQuietly(() -> ptr.delete(oldByName));
+
+    ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(ptr, oldByName, p.getVersion()));
     return true;
   }
 
@@ -106,44 +111,53 @@ public class TableRepository extends BaseRepository<Table> {
     var oldByName = Keys.tblByNamePtr(tid, oldCatalogId.getId(), oldNamespaceId.getId(), updated.getDisplayName());
     var newByName = Keys.tblByNamePtr(tid, newCatalogId.getId(), newNamespaceId.getId(), updated.getDisplayName());
 
+    putBlob(blob, updated);
     reserveIndexOrIdempotent(newByName, blob);
-    if (!updateCanonical(canon, blob, updated, expectedVersion)) {
-      return false;
+    try {
+      advancePointer(canon, blob, expectedVersion);
+    } catch (RuntimeException e) {
+      ptr.get(newByName).ifPresent(p -> compareAndDeleteOrFalse(ptr, newByName, p.getVersion()));
+      throw e;
     }
-    deleteQuietly(() -> ptr.delete(oldByName));
+
+    ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(ptr, oldByName, p.getVersion()));
     return true;
   }
 
   public boolean delete(ResourceId tableId) {
-    var tdOpt = get(tableId);
     var tid = tableId.getTenantId();
     var canon = Keys.tblCanonicalPtr(tid, tableId.getId());
     var blob = Keys.tblBlob(tid, tableId.getId());
-    final String byName = tdOpt.map(td -> Keys.tblByNamePtr(
-        tid, td.getCatalogId().getId(), td.getNamespaceId().getId(), td.getDisplayName()))
-            .orElse(null);
 
-    deleteQuietly(() -> ptr.delete(canon));
+    var tdOpt = get(tableId);
+    var byName = tdOpt.map(td -> Keys.tblByNamePtr(
+        tid, td.getCatalogId().getId(), td.getNamespaceId().getId(), td.getDisplayName()))
+        .orElse(null);
+
+    if (byName != null) {
+      ptr.get(byName).ifPresent(p -> compareAndDeleteOrFalse(ptr, byName, p.getVersion()));
+    }
+    ptr.get(canon).ifPresent(p -> compareAndDeleteOrFalse(ptr, canon, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
-    if (byName != null) deleteQuietly(() -> ptr.delete(byName));
     return true;
   }
 
   public boolean deleteWithPrecondition(ResourceId tableId, long expectedVersion) {
-    var tdOpt = get(tableId);
     var tid = tableId.getTenantId();
     var canon = Keys.tblCanonicalPtr(tid, tableId.getId());
     var blob = Keys.tblBlob(tid, tableId.getId());
 
-    final String byName = tdOpt.map(td -> Keys.tblByNamePtr(
+    var tdOpt = get(tableId);
+    var byName = tdOpt.map(td -> Keys.tblByNamePtr(
         tid, td.getCatalogId().getId(), td.getNamespaceId().getId(), td.getDisplayName()))
-            .orElse(null);
+        .orElse(null);
 
     if (!compareAndDeleteOrFalse(ptr, canon, expectedVersion)) {
       return false;
     }
+    if (byName != null) ptr.get(byName).ifPresent(
+        p -> compareAndDeleteOrFalse(ptr, byName, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
-    if (byName != null) deleteQuietly(() -> ptr.delete(byName));
     return true;
   }
 

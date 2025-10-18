@@ -59,43 +59,76 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     }
   }
 
+  public Optional<Snapshot> getAsOf(ResourceId tableId, Timestamp asOf) {
+    final String tenantId = tableId.getTenantId();
+    final String tableUUID = tableId.getId();
+    final String pfx = Keys.snapPtrByTimePrefix(tenantId, tableUUID);
+
+    final long asOfMs = Timestamps.toMillis(asOf);
+
+    String token = "";
+    StringBuilder next = new StringBuilder();
+
+    do {
+      var rows = ptr.listPointersByPrefix(pfx, 200, token, next);
+      for (var r : rows) {
+        final byte[] bytes;
+        try {
+          bytes = blobs.get(r.blobUri());
+        } catch (Exception e) {
+          throw new RuntimeException("blob fetch failed: " + r.blobUri(), e);
+        }
+        final Snapshot snap;
+        try {
+          snap = Snapshot.parseFrom(bytes);
+        } catch (Exception e) {
+          throw new RuntimeException("parse failed: " + r.blobUri(), e);
+        }
+
+        long createdMs = Timestamps.toMillis(snap.getUpstreamCreatedAt());
+        if (createdMs <= asOfMs) {
+          return Optional.of(snap);
+        }
+      }
+
+      token = next.toString();
+      next.setLength(0);
+    } while (!token.isEmpty());
+
+    return Optional.empty();
+  }
+
   public void create(Snapshot snapshot) {
     var tableId = snapshot.getTableId();
     var tenantId = tableId.getTenantId();
     var tableUUID = tableId.getId();
-    long snapshotId = snapshot.getSnapshotId();
-    long upstreamCreatedAt = Timestamps.toMillis(snapshot.getUpstreamCreatedAt());
+    long snapId = snapshot.getSnapshotId();
+    long created = com.google.protobuf.util.Timestamps.toMillis(snapshot.getUpstreamCreatedAt());
 
-    String byId = Keys.snapPtrById(tenantId, tableUUID, snapshotId);
-    String byTime = Keys.snapPtrByTime(tenantId, tableUUID, snapshotId, upstreamCreatedAt);
-    String blob = Keys.snapBlob(tenantId, tableUUID, snapshotId);
+    String byId = Keys.snapPtrById(tenantId, tableUUID, snapId);
+    String byTime = Keys.snapPtrByTime(tenantId, tableUUID, snapId, created);
+    String blob = Keys.snapBlob(tenantId, tableUUID, snapId);
 
-    putCas(byTime, blob);
-    try {
-      putBlob(blob, snapshot);
-      putCas(byId, blob);
-    } catch (RuntimeException e) {
-      deleteQuietly(() -> ptr.delete(byTime));
-      throw e;
-    }
+    reserveIndexOrIdempotent(byId,   blob);
+    reserveIndexOrIdempotent(byTime, blob);
+    putBlob(blob, snapshot);
   }
 
   public boolean delete(ResourceId tableId, long snapshotId) {
     var tid = tableId.getTenantId();
     var tbl = tableId.getId();
-    var byId = Keys.snapPtrById(tid, tbl, snapshotId);
-    var snapshotOpt = get(byId);
-    long upstreamCreatedAtMs = 0L;
-    if (snapshotOpt.isPresent()) {
-      upstreamCreatedAtMs = Timestamps.toMillis(snapshotOpt.get().getUpstreamCreatedAt());
-    }
-    var byTime = Keys.snapPtrByTime(tid, tbl, snapshotId, upstreamCreatedAtMs);
-    var blob = Keys.snapBlob(tid, tbl, snapshotId);
 
-    deleteQuietly(() -> ptr.delete(byId));
-    deleteQuietly(() -> ptr.delete(byTime));
+    String byId = Keys.snapPtrById(tid, tbl, snapshotId);
+    long createdMs = get(byId)
+        .map(s -> com.google.protobuf.util.Timestamps.toMillis(s.getUpstreamCreatedAt()))
+        .orElse(0L);
+    String byTime = Keys.snapPtrByTime(tid, tbl, snapshotId, createdMs);
+    String blob = Keys.snapBlob(tid, tbl, snapshotId);
+
+    ptr.get(byTime).ifPresent(p -> compareAndDeleteOrFalse(ptr, byTime, p.getVersion()));
+    ptr.get(byId).ifPresent(p -> compareAndDeleteOrFalse(ptr, byId, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
-    return ptr.get(byId).isEmpty() && ptr.get(byTime).isEmpty() && blobs.head(blob).isEmpty();
+    return true;
   }
 
   public boolean deleteWithPrecondition(ResourceId tableId, long snapshotId, long expectedVersion) {
@@ -103,18 +136,14 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     var tbl = tableId.getId();
 
     String byId = Keys.snapPtrById(tid, tbl, snapshotId);
-    var snapshotOpt = get(byId);
-    long upstreamCreatedAtMs = 0L;
-    if (snapshotOpt.isPresent()) {
-      upstreamCreatedAtMs = Timestamps.toMillis(snapshotOpt.get().getUpstreamCreatedAt());
-    }
-    String byTime = Keys.snapPtrByTime(tid, tbl, snapshotId, upstreamCreatedAtMs);
+    long createdMs = get(byId)
+        .map(s -> com.google.protobuf.util.Timestamps.toMillis(s.getUpstreamCreatedAt()))
+        .orElse(0L);
+    String byTime = Keys.snapPtrByTime(tid, tbl, snapshotId, createdMs);
     String blob = Keys.snapBlob(tid, tbl, snapshotId);
 
-    if (!compareAndDeleteOrFalse(ptr, byId, expectedVersion)) {
-      return false;
-    }
-    deleteQuietly(() -> ptr.delete(byTime));
+    if (!compareAndDeleteOrFalse(ptr, byId, expectedVersion)) return false;
+    ptr.get(byTime).ifPresent(p -> compareAndDeleteOrFalse(ptr, byTime, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
     return true;
   }

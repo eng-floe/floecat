@@ -45,7 +45,8 @@ class PlanningIT {
         mutation, cat.getResourceId(), ns.getResourceId(),
             "orders", "s3://bucket/orders",
                 "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}", "none");
-    var snap = TestSupport.createSnapshot(mutation, tbl.getResourceId(), 0L);
+    var snap = TestSupport.createSnapshot(
+        mutation, tbl.getResourceId(), 0L, System.currentTimeMillis() - 10_000L);
 
     var name = NameRef.newBuilder()
         .setCatalog(catName)
