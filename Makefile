@@ -21,7 +21,7 @@ MAKEFLAGS  += --no-builtin-rules
 MVN ?= mvn
 
 # ---------- Modules ----------
-JAVA_MODULES   := proto service
+JAVA_MODULES   := proto service reconciler connectors-spi connectors-iceberg
 JAVA_SERVICES  := service               # runnable module(s)
 
 # ---------- Quarkus dev settings ----------

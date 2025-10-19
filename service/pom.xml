@@ -13,6 +13,7 @@
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <iceberg.version>1.9.2</iceberg.version>
   </properties>
 
   <dependencyManagement>
@@ -69,6 +70,18 @@
     <dependency>
       <groupId>ai.floedb.metacat</groupId>
       <artifactId>metacat-proto</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.metacat</groupId>
+      <artifactId>metacat-connectors-spi</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.metacat</groupId>
+      <artifactId>metacat-reconciler</artifactId>
       <version>${project.version}</version>
     </dependency>
   </dependencies>

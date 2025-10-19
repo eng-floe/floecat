@@ -57,7 +57,7 @@ class BackendStorageIT {
     var fullPath = List.of("db_it", "schema_it", "it_ns");
     String kNsByPath = Keys.nsByPathPtr(tenantId, catId.getId(), fullPath);
     String kNsPtr = Keys.nsPtr(tenantId, catId.getId(), nsId.getId());
-    String kNsBlob = Keys.nsBlob(tenantId, catId.getId(), nsId.getId());
+    String kNsBlob = Keys.nsBlob(tenantId, nsId.getId());
     assertTrue(ptr.get(kNsByPath).isPresent(), "namespace by-path pointer missing");
     assertTrue(ptr.get(kNsPtr).isPresent(), "namespace canonical pointer missing");
     assertTrue(blobs.head(kNsBlob).isPresent(), "namespace blob missing");

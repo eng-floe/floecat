@@ -6,7 +6,6 @@ import java.util.Objects;
 
 import com.google.protobuf.Any;
 import com.google.protobuf.util.Timestamps;
-
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
@@ -16,6 +15,10 @@ import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.connector.rpc.Connector;
+import ai.floedb.metacat.connector.rpc.ConnectorSpec;
+import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
+import ai.floedb.metacat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
@@ -82,6 +85,13 @@ public final class TestSupport {
             .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedAtMs)))
             .build());
     return resp.getSnapshot();
+  }
+
+  public static Connector createConnector(ConnectorsGrpc.ConnectorsBlockingStub connectors,
+                                        ConnectorSpec spec) {
+    return connectors.createConnector(
+        CreateConnectorRequest.newBuilder().setSpec(spec).build()
+    ).getConnector();
   }
 
   public static ResourceId resolveCatalogId(DirectoryGrpc.DirectoryBlockingStub directory, String catalogName) {
@@ -193,37 +203,34 @@ public final class TestSupport {
       String catalogDisplayName,
       List<String> fullPath) {
 
-    // 1) Resolve catalogId from the by-name catalog pointer (blob is a Catalog)
     var catIdxKey = Keys.catByNamePtr(tenant, catalogDisplayName);
     var catPtr = ptr.get(catIdxKey).orElseThrow(
         () -> new AssertionError("catalog by-name pointer missing: " + catIdxKey));
 
-    ai.floedb.metacat.catalog.rpc.Catalog cat;
+   Catalog cat;
     try {
-      cat = ai.floedb.metacat.catalog.rpc.Catalog.parseFrom(blobs.get(catPtr.getBlobUri()));
+      cat = Catalog.parseFrom(blobs.get(catPtr.getBlobUri()));
     } catch (Exception e) {
       throw new AssertionError("failed to parse Catalog blob: " + catPtr.getBlobUri(), e);
     }
     var catalogId = cat.getResourceId().getId();
 
-    // 2) Resolve namespace via by-path pointer (blob is a Namespace)
     var nsIdxKey = Keys.nsByPathPtr(tenant, catalogId, fullPath);
     var nsIdxPtr = ptr.get(nsIdxKey).orElseThrow(
         () -> new AssertionError("namespace by-path pointer missing: " + nsIdxKey));
 
-    ai.floedb.metacat.catalog.rpc.Namespace ns;
+    Namespace ns;
     try {
-      ns = ai.floedb.metacat.catalog.rpc.Namespace.parseFrom(blobs.get(nsIdxPtr.getBlobUri()));
+      ns = Namespace.parseFrom(blobs.get(nsIdxPtr.getBlobUri()));
     } catch (Exception e) {
       throw new AssertionError("failed to parse Namespace blob: " + nsIdxPtr.getBlobUri(), e);
     }
 
     var nsRid = ns.getResourceId();
-    var nsTenant = nsRid.getTenantId(); // authoritative tenant from the object
+    var nsTenant = nsRid.getTenantId();
 
-    // 3) Build canonical keys and return meta for the canonical pointer/blob
     var nsPtrKey = Keys.nsPtr(nsTenant, catalogId, nsRid.getId());
-    var nsBlob = Keys.nsBlob(nsTenant, catalogId, nsRid.getId());
+    var nsBlob = Keys.nsBlob(nsTenant, nsRid.getId());
 
     var nsPtr = ptr.get(nsPtrKey).orElseThrow(
         () -> new AssertionError("namespace canonical pointer missing: " + nsPtrKey));

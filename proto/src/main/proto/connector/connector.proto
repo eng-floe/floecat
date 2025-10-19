@@ -1,0 +1,164 @@
+syntax = "proto3";
+package ai.floedb.metacat.connector;
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.connector.rpc";
+
+import "common/common.proto";
+import "catalog/catalog.proto";
+import "resource/mutation.proto";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+enum ConnectorKind {
+  CK_UNSPECIFIED = 0;
+  CK_ICEBERG_REST = 1;
+  CK_DELTA = 2;
+  CK_GLUE = 3;
+  CK_UNITY = 4;
+}
+
+message Connector {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  string display_name = 2;
+  ConnectorKind kind = 3;
+  string target_catalog_display_name = 4;
+  string target_tenant_id = 5;
+  string uri = 10;
+  map<string,string> options = 11;
+  AuthConfig auth = 12;
+  ReconcilePolicy policy = 20;
+  google.protobuf.Timestamp created_at = 30;
+  google.protobuf.Timestamp updated_at = 31;
+  ConnectorState state = 32;
+}
+
+enum ConnectorState {
+  CS_UNSPECIFIED = 0;
+  CS_ACTIVE = 1;
+  CS_PAUSED = 2;
+  CS_DELETING = 3;
+}
+
+message AuthConfig {
+  string scheme = 1;
+  map<string,string> props = 2;
+  map<string,string> header_hints = 3;
+  string secret_ref = 10;
+}
+
+message ReconcilePolicy {
+  google.protobuf.Duration interval = 1;
+  bool enabled = 2;
+  int32 max_parallel = 3;
+  google.protobuf.Timestamp not_before = 4;
+}
+
+message ConnectorSpec {
+  string display_name = 1;
+  ConnectorKind kind = 2;
+  string target_catalog_display_name = 3;
+  string target_tenant_id = 4;
+  string uri = 10;
+  map<string,string> options = 11;
+  AuthConfig auth = 12;
+  ReconcilePolicy policy = 20;
+}
+
+message CreateConnectorRequest {
+  ConnectorSpec spec = 1;
+  ai.floedb.metacat.catalog.IdempotencyKey idempotency = 2;
+}
+message CreateConnectorResponse {
+  Connector connector = 1;
+  ai.floedb.metacat.catalog.MutationMeta meta = 2;
+}
+
+message GetConnectorRequest {
+  ai.floedb.metacat.common.ResourceId connector_id = 1;
+}
+message GetConnectorResponse {
+  Connector connector = 1;
+}
+
+message ListConnectorsRequest {
+  ai.floedb.metacat.common.PageRequest page = 1;
+  string tenant_id = 2;
+  string kind = 3;
+}
+message ListConnectorsResponse {
+  repeated Connector connectors = 1;
+  ai.floedb.metacat.common.PageResponse page = 2;
+}
+
+message UpdateConnectorRequest {
+  ai.floedb.metacat.common.ResourceId connector_id = 1;
+  ConnectorSpec spec = 2;
+  ai.floedb.metacat.catalog.Precondition precondition = 3;
+}
+message UpdateConnectorResponse {
+  Connector connector = 1;
+  ai.floedb.metacat.catalog.MutationMeta meta = 2;
+}
+
+message DeleteConnectorRequest {
+  ai.floedb.metacat.common.ResourceId connector_id = 1;
+  ai.floedb.metacat.catalog.Precondition precondition = 2;
+}
+message DeleteConnectorResponse {
+  ai.floedb.metacat.catalog.MutationMeta meta = 1;
+}
+
+
+message ValidateConnectorRequest {
+  ConnectorSpec spec = 1;
+}
+message ValidateConnectorResponse {
+  bool ok = 1;
+  string summary = 2;
+  map<string,string> capabilities = 3;
+}
+
+message TriggerReconcileRequest {
+  ai.floedb.metacat.common.ResourceId connector_id = 1;
+  bool full_rescan = 2;
+}
+message TriggerReconcileResponse {
+  string job_id = 1;
+}
+
+message GetReconcileJobRequest {
+  string job_id = 1;
+}
+message GetReconcileJobResponse {
+  string job_id = 1;
+  string connector_id = 2;
+  JobState state = 3;
+  string message = 4;
+  google.protobuf.Timestamp started_at = 5;
+  google.protobuf.Timestamp finished_at = 6;
+  uint64 tables_scanned = 7;
+  uint64 tables_changed = 8;
+  uint64 errors = 9;
+}
+enum JobState {
+  JS_UNSPECIFIED = 0;
+  JS_QUEUED = 1;
+  JS_RUNNING = 2;
+  JS_SUCCEEDED = 3;
+  JS_FAILED = 4;
+  JS_CANCELLED = 5;
+}
+
+service Connectors {
+  rpc CreateConnector(CreateConnectorRequest) returns (CreateConnectorResponse);
+  rpc GetConnector(GetConnectorRequest) returns (GetConnectorResponse);
+  rpc ListConnectors(ListConnectorsRequest) returns (ListConnectorsResponse);
+  rpc UpdateConnector(UpdateConnectorRequest) returns (UpdateConnectorResponse);
+  rpc DeleteConnector(DeleteConnectorRequest) returns (DeleteConnectorResponse);
+
+  rpc ValidateConnector(ValidateConnectorRequest) returns (ValidateConnectorResponse);
+
+  rpc TriggerReconcile(TriggerReconcileRequest) returns (TriggerReconcileResponse);
+  rpc GetReconcileJob(GetReconcileJobRequest) returns (GetReconcileJobResponse);
+}

@@ -7,10 +7,15 @@ import java.util.List;
 public final class Keys {
   private Keys() {}
 
-  private static String enc(String s) { return URLEncoder.encode(s, StandardCharsets.UTF_8); }
-  private static String normTenant(String tid) { return tid.toLowerCase(); }
+  private static String enc(String s) {
+    return URLEncoder.encode(s, StandardCharsets.UTF_8);
+  }
 
-  // ========= Catalog (canonical + by-name) =========
+  private static String normTenant(String tid) {
+    return tid.toLowerCase();
+  }
+
+  // ========= Catalog =========
   public static String catPtr(String tid, String catId) {
     return "/tenants/" + normTenant(tid) + "/catalogs/by-id/" + enc(catId);
   }
@@ -24,7 +29,7 @@ public final class Keys {
     return "mem://tenants/" + normTenant(tid) + "/catalogs/" + enc(catId) + "/catalog.pb";
   }
 
-  // ========= Namespace (canonical under catalog + by-path) =========
+  // ========= Namespace =========
   public static String nsPtr(String tid, String catId, String nsId) {
     return "/tenants/" + normTenant(tid) + "/catalogs/" + enc(catId) + "/namespaces/by-id/" + enc(nsId);
   }
@@ -37,12 +42,11 @@ public final class Keys {
     return "/tenants/" + normTenant(tid) + "/catalogs/" + enc(catId) + "/namespaces/by-path/"
         + (joined.isEmpty() ? "" : joined + "/");
   }
-  public static String nsBlob(String tid, String catId, String nsId) {
-    return "mem://tenants/" + normTenant(tid) + "/catalogs/" + enc(catId) + "/namespaces/"
-        + enc(nsId) + "/namespace.pb";
+  public static String nsBlob(String tid, String nsId) {
+    return "mem://tenants/" + normTenant(tid) + "/namespaces/" + enc(nsId) + "/namespace.pb";
   }
 
-  // ========= Table (canonical + by-name) =========
+  // ========= Table =========
   public static String tblCanonicalPtr(String tid, String tblId) {
     return "/tenants/" + normTenant(tid) + "/tables/" + enc(tblId);
   }
@@ -109,6 +113,20 @@ public final class Keys {
   }
   public static String snapColStatsPrefix(String tid, String tblId, long snapId) {
     return snapColStatsDir(tid, tblId, snapId);
+  }
+
+  // ========= Connectors =========
+  public static String connByIdPtr(String tenantId, String connectorId) {
+    return "/tenants/" + tenantId + "/connectors/by-id/" + enc(connectorId);
+  }
+  public static String connByNamePtr(String tenantId, String displayName) {
+    return "/tenants/" + tenantId + "/connectors/by-name/" + enc(displayName);
+  }
+  public static String connByNamePrefix(String tenantId) {
+    return "/tenants/" + tenantId + "/connectors/by-name/";
+  }
+  public static String connBlob(String tenantId, String connectorId) {
+    return "tenants/" + tenantId + "/connectors/" + enc(connectorId) + "/connector.pb";
   }
 
   // ========= Idempotency key =========

@@ -19,6 +19,9 @@
 
   <modules>
     <module>proto</module>
+    <module>reconciler</module>
+    <module>connectors-spi</module>
+    <module>connectors-iceberg</module>
     <module>service</module>
   </modules>
 

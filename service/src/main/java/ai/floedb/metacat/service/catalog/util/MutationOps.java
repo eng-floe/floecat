@@ -86,8 +86,12 @@ public final class MutationOps {
         tenant, opName, idemKeyOrEmpty, fp, creator, metaOf,
         Message::toByteArray,
         bytes -> {
-          try { return parser.parse(bytes); }
-          catch (Exception e) { throw new IllegalStateException(e); }
+          try {
+            return parser.parse(bytes);
+          }
+          catch (Exception e) {
+            throw new IllegalStateException(e);
+          }
         },
         idemStore, now, ttlSeconds, corrIdSupplier
     );

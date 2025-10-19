@@ -6,7 +6,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 import io.grpc.*;
-import io.grpc.MethodDescriptor;
 import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
@@ -47,7 +46,7 @@ class PropagationIT {
     String corr = "it-corr-" + UUID.randomUUID();
 
     Metadata m = new Metadata();
-    m.put(PRINCIPAL_BIN, pc("t-7777").toByteArray());
+    m.put(PRINCIPAL_BIN, pc("t-0001").toByteArray());
     m.put(CORR, corr);
 
     RespHeadersCaptureInterceptor capture = new RespHeadersCaptureInterceptor();
@@ -66,7 +65,7 @@ class PropagationIT {
     assertEquals(corr, echoed, "server should echo x-correlation-id");
 
     var rid = ResourceId.newBuilder()
-        .setTenantId("t-7777")
+        .setTenantId("t-0001")
         .setKind(ResourceKind.RK_CATALOG)
         .setId("00000000-0000-0000-0000-000000000000")
         .build();

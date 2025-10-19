@@ -9,6 +9,7 @@ import java.util.Optional;
 import java.util.function.Function;
 
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
 
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.BlobHeader;
@@ -189,5 +190,54 @@ public abstract class BaseRepository<T> implements Repository<T> {
     } catch (Throwable ignore) {
       return false; 
     }
+  }
+
+  public String dumpByPrefix(String prefix, int pageSize) {
+    Objects.requireNonNull(prefix, "prefix");
+    final int limit = Math.max(1, pageSize);
+
+    String token = "";
+    var out = new StringBuilder(512);
+    out.append("== DUMP prefix=").append(prefix).append(" ==\n");
+    out.append(String.format("%-5s %-8s %-36s %-24s %-24s  %s -> %s%n",
+        "#", "ver", "etag", "created_at", "last_modified", "pointer", "blobUri"));
+
+    int rowNum = 0;
+    do {
+      var next = new StringBuilder();
+      var rows = ptr.listPointersByPrefix(prefix, limit, token, next);
+
+      for (var r : rows) {
+        rowNum++;
+        var hdrOpt = blobs.head(r.blobUri());
+        String etag = hdrOpt.map(BlobHeader::getEtag).orElse("-");
+        String created = hdrOpt.map(h -> Timestamps.toString(h.getCreatedAt())).orElse("-");
+        String modified = hdrOpt.map(h -> Timestamps.toString(h.getLastModifiedAt())).orElse("-");
+
+        out.append(String.format("%-5d %-8d %-36s %-24s %-24s  %s -> %s%n",
+            rowNum, r.version(), etag, created, modified, r.key(), r.blobUri()));
+      }
+
+      token = next.toString();
+    } while (!token.isEmpty());
+
+    return out.toString();
+  }
+
+  public String dumpPointer(String key) {
+    var p = ptr.get(key).orElse(null);
+    if (p == null) return "pointer not found: " + key;
+
+    var hdr = blobs.head(p.getBlobUri());
+    String etag = hdr.map(BlobHeader::getEtag).orElse("-");
+    String created = hdr.map(h -> Timestamps.toString(h.getCreatedAt())).orElse("-");
+    String modified = hdr.map(h -> Timestamps.toString(h.getLastModifiedAt())).orElse("-");
+    String rid = hdr.map(h -> {
+      var id = h.getResourceId();
+      return id.getTenantId() + ":" + id.getId() + ":" + id.getKind().name();
+    }).orElse("-");
+
+    return String.format("ver=%d etag=%s created=%s modified=%s rid=%s %s -> %s",
+        p.getVersion(), etag, created, modified, rid, p.getKey(), p.getBlobUri());
   }
 }

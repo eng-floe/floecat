@@ -13,7 +13,6 @@ import jakarta.inject.Inject;
 
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.catalog.rpc.Namespace;
-import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
@@ -78,7 +77,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     var tid = nsRid.getTenantId();
 
     var byId = Keys.nsPtr(tid, catalogId.getId(), nsRid.getId());
-    var blob = Keys.nsBlob(tid, catalogId.getId(), nsRid.getId());
+    var blob = Keys.nsBlob(tid, nsRid.getId());
     var full = new ArrayList<>(ns.getParentsList());
     if (!ns.getDisplayName().isBlank()) {
       full.add(ns.getDisplayName());
@@ -94,7 +93,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     requireCatalogId(catalogId);
     var tid = updated.getResourceId().getTenantId();
     var byId = Keys.nsPtr(tid, catalogId.getId(), updated.getResourceId().getId());
-    var blob = Keys.nsBlob(tid, catalogId.getId(), updated.getResourceId().getId());
+    var blob = Keys.nsBlob(tid, updated.getResourceId().getId());
 
     putBlob(blob, updated);
     advancePointer(byId, blob, expectedVersion);
@@ -127,22 +126,20 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     var oldByPath = Keys.nsByPathPtr(tid, oldCatalogId.getId(), oldPath);
     var newByPath = Keys.nsByPathPtr(tid, newCatalogId.getId(), newPath);
 
-    var oldBlob = Keys.nsBlob(tid, oldCatalogId.getId(), nsId);
-    var newBlob = Keys.nsBlob(tid, newCatalogId.getId(), nsId);
+    var blob = Keys.nsBlob(tid, nsId);
 
-    putBlob(newBlob, updated);
-    reserveIndexOrIdempotent(newByPath, newBlob);
+    putBlob(blob, updated);
+    reserveIndexOrIdempotent(newByPath, blob);
     try {
       if (sameCatalog) {
-        advancePointer(oldById, newBlob, expectedVersion);
+        advancePointer(oldById, blob, expectedVersion);
       } else {
-        reserveIndexOrIdempotent(newById, newBlob);
+        reserveIndexOrIdempotent(newById, blob);
         if (!compareAndDeleteOrFalse(ptr, oldById, expectedVersion)) {
           ptr.get(newById).ifPresent(p -> compareAndDeleteOrFalse(ptr, newById, p.getVersion()));
           ptr.get(newByPath).ifPresent(p -> compareAndDeleteOrFalse(ptr, newByPath, p.getVersion()));
           return false;
         }
-        deleteQuietly(() -> blobs.delete(oldBlob));
       }
     } catch (RuntimeException e) {
       ptr.get(newByPath).ifPresent(p -> compareAndDeleteOrFalse(ptr, newByPath, p.getVersion()));
@@ -156,7 +153,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
   public boolean delete(ResourceId catalogId, ResourceId namespaceId) {
     var tid = namespaceId.getTenantId();
     var byId = Keys.nsPtr(tid, catalogId.getId(), namespaceId.getId());
-    var blob = Keys.nsBlob(tid, catalogId.getId(), namespaceId.getId());
+    var blob = Keys.nsBlob(tid, namespaceId.getId());
 
     var nsOpt = get(catalogId, namespaceId);
     var byPath = nsOpt.map(ns -> {
@@ -176,7 +173,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
   public boolean deleteWithPrecondition(ResourceId catalogId, ResourceId namespaceId, long expectedVersion) {
     var tid = namespaceId.getTenantId();
     var byId = Keys.nsPtr(tid, catalogId.getId(), namespaceId.getId());
-    var blob = Keys.nsBlob(tid, catalogId.getId(), namespaceId.getId());
+    var blob = Keys.nsBlob(tid, namespaceId.getId());
 
     var nsOpt = get(catalogId, namespaceId);
     var byPath = nsOpt.map(ns -> {
@@ -203,7 +200,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
   public MutationMeta metaForSafe(ResourceId catalogId, ResourceId namespaceId, Timestamp nowTs) {
     var t = namespaceId.getTenantId();
     var key = Keys.nsPtr(t, catalogId.getId(), namespaceId.getId());
-    var blob = Keys.nsBlob(t, catalogId.getId(), namespaceId.getId());
+    var blob = Keys.nsBlob(t, namespaceId.getId());
     return safeMetaOrDefault(key, blob, nowTs);
   }
 

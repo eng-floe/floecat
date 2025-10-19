@@ -1,0 +1,96 @@
+package ai.floedb.metacat.reconciler.impl;
+
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import io.quarkus.scheduler.Scheduled;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+
+import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.connector.rpc.Connector;
+import ai.floedb.metacat.connector.rpc.GetConnectorRequest;
+import ai.floedb.metacat.connector.spi.ConnectorConfig;
+import ai.floedb.metacat.connector.spi.ConnectorConfig.Kind;
+import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
+
+@ApplicationScoped
+public class ReconcilerScheduler {
+
+  @Inject GrpcClients mc;
+  @Inject ReconcileJobStore jobs;
+  @Inject ReconcilerService svc;
+
+  private final AtomicBoolean running = new AtomicBoolean(false);
+
+  public void signalScheduler() {
+    pollOnce();
+  }
+
+  @Scheduled(every = "{reconciler.pollEvery:10s}", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+  void pollOnce() {
+    if (!running.compareAndSet(false, true)) {
+      return;
+    }
+    try {
+      var lease = jobs.leaseNext().orElse(null);
+      if (lease == null) return;
+
+      long now = System.currentTimeMillis();
+      jobs.markRunning(lease.jobId, now);
+
+      try {
+        var rid = ResourceId.newBuilder()
+            .setTenantId(lease.tenantId)
+            .setId(lease.connectorId)
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .build();
+
+        Connector conn = mc.connector().getConnector(
+            GetConnectorRequest.newBuilder().setConnectorId(rid).build()
+        ).getConnector();
+
+        ConnectorConfig cfg = toConfig(conn);
+
+        var result = svc.reconcile(cfg, lease.fullRescan);
+
+        long finished = System.currentTimeMillis();
+        if (result.ok()) {
+          jobs.markSucceeded(lease.jobId, finished, result.scanned, result.changed);
+        } else {
+          jobs.markFailed(lease.jobId, finished, result.message(), result.scanned, result.changed, result.errors);
+        }
+      } catch (Exception e) {
+        long finished = System.currentTimeMillis();
+        jobs.markFailed(lease.jobId, finished, e.getMessage(), 0, 0, 1);
+      }
+    } finally {
+      running.set(false);
+    }
+  }
+
+  private static ConnectorConfig toConfig(Connector c) {
+    Kind kind = switch (c.getKind()) {
+      case CK_ICEBERG_REST -> Kind.ICEBERG_REST;
+      case CK_DELTA        -> Kind.DELTA;
+      case CK_GLUE         -> Kind.GLUE;
+      case CK_UNITY        -> Kind.UNITY;
+      default -> throw new IllegalArgumentException("Unsupported kind: " + c.getKind());
+    };
+    var auth = new ConnectorConfig.Auth(
+        c.getAuth().getScheme(),
+        c.getAuth().getPropsMap(),
+        c.getAuth().getHeaderHintsMap(),
+        c.getAuth().getSecretRef()
+    );
+    return new ConnectorConfig(
+        kind,
+        c.getDisplayName(),
+        c.getTargetCatalogDisplayName(),
+        c.getTargetTenantId(),
+        c.getUri(),
+        c.getOptionsMap(),
+        auth
+    );
+  }
+}

@@ -263,7 +263,6 @@ public class DirectoryImpl implements Directory {
             ResourceId nsId = namespaces.getByPath(tenant, cat.getResourceId(), n.getPathList())
                 .orElseThrow();
 
-            // Resolve by scanning tables under ns (see note above)
             Optional<Table> tdOpt = tables
                 .listByNamespace(
                       cat.getResourceId(),

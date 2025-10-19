@@ -5,7 +5,6 @@ import java.util.Optional;
 import java.util.UUID;
 
 import org.jboss.logging.MDC;
-
 import io.grpc.Context;
 import io.grpc.Contexts;
 import io.grpc.Metadata;
@@ -25,6 +24,7 @@ import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.service.planning.PlanContextStore;
 import ai.floedb.metacat.service.planning.impl.PlanContext;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
+import ai.floedb.metacat.service.tenancy.impl.TenantRegistry;
 
 @ApplicationScoped
 @GlobalInterceptor
@@ -44,6 +44,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
   private Clock clock = Clock.systemUTC();
 
   @Inject PlanContextStore planStore;
+  @Inject TenantRegistry tenantRegistry;
 
   @Override
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
@@ -72,7 +73,9 @@ public class InboundContextInterceptor implements ServerInterceptor {
       .put("plan_id", planId)
       .put("correlation_id", corr)
       .build();
+
     var otelCtx = baggage.storeInContext(io.opentelemetry.context.Context.current());
+
     var span = Span.fromContext(otelCtx);
     if (span.getSpanContext().isValid()) {
       span.setAttribute("plan_id", planId);
@@ -84,15 +87,26 @@ public class InboundContextInterceptor implements ServerInterceptor {
     var forwarding = new SimpleForwardingServerCall<ReqT, RespT>(call) {
       @Override public void sendHeaders(Metadata h) { h.put(CORR, corr); super.sendHeaders(h); }
       @Override public void close(Status s, Metadata t) {
-        try { t.put(CORR, corr); }
-        finally { MDC.remove("plan_id"); MDC.remove("correlation_id"); }
+        try {
+          t.put(CORR, corr);
+        } finally {
+          MDC.remove("plan_id"); MDC.remove("correlation_id");
+        }
         super.close(s, t);
       }
     };
 
-    try (var scope = otelCtx.makeCurrent()) {
-      return Contexts.interceptCall(ctx, forwarding, headers, next);
+    var listener = Contexts.interceptCall(ctx, forwarding, headers, next);
+
+    span = io.opentelemetry.api.trace.Span.current();
+    if (span.getSpanContext().isValid()) {
+      span.setAttribute("plan_id", planId);
+      span.setAttribute("correlation_id", corr);
+      span.setAttribute("tenant_id", pc.getTenantId());
+      span.setAttribute("subject", pc.getSubject());
     }
+
+    return listener;
   }
 
   private ResolvedContext resolvePrincipalAndPlan(Metadata headers, String planIdHdr) {
@@ -100,6 +114,8 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
     if (pcBytes != null) {
       PrincipalContext pc = parsePrincipal(pcBytes);
+
+      validateTenant(pc.getTenantId());
 
       if (!isBlank(planIdHdr) && !isBlank(pc.getPlanId()) && !pc.getPlanId().equals(planIdHdr)) {
         throw Status.FAILED_PRECONDITION
@@ -159,7 +175,9 @@ public class InboundContextInterceptor implements ServerInterceptor {
     }
   }
 
-  private static boolean isBlank(String s) { return s == null || s.isBlank(); }
+  private static boolean isBlank(String s) {
+    return s == null || s.isBlank();
+  }
 
   private static PrincipalContext devContext() {
     return PrincipalContext.newBuilder()
@@ -172,7 +190,17 @@ public class InboundContextInterceptor implements ServerInterceptor {
       .addPermissions("namespace.write")
       .addPermissions("table.read")
       .addPermissions("table.write")
+      .addPermissions("table.write")
+      .addPermissions("connector.manage")
       .build();
+  }
+
+  private void validateTenant(String tenantId) {
+    if (isBlank(tenantId) || !tenantRegistry.exists(tenantId)) {
+      throw Status.UNAUTHENTICATED
+        .withDescription("invalid or unknown tenant: " + tenantId)
+        .asRuntimeException();
+    }
   }
 
   private record ResolvedContext(PrincipalContext pc, String planId) {}

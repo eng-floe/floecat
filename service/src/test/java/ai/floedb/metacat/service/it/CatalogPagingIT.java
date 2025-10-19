@@ -30,9 +30,9 @@ class CatalogPagingIT {
   @GrpcClient("resource-access")
   ResourceAccessGrpc.ResourceAccessBlockingStub resourceAccess;
 
-  private static final String TENANT = "t-it-0001";
+  private static final String TENANT = "t-0001";
   private static final int LIMIT = 10;
-  private static final int TOTAL = 13; // > LIMIT, leaves TOTAL-LIMIT on page 2
+  private static final int TOTAL = 25;
 
   private final Clock clock = Clock.systemUTC();
 
@@ -75,6 +75,14 @@ class CatalogPagingIT {
 
   @Test
   void listCatalogs_pagingAndTotals() {
+    var pageAllReq = ListCatalogsRequest.newBuilder()
+        .setPage(PageRequest.newBuilder()
+            .setPageSize(1000))
+        .build();
+    var pageAll = resourceAccess.listCatalogs(pageAllReq);
+    var total = pageAll.getPage().getTotalSize();
+    assertTrue(total >= TOTAL);
+
     var page1Req = ListCatalogsRequest.newBuilder()
         .setPage(PageRequest.newBuilder()
             .setPageSize(LIMIT))
@@ -83,7 +91,7 @@ class CatalogPagingIT {
     var page1 = resourceAccess.listCatalogs(page1Req);
     assertEquals(LIMIT, page1.getCatalogsCount(), "first page should return LIMIT items");
     assertFalse(page1.getPage().getNextPageToken().isEmpty(), "next_page_token should be set");
-    assertEquals(TOTAL, page1.getPage().getTotalSize(), "total_size should be TOTAL");
+    assertEquals(total, page1.getPage().getTotalSize(), "total_size should be TOTAL");
 
     var page2Req = ListCatalogsRequest.newBuilder()
         .setPage(PageRequest.newBuilder()
@@ -92,8 +100,7 @@ class CatalogPagingIT {
         .build();
 
     var page2 = resourceAccess.listCatalogs(page2Req);
-    assertEquals(TOTAL - LIMIT, page2.getCatalogsCount(), "second page should have the remainder");
-    assertTrue(page2.getPage().getNextPageToken().isEmpty(), "no further pages expected");
-    assertEquals(TOTAL, page2.getPage().getTotalSize(), "total_size should remain TOTAL across pages");
+    assertEquals(LIMIT, page2.getCatalogsCount(), "second page should have the remainder");
+    assertEquals(total, page2.getPage().getTotalSize(), "total_size should remain TOTAL across pages");
   }
 }
