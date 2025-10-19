@@ -72,7 +72,8 @@ public class CatalogRepository extends BaseRepository<Catalog> {
 
   public boolean rename(String tenant, ResourceId catId, String newName, long expectedVersion) {
     var byId = Keys.catPtr(tenant, catId.getId());
-    var cur = get(byId).orElseThrow(() -> new IllegalStateException("catalog not found"));
+    var cur = get(byId).orElseThrow(
+        () -> new NotFoundException("catalog not found: " + catId.getId()));
 
     if (newName.equals(cur.getDisplayName())) return true;
 
@@ -83,15 +84,9 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     var updated = cur.toBuilder().setDisplayName(newName).build();
     putBlob(blob, updated);
     reserveIndexOrIdempotent(newByName, blob);
-    try {
-      advancePointer(byId, blob, expectedVersion);
-    } catch (RuntimeException e) {
-      ptr.get(newByName).ifPresent(p -> compareAndDeleteOrFalse(ptr, newByName, p.getVersion()));
-      throw e;
-    }
-
-    ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(ptr, oldByName, p.getVersion()));
-    return true;
+    advancePointer(byId, blob, expectedVersion);
+    ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(oldByName, p.getVersion()));
+   return true;
   }
 
   public boolean delete(ResourceId catalogId) {
@@ -112,10 +107,10 @@ public class CatalogRepository extends BaseRepository<Catalog> {
 
     if (byName != null) {
       ptr.get(byName).ifPresent(
-          p -> compareAndDeleteOrFalse(ptr, byName, p.getVersion()));
+          p -> compareAndDeleteOrFalse(byName, p.getVersion()));
     }
 
-    if (!compareAndDeleteOrFalse(ptr, byId, pId.getVersion())) return false;
+    if (!compareAndDeleteOrFalse(byId, pId.getVersion())) return false;
 
     deleteQuietly(() -> blobs.delete(blob));
     return true;
@@ -130,9 +125,9 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     var byName = catOpt.map(
         c -> Keys.catByNamePtr(tid, c.getDisplayName())).orElse(null);
 
-    if (!compareAndDeleteOrFalse(ptr, byId, expectedVersion)) return false;
+    if (!compareAndDeleteOrFalse(byId, expectedVersion)) return false;
     if (byName != null) ptr.get(byName).ifPresent(
-        p -> compareAndDeleteOrFalse(ptr, byName, p.getVersion()));
+        p -> compareAndDeleteOrFalse(byName, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
     return true;
   }

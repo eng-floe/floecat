@@ -130,23 +130,18 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
 
     putBlob(blob, updated);
     reserveIndexOrIdempotent(newByPath, blob);
-    try {
-      if (sameCatalog) {
-        advancePointer(oldById, blob, expectedVersion);
-      } else {
-        reserveIndexOrIdempotent(newById, blob);
-        if (!compareAndDeleteOrFalse(ptr, oldById, expectedVersion)) {
-          ptr.get(newById).ifPresent(p -> compareAndDeleteOrFalse(ptr, newById, p.getVersion()));
-          ptr.get(newByPath).ifPresent(p -> compareAndDeleteOrFalse(ptr, newByPath, p.getVersion()));
-          return false;
-        }
+    if (sameCatalog) {
+      advancePointer(oldById, blob, expectedVersion);
+    } else {
+      reserveIndexOrIdempotent(newById, blob);
+      if (!compareAndDeleteOrFalse(oldById, expectedVersion)) {
+        ptr.get(newById).ifPresent(p -> compareAndDeleteOrFalse(newById, p.getVersion()));
+        ptr.get(newByPath).ifPresent(p -> compareAndDeleteOrFalse(newByPath, p.getVersion()));
+        return false;
       }
-    } catch (RuntimeException e) {
-      ptr.get(newByPath).ifPresent(p -> compareAndDeleteOrFalse(ptr, newByPath, p.getVersion()));
-      throw e;
     }
 
-    ptr.get(oldByPath).ifPresent(p -> compareAndDeleteOrFalse(ptr, oldByPath, p.getVersion()));
+    ptr.get(oldByPath).ifPresent(p -> compareAndDeleteOrFalse(oldByPath, p.getVersion()));
     return true;
   }
 
@@ -163,9 +158,9 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     }).orElse(null);
 
     if (byPath != null) {
-      ptr.get(byPath).ifPresent(p -> compareAndDeleteOrFalse(ptr, byPath, p.getVersion()));
+      ptr.get(byPath).ifPresent(p -> compareAndDeleteOrFalse(byPath, p.getVersion()));
     }
-    ptr.get(byId).ifPresent(p -> compareAndDeleteOrFalse(ptr, byId, p.getVersion()));
+    ptr.get(byId).ifPresent(p -> compareAndDeleteOrFalse(byId, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
     return true;
   }
@@ -182,9 +177,9 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
       return Keys.nsByPathPtr(tid, catalogId.getId(), full);
     }).orElse(null);
 
-    if (!compareAndDeleteOrFalse(ptr, byId, expectedVersion)) return false;
+    if (!compareAndDeleteOrFalse(byId, expectedVersion)) return false;
     if (byPath != null) ptr.get(byPath).ifPresent(
-        p -> compareAndDeleteOrFalse(ptr, byPath, p.getVersion()));
+        p -> compareAndDeleteOrFalse(byPath, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
     return true;
   }

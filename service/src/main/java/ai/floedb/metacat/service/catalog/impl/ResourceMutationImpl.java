@@ -53,6 +53,7 @@ import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
+import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
@@ -110,10 +111,12 @@ public class ResourceMutationImpl implements ResourceMutation {
 
           try {
             catalogs.create(built);
-          } catch (IllegalStateException e) {
+          } catch (BaseRepository.NameConflictException e) {
             throw GrpcErrors.conflict(
                 corrId(), "catalog.already_exists",
-                java.util.Map.of("display_name", built.getDisplayName()));
+                    Map.of("display_name", built.getDisplayName()));
+          } catch (BaseRepository.AbortRetryableException are) {
+            throw GrpcErrors.aborted(corrId(), null, Map.of());
           }
 
           return new IdempotencyGuard.CreateResult<>(built, catalogId);
@@ -162,37 +165,46 @@ public class ResourceMutationImpl implements ResourceMutation {
     }
 
     if (!desiredName.equals(prev.getDisplayName())) {
-      final boolean renamed;
       try {
-        renamed = catalogs.rename(p.getTenantId(), catalogId, desiredName, curMeta.getPointerVersion());
-      } catch (IllegalStateException e) {
+        catalogs.rename(p.getTenantId(), catalogId, desiredName, curMeta.getPointerVersion());
+      } catch (BaseRepository.NameConflictException nce) {
         throw GrpcErrors.conflict(corr, "catalog.already_exists",
             Map.of("display_name", desiredName));
-      }
-      if (!renamed) {
-        var nowMeta = catalogs.metaFor(catalogId, nowTs);
+      } catch (BaseRepository.PreconditionFailedException pfe) {
         throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-            Map.of("expected", Long.toString(curMeta.getPointerVersion()),
-                "actual",   Long.toString(nowMeta.getPointerVersion())));
+            Map.of("expected", Long.toString(curMeta.getPointerVersion())));
+      } catch (BaseRepository.AbortRetryableException are) {
+        throw GrpcErrors.aborted(corr, null, Map.of());
       }
+
       if (!Objects.equals(desiredDesc, prev.getDescription())) {
         var afterMeta = catalogs.metaFor(catalogId, nowTs);
         var renamedObj = catalogs.getById(catalogId).orElse(prev);
         var withDesc = renamedObj.toBuilder().setDescription(desiredDesc).build();
-        if (!catalogs.update(withDesc, afterMeta.getPointerVersion())) {
-          var nowMeta = catalogs.metaFor(catalogId, nowTs);
+
+        try {
+          catalogs.update(withDesc, afterMeta.getPointerVersion());
+        } catch (BaseRepository.PreconditionFailedException pfe) {
           throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-              Map.of("expected", Long.toString(afterMeta.getPointerVersion()),
-                  "actual",   Long.toString(nowMeta.getPointerVersion())));
+              Map.of("expected", Long.toString(curMeta.getPointerVersion()),
+                  "actual", Long.toString(afterMeta.getPointerVersion())));
+        } catch (BaseRepository.AbortRetryableException are) {
+          throw GrpcErrors.aborted(corr, null, Map.of());
         }
+        
       }
     } else {
+      var nowMeta = catalogs.metaFor(catalogId, nowTs);
       var updated = prev.toBuilder().setDescription(desiredDesc).build();
-      if (!catalogs.update(updated, curMeta.getPointerVersion())) {
-        var nowMeta = catalogs.metaFor(catalogId, nowTs);
+
+      try {
+        catalogs.update(updated, curMeta.getPointerVersion()); 
+      } catch (BaseRepository.PreconditionFailedException pfe) {
         throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-            Map.of("expected", Long.toString(curMeta.getPointerVersion()),
-                "actual",   Long.toString(nowMeta.getPointerVersion())));
+              Map.of("expected", Long.toString(curMeta.getPointerVersion()),
+                  "actual", Long.toString(nowMeta.getPointerVersion())));
+      } catch (BaseRepository.AbortRetryableException are) {
+        throw GrpcErrors.aborted(corr, null, Map.of());
       }
     }
 
@@ -230,13 +242,19 @@ public class ResourceMutationImpl implements ResourceMutation {
     var meta = catalogs.metaFor(catalogId, nowTs);
     enforcePreconditions(corr, meta, req.getPrecondition());
 
-    if (!catalogs.deleteWithPrecondition(catalogId, meta.getPointerVersion())) {
-      var cur = catalogs.metaForSafe(catalogId, nowTs);
-      throw GrpcErrors.preconditionFailed(
-          corr, "version_mismatch",
+    var cur = catalogs.metaForSafe(catalogId, nowTs);
+    try {
+      catalogs.deleteWithPrecondition(catalogId, meta.getPointerVersion());
+    } catch (BaseRepository.PreconditionFailedException pfe) {
+      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
           Map.of("expected", Long.toString(meta.getPointerVersion()),
-                "actual", Long.toString(cur.getPointerVersion())));
+              "actual", Long.toString(cur.getPointerVersion())));
+    } catch (BaseRepository.AbortRetryableException are) {
+      throw GrpcErrors.aborted(corr, null, Map.of());
+    } catch (BaseRepository.NotFoundException nfe) {
+      throw GrpcErrors.notFound(corrId(), "catalog", Map.of("id", catalogId.getId()));
     }
+
     return Uni.createFrom().item(DeleteCatalogResponse.newBuilder().setMeta(meta).build());
   }
 
@@ -278,14 +296,16 @@ public class ResourceMutationImpl implements ResourceMutation {
 
           try {
             namespaces.create(built, req.getSpec().getCatalogId());
-          } catch (IllegalStateException e) {
-            {
-              var parts = new java.util.ArrayList<>(req.getSpec().getPathList());
-              parts.add(req.getSpec().getDisplayName());
-              var pretty = String.join("/", parts);
-              throw GrpcErrors.conflict(corrId(), "namespace.already_exists",
-                  Map.of("catalog", req.getSpec().getCatalogId().getId(), "path", pretty));
-            }
+          } catch (BaseRepository.NameConflictException e) {
+            var parts = new ArrayList<>(req.getSpec().getPathList());
+            parts.add(req.getSpec().getDisplayName());
+            var pretty = String.join("/", parts);
+            throw GrpcErrors.conflict(
+                corrId(), "namespace.already_exists",
+                    Map.of("catalog", req.getSpec().getCatalogId().getId(),
+                        "path", pretty));
+          } catch (BaseRepository.AbortRetryableException are) {
+            throw GrpcErrors.aborted(corrId(), null, Map.of());
           }
 
           return new IdempotencyGuard.CreateResult<>(built, namespaceId);
@@ -355,25 +375,37 @@ public class ResourceMutationImpl implements ResourceMutation {
 
     var updated = cur.toBuilder().setDisplayName(newLeaf).clearParents().addAllParents(newParents).build();
 
-    boolean ok = namespaces.renameOrMove(
-        updated,
-        curCatalogId,
-        curParents,
-        cur.getDisplayName(),
-        targetCatalogId,
-        newParents,
-        curMeta.getPointerVersion());
-
-    if (!ok) {
-      var nowMeta = namespaces.metaFor(targetCatalogId, nsId, nowTs);
+    var nowMeta = namespaces.metaFor(targetCatalogId, nsId, nowTs);
+    try {
+      namespaces.renameOrMove(
+          updated,
+          curCatalogId,
+          curParents,
+          cur.getDisplayName(),
+          targetCatalogId,
+          newParents,
+          curMeta.getPointerVersion());
+    } catch (BaseRepository.NameConflictException e) {
+      var parts = new ArrayList<>(newParents);
+      parts.add(newLeaf);
+      var pretty = String.join("/", parts);
+      throw GrpcErrors.conflict(
+          corrId(), "namespace.already_exists",
+              Map.of("catalog", targetCatalogId.getId(),
+                  "path", pretty));
+    } catch (BaseRepository.PreconditionFailedException pfe) {
       throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-          Map.of("expected", Long.toString(curMeta.getPointerVersion()),
-                "actual", Long.toString(nowMeta.getPointerVersion())));
+        Map.of("expected", Long.toString(curMeta.getPointerVersion()),
+            "actual", Long.toString(nowMeta.getPointerVersion())));
+    } catch (BaseRepository.AbortRetryableException are) {
+      throw GrpcErrors.aborted(corr, null, Map.of());
     }
 
     var outMeta = namespaces.metaFor(targetCatalogId, nsId, nowTs);
     return Uni.createFrom().item(
-        RenameNamespaceResponse.newBuilder().setNamespace(updated).setMeta(outMeta).build());
+        RenameNamespaceResponse.newBuilder()
+        .setNamespace(updated)
+        .setMeta(outMeta).build());
   }
 
   @Override
@@ -417,13 +449,17 @@ public class ResourceMutationImpl implements ResourceMutation {
     var meta = namespaces.metaFor(catId, namespaceId, nowTs);
     enforcePreconditions(corr, meta, req.getPrecondition());
 
-    boolean ok = namespaces.deleteWithPrecondition(catId, namespaceId, meta.getPointerVersion());
-    if (!ok) {
-      var cur = namespaces.metaFor(catId, namespaceId, nowTs);
-      throw GrpcErrors.preconditionFailed(
-          corr, "version_mismatch",
+    var cur = namespaces.metaFor(catId, namespaceId, nowTs);
+    try {
+      namespaces.deleteWithPrecondition(catId, namespaceId, meta.getPointerVersion());
+    } catch (BaseRepository.PreconditionFailedException pfe) {
+      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
           Map.of("expected", Long.toString(meta.getPointerVersion()),
                 "actual", Long.toString(cur.getPointerVersion())));
+    } catch (BaseRepository.AbortRetryableException are) {
+      throw GrpcErrors.aborted(corr, null, Map.of());
+    } catch (BaseRepository.NotFoundException nfe) {
+      throw GrpcErrors.notFound(corrId(), "namespace", Map.of("id", namespaceId.getId()));
     }
 
     return Uni.createFrom().item(DeleteNamespaceResponse.newBuilder().setMeta(meta).build());
@@ -474,10 +510,14 @@ public class ResourceMutationImpl implements ResourceMutation {
 
           try {
             tables.create(td);
-          } catch (IllegalStateException e) {
-            throw GrpcErrors.conflict(corrId(), "table.already_exists",
-                Map.of("name", td.getDisplayName()));
+          } catch (BaseRepository.NameConflictException e) {
+            throw GrpcErrors.conflict(
+                corrId(), "table.already_exists",
+                    Map.of("name", td.getDisplayName()));
+          } catch (BaseRepository.AbortRetryableException are) {
+            throw GrpcErrors.aborted(corrId(), null, Map.of());
           }
+
           return new IdempotencyGuard.CreateResult<>(td, tableId);
         },
         (t) -> tables.metaFor(t.getResourceId(), nowTs),
@@ -523,13 +563,15 @@ public class ResourceMutationImpl implements ResourceMutation {
     var meta = tables.metaFor(tableId, nowTs);
     enforcePreconditions(corr, meta, req.getPrecondition());
 
-    boolean ok = tables.update(updated, meta.getPointerVersion());
-    if (!ok) {
-      var now = tables.metaFor(tableId, nowTs);
-      throw GrpcErrors.preconditionFailed(
-          corr, "version_mismatch",
-          Map.of("expected", Long.toString(meta.getPointerVersion()),
-                "actual", Long.toString(now.getPointerVersion())));
+    var now = tables.metaFor(tableId, nowTs);
+    try {
+      tables.update(updated, meta.getPointerVersion());
+    } catch (BaseRepository.PreconditionFailedException pfe) {
+      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+        Map.of("expected", Long.toString(meta.getPointerVersion()),
+            "actual", Long.toString(now.getPointerVersion())));
+    } catch (BaseRepository.AbortRetryableException are) {
+      throw GrpcErrors.aborted(corr, null, Map.of());
     }
 
     var outMeta = tables.metaFor(tableId, nowTs);
@@ -565,18 +607,18 @@ public class ResourceMutationImpl implements ResourceMutation {
     var meta = tables.metaFor(tableId, nowTs);
     enforcePreconditions(corr, meta, req.getPrecondition());
 
-    boolean ok;
+    var now = tables.metaFor(tableId, nowTs);
     try {
-      ok = tables.rename(tableId, newName, meta.getPointerVersion());
-    } catch (IllegalStateException e) {
-      throw GrpcErrors.conflict(corr, "table.already_exists", Map.of("name", newName));
-    }
-    if (!ok) {
-      var now = tables.metaFor(tableId, nowTs);
-      throw GrpcErrors.preconditionFailed(
-          corr, "version_mismatch",
-          Map.of("expected", Long.toString(meta.getPointerVersion()),
-                "actual", Long.toString(now.getPointerVersion())));
+      tables.rename(tableId, newName, meta.getPointerVersion());
+    } catch (BaseRepository.NameConflictException nce) {
+      throw GrpcErrors.conflict(corr, "table.already_exists",
+          Map.of("display_name", newName));
+    } catch (BaseRepository.PreconditionFailedException pfe) {
+      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+        Map.of("expected", Long.toString(meta.getPointerVersion()),
+            "actual", Long.toString(now.getPointerVersion())));
+    } catch (BaseRepository.AbortRetryableException are) {
+      throw GrpcErrors.aborted(corr, null, Map.of());
     }
 
     var outMeta = tables.metaFor(tableId, nowTs);
@@ -638,27 +680,19 @@ public class ResourceMutationImpl implements ResourceMutation {
     final var meta = tables.metaFor(tableId, nowTs);
     enforcePreconditions(corr, meta, req.getPrecondition());
 
-    final boolean ok;
+    final var now = tables.metaFor(tableId, nowTs);
     try {
-      ok = tables.move(updated, cur.getCatalogId(), cur.getNamespaceId(),
+      tables.move(updated, cur.getCatalogId(), cur.getNamespaceId(),
           newCatId, newNsId, meta.getPointerVersion());
-    } catch (IllegalStateException e) {
-      throw GrpcErrors.conflict(
-          corr, "table.already_exists",
-          Map.of("name", targetName));
-    }
-
-    if (!ok) {
-      final var now = tables.metaFor(tableId, nowTs);
-      if (now.getPointerVersion() != meta.getPointerVersion()) {
-        throw GrpcErrors.preconditionFailed(
-            corr, "version_mismatch",
-            Map.of("expected", Long.toString(meta.getPointerVersion()),
-                  "actual", Long.toString(now.getPointerVersion())));
-      }
-      throw GrpcErrors.preconditionFailed(
-          corr, "move_conflict",
-          Map.of("reason", "target_namespace_busy_or_old_namespace_cas_failed"));
+    } catch (BaseRepository.NameConflictException nce) {
+      throw GrpcErrors.conflict(corr, "table.already_exists",
+          Map.of("display_name", targetName));
+    } catch (BaseRepository.PreconditionFailedException pfe) {
+      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+        Map.of("expected", Long.toString(meta.getPointerVersion()),
+            "actual", Long.toString(now.getPointerVersion())));
+    } catch (BaseRepository.AbortRetryableException are) {
+      throw GrpcErrors.aborted(corr, null, Map.of());
     }
 
     final var outMeta = tables.metaFor(tableId, nowTs);
@@ -689,15 +723,20 @@ public class ResourceMutationImpl implements ResourceMutation {
     var meta = tables.metaFor(tableId, nowTs);
     enforcePreconditions(corr, meta, req.getPrecondition());
 
-    boolean ok = tables.deleteWithPrecondition(tableId, meta.getPointerVersion());
-    if (!ok) {
-      var nowPtr = ptr.get(canonKey).orElse(null);
-      var actual = (nowPtr == null) ? 0L : nowPtr.getVersion();
+  var nowPtr = ptr.get(canonKey).orElse(null);
+  var actual = (nowPtr == null) ? 0L : nowPtr.getVersion();
+   try {
+    tables.deleteWithPrecondition(tableId, meta.getPointerVersion());
+    } catch (BaseRepository.PreconditionFailedException pfe) {
       throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-          java.util.Map.of("expected", Long.toString(meta.getPointerVersion()),
-              "actual", Long.toString(actual)));
+        Map.of("expected", Long.toString(meta.getPointerVersion()),
+            "actual", Long.toString(actual)));
+    } catch (BaseRepository.AbortRetryableException are) {
+      throw GrpcErrors.aborted(corr, null, Map.of());
+    } catch (BaseRepository.NotFoundException nfe) {
+      throw GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId()));
     }
-
+ 
     return Uni.createFrom().item(DeleteTableResponse.newBuilder().setMeta(meta).build());
   }
 
@@ -727,10 +766,14 @@ public class ResourceMutationImpl implements ResourceMutation {
               .build();
           try {
             snapshots.create(snap);
-          } catch (IllegalStateException e) {
-            throw GrpcErrors.conflict(corrId(), "snapshot.already_exists",
-                Map.of("name", Long.toString(snap.getSnapshotId())));
+          } catch (BaseRepository.NameConflictException e) {
+            throw GrpcErrors.conflict(
+                corrId(), "snapshot.already_exists",
+                    Map.of("name", Long.toString(snap.getSnapshotId())));
+          } catch (BaseRepository.AbortRetryableException are) {
+            throw GrpcErrors.aborted(corrId(), null, Map.of());
           }
+
           return new IdempotencyGuard.CreateResult<>(snap, snap.getTableId());
         },
         (s) -> snapshots.metaFor(s.getTableId(), s.getSnapshotId(), nowTs),
@@ -762,13 +805,19 @@ public class ResourceMutationImpl implements ResourceMutation {
     var meta = snapshots.metaFor(tableId, snapshotId, nowTs);
     enforcePreconditions(corr, meta, req.getPrecondition());
 
-    boolean ok = snapshots.deleteWithPrecondition(tableId, snapshotId, meta.getPointerVersion());
-    if (!ok) {
-      var nowPtr = ptr.get(snapKey).orElse(null);
-      var actual = (nowPtr == null) ? 0L : nowPtr.getVersion();
+    var nowPtr = ptr.get(snapKey).orElse(null);
+    var actual = (nowPtr == null) ? 0L : nowPtr.getVersion();
+    try {
+      snapshots.deleteWithPrecondition(tableId, snapshotId, meta.getPointerVersion());
+    } catch (BaseRepository.PreconditionFailedException pfe) {
       throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-          java.util.Map.of("expected", Long.toString(meta.getPointerVersion()),
-              "actual", Long.toString(actual)));
+        Map.of("expected", Long.toString(meta.getPointerVersion()),
+            "actual", Long.toString(actual)));
+    } catch (BaseRepository.AbortRetryableException are) {
+      throw GrpcErrors.aborted(corr, null, Map.of());
+    } catch (BaseRepository.NotFoundException nfe) {
+      throw GrpcErrors.notFound(corrId(), "snapshot",
+          Map.of("id", Long.toString(snapshotId)));
     }
 
     return Uni.createFrom().item(

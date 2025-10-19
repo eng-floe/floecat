@@ -48,7 +48,7 @@ public class StatsRepository extends BaseRepository<TableStats> {
     final String key = Keys.snapTableStatsPtr(tid, tbl, snapshotId);
     final String blob = Keys.snapTableStatsBlob(tid, tbl, snapshotId);
 
-    ptr.get(key).ifPresent(p -> compareAndDeleteOrFalse(ptr, key, p.getVersion()));
+    ptr.get(key).ifPresent(p -> compareAndDeleteOrFalse(key, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
     return true;
   }
@@ -60,7 +60,7 @@ public class StatsRepository extends BaseRepository<TableStats> {
     try {
       return Optional.of(ColumnStats.parseFrom(blobs.get(p.get().getBlobUri())));
     } catch (Exception e) {
-      throw new RuntimeException("parse failed: " + p.get().getBlobUri(), e);
+      throw new CorruptionException("parse failed: " + p.get().getBlobUri(), e);
     }
   }
 
@@ -95,7 +95,7 @@ public class StatsRepository extends BaseRepository<TableStats> {
       }
       try { out.add(ColumnStats.parseFrom(bytes)); }
       catch (Exception e) {
-        throw new RuntimeException("parse failed: " + r.blobUri(), e);
+        throw new CorruptionException("parse failed: " + r.blobUri(), e);
       }
     }
     return out;
@@ -112,7 +112,7 @@ public class StatsRepository extends BaseRepository<TableStats> {
     do {
       var rows = ptr.listPointersByPrefix(pfx, 200, token, next);
       for (var r : rows) {
-        ptr.get(r.key()).ifPresent(p -> compareAndDeleteOrFalse(ptr, r.key(), p.getVersion()));
+        ptr.get(r.key()).ifPresent(p -> compareAndDeleteOrFalse(r.key(), p.getVersion()));
         deleteQuietly(() -> blobs.delete(r.blobUri()));
       }
       token = next.toString(); next.setLength(0);

@@ -15,6 +15,10 @@ import ai.floedb.metacat.common.rpc.ErrorCode;
 public final class GrpcErrors {
   private GrpcErrors() {}
 
+  public static StatusRuntimeException aborted(String correlationId, String messageKey, Map<String,String> params) {
+    return build(io.grpc.Status.ABORTED, ErrorCode.MC_ABORT_RETRYABLE, correlationId, params, Map.of(), messageKey);
+  }
+
   public static StatusRuntimeException invalidArgument(String correlationId, String messageKey, Map<String,String> params) {
     return build(io.grpc.Status.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, correlationId, params, Map.of(), messageKey);
   }

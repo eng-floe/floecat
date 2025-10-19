@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -14,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.Pointer;
@@ -299,7 +302,7 @@ class BackendStorageIT {
   }
 
   @Test
-  void delete_skewTolerance() {
+  void delete_skewTolerance() throws Exception {
     var catName = "cat_del_" + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation, catName, "del");
     var tenantId = TestSupport.seedTenantId(directory, catName);
@@ -322,8 +325,15 @@ class BackendStorageIT {
 
     // Simulate blob missing
     assertTrue(blobs.delete(Keys.tblBlob(tenantId, tbl.getResourceId().getId())));
-    TestSupport.deleteTable(mutation, ns.getResourceId(), tbl.getResourceId());
-    assertTrue(ptr.get(canon).isEmpty());
+
+    var bad = assertThrows(StatusRuntimeException.class, () ->
+        mutation.deleteTable(DeleteTableRequest.newBuilder().setTableId(tbl.getResourceId()).build())
+    );
+    TestSupport.assertGrpcAndMc(
+        bad,
+        Status.Code.NOT_FOUND,
+        ErrorCode.MC_NOT_FOUND, 
+        "Table not found");
 
     var tbl2 = TestSupport.createTable(
         mutation,

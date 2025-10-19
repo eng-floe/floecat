@@ -84,14 +84,8 @@ public class TableRepository extends BaseRepository<Table> {
     putBlob(blob, updated);
 
     reserveIndexOrIdempotent(newByName, blob);
-    try {
-      advancePointer(canon, blob, expectedVersion);
-    } catch (RuntimeException e) {
-      ptr.get(newByName).ifPresent(p -> compareAndDeleteOrFalse(ptr, newByName, p.getVersion()));
-      throw e;
-    }
-
-    ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(ptr, oldByName, p.getVersion()));
+    advancePointer(canon, blob, expectedVersion);
+    ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(oldByName, p.getVersion()));
     return true;
   }
 
@@ -113,14 +107,8 @@ public class TableRepository extends BaseRepository<Table> {
 
     putBlob(blob, updated);
     reserveIndexOrIdempotent(newByName, blob);
-    try {
-      advancePointer(canon, blob, expectedVersion);
-    } catch (RuntimeException e) {
-      ptr.get(newByName).ifPresent(p -> compareAndDeleteOrFalse(ptr, newByName, p.getVersion()));
-      throw e;
-    }
-
-    ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(ptr, oldByName, p.getVersion()));
+    advancePointer(canon, blob, expectedVersion);
+    ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(oldByName, p.getVersion()));
     return true;
   }
 
@@ -135,9 +123,9 @@ public class TableRepository extends BaseRepository<Table> {
         .orElse(null);
 
     if (byName != null) {
-      ptr.get(byName).ifPresent(p -> compareAndDeleteOrFalse(ptr, byName, p.getVersion()));
+      ptr.get(byName).ifPresent(p -> compareAndDeleteOrFalse(byName, p.getVersion()));
     }
-    ptr.get(canon).ifPresent(p -> compareAndDeleteOrFalse(ptr, canon, p.getVersion()));
+    ptr.get(canon).ifPresent(p -> compareAndDeleteOrFalse(canon, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
     return true;
   }
@@ -152,11 +140,11 @@ public class TableRepository extends BaseRepository<Table> {
         tid, td.getCatalogId().getId(), td.getNamespaceId().getId(), td.getDisplayName()))
         .orElse(null);
 
-    if (!compareAndDeleteOrFalse(ptr, canon, expectedVersion)) {
+    if (!compareAndDeleteOrFalse(canon, expectedVersion)) {
       return false;
     }
     if (byName != null) ptr.get(byName).ifPresent(
-        p -> compareAndDeleteOrFalse(ptr, byName, p.getVersion()));
+        p -> compareAndDeleteOrFalse(byName, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
     return true;
   }

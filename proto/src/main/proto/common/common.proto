@@ -115,6 +115,7 @@ enum ErrorCode {
   MC_INTERNAL = 9;
   MC_UNAVAILABLE = 10;
   MC_TIMEOUT = 11;
+  MC_ABORT_RETRYABLE = 12;
 }
 
 message Error {

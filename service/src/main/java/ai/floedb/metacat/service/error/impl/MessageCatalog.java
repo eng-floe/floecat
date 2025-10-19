@@ -29,6 +29,7 @@ public String render(Error e) {
 
   private static String defaultTemplate(ErrorCode code) {
     return switch (code) {
+      case MC_ABORT_RETRYABLE -> "Conflict detected, retry.";
       case MC_NOT_FOUND -> "The {resource} was not found: {id}.";
       case MC_INVALID_ARGUMENT -> "Invalid value for {field}.";
       case MC_PRECONDITION_FAILED -> "Precondition failed: {reason}.";

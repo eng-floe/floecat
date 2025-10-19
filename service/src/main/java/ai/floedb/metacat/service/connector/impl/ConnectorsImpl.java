@@ -22,6 +22,7 @@ import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.catalog.util.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.ConnectorRepository;
+import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import ai.floedb.metacat.service.storage.IdempotencyStore;
@@ -45,15 +46,6 @@ public class ConnectorsImpl implements Connectors {
     authz.require(p, "connector.manage");
 
     final var tenant = p.getTenantId();
-    final var targetTenant = req.getSpec().getTargetTenantId();
-    if (targetTenant == null || targetTenant.isBlank()) {
-      throw GrpcErrors.invalidArgument(corrId(), null,
-          Map.of("field", "tenant_id"));
-    }
-
-    if (!targetTenant.equals(tenant)) {
-      throw GrpcErrors.permissionDenied(corrId(), "tenant", Map.of());
-    }
 
     final var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
     final var nowTs = Timestamps.fromMillis(clock.millis());
@@ -79,8 +71,7 @@ public class ConnectorsImpl implements Connectors {
               .setKind(spec.getKind())
               .setTargetCatalogDisplayName(mustNonEmpty(
                     spec.getTargetCatalogDisplayName(), "target_catalog_display_name"))
-              .setTargetTenantId(spec.getTargetTenantId().isBlank()
-                  ? tenant : spec.getTargetTenantId())
+              .setTargetTenantId(tenant)
               .setUri(mustNonEmpty(spec.getUri(), "uri"))
               .putAllOptions(spec.getOptionsMap())
               .setAuth(spec.getAuth())
@@ -91,15 +82,14 @@ public class ConnectorsImpl implements Connectors {
               .build();
 
           try {
-            if (connectors.getByName(tenant, c.getDisplayName()).isPresent()) {
-              throw GrpcErrors.conflict(corrId(), "connector.already_exists",
-                  Map.of("display_name", c.getDisplayName()));
-            }
             connectors.create(c);
-          } catch (IllegalStateException ise) {
+          } catch (BaseRepository.NameConflictException nce) {
             throw GrpcErrors.conflict(corrId(), "connector.already_exists",
                 Map.of("display_name", c.getDisplayName()));
+          } catch (BaseRepository.AbortRetryableException are) {
+            throw GrpcErrors.aborted(corrId(), null, Map.of());
           }
+
           return new IdempotencyGuard.CreateResult<>(c, rid);
         },
         (conn) -> connectors.metaFor(conn.getResourceId(), nowTs),
@@ -137,7 +127,7 @@ public class ConnectorsImpl implements Connectors {
     var p = principal.get();
     authz.require(p, "connector.manage");
 
-    var tenant = req.getTenantId().isBlank() ? p.getTenantId() : req.getTenantId();
+    var tenant = p.getTenantId();
 
     var page = req.getPage();
     int limit = page.getPageSize() > 0 ? page.getPageSize() : 100;
@@ -170,6 +160,7 @@ public class ConnectorsImpl implements Connectors {
     var cur = connectors.getById(rid)
         .orElseThrow(() -> GrpcErrors.notFound(
           corr, "connector", Map.of("id", rid.getId())));
+    var tenant = p.getTenantId();
 
     var spec = req.getSpec();
     var nowTs = Timestamps.fromMillis(clock.millis());
@@ -182,8 +173,7 @@ public class ConnectorsImpl implements Connectors {
         .setKind(spec.getKind() == ConnectorKind.CK_UNSPECIFIED ? cur.getKind() : spec.getKind())
         .setTargetCatalogDisplayName(spec.getTargetCatalogDisplayName().isBlank()
             ? cur.getTargetCatalogDisplayName() : spec.getTargetCatalogDisplayName())
-        .setTargetTenantId(spec.getTargetTenantId().isBlank()
-            ? cur.getTargetTenantId() : spec.getTargetTenantId())
+        .setTargetTenantId(tenant)
         .setUri(spec.getUri().isBlank() ? cur.getUri() : spec.getUri())
         .clearOptions().putAllOptions(spec.getOptionsMap().isEmpty()
             ? cur.getOptionsMap() : spec.getOptionsMap())
@@ -199,11 +189,23 @@ public class ConnectorsImpl implements Connectors {
 
     boolean nameChanged = !desired.getDisplayName().equals(cur.getDisplayName());
     if (nameChanged) {
-      try {
-        connectors.rename(desired, cur.getDisplayName(), curMeta.getPointerVersion());
-      } catch (IllegalStateException e) {
+      var existing = connectors.getByName(p.getTenantId(), desired.getDisplayName());
+      if (existing.isPresent() &&
+          !existing.get().getResourceId().getId().equals(rid.getId())) {
         throw GrpcErrors.conflict(corr, "connector.already_exists",
             Map.of("display_name", desired.getDisplayName()));
+      }
+
+      try {
+        connectors.rename(desired, cur.getDisplayName(), curMeta.getPointerVersion());
+      } catch (BaseRepository.NameConflictException nce) {
+        throw GrpcErrors.conflict(corr, "connector.already_exists",
+            Map.of("display_name", desired.getDisplayName()));
+      } catch (BaseRepository.PreconditionFailedException pfe) {
+        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+            Map.of("expected", Long.toString(curMeta.getPointerVersion())));
+      } catch (BaseRepository.AbortRetryableException are) {
+        throw GrpcErrors.aborted(corr, null, Map.of());
       }
     } else {
       connectors.update(desired, curMeta.getPointerVersion());
@@ -235,13 +237,17 @@ public class ConnectorsImpl implements Connectors {
     var curMeta = connectors.metaFor(rid, nowTs);
     enforcePreconditions(corr, curMeta, req.getPrecondition());
 
-    boolean ok = connectors.deleteWithPrecondition(rid, curMeta.getPointerVersion());
-    if (!ok) {
-      var cur = connectors.metaForSafe(rid, nowTs);
-      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-          Map.of("expected", Long.toString(curMeta.getPointerVersion()),
-                 "actual", Long.toString(cur.getPointerVersion())));
+    var cur = connectors.metaForSafe(rid, nowTs);
+    try {
+      connectors.deleteWithPrecondition(rid, curMeta.getPointerVersion());
+    } catch (BaseRepository.PreconditionFailedException pfe) {
+        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+            Map.of("expected", Long.toString(curMeta.getPointerVersion()),
+              "actual", Long.toString(cur.getPointerVersion())));
+    } catch (BaseRepository.AbortRetryableException are) {
+      throw GrpcErrors.aborted(corr, null, Map.of());
     }
+
     return Uni.createFrom().item(DeleteConnectorResponse.newBuilder().setMeta(curMeta).build());
   }
 
@@ -306,7 +312,8 @@ public class ConnectorsImpl implements Connectors {
     var rid = req.getConnectorId();
     ensureKind(rid, "TriggerReconcile");
     connectors.getById(rid)
-        .orElseThrow(() -> GrpcErrors.notFound(corrId(), "connector", Map.of("id", rid.getId())));
+        .orElseThrow(() -> GrpcErrors.notFound(
+            corrId(), "connector", Map.of("id", rid.getId())));
 
     var jobId = jobs.enqueue(rid.getTenantId(), rid.getId(), req.getFullRescan());
     return Uni.createFrom().item(TriggerReconcileResponse.newBuilder().setJobId(jobId).build());
@@ -366,7 +373,7 @@ public class ConnectorsImpl implements Connectors {
     if (checkVer && cur.getPointerVersion() != pc.getExpectedVersion()) {
       throw GrpcErrors.preconditionFailed(corrId, "version_mismatch",
           Map.of("expected", Long.toString(pc.getExpectedVersion()),
-                 "actual", Long.toString(cur.getPointerVersion())));
+              "actual", Long.toString(cur.getPointerVersion())));
     }
     if (checkTag && !Objects.equals(cur.getEtag(), pc.getExpectedEtag())) {
       throw GrpcErrors.preconditionFailed(corrId, "etag_mismatch",

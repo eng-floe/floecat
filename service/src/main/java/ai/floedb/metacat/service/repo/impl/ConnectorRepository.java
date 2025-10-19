@@ -69,20 +69,13 @@ public class ConnectorRepository extends BaseRepository<Connector> {
     var rid = updated.getResourceId();
     var tid = rid.getTenantId();
 
-    var byId = Keys.connByIdPtr(tid, rid.getId());
     var newByName = Keys.connByNamePtr(tid, updated.getDisplayName());
     var oldByName = Keys.connByNamePtr(tid, oldDisplayName);
     var blob = Keys.connBlob(tid, rid.getId());
 
     putBlob(blob, updated);
     reserveIndexOrIdempotent(newByName, blob);
-    try {
-      advancePointer(byId, blob, expectedVersion);
-    } catch (RuntimeException e) {
-      ptr.get(newByName).ifPresent(p -> compareAndDeleteOrFalse(ptr, newByName, p.getVersion()));
-      throw e;
-    }
-    ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(ptr, oldByName, p.getVersion()));
+    ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(oldByName, p.getVersion()));
     return true;
   }
 
@@ -94,8 +87,8 @@ public class ConnectorRepository extends BaseRepository<Connector> {
     var cOpt = getById(rid);
     var byName = cOpt.map(c -> Keys.connByNamePtr(tid, c.getDisplayName())).orElse(null);
 
-    if (byName != null) ptr.get(byName).ifPresent(p -> compareAndDeleteOrFalse(ptr, byName, p.getVersion()));
-    ptr.get(byId).ifPresent(p -> compareAndDeleteOrFalse(ptr, byId, p.getVersion()));
+    if (byName != null) ptr.get(byName).ifPresent(p -> compareAndDeleteOrFalse(byName, p.getVersion()));
+    ptr.get(byId).ifPresent(p -> compareAndDeleteOrFalse(byId, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
     return true;
   }
@@ -108,8 +101,8 @@ public class ConnectorRepository extends BaseRepository<Connector> {
     var cOpt = getById(rid);
     var byName = cOpt.map(c -> Keys.connByNamePtr(tid, c.getDisplayName())).orElse(null);
 
-    if (!compareAndDeleteOrFalse(ptr, byId, expectedVersion)) return false;
-    if (byName != null) ptr.get(byName).ifPresent(p -> compareAndDeleteOrFalse(ptr, byName, p.getVersion()));
+    if (!compareAndDeleteOrFalse(byId, expectedVersion)) return false;
+    if (byName != null) ptr.get(byName).ifPresent(p -> compareAndDeleteOrFalse(byName, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
     return true;
   }

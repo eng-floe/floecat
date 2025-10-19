@@ -55,7 +55,7 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     try {
       return Optional.of(Snapshot.parseFrom(blobs.get(latest.blobUri())));
     } catch (Exception e) {
-      throw new RuntimeException("parse failed: " + latest.blobUri(), e);
+      throw new CorruptionException("parse failed: " + latest.blobUri(), e);
     }
   }
 
@@ -76,13 +76,13 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
         try {
           bytes = blobs.get(r.blobUri());
         } catch (Exception e) {
-          throw new RuntimeException("blob fetch failed: " + r.blobUri(), e);
+          throw new CorruptionException("parse failed: " + r.blobUri(), e);
         }
         final Snapshot snap;
         try {
           snap = Snapshot.parseFrom(bytes);
         } catch (Exception e) {
-          throw new RuntimeException("parse failed: " + r.blobUri(), e);
+          throw new CorruptionException("parse failed: " + r.blobUri(), e);
         }
 
         long createdMs = Timestamps.toMillis(snap.getUpstreamCreatedAt());
@@ -125,8 +125,8 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     String byTime = Keys.snapPtrByTime(tid, tbl, snapshotId, createdMs);
     String blob = Keys.snapBlob(tid, tbl, snapshotId);
 
-    ptr.get(byTime).ifPresent(p -> compareAndDeleteOrFalse(ptr, byTime, p.getVersion()));
-    ptr.get(byId).ifPresent(p -> compareAndDeleteOrFalse(ptr, byId, p.getVersion()));
+    ptr.get(byTime).ifPresent(p -> compareAndDeleteOrFalse(byTime, p.getVersion()));
+    ptr.get(byId).ifPresent(p -> compareAndDeleteOrFalse(byId, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
     return true;
   }
@@ -142,8 +142,8 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     String byTime = Keys.snapPtrByTime(tid, tbl, snapshotId, createdMs);
     String blob = Keys.snapBlob(tid, tbl, snapshotId);
 
-    if (!compareAndDeleteOrFalse(ptr, byId, expectedVersion)) return false;
-    ptr.get(byTime).ifPresent(p -> compareAndDeleteOrFalse(ptr, byTime, p.getVersion()));
+    if (!compareAndDeleteOrFalse(byId, expectedVersion)) return false;
+    ptr.get(byTime).ifPresent(p -> compareAndDeleteOrFalse(byTime, p.getVersion()));
     deleteQuietly(() -> blobs.delete(blob));
     return true;
   }

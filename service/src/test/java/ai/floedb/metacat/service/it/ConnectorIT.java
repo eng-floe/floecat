@@ -3,6 +3,7 @@ package ai.floedb.metacat.service.it;
 import java.time.Duration;
 import java.util.List;
 
+import io.grpc.Status;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -11,6 +12,10 @@ import org.junit.jupiter.api.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.connector.rpc.*;
+import ai.floedb.metacat.catalog.rpc.IdempotencyKey;
+import ai.floedb.metacat.common.rpc.ErrorCode;
+import ai.floedb.metacat.common.rpc.PageRequest;
+import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.reconciler.impl.ReconcilerScheduler;
 import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
@@ -93,5 +98,84 @@ public class ConnectorIT {
     var anyTable = tables.listByNamespace(
         catId, dbNsId,  50, "", new StringBuilder()).get(0).getResourceId();
     assertTrue(snaps.get(anyTable, 42L).isPresent());
+  }
+
+  @Test
+  void CreateConnector_idempotent() {
+    var spec = ConnectorSpec.newBuilder()
+        .setDisplayName("idem-1")
+        .setKind(ConnectorKind.CK_UNITY)
+        .setTargetCatalogDisplayName("cat-idem")
+        .setUri("dummy://x")
+        .build();
+
+    var idem = IdempotencyKey.newBuilder()
+        .setKey("fixed-key-1").build();
+
+    var r1 = connectors.createConnector(CreateConnectorRequest.newBuilder()
+        .setSpec(spec).setIdempotency(idem).build());
+    var r2 = connectors.createConnector(CreateConnectorRequest.newBuilder()
+        .setSpec(spec).setIdempotency(idem).build());
+
+    assertEquals(r1.getConnector().getResourceId().getId(),
+                r2.getConnector().getResourceId().getId());
+    assertEquals(r1.getMeta().getPointerVersion(), r2.getMeta().getPointerVersion());
+  }
+
+@Test
+  void GetConnector_notFound() {
+    var badRid = ResourceId.newBuilder()
+        .setTenantId("t-0001").setId("nope").setKind(ResourceKind.RK_CONNECTOR).build();
+    var ex = assertThrows(io.grpc.StatusRuntimeException.class, () ->
+        connectors.getConnector(GetConnectorRequest.newBuilder().setConnectorId(badRid).build()));
+    assertEquals(io.grpc.Status.Code.NOT_FOUND, ex.getStatus().getCode());
+  }
+
+  @Test
+  void ListConnectors_pagination() {
+    for (int i = 0; i < 5; i++) {
+      TestSupport.createConnector(connectors, ConnectorSpec.newBuilder()
+          .setDisplayName("p-" + i).setKind(ConnectorKind.CK_UNITY)
+          .setTargetCatalogDisplayName("cat-p").setUri("dummy://x").build());
+    }
+    String token = "";
+    int total = 0;
+    for (int page = 0; page < 5; page++) {
+      var resp = connectors.listConnectors(ListConnectorsRequest.newBuilder()
+          .setPage(PageRequest.newBuilder()
+              .setPageSize(2).setPageToken(token))
+          .build());
+      total += resp.getConnectorsCount();
+      token = resp.getPage().getNextPageToken();
+      if (token.isEmpty()) break;
+    }
+    assertTrue(total >= 5);
+  }
+
+  @Test
+  void UpdateConnector_rename_and_conflict() throws Exception {
+    var a = TestSupport.createConnector(connectors, ConnectorSpec.newBuilder()
+        .setDisplayName("u-a").setKind(ConnectorKind.CK_UNITY)
+        .setTargetCatalogDisplayName("cat-u").setUri("dummy://x").build());
+    var b = TestSupport.createConnector(connectors, ConnectorSpec.newBuilder()
+        .setDisplayName("u-b").setKind(ConnectorKind.CK_UNITY)
+        .setTargetCatalogDisplayName("cat-u").setUri("dummy://x").build());
+
+    // rename u-a -> u-a1
+    var ok = connectors.updateConnector(UpdateConnectorRequest.newBuilder()
+        .setConnectorId(a.getResourceId())
+        .setSpec(ConnectorSpec.newBuilder().setDisplayName("u-a1"))
+        .build());
+    assertEquals("u-a1", ok.getConnector().getDisplayName());
+
+    // rename u-b -> u-a1
+    var ex = assertThrows(io.grpc.StatusRuntimeException.class, () ->
+        connectors.updateConnector(UpdateConnectorRequest.newBuilder()
+            .setConnectorId(b.getResourceId())
+            .setSpec(ConnectorSpec.newBuilder().setDisplayName("u-a1"))
+            .build()));
+
+    TestSupport.assertGrpcAndMc(ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT,
+        "Connector \"u-a1\" already exists");
   }
 }

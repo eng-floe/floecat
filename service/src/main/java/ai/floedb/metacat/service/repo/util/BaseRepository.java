@@ -27,6 +27,31 @@ public abstract class BaseRepository<T> implements Repository<T> {
 
   public static final int CAS_MAX = 10;
 
+  public static class RepoException extends RuntimeException {
+    public RepoException(String msg) { super(msg); }
+    public RepoException(String msg, Throwable cause) { super(msg, cause); }
+  }
+  /** Resource exists in an incompatible way (e.g., by-name points elsewhere). */
+  public static class NameConflictException extends RepoException {
+    public NameConflictException(String msg) { super(msg); }
+  }
+  /** Pointer/version mismatch, etag mismatch, or other optimistic concurrency failure. */
+  public static class PreconditionFailedException extends RepoException {
+    public PreconditionFailedException(String msg) { super(msg); }
+  }
+  /** Persistent CAS failure or state churn — operation should be retried by caller. */
+  public static class AbortRetryableException extends RepoException {
+    public AbortRetryableException(String msg) { super(msg); }
+  }
+  /** Blob or pointer missing where it must exist. */
+  public static class NotFoundException extends RepoException {
+    public NotFoundException(String msg) { super(msg); }
+  }
+  /** Blob present but unreadable / invalid. */
+  public static class CorruptionException extends RepoException {
+    public CorruptionException(String msg, Throwable cause) { super(msg, cause); }
+  }
+
   protected BaseRepository() { }
 
   protected BaseRepository(
@@ -48,12 +73,14 @@ public abstract class BaseRepository<T> implements Repository<T> {
     if (pOpt.isEmpty()) return Optional.empty();
 
     var p = pOpt.get();
-    if (blobs.head(p.getBlobUri()).isEmpty()) return Optional.empty();
+    if (blobs.head(p.getBlobUri()).isEmpty()) {
+      throw new NotFoundException("blob missing: "+p.getBlobUri());
+    }
 
     try {
       return Optional.of(parser.parse(blobs.get(p.getBlobUri())));
     } catch (Exception e) {
-      throw new RuntimeException("parse failed: " + p.getBlobUri(), e);
+      throw new CorruptionException("parse failed: " + p.getBlobUri(), e);
     }
   }
 
@@ -62,8 +89,11 @@ public abstract class BaseRepository<T> implements Repository<T> {
     if (ptr.compareAndSet(key, 0L, reserve)) return;
 
     var ex = ptr.get(key).orElse(null);
-    if (ex == null || !blobUri.equals(ex.getBlobUri())) {
-      throw new IllegalStateException("pointer exists with different blob: " + key);
+    if (ex == null) {
+      throw new AbortRetryableException("pointer suddenly vanished: " + key);
+    }
+    if (!blobUri.equals(ex.getBlobUri())) {
+      throw new NameConflictException("pointer bound to different blob: " + key);
     }
   }
 
@@ -75,10 +105,9 @@ public abstract class BaseRepository<T> implements Repository<T> {
     if (before.isPresent() && want.equals(before.get().getEtag())) return;
 
     blobs.put(blobUri, bytes, contentType);
-
     var after = blobs.head(blobUri);
     if (after.isEmpty() || !want.equals(after.get().getEtag())) {
-      throw new IllegalStateException("blob write verification failed: " + blobUri);
+      throw new AbortRetryableException("blob write verification failed: " + blobUri);
     }
   }
 
@@ -91,7 +120,7 @@ public abstract class BaseRepository<T> implements Repository<T> {
 
     var after = blobs.head(blobUri);
     if (after.isEmpty() || !want.equals(after.get().getEtag())) {
-      throw new IllegalStateException("blob write verification failed: " + blobUri);
+      throw new AbortRetryableException("blob write verification failed: " + blobUri);
     }
   }
 
@@ -105,7 +134,7 @@ public abstract class BaseRepository<T> implements Repository<T> {
       if (ptr.compareAndSet(key, cur == null ? 0L : cur.getVersion(), next)) return;
       backoff(i);
     }
-    throw new IllegalStateException("CAS failed after retries: " + key);
+    throw new AbortRetryableException("CAS retries exhausted: " + key);
   }
 
   @Override
@@ -113,12 +142,14 @@ public abstract class BaseRepository<T> implements Repository<T> {
     for (int i = 0; i < CAS_MAX; i++) {
       var cur = ptr.get(key).orElse(null);
       if (cur == null) {
-        if (expectedVersion != 0L) throw new IllegalStateException("precondition failed: " + key);
+        if (expectedVersion != 0L) {
+          throw new PreconditionFailedException("missing pointer: " + key + " expected=" + expectedVersion);
+        }
         var created = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
         if (ptr.compareAndSet(key, 0L, created)) return;
       } else {
         if (cur.getVersion() != expectedVersion) {
-          throw new IllegalStateException("precondition failed: " + key
+          throw new PreconditionFailedException("version mismatch: " + key
               + " expected=" + expectedVersion + " actual=" + cur.getVersion());
         }
         var next = cur.toBuilder().setBlobUri(blobUri).setVersion(cur.getVersion() + 1).build();
@@ -126,7 +157,7 @@ public abstract class BaseRepository<T> implements Repository<T> {
       }
       backoff(i);
     }
-    throw new IllegalStateException("CAS failed after retries: " + key);
+    throw new AbortRetryableException("CAS retries exhausted: " + key);
   }
 
   private static void backoff(int attempt) {
@@ -184,11 +215,25 @@ public abstract class BaseRepository<T> implements Repository<T> {
 
   protected static void deleteQuietly(Runnable r) {try { r.run(); } catch (Throwable ignore) {} }
 
-  protected static boolean compareAndDeleteOrFalse(PointerStore ps, String key, long expectedVersion) {
-    try { 
-      return ps.compareAndDelete(key, expectedVersion); 
-    } catch (Throwable ignore) {
-      return false; 
+  protected void compareAndDeleteOrThrow(String key, long expectedVersion) {
+    boolean ok = ptr.compareAndDelete(key, expectedVersion);
+    if (!ok) {
+      var cur = ptr.get(key).orElse(null);
+      if (cur == null) {
+        throw new NotFoundException("pointer already deleted: " + key);
+      }
+      throw new PreconditionFailedException(
+          "delete version mismatch for " + key +
+          " expected=" + expectedVersion + " actual=" + cur.getVersion());
+    }
+  }
+
+  protected boolean compareAndDeleteOrFalse(String key, long expectedVersion) {
+    try {
+      compareAndDeleteOrThrow(key, expectedVersion);
+      return true;
+    } catch (PreconditionFailedException | NotFoundException e) {
+      return false;
     }
   }
 
