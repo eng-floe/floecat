@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.util.List;
 
 import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -13,6 +14,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.connector.rpc.*;
 import ai.floedb.metacat.catalog.rpc.IdempotencyKey;
+import ai.floedb.metacat.catalog.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -177,5 +179,81 @@ public class ConnectorIT {
 
     TestSupport.assertGrpcAndMc(ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT,
         "Connector \"u-a1\" already exists");
+  }
+
+  @Test
+  void UpdateConnector_preconditionMismatch() throws Exception {
+    var c = TestSupport.createConnector(connectors, ConnectorSpec.newBuilder()
+        .setDisplayName("pre-a").setKind(ConnectorKind.CK_UNITY)
+        .setTargetCatalogDisplayName("cat-pre").setUri("dummy://x").build());
+
+    var ex = assertThrows(StatusRuntimeException.class, () ->
+        connectors.updateConnector(UpdateConnectorRequest.newBuilder()
+            .setConnectorId(c.getResourceId())
+            .setSpec(ConnectorSpec.newBuilder().setUri("dummy://changed"))
+            .setPrecondition(Precondition.newBuilder()
+                .setExpectedVersion(9999)) // wrong version
+            .build()));
+
+    TestSupport.assertGrpcAndMc(ex, Status.Code.FAILED_PRECONDITION, ErrorCode.MC_PRECONDITION_FAILED,
+        "Version mismatch");
+  }
+
+  @Test
+  void DeleteConnector_ok_and_idempotent() {
+    var c = TestSupport.createConnector(connectors, ConnectorSpec.newBuilder()
+        .setDisplayName("del-1").setKind(ConnectorKind.CK_UNITY)
+        .setTargetCatalogDisplayName("cat-del").setUri("dummy://x").build());
+
+    connectors.deleteConnector(DeleteConnectorRequest.newBuilder()
+        .setConnectorId(c.getResourceId()).build());
+
+    // deleting again must be OK (no throw), returns safe meta
+    connectors.deleteConnector(DeleteConnectorRequest.newBuilder()
+        .setConnectorId(c.getResourceId()).build());
+  }
+
+  @Test
+  void TriggerReconcile_notFound() throws Exception {
+    var rid = ai.floedb.metacat.common.rpc.ResourceId.newBuilder()
+        .setTenantId("t-0001").setId("missing").setKind(ResourceKind.RK_CONNECTOR).build();
+    var ex = assertThrows(StatusRuntimeException.class, () ->
+        connectors.triggerReconcile(TriggerReconcileRequest.newBuilder()
+            .setConnectorId(rid).build()));
+
+    TestSupport.assertGrpcAndMc(ex, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND,
+        "Connector not found");
+  }
+
+  @Test
+  void GetReconcileJob_notFound() throws Exception {
+    var ex = assertThrows(StatusRuntimeException.class, () ->
+        connectors.getReconcileJob(GetReconcileJobRequest.newBuilder()
+            .setJobId("zzz").build()));
+
+    TestSupport.assertGrpcAndMc(ex, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND,
+        "Job not found");
+  }
+
+  @Test
+  void ValidateConnector_ok_and_failures() throws Exception {
+    // OK (dummy UNITY connector)
+    var ok = connectors.validateConnector(ValidateConnectorRequest.newBuilder()
+        .setSpec(ConnectorSpec.newBuilder()
+            .setDisplayName("v-ok").setKind(ConnectorKind.CK_UNITY)
+            .setTargetCatalogDisplayName("cat-v").setUri("dummy://x"))
+        .build());
+    assertTrue(ok.getOk());
+
+    // INVALID_ARGUMENT for unspecified kind
+    var ex = assertThrows(StatusRuntimeException.class, () ->
+      connectors.validateConnector(ValidateConnectorRequest.newBuilder()
+          .setSpec(ConnectorSpec.newBuilder()
+              .setDisplayName("v-bad").setKind(ConnectorKind.CK_UNSPECIFIED)
+              .setTargetCatalogDisplayName("cat-v").setUri("dummy://x"))
+          .build()));
+
+    TestSupport.assertGrpcAndMc(ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT,
+      "Invalid value");
   }
 }
