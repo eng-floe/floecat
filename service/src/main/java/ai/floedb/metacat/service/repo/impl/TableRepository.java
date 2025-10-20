@@ -29,6 +29,11 @@ public class TableRepository extends BaseRepository<Table> {
     return get(Keys.tblCanonicalPtr(tableId.getTenantId(), tableId.getId()));
   }
 
+  public Optional<Table> getByName(ResourceId catalogId, ResourceId nsId, String name) {
+    return get(Keys.tblByNamePtr(catalogId.getTenantId(), catalogId.getId(), nsId.getId(), name));
+  }
+
+
   public List<Table> listByNamespace(ResourceId catalogId, ResourceId nsId, int limit, String token, StringBuilder next) {
     var pfx = Keys.tblByNamePrefix(nsId.getTenantId(), catalogId.getId(), nsId.getId());
     return listByPrefix(pfx, limit, token, next);
@@ -65,7 +70,10 @@ public class TableRepository extends BaseRepository<Table> {
     return true;
   }
 
-  public boolean rename(ResourceId tableId, String newDisplayName, long expectedVersion) {
+  public boolean rename(
+    ResourceId tableId,
+    String newDisplayName,
+    long expectedVersion) {
     var tid = tableId.getTenantId();
     var cur = get(tableId).orElseThrow(() -> new IllegalStateException("table not found"));
     if (newDisplayName.equals(cur.getDisplayName())) {
@@ -94,9 +102,13 @@ public class TableRepository extends BaseRepository<Table> {
     return true;
   }
 
-  public boolean move(Table updated,
-      ResourceId oldCatalogId, ResourceId oldNamespaceId,
-      ResourceId newCatalogId, ResourceId newNamespaceId,
+  public boolean move(
+      Table updated,
+      String oldDisplayName,
+      ResourceId oldCatalogId,
+      ResourceId oldNamespaceId,
+      ResourceId newCatalogId,
+      ResourceId newNamespaceId,
       long expectedVersion) {
 
     requireOwnerIds(updated);
@@ -107,7 +119,7 @@ public class TableRepository extends BaseRepository<Table> {
     var canon = Keys.tblCanonicalPtr(tid, tblId);
     var blob = Keys.tblBlob(tid, tblId);
 
-    var oldByName = Keys.tblByNamePtr(tid, oldCatalogId.getId(), oldNamespaceId.getId(), updated.getDisplayName());
+    var oldByName = Keys.tblByNamePtr(tid, oldCatalogId.getId(), oldNamespaceId.getId(), oldDisplayName);
     var newByName = Keys.tblByNamePtr(tid, newCatalogId.getId(), newNamespaceId.getId(), updated.getDisplayName());
 
     putBlob(blob, updated);

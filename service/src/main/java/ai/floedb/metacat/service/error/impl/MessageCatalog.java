@@ -40,6 +40,7 @@ public String render(Error e) {
       case MC_UNAVAILABLE -> "Service temporarily unavailable.";
       case MC_TIMEOUT -> "The operation timed out.";
       case MC_INTERNAL -> "Unexpected error.";
+      case MC_CANCELLED -> "Request cancelled.";
       case MC_SNAPSHOT_EXPIRED -> "Snapshot is no longer available.";
       case MC_UNSPECIFIED, UNRECOGNIZED -> "An error occurred.";
     };

@@ -55,6 +55,10 @@ public final class GrpcErrors {
     return build(io.grpc.Status.UNAVAILABLE, ErrorCode.MC_UNAVAILABLE, correlationId, params, Map.of(), messageKey);
   }
 
+  public static StatusRuntimeException cancelled(String correlationId, String messageKey, Map<String,String> params) {
+    return build(io.grpc.Status.CANCELLED, ErrorCode.MC_CANCELLED, correlationId, params, Map.of(), messageKey);
+  }
+
   public static StatusRuntimeException internal(String correlationId, String messageKey, Map<String,String> params) {
     return build(io.grpc.Status.INTERNAL, ErrorCode.MC_INTERNAL, correlationId, params, Map.of(), messageKey);
   }

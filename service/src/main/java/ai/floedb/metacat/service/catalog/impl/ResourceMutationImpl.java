@@ -1,13 +1,11 @@
 package ai.floedb.metacat.service.catalog.impl;
 
-import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
-import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -31,9 +29,7 @@ import ai.floedb.metacat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteTableResponse;
 import ai.floedb.metacat.catalog.rpc.MoveTableRequest;
 import ai.floedb.metacat.catalog.rpc.MoveTableResponse;
-import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.catalog.rpc.Namespace;
-import ai.floedb.metacat.catalog.rpc.Precondition;
 import ai.floedb.metacat.catalog.rpc.ResourceMutation;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
@@ -48,6 +44,7 @@ import ai.floedb.metacat.catalog.rpc.RenameTableResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.catalog.util.MutationOps;
+import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
@@ -62,7 +59,7 @@ import ai.floedb.metacat.service.storage.PointerStore;
 import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 
 @GrpcService
-public class ResourceMutationImpl implements ResourceMutation {
+public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMutation {
 
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;
@@ -73,800 +70,796 @@ public class ResourceMutationImpl implements ResourceMutation {
   @Inject PointerStore ptr;
   @Inject IdempotencyStore idempotencyStore;
 
-  private final Clock clock;
-
-  public ResourceMutationImpl() {
-    this.clock = Clock.systemUTC();
-  }
-
   @Override
   public Uni<CreateCatalogResponse> createCatalog(CreateCatalogRequest req) {
-    var p = principal.get();
-    authz.require(p, "catalog.write");
+    return mapFailures(runWithRetry(() -> {
+      var p = principal.get();
+      var corr = p.getCorrelationId();
+      authz.require(p, "catalog.write");
 
-    final var tenant = p.getTenantId();
-    final var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
+      final var tenant = p.getTenantId();
+      final var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
+      final byte[] fp = req.getSpec().toBuilder().clearDescription().build().toByteArray();
+      var tsNow = nowTs();
 
-    final var nowTs = Timestamps.fromMillis(clock.millis());
-    final byte[] fp = req.getSpec().toBuilder().clearDescription().build().toByteArray();
+      var out = MutationOps.createProto(
+          tenant,
+          "CreateCatalog",
+          idemKey,
+          () -> fp,
+          () -> {
+            final String catalogUuid =
+              !idemKey.isBlank()
+                ? deterministicUuid(tenant, "catalog", idemKey)
+                : UUID.randomUUID().toString();
 
-    var out = MutationOps.createProto(
-        tenant,
-        "CreateCatalog",
-        idemKey,
-        () -> fp,
-        () -> {
-          var catalogId = ResourceId.newBuilder()
-              .setTenantId(tenant)
-              .setId(UUID.randomUUID().toString())
-              .setKind(ResourceKind.RK_CATALOG)
-              .build();
+            var catalogId = ResourceId.newBuilder()
+                .setTenantId(tenant)
+                .setId(catalogUuid)
+                .setKind(ResourceKind.RK_CATALOG)
+                .build();
 
-          var built = Catalog.newBuilder()
-              .setResourceId(catalogId)
-              .setDisplayName(mustNonEmpty(req.getSpec().getDisplayName(), "display_name"))
-              .setDescription(req.getSpec().getDescription())
-              .setCreatedAt(nowTs)
-              .build();
+            var built = Catalog.newBuilder()
+                .setResourceId(catalogId)
+                .setDisplayName(mustNonEmpty(req.getSpec().getDisplayName(), "display_name", corr))
+                .setDescription(req.getSpec().getDescription())
+                .setCreatedAt(tsNow)
+                .build();
 
-          try {
-            catalogs.create(built);
-          } catch (BaseRepository.NameConflictException e) {
-            throw GrpcErrors.conflict(
-                corrId(), "catalog.already_exists",
-                    Map.of("display_name", built.getDisplayName()));
-          } catch (BaseRepository.AbortRetryableException are) {
-            throw GrpcErrors.aborted(corrId(), null, Map.of());
-          }
+            try {
+              catalogs.create(built);
+            } catch (BaseRepository.NameConflictException e) {
+              if (!idemKey.isBlank()) {
+                var existing = catalogs.getByName(tenant, built.getDisplayName());
+                if (existing.isPresent()) {
+                  return new IdempotencyGuard.CreateResult<>(existing.get(), existing.get().getResourceId());
+                }
+              }
+              throw GrpcErrors.conflict(
+                  corr, "catalog.already_exists",
+                  Map.of("display_name", built.getDisplayName()));
+            }
 
-          return new IdempotencyGuard.CreateResult<>(built, catalogId);
-        },
-        (c) -> catalogs.metaFor(c.getResourceId(), nowTs),
-        idempotencyStore,
-        nowTs,
-        86_400L,
-        this::corrId,
-        Catalog::parseFrom
-    );
+            return new IdempotencyGuard.CreateResult<>(built, catalogId);
+          },
+          (c) -> catalogs.metaFor(c.getResourceId(), tsNow),
+          idempotencyStore,
+          tsNow,
+          IDEMPOTENCY_TTL_SECONDS,
+          this::corrId,
+          Catalog::parseFrom
+      );
 
-    return Uni.createFrom().item(
-        CreateCatalogResponse.newBuilder()
-            .setCatalog(out.body)
-            .setMeta(out.meta)
-            .build()
-    );
+      return CreateCatalogResponse.newBuilder()
+          .setCatalog(out.body)
+          .setMeta(out.meta)
+          .build();
+    }), corrId());
   }
 
   @Override
   public Uni<UpdateCatalogResponse> updateCatalog(UpdateCatalogRequest req) {
-    var p = principal.get();
-    authz.require(p, "catalog.write");
+    return mapFailures(runWithRetry(() -> {
+      var p = principal.get();
+      var corr = p.getCorrelationId();
+      authz.require(p, "catalog.write");
 
-    var catalogId = req.getCatalogId();
-    ensureKind(catalogId, ResourceKind.RK_CATALOG, "UpdateCatalog");
+      var tsNow = nowTs();
 
-    var corr = corrId();
+      var catalogId = req.getCatalogId();
+      ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", corr);
 
-    var prev = catalogs.getById(catalogId)
-        .orElseThrow(() -> GrpcErrors.notFound(
-              corr, "catalog", Map.of("id", catalogId.getId())));
+      var prev = catalogs.getById(catalogId)
+          .orElseThrow(() -> GrpcErrors.notFound(
+                corr, "catalog", Map.of("id", catalogId.getId())));
 
-    var desiredName = mustNonEmpty(req.getSpec().getDisplayName(), "display_name");
-    var desiredDesc = req.getSpec().getDescription();
+      var desiredName = mustNonEmpty(req.getSpec().getDisplayName(), "display_name", corr);
+      var desiredDesc = req.getSpec().getDescription();
 
-    final var nowTs = Timestamps.fromMillis(clock.millis());
-    var curMeta = catalogs.metaFor(catalogId, nowTs);
-    enforcePreconditions(corr, curMeta, req.getPrecondition());
+      var meta = catalogs.metaFor(catalogId, tsNow);
+      long expectedVersion = meta.getPointerVersion();
+      enforcePreconditions(corr, meta, req.getPrecondition());
 
-    if (desiredName.equals(prev.getDisplayName()) &&
-        Objects.equals(desiredDesc, prev.getDescription())) {
-      return Uni.createFrom().item(
-          UpdateCatalogResponse.newBuilder().setCatalog(prev).setMeta(curMeta).build());
-    }
-
-    if (!desiredName.equals(prev.getDisplayName())) {
-      try {
-        catalogs.rename(p.getTenantId(), catalogId, desiredName, curMeta.getPointerVersion());
-      } catch (BaseRepository.NameConflictException nce) {
-        throw GrpcErrors.conflict(corr, "catalog.already_exists",
-            Map.of("display_name", desiredName));
-      } catch (BaseRepository.PreconditionFailedException pfe) {
-        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-            Map.of("expected", Long.toString(curMeta.getPointerVersion())));
-      } catch (BaseRepository.AbortRetryableException are) {
-        throw GrpcErrors.aborted(corr, null, Map.of());
+      if (desiredName.equals(prev.getDisplayName()) &&
+          Objects.equals(desiredDesc, prev.getDescription())) {
+        return UpdateCatalogResponse.newBuilder().setCatalog(prev).setMeta(meta).build();
       }
 
-      if (!Objects.equals(desiredDesc, prev.getDescription())) {
-        var afterMeta = catalogs.metaFor(catalogId, nowTs);
-        var renamedObj = catalogs.getById(catalogId).orElse(prev);
-        var withDesc = renamedObj.toBuilder().setDescription(desiredDesc).build();
+      if (!desiredName.equals(prev.getDisplayName())) {
+        try {
+          catalogs.rename(p.getTenantId(), catalogId, desiredName, expectedVersion);
+        } catch (BaseRepository.NameConflictException nce) {
+          throw GrpcErrors.conflict(corr, "catalog.already_exists",
+              Map.of("display_name", desiredName));
+        } catch (BaseRepository.PreconditionFailedException pfe) {
+          var nowMeta = catalogs.metaFor(catalogId, tsNow);
+          throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+                Map.of("expected", Long.toString(expectedVersion),
+                    "actual", Long.toString(nowMeta.getPointerVersion())));
+        }
+
+        if (!Objects.equals(desiredDesc, prev.getDescription())) {
+          meta = catalogs.metaFor(catalogId, tsNow);
+          expectedVersion = meta.getPointerVersion();
+          var renamedObj = catalogs.getById(catalogId).orElse(prev);
+          var withDesc = renamedObj.toBuilder().setDescription(desiredDesc).build();
+
+          try {
+            catalogs.update(withDesc, meta.getPointerVersion());
+          } catch (BaseRepository.PreconditionFailedException pfe) {
+            var nowMeta = catalogs.metaFor(catalogId, tsNow);
+            throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+                Map.of("expected", Long.toString(expectedVersion),
+                    "actual", Long.toString(nowMeta.getPointerVersion())));
+          }
+
+        }
+      } else {
+        meta = catalogs.metaFor(catalogId, tsNow);
+        expectedVersion = meta.getPointerVersion();
+        var updated = prev.toBuilder().setDescription(desiredDesc).build();
 
         try {
-          catalogs.update(withDesc, afterMeta.getPointerVersion());
+          catalogs.update(updated, meta.getPointerVersion());
         } catch (BaseRepository.PreconditionFailedException pfe) {
+          var nowMeta = catalogs.metaFor(catalogId, tsNow);
           throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-              Map.of("expected", Long.toString(curMeta.getPointerVersion()),
-                  "actual", Long.toString(afterMeta.getPointerVersion())));
-        } catch (BaseRepository.AbortRetryableException are) {
-          throw GrpcErrors.aborted(corr, null, Map.of());
-        }
-        
-      }
-    } else {
-      var nowMeta = catalogs.metaFor(catalogId, nowTs);
-      var updated = prev.toBuilder().setDescription(desiredDesc).build();
-
-      try {
-        catalogs.update(updated, curMeta.getPointerVersion()); 
-      } catch (BaseRepository.PreconditionFailedException pfe) {
-        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-              Map.of("expected", Long.toString(curMeta.getPointerVersion()),
+              Map.of("expected", Long.toString(expectedVersion),
                   "actual", Long.toString(nowMeta.getPointerVersion())));
-      } catch (BaseRepository.AbortRetryableException are) {
-        throw GrpcErrors.aborted(corr, null, Map.of());
+        }
       }
-    }
 
-    return Uni.createFrom().item(
-        UpdateCatalogResponse.newBuilder()
-            .setCatalog(catalogs.getById(catalogId).orElse(prev))
-            .setMeta(catalogs.metaFor(catalogId, nowTs))
-            .build());
+      return UpdateCatalogResponse.newBuilder()
+          .setCatalog(catalogs.getById(catalogId).orElse(prev))
+          .setMeta(catalogs.metaFor(catalogId, tsNow))
+          .build();
+    }), corrId());
   }
 
   @Override
   public Uni<DeleteCatalogResponse> deleteCatalog(DeleteCatalogRequest req) {
-    authz.require(principal.get(), "catalog.write");
+    return mapFailures(runWithRetry(() -> {
+      var p = principal.get();
+      var corr = p.getCorrelationId();
+      authz.require(p, "catalog.write");
 
-    var catalogId = req.getCatalogId();
-    ensureKind(catalogId, ResourceKind.RK_CATALOG, "DeleteCatalog");
+      var tsNow = nowTs();
 
-    var corr = corrId();
-    final var nowTs = Timestamps.fromMillis(clock.millis());
+      var catalogId = req.getCatalogId();
+      ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", corr);
 
-    var key = Keys.catPtr(catalogId.getTenantId(), catalogId.getId());
-    if (ptr.get(key).isEmpty()) {
-      catalogs.delete(catalogId);
-      var safe = catalogs.metaForSafe(catalogId, nowTs);
-      return Uni.createFrom().item(DeleteCatalogResponse.newBuilder().setMeta(safe).build());
-    }
+      var key = Keys.catPtr(catalogId.getTenantId(), catalogId.getId());
+      if (ptr.get(key).isEmpty()) {
+        catalogs.delete(catalogId);
+        var safe = catalogs.metaForSafe(catalogId, tsNow);
+        return DeleteCatalogResponse.newBuilder().setMeta(safe).build();
+      }
 
-    if (req.getRequireEmpty() && namespaces.countUnderCatalog(catalogId) > 0) {
-      var cur = catalogs.getById(catalogId).orElse(null);
-      var displayName = (cur != null && !cur.getDisplayName().isBlank())
-          ? cur.getDisplayName() : catalogId.getId();
-      throw GrpcErrors.conflict(corr, "catalog.not_empty", Map.of("display_name", displayName));
-    }
+      if (req.getRequireEmpty() && namespaces.countUnderCatalog(catalogId) > 0) {
+        var cur = catalogs.getById(catalogId).orElse(null);
+        var displayName = (cur != null && !cur.getDisplayName().isBlank())
+            ? cur.getDisplayName() : catalogId.getId();
+        throw GrpcErrors.conflict(corr, "catalog.not_empty", Map.of("display_name", displayName));
+      }
 
-    var meta = catalogs.metaFor(catalogId, nowTs);
-    enforcePreconditions(corr, meta, req.getPrecondition());
+      var meta = catalogs.metaFor(catalogId, tsNow);
+      long expectedVersion = meta.getPointerVersion();
+      enforcePreconditions(corr, meta, req.getPrecondition());
 
-    var cur = catalogs.metaForSafe(catalogId, nowTs);
-    try {
-      catalogs.deleteWithPrecondition(catalogId, meta.getPointerVersion());
-    } catch (BaseRepository.PreconditionFailedException pfe) {
-      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-          Map.of("expected", Long.toString(meta.getPointerVersion()),
-              "actual", Long.toString(cur.getPointerVersion())));
-    } catch (BaseRepository.AbortRetryableException are) {
-      throw GrpcErrors.aborted(corr, null, Map.of());
-    } catch (BaseRepository.NotFoundException nfe) {
-      throw GrpcErrors.notFound(corrId(), "catalog", Map.of("id", catalogId.getId()));
-    }
+      try {
+        catalogs.deleteWithPrecondition(catalogId, expectedVersion);
+      } catch (BaseRepository.PreconditionFailedException pfe) {
+        var nowMeta = catalogs.metaFor(catalogId, tsNow);
+        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+            Map.of("expected", Long.toString(expectedVersion),
+                "actual", Long.toString(nowMeta.getPointerVersion())));
+      } catch (BaseRepository.NotFoundException nfe) {
+        throw GrpcErrors.notFound(corr,
+            "catalog", Map.of("id", catalogId.getId()));
+      }
 
-    return Uni.createFrom().item(DeleteCatalogResponse.newBuilder().setMeta(meta).build());
+      return DeleteCatalogResponse.newBuilder().setMeta(meta).build();
+    }), corrId());
   }
 
   @Override
   public Uni<CreateNamespaceResponse> createNamespace(CreateNamespaceRequest req) {
-    var p = principal.get();
-    authz.require(p, "namespace.write");
+    return mapFailures(runWithRetry(() -> {
+      var p = principal.get();
+      var corr = p.getCorrelationId();
+      authz.require(p, "namespace.write");
 
-    var tenant = p.getTenantId();
-    var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
+      var tsNow = nowTs();
 
-    var nowTs = Timestamps.fromMillis(clock.millis());
-    byte[] fp = req.getSpec().toBuilder().clearDescription().build().toByteArray();
+      var tenant = p.getTenantId();
+      var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
+      byte[] fp = req.getSpec().toBuilder().clearDescription().build().toByteArray();
 
-    var out = MutationOps.createProto(
-        tenant,
-        "CreateNamespace",
-        idemKey,
-        () -> fp,
-        () -> {
-          var namespaceId = ResourceId.newBuilder()
-              .setTenantId(tenant)
-              .setId(UUID.randomUUID().toString())
-              .setKind(ResourceKind.RK_NAMESPACE)
-              .build();
+      var out = MutationOps.createProto(
+          tenant,
+          "CreateNamespace",
+          idemKey,
+          () -> fp,
+          () -> {
+            final String namespaceUuid =
+              !idemKey.isBlank()
+                ? deterministicUuid(tenant, "namespace", idemKey)
+                : UUID.randomUUID().toString();
 
-          if (catalogs.getById(req.getSpec().getCatalogId()).isEmpty()) {
-            throw GrpcErrors.notFound(corrId(), "catalog",
-                Map.of("id", req.getSpec().getCatalogId().getId()));
-          }
+            var namespaceId = ResourceId.newBuilder()
+                .setTenantId(tenant)
+                .setId(namespaceUuid)
+                .setKind(ResourceKind.RK_NAMESPACE)
+                .build();
 
-          var built = Namespace.newBuilder()
-              .setResourceId(namespaceId)
-              .setDisplayName(mustNonEmpty(req.getSpec().getDisplayName(), "display_name"))
-              .addAllParents(req.getSpec().getPathList())
-              .setDescription(req.getSpec().getDescription())
-              .setCreatedAt(nowTs)
-              .build();
+            if (catalogs.getById(req.getSpec().getCatalogId()).isEmpty()) {
+              throw GrpcErrors.notFound(corr, "catalog",
+                  Map.of("id", req.getSpec().getCatalogId().getId()));
+            }
 
-          try {
-            namespaces.create(built, req.getSpec().getCatalogId());
-          } catch (BaseRepository.NameConflictException e) {
-            var parts = new ArrayList<>(req.getSpec().getPathList());
-            parts.add(req.getSpec().getDisplayName());
-            var pretty = String.join("/", parts);
-            throw GrpcErrors.conflict(
-                corrId(), "namespace.already_exists",
-                    Map.of("catalog", req.getSpec().getCatalogId().getId(),
+            var built = Namespace.newBuilder()
+                .setResourceId(namespaceId)
+                .setDisplayName(mustNonEmpty(
+                    req.getSpec().getDisplayName(), "display_name", corr))
+                .addAllParents(req.getSpec().getPathList())
+                .setDescription(req.getSpec().getDescription())
+                .setCreatedAt(tsNow)
+                .build();
+
+            try {
+              namespaces.create(built, req.getSpec().getCatalogId());
+            } catch (BaseRepository.NameConflictException e) {
+              if (!idemKey.isBlank()) {
+                var fullPath = new ArrayList<>(req.getSpec().getPathList());
+                fullPath.add(req.getSpec().getDisplayName());
+                var existingId = namespaces.getByPath(tenant, req.getSpec().getCatalogId(), fullPath);
+                if (existingId.isPresent()) {
+                  var existing = namespaces.get(req.getSpec().getCatalogId(), existingId.get());
+                  if (existing.isPresent()) {
+                    return new IdempotencyGuard.CreateResult<>(existing.get(), existingId.get());
+                  }
+                }
+              }
+              var pretty = prettyNamespacePath(req.getSpec().getPathList(), req.getSpec().getDisplayName());
+              throw GrpcErrors.conflict(
+                  corr, "namespace.already_exists",
+                  Map.of("catalog", req.getSpec().getCatalogId().getId(),
                         "path", pretty));
-          } catch (BaseRepository.AbortRetryableException are) {
-            throw GrpcErrors.aborted(corrId(), null, Map.of());
-          }
+            }
 
-          return new IdempotencyGuard.CreateResult<>(built, namespaceId);
-        },
-        (n) -> namespaces.metaFor(req.getSpec().getCatalogId(), n.getResourceId(), nowTs),
-        idempotencyStore,
-        nowTs,
-        86_400L,
-        this::corrId,
-        Namespace::parseFrom
-    );
+            return new IdempotencyGuard.CreateResult<>(built, namespaceId);
+          },
+          (n) -> namespaces.metaFor(req.getSpec().getCatalogId(), n.getResourceId(), tsNow),
+          idempotencyStore,
+          tsNow,
+          IDEMPOTENCY_TTL_SECONDS,
+          this::corrId,
+          Namespace::parseFrom
+      );
 
-    return Uni.createFrom().item(
-        CreateNamespaceResponse.newBuilder()
-            .setNamespace(out.body)
-            .setMeta(out.meta)
-            .build());
+      return CreateNamespaceResponse.newBuilder()
+          .setNamespace(out.body)
+          .setMeta(out.meta)
+          .build();
+    }), corrId());
   }
 
   @Override
   public Uni<RenameNamespaceResponse> renameNamespace(RenameNamespaceRequest req) {
-    var p = principal.get();
-    authz.require(p, "namespace.write");
+    return mapFailures(runWithRetry(() -> {
+      var p = principal.get();
+      var corr = p.getCorrelationId();
+      authz.require(p, "namespace.write");
 
-    var nsId = req.getNamespaceId();
-    ensureKind(nsId, ResourceKind.RK_NAMESPACE, "RenameNamespace");
+      var tsNow = nowTs();
 
-    var corr = corrId();
-    var tenant = p.getTenantId();
+      var nsId = req.getNamespaceId();
+      ensureKind(nsId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
 
-    var curCatalogId = namespaces.findOwnerCatalog(tenant, nsId.getId())
-        .orElseThrow(() -> GrpcErrors.notFound(corr, "namespace", Map.of("id", nsId.getId())));
+      var tenant = p.getTenantId();
 
-    Namespace cur = namespaces.get(curCatalogId, nsId).orElseThrow(() ->
-        GrpcErrors.notFound(corr, "namespace", Map.of("id", nsId.getId())));
+      var curCatalogId = namespaces.findOwnerCatalog(tenant, nsId.getId())
+          .orElseThrow(() -> GrpcErrors.notFound(corr, "namespace", Map.of("id", nsId.getId())));
 
-    var pathProvided = !req.getNewPathList().isEmpty();
-    var newLeaf = pathProvided
-        ? req.getNewPath(req.getNewPathCount() - 1)
-        : (req.getNewDisplayName().isBlank() ? cur.getDisplayName() : req.getNewDisplayName());
+      Namespace cur = namespaces.get(curCatalogId, nsId).orElseThrow(() ->
+          GrpcErrors.notFound(corr, "namespace", Map.of("id", nsId.getId())));
 
-    var curParents = cur.getParentsList();
-    var newParents = pathProvided
-        ? List.copyOf(req.getNewPathList().subList(0, req.getNewPathCount() - 1))
-        : curParents;
+      var pathProvided = !req.getNewPathList().isEmpty();
+      var newLeaf = pathProvided
+          ? req.getNewPath(req.getNewPathCount() - 1)
+          : (req.getNewDisplayName().isBlank() ? cur.getDisplayName() : req.getNewDisplayName());
 
-    var targetCatalogId = (req.hasNewCatalogId() && !req.getNewCatalogId().getId().isBlank())
-        ? req.getNewCatalogId()
-        : curCatalogId;
+      var curParents = cur.getParentsList();
+      var newParents = pathProvided
+          ? List.copyOf(req.getNewPathList().subList(0, req.getNewPathCount() - 1))
+          : curParents;
 
-    if (catalogs.getById(targetCatalogId).isEmpty()) {
-      throw GrpcErrors.notFound(corr, "catalog", Map.of("id", targetCatalogId.getId()));
-    }
+      var targetCatalogId = (req.hasNewCatalogId() && !req.getNewCatalogId().getId().isBlank())
+          ? req.getNewCatalogId()
+          : curCatalogId;
 
-    var sameCatalog = targetCatalogId.getId().equals(curCatalogId.getId());
-    var sameLeaf = newLeaf.equals(cur.getDisplayName());
-    var sameParents = Objects.equals(curParents, newParents);
+      if (catalogs.getById(targetCatalogId).isEmpty()) {
+        throw GrpcErrors.notFound(corr, "catalog", Map.of("id", targetCatalogId.getId()));
+      }
 
-    final var nowTs = Timestamps.fromMillis(clock.millis());
-    var curMeta = namespaces.metaFor(curCatalogId, nsId, nowTs);
-    enforcePreconditions(corr, curMeta, req.getPrecondition());
+      var sameCatalog = targetCatalogId.getId().equals(curCatalogId.getId());
+      var sameLeaf = newLeaf.equals(cur.getDisplayName());
+      var sameParents = Objects.equals(curParents, newParents);
 
-    if (sameCatalog && sameLeaf && sameParents) {
-      return Uni.createFrom().item(
-          RenameNamespaceResponse.newBuilder().setNamespace(cur).setMeta(curMeta).build());
-    }
+      var meta = namespaces.metaFor(curCatalogId, nsId, tsNow);
+      long expectedVersion = meta.getPointerVersion();
+      enforcePreconditions(corr, meta, req.getPrecondition());
 
-    var updated = cur.toBuilder().setDisplayName(newLeaf).clearParents().addAllParents(newParents).build();
+      if (sameCatalog && sameLeaf && sameParents) {
+        return RenameNamespaceResponse.newBuilder().setNamespace(cur).setMeta(meta).build();
+      }
 
-    var nowMeta = namespaces.metaFor(targetCatalogId, nsId, nowTs);
-    try {
-      namespaces.renameOrMove(
-          updated,
-          curCatalogId,
-          curParents,
-          cur.getDisplayName(),
-          targetCatalogId,
-          newParents,
-          curMeta.getPointerVersion());
-    } catch (BaseRepository.NameConflictException e) {
-      var parts = new ArrayList<>(newParents);
-      parts.add(newLeaf);
-      var pretty = String.join("/", parts);
-      throw GrpcErrors.conflict(
-          corrId(), "namespace.already_exists",
-              Map.of("catalog", targetCatalogId.getId(),
-                  "path", pretty));
-    } catch (BaseRepository.PreconditionFailedException pfe) {
-      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-        Map.of("expected", Long.toString(curMeta.getPointerVersion()),
-            "actual", Long.toString(nowMeta.getPointerVersion())));
-    } catch (BaseRepository.AbortRetryableException are) {
-      throw GrpcErrors.aborted(corr, null, Map.of());
-    }
+      var updated = cur.toBuilder().setDisplayName(newLeaf).clearParents().addAllParents(newParents).build();
 
-    var outMeta = namespaces.metaFor(targetCatalogId, nsId, nowTs);
-    return Uni.createFrom().item(
-        RenameNamespaceResponse.newBuilder()
-        .setNamespace(updated)
-        .setMeta(outMeta).build());
+      try {
+        namespaces.renameOrMove(
+            updated,
+            curCatalogId,
+            curParents,
+            cur.getDisplayName(),
+            targetCatalogId,
+            newParents,
+            expectedVersion);
+      } catch (BaseRepository.NameConflictException e) {
+        var parts = new ArrayList<>(newParents);
+        parts.add(newLeaf);
+        var pretty = String.join("/", parts);
+        throw GrpcErrors.conflict(
+            corr, "namespace.already_exists",
+                Map.of("catalog", targetCatalogId.getId(),
+                    "path", pretty));
+      } catch (BaseRepository.PreconditionFailedException pfe) {
+        var nowMeta = namespaces.metaFor(curCatalogId, nsId, tsNow);
+        throw GrpcErrors.preconditionFailed(
+            corr, "version_mismatch",
+            Map.of("expected", Long.toString(expectedVersion),
+                "actual", Long.toString(nowMeta.getPointerVersion())));
+      }
+
+      var outMeta = namespaces.metaFor(targetCatalogId, nsId, tsNow);
+      return RenameNamespaceResponse.newBuilder()
+          .setNamespace(updated)
+          .setMeta(outMeta).build();
+    }), corrId());
   }
 
   @Override
   public Uni<DeleteNamespaceResponse> deleteNamespace(DeleteNamespaceRequest req) {
-    var p = principal.get();
-    authz.require(p, "namespace.write");
+    return mapFailures(runWithRetry(() -> {
+      var p = principal.get();
+      var corr = p.getCorrelationId();
+      authz.require(p, "namespace.write");
 
-    final var tenantId = p.getTenantId();
-    final var namespaceId = req.getNamespaceId();
-    ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "DeleteNamespace");
+      var tsNow = nowTs();
 
-    final var corr = corrId();
-    final var nowTs = Timestamps.fromMillis(clock.millis());
+      final var tenantId = p.getTenantId();
+      final var namespaceId = req.getNamespaceId();
+      ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
 
-    var catId = namespaces.findOwnerCatalog(tenantId, namespaceId.getId())
-        .orElse(null);
+      var catId = namespaces.findOwnerCatalog(tenantId, namespaceId.getId())
+          .orElse(null);
 
-    if (catId == null) {
-      var safe = namespaces.metaForSafe(ResourceId.newBuilder()
-          .setTenantId(tenantId)
-          .setId("_unknown_")
-          .setKind(ResourceKind.RK_CATALOG)
-          .build(), namespaceId, nowTs);
-      return Uni.createFrom().item(DeleteNamespaceResponse.newBuilder().setMeta(safe).build());
-    }
-
-    if (req.getRequireEmpty() && tables.countUnderNamespace(catId, namespaceId) > 0) {
-      var cur = namespaces.get(catId, namespaceId).orElse(null);
-      final String display;
-      if (cur != null) {
-        var parts = new ArrayList<>(cur.getParentsList());
-        parts.add(cur.getDisplayName());
-        display = String.join("/", parts);
-      } else {
-        display = namespaceId.getId();
+      if (catId == null) {
+        var safe = namespaces.metaForSafe(ResourceId.newBuilder()
+            .setTenantId(tenantId)
+            .setId("_unknown_")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build(), namespaceId, tsNow);
+        return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
       }
-      throw GrpcErrors.conflict(
-          corr, "namespace.not_empty", Map.of("display_name", display));
-    }
 
-    var meta = namespaces.metaFor(catId, namespaceId, nowTs);
-    enforcePreconditions(corr, meta, req.getPrecondition());
+      if (req.getRequireEmpty() && tables.countUnderNamespace(catId, namespaceId) > 0) {
+        var cur = namespaces.get(catId, namespaceId).orElse(null);
+        final String display = (cur != null)
+            ? prettyNamespacePath(cur.getParentsList(), cur.getDisplayName())
+            : namespaceId.getId();
+        throw GrpcErrors.conflict(
+            corr, "namespace.not_empty", Map.of("display_name", display));
+      }
 
-    var cur = namespaces.metaFor(catId, namespaceId, nowTs);
-    try {
-      namespaces.deleteWithPrecondition(catId, namespaceId, meta.getPointerVersion());
-    } catch (BaseRepository.PreconditionFailedException pfe) {
-      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-          Map.of("expected", Long.toString(meta.getPointerVersion()),
-                "actual", Long.toString(cur.getPointerVersion())));
-    } catch (BaseRepository.AbortRetryableException are) {
-      throw GrpcErrors.aborted(corr, null, Map.of());
-    } catch (BaseRepository.NotFoundException nfe) {
-      throw GrpcErrors.notFound(corrId(), "namespace", Map.of("id", namespaceId.getId()));
-    }
+      var meta = namespaces.metaFor(catId, namespaceId, tsNow);
+      long expectedVersion = meta.getPointerVersion();
+      enforcePreconditions(corr, meta, req.getPrecondition());
 
-    return Uni.createFrom().item(DeleteNamespaceResponse.newBuilder().setMeta(meta).build());
+      try {
+        namespaces.deleteWithPrecondition(catId, namespaceId, expectedVersion);
+      } catch (BaseRepository.PreconditionFailedException pfe) {
+        var nowMeta = namespaces.metaFor(catId, namespaceId, tsNow);
+        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+            Map.of("expected", Long.toString(expectedVersion),
+                "actual", Long.toString(nowMeta.getPointerVersion())));
+      } catch (BaseRepository.NotFoundException nfe) {
+        throw GrpcErrors.notFound(corr,
+            "namespace", Map.of("id", namespaceId.getId()));
+      }
+
+      return DeleteNamespaceResponse.newBuilder().setMeta(meta).build();
+    }), corrId());
   }
 
   @Override
   public Uni<CreateTableResponse> createTable(CreateTableRequest req) {
-    var p = principal.get();
-    authz.require(p, "table.write");
+    return mapFailures(runWithRetry(() -> {
+      var p = principal.get();
+      var corr = p.getCorrelationId();
+      authz.require(p, "table.write");
 
-    var tenant = p.getTenantId();
-    var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
+      var tsNow = nowTs();
 
-    if (catalogs.getById(req.getSpec().getCatalogId()).isEmpty()) {
-      throw GrpcErrors.notFound(corrId(), "catalog",
-          Map.of("id", req.getSpec().getCatalogId().getId()));
-    }
-    if (namespaces.get(req.getSpec().getCatalogId(), req.getSpec().getNamespaceId()).isEmpty()) {
-      throw GrpcErrors.notFound(corrId(), "namespace",
-          Map.of("id", req.getSpec().getNamespaceId().getId()));
-    }
+      var tenant = p.getTenantId();
+      var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
 
-    var nowTs = Timestamps.fromMillis(clock.millis());
-    byte[] fp = req.getSpec().toBuilder().clearDescription().build().toByteArray();
+      if (catalogs.getById(req.getSpec().getCatalogId()).isEmpty()) {
+        throw GrpcErrors.notFound(corr, "catalog",
+            Map.of("id", req.getSpec().getCatalogId().getId()));
+      }
+      if (namespaces.get(req.getSpec().getCatalogId(), req.getSpec().getNamespaceId()).isEmpty()) {
+        throw GrpcErrors.notFound(corr, "namespace",
+            Map.of("id", req.getSpec().getNamespaceId().getId()));
+      }
 
-    var out = MutationOps.createProto(
-        tenant,
-        "CreateTable",
-        idemKey,
-        () -> fp,
-        () -> {
-          var tableId = ResourceId.newBuilder()
-              .setTenantId(tenant)
-              .setId(UUID.randomUUID().toString())
-              .setKind(ResourceKind.RK_TABLE)
-              .build();
+      byte[] fp = req.getSpec().toBuilder().clearDescription().build().toByteArray();
 
-          var td = Table.newBuilder()
-              .setResourceId(tableId)
-              .setDisplayName(mustNonEmpty(req.getSpec().getDisplayName(), "display_name"))
-              .setDescription(req.getSpec().getDescription())
-              .setFormat(req.getSpec().getFormat())
-              .setCatalogId(req.getSpec().getCatalogId())
-              .setNamespaceId(req.getSpec().getNamespaceId())
-              .setRootUri(mustNonEmpty(req.getSpec().getRootUri(), "root_uri"))
-              .setSchemaJson(mustNonEmpty(req.getSpec().getSchemaJson(), "schema_json"))
-              .setCreatedAt(nowTs)
-              .build();
+      var out = MutationOps.createProto(
+          tenant,
+          "CreateTable",
+          idemKey,
+          () -> fp,
+          () -> {
+            final String tableUuid =
+              !idemKey.isBlank()
+                ? deterministicUuid(tenant, "table", idemKey)
+                : UUID.randomUUID().toString();
 
-          try {
-            tables.create(td);
-          } catch (BaseRepository.NameConflictException e) {
-            throw GrpcErrors.conflict(
-                corrId(), "table.already_exists",
-                    Map.of("name", td.getDisplayName()));
-          } catch (BaseRepository.AbortRetryableException are) {
-            throw GrpcErrors.aborted(corrId(), null, Map.of());
-          }
+            var tableId = ResourceId.newBuilder()
+                .setTenantId(tenant)
+                .setId(tableUuid)
+                .setKind(ResourceKind.RK_TABLE)
+                .build();
 
-          return new IdempotencyGuard.CreateResult<>(td, tableId);
-        },
-        (t) -> tables.metaFor(t.getResourceId(), nowTs),
-        idempotencyStore,
-        nowTs,
-        86_400L,
-        this::corrId,
-        Table::parseFrom
-    );
+            var td = Table.newBuilder()
+                .setResourceId(tableId)
+                .setDisplayName(mustNonEmpty(
+                    req.getSpec().getDisplayName(), "display_name", corr))
+                .setDescription(req.getSpec().getDescription())
+                .setFormat(req.getSpec().getFormat())
+                .setCatalogId(req.getSpec().getCatalogId())
+                .setNamespaceId(req.getSpec().getNamespaceId())
+                .setRootUri(mustNonEmpty(
+                      req.getSpec().getRootUri(), "root_uri", corr))
+                .setSchemaJson(
+                    mustNonEmpty(req.getSpec().getSchemaJson(), "schema_json", corr))
+                .setCreatedAt(tsNow)
+                .build();
 
-    return Uni.createFrom().item(
-        CreateTableResponse.newBuilder().setTable(out.body).setMeta(out.meta).build());
+            try {
+              tables.create(td);
+            }  catch (BaseRepository.NameConflictException e) {
+              if (!idemKey.isBlank()) {
+                return tables
+                    .getByName(req.getSpec().getCatalogId(),
+                              req.getSpec().getNamespaceId(),
+                              td.getDisplayName())
+                    .map(ex -> new IdempotencyGuard.CreateResult<>(ex, ex.getResourceId()))
+                    .orElseThrow(() -> GrpcErrors.conflict(
+                        corr, "table.already_exists", Map.of("display_name", td.getDisplayName())));
+              }
+              throw GrpcErrors.conflict(corr, "table.already_exists",
+                  Map.of("display_name", td.getDisplayName()));
+            }
+
+            return new IdempotencyGuard.CreateResult<>(td, tableId);
+          },
+          (t) -> tables.metaFor(t.getResourceId(), tsNow),
+          idempotencyStore,
+          tsNow,
+          IDEMPOTENCY_TTL_SECONDS,
+          this::corrId,
+          Table::parseFrom
+      );
+
+      return CreateTableResponse.newBuilder().setTable(out.body).setMeta(out.meta).build();
+    }), corrId());
   }
 
   @Override
   public Uni<UpdateTableSchemaResponse> updateTableSchema(UpdateTableSchemaRequest req) {
-    var p = principal.get();
-    authz.require(p, "table.write");
+    return mapFailures(runWithRetry(() -> {
+      var p = principal.get();
+      var corr = p.getCorrelationId();
+      authz.require(p, "table.write");
 
-    var tableId = req.getTableId();
-    ensureKind(tableId, ResourceKind.RK_TABLE, "UpdateTableSchema");
+      var tsNow = nowTs();
 
-    var corr = corrId();
-    final var nowTs = Timestamps.fromMillis(clock.millis());
+      var tableId = req.getTableId();
+      ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
 
-    var cur = tables.get(tableId).orElseThrow(() ->
-        GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
+      var cur = tables.get(tableId).orElseThrow(() ->
+          GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
 
-    var updated = cur.toBuilder()
-        .setSchemaJson(req.getSchemaJson())
-        .build();
+      var updated = cur.toBuilder()
+          .setSchemaJson(req.getSchemaJson())
+          .build();
 
-    if (updated.equals(cur)) {
-      var metaNoop = tables.metaFor(tableId, nowTs);
-      enforcePreconditions(corr, metaNoop, req.getPrecondition());
-      return Uni.createFrom().item(
-          UpdateTableSchemaResponse.newBuilder()
-              .setTable(cur)
-              .setMeta(metaNoop)
-              .build());
-    }
+      if (updated.equals(cur)) {
+        var metaNoop = tables.metaFor(tableId, tsNow);
+        enforcePreconditions(corr, metaNoop, req.getPrecondition());
+        return UpdateTableSchemaResponse.newBuilder()
+            .setTable(cur)
+            .setMeta(metaNoop)
+            .build();
+      }
 
-    var meta = tables.metaFor(tableId, nowTs);
-    enforcePreconditions(corr, meta, req.getPrecondition());
+      var meta = tables.metaFor(tableId, tsNow);
+      long expectedVersion = meta.getPointerVersion();
+      enforcePreconditions(corr, meta, req.getPrecondition());
 
-    var now = tables.metaFor(tableId, nowTs);
-    try {
-      tables.update(updated, meta.getPointerVersion());
-    } catch (BaseRepository.PreconditionFailedException pfe) {
-      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-        Map.of("expected", Long.toString(meta.getPointerVersion()),
-            "actual", Long.toString(now.getPointerVersion())));
-    } catch (BaseRepository.AbortRetryableException are) {
-      throw GrpcErrors.aborted(corr, null, Map.of());
-    }
+      try {
+        tables.update(updated, expectedVersion);
+      } catch (BaseRepository.PreconditionFailedException pfe) {
+        var nowMeta = tables.metaFor(tableId, tsNow);
+        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+            Map.of("expected", Long.toString(expectedVersion),
+                "actual", Long.toString(nowMeta.getPointerVersion())));
+      }
 
-    var outMeta = tables.metaFor(tableId, nowTs);
-    return Uni.createFrom().item(
-        UpdateTableSchemaResponse.newBuilder()
-            .setTable(updated)
-            .setMeta(outMeta)
-            .build());
+      var outMeta = tables.metaFor(tableId, tsNow);
+      return UpdateTableSchemaResponse.newBuilder()
+              .setTable(updated)
+              .setMeta(outMeta)
+              .build();
+      }), corrId()
+    );
   }
 
   @Override
   public Uni<RenameTableResponse> renameTable(RenameTableRequest req) {
-    var p = principal.get();
-    authz.require(p, "table.write");
+    return mapFailures(runWithRetry(() -> {
+      var p = principal.get();
+      var corr = p.getCorrelationId();
+      authz.require(p, "table.write");
 
-    var tableId = req.getTableId();
-    ensureKind(tableId, ResourceKind.RK_TABLE, "RenameTable");
+      var tsNow = nowTs();
 
-    var corr = corrId();
-    final var nowTs = Timestamps.fromMillis(clock.millis());
+      var tableId = req.getTableId();
+      ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
 
-    var cur = tables.get(tableId).orElseThrow(() ->
-        GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
+      var cur = tables.get(tableId).orElseThrow(() ->
+          GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
 
-    var newName = mustNonEmpty(req.getNewDisplayName(), "display_name");
-    if (newName.equals(cur.getDisplayName())) {
-      var metaNoop = tables.metaFor(tableId, nowTs);
-      enforcePreconditions(corr, metaNoop, req.getPrecondition());
-      return Uni.createFrom().item(
-          RenameTableResponse.newBuilder().setTable(cur).setMeta(metaNoop).build());
-    }
+      var newName = mustNonEmpty(req.getNewDisplayName(), "display_name", corr);
+      if (newName.equals(cur.getDisplayName())) {
+        var metaNoop = tables.metaFor(tableId, tsNow);
+        enforcePreconditions(corr, metaNoop, req.getPrecondition());
+        return RenameTableResponse.newBuilder().setTable(cur).setMeta(metaNoop).build();
+      }
 
-    var meta = tables.metaFor(tableId, nowTs);
-    enforcePreconditions(corr, meta, req.getPrecondition());
+      var meta = tables.metaFor(tableId, tsNow);
+      long expectedVersion = meta.getPointerVersion();
+      enforcePreconditions(corr, meta, req.getPrecondition());
 
-    var now = tables.metaFor(tableId, nowTs);
-    try {
-      tables.rename(tableId, newName, meta.getPointerVersion());
-    } catch (BaseRepository.NameConflictException nce) {
-      throw GrpcErrors.conflict(corr, "table.already_exists",
-          Map.of("display_name", newName));
-    } catch (BaseRepository.PreconditionFailedException pfe) {
-      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-        Map.of("expected", Long.toString(meta.getPointerVersion()),
-            "actual", Long.toString(now.getPointerVersion())));
-    } catch (BaseRepository.AbortRetryableException are) {
-      throw GrpcErrors.aborted(corr, null, Map.of());
-    }
+      try {
+        tables.rename(tableId, newName, expectedVersion);
+      } catch (BaseRepository.NameConflictException nce) {
+        throw GrpcErrors.conflict(corr, "table.already_exists",
+            Map.of("display_name", newName));
+      } catch (BaseRepository.PreconditionFailedException pfe) {
+        var nowMeta = tables.metaFor(tableId, tsNow);
+        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+            Map.of("expected", Long.toString(expectedVersion),
+                "actual", Long.toString(nowMeta.getPointerVersion())));
+      }
 
-    var outMeta = tables.metaFor(tableId, nowTs);
-    var updated = tables.get(tableId).orElse(cur);
-    return Uni.createFrom().item(
-        RenameTableResponse.newBuilder().setTable(updated).setMeta(outMeta).build());
+      var outMeta = tables.metaFor(tableId, tsNow);
+      var updated = tables.get(tableId).orElse(cur);
+      return RenameTableResponse.newBuilder().setTable(updated).setMeta(outMeta).build();
+    }), corrId());
   }
 
   @Override
   public Uni<MoveTableResponse> moveTable(MoveTableRequest req) {
-    final var p = principal.get();
-    authz.require(p, "table.write");
+    return mapFailures(runWithRetry(() -> {
+      final var p = principal.get();
+      var corr = p.getCorrelationId();
+      authz.require(p, "table.write");
 
-    final var tableId = req.getTableId();
-    ensureKind(tableId, ResourceKind.RK_TABLE, "MoveTable");
+      var tsNow = nowTs();
 
-    final var corr = corrId();
-    final var tenant = p.getTenantId();
-    final var nowTs = Timestamps.fromMillis(clock.millis());
+      final var tableId = req.getTableId();
+      ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
 
-    final var cur = tables.get(tableId).orElseThrow(() ->
-        GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
+      final var tenant = p.getTenantId();
 
-    if (!req.hasNewNamespaceId() || req.getNewNamespaceId().getId().isBlank()) {
-      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "new_namespace_id"));
-    }
+      final var cur = tables.get(tableId).orElseThrow(() ->
+          GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
 
-    final var newNsId = req.getNewNamespaceId();
-    ensureKind(newNsId, ResourceKind.RK_NAMESPACE, "MoveTable.new_namespace_id");
+      if (!req.hasNewNamespaceId() || req.getNewNamespaceId().getId().isBlank()) {
+        throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "new_namespace_id"));
+      }
 
-    final var newCatId = namespaces.findOwnerCatalog(tenant, newNsId.getId())
-        .orElseThrow(() -> GrpcErrors.notFound(
-            corr, "catalog", Map.of("reason", "namespace_owner_missing", "namespace_id", newNsId.getId())));
+      final var newNsId = req.getNewNamespaceId();
+      ensureKind(newNsId, ResourceKind.RK_NAMESPACE, "new_namespace_id", corr);
 
-    if (namespaces.get(newCatId, newNsId).isEmpty()) {
-      throw GrpcErrors.notFound(corr, "namespace", Map.of("id", newNsId.getId()));
-    }
+      final var newCatId = namespaces.findOwnerCatalog(tenant, newNsId.getId())
+          .orElseThrow(() -> GrpcErrors.notFound(
+              corr, "catalog", Map.of("reason", "namespace_owner_missing", "namespace_id", newNsId.getId())));
 
-    final var targetName =
-        (req.getNewDisplayName() != null && !req.getNewDisplayName().isBlank())
-            ? req.getNewDisplayName()
-            : cur.getDisplayName();
+      if (namespaces.get(newCatId, newNsId).isEmpty()) {
+        throw GrpcErrors.notFound(corr, "namespace", Map.of("id", newNsId.getId()));
+      }
 
-    final boolean sameNs = cur.getNamespaceId().getId().equals(newNsId.getId());
-    final boolean sameName = cur.getDisplayName().equals(targetName);
-    if (sameNs && sameName) {
-      final var metaNoop = tables.metaFor(tableId, nowTs);
-      enforcePreconditions(corr, metaNoop, req.getPrecondition());
-      return Uni.createFrom().item(
-          MoveTableResponse.newBuilder().setTable(cur).setMeta(metaNoop).build());
-    }
+      final var targetName =
+          (req.getNewDisplayName() != null && !req.getNewDisplayName().isBlank())
+              ? req.getNewDisplayName()
+              : cur.getDisplayName();
 
-    final var updated = cur.toBuilder()
-        .setDisplayName(targetName)
-        .setCatalogId(newCatId)
-        .setNamespaceId(newNsId)
-        .build();
+      final boolean sameNs = cur.getNamespaceId().getId().equals(newNsId.getId());
+      final boolean sameName = cur.getDisplayName().equals(targetName);
+      if (sameNs && sameName) {
+        final var metaNoop = tables.metaFor(tableId, tsNow);
+        enforcePreconditions(corr, metaNoop, req.getPrecondition());
+        return MoveTableResponse.newBuilder().setTable(cur).setMeta(metaNoop).build();
+      }
 
-    final var meta = tables.metaFor(tableId, nowTs);
-    enforcePreconditions(corr, meta, req.getPrecondition());
+      final var updated = cur.toBuilder()
+          .setDisplayName(targetName)
+          .setCatalogId(newCatId)
+          .setNamespaceId(newNsId)
+          .build();
 
-    final var now = tables.metaFor(tableId, nowTs);
-    try {
-      tables.move(updated, cur.getCatalogId(), cur.getNamespaceId(),
-          newCatId, newNsId, meta.getPointerVersion());
-    } catch (BaseRepository.NameConflictException nce) {
-      throw GrpcErrors.conflict(corr, "table.already_exists",
-          Map.of("display_name", targetName));
-    } catch (BaseRepository.PreconditionFailedException pfe) {
-      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-        Map.of("expected", Long.toString(meta.getPointerVersion()),
-            "actual", Long.toString(now.getPointerVersion())));
-    } catch (BaseRepository.AbortRetryableException are) {
-      throw GrpcErrors.aborted(corr, null, Map.of());
-    }
+      var meta = tables.metaFor(tableId, tsNow);
+      long expectedVersion = meta.getPointerVersion();
+      enforcePreconditions(corr, meta, req.getPrecondition());
 
-    final var outMeta = tables.metaFor(tableId, nowTs);
-    return Uni.createFrom().item(
-        MoveTableResponse.newBuilder().setTable(updated).setMeta(outMeta).build());
+      try {
+        tables.move(updated, cur.getDisplayName(), cur.getCatalogId(), cur.getNamespaceId(),
+            newCatId, newNsId, expectedVersion);
+      } catch (BaseRepository.NameConflictException nce) {
+        throw GrpcErrors.conflict(corr, "table.already_exists",
+            Map.of("display_name", targetName));
+      } catch (BaseRepository.PreconditionFailedException pfe) {
+        var nowMeta = tables.metaFor(tableId, tsNow);
+        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+            Map.of("expected", Long.toString(expectedVersion),
+                "actual", Long.toString(nowMeta.getPointerVersion())));
+      }
+
+      final var outMeta = tables.metaFor(tableId, tsNow);
+      return MoveTableResponse.newBuilder().setTable(updated).setMeta(outMeta).build();
+    }), corrId());
   }
 
   @Override
   public Uni<DeleteTableResponse> deleteTable(DeleteTableRequest req) {
-    var p = principal.get();
-    authz.require(p, "table.write");
+    return mapFailures(runWithRetry(() -> {
+      var p = principal.get();
+      var corr = p.getCorrelationId();
+      authz.require(p, "table.write");
 
-    var tableId = req.getTableId();
-    ensureKind(tableId, ResourceKind.RK_TABLE, "DeleteTable");
+      var tsNow = nowTs();
 
-    var corr = corrId();
-    var tenant = tableId.getTenantId();
-    var canonKey = Keys.tblCanonicalPtr(tenant, tableId.getId());
-    var canonPtr = ptr.get(canonKey);
-    final var nowTs = Timestamps.fromMillis(clock.millis());
+      var tableId = req.getTableId();
+      ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
 
-    if (canonPtr.isEmpty()) {
-      tables.delete(tableId);
-      var safe = tables.metaForSafe(tableId, nowTs);
-      return Uni.createFrom().item(DeleteTableResponse.newBuilder().setMeta(safe).build());
-    }
+      var tenant = tableId.getTenantId();
+      var canonKey = Keys.tblCanonicalPtr(tenant, tableId.getId());
+      var canonPtr = ptr.get(canonKey);
 
-    var meta = tables.metaFor(tableId, nowTs);
-    enforcePreconditions(corr, meta, req.getPrecondition());
+      if (canonPtr.isEmpty()) {
+        tables.delete(tableId);
+        var safe = tables.metaForSafe(tableId, tsNow);
+        return DeleteTableResponse.newBuilder().setMeta(safe).build();
+      }
 
-  var nowPtr = ptr.get(canonKey).orElse(null);
-  var actual = (nowPtr == null) ? 0L : nowPtr.getVersion();
-   try {
-    tables.deleteWithPrecondition(tableId, meta.getPointerVersion());
-    } catch (BaseRepository.PreconditionFailedException pfe) {
-      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-        Map.of("expected", Long.toString(meta.getPointerVersion()),
-            "actual", Long.toString(actual)));
-    } catch (BaseRepository.AbortRetryableException are) {
-      throw GrpcErrors.aborted(corr, null, Map.of());
-    } catch (BaseRepository.NotFoundException nfe) {
-      throw GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId()));
-    }
- 
-    return Uni.createFrom().item(DeleteTableResponse.newBuilder().setMeta(meta).build());
+      var meta = tables.metaFor(tableId, tsNow);
+      long expectedVersion = meta.getPointerVersion();
+      enforcePreconditions(corr, meta, req.getPrecondition());
+
+      try {
+        tables.deleteWithPrecondition(tableId, expectedVersion);
+        } catch (BaseRepository.PreconditionFailedException pfe) {
+          var nowMeta = tables.metaFor(tableId, tsNow);
+          throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+              Map.of("expected", Long.toString(expectedVersion),
+                  "actual", Long.toString(nowMeta.getPointerVersion())));
+        } catch (BaseRepository.NotFoundException nfe) {
+          throw GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId()));
+        }
+
+      return DeleteTableResponse.newBuilder().setMeta(meta).build();
+    }), corrId());
   }
 
   @Override
   public Uni<CreateSnapshotResponse> createSnapshot(CreateSnapshotRequest req) {
-    var p = principal.get();
-    authz.require(p, "table.write");
+    return mapFailures(runWithRetry(() -> {
+      var p = principal.get();
+      var corr = p.getCorrelationId();
+      authz.require(p, "table.write");
 
-    var tenant = p.getTenantId();
-    var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
+      var tsNow = nowTs();
 
-    var nowTs = Timestamps.fromMillis(clock.millis());
-    byte[] fp = req.getSpec().toBuilder().build().toByteArray();
+      var tenant = p.getTenantId();
+      var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
 
-    var out = MutationOps.createProto(
-        tenant,
-        "CreateSnapshot",
-        idemKey,
-        () -> fp,
-        () -> {
-          var snap = Snapshot.newBuilder()
-              .setTableId(req.getSpec().getTableId())
-              .setSnapshotId(req.getSpec().getSnapshotId())
-              .setIngestedAt(nowTs)
-              .setUpstreamCreatedAt(req.getSpec().getUpstreamCreatedAt())
-              .setParentSnapshotId(req.getSpec().getParentSnapshotId())
-              .build();
-          try {
-            snapshots.create(snap);
-          } catch (BaseRepository.NameConflictException e) {
-            throw GrpcErrors.conflict(
-                corrId(), "snapshot.already_exists",
-                    Map.of("name", Long.toString(snap.getSnapshotId())));
-          } catch (BaseRepository.AbortRetryableException are) {
-            throw GrpcErrors.aborted(corrId(), null, Map.of());
-          }
+      byte[] fp = req.getSpec().toBuilder().build().toByteArray();
 
-          return new IdempotencyGuard.CreateResult<>(snap, snap.getTableId());
-        },
-        (s) -> snapshots.metaFor(s.getTableId(), s.getSnapshotId(), nowTs),
-        idempotencyStore,
-        nowTs,
-        86_400L,
-        this::corrId,
-        Snapshot::parseFrom
-    );
+      var out = MutationOps.createProto(
+          tenant,
+          "CreateSnapshot",
+          idemKey,
+          () -> fp,
+          () -> {
+            var snap = Snapshot.newBuilder()
+                .setTableId(req.getSpec().getTableId())
+                .setSnapshotId(req.getSpec().getSnapshotId())
+                .setIngestedAt(tsNow)
+                .setUpstreamCreatedAt(req.getSpec().getUpstreamCreatedAt())
+                .setParentSnapshotId(req.getSpec().getParentSnapshotId())
+                .build();
+            try {
+              snapshots.create(snap);
+            } catch (BaseRepository.NameConflictException e) {
+              if (!idemKey.isBlank()) {
+                var existing = snapshots.get(req.getSpec().getTableId(), req.getSpec().getSnapshotId());
+                if (existing.isPresent()) {
+                  return new IdempotencyGuard.CreateResult<>(existing.get(), existing.get().getTableId());
+                }
+              }
+              throw GrpcErrors.conflict(
+                  corr, "snapshot.already_exists",
+                  Map.of("id", Long.toString(req.getSpec().getSnapshotId())));
+            }
 
-    return Uni.createFrom().item(
-        CreateSnapshotResponse.newBuilder().setMeta(out.meta).build());
+            return new IdempotencyGuard.CreateResult<>(snap, snap.getTableId());
+          },
+          (s) -> snapshots.metaFor(s.getTableId(), s.getSnapshotId(), tsNow),
+          idempotencyStore,
+          tsNow,
+          IDEMPOTENCY_TTL_SECONDS,
+          this::corrId,
+          Snapshot::parseFrom
+      );
+
+      return CreateSnapshotResponse.newBuilder().setMeta(out.meta).build();
+    }), corrId());
   }
 
   @Override
   public Uni<DeleteSnapshotResponse> deleteSnapshot(DeleteSnapshotRequest req) {
-    var p = principal.get();
-    authz.require(p, "table.write");
+    return mapFailures(runWithRetry(() -> {
+      var p = principal.get();
+      var corr = p.getCorrelationId();
+      authz.require(p, "table.write");
 
-    var tableId = req.getTableId();
-    long snapshotId = req.getSnapshotId();
-    ensureKind(tableId, ResourceKind.RK_TABLE, "DeleteSnapshot");
+      var tsNow = nowTs();
+      
+      var tableId = req.getTableId();
+      long snapshotId = req.getSnapshotId();
+      ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
 
-    var corr = corrId();
-    var tenant = tableId.getTenantId();
-    var snapKey = Keys.snapPtrById(tenant, tableId.getId(), req.getSnapshotId());
-    final var nowTs = Timestamps.fromMillis(clock.millis());
+      var meta = snapshots.metaFor(tableId, snapshotId, tsNow);
+      long expectedVersion = meta.getPointerVersion();
+      enforcePreconditions(corr, meta, req.getPrecondition());
 
-    var meta = snapshots.metaFor(tableId, snapshotId, nowTs);
-    enforcePreconditions(corr, meta, req.getPrecondition());
+      try {
+        snapshots.deleteWithPrecondition(tableId, snapshotId, expectedVersion);
+      } catch (BaseRepository.PreconditionFailedException pfe) {
+        var nowMeta = snapshots.metaFor(tableId, snapshotId, tsNow);
+        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+            Map.of("expected", Long.toString(expectedVersion),
+                "actual", Long.toString(nowMeta.getPointerVersion())));
+      } catch (BaseRepository.NotFoundException nfe) {
+        throw GrpcErrors.notFound(corr, "snapshot",
+            Map.of("id", Long.toString(snapshotId)));
+      }
 
-    var nowPtr = ptr.get(snapKey).orElse(null);
-    var actual = (nowPtr == null) ? 0L : nowPtr.getVersion();
-    try {
-      snapshots.deleteWithPrecondition(tableId, snapshotId, meta.getPointerVersion());
-    } catch (BaseRepository.PreconditionFailedException pfe) {
-      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-        Map.of("expected", Long.toString(meta.getPointerVersion()),
-            "actual", Long.toString(actual)));
-    } catch (BaseRepository.AbortRetryableException are) {
-      throw GrpcErrors.aborted(corr, null, Map.of());
-    } catch (BaseRepository.NotFoundException nfe) {
-      throw GrpcErrors.notFound(corrId(), "snapshot",
-          Map.of("id", Long.toString(snapshotId)));
-    }
-
-    return Uni.createFrom().item(
-        DeleteSnapshotResponse.newBuilder().setMeta(meta).build());
-  }
-
-  private void ensureKind(ResourceId rid, ResourceKind want, String op) {
-    if (rid == null)
-      throw GrpcErrors.invalidArgument(corrId(), null, Map.of("field", op));
-    if (rid.getKind() != want)
-      throw GrpcErrors.invalidArgument(corrId(), null, Map.of("field", op));
-  }
-
-  private String mustNonEmpty(String v, String name) {
-    if (v == null || v.isBlank())
-      throw GrpcErrors.invalidArgument(corrId(), null, Map.of("field", name));
-    return v;
-  }
-
-  private String corrId() {
-    var pctx = principal != null ? principal.get() : null;
-    return pctx != null ? pctx.getCorrelationId() : "";
-  }
-
-  private void enforcePreconditions(
-      String corrId,
-      MutationMeta cur,
-      Precondition pc) {
-    if (pc == null) return;
-
-    boolean checkVer = pc.getExpectedVersion() > 0;
-    boolean checkTag = pc.getExpectedEtag() != null && !pc.getExpectedEtag().isBlank();
-
-    if (!checkVer && !checkTag) {
-      return;
-    }
-
-    if (checkVer && cur.getPointerVersion() != pc.getExpectedVersion()) {
-      throw GrpcErrors.preconditionFailed(
-        corrId, "version_mismatch",
-        Map.of("expected", Long.toString(pc.getExpectedVersion()),
-            "actual", Long.toString(cur.getPointerVersion())));
-    }
-    if (checkTag && !cur.getEtag().equals(pc.getExpectedEtag())) {
-      throw GrpcErrors.preconditionFailed(
-        corrId, "etag_mismatch",
-        Map.of("expected", pc.getExpectedEtag(),
-            "actual", cur.getEtag()));
-    }
+      return DeleteSnapshotResponse.newBuilder().setMeta(meta).build();
+    }), corrId());
   }
 }

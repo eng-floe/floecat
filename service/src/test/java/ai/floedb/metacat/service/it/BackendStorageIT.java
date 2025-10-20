@@ -568,7 +568,8 @@ class BackendStorageIT {
     t1.start(); t2.start(); latch.countDown(); t1.join(); t2.join();
     assertNull(err.get(), "unexpected error in concurrent writers");
 
-    var a = out1.get(); var b = out2.get();
+    var a = out1.get();
+    var b = out2.get();
     assertNotNull(a); assertNotNull(b);
     assertEquals(a.getTable().getResourceId().getId(), b.getTable().getResourceId().getId(), "should be same table id");
 
