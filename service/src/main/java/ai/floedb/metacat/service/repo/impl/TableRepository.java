@@ -50,9 +50,8 @@ public class TableRepository extends BaseRepository<Table> {
     var byName = Keys.tblByNamePtr(tid, catId, nsId, table.getDisplayName());
     var blob = Keys.tblBlob(tid, tblId);
 
-    reserveIndexOrIdempotent(canon,  blob);
-    reserveIndexOrIdempotent(byName, blob);
     putBlob(blob, table);
+    reserveAllOrRollback(canon, blob, byName, blob);
   }
 
   public boolean update(Table updated, long expectedVersion) {
@@ -83,8 +82,14 @@ public class TableRepository extends BaseRepository<Table> {
 
     putBlob(blob, updated);
 
-    reserveIndexOrIdempotent(newByName, blob);
-    advancePointer(canon, blob, expectedVersion);
+    reserveAllOrRollback(newByName, blob);
+    try {
+      advancePointer(canon, blob, expectedVersion);
+    } catch (PreconditionFailedException e) {
+      ptr.get(newByName).ifPresent(p -> compareAndDeleteOrFalse(newByName, p.getVersion()));
+      return false;
+    }
+
     ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(oldByName, p.getVersion()));
     return true;
   }
@@ -106,8 +111,15 @@ public class TableRepository extends BaseRepository<Table> {
     var newByName = Keys.tblByNamePtr(tid, newCatalogId.getId(), newNamespaceId.getId(), updated.getDisplayName());
 
     putBlob(blob, updated);
-    reserveIndexOrIdempotent(newByName, blob);
-    advancePointer(canon, blob, expectedVersion);
+
+    reserveAllOrRollback(newByName, blob);
+    try {
+      advancePointer(canon, blob, expectedVersion);
+    } catch (PreconditionFailedException e) {
+      ptr.get(newByName).ifPresent(p -> compareAndDeleteOrFalse(newByName, p.getVersion()));
+      return false;
+    }
+
     ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(oldByName, p.getVersion()));
     return true;
   }

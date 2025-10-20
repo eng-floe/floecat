@@ -38,8 +38,8 @@ public class StatsRepository extends BaseRepository<TableStats> {
     final String key = Keys.snapTableStatsPtr(tid, tbl, snapshotId);
     final String blob = Keys.snapTableStatsBlob(tid, tbl, snapshotId);
 
-    reserveIndexOrIdempotent(key, blob);
     putBlob(blob, stats);
+    reserveAllOrRollback(key, blob);
   }
 
   public boolean deleteTableStats(ResourceId tableId, long snapshotId) {
@@ -69,14 +69,21 @@ public class StatsRepository extends BaseRepository<TableStats> {
     final String tbl = tableId.getId();
     final String key = Keys.snapColStatsPtr(tid, tbl, snapshotId, cs.getColumnId());
     final String blob = Keys.snapColStatsBlob(tid, tbl, snapshotId, cs.getColumnId());
-    reserveIndexOrIdempotent(key, blob);
+    
     putBlobStrictBytes(blob, cs.toByteArray());
+    reserveAllOrRollback(key, blob);
   }
 
-  public void putColumnStatsBatch(ResourceId tableId, long snapshotId, List<ColumnStats> cols) {
+  public int putColumnStatsBatch(ResourceId tableId, long snapshotId, List<ColumnStats> cols) {
+    int created = 0;
     for (var cs : cols) {
+      final var key = Keys.snapColStatsPtr(tableId.getTenantId(), tableId.getId(), snapshotId, cs.getColumnId());
+      if (ptr.get(key).isEmpty()) {
+        created++;
+      }
       putColumnStats(tableId, snapshotId, cs);
     }
+    return created;
   }
 
   public List<ColumnStats> listColumnStats(ResourceId tableId, long snapshotId, int limit, String token, StringBuilder nextOut) {

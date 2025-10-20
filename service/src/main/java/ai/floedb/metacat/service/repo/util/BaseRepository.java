@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Function;
 
 import com.google.protobuf.Timestamp;
@@ -31,23 +32,23 @@ public abstract class BaseRepository<T> implements Repository<T> {
     public RepoException(String msg) { super(msg); }
     public RepoException(String msg, Throwable cause) { super(msg, cause); }
   }
-  /** Resource exists in an incompatible way (e.g., by-name points elsewhere). */
+
   public static class NameConflictException extends RepoException {
     public NameConflictException(String msg) { super(msg); }
   }
-  /** Pointer/version mismatch, etag mismatch, or other optimistic concurrency failure. */
+
   public static class PreconditionFailedException extends RepoException {
     public PreconditionFailedException(String msg) { super(msg); }
   }
-  /** Persistent CAS failure or state churn — operation should be retried by caller. */
+
   public static class AbortRetryableException extends RepoException {
     public AbortRetryableException(String msg) { super(msg); }
   }
-  /** Blob or pointer missing where it must exist. */
+
   public static class NotFoundException extends RepoException {
     public NotFoundException(String msg) { super(msg); }
   }
-  /** Blob present but unreadable / invalid. */
+
   public static class CorruptionException extends RepoException {
     public CorruptionException(String msg, Throwable cause) { super(msg, cause); }
   }
@@ -84,7 +85,7 @@ public abstract class BaseRepository<T> implements Repository<T> {
     }
   }
 
-  protected void reserveIndexOrIdempotent(String key, String blobUri) {
+  private void reserveIndexOrIdempotent(String key, String blobUri) {
     var reserve = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
     if (ptr.compareAndSet(key, 0L, reserve)) return;
 
@@ -94,6 +95,24 @@ public abstract class BaseRepository<T> implements Repository<T> {
     }
     if (!blobUri.equals(ex.getBlobUri())) {
       throw new NameConflictException("pointer bound to different blob: " + key);
+    }
+  }
+
+  protected void reserveAllOrRollback(String... keyBlobPairs) {
+    final var reserved = new ArrayList<String>(keyBlobPairs.length/2);
+    try {
+      for (int i = 0; i < keyBlobPairs.length; i += 2) {
+        final var k = keyBlobPairs[i];
+        final var b = keyBlobPairs[i+1];
+        reserveIndexOrIdempotent(k, b);
+        reserved.add(k);
+      }
+    } catch (NameConflictException | AbortRetryableException e) {
+      for (int i = reserved.size() - 1; i >= 0; i--) {
+        final var k = reserved.get(i);
+        ptr.get(k).ifPresent(p -> compareAndDeleteOrFalse(k, p.getVersion()));
+      }
+      throw e;
     }
   }
 
@@ -125,19 +144,6 @@ public abstract class BaseRepository<T> implements Repository<T> {
   }
 
   @Override
-  public void advancePointer(String key, String blobUri) {
-    for (int i = 0; i < CAS_MAX; i++) {
-      var cur = ptr.get(key).orElse(null);
-      var next = (cur == null)
-          ? Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build()
-          : cur.toBuilder().setBlobUri(blobUri).setVersion(cur.getVersion() + 1).build();
-      if (ptr.compareAndSet(key, cur == null ? 0L : cur.getVersion(), next)) return;
-      backoff(i);
-    }
-    throw new AbortRetryableException("CAS retries exhausted: " + key);
-  }
-
-  @Override
   public void advancePointer(String key, String blobUri, long expectedVersion) {
     for (int i = 0; i < CAS_MAX; i++) {
       var cur = ptr.get(key).orElse(null);
@@ -162,7 +168,9 @@ public abstract class BaseRepository<T> implements Repository<T> {
 
   private static void backoff(int attempt) {
     try {
-      Thread.sleep(Math.min(5L * (1 << attempt), 50L));
+      long base = Math.min(5L * (1L << attempt), 50L);
+      long jitter = ThreadLocalRandom.current().nextLong(0, 5);
+      Thread.sleep(base + jitter);
     } catch (InterruptedException ignored) {}
   }
 
@@ -177,9 +185,11 @@ public abstract class BaseRepository<T> implements Repository<T> {
     for (var r : rows) {
       byte[] bytes = blobsMap.get(r.blobUri());
       if (bytes == null) continue;
-      try { out.add(parser.parse(bytes)); }
+      try {
+        out.add(parser.parse(bytes));
+      }
       catch (Exception e) {
-        throw new RuntimeException("parse failed: " + r.blobUri(), e);
+        throw new CorruptionException("parse failed: " + r.blobUri(), e);
       }
     }
     return out;

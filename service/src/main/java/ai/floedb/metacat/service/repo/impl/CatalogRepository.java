@@ -54,9 +54,8 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     var byId = Keys.catPtr(tid, rid.getId());
     var blob = Keys.catBlob(tid, rid.getId());
 
-    reserveIndexOrIdempotent(byId, blob);
-    reserveIndexOrIdempotent(byName, blob);
     putBlob(blob, cat);
+    reserveAllOrRollback(byId, blob, byName, blob);
   }
 
   public boolean update(Catalog updated, long expectedPointerVersion) {
@@ -72,10 +71,10 @@ public class CatalogRepository extends BaseRepository<Catalog> {
 
   public boolean rename(String tenant, ResourceId catId, String newName, long expectedVersion) {
     var byId = Keys.catPtr(tenant, catId.getId());
-    var cur = get(byId).orElseThrow(
-        () -> new NotFoundException("catalog not found: " + catId.getId()));
-
-    if (newName.equals(cur.getDisplayName())) return true;
+    var cur = get(byId).orElseThrow(() -> new NotFoundException("catalog not found: " + catId.getId()));
+    if (newName.equals(cur.getDisplayName())) {
+      return true;
+    }
 
     var blob = Keys.catBlob(tenant, catId.getId());
     var newByName = Keys.catByNamePtr(tenant, newName);
@@ -83,10 +82,13 @@ public class CatalogRepository extends BaseRepository<Catalog> {
 
     var updated = cur.toBuilder().setDisplayName(newName).build();
     putBlob(blob, updated);
-    reserveIndexOrIdempotent(newByName, blob);
+
+    reserveAllOrRollback(newByName, blob);
+
     advancePointer(byId, blob, expectedVersion);
+
     ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(oldByName, p.getVersion()));
-   return true;
+    return true;
   }
 
   public boolean delete(ResourceId catalogId) {

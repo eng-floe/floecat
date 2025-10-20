@@ -83,10 +83,9 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
       full.add(ns.getDisplayName());
     }
     var byPath = Keys.nsByPathPtr(tid, catalogId.getId(), full);
-
-    reserveIndexOrIdempotent(byId, blob);
-    reserveIndexOrIdempotent(byPath, blob);
+;
     putBlob(blob, ns);
+    reserveAllOrRollback(byId, blob, byPath, blob);
   }
 
   public boolean update(Namespace updated, ResourceId catalogId, long expectedVersion) {
@@ -114,26 +113,32 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
 
     var tid = updated.getResourceId().getTenantId();
     var nsId = updated.getResourceId().getId();
+    var blob = Keys.nsBlob(tid, nsId);
 
     var sameCatalog = oldCatalogId.getId().equals(newCatalogId.getId());
-
     var oldById = Keys.nsPtr(tid, oldCatalogId.getId(), nsId);
     var newById = Keys.nsPtr(tid, newCatalogId.getId(), nsId);
-
     var oldPath = new ArrayList<>(oldParents); oldPath.add(oldLeaf);
     var newPath = new ArrayList<>(newParents); newPath.add(updated.getDisplayName());
-
     var oldByPath = Keys.nsByPathPtr(tid, oldCatalogId.getId(), oldPath);
     var newByPath = Keys.nsByPathPtr(tid, newCatalogId.getId(), newPath);
 
-    var blob = Keys.nsBlob(tid, nsId);
+    if (sameCatalog && oldPath.equals(newPath)) {
+      return true;
+    }
 
     putBlob(blob, updated);
-    reserveIndexOrIdempotent(newByPath, blob);
+
     if (sameCatalog) {
-      advancePointer(oldById, blob, expectedVersion);
+      reserveAllOrRollback(newByPath, blob);
+      try {
+        advancePointer(oldById, blob, expectedVersion);
+      } catch (PreconditionFailedException e) {
+        ptr.get(newByPath).ifPresent(p -> compareAndDeleteOrFalse(newByPath, p.getVersion()));
+        return false;
+      }
     } else {
-      reserveIndexOrIdempotent(newById, blob);
+      reserveAllOrRollback(newById, blob, newByPath, blob);
       if (!compareAndDeleteOrFalse(oldById, expectedVersion)) {
         ptr.get(newById).ifPresent(p -> compareAndDeleteOrFalse(newById, p.getVersion()));
         ptr.get(newByPath).ifPresent(p -> compareAndDeleteOrFalse(newByPath, p.getVersion()));

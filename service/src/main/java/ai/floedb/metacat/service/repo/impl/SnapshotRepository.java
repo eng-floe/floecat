@@ -109,9 +109,8 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     String byTime = Keys.snapPtrByTime(tenantId, tableUUID, snapId, created);
     String blob = Keys.snapBlob(tenantId, tableUUID, snapId);
 
-    reserveIndexOrIdempotent(byId,   blob);
-    reserveIndexOrIdempotent(byTime, blob);
     putBlob(blob, snapshot);
+    reserveAllOrRollback(byId, blob, byTime, blob);
   }
 
   public boolean delete(ResourceId tableId, long snapshotId) {

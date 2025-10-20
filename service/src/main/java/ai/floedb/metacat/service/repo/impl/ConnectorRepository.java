@@ -48,9 +48,8 @@ public class ConnectorRepository extends BaseRepository<Connector> {
     var byName = Keys.connByNamePtr(tid, c.getDisplayName());
     var blob = Keys.connBlob(tid, rid.getId());
 
-    reserveIndexOrIdempotent(byId, blob);
-    reserveIndexOrIdempotent(byName, blob);
     putBlob(blob, c);
+    reserveAllOrRollback(byId, blob, byName, blob);
   }
 
   public boolean update(Connector updated, long expectedPointerVersion) {
@@ -74,7 +73,7 @@ public class ConnectorRepository extends BaseRepository<Connector> {
     var blob = Keys.connBlob(tid, rid.getId());
 
     putBlob(blob, updated);
-    reserveIndexOrIdempotent(newByName, blob);
+    reserveAllOrRollback(newByName, blob);
     ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(oldByName, p.getVersion()));
     return true;
   }
