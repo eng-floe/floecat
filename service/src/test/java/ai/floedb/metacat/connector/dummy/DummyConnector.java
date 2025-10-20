@@ -3,7 +3,7 @@ package ai.floedb.metacat.connector.dummy;
 import java.util.*;
 
 import ai.floedb.metacat.connector.spi.MetacatConnector;
-import ai.floedb.metacat.connector.spi.TableFormat;
+import ai.floedb.metacat.connector.spi.ConnectorFormat;
 
 public final class DummyConnector implements MetacatConnector {
 
@@ -19,8 +19,8 @@ public final class DummyConnector implements MetacatConnector {
     return id;
   }
 
-  @Override public TableFormat format() {
-    return TableFormat.ICEBERG;
+  @Override public ConnectorFormat format() {
+    return ConnectorFormat.CF_ICEBERG;
   }
 
   @Override

@@ -117,7 +117,7 @@ message TableSpec {
   string root_uri = 5;
   string schema_json = 6;
   repeated string partition_keys = 7;
-  string format = 8;
+  TableFormat format = 8;
   map<string,string> properties = 9;
   string policy_ref = 10;
 }

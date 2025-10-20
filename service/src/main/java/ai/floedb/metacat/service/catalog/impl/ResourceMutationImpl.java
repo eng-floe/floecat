@@ -501,6 +501,7 @@ public class ResourceMutationImpl implements ResourceMutation {
               .setResourceId(tableId)
               .setDisplayName(mustNonEmpty(req.getSpec().getDisplayName(), "display_name"))
               .setDescription(req.getSpec().getDescription())
+              .setFormat(req.getSpec().getFormat())
               .setCatalogId(req.getSpec().getCatalogId())
               .setNamespaceId(req.getSpec().getNamespaceId())
               .setRootUri(mustNonEmpty(req.getSpec().getRootUri(), "root_uri"))

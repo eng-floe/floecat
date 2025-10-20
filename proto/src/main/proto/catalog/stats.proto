@@ -5,18 +5,13 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.metacat.catalog.rpc";
 
 import "common/common.proto";
+import "catalog/catalog.proto";
 import "resource/mutation.proto";
 
 import "google/protobuf/timestamp.proto";
 
-enum UpstreamSystem {
-  US_UNSPECIFIED = 0;
-  US_ICEBERG = 1;
-  US_DELTA = 2;
-}
-
 message UpstreamStamp {
-  UpstreamSystem system = 1;
+  TableFormat system = 1;
   string table_native_id = 2;
   string commit_ref = 3;
   google.protobuf.Timestamp fetched_at = 4;

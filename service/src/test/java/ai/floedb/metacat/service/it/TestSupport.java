@@ -71,6 +71,7 @@ public final class TestSupport {
           .setNamespaceId(namespaceId)
           .setDisplayName(displayName)
           .setDescription(desc)
+          .setFormat(TableFormat.TF_ICEBERG)
           .setRootUri(rootUri)
           .setSchemaJson(schemaJson)).build());
     return resp.getTable();

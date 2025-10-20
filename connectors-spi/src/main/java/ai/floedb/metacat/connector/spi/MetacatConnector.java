@@ -8,7 +8,7 @@ import java.util.Optional;
 public interface MetacatConnector extends Closeable {
   String id();
 
-  TableFormat format();
+  ConnectorFormat format();
 
   List<String> listNamespaces();
 

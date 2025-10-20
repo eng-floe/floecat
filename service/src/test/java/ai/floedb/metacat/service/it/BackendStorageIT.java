@@ -451,6 +451,7 @@ class BackendStorageIT {
     var spec = TableSpec.newBuilder()
         .setCatalogId(cat.getResourceId())
         .setNamespaceId(ns.getResourceId())
+        .setFormat(TableFormat.TF_DELTA)
         .setDisplayName("t0")
         .setRootUri("s3://b/p")
         .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
@@ -505,12 +506,14 @@ class BackendStorageIT {
     var specA = ai.floedb.metacat.catalog.rpc.TableSpec.newBuilder()
         .setCatalogId(cat.getResourceId()).setNamespaceId(ns.getResourceId())
         .setDisplayName("tA").setRootUri("s3://b/p").setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
+        .setFormat(TableFormat.TF_DELTA)
         .build();
 
     var specB = ai.floedb.metacat.catalog.rpc.TableSpec.newBuilder()
         .setCatalogId(cat.getResourceId()).setNamespaceId(ns.getResourceId())
         .setDisplayName("tB")  // <-- different display_name so different fingerprint
         .setRootUri("s3://b/p").setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
+        .setFormat(TableFormat.TF_DELTA)
         .build();
 
     var reqA = ai.floedb.metacat.catalog.rpc.CreateTableRequest.newBuilder().setSpec(specA).setIdempotency(idem).build();
@@ -539,6 +542,7 @@ class BackendStorageIT {
         .setCatalogId(cat.getResourceId())
         .setNamespaceId(ns.getResourceId())
         .setDisplayName("tcc")
+        .setFormat(TableFormat.TF_DELTA)
         .setRootUri("s3://b/p")
         .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
         .build();

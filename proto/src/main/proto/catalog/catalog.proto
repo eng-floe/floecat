@@ -91,6 +91,13 @@ message LookupTableResponse {
   ai.floedb.metacat.common.NameRef name = 1;
 }
 
+enum TableFormat {
+  TF_UNSPECIFIED = 0;
+  TF_ICEBERG = 1;
+  TF_DELTA = 2;
+  TF_UNKNOWN = 10;
+}
+
 message Table {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
@@ -101,7 +108,7 @@ message Table {
   google.protobuf.Timestamp created_at = 7;
   string schema_json = 8;
   repeated string partition_keys = 9;
-  string format = 10;
+  TableFormat format = 10;
   map<string,string> properties = 11;
 }
 

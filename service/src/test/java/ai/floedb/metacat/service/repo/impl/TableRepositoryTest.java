@@ -12,6 +12,7 @@ import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
+import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.util.Keys;
@@ -67,6 +68,7 @@ class TableRepositoryTest {
         .setResourceId(tableRid)
         .setDisplayName("orders")
         .setDescription("Orders table")
+        .setFormat(TableFormat.TF_ICEBERG)
         .setCatalogId(catRid)
         .setNamespaceId(nsRid)
         .setRootUri("s3://upstream/tables/orders")

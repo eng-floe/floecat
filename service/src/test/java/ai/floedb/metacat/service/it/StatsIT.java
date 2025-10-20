@@ -76,7 +76,7 @@ class StatsIT {
         .setTableId(tblId)
         .setSnapshotId(snapOld)
         .setUpstream(UpstreamStamp.newBuilder()
-            .setSystem(UpstreamSystem.US_ICEBERG)
+            .setSystem(TableFormat.TF_ICEBERG)
             .setTableNativeId("iceberg://warehouse/db/fact_orders")
             .setCommitRef(Long.toString(snapOld))
             .setFetchedAt(Timestamps.fromMillis(System.currentTimeMillis()))

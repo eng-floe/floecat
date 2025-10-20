@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
+import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
@@ -39,6 +40,7 @@ class TableRepositorySnapshotsTest {
         .setResourceId(tableRid)
         .setDisplayName("orders")
         .setDescription("Orders table")
+        .setFormat(TableFormat.TF_DELTA)
         .setCatalogId(catalogRid)
         .setNamespaceId(nsRid)
         .setRootUri("s3://upstream/tables/orders/")

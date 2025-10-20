@@ -14,8 +14,8 @@ import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.spi.ConnectorConfig;
 import ai.floedb.metacat.connector.spi.ConnectorFactory;
+import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
-import ai.floedb.metacat.connector.spi.TableFormat;
 
 import static ai.floedb.metacat.reconciler.util.NameParts.split;
 
@@ -113,7 +113,7 @@ public class ReconcilerService {
   private ResourceId ensureTable(ResourceId catalogId,
                                  ResourceId namespaceId,
                                  MetacatConnector.UpstreamTable up,
-                                 TableFormat fmt) {
+                                 ConnectorFormat fmt) {
     try {
       var ref = NameRef.newBuilder()
           .setCatalog(lookupCatalogName(catalogId))
@@ -135,7 +135,7 @@ public class ReconcilerService {
         .setDisplayName(up.tableName())
         .setRootUri(up.location())
         .setSchemaJson(up.schemaJson())
-        .setFormat(fmt == TableFormat.ICEBERG ? "ICEBERG" : fmt.name())
+        .setFormat(toTableFormat(fmt))
         .putAllProperties(up.properties())
         .build();
 
@@ -190,5 +190,21 @@ public class ReconcilerService {
     return mc.directory().lookupCatalog(
         LookupCatalogRequest.newBuilder().setResourceId(catalogId).build()
     ).getDisplayName();
+  }
+
+  private static TableFormat toTableFormat(ConnectorFormat src) {
+    if (src == null) return TableFormat.TF_UNSPECIFIED;
+
+    String name = src.name();
+    int i = name.indexOf('_');
+    String stem = (i >= 0 && i + 1 < name.length()) ? name.substring(i + 1) : name;
+
+    String target = "TF_" + stem;
+
+    try {
+      return TableFormat.valueOf(target);
+    } catch (IllegalArgumentException ignored) {
+      return TableFormat.TF_UNKNOWN;
+    }
   }
 }

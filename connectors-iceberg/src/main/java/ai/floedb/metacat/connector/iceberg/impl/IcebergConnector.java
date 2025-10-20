@@ -3,8 +3,8 @@ package ai.floedb.metacat.connector.iceberg.impl;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
-import ai.floedb.metacat.connector.spi.TableFormat;
 
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
@@ -67,7 +67,7 @@ public final class IcebergConnector implements MetacatConnector {
   }
 
   @Override public String id() { return id; }
-  @Override public TableFormat format() { return TableFormat.ICEBERG; }
+  @Override public ConnectorFormat format() { return ConnectorFormat.CF_ICEBERG; }
 
   @Override
   public List<String> listNamespaces() {

@@ -14,6 +14,7 @@ import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
+import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
@@ -113,6 +114,7 @@ public class SeedRunner {
       .setResourceId(tableRid)
       .setDisplayName(name)
       .setDescription(name + " table")
+      .setFormat(TableFormat.TF_ICEBERG)
       .setCatalogId(catalogId)
       .setNamespaceId(nsRid)
       .setRootUri(rootUri)
