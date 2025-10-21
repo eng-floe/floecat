@@ -29,6 +29,10 @@ public abstract class BaseRepository<T> implements Repository<T> {
 
   public static final int CAS_MAX = 10;
 
+  public BaseRepository() {
+    super();
+  }
+
   public static class RepoException extends RuntimeException {
     public RepoException(String msg) {
       super(msg);
@@ -67,9 +71,6 @@ public abstract class BaseRepository<T> implements Repository<T> {
     public CorruptionException(String msg, Throwable cause) {
       super(msg, cause);
     }
-  }
-
-  protected BaseRepository() {
   }
 
   protected BaseRepository(

@@ -22,7 +22,6 @@ import ai.floedb.metacat.service.planning.impl.PlanContext;
 
 @QuarkusTest
 class PropagationIT {
-
   @GrpcClient("resource-access")
   ResourceAccessGrpc.ResourceAccessBlockingStub resourceAccess;
 

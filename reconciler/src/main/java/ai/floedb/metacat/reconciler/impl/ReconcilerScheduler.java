@@ -16,7 +16,6 @@ import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
 
 @ApplicationScoped
 public class ReconcilerScheduler {
-
   @Inject GrpcClients clients;
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerService reconcilerService;

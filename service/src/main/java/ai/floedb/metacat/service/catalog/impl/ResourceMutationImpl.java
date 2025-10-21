@@ -60,7 +60,6 @@ import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 
 @GrpcService
 public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMutation {
-
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;
   @Inject TableRepository tables;

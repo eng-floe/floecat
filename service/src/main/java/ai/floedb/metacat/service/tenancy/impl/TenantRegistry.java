@@ -6,7 +6,6 @@ import jakarta.enterprise.context.ApplicationScoped;
 
 @ApplicationScoped
 public class TenantRegistry {
-
   // TODO: build proper tenant repo
   private static final Set<String> VALID_TENANTS = Set.of("t-0001", "t-0002");
 

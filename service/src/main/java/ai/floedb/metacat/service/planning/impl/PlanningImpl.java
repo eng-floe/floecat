@@ -40,16 +40,13 @@ import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 
 @GrpcService
 public class PlanningImpl extends BaseServiceImpl implements Planning {
-
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
 
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
-
   @GrpcClient("resource-access")
   ResourceAccessGrpc.ResourceAccessBlockingStub access;
-
   @Inject PlanContextStore plans;
 
   @Inject

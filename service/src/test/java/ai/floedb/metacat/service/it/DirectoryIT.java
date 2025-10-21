@@ -27,7 +27,6 @@ import ai.floedb.metacat.common.rpc.PageRequest;
 class DirectoryIT {
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
-
   @GrpcClient("resource-mutation")
   ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
 

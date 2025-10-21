@@ -16,16 +16,12 @@ import ai.floedb.metacat.service.planning.PlanContextStore;
 
 @ApplicationScoped
 public class PlanContextStoreImpl implements PlanContextStore {
-
   @ConfigProperty(name = "metacat.plan.default-ttl-ms", defaultValue = "60000")
   long defaultTtlMs;
-
   @ConfigProperty(name = "metacat.plan.ended-grace-ms", defaultValue = "15000")
   long endedGraceMs;
-
   @ConfigProperty(name = "metacat.plan.max-size", defaultValue = "10000")
   long maxSize;
-
   @ConfigProperty(name = "metacat.plan.safety-expiry-minutes", defaultValue = "10")
   long safetyExpiryMinutes;
 

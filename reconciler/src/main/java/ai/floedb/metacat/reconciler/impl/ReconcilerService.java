@@ -21,7 +21,6 @@ import static ai.floedb.metacat.reconciler.util.NameParts.split;
 
 @ApplicationScoped
 public class ReconcilerService {
-
   @Inject GrpcClients clients;
 
   public Result reconcile(ConnectorConfig cfg, boolean fullRescan) throws Exception {

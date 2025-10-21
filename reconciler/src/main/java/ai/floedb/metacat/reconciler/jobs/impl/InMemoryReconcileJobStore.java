@@ -13,7 +13,6 @@ import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
 
 @ApplicationScoped
 public class InMemoryReconcileJobStore implements ReconcileJobStore {
-
   private final Map<String, ReconcileJob> jobs = new ConcurrentHashMap<>();
   private final ConcurrentLinkedQueue<String> ready = new ConcurrentLinkedQueue<>();
   private final Set<String> leased = ConcurrentHashMap.newKeySet();

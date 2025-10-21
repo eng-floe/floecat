@@ -27,6 +27,7 @@ import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class CatalogPagingIT {
   @Inject CatalogRepository repo;
+
   @GrpcClient("resource-access")
   ResourceAccessGrpc.ResourceAccessBlockingStub resourceAccess;
 

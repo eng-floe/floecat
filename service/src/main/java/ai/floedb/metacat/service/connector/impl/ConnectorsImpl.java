@@ -28,7 +28,6 @@ import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
 
 @GrpcService
 public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
-
   @Inject ConnectorRepository connectors;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;

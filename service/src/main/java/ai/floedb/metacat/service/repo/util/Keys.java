@@ -6,9 +6,6 @@ import java.util.List;
 
 public final class Keys {
 
-  private Keys() {
-  }
-
   private static String enc(String s) {
     return URLEncoder.encode(s, StandardCharsets.UTF_8);
   }

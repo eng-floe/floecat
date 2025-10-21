@@ -11,7 +11,6 @@ import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.service.planning.impl.PlanContext;
 
 class PlanContextTest {
-
   private final Clock clock = Clock.systemUTC();
 
   private static PrincipalContext pc(String tenant, String subject, String planId) {

@@ -17,7 +17,6 @@ import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
 
 class TableRepositorySnapshotsTest {
-
   private final Clock clock = Clock.systemUTC();
 
   @Test

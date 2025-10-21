@@ -22,6 +22,9 @@ import ai.floedb.metacat.service.storage.PointerStore;
 
 @ApplicationScoped
 public class NamespaceRepository extends BaseRepository<Namespace> {
+  public NamespaceRepository() {
+    super();
+  }
 
   @Inject
   public NamespaceRepository(PointerStore pointerStore, BlobStore blobs) {

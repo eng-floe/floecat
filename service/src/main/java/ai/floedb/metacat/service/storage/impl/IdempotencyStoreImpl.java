@@ -116,7 +116,7 @@ public final class IdempotencyStoreImpl implements IdempotencyStore {
     var uri = p.get().getBlobUri();
     var ok = ptr.delete(key);
     blobs.delete(uri);
-    
+
     return ok;
   }
 }

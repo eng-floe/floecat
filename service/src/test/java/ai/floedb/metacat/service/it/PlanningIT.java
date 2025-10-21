@@ -23,13 +23,10 @@ import ai.floedb.metacat.planning.rpc.RenewPlanRequest;
 
 @QuarkusTest
 class PlanningIT {
-
   @GrpcClient("planning")
   PlanningGrpc.PlanningBlockingStub planning;
-
   @GrpcClient("mutation")
   ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
-
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
 

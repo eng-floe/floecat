@@ -25,7 +25,6 @@ import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 
 @GrpcService
 public class StatsMutationImpl extends BaseServiceImpl implements StatsMutation {
-
   @Inject TableRepository tables;
   @Inject SnapshotRepository snapshots;
   @Inject StatsRepository stats;

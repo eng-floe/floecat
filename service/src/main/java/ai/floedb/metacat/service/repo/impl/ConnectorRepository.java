@@ -17,6 +17,9 @@ import ai.floedb.metacat.service.storage.PointerStore;
 
 @ApplicationScoped
 public class ConnectorRepository extends BaseRepository<Connector> {
+  public ConnectorRepository() {
+    super();
+  }
 
   @Inject
   public ConnectorRepository(PointerStore pointerStore, BlobStore blobs) {

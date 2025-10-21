@@ -21,7 +21,6 @@ import ai.floedb.metacat.service.storage.BlobStore;
 @ApplicationScoped
 @IfBuildProperty(name = "metacat.blob", stringValue = "memory")
 public class InMemoryBlobStore implements BlobStore {
-
   private static final String TAG_CONTENT_TYPE = "contentType";
   private static final String TAG_CONTENT_LENGTH = "contentLength";
   private static final String TAG_LAST_MODIFIED = "lastModified";

@@ -13,7 +13,6 @@ import ai.floedb.metacat.common.rpc.Error;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 
 public final class GrpcErrors {
-  private GrpcErrors() {}
 
   public static StatusRuntimeException aborted(
       String correlationId,

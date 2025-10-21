@@ -18,8 +18,9 @@ import ai.floedb.metacat.service.storage.PointerStore;
 
 @ApplicationScoped
 public class SnapshotRepository extends BaseRepository<Snapshot> {
-
-  protected SnapshotRepository() { super(); }
+  public SnapshotRepository() {
+    super();
+  }
 
   @Inject
   public SnapshotRepository(PointerStore pointerStore, BlobStore blobs) {

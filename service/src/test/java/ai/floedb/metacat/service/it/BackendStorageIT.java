@@ -28,10 +28,8 @@ import ai.floedb.metacat.service.storage.PointerStore;
 
 @QuarkusTest
 class BackendStorageIT {
-
   @GrpcClient("resource-mutation")
   ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
-
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
 

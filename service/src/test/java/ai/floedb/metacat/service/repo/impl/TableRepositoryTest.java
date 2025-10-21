@@ -18,7 +18,6 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class TableRepositoryTest {
-
   private final Clock clock = Clock.systemUTC();
 
   @Test

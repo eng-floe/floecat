@@ -20,7 +20,6 @@ import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.rest.RESTCatalog;
 
 public final class IcebergConnector implements MetacatConnector {
-
   private final String id;
   private final RESTCatalog catalog;
 
@@ -37,7 +36,6 @@ public final class IcebergConnector implements MetacatConnector {
       Map<String, String> headerHints
   ) {
     Objects.requireNonNull(uri, "uri");
-
     Map<String, String> props = new HashMap<>(options == null ? Map.of() : options);
     props.put("type", "rest");
     props.put("uri", uri);

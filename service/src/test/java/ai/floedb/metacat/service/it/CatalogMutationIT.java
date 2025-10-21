@@ -15,13 +15,10 @@ import ai.floedb.metacat.common.rpc.ResourceKind;
 
 @QuarkusTest
 class CatalogMutationIT {
-
   @GrpcClient("resource-mutation")
   ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
-
   @GrpcClient("resource-access")
   ResourceAccessGrpc.ResourceAccessBlockingStub access;
-
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
 
@@ -33,7 +30,7 @@ class CatalogMutationIT {
 
     StatusRuntimeException catExists = assertThrows(StatusRuntimeException.class, () ->
         TestSupport.createCatalog(mutation, catalogPrefix + "cat1", "cat1"));
-        
+
     TestSupport.assertGrpcAndMc(
         catExists,
         Status.Code.ABORTED,

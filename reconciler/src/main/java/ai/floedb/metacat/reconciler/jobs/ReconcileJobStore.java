@@ -3,10 +3,8 @@ package ai.floedb.metacat.reconciler.jobs;
 import java.util.Optional;
 
 public interface ReconcileJobStore {
-
   String enqueue(String tenantId, String connectorId, boolean fullRescan);
   Optional<ReconcileJob> get(String jobId);
-
 
   Optional<LeasedJob> leaseNext();
   void markRunning(String jobId, long startedAtMs);

@@ -20,13 +20,10 @@ import ai.floedb.metacat.common.rpc.ResourceKind;
 
 @QuarkusTest
 class ResourceMutationIT {
-
   @GrpcClient("resource-mutation")
   ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
-
   @GrpcClient("resource-access")
   ResourceAccessGrpc.ResourceAccessBlockingStub access;
-
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
 

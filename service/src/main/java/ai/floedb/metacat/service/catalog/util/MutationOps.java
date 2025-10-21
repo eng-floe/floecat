@@ -12,8 +12,6 @@ import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 
 public final class MutationOps {
 
-  private MutationOps() { }
-
   public static final class OpResult<T> {
     public final T body;
     public final MutationMeta meta;

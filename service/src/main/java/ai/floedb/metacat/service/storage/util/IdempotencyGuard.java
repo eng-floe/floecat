@@ -18,7 +18,6 @@ import ai.floedb.metacat.service.storage.IdempotencyStore;
 import ai.floedb.metacat.storage.rpc.IdempotencyRecord;
 
 public final class IdempotencyGuard {
-
   public record CreateResult<T>(T resource, ResourceId resourceId) {}
 
   public static <T> T runOnce(

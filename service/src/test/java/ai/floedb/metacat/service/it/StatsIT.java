@@ -30,16 +30,12 @@ class StatsIT {
 
   @GrpcClient("resource-mutation")
   ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
-
   @GrpcClient("resource-access")
   ResourceAccessGrpc.ResourceAccessBlockingStub access;
-
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
-
   @GrpcClient("stats-mutation")
   StatsMutationGrpc.StatsMutationBlockingStub statsMutation;
-
   @GrpcClient("stats-access")
   StatsAccessGrpc.StatsAccessBlockingStub statsAccess;
 

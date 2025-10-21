@@ -13,10 +13,8 @@ import ai.floedb.metacat.common.rpc.ErrorCode;
 
 @QuarkusTest
 class ResourceAccessIT {
-
   @GrpcClient("resource-access")
   ResourceAccessGrpc.ResourceAccessBlockingStub resourceAccess;
-
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
 

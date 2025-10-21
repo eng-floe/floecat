@@ -6,7 +6,6 @@ import ai.floedb.metacat.connector.spi.MetacatConnector;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 
 public final class DummyConnector implements MetacatConnector {
-
   private final String id;
 
   private DummyConnector(String id) {

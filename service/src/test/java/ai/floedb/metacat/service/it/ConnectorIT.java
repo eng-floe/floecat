@@ -26,13 +26,11 @@ import ai.floedb.metacat.service.repo.util.Keys;
 
 @QuarkusTest
 public class ConnectorIT {
-
   @GrpcClient("connectors")
   ConnectorsGrpc.ConnectorsBlockingStub connectors;
 
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerScheduler scheduler;
-
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;
   @Inject TableRepository tables;

@@ -17,6 +17,9 @@ import ai.floedb.metacat.service.storage.PointerStore;
 
 @ApplicationScoped
 public class TableRepository extends BaseRepository<Table> {
+  public TableRepository() {
+    super();
+  }
 
   @Inject
   public TableRepository(PointerStore pointerStore, BlobStore blobs) {

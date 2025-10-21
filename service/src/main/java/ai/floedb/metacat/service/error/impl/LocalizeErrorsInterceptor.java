@@ -17,7 +17,6 @@ import ai.floedb.metacat.common.rpc.PrincipalContext;
 @GlobalInterceptor
 @ApplicationScoped
 public class LocalizeErrorsInterceptor implements ServerInterceptor {
-
   private static final Metadata.Key<byte[]> PRINC_BIN =
       Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
   private static final Metadata.Key<String> ACCEPT_LANGUAGE =

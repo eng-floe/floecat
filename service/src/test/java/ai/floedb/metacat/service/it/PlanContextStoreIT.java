@@ -16,7 +16,6 @@ import ai.floedb.metacat.service.planning.impl.PlanContext;
 
 @QuarkusTest
 class PlanContextStoreIT {
-
   public static class StoreTestProfile implements QuarkusTestProfile {
     @Override
     public Map<String, String> getConfigOverrides() {

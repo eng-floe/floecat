@@ -14,7 +14,6 @@ import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
 
 class NamespaceRepositoryTest {
-
   @Test
   void putAndGetRoundTrip() {
     var ptr = new InMemoryPointerStore();

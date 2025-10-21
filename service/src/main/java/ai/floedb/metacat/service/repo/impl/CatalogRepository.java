@@ -17,6 +17,9 @@ import ai.floedb.metacat.service.storage.PointerStore;
 
 @ApplicationScoped
 public class CatalogRepository extends BaseRepository<Catalog> {
+  public CatalogRepository() {
+    super();
+  }
 
   @Inject
   public CatalogRepository(PointerStore pointerStore, BlobStore blobs) {
