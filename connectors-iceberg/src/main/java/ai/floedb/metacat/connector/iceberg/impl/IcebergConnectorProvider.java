@@ -8,11 +8,13 @@ import ai.floedb.metacat.connector.spi.ConnectorProvider;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
 
 public final class IcebergConnectorProvider implements ConnectorProvider {
-  @Override public String kind() { return "iceberg-rest"; }
+  @Override public String kind() {
+    return "iceberg-rest";
+  }
 
   @Override
   public MetacatConnector create(ConnectorConfig cfg) {
-    Map<String,String> options = new HashMap<>(cfg.options());
+    Map<String, String> options = new HashMap<>(cfg.options());
     var auth = cfg.auth();
     return IcebergConnector.create(
         cfg.uri(),

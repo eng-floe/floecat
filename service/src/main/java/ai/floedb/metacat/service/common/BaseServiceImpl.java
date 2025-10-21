@@ -131,7 +131,7 @@ protected <T> Uni<T> runWithRetry(Supplier<T> body) {
     if (token == null || token.isEmpty()) {
       return 0;
     }
-    
+
     try {
       return Integer.parseInt(token);
     } catch (NumberFormatException nfe) {

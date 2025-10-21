@@ -72,7 +72,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                 .setDisplayName(mustNonEmpty(spec.getDisplayName(), "display_name", correlationId))
                 .setKind(spec.getKind())
                 .setTargetCatalogDisplayName(mustNonEmpty(
-                    spec.getTargetCatalogDisplayName(), 
+                    spec.getTargetCatalogDisplayName(),
                         "target_catalog_display_name", correlationId))
                 .setTargetTenantId(tenant)
                 .setUri(mustNonEmpty(spec.getUri(), "uri", correlationId))

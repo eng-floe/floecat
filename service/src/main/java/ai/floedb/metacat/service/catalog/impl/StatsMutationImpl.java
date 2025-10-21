@@ -93,7 +93,7 @@ public class StatsMutationImpl extends BaseServiceImpl implements StatsMutation 
       authz.require(principalContext, "table.write");
 
       var tsNow = nowTs();
-      
+
       tables.get(request.getTableId()).orElseThrow(() -> GrpcErrors.notFound(
           correlationId(), "table",
               Map.of("id", request.getTableId().getId())));

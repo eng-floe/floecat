@@ -34,13 +34,13 @@ class NamespaceMutationIT {
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
 
-  String NS_PREFIX = this.getClass().getSimpleName() + "_";
+  String namespacePrefix = this.getClass().getSimpleName() + "_";
 
   @Test
   void namespace_exists() throws Exception {
-    var cat = TestSupport.createCatalog(mutation, NS_PREFIX + "cat1", "cat1");
+    var cat = TestSupport.createCatalog(mutation, namespacePrefix + "cat1", "cat1");
 
-    var ns = TestSupport.createNamespace(
+    TestSupport.createNamespace(
         mutation, cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
 
     StatusRuntimeException nsExists = assertThrows(
@@ -55,11 +55,11 @@ class NamespaceMutationIT {
 
   @Test
   void namespace_create_rename_move_delete_with_preconditions() throws Exception {
-    var cat = TestSupport.createCatalog(mutation, NS_PREFIX + "cat2", "cat2");
-    String tenantId = TestSupport.seedTenantId(directory, NS_PREFIX + "cat2");
+    var cat = TestSupport.createCatalog(mutation, namespacePrefix + "cat2", "cat2");
+    String tenantId = TestSupport.seedTenantId(directory, namespacePrefix + "cat2");
     assertEquals(tenantId, cat.getResourceId().getTenantId());
 
-    var parents = List.of("db_it","schema_it");
+    var parents = List.of("db_it", "schema_it");
     var leaf = "it_schema";
     var ns = TestSupport.createNamespace(
         mutation, cat.getResourceId(), leaf, parents, "ns desc");
@@ -86,7 +86,8 @@ class NamespaceMutationIT {
             .build())
         .build()).getMeta();
 
-    var fullRen = new ArrayList<>(parents); fullRen.add(leaf + "_ren");
+    var fullRen = new ArrayList<>(parents);
+    fullRen.add(leaf + "_ren");
     var resolvedRen = directory.resolveNamespace(ResolveNamespaceRequest.newBuilder()
         .setRef(NameRef.newBuilder()
             .setCatalog(cat.getDisplayName())
@@ -122,7 +123,7 @@ class NamespaceMutationIT {
                 .build())
             .build()));
     TestSupport.assertGrpcAndMc(
-        bad, Status.Code.FAILED_PRECONDITION, 
+        bad, Status.Code.FAILED_PRECONDITION,
             ErrorCode.MC_PRECONDITION_FAILED, "mismatch");
 
     var before = TestSupport.metaForNamespace(
@@ -151,11 +152,11 @@ class NamespaceMutationIT {
             .build())
     );
 
-    TestSupport.assertGrpcAndMc(stale, Status.Code.FAILED_PRECONDITION, 
+    TestSupport.assertGrpcAndMc(stale, Status.Code.FAILED_PRECONDITION,
         ErrorCode.MC_PRECONDITION_FAILED, "mismatch");
 
     var tbl = TestSupport.createTable(
-        mutation, cat.getResourceId(), nsId, "orders", 
+        mutation, cat.getResourceId(), nsId, "orders",
             "s3://ns/orders", "{}", "none");
 
     StatusRuntimeException nsDelBlocked = assertThrows(StatusRuntimeException.class, () ->
@@ -184,22 +185,22 @@ class NamespaceMutationIT {
     assertFalse(delOk.getMeta().getPointerKey().isEmpty());
 
     var nf = assertThrows(
-        StatusRuntimeException.class, 
+        StatusRuntimeException.class,
         () -> directory.resolveNamespace(ResolveNamespaceRequest.newBuilder()
             .setRef(NameRef.newBuilder()
                 .setCatalog(cat.getDisplayName())
                 .addPath(leaf + "_root3"))
             .build()));
-    TestSupport.assertGrpcAndMc(nf, Status.Code.NOT_FOUND, 
+    TestSupport.assertGrpcAndMc(nf, Status.Code.NOT_FOUND,
         ErrorCode.MC_NOT_FOUND, "Namespace not found");
   }
 
   @Test
   void namespace_create_is_idempotent_sameKey_sameSpec() throws Exception {
-    var cat = TestSupport.createCatalog(mutation, NS_PREFIX + "cat3", "cat3");
+    var cat = TestSupport.createCatalog(mutation, namespacePrefix + "cat3", "cat3");
     TestSupport.seedTenantId(directory,  cat.getDisplayName());
 
-    var key = IdempotencyKey.newBuilder().setKey(NS_PREFIX + "k-ns-1").build();
+    var key = IdempotencyKey.newBuilder().setKey(namespacePrefix + "k-ns-1").build();
     var spec = NamespaceSpec.newBuilder()
         .setCatalogId(cat.getResourceId())
         .setDisplayName("idem_ns")
@@ -221,8 +222,8 @@ class NamespaceMutationIT {
 
   @Test
   void namespace_create_idempotency_mismatch_sameKey_differentSpec_conflict() throws Exception {
-    var cat = TestSupport.createCatalog(mutation, NS_PREFIX + "cat4", "cat4");
-    var key = IdempotencyKey.newBuilder().setKey(NS_PREFIX + "k-ns-2").build();
+    var cat = TestSupport.createCatalog(mutation, namespacePrefix + "cat4", "cat4");
+    var key = IdempotencyKey.newBuilder().setKey(namespacePrefix + "k-ns-2").build();
 
     mutation.createNamespace(CreateNamespaceRequest.newBuilder()
         .setSpec(NamespaceSpec.newBuilder()

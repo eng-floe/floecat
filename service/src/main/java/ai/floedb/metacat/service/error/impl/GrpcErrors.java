@@ -66,8 +66,8 @@ public final class GrpcErrors {
   public static StatusRuntimeException unauthenticated(
       String correlationId,
       String messageKey,
-      Map<String,String> params) {
-    return build(io.grpc.Status.UNAUTHENTICATED, ErrorCode.MC_UNAUTHENTICATED, 
+      Map<String, String> params) {
+    return build(io.grpc.Status.UNAUTHENTICATED, ErrorCode.MC_UNAUTHENTICATED,
       correlationId, params, Map.of(), messageKey);
   }
 

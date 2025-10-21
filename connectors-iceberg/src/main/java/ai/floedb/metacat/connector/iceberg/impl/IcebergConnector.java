@@ -1,6 +1,13 @@
 package ai.floedb.metacat.connector.iceberg.impl;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
@@ -24,14 +31,14 @@ public final class IcebergConnector implements MetacatConnector {
 
   public static MetacatConnector create(
       String uri,
-      Map<String,String> options,
+      Map<String, String> options,
       String authScheme,
-      Map<String,String> authProps,
-      Map<String,String> headerHints
+      Map<String, String> authProps,
+      Map<String, String> headerHints
   ) {
     Objects.requireNonNull(uri, "uri");
 
-    Map<String,String> props = new HashMap<>(options == null ? Map.of() : options);
+    Map<String, String> props = new HashMap<>(options == null ? Map.of() : options);
     props.put("type", "rest");
     props.put("uri", uri);
 
@@ -66,8 +73,13 @@ public final class IcebergConnector implements MetacatConnector {
     return new IcebergConnector("iceberg-rest", cat);
   }
 
-  @Override public String id() { return id; }
-  @Override public ConnectorFormat format() { return ConnectorFormat.CF_ICEBERG; }
+  @Override public String id() {
+    return id;
+  }
+
+  @Override public ConnectorFormat format() {
+    return ConnectorFormat.CF_ICEBERG;
+  }
 
   @Override
   public List<String> listNamespaces() {
@@ -113,10 +125,16 @@ public final class IcebergConnector implements MetacatConnector {
     );
   }
 
-  @Override public boolean supportsTableStats() { return false; }
+  @Override public boolean supportsTableStats() {
+    return false;
+  }
 
   @Override
   public void close() {
-    try { catalog.close(); } catch (Exception ignore) {}
+    try {
+      catalog.close();
+    } catch (Exception ignore) {
+      // ignore
+    }
   }
 }

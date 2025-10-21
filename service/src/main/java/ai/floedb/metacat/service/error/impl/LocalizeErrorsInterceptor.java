@@ -106,7 +106,7 @@ public class LocalizeErrorsInterceptor implements ServerInterceptor {
     if (pcBytes == null || pcBytes.length == 0) {
       return null;
     }
-    
+
     try {
       return PrincipalContext.parseFrom(pcBytes);
     } catch (InvalidProtocolBufferException e) {

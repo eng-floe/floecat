@@ -69,7 +69,7 @@ public class ReconcilerService {
     public boolean ok() {
       return error == null;
     }
-    
+
     public String message() {
       return ok() ? "OK" : error.getMessage();
     }
@@ -93,7 +93,7 @@ public class ReconcilerService {
     return clients.mutation().createCatalog(request).getCatalog().getResourceId();
   }
 
-   private ResourceId ensureNamespace(ResourceId catalogId, String namespaceFq) {
+  private ResourceId ensureNamespace(ResourceId catalogId, String namespaceFq) {
     var parts = split(namespaceFq);
     try {
       var nameRef = NameRef.newBuilder()
@@ -151,7 +151,7 @@ public class ReconcilerService {
     var request = CreateTableRequest.newBuilder()
         .setSpec(spec)
         .setIdempotency(idem(
-            "CreateTable|" 
+            "CreateTable|"
             + key(catalogId)
             + "|" + key(namespaceId)
             + "|" + upstreamTable.tableName()))
@@ -159,7 +159,9 @@ public class ReconcilerService {
     return clients.mutation().createTable(request).getTable().getResourceId();
   }
 
-  private void maybeBumpTableSchema(ResourceId tableId, MetacatConnector.UpstreamTable upstreamTable) {
+  private void maybeBumpTableSchema(
+      ResourceId tableId,
+      MetacatConnector.UpstreamTable upstreamTable) {
     var request = UpdateTableSchemaRequest.newBuilder()
         .setTableId(tableId)
         .setSchemaJson(upstreamTable.schemaJson())
@@ -188,9 +190,8 @@ public class ReconcilerService {
             + key(tableId)
             + "|" + snapshotId)).build();
     try {
-      clients.mutation().createSnapshot(request); 
-    }
-    catch (StatusRuntimeException e) {
+      clients.mutation().createSnapshot(request);
+    } catch (StatusRuntimeException e) {
       var c = e.getStatus().getCode();
       if (c != Status.Code.ALREADY_EXISTS
           && c != Status.Code.ABORTED

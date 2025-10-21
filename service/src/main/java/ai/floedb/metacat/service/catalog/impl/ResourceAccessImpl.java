@@ -48,7 +48,7 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
   public Uni<GetCatalogResponse> getCatalog(GetCatalogRequest request) {
     return mapFailures(run(() -> {
       var principalContext = principal.get();
-      
+
       authz.require(principalContext, "catalog.read");
 
       return catalogRepo.getById(request.getCatalogId())
@@ -175,7 +175,7 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
 
       var items = tableRepo.listByNamespace(
           catalogId, namespaceId, Math.max(1, limit), token, next);
-          
+
       int total = tableRepo.countUnderNamespace(catalogId, namespaceId);
 
       var page = PageResponse.newBuilder()

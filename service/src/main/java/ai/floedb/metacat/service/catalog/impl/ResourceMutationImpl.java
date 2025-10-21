@@ -792,7 +792,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
       if (cannonicalPtr.isEmpty()) {
         tables.delete(tableId);
         var safe = tables.metaForSafe(tableId, tsNow);
-        
+
         return DeleteTableResponse.newBuilder().setMeta(safe).build();
       }
 
@@ -882,7 +882,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
       authz.require(principalContext, "table.write");
 
       var tsNow = nowTs();
-      
+
       var tableId = request.getTableId();
       long snapshotId = request.getSnapshotId();
       ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);

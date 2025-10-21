@@ -51,11 +51,12 @@ class CatalogRepositoryTest {
     catalogRepo.create(cat);
 
     var nsRid = ResourceId.newBuilder()
-      .setTenantId(tenant).setId(UUID.randomUUID().toString())
-      .setKind(ResourceKind.RK_NAMESPACE).build();
+        .setTenantId(tenant).setId(UUID.randomUUID().toString())
+        .setKind(ResourceKind.RK_NAMESPACE).build();
+
     var ns = Namespace.newBuilder()
-      .setResourceId(nsRid).setDisplayName("eu")
-      .setDescription("EU namespace").build();
+        .setResourceId(nsRid).setDisplayName("eu")
+        .setDescription("EU namespace").build();
     namespaceRepo.create(ns, catRid);
 
     nsRid = ResourceId.newBuilder()

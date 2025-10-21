@@ -137,9 +137,10 @@ class PropagationIT {
               responseHeaders.set(h);
               super.onHeaders(h);
             }
-            
+
             @Override public void onClose(Status status, Metadata t) {
-              responseTrailers.set(t); super.onClose(status, t);
+              responseTrailers.set(t);
+              super.onClose(status, t);
             }
           }, headersIn);
         }

@@ -46,7 +46,7 @@ public final class MessageCatalog {
     };
   }
 
-  private static String format(String template, Map<String,String> params) {
+  private static String format(String template, Map<String, String> params) {
     String formattedMessage = template;
     for (var e : params.entrySet()) {
       formattedMessage = formattedMessage.replace("{" + e.getKey() + "}", e.getValue());

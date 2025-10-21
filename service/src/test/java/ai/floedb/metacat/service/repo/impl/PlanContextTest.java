@@ -16,9 +16,11 @@ class PlanContextTest {
 
   private static PrincipalContext pc(String tenant, String subject, String planId) {
     var b = PrincipalContext.newBuilder()
-      .setTenantId(tenant)
-      .setSubject(subject == null ? "test-user" : subject);
-    if (planId != null) b.setPlanId(planId);
+        .setTenantId(tenant)
+        .setSubject(subject == null ? "test-user" : subject);
+    if (planId != null) {
+      b.setPlanId(planId);
+    }
     return b.build();
   }
 
@@ -26,8 +28,8 @@ class PlanContextTest {
   void newActive_valid() {
     var pc = pc("t-001", "alice", "plan-123");
     var ctx = PlanContext.newActive(
-      "plan-123", "t-001", pc, null, null,
-      1_000, 1);
+        "plan-123", "t-001", pc, null, null,
+        1_000, 1);
 
     assertEquals("plan-123", ctx.getPlanId());
     assertEquals("t-001", ctx.getTenantId());
@@ -51,12 +53,12 @@ class PlanContextTest {
   void builder_rejectsExpiresBeforeCreated() {
     var pc = pc("t-001", "alice", "p1");
     Executable ex = () -> PlanContext.builder()
-      .planId("p1")
-      .tenantId("t-001")
-      .principal(pc)
-      .createdAtMs(2000)
-      .expiresAtMs(1000)
-      .build();
+        .planId("p1")
+        .tenantId("t-001")
+        .principal(pc)
+        .createdAtMs(2000)
+        .expiresAtMs(1000)
+        .build();
     var err = assertThrows(IllegalArgumentException.class, ex);
     assertTrue(err.getMessage().contains("expiresAtMs must be >="));
   }

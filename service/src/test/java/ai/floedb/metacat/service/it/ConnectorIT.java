@@ -80,9 +80,6 @@ public class ConnectorIT {
     assertNotNull(job);
     assertEquals("JS_SUCCEEDED", job.state);
 
-    String dump = catalogs.dumpByPrefix(Keys.catByNamePrefix("t-0001"), 100);
-    System.out.println(dump);
-
     var catId = catalogs.getByName(
         "t-0001", "cat-e2e").orElseThrow().getResourceId();
 

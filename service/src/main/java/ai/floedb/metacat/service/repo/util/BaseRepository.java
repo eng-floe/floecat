@@ -65,7 +65,7 @@ public abstract class BaseRepository<T> implements Repository<T> {
 
   public static class CorruptionException extends RepoException {
     public CorruptionException(String msg, Throwable cause) {
-      super(msg, cause); 
+      super(msg, cause);
     }
   }
 
@@ -146,14 +146,14 @@ public abstract class BaseRepository<T> implements Repository<T> {
     byte[] bytes = toBytes.apply(value);
     String want = sha256B64(bytes);
     var before = blobStore.head(blobUri);
-    
+
     if (before.isPresent() && want.equals(before.get().getEtag())) {
       return;
     }
 
     blobStore.put(blobUri, bytes, contentType);
     var after = blobStore.head(blobUri);
-    
+
     if (after.isEmpty() || !want.equals(after.get().getEtag())) {
       throw new AbortRetryableException("blob write verification failed: " + blobUri);
     }
@@ -278,7 +278,7 @@ public abstract class BaseRepository<T> implements Repository<T> {
       runnable.run();
     } catch (Throwable ignore) {
       // ignore
-    } 
+    }
   }
 
   protected void compareAndDeleteOrThrow(String key, long expectedVersion) {

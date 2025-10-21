@@ -21,13 +21,15 @@ public interface MetacatConnector extends Closeable {
       String schemaJson,
       Optional<Long> currentSnapshotId,
       Optional<Long> currentSnapshotTsMillis,
-      Map<String,String> properties,
+      Map<String, String> properties,
       List<String> partitionKeys
   ) {}
 
   UpstreamTable describe(String namespaceFq, String tableName);
 
-  default boolean supportsTableStats() { return false; }
+  default boolean supportsTableStats() {
+    return false;
+  }
 
   @Override void close();
 }

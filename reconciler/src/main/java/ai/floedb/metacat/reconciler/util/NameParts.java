@@ -6,10 +6,10 @@ public final class NameParts {
   private NameParts() {}
 
   public static class Ns {
-    public final List<String> parents; 
+    public final List<String> parents;
     public final String leaf;
 
-    public Ns(List<String> parents, String leaf) { 
+    public Ns(List<String> parents, String leaf) {
       this.parents = parents;
       this.leaf = leaf;
     }
@@ -23,6 +23,6 @@ public final class NameParts {
     if (parts.size() == 1) {
       return new Ns(List.of(), parts.get(0));
     }
-    return new Ns(parts.subList(0, parts.size()-1), parts.get(parts.size()-1));
+    return new Ns(parts.subList(0, parts.size() - 1), parts.get(parts.size() - 1));
   }
 }

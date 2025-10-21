@@ -70,7 +70,7 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
 
       final long ttlMs = (request.getTtlSeconds() > 0 ? request.getTtlSeconds()
           : (int) (defaultTtlMs / 1000)) * 1000L;
-          
+
       final Optional<Timestamp> asOfDefault = request.hasAsOfDefault()
           ? Optional.of(request.getAsOfDefault())
           : Optional.empty();
@@ -173,7 +173,7 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
 
       var updated = plans.extendLease(planId, requestedExp);
       if (updated.isEmpty()) {
-        throw GrpcErrors.notFound(correlationId,  
+        throw GrpcErrors.notFound(correlationId,
             "plan.not_found", Map.of("plan_id", planId));
       }
       return RenewPlanResponse.newBuilder()

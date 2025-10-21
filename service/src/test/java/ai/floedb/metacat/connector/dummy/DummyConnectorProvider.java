@@ -8,7 +8,7 @@ public final class DummyConnectorProvider implements ConnectorProvider {
   @Override public String kind() {
     return "unity";
   }
-  
+
   @Override
   public MetacatConnector create(ConnectorConfig cfg) {
     return DummyConnector.create();

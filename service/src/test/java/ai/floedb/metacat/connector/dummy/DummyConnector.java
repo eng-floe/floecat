@@ -48,12 +48,12 @@ public final class DummyConnector implements MetacatConnector {
       ]}
         """.trim();
 
-    String location = "s3://dummy/" + namespaceFq.replace('.','/') + "/" + tableName;
+    String location = "s3://dummy/" + namespaceFq.replace('.', '/') + "/" + tableName;
 
     Optional<Long> sid = Optional.of(42L);
     Optional<Long> ts = Optional.of(1_700_000_000_000L);
 
-    Map<String, String> props = Map.of("upstream","dummy","owner","tests");
+    Map<String, String> props = Map.of("upstream", "dummy", "owner", "tests");
 
     List<String> pks = List.of("ts");
 

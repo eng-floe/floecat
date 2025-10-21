@@ -226,7 +226,7 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
   public Uni<ResolveFQTablesResponse> resolveFQTables(ResolveFQTablesRequest request) {
     return mapFailures(run(() -> {
       var principalContext = principal.get();
-      
+
       authz.require(principalContext, List.of("catalog.read", "table.read"));
 
       final int limit = (request.hasPage() && request.getPage().getPageSize() > 0)
