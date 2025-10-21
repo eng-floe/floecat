@@ -25,9 +25,15 @@ public final class IdempotencyStoreImpl implements IdempotencyStore {
   @Override
   public Optional<IdempotencyRecord> get(String key) {
     var p = ptr.get(key);
-    if (p.isEmpty()) return Optional.empty();
+    if (p.isEmpty()) {
+      return Optional.empty();
+    }
+
     var hdr = blobs.head(p.get().getBlobUri());
-    if (hdr.isEmpty()) return Optional.empty();
+    if (hdr.isEmpty()) {
+      return Optional.empty();
+    }
+
     try {
       var bytes = blobs.get(p.get().getBlobUri());
       return Optional.of(IdempotencyRecord.parseFrom(bytes));
@@ -59,7 +65,9 @@ public final class IdempotencyStoreImpl implements IdempotencyStore {
     for (int i = 0; i < BaseRepository.CAS_MAX; i++) {
       long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
       var next = Pointer.newBuilder().setKey(key).setBlobUri(uri).setVersion(expected + 1).build();
-      if (ptr.compareAndSet(key, expected, next)) return true;
+      if (ptr.compareAndSet(key, expected, next)) {
+        return true;
+      }
     }
 
     return false;
@@ -92,17 +100,23 @@ public final class IdempotencyStoreImpl implements IdempotencyStore {
     for (int i = 0; i < BaseRepository.CAS_MAX; i++) {
       long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
       var next = Pointer.newBuilder().setKey(key).setBlobUri(uri).setVersion(expected + 1).build();
-      if (ptr.compareAndSet(key, expected, next)) break;
+      if (ptr.compareAndSet(key, expected, next)) {
+        break;
+      }
     }
   }
 
   @Override
   public boolean delete(String key) {
     var p = ptr.get(key);
-    if (p.isEmpty()) return true;
+    if (p.isEmpty()) {
+      return true;
+    }
+
     var uri = p.get().getBlobUri();
     var ok = ptr.delete(key);
     blobs.delete(uri);
+    
     return ok;
   }
 }

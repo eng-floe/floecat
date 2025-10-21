@@ -42,7 +42,7 @@ class TableMutationIT {
     String tenantId = TestSupport.seedTenantId(directory, tablePrefix + "cat1");
     assertEquals(tenantId, cat.getResourceId().getTenantId());
 
-    var parents = List.of("db_tbl","schema_tbl");
+    var parents = List.of("db_tbl", "schema_tbl");
     var nsLeaf = "it_ns";
     var ns = TestSupport.createNamespace(mutation,
         cat.getResourceId(), nsLeaf, parents, "ns for tables");
@@ -162,14 +162,14 @@ class TableMutationIT {
     String tenantId = TestSupport.seedTenantId(directory, catName);
     assertEquals(tenantId, cat.getResourceId().getTenantId());
 
-    var parents = List.of("db_tbl","schema_tbl");
+    var parents = List.of("db_tbl", "schema_tbl");
     var nsLeaf = "it_ns";
     var ns = TestSupport.createNamespace(mutation,
         cat.getResourceId(), nsLeaf, parents, "ns for tables");
     var nsId = ns.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
 
-    var parents2 = List.of("db_tbl","schema_tbl");
+    var parents2 = List.of("db_tbl", "schema_tbl");
     var nsLeaf2 = "it_ns2";
     var ns2 = TestSupport.createNamespace(mutation,
         cat.getResourceId(), nsLeaf2, parents2, "ns for tables");
@@ -265,7 +265,7 @@ class TableMutationIT {
     String tenantId = TestSupport.seedTenantId(directory, catName);
     assertEquals(tenantId, cat.getResourceId().getTenantId());
 
-    var parents = List.of("db_tbl","schema_tbl");
+    var parents = List.of("db_tbl", "schema_tbl");
     var nsLeaf = "it_ns";
     var ns = TestSupport.createNamespace(
         mutation, cat.getResourceId(), nsLeaf, parents, "ns for tables");

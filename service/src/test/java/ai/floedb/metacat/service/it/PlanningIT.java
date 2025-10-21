@@ -33,11 +33,11 @@ class PlanningIT {
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
 
-  String CAT_PREFIX = this.getClass().getSimpleName() + "_";
+  String catalogPrefix = this.getClass().getSimpleName() + "_";
 
   @Test
   void beginRenewEnd_flow() {
-    var catName = CAT_PREFIX + "cat1";
+    var catName = catalogPrefix + "cat1";
     var cat = TestSupport.createCatalog(mutation, catName, "");
     TestSupport.seedTenantId(directory, cat.getDisplayName());
     var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "sch", List.of("db"), "");

@@ -65,9 +65,9 @@ class CatalogPagingIT {
         .build();
 
     Metadata headers = new Metadata();
-    Metadata.Key<byte[]> PRINC_BIN =
+    Metadata.Key<byte[]> pincipalContextBytes =
         Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
-    headers.put(PRINC_BIN, pc.toByteArray());
+    headers.put(pincipalContextBytes, pc.toByteArray());
 
     ClientInterceptor attach = MetadataUtils.newAttachHeadersInterceptor(headers);
     this.resourceAccess = resourceAccess.withInterceptors(attach);

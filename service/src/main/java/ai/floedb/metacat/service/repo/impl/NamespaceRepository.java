@@ -148,15 +148,19 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
       var newById = Keys.nsPtr(tenantId, newCatalogId.getId(), namespaceId);
       reserveAllOrRollback(newById, blobUri, newByPath, blobUri);
       if (!compareAndDeleteOrFalse(oldById, expectedVersion)) {
-        pointerStore.get(newById).ifPresent(pointer -> compareAndDeleteOrFalse(newById, pointer.getVersion()));
+        pointerStore.get(newById).ifPresent(
+            pointer -> compareAndDeleteOrFalse(newById, pointer.getVersion()));
         pointerStore.get(newByPath).ifPresent(
             pointer -> compareAndDeleteOrFalse(newByPath, pointer.getVersion()));
+
         return false;
       }
     }
 
     var oldByPath = Keys.nsByPathPtr(tenantId, oldCatalogId.getId(), oldPath);
-    pointerStore.get(oldByPath).ifPresent(pointer -> compareAndDeleteOrFalse(oldByPath, pointer.getVersion()));
+    pointerStore.get(oldByPath).ifPresent(
+        pointer -> compareAndDeleteOrFalse(oldByPath, pointer.getVersion()));
+
     return true;
   }
 
@@ -196,10 +200,17 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
       return Keys.nsByPathPtr(tenantId, catalogId.getId(), fullNamespacePath);
     }).orElse(null);
 
-    if (!compareAndDeleteOrFalse(byId, expectedVersion)) return false;
-    if (byPath != null) pointerStore.get(byPath).ifPresent(
-        pointer -> compareAndDeleteOrFalse(byPath, pointer.getVersion()));
+    if (!compareAndDeleteOrFalse(byId, expectedVersion)) {
+      return false;
+    }
+
+    if (byPath != null) {
+      pointerStore.get(byPath).ifPresent(
+          pointer -> compareAndDeleteOrFalse(byPath, pointer.getVersion()));
+    }
+
     deleteQuietly(() -> blobStore.delete(blobUri));
+
     return true;
   }
 

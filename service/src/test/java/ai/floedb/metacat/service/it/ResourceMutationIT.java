@@ -37,7 +37,7 @@ class ResourceMutationIT {
     var cat = TestSupport.createCatalog(mutation, "cat1", "cat1");
     var ns = TestSupport.createNamespace(mutation,
         cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
-    var tbl = TestSupport.createTable(mutation,
+    TestSupport.createTable(mutation,
         cat.getResourceId(), ns.getResourceId(), "events", "s3://events", "{}", "none");
 
     StatusRuntimeException catExists = assertThrows(StatusRuntimeException.class, () ->
@@ -59,7 +59,7 @@ class ResourceMutationIT {
   }
 
   @Test
-  void endtoEnd_CRUD() throws Exception {
+  void endtoEndCrud() throws Exception {
     String catName = "it_mutation_cat_" + clock.millis();
     Catalog cat = TestSupport.createCatalog(mutation, catName, "IT cat");
     String tenantId = TestSupport.seedTenantId(directory, catName);
@@ -78,7 +78,8 @@ class ResourceMutationIT {
     String nsLeaf = "it_schema";
     Namespace ns = TestSupport.createNamespace(mutation, catId, nsLeaf, nsPath, "IT ns");
     ResourceId nsId = ns.getResourceId();
-    var nsFullPath = new ArrayList<>(nsPath); nsFullPath.add(nsLeaf);
+    var nsFullPath = new ArrayList<>(nsPath);
+    nsFullPath.add(nsLeaf);
     assertEquals(nsId.getId(),
         TestSupport.resolveNamespaceId(directory, catName, nsFullPath).getId());
 

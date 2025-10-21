@@ -159,17 +159,19 @@ class BackendStorageIT {
   void listTables_pagination_noRepeatsNoSkips() {
     var catName = "cat_pg_" + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation,  catName, "pag");
-    String tenantId = TestSupport.seedTenantId(directory, catName);
+    TestSupport.seedTenantId(directory, catName);
 
     var nsPath = List.of("db", "sch");
     var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns_pg", nsPath, "pg");
-    for (int i=0;i<5;i++) TestSupport.createTable(
-        mutation,
-        cat.getResourceId(),
-        ns.getResourceId(),
-        "t"+i, "s3://b/p",
-        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
-        "d");
+    for (int i = 0; i < 5; i++) {
+      TestSupport.createTable(
+          mutation,
+          cat.getResourceId(),
+          ns.getResourceId(),
+          "t" + i, "s3://b/p",
+          "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+          "d");
+    }
 
     var prefixRef = NameRef.newBuilder()
         .setCatalog(cat.getDisplayName())
@@ -203,13 +205,13 @@ class BackendStorageIT {
                 .setPageSize(pageSize)
                 .setPageToken(t2))
             .build());
-    String t3 = p3.getPage().getNextPageToken();
 
     var all = new LinkedHashSet<String>();
     p1.getTablesList().forEach(e -> all.add(e.getName().getName()));
     p2.getTablesList().forEach(e -> all.add(e.getName().getName()));
     p3.getTablesList().forEach(e -> all.add(e.getName().getName()));
     assertEquals(5, all.size());
+    String t3 = p3.getPage().getNextPageToken();
     assertTrue(t3.isEmpty(), "final page should clear nextToken");
   }
 
@@ -260,9 +262,9 @@ class BackendStorageIT {
   void update_bumpsBothPointers() {
     var catName = "cat_ver_" + System.currentTimeMillis() + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation, catName, "ver");
-    String tenantId = TestSupport.seedTenantId(directory, catName);
+    TestSupport.seedTenantId(directory, catName);
     var ns = TestSupport.createNamespace(mutation,
-        cat.getResourceId(), "ns", List.of("db","sch"), "ver");
+        cat.getResourceId(), "ns", List.of("db", "sch"), "ver");
     var tbl = TestSupport.createTable(mutation,
         cat.getResourceId(), ns.getResourceId(),
             "t", "s3://b/p",
@@ -286,7 +288,7 @@ class BackendStorageIT {
     var tenantId = TestSupport.seedTenantId(directory, catName);
 
     var ns = TestSupport.createNamespace(mutation,
-        cat.getResourceId(), "ns", List.of("db","sch"), "etag");
+        cat.getResourceId(), "ns", List.of("db", "sch"), "etag");
     var tbl = TestSupport.createTable(
         mutation,
         cat.getResourceId(),
@@ -374,13 +376,12 @@ class BackendStorageIT {
   void casContention_twoConcurrentUpdates() throws InterruptedException {
     var catName = "cat_cas_" + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation, catName, "cas");
-    var tenantId = TestSupport.seedTenantId(directory, catName);
 
     var ns = TestSupport.createNamespace(
         mutation,
         cat.getResourceId(),
         "ns",
-        List.of("db","sch"),
+        List.of("db", "sch"),
         "cas");
     var tbl = TestSupport.createTable(
         mutation,
@@ -391,8 +392,6 @@ class BackendStorageIT {
         "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
         "d");
     var tid = tbl.getResourceId();
-    String canon = Keys.tblCanonicalPtr(tenantId, tid.getId());
-    long v0 = ptr.get(canon).orElseThrow().getVersion();
 
     var schemaA = "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}"
         + ",{\"name\":\"a\",\"type\":\"double\"}]}";
@@ -418,6 +417,10 @@ class BackendStorageIT {
         errs.add(t);
       }
     };
+
+    var tenantId = TestSupport.seedTenantId(directory, catName);
+    String canon = Keys.tblCanonicalPtr(tenantId, tid.getId());
+    long v0 = ptr.get(canon).orElseThrow().getVersion();
 
     var t1 = new Thread(r1);
     var t2 = new Thread(r2);
@@ -528,7 +531,7 @@ class BackendStorageIT {
     assertTrue(blobs.head(blobUri).isPresent(), "blob missing");
 
     var idxByName = Keys.tblByNamePtr(tenantId,
-      cat.getResourceId().getId(), ns.getResourceId().getId(), "t0");
+        cat.getResourceId().getId(), ns.getResourceId().getId(), "t0");
     assertTrue(ptr.get(idxByName).isPresent(), "by-name pointer missing");
 
     assertEquals(resp1.getMeta().getPointerKey(), resp2.getMeta().getPointerKey());
@@ -582,7 +585,7 @@ class BackendStorageIT {
         mutation,
         cat.getResourceId(),
         "ns",
-        List.of("db","sch"),
+        List.of("db", "sch"),
         "idem");
 
     var spec = TableSpec.newBuilder()
@@ -614,8 +617,7 @@ class BackendStorageIT {
       try {
         latch.await();
         out2.compareAndSet(null, mutation.createTable(req));
-      }
-      catch (Throwable t) {
+      } catch (Throwable t) {
         err.set(t);
       }
     };

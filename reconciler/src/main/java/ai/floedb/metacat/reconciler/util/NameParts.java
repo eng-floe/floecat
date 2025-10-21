@@ -23,6 +23,6 @@ public final class NameParts {
     if (parts.size() == 1) {
       return new Ns(List.of(), parts.get(0));
     }
-    return new Ns(parts.subList(0, parts.size()-1), parts.get(parts.size()-1));
+    return new Ns(parts.subList(0, parts.size() - 1), parts.get(parts.size() - 1));
   }
 }

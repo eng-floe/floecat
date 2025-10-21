@@ -83,7 +83,10 @@ public class InMemoryBlobStore implements BlobStore {
 
   @Override
   public Map<String, byte[]> getBatch(List<String> uris) {
-    if (uris == null || uris.isEmpty()) return Collections.emptyMap();
+    if (uris == null || uris.isEmpty()) {
+      return Collections.emptyMap();
+    }
+
     Map<String, byte[]> out = new HashMap<>(uris.size());
     for (String u : uris) {
       Blob b = map.get(u);
@@ -91,6 +94,7 @@ public class InMemoryBlobStore implements BlobStore {
         out.put(u, Arrays.copyOf(b.data, b.data.length));
       }
     }
+
     return out;
   }
 
@@ -100,7 +104,9 @@ public class InMemoryBlobStore implements BlobStore {
 
   public static Optional<String> getTag(BlobHeader hdr, String key) {
     for (Tag t : hdr.getTagsList()) {
-      if (key.equals(t.getKey())) return Optional.ofNullable(t.getValue());
+      if (key.equals(t.getKey())) {
+        return Optional.ofNullable(t.getValue());
+      }
     }
     return Optional.empty();
   }

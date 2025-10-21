@@ -52,14 +52,15 @@ class StatsIT {
     String tenantId = TestSupport.seedTenantId(directory, catName);
     assertEquals(tenantId, cat.getResourceId().getTenantId());
 
-    var parents = List.of("db_stats","schema_stats");
+    var parents = List.of("db_stats", "schema_stats");
     var nsLeaf = "it_ns";
     var ns = TestSupport.createNamespace(mutation,
         cat.getResourceId(), nsLeaf, parents, "ns for stats");
     var nsId = ns.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
 
-    var nsPath = new ArrayList<>(parents); nsPath.add(nsLeaf);
+    var nsPath = new ArrayList<>(parents);
+    nsPath.add(nsLeaf);
     var tbl = TestSupport.createTable(
         mutation, cat.getResourceId(), nsId,
         "fact_orders", "s3://bucket/fact_orders",
@@ -114,7 +115,7 @@ class StatsIT {
         .setNullCount(10)
         .setNdv(Ndv.newBuilder()
             .setKind(NdvKind.NK_HLL)
-            .setHllSketch(ByteString.copyFrom(new byte[]{1,2,3,4})))
+            .setHllSketch(ByteString.copyFrom(new byte[]{1, 2, 3, 4})))
         .setMin("2024-01-01T00:00:00Z").setMax("2024-12-31T23:59:59Z")
         .setUpstream(tableStatsOld.getUpstream())
         .build();
@@ -146,7 +147,7 @@ class StatsIT {
     assertEquals(2, listColsOld.getColumnsCount());
     assertEquals("id", listColsOld.getColumns(0).getColumnId());
 
-    var tStatsNew = tableStatsOld.toBuilder()
+    var tableStatsNew = tableStatsOld.toBuilder()
         .setSnapshotId(snapNew)
         .setRowCount(2_500)
         .setDataFileCount(9)
@@ -159,7 +160,7 @@ class StatsIT {
 
     statsMutation.putTableStats(
         PutTableStatsRequest.newBuilder()
-            .setTableId(tblId).setSnapshotId(snapNew).setStats(tStatsNew).build());
+            .setTableId(tblId).setSnapshotId(snapNew).setStats(tableStatsNew).build());
 
     statsMutation.putColumnStatsBatch(
         PutColumnStatsBatchRequest.newBuilder()

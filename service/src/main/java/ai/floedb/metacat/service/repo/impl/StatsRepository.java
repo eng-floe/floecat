@@ -152,7 +152,11 @@ public class StatsRepository extends BaseRepository<TableStats> {
     return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
   }
 
-  public MutationMeta metaForColumnStats(ResourceId tableId, long snapshotId, String columnId, Timestamp nowTs) {
+  public MutationMeta metaForColumnStats(
+      ResourceId tableId,
+      long snapshotId,
+      String columnId,
+      Timestamp nowTs) {
     final String tenantId = tableId.getTenantId();
     final String key = Keys.snapColStatsPtr(tenantId, tableId.getId(), snapshotId, columnId);
     final var pointer = pointerStore.get(key).orElseThrow(() ->

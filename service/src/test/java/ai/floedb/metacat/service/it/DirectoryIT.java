@@ -168,7 +168,7 @@ class DirectoryIT {
     assertTrue(resp.getTablesCount() == 2);
     for (var e : resp.getTablesList()) {
       assertEquals(cat.getDisplayName(), e.getName().getCatalog());
-      assertEquals(List.of("staging","2025"), e.getName().getPathList());
+      assertEquals(List.of("staging", "2025"), e.getName().getPathList());
       assertFalse(e.getName().getName().isEmpty());
       assertFalse(e.getResourceId().getId().isEmpty());
     }

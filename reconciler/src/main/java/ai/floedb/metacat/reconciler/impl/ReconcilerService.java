@@ -93,7 +93,7 @@ public class ReconcilerService {
     return clients.mutation().createCatalog(request).getCatalog().getResourceId();
   }
 
-   private ResourceId ensureNamespace(ResourceId catalogId, String namespaceFq) {
+  private ResourceId ensureNamespace(ResourceId catalogId, String namespaceFq) {
     var parts = split(namespaceFq);
     try {
       var nameRef = NameRef.newBuilder()
@@ -159,7 +159,9 @@ public class ReconcilerService {
     return clients.mutation().createTable(request).getTable().getResourceId();
   }
 
-  private void maybeBumpTableSchema(ResourceId tableId, MetacatConnector.UpstreamTable upstreamTable) {
+  private void maybeBumpTableSchema(
+      ResourceId tableId,
+      MetacatConnector.UpstreamTable upstreamTable) {
     var request = UpdateTableSchemaRequest.newBuilder()
         .setTableId(tableId)
         .setSchemaJson(upstreamTable.schemaJson())
@@ -189,8 +191,7 @@ public class ReconcilerService {
             + "|" + snapshotId)).build();
     try {
       clients.mutation().createSnapshot(request);
-    }
-    catch (StatusRuntimeException e) {
+    } catch (StatusRuntimeException e) {
       var c = e.getStatus().getCode();
       if (c != Status.Code.ALREADY_EXISTS
           && c != Status.Code.ABORTED

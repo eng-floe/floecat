@@ -94,7 +94,8 @@ public class InboundContextInterceptor implements ServerInterceptor {
         try {
           metadata.put(CORR, correlationId);
         } finally {
-          MDC.remove("plan_id"); MDC.remove("correlation_id");
+          MDC.remove("plan_id");
+          MDC.remove("correlation_id");
         }
         super.close(status, metadata);
       }
@@ -152,7 +153,8 @@ public class InboundContextInterceptor implements ServerInterceptor {
       }
 
       PrincipalContext principalContext = ctx.getPrincipal();
-      if (!isBlank(principalContext.getPlanId()) && !principalContext.getPlanId().equals(planIdHeader)) {
+      if (!isBlank(principalContext.getPlanId())
+          && !principalContext.getPlanId().equals(planIdHeader)) {
         throw Status.FAILED_PRECONDITION
             .withDescription("plan_id mismatch (store vs principal)")
             .asRuntimeException();

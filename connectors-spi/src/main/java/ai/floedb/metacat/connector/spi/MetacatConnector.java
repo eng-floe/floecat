@@ -21,7 +21,7 @@ public interface MetacatConnector extends Closeable {
       String schemaJson,
       Optional<Long> currentSnapshotId,
       Optional<Long> currentSnapshotTsMillis,
-      Map<String,String> properties,
+      Map<String, String> properties,
       List<String> partitionKeys
   ) {}
 

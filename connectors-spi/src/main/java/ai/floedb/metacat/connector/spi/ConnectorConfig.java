@@ -30,11 +30,11 @@ public final class ConnectorConfig {
       return scheme;
     }
 
-    public Map<String,String> props() {
+    public Map<String, String> props() {
       return props;
     }
 
-    public Map<String,String> headerHints() {
+    public Map<String, String> headerHints() {
       return headerHints;
     }
 
