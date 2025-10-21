@@ -72,7 +72,7 @@ public class StatsRepository extends BaseRepository<TableStats> {
         tenantId, tableId.getId(), snapshotId, cs.getColumnId());
     final String blobUri = Keys.snapColStatsBlob(
         tenantId, tableId.getId(), snapshotId, cs.getColumnId());
-    
+
     putBlobStrictBytes(blobUri, cs.toByteArray());
     reserveAllOrRollback(key, blobUri);
   }
@@ -146,8 +146,9 @@ public class StatsRepository extends BaseRepository<TableStats> {
     final String tenantId = tableId.getTenantId();
     final String key = Keys.snapTableStatsPtr(tenantId, tableId.getId(), snapshotId);
     final var pointer = pointerStore.get(key).orElseThrow(() ->
-        new IllegalStateException("Pointer missing for table-stats: " + tableId.getId() + "@" + snapshotId));
-        
+        new IllegalStateException("Pointer missing for table-stats: "
+            + tableId.getId() + "@" + snapshotId));
+
     return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
   }
 

@@ -17,18 +17,18 @@ message Catalog {
   google.protobuf.Timestamp created_at = 4;
 }
 
-message ResolveCatalogRequest { 
-  ai.floedb.metacat.common.NameRef ref = 1; 
+message ResolveCatalogRequest {
+  ai.floedb.metacat.common.NameRef ref = 1;
 }
-message ResolveCatalogResponse 
-{ 
-  ai.floedb.metacat.common.ResourceId resource_id = 1; 
+message ResolveCatalogResponse
+{
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
 }
-message LookupCatalogRequest { 
-  ai.floedb.metacat.common.ResourceId resource_id = 1; 
+message LookupCatalogRequest {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
 }
-message LookupCatalogResponse { 
-  string display_name = 1; 
+message LookupCatalogResponse {
+  string display_name = 1;
 }
 
 // ----- Namespace -----
@@ -41,16 +41,16 @@ message Namespace {
   google.protobuf.Timestamp created_at = 5;
 }
 
-message ResolveNamespaceRequest { 
+message ResolveNamespaceRequest {
   ai.floedb.metacat.common.NameRef ref = 1;
 }
-message ResolveNamespaceResponse { 
-  ai.floedb.metacat.common.ResourceId resource_id = 1; 
+message ResolveNamespaceResponse {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
 }
-message LookupNamespaceRequest { 
-  ai.floedb.metacat.common.ResourceId resource_id = 1; 
+message LookupNamespaceRequest {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
 }
-message LookupNamespaceResponse { 
+message LookupNamespaceResponse {
   ai.floedb.metacat.common.NameRef ref = 1;
 }
 
@@ -71,8 +71,8 @@ message ResolveFQTablesRequest {
   ai.floedb.metacat.common.PageRequest page = 10;
 }
 
-message NameList { 
-  repeated ai.floedb.metacat.common.NameRef names = 1; 
+message NameList {
+  repeated ai.floedb.metacat.common.NameRef names = 1;
 }
 
 message ResolveFQTablesResponse {

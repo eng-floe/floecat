@@ -67,7 +67,7 @@ public final class GrpcErrors {
       String correlationId,
       String messageKey,
       Map<String,String> params) {
-    return build(io.grpc.Status.UNAUTHENTICATED, ErrorCode.MC_UNAUTHENTICATED, 
+    return build(io.grpc.Status.UNAUTHENTICATED, ErrorCode.MC_UNAUTHENTICATED,
       correlationId, params, Map.of(), messageKey);
   }
 

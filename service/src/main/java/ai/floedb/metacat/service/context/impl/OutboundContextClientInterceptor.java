@@ -28,7 +28,7 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
 
     return new ForwardingClientCall.SimpleForwardingClientCall
         <>(next.newCall(method, callOptions)) {
-      
+
         @Override
         public void start(Listener<RespT> reponseListener, Metadata headers) {
           var principalContext = InboundContextInterceptor.PC_KEY.get();

@@ -36,7 +36,7 @@ class CatalogMutationIT {
     TestSupport.assertGrpcAndMc(
         catExists,
         Status.Code.ABORTED,
-        ErrorCode.MC_CONFLICT, 
+        ErrorCode.MC_CONFLICT,
         "Catalog \"" + CAT_PREFIX + "cat1\" already exists");
   }
 
@@ -76,7 +76,7 @@ class CatalogMutationIT {
     assertTrue(updOk.getMeta().getPointerVersion() > m1.getPointerVersion());
 
     var bad = assertThrows(
-        StatusRuntimeException.class, 
+        StatusRuntimeException.class,
             () -> mutation.updateCatalog(UpdateCatalogRequest.newBuilder()
                 .setCatalogId(id)
                 .setSpec(CatalogSpec.newBuilder().setDisplayName(CAT_PREFIX + "cat_pre_3"))

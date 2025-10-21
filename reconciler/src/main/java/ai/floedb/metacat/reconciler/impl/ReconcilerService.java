@@ -69,7 +69,7 @@ public class ReconcilerService {
     public boolean ok() {
       return error == null;
     }
-    
+
     public String message() {
       return ok() ? "OK" : error.getMessage();
     }
@@ -151,7 +151,7 @@ public class ReconcilerService {
     var request = CreateTableRequest.newBuilder()
         .setSpec(spec)
         .setIdempotency(idem(
-            "CreateTable|" 
+            "CreateTable|"
             + key(catalogId)
             + "|" + key(namespaceId)
             + "|" + upstreamTable.tableName()))
@@ -188,7 +188,7 @@ public class ReconcilerService {
             + key(tableId)
             + "|" + snapshotId)).build();
     try {
-      clients.mutation().createSnapshot(request); 
+      clients.mutation().createSnapshot(request);
     }
     catch (StatusRuntimeException e) {
       var c = e.getStatus().getCode();

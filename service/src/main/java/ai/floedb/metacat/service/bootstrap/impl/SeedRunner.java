@@ -41,7 +41,7 @@ public class SeedRunner {
     final long now = clock.millis();
 
     var salesId = seedCatalog(tenant, "sales", "Sales catalog", now);
-    
+
     var salesCoreNsId = seedNamespace(tenant, salesId, null, "core", now);
     var ordersId = seedTable(tenant, salesId, salesCoreNsId.getId(), "orders", 0L, now);
     seedTable(tenant, salesId, salesCoreNsId.getId(), "lineitem", 0L, now);

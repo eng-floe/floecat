@@ -22,11 +22,11 @@ message ListCatalogsResponse {
   ai.floedb.metacat.common.PageResponse page = 2;
 }
 
-message GetNamespaceRequest { 
-  ai.floedb.metacat.common.ResourceId namespace_id = 1; 
+message GetNamespaceRequest {
+  ai.floedb.metacat.common.ResourceId namespace_id = 1;
 }
-message GetNamespaceResponse { 
-  Namespace namespace = 1; 
+message GetNamespaceResponse {
+  Namespace namespace = 1;
 }
 
 message ListNamespacesRequest {
@@ -45,8 +45,8 @@ message GetTableDescriptorRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
   optional ai.floedb.metacat.common.SnapshotRef snapshot = 2;
 }
-message GetTableDescriptorResponse { 
-  Table table = 1; 
+message GetTableDescriptorResponse {
+  Table table = 1;
 }
 
 message ListTablesRequest {

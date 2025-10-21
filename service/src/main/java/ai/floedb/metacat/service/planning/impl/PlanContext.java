@@ -128,16 +128,16 @@ public final class PlanContext {
 
   public String getPlanId() {
     return planId;
-  
+
   }
   public String getTenantId() {
     return tenantId;
   }
 
   public PrincipalContext getPrincipal() {
-    return principal; 
+    return principal;
   }
-  
+
   public byte[] getExpansionMap() {
     return copyOrNull(expansionMap);
   }

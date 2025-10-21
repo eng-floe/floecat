@@ -28,15 +28,15 @@ public class InMemoryPointerStore implements PointerStore {
     final boolean[] updated = { false };
     map.compute(key, (k, cur) -> {
       if (cur == null) {
-        if (expectedVersion == 0L) { 
-          updated[0] = true; 
-          return next; 
+        if (expectedVersion == 0L) {
+          updated[0] = true;
+          return next;
         }
         return null;
       }
-      if (cur.getVersion() == expectedVersion) { 
-        updated[0] = true; 
-        return next; 
+      if (cur.getVersion() == expectedVersion) {
+        updated[0] = true;
+        return next;
       }
       return cur;
     });
@@ -54,7 +54,7 @@ public class InMemoryPointerStore implements PointerStore {
 
     List<String> keys = new ArrayList<>();
     for (String k : map.keySet()) {
-      if (k.startsWith(pfx)) 
+      if (k.startsWith(pfx))
       {
         keys.add(k);
       }

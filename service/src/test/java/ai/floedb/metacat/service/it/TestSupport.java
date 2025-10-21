@@ -32,28 +32,37 @@ public final class TestSupport {
 
   public static NameRef fq(String catalog, List<String> path, String name) {
     var b = NameRef.newBuilder().setCatalog(catalog).addAllPath(path);
-    if (name != null) b.setName(name);
+    if (name != null) {
+      b.setName(name);
+    }
     return b.build();
   }
 
-  public static String seedTenantId(DirectoryGrpc.DirectoryBlockingStub directory, String seededCatalogName) {
+  public static String seedTenantId(
+      DirectoryGrpc.DirectoryBlockingStub directory,
+      String seededCatalogName) {
     var seeded = directory.resolveCatalog(
         ResolveCatalogRequest.newBuilder()
             .setRef(NameRef.newBuilder().setCatalog(seededCatalogName)).build());
     return seeded.getResourceId().getTenantId();
   }
 
-  public static Catalog createCatalog(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
-      String displayName, String description) {
+  public static Catalog createCatalog(
+      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      String displayName,
+      String description) {
     var resp = mutation.createCatalog(CreateCatalogRequest.newBuilder()
         .setSpec(CatalogSpec.newBuilder().setDisplayName(displayName).setDescription(description))
         .build());
     return resp.getCatalog();
   }
 
-  public static Namespace createNamespace(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
-      ResourceId catalogId, String displayName, 
-      List<String> path, String desc) {
+  public static Namespace createNamespace(
+      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      ResourceId catalogId,
+      String displayName,
+      List<String> path,
+      String desc) {
     var specB = NamespaceSpec.newBuilder()
         .setCatalogId(catalogId)
         .setDisplayName(displayName)
@@ -66,10 +75,11 @@ public final class TestSupport {
     return resp.getNamespace();
   }
 
-  public static Table createTable(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
-                                            ResourceId catalogId, ResourceId namespaceId,
-                                            String displayName, String rootUri, 
-                                            String schemaJson, String desc) {
+  public static Table createTable(
+      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      ResourceId catalogId, ResourceId namespaceId,
+      String displayName, String rootUri,
+      String schemaJson, String desc) {
     var resp = mutation.createTable(CreateTableRequest.newBuilder()
         .setSpec(TableSpec.newBuilder()
             .setCatalogId(catalogId)
@@ -82,9 +92,11 @@ public final class TestSupport {
     return resp.getTable();
   }
 
-  public static Snapshot createSnapshot(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
-                                        ResourceId tableId, long snapshotId, 
-                                        long upstreamCreatedAtMs) {
+  public static Snapshot createSnapshot(
+      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      ResourceId tableId,
+      long snapshotId,
+      long upstreamCreatedAtMs) {
     var resp = mutation.createSnapshot(CreateSnapshotRequest.newBuilder()
         .setSpec(SnapshotSpec.newBuilder()
             .setTableId(tableId)
@@ -94,66 +106,85 @@ public final class TestSupport {
     return resp.getSnapshot();
   }
 
-  public static Connector createConnector(ConnectorsGrpc.ConnectorsBlockingStub connectors,
-                                        ConnectorSpec spec) {
+  public static Connector createConnector(
+      ConnectorsGrpc.ConnectorsBlockingStub connectors,
+      ConnectorSpec spec) {
     return connectors.createConnector(
         CreateConnectorRequest.newBuilder().setSpec(spec).build()
     ).getConnector();
   }
 
-  public static ResourceId resolveCatalogId(DirectoryGrpc.DirectoryBlockingStub directory,
+  public static ResourceId resolveCatalogId(
+      DirectoryGrpc.DirectoryBlockingStub directory,
       String catalogName) {
     var r = directory.resolveCatalog(ResolveCatalogRequest.newBuilder()
         .setRef(NameRef.newBuilder().setCatalog(catalogName)).build());
     return r.getResourceId();
   }
 
-  public static ResourceId resolveNamespaceId(DirectoryGrpc.DirectoryBlockingStub directory,
-                                              String catalog, List<String> path) {
+  public static ResourceId resolveNamespaceId(
+      DirectoryGrpc.DirectoryBlockingStub directory,
+      String catalog,
+      List<String> path) {
     var r = directory.resolveNamespace(ResolveNamespaceRequest.newBuilder()
         .setRef(fq(catalog, path, null)).build());
     return r.getResourceId();
   }
 
-  public static ResourceId resolveTableId(DirectoryGrpc.DirectoryBlockingStub directory,
-                                          String catalog, List<String> path, String name) {
+  public static ResourceId resolveTableId(
+      DirectoryGrpc.DirectoryBlockingStub directory,
+      String catalog,
+      List<String> path,
+      String name) {
     var r = directory.resolveTable(ResolveTableRequest.newBuilder()
         .setRef(fq(catalog, path, name)).build());
     return r.getResourceId();
   }
 
-  public static Table updateSchema(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
-                                             ResourceId tableId, String newSchemaJson) {
+  public static Table updateSchema(
+      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      ResourceId tableId,
+      String newSchemaJson) {
     return mutation.updateTableSchema(UpdateTableSchemaRequest.newBuilder()
         .setTableId(tableId).setSchemaJson(newSchemaJson).build()).getTable();
   }
 
-  public static Table renameTable(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
-                                            ResourceId tableId, String newName) {
+  public static Table renameTable(
+      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      ResourceId tableId,
+      String newName) {
     return mutation.renameTable(RenameTableRequest.newBuilder()
         .setTableId(tableId).setNewDisplayName(newName).build()).getTable();
   }
 
-  public static void deleteTable(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
-      ResourceId namespaceId, ResourceId tableId) {
+  public static void deleteTable(
+      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      ResourceId namespaceId,
+      ResourceId tableId) {
     mutation.deleteTable(DeleteTableRequest.newBuilder().setTableId(tableId).build());
   }
 
-  public static void deleteSnapshot(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
-                                        ResourceId tableId, long snapshotId) {
+  public static void deleteSnapshot(
+      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      ResourceId tableId,
+      long snapshotId) {
     mutation.deleteSnapshot(DeleteSnapshotRequest.newBuilder()
         .setTableId(tableId)
         .setSnapshotId(snapshotId).build());
   }
 
-  public static void deleteNamespace(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
-                                     ResourceId nsId, boolean requireEmpty) {
+  public static void deleteNamespace(
+      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      ResourceId nsId,
+      boolean requireEmpty) {
     mutation.deleteNamespace(DeleteNamespaceRequest.newBuilder()
         .setNamespaceId(nsId).setRequireEmpty(requireEmpty).build());
   }
 
-  public static void deleteCatalog(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
-                                   ResourceId catalogId, boolean requireEmpty) {
+  public static void deleteCatalog(
+      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      ResourceId catalogId,
+      boolean requireEmpty) {
     mutation.deleteCatalog(DeleteCatalogRequest.newBuilder()
         .setCatalogId(catalogId).setRequireEmpty(requireEmpty).build());
   }
@@ -170,10 +201,11 @@ public final class TestSupport {
     return null;
   }
 
-  public static void assertGrpcAndMc(StatusRuntimeException ex,
-                                     Status.Code grpcCode,
-                                     ErrorCode mcCode,
-                                     String msgContains) throws Exception {
+  public static void assertGrpcAndMc(
+      StatusRuntimeException ex,
+      Status.Code grpcCode,
+      ErrorCode mcCode,
+      String msgContains) throws Exception {
     Objects.requireNonNull(ex, "ex");
     assert ex.getStatus().getCode() == grpcCode
         : "expected gRPC code " + grpcCode + " got " + ex.getStatus().getCode();

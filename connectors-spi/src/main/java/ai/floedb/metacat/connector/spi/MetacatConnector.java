@@ -27,7 +27,9 @@ public interface MetacatConnector extends Closeable {
 
   UpstreamTable describe(String namespaceFq, String tableName);
 
-  default boolean supportsTableStats() { return false; }
+  default boolean supportsTableStats() {
+    return false;
+  }
 
   @Override void close();
 }

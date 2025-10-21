@@ -51,7 +51,7 @@ class DirectoryIT {
     var cat = TestSupport.createCatalog(mutation, "resolveAndLookupNamespace", "");
     TestSupport.seedTenantId(directory,  cat.getDisplayName());
 
-    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), 
+    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(),
         "2025", List.of("staging"), "core ns");
 
     var ref = NameRef.newBuilder()
@@ -221,7 +221,7 @@ class DirectoryIT {
     TestSupport.renameTable(mutation, id, "t1");
 
     assertThrows(
-        io.grpc.StatusRuntimeException.class, 
+        io.grpc.StatusRuntimeException.class,
             () -> directory.resolveTable(
                 ResolveTableRequest.newBuilder().setRef(oldRef).build()));
 
@@ -309,7 +309,7 @@ class DirectoryIT {
         "2025", List.of("staging"), "2025 ns");
     TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(),
         "staging events 🧪", "s3://barf", "{}", "none");
-    
+
     var nameRef = NameRef.newBuilder()
         .setCatalog("barf3").addPath("staging")
             .addPath("2025").setName("staging events 🧪").build();

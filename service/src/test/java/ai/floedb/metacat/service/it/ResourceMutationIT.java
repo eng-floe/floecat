@@ -42,19 +42,19 @@ class ResourceMutationIT {
 
     StatusRuntimeException catExists = assertThrows(StatusRuntimeException.class, () ->
         TestSupport.createCatalog(mutation, "cat1", "cat1"));
-    TestSupport.assertGrpcAndMc(catExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, 
+    TestSupport.assertGrpcAndMc(catExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT,
         "Catalog \"cat1\" already exists");
 
     StatusRuntimeException nsExists = assertThrows(StatusRuntimeException.class, () ->
         TestSupport.createNamespace(mutation,
             cat.getResourceId(), "2025", List.of("staging"), "2025 ns"));
-    TestSupport.assertGrpcAndMc(nsExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, 
+    TestSupport.assertGrpcAndMc(nsExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT,
         "Namespace \"staging/2025\" already exists");
 
     StatusRuntimeException tblExists = assertThrows(StatusRuntimeException.class, () ->
         TestSupport.createTable(mutation,
             cat.getResourceId(), ns.getResourceId(), "events", "s3://events", "{}", "none"));
-    TestSupport.assertGrpcAndMc(tblExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, 
+    TestSupport.assertGrpcAndMc(tblExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT,
         "Table \"events\" already exists");
   }
 
@@ -102,7 +102,7 @@ class ResourceMutationIT {
     assertEquals(newName, renamed.getDisplayName());
     assertEquals(tblId.getId(),
         TestSupport.resolveTableId(directory, catName, nsFullPath, newName).getId());
-    
+
     StatusRuntimeException oldName404 = assertThrows(StatusRuntimeException.class, () ->
         TestSupport.resolveTableId(directory, catName, nsFullPath, "orders_it"));
     TestSupport.assertGrpcAndMc(oldName404, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, null);
@@ -112,7 +112,7 @@ class ResourceMutationIT {
             .setNamespaceId(nsId)
             .setRequireEmpty(true)
             .build()));
-    TestSupport.assertGrpcAndMc(nsDelBlocked, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, 
+    TestSupport.assertGrpcAndMc(nsDelBlocked, Status.Code.ABORTED, ErrorCode.MC_CONFLICT,
         "Namespace \"db_it/schema_it/it_schema\" contains tables and/or children.");
 
     TestSupport.deleteTable(mutation, nsId, tblId);

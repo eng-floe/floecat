@@ -85,7 +85,7 @@ This early version of Metacat is seeded with test catalogs, namespaces and table
 | Module | Purpose |
 |--------|---------|
 | proto/ | Protobuf and gRPC interface definitions (ai.floedb.metacat.*) |
-| service/ | Quarkus service layer, repositories, and tests | 
+| service/ | Quarkus service layer, repositories, and tests |
 
 ## Key Concepts
 

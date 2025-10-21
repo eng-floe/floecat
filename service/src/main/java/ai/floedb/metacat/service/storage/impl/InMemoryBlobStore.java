@@ -29,7 +29,7 @@ public class InMemoryBlobStore implements BlobStore {
   private final Clock clock = Clock.systemUTC();
 
   private static final class Blob {
-    final byte[] data; 
+    final byte[] data;
     final BlobHeader hdr;
 
     Blob(byte[] d, BlobHeader h) {

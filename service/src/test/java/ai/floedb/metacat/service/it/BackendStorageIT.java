@@ -129,7 +129,7 @@ class BackendStorageIT {
     String idxNewKey = Keys.tblByNamePtr(tenantId, catId.getId(), nsId.getId(), newName);
     assertTrue(ptr.get(idxNewKey).isPresent(), "new by-name pointer must exist");
     assertTrue(ptr.get(idxOldKey).isEmpty(),   "old by-name pointer must be removed");
- 
+
     TestSupport.deleteTable(mutation, nsId, tblId);
     TestSupport.deleteTable(mutation, nsId, tblId);
     assertTrue(ptr.get(keyTblCanon).isEmpty());
@@ -168,7 +168,7 @@ class BackendStorageIT {
         cat.getResourceId(),
         ns.getResourceId(),
         "t"+i, "s3://b/p",
-        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}", 
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
         "d");
 
     var prefixRef = NameRef.newBuilder()
@@ -285,7 +285,7 @@ class BackendStorageIT {
     var cat = TestSupport.createCatalog(mutation, catName, "etag");
     var tenantId = TestSupport.seedTenantId(directory, catName);
 
-    var ns = TestSupport.createNamespace(mutation, 
+    var ns = TestSupport.createNamespace(mutation,
         cat.getResourceId(), "ns", List.of("db","sch"), "etag");
     var tbl = TestSupport.createTable(
         mutation,
@@ -349,7 +349,7 @@ class BackendStorageIT {
     TestSupport.assertGrpcAndMc(
         bad,
         Status.Code.NOT_FOUND,
-        ErrorCode.MC_NOT_FOUND, 
+        ErrorCode.MC_NOT_FOUND,
         "Table not found");
 
     var tbl2 = TestSupport.createTable(
@@ -402,7 +402,7 @@ class BackendStorageIT {
     var latch = new CountDownLatch(1);
     var errs = new CopyOnWriteArrayList<Throwable>();
     Runnable r1 = () -> {
-      try { 
+      try {
         latch.await();
         TestSupport.updateSchema(mutation, tid, schemaA);
       } catch (Throwable t) {
@@ -488,10 +488,10 @@ class BackendStorageIT {
     var tenantId = TestSupport.seedTenantId(directory, catName);
 
     var ns = TestSupport.createNamespace(
-        mutation, 
-        cat.getResourceId(), 
-        "ns", 
-        List.of("db", "sch"), 
+        mutation,
+        cat.getResourceId(),
+        "ns",
+        List.of("db", "sch"),
         "idem");
 
     var spec = TableSpec.newBuilder()
@@ -607,7 +607,7 @@ class BackendStorageIT {
         latch.await();
         out1.compareAndSet(null, mutation.createTable(req));
       } catch (Throwable t) {
-        err.set(t); 
+        err.set(t);
       }
     };
     Runnable s = () -> {

@@ -23,7 +23,7 @@ class TableRepositorySnapshotsTest {
   @Test
   void list_count_and_currentSnapshot_fromSeeded() {
     var ptr = new InMemoryPointerStore();
-    var blobs= new InMemoryBlobStore();
+    var blobs = new InMemoryBlobStore();
     var snapshotRepo = new SnapshotRepository(ptr, blobs);
     var tableRepo = new TableRepository(ptr, blobs);
 
@@ -32,9 +32,12 @@ class TableRepositorySnapshotsTest {
     String nsId = UUID.randomUUID().toString();
     String tblId = UUID.randomUUID().toString();
 
-    var catalogRid = ResourceId.newBuilder().setTenantId(tenant).setId(catalogId).setKind(ResourceKind.RK_CATALOG).build();
-    var nsRid = ResourceId.newBuilder().setTenantId(tenant).setId(nsId).setKind(ResourceKind.RK_NAMESPACE).build();
-    var tableRid = ResourceId.newBuilder().setTenantId(tenant).setId(tblId).setKind(ResourceKind.RK_TABLE).build();
+    var catalogRid = ResourceId.newBuilder().setTenantId(tenant)
+        .setId(catalogId).setKind(ResourceKind.RK_CATALOG).build();
+    var nsRid = ResourceId.newBuilder().setTenantId(tenant)
+        .setId(nsId).setKind(ResourceKind.RK_NAMESPACE).build();
+    var tableRid = ResourceId.newBuilder().setTenantId(tenant)
+        .setId(tblId).setKind(ResourceKind.RK_TABLE).build();
 
     var td = Table.newBuilder()
         .setResourceId(tableRid)
@@ -49,8 +52,10 @@ class TableRepositorySnapshotsTest {
         .build();
     tableRepo.create(td);
 
-    seedSnapshot(snapshotRepo, tenant, tableRid, 199, clock.millis() - 20_000, clock.millis() - 60_000);
-    seedSnapshot(snapshotRepo, tenant, tableRid, 200, clock.millis() - 10_000, clock.millis() - 50_000);
+    seedSnapshot(snapshotRepo, tenant, tableRid, 199,
+        clock.millis() - 20_000, clock.millis() - 60_000);
+    seedSnapshot(snapshotRepo, tenant, tableRid, 200,
+        clock.millis() - 10_000, clock.millis() - 50_000);
 
     StringBuilder next = new StringBuilder();
     var page1 = snapshotRepo.list(tableRid, 1, "", next);
@@ -78,12 +83,12 @@ class TableRepositorySnapshotsTest {
       long ingestedAtMs,
       long upstreamCreatedAt) {
     var snap = Snapshot.newBuilder()
-      .setTableId(tableId)
-      .setSnapshotId(snapshotId)
-      .setIngestedAt(Timestamps.fromMillis(ingestedAtMs))
-      .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedAt))
-      .build();
-      
+        .setTableId(tableId)
+        .setSnapshotId(snapshotId)
+        .setIngestedAt(Timestamps.fromMillis(ingestedAtMs))
+        .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedAt))
+        .build();
+
 
     snapshotRepo.create(snap);
   }

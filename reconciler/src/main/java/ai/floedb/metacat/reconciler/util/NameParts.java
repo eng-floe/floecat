@@ -6,10 +6,10 @@ public final class NameParts {
   private NameParts() {}
 
   public static class Ns {
-    public final List<String> parents; 
+    public final List<String> parents;
     public final String leaf;
 
-    public Ns(List<String> parents, String leaf) { 
+    public Ns(List<String> parents, String leaf) {
       this.parents = parents;
       this.leaf = leaf;
     }

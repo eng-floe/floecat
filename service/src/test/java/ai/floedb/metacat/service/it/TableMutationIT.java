@@ -49,7 +49,7 @@ class TableMutationIT {
     var nsId = ns.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
 
-    var nsPath = new ArrayList<>(parents); 
+    var nsPath = new ArrayList<>(parents);
     nsPath.add(nsLeaf);
     var nsResolved = directory.resolveNamespace(ResolveNamespaceRequest.newBuilder()
         .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath))
@@ -282,8 +282,8 @@ class TableMutationIT {
     for (int i = 0; i < 100; i++) {
       TestSupport.createSnapshot(mutation, tbl.getResourceId(), i,
           System.currentTimeMillis() + i * 1_000L);
-    }  
-    
+    }
+
     ListSnapshotsRequest req = ListSnapshotsRequest.newBuilder()
         .setTableId(tblId)
         .setPage(PageRequest.newBuilder().setPageSize(1000).build())
@@ -295,6 +295,6 @@ class TableMutationIT {
     List<Snapshot> snaps = resp.getSnapshotsList();
     for (int i = 0; i < 100; i++) {
       assertEquals(i, snaps.get(i).getSnapshotId());
-    }  
+    }
   }
 }

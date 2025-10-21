@@ -122,7 +122,7 @@ class NamespaceMutationIT {
                 .build())
             .build()));
     TestSupport.assertGrpcAndMc(
-        bad, Status.Code.FAILED_PRECONDITION, 
+        bad, Status.Code.FAILED_PRECONDITION,
             ErrorCode.MC_PRECONDITION_FAILED, "mismatch");
 
     var before = TestSupport.metaForNamespace(
@@ -151,11 +151,11 @@ class NamespaceMutationIT {
             .build())
     );
 
-    TestSupport.assertGrpcAndMc(stale, Status.Code.FAILED_PRECONDITION, 
+    TestSupport.assertGrpcAndMc(stale, Status.Code.FAILED_PRECONDITION,
         ErrorCode.MC_PRECONDITION_FAILED, "mismatch");
 
     var tbl = TestSupport.createTable(
-        mutation, cat.getResourceId(), nsId, "orders", 
+        mutation, cat.getResourceId(), nsId, "orders",
             "s3://ns/orders", "{}", "none");
 
     StatusRuntimeException nsDelBlocked = assertThrows(StatusRuntimeException.class, () ->
@@ -184,13 +184,13 @@ class NamespaceMutationIT {
     assertFalse(delOk.getMeta().getPointerKey().isEmpty());
 
     var nf = assertThrows(
-        StatusRuntimeException.class, 
+        StatusRuntimeException.class,
         () -> directory.resolveNamespace(ResolveNamespaceRequest.newBuilder()
             .setRef(NameRef.newBuilder()
                 .setCatalog(cat.getDisplayName())
                 .addPath(leaf + "_root3"))
             .build()));
-    TestSupport.assertGrpcAndMc(nf, Status.Code.NOT_FOUND, 
+    TestSupport.assertGrpcAndMc(nf, Status.Code.NOT_FOUND,
         ErrorCode.MC_NOT_FOUND, "Namespace not found");
   }
 
