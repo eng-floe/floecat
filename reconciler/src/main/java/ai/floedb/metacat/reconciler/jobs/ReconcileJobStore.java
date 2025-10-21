@@ -27,10 +27,12 @@ public interface ReconcileJobStore {
     public final long errors;
     public final boolean fullRescan;
 
-    public ReconcileJob(String jobId, String tenantId, String connectorId, String state, String message,
-                        long startedAtMs, long finishedAtMs,
-                        long tablesScanned, long tablesChanged, long errors,
-                        boolean fullRescan) {
+    public ReconcileJob(
+        String jobId, String tenantId,
+        String connectorId, String state, String message,
+        long startedAtMs, long finishedAtMs,
+        long tablesScanned, long tablesChanged, long errors,
+        boolean fullRescan) {
       this.jobId = jobId;
       this.tenantId = tenantId;
       this.connectorId = connectorId;
@@ -50,8 +52,12 @@ public interface ReconcileJobStore {
     public final String tenantId;
     public final String connectorId;
     public final boolean fullRescan;
+
     public LeasedJob(String jobId, String tenantId, String connectorId, boolean fullRescan) {
-      this.jobId = jobId; this.tenantId = tenantId; this.connectorId = connectorId; this.fullRescan = fullRescan;
+      this.jobId = jobId;
+      this.tenantId = tenantId;
+      this.connectorId = connectorId;
+      this.fullRescan = fullRescan;
     }
   }
 }

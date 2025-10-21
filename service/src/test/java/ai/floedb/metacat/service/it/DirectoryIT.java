@@ -42,7 +42,8 @@ class DirectoryIT {
 
     var l = directory.lookupCatalog(LookupCatalogRequest.newBuilder()
         .setResourceId(r.getResourceId()).build());
-    assertTrue(l.getDisplayName().equals("resolveAndLookupCatalog") || l.getDisplayName().isEmpty());
+    assertTrue(l.getDisplayName().equals(
+        "resolveAndLookupCatalog") || l.getDisplayName().isEmpty());
   }
 
   @Test
@@ -59,7 +60,7 @@ class DirectoryIT {
         .setName("2025")
         .build();
 
-    var nsRes = directory.resolveNamespace(
+    directory.resolveNamespace(
         ResolveNamespaceRequest.newBuilder().setRef(ref).build());
 
     var lookup = directory.lookupNamespace(
@@ -112,7 +113,7 @@ class DirectoryIT {
   }
 
   @Test
-  void resolveFQTables_prefix_salesCore_returnsOrdersAndLineitem() {
+  void resolveFullyQualifiedTables_prefix_salesCore_returnsOrdersAndLineitem() {
     var cat = TestSupport.createCatalog(mutation,
         "resolveFQTables_prefix_salesCore_returnsOrdersAndLineitem", "");
     TestSupport.seedTenantId(directory,  cat.getDisplayName());
@@ -145,7 +146,7 @@ class DirectoryIT {
   }
 
   @Test
-  void resolveFQTables_prefix_salesStaging2025_returnsTwo() {
+  void resolveFullyQualifiedTables_prefix_salesStaging2025_returnsTwo() {
     var cat = TestSupport.createCatalog(mutation,
         "resolveFQTables_prefix_salesStaging2025_returnsTwo", "");
     TestSupport.seedTenantId(directory,  cat.getDisplayName());
@@ -175,13 +176,13 @@ class DirectoryIT {
 
   @Test
   void resolve_and_lookup_financeCore_glEntries_roundtrip() {
-      var cat = TestSupport.createCatalog(mutation,
-          "resolve_and_lookup_financeCore_glEntries_roundtrip", "");
-      TestSupport.seedTenantId(directory, cat.getDisplayName());
+    var cat = TestSupport.createCatalog(mutation,
+        "resolve_and_lookup_financeCore_glEntries_roundtrip", "");
+    TestSupport.seedTenantId(directory, cat.getDisplayName());
 
-      var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "core", null, "core ns");
-      TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(),
-          "gl_entries", "s3://barf", "{}", "none");
+    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "core", null, "core ns");
+    TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(),
+        "gl_entries", "s3://barf", "{}", "none");
 
     var name = NameRef.newBuilder()
         .setCatalog("finance").addPath("core").setName("gl_entries")
@@ -208,25 +209,27 @@ class DirectoryIT {
 
     var ns = TestSupport.createNamespace(
         mutation, cat.getResourceId(), "core", null, "core ns");
-    var tbl = TestSupport.createTable(
+    TestSupport.createTable(
         mutation, cat.getResourceId(), ns.getResourceId(), "t0", "s3://barf", "{}", "none");
     var path = List.of("core");
 
-    var oldRef = NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(path).setName("t0").build();
-    var id = directory.resolveTable(ResolveTableRequest.newBuilder().setRef(oldRef).build()).getResourceId();
+    var oldRef = NameRef.newBuilder().setCatalog(
+        cat.getDisplayName()).addAllPath(path).setName("t0").build();
+    var id = directory.resolveTable(
+        ResolveTableRequest.newBuilder().setRef(oldRef).build()).getResourceId();
 
     TestSupport.renameTable(mutation, id, "t1");
 
     assertThrows(
-      io.grpc.StatusRuntimeException.class, 
-      () -> directory.resolveTable(
-          ResolveTableRequest.newBuilder().setRef(oldRef).build()));
+        io.grpc.StatusRuntimeException.class, 
+            () -> directory.resolveTable(
+                ResolveTableRequest.newBuilder().setRef(oldRef).build()));
 
     var newRef = NameRef.newBuilder().setCatalog(
         cat.getDisplayName()).addAllPath(path).setName("t1").build();
     var resolved = directory.resolveTable(ResolveTableRequest.newBuilder().setRef(newRef).build());
     var looked = directory.lookupTable(
-      LookupTableRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
+        LookupTableRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
     assertEquals("t1", looked.getName().getName());
   }
 
@@ -241,17 +244,19 @@ class DirectoryIT {
     var oldRef = NameRef.newBuilder().setCatalog(
         cat.getDisplayName()).addPath("p").addPath("a").build();
 
-    var renamed = mutation.renameNamespace(RenameNamespaceRequest.newBuilder()
+    mutation.renameNamespace(RenameNamespaceRequest.newBuilder()
         .setNamespaceId(id)
         .setNewDisplayName("b")
         .build()).getNamespace();
 
     assertThrows(StatusRuntimeException.class, () ->
-      directory.resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(oldRef).build()));
+        directory.resolveNamespace(
+            ResolveNamespaceRequest.newBuilder().setRef(oldRef).build()));
 
     var newRef = NameRef.newBuilder().setCatalog(
         cat.getDisplayName()).addPath("p").addPath("b").build();
-    var resolved = directory.resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(newRef).build());
+    var resolved = directory.resolveNamespace(
+        ResolveNamespaceRequest.newBuilder().setRef(newRef).build());
 
     var looked = directory.lookupNamespace(
         LookupNamespaceRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
@@ -260,7 +265,7 @@ class DirectoryIT {
   }
 
   @Test
-  void resolveFQTables_list_selector_paging_and_errors() {
+  void resolveFullyQualifiedTables_list_selector_paging_and_errors() {
     var cat = TestSupport.createCatalog(mutation,
         "resolveFQTables_list_selector_paging_and_errors", "");
     TestSupport.seedTenantId(directory,  cat.getDisplayName());
@@ -282,7 +287,7 @@ class DirectoryIT {
         NameList.newBuilder().addAllNames(names)).build();
 
     var page1 = directory.resolveFQTables(ResolveFQTablesRequest.newBuilder(req)
-      . setPage(PageRequest.newBuilder().setPageSize(1)).build());
+        .setPage(PageRequest.newBuilder().setPageSize(1)).build());
     assertEquals(1, page1.getTablesCount());
     var token = page1.getPage().getNextPageToken();
 
@@ -302,7 +307,7 @@ class DirectoryIT {
 
     var ns = TestSupport.createNamespace(mutation, cat.getResourceId(),
         "2025", List.of("staging"), "2025 ns");
-    var tbl = TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(),
+    TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(),
         "staging events 🧪", "s3://barf", "{}", "none");
     
     var nameRef = NameRef.newBuilder()
@@ -313,7 +318,7 @@ class DirectoryIT {
         ResolveTableRequest.newBuilder().setRef(nameRef).build());
     var lookup = directory.lookupTable(
         LookupTableRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
-    assertEquals(List.of("staging","2025"), lookup.getName().getPathList());
+    assertEquals(List.of("staging", "2025"), lookup.getName().getPathList());
     assertEquals("staging events 🧪", lookup.getName().getName());
   }
 
@@ -322,10 +327,12 @@ class DirectoryIT {
     var bogus = ai.floedb.metacat.common.rpc.ResourceId.newBuilder()
         .setTenantId("t-0001").setId("nope").build();
 
-    var lcat = directory.lookupCatalog(LookupCatalogRequest.newBuilder().setResourceId(bogus).build());
+    var lcat = directory.lookupCatalog(
+        LookupCatalogRequest.newBuilder().setResourceId(bogus).build());
     assertTrue(lcat.getDisplayName().isEmpty());
 
-    var lns = directory.lookupNamespace(LookupNamespaceRequest.newBuilder().setResourceId(bogus).build());
+    var lns = directory.lookupNamespace(
+        LookupNamespaceRequest.newBuilder().setResourceId(bogus).build());
     assertFalse(lns.hasRef());
 
     var ltbl = directory.lookupTable(LookupTableRequest.newBuilder().setResourceId(bogus).build());

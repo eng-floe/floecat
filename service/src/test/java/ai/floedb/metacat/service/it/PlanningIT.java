@@ -39,7 +39,7 @@ class PlanningIT {
   void beginRenewEnd_flow() {
     var catName = CAT_PREFIX + "cat1";
     var cat = TestSupport.createCatalog(mutation, catName, "");
-    String tenantId = TestSupport.seedTenantId(directory, cat.getDisplayName());
+    TestSupport.seedTenantId(directory, cat.getDisplayName());
     var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "sch", List.of("db"), "");
     var tbl = TestSupport.createTable(
         mutation, cat.getResourceId(), ns.getResourceId(),

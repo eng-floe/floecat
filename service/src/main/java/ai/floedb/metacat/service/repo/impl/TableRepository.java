@@ -18,11 +18,9 @@ import ai.floedb.metacat.service.storage.PointerStore;
 @ApplicationScoped
 public class TableRepository extends BaseRepository<Table> {
 
-  protected TableRepository() { super(); }
-
   @Inject
-  public TableRepository(PointerStore ptr, BlobStore blobs) {
-    super(ptr, blobs, Table::parseFrom, Table::toByteArray, "application/x-protobuf");
+  public TableRepository(PointerStore pointerStore, BlobStore blobs) {
+    super(pointerStore, blobs, Table::parseFrom, Table::toByteArray, "application/x-protobuf");
   }
 
   public Optional<Table> get(ResourceId tableId) {
@@ -35,38 +33,40 @@ public class TableRepository extends BaseRepository<Table> {
 
 
   public List<Table> listByNamespace(ResourceId catalogId, ResourceId nsId, int limit, String token, StringBuilder next) {
-    var pfx = Keys.tblByNamePrefix(nsId.getTenantId(), catalogId.getId(), nsId.getId());
-    return listByPrefix(pfx, limit, token, next);
+    var prefix = Keys.tblByNamePrefix(nsId.getTenantId(), catalogId.getId(), nsId.getId());
+    return listByPrefix(prefix, limit, token, next);
   }
 
   public int countUnderNamespace(ResourceId catalogId, ResourceId nsId) {
-    var pfx = Keys.tblByNamePrefix(nsId.getTenantId(), catalogId.getId(), nsId.getId());
-    return countByPrefix(pfx);
+    var prefix = Keys.tblByNamePrefix(nsId.getTenantId(), catalogId.getId(), nsId.getId());
+    return countByPrefix(prefix);
   }
 
   public void create(Table table) {
     requireOwnerIds(table);
-    var tid = table.getResourceId().getTenantId();
-    var tblId = table.getResourceId().getId();
-    var catId = table.getCatalogId().getId();
-    var nsId = table.getNamespaceId().getId();
+    var tenantId = table.getResourceId().getTenantId();
+    var tableId = table.getResourceId();
+    var catalogId = table.getCatalogId();
+    var namespaceId = table.getNamespaceId();
 
-    var canon = Keys.tblCanonicalPtr(tid, tblId);
-    var byName = Keys.tblByNamePtr(tid, catId, nsId, table.getDisplayName());
-    var blob = Keys.tblBlob(tid, tblId);
+    var canonicalPointer = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    var byName = Keys.tblByNamePtr(tenantId,
+        catalogId.getId(), namespaceId.getId(), table.getDisplayName());
+    var blobUri = Keys.tblBlob(tenantId, tableId.getId());
 
-    putBlob(blob, table);
-    reserveAllOrRollback(canon, blob, byName, blob);
+    putBlob(blobUri, table);
+    reserveAllOrRollback(canonicalPointer, blobUri, byName, blobUri);
   }
 
   public boolean update(Table updated, long expectedVersion) {
     requireOwnerIds(updated);
-    var tid = updated.getResourceId().getTenantId();
-    var canon = Keys.tblCanonicalPtr(tid, updated.getResourceId().getId());
-    var blob = Keys.tblBlob(tid, updated.getResourceId().getId());
+    var tenantId = updated.getResourceId().getTenantId();
+    var canonicalPointer = Keys.tblCanonicalPtr(tenantId, updated.getResourceId().getId());
+    var blobUri = Keys.tblBlob(tenantId, updated.getResourceId().getId());
 
-    putBlob(blob, updated);
-    advancePointer(canon, blob, expectedVersion);
+    putBlob(blobUri, updated);
+    advancePointer(canonicalPointer, blobUri, expectedVersion);
+
     return true;
   }
 
@@ -74,31 +74,35 @@ public class TableRepository extends BaseRepository<Table> {
     ResourceId tableId,
     String newDisplayName,
     long expectedVersion) {
-    var tid = tableId.getTenantId();
-    var cur = get(tableId).orElseThrow(() -> new IllegalStateException("table not found"));
-    if (newDisplayName.equals(cur.getDisplayName())) {
+    var tenantId = tableId.getTenantId();
+    var table = get(tableId).orElseThrow(() -> new IllegalStateException("table not found"));
+    if (newDisplayName.equals(table.getDisplayName())) {
       return true;
     }
 
-    var blob = Keys.tblBlob(tid, tableId.getId());
-    var canon = Keys.tblCanonicalPtr(tid, tableId.getId());
+    var blobUri = Keys.tblBlob(tenantId, tableId.getId());
+    var canonicalPointer = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    var updated = table.toBuilder().setDisplayName(newDisplayName).build();
 
-    var newByName = Keys.tblByNamePtr(tid, cur.getCatalogId().getId(), cur.getNamespaceId().getId(), newDisplayName);
-    var oldByName = Keys.tblByNamePtr(tid, cur.getCatalogId().getId(), cur.getNamespaceId().getId(), cur.getDisplayName());
+    putBlob(blobUri, updated);
 
-    var updated = cur.toBuilder().setDisplayName(newDisplayName).build();
+    var newByName = Keys.tblByNamePtr(tenantId,
+        table.getCatalogId().getId(), table.getNamespaceId().getId(), newDisplayName);
 
-    putBlob(blob, updated);
-
-    reserveAllOrRollback(newByName, blob);
+    reserveAllOrRollback(newByName, blobUri);
     try {
-      advancePointer(canon, blob, expectedVersion);
+      advancePointer(canonicalPointer, blobUri, expectedVersion);
     } catch (PreconditionFailedException e) {
-      ptr.get(newByName).ifPresent(p -> compareAndDeleteOrFalse(newByName, p.getVersion()));
+      pointerStore.get(newByName).ifPresent(
+          pointer -> compareAndDeleteOrFalse(newByName, pointer.getVersion()));
       return false;
     }
 
-    ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(oldByName, p.getVersion()));
+    var oldByName = Keys.tblByNamePtr(tenantId,
+        table.getCatalogId().getId(), table.getNamespaceId().getId(), table.getDisplayName());
+
+    pointerStore.get(oldByName).ifPresent(
+        pointer -> compareAndDeleteOrFalse(oldByName, pointer.getVersion()));
     return true;
   }
 
@@ -113,84 +117,99 @@ public class TableRepository extends BaseRepository<Table> {
 
     requireOwnerIds(updated);
 
-    var tid = updated.getResourceId().getTenantId();
-    var tblId = updated.getResourceId().getId();
+    var tenantId = updated.getResourceId().getTenantId();
+    var tableId = updated.getResourceId();
 
-    var canon = Keys.tblCanonicalPtr(tid, tblId);
-    var blob = Keys.tblBlob(tid, tblId);
+    var canonicalPointer = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    var blobUri = Keys.tblBlob(tenantId, tableId.getId());
 
-    var oldByName = Keys.tblByNamePtr(tid, oldCatalogId.getId(), oldNamespaceId.getId(), oldDisplayName);
-    var newByName = Keys.tblByNamePtr(tid, newCatalogId.getId(), newNamespaceId.getId(), updated.getDisplayName());
+    putBlob(blobUri, updated);
 
-    putBlob(blob, updated);
+    var newByName = Keys.tblByNamePtr(tenantId,
+        newCatalogId.getId(), newNamespaceId.getId(), updated.getDisplayName());
 
-    reserveAllOrRollback(newByName, blob);
+    reserveAllOrRollback(newByName, blobUri);
     try {
-      advancePointer(canon, blob, expectedVersion);
+      advancePointer(canonicalPointer, blobUri, expectedVersion);
     } catch (PreconditionFailedException e) {
-      ptr.get(newByName).ifPresent(p -> compareAndDeleteOrFalse(newByName, p.getVersion()));
+      pointerStore.get(newByName).ifPresent(
+          pointer -> compareAndDeleteOrFalse(newByName, pointer.getVersion()));
       return false;
     }
 
-    ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(oldByName, p.getVersion()));
+    var oldByName = Keys.tblByNamePtr(
+        tenantId, oldCatalogId.getId(), oldNamespaceId.getId(), oldDisplayName);
+
+    pointerStore.get(oldByName).ifPresent(
+        pointer -> compareAndDeleteOrFalse(oldByName, pointer.getVersion()));
+
     return true;
   }
 
   public boolean delete(ResourceId tableId) {
-    var tid = tableId.getTenantId();
-    var canon = Keys.tblCanonicalPtr(tid, tableId.getId());
-    var blob = Keys.tblBlob(tid, tableId.getId());
+    var tenantId = tableId.getTenantId();
+    var canonicalPointer = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    var blobUri = Keys.tblBlob(tenantId, tableId.getId());
 
     var tdOpt = get(tableId);
     var byName = tdOpt.map(td -> Keys.tblByNamePtr(
-        tid, td.getCatalogId().getId(), td.getNamespaceId().getId(), td.getDisplayName()))
+        tenantId, td.getCatalogId().getId(), td.getNamespaceId().getId(), td.getDisplayName()))
         .orElse(null);
 
     if (byName != null) {
-      ptr.get(byName).ifPresent(p -> compareAndDeleteOrFalse(byName, p.getVersion()));
+      pointerStore.get(byName).ifPresent(
+          pointer -> compareAndDeleteOrFalse(byName, pointer.getVersion()));
     }
-    ptr.get(canon).ifPresent(p -> compareAndDeleteOrFalse(canon, p.getVersion()));
-    deleteQuietly(() -> blobs.delete(blob));
+    pointerStore.get(canonicalPointer).ifPresent(
+        pointer -> compareAndDeleteOrFalse(canonicalPointer, pointer.getVersion()));
+
+    deleteQuietly(() -> blobStore.delete(blobUri));
+
     return true;
   }
 
   public boolean deleteWithPrecondition(ResourceId tableId, long expectedVersion) {
-    var tid = tableId.getTenantId();
-    var canon = Keys.tblCanonicalPtr(tid, tableId.getId());
-    var blob = Keys.tblBlob(tid, tableId.getId());
+    var tenantId = tableId.getTenantId();
+    var canonicalPointer = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    var blobUri = Keys.tblBlob(tenantId, tableId.getId());
 
-    var tdOpt = get(tableId);
-    var byName = tdOpt.map(td -> Keys.tblByNamePtr(
-        tid, td.getCatalogId().getId(), td.getNamespaceId().getId(), td.getDisplayName()))
+    var tableObt = get(tableId);
+    var byName = tableObt.map(table -> Keys.tblByNamePtr(
+        tenantId, table.getCatalogId().getId(),
+            table.getNamespaceId().getId(), table.getDisplayName()))
         .orElse(null);
 
-    if (!compareAndDeleteOrFalse(canon, expectedVersion)) {
+    if (!compareAndDeleteOrFalse(canonicalPointer, expectedVersion)) {
       return false;
     }
-    if (byName != null) ptr.get(byName).ifPresent(
-        p -> compareAndDeleteOrFalse(byName, p.getVersion()));
-    deleteQuietly(() -> blobs.delete(blob));
+
+    if (byName != null) {
+      pointerStore.get(byName).ifPresent(
+          pointer -> compareAndDeleteOrFalse(byName, pointer.getVersion()));
+    }
+
+    deleteQuietly(() -> blobStore.delete(blobUri));
     return true;
   }
 
   public MutationMeta metaFor(ResourceId tableId, Timestamp nowTs) {
-    var t = tableId.getTenantId();
-    var key = Keys.tblCanonicalPtr(t, tableId.getId());
-    var p = ptr.get(key).orElseThrow(() -> new IllegalStateException(
+    var tenantId = tableId.getTenantId();
+    var key = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    var pointer = pointerStore.get(key).orElseThrow(() -> new IllegalStateException(
         "Pointer missing for table: " + tableId.getId()));
-    return safeMetaOrDefault(key, p.getBlobUri(), nowTs);
+    return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
   }
 
   public MutationMeta metaForSafe(ResourceId tableId, Timestamp nowTs) {
-    var t = tableId.getTenantId();
-    var key = Keys.tblCanonicalPtr(t, tableId.getId());
-    var blob = Keys.tblBlob(t, tableId.getId());
-    return safeMetaOrDefault(key, blob, nowTs);
+    var tenantId = tableId.getTenantId();
+    var key = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    var blobUri = Keys.tblBlob(tenantId, tableId.getId());
+    return safeMetaOrDefault(key, blobUri, nowTs);
   }
 
-  private static void requireOwnerIds(Table td) {
-    if (!td.hasCatalogId() || td.getCatalogId().getId().isBlank()
-        || !td.hasNamespaceId() || td.getNamespaceId().getId().isBlank()) {
+  private static void requireOwnerIds(Table table) {
+    if (!table.hasCatalogId() || table.getCatalogId().getId().isBlank()
+        || !table.hasNamespaceId() || table.getNamespaceId().getId().isBlank()) {
       throw new IllegalArgumentException("table requires catalog_id and namespace_id");
     }
   }

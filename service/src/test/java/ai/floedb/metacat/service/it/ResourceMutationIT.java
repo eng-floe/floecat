@@ -33,10 +33,12 @@ class ResourceMutationIT {
   private final Clock clock = Clock.systemUTC();
 
   @Test
-  void Resources_exist() throws Exception {
+  void resources_exist() throws Exception {
     var cat = TestSupport.createCatalog(mutation, "cat1", "cat1");
-    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
-    var tbl = TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(), "events", "s3://events", "{}", "none");
+    var ns = TestSupport.createNamespace(mutation,
+        cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
+    var tbl = TestSupport.createTable(mutation,
+        cat.getResourceId(), ns.getResourceId(), "events", "s3://events", "{}", "none");
 
     StatusRuntimeException catExists = assertThrows(StatusRuntimeException.class, () ->
         TestSupport.createCatalog(mutation, "cat1", "cat1"));
@@ -44,18 +46,20 @@ class ResourceMutationIT {
         "Catalog \"cat1\" already exists");
 
     StatusRuntimeException nsExists = assertThrows(StatusRuntimeException.class, () ->
-        TestSupport.createNamespace(mutation, cat.getResourceId(), "2025", List.of("staging"), "2025 ns"));
+        TestSupport.createNamespace(mutation,
+            cat.getResourceId(), "2025", List.of("staging"), "2025 ns"));
     TestSupport.assertGrpcAndMc(nsExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, 
         "Namespace \"staging/2025\" already exists");
 
     StatusRuntimeException tblExists = assertThrows(StatusRuntimeException.class, () ->
-        TestSupport.createTable(mutation, cat.getResourceId(), ns.getResourceId(), "events", "s3://events", "{}", "none"));
+        TestSupport.createTable(mutation,
+            cat.getResourceId(), ns.getResourceId(), "events", "s3://events", "{}", "none"));
     TestSupport.assertGrpcAndMc(tblExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, 
         "Table \"events\" already exists");
   }
 
   @Test
-  void EndtoEnd_CRUD() throws Exception {
+  void endtoEnd_CRUD() throws Exception {
     String catName = "it_mutation_cat_" + clock.millis();
     Catalog cat = TestSupport.createCatalog(mutation, catName, "IT cat");
     String tenantId = TestSupport.seedTenantId(directory, catName);
@@ -66,15 +70,17 @@ class ResourceMutationIT {
     assertTrue(catId.getId().matches("^[0-9a-fA-F-]{36}$"), "id must look like UUID");
 
     assertEquals(catId.getId(), TestSupport.resolveCatalogId(directory, catName).getId());
-    assertEquals(catName, access.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(catId).build())
-        .getCatalog().getDisplayName());
+    assertEquals(catName, access.getCatalog(
+        GetCatalogRequest.newBuilder().setCatalogId(catId).build())
+            .getCatalog().getDisplayName());
 
-    var nsPath = List.of("db_it","schema_it");
+    var nsPath = List.of("db_it", "schema_it");
     String nsLeaf = "it_schema";
     Namespace ns = TestSupport.createNamespace(mutation, catId, nsLeaf, nsPath, "IT ns");
     ResourceId nsId = ns.getResourceId();
     var nsFullPath = new ArrayList<>(nsPath); nsFullPath.add(nsLeaf);
-    assertEquals(nsId.getId(), TestSupport.resolveNamespaceId(directory, catName, nsFullPath).getId());
+    assertEquals(nsId.getId(),
+        TestSupport.resolveNamespaceId(directory, catName, nsFullPath).getId());
 
     String schema = """
         {"type":"struct","fields":[{"name":"id","type":"long"}]}
@@ -120,7 +126,8 @@ class ResourceMutationIT {
 
     StatusRuntimeException catGone = assertThrows(StatusRuntimeException.class, () ->
         TestSupport.resolveCatalogId(directory, catName));
-    TestSupport.assertGrpcAndMc(catGone, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Catalog not found");
+    TestSupport.assertGrpcAndMc(catGone, Status.Code.NOT_FOUND,
+        ErrorCode.MC_NOT_FOUND, "Catalog not found");
   }
 
   @Test
@@ -136,7 +143,8 @@ class ResourceMutationIT {
         .setRef(NameRef.newBuilder().setCatalog("cat_pre")).build());
     assertEquals(id.getId(), resolved.getResourceId().getId());
 
-    var spec2 = CatalogSpec.newBuilder().setDisplayName("cat_pre_2").setDescription("desc2").build();
+    var spec2 = CatalogSpec.newBuilder().setDisplayName(
+        "cat_pre_2").setDescription("desc2").build();
     var updOk = mutation.updateCatalog(UpdateCatalogRequest.newBuilder()
         .setCatalogId(id)
         .setSpec(spec2)
@@ -149,16 +157,16 @@ class ResourceMutationIT {
     assertTrue(updOk.getMeta().getPointerVersion() > m1.getPointerVersion());
 
     var bad = assertThrows(StatusRuntimeException.class, () ->
-      mutation.updateCatalog(UpdateCatalogRequest.newBuilder()
-          .setCatalogId(id)
-          .setSpec(CatalogSpec.newBuilder().setDisplayName("cat_pre_3"))
-          .setPrecondition(Precondition.newBuilder()
-              .setExpectedVersion(123456L)
-              .setExpectedEtag("bogus")
-              .build())
-          .build()));
+        mutation.updateCatalog(UpdateCatalogRequest.newBuilder()
+            .setCatalogId(id)
+            .setSpec(CatalogSpec.newBuilder().setDisplayName("cat_pre_3"))
+            .setPrecondition(Precondition.newBuilder()
+                .setExpectedVersion(123456L)
+                .setExpectedEtag("bogus")
+                .build())
+            .build()));
     TestSupport.assertGrpcAndMc(bad, Status.Code.FAILED_PRECONDITION,
-      ErrorCode.MC_PRECONDITION_FAILED, null);
+        ErrorCode.MC_PRECONDITION_FAILED, null);
 
     var m2 = updOk.getMeta();
     var delOk = mutation.deleteCatalog(DeleteCatalogRequest.newBuilder()
@@ -172,8 +180,8 @@ class ResourceMutationIT {
     assertEquals(m2.getPointerKey(), delOk.getMeta().getPointerKey());
 
     var notFound = assertThrows(StatusRuntimeException.class, () ->
-      directory.resolveCatalog(ResolveCatalogRequest.newBuilder()
-          .setRef(NameRef.newBuilder().setCatalog("cat_pre_2")).build()));
+        directory.resolveCatalog(ResolveCatalogRequest.newBuilder()
+            .setRef(NameRef.newBuilder().setCatalog("cat_pre_2")).build()));
     TestSupport.assertGrpcAndMc(notFound, Status.Code.NOT_FOUND,
         ErrorCode.MC_NOT_FOUND, "Catalog not found");
   }

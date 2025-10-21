@@ -14,18 +14,18 @@ public final class MessageCatalog {
     this.bundle = ResourceBundle.getBundle("errors", locale);
   }
 
-public String render(Error e) {
-  String base = e.getCode().name();
-  String key = !e.getMessageKey().isBlank()
-    ? base + "." + e.getMessageKey()
-    : base;
+  public String render(Error e) {
+    String base = e.getCode().name();
+    String key = !e.getMessageKey().isBlank()
+        ? base + "." + e.getMessageKey()
+        : base;
 
-  String template = bundle.containsKey(key)
-    ? bundle.getString(key)
-    : (bundle.containsKey(base) ? bundle.getString(base) : defaultTemplate(e.getCode()));
+    String template = bundle.containsKey(key)
+        ? bundle.getString(key)
+        : (bundle.containsKey(base) ? bundle.getString(base) : defaultTemplate(e.getCode()));
 
-  return format(template, e.getParamsMap());
-}
+    return format(template, e.getParamsMap());
+  }
 
   private static String defaultTemplate(ErrorCode code) {
     return switch (code) {
@@ -47,10 +47,10 @@ public String render(Error e) {
   }
 
   private static String format(String template, Map<String,String> params) {
-    String out = template;
+    String formattedMessage = template;
     for (var e : params.entrySet()) {
-      out = out.replace("{" + e.getKey() + "}", e.getValue());
+      formattedMessage = formattedMessage.replace("{" + e.getKey() + "}", e.getValue());
     }
-    return out;
+    return formattedMessage;
   }
 }

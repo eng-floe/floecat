@@ -57,10 +57,10 @@ class PropagationIT {
     client.listCatalogs(ListCatalogsRequest.getDefaultInstance());
 
     String echoed =
-      Optional.ofNullable(capture.responseHeaders.get())
-          .map(h -> h.get(CORR))
-          .orElseGet(() -> Optional.ofNullable(capture.responseTrailers.get())
-              .map(t -> t.get(CORR)).orElse(null));
+        Optional.ofNullable(capture.responseHeaders.get())
+            .map(h -> h.get(CORR))
+            .orElseGet(() -> Optional.ofNullable(capture.responseTrailers.get())
+                .map(t -> t.get(CORR)).orElse(null));
 
     assertEquals(corr, echoed, "server should echo x-correlation-id");
 
@@ -80,9 +80,9 @@ class PropagationIT {
         () -> errClient.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(rid).build()));
 
     String echoedOnErr =
-      Optional.ofNullable(captureErr.responseTrailers.get())
-          .map(t -> t.get(CORR))
-          .orElse(null);
+        Optional.ofNullable(captureErr.responseTrailers.get())
+            .map(t -> t.get(CORR))
+            .orElse(null);
     assertEquals(corr, echoedOnErr, "server should echo x-correlation-id in trailers on error");
   }
 
@@ -114,10 +114,10 @@ class PropagationIT {
     client.listCatalogs(ListCatalogsRequest.getDefaultInstance());
 
     String echoed =
-      Optional.ofNullable(capture.responseHeaders.get())
-        .map(h -> h.get(CORR))
-        .orElseGet(() -> Optional.ofNullable(capture.responseTrailers.get())
-            .map(t -> t.get(CORR)).orElse(null));
+        Optional.ofNullable(capture.responseHeaders.get())
+            .map(h -> h.get(CORR))
+            .orElseGet(() -> Optional.ofNullable(capture.responseTrailers.get())
+                .map(t -> t.get(CORR)).orElse(null));
     assertEquals(corr, echoed, "server should echo x-correlation-id");
   }
 
@@ -131,9 +131,16 @@ class PropagationIT {
       ClientCall<ReqT, RespT> call = next.newCall(method, callOptions);
       return new ForwardingClientCall.SimpleForwardingClientCall<>(call) {
         @Override public void start(Listener<RespT> responseListener, Metadata headersIn) {
-          super.start(new ForwardingClientCallListener.SimpleForwardingClientCallListener<>(responseListener) {
-            @Override public void onHeaders(Metadata h) { responseHeaders.set(h); super.onHeaders(h); }
-            @Override public void onClose(Status status, Metadata t) { responseTrailers.set(t); super.onClose(status, t); }
+          super.start(new ForwardingClientCallListener
+              .SimpleForwardingClientCallListener<>(responseListener) {
+            @Override public void onHeaders(Metadata h) {
+              responseHeaders.set(h);
+              super.onHeaders(h);
+            }
+            
+            @Override public void onClose(Status status, Metadata t) {
+              responseTrailers.set(t); super.onClose(status, t);
+            }
           }, headersIn);
         }
       };

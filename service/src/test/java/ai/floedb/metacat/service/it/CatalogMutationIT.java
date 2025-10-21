@@ -28,7 +28,7 @@ class CatalogMutationIT {
   String CAT_PREFIX = this.getClass().getSimpleName() + "_";
 
   @Test
-  void Catalog_exists() throws Exception {
+  void catalog_exists() throws Exception {
     TestSupport.createCatalog(mutation, CAT_PREFIX + "cat1", "cat1");
 
     StatusRuntimeException catExists = assertThrows(StatusRuntimeException.class, () ->
@@ -41,7 +41,7 @@ class CatalogMutationIT {
   }
 
   @Test
-  void Catalog_create_update_delete() throws Exception {
+  void catalog_create_update_delete() throws Exception {
     String tenantId = TestSupport.seedTenantId(directory, "sales");
 
     var c1 = TestSupport.createCatalog(mutation, CAT_PREFIX + "cat_pre", "desc");
@@ -76,15 +76,15 @@ class CatalogMutationIT {
     assertTrue(updOk.getMeta().getPointerVersion() > m1.getPointerVersion());
 
     var bad = assertThrows(
-      StatusRuntimeException.class, 
-      () -> mutation.updateCatalog(UpdateCatalogRequest.newBuilder()
-          .setCatalogId(id)
-          .setSpec(CatalogSpec.newBuilder().setDisplayName(CAT_PREFIX + "cat_pre_3"))
-          .setPrecondition(Precondition.newBuilder()
-              .setExpectedVersion(123456L)
-              .setExpectedEtag("bogus")
-              .build())
-          .build()));
+        StatusRuntimeException.class, 
+            () -> mutation.updateCatalog(UpdateCatalogRequest.newBuilder()
+                .setCatalogId(id)
+                .setSpec(CatalogSpec.newBuilder().setDisplayName(CAT_PREFIX + "cat_pre_3"))
+                .setPrecondition(Precondition.newBuilder()
+                    .setExpectedVersion(123456L)
+                    .setExpectedEtag("bogus")
+                    .build())
+                .build()));
     TestSupport.assertGrpcAndMc(bad, Status.Code.FAILED_PRECONDITION,
         ErrorCode.MC_PRECONDITION_FAILED, "mismatch");
 
@@ -100,16 +100,17 @@ class CatalogMutationIT {
     assertEquals(m2.getPointerKey(), delOk.getMeta().getPointerKey());
 
     var notFound = assertThrows(StatusRuntimeException.class, () ->
-      directory.resolveCatalog(ResolveCatalogRequest.newBuilder()
+        directory.resolveCatalog(ResolveCatalogRequest.newBuilder()
           .setRef(NameRef.newBuilder().setCatalog(CAT_PREFIX + "cat_pre_2")).build()));
     TestSupport.assertGrpcAndMc(notFound, Status.Code.NOT_FOUND,
         ErrorCode.MC_NOT_FOUND, "Catalog not found");
   }
 
   @Test
-  void Catalog_create_is_idempotent_sameKey_sameSpec() throws Exception {
+  void catalog_create_is_idempotent_sameKey_sameSpec() throws Exception {
     var key = IdempotencyKey.newBuilder().setKey(CAT_PREFIX + "k-cat-1").build();
-    var spec = CatalogSpec.newBuilder().setDisplayName(CAT_PREFIX + "idem_cat").setDescription("x").build();
+    var spec = CatalogSpec.newBuilder()
+        .setDisplayName(CAT_PREFIX + "idem_cat").setDescription("x").build();
 
     var r1 = mutation.createCatalog(CreateCatalogRequest.newBuilder()
         .setSpec(spec).setIdempotency(key).build());
@@ -123,7 +124,7 @@ class CatalogMutationIT {
   }
 
   @Test
-  void Catalog_create_idempotency_mismatch_sameKey_differentSpec_conflict() throws Exception {
+  void catalog_create_idempotency_mismatch_sameKey_differentSpec_conflict() throws Exception {
     var key = IdempotencyKey.newBuilder().setKey(CAT_PREFIX + "k-cat-2").build();
 
     mutation.createCatalog(CreateCatalogRequest.newBuilder()
@@ -131,10 +132,10 @@ class CatalogMutationIT {
         .setIdempotency(key).build());
 
     var ex = assertThrows(StatusRuntimeException.class, () ->
-      mutation.createCatalog(CreateCatalogRequest.newBuilder()
-          .setSpec(CatalogSpec.newBuilder().setDisplayName(
-                CAT_PREFIX + "idem_cat2_DIFFERENT").build())
-          .setIdempotency(key).build()));
+        mutation.createCatalog(CreateCatalogRequest.newBuilder()
+            .setSpec(CatalogSpec.newBuilder().setDisplayName(
+                  CAT_PREFIX + "idem_cat2_DIFFERENT").build())
+            .setIdempotency(key).build()));
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
   }

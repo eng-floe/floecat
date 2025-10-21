@@ -38,12 +38,13 @@ public final class TestSupport {
 
   public static String seedTenantId(DirectoryGrpc.DirectoryBlockingStub directory, String seededCatalogName) {
     var seeded = directory.resolveCatalog(
-        ResolveCatalogRequest.newBuilder().setRef(NameRef.newBuilder().setCatalog(seededCatalogName)).build());
+        ResolveCatalogRequest.newBuilder()
+            .setRef(NameRef.newBuilder().setCatalog(seededCatalogName)).build());
     return seeded.getResourceId().getTenantId();
   }
 
   public static Catalog createCatalog(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
-                                      String displayName, String description) {
+      String displayName, String description) {
     var resp = mutation.createCatalog(CreateCatalogRequest.newBuilder()
         .setSpec(CatalogSpec.newBuilder().setDisplayName(displayName).setDescription(description))
         .build());
@@ -51,12 +52,15 @@ public final class TestSupport {
   }
 
   public static Namespace createNamespace(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
-                                          ResourceId catalogId, String displayName, List<String> path, String desc) {
+      ResourceId catalogId, String displayName, 
+      List<String> path, String desc) {
     var specB = NamespaceSpec.newBuilder()
         .setCatalogId(catalogId)
         .setDisplayName(displayName)
         .setDescription(desc);
-    if (path != null) specB.addAllPath(path);
+    if (path != null) {
+      specB.addAllPath(path);
+    }
     var resp = mutation.createNamespace(
         CreateNamespaceRequest.newBuilder().setSpec(specB).build());
     return resp.getNamespace();
@@ -64,21 +68,23 @@ public final class TestSupport {
 
   public static Table createTable(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
                                             ResourceId catalogId, ResourceId namespaceId,
-                                            String displayName, String rootUri, String schemaJson, String desc) {
+                                            String displayName, String rootUri, 
+                                            String schemaJson, String desc) {
     var resp = mutation.createTable(CreateTableRequest.newBuilder()
-      .setSpec(TableSpec.newBuilder()
-          .setCatalogId(catalogId)
-          .setNamespaceId(namespaceId)
-          .setDisplayName(displayName)
-          .setDescription(desc)
-          .setFormat(TableFormat.TF_ICEBERG)
-          .setRootUri(rootUri)
-          .setSchemaJson(schemaJson)).build());
+        .setSpec(TableSpec.newBuilder()
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName(displayName)
+            .setDescription(desc)
+            .setFormat(TableFormat.TF_ICEBERG)
+            .setRootUri(rootUri)
+            .setSchemaJson(schemaJson)).build());
     return resp.getTable();
   }
 
   public static Snapshot createSnapshot(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
-                                        ResourceId tableId, long snapshotId, long upstreamCreatedAtMs) {
+                                        ResourceId tableId, long snapshotId, 
+                                        long upstreamCreatedAtMs) {
     var resp = mutation.createSnapshot(CreateSnapshotRequest.newBuilder()
         .setSpec(SnapshotSpec.newBuilder()
             .setTableId(tableId)
@@ -95,7 +101,8 @@ public final class TestSupport {
     ).getConnector();
   }
 
-  public static ResourceId resolveCatalogId(DirectoryGrpc.DirectoryBlockingStub directory, String catalogName) {
+  public static ResourceId resolveCatalogId(DirectoryGrpc.DirectoryBlockingStub directory,
+      String catalogName) {
     var r = directory.resolveCatalog(ResolveCatalogRequest.newBuilder()
         .setRef(NameRef.newBuilder().setCatalog(catalogName)).build());
     return r.getResourceId();
@@ -127,7 +134,8 @@ public final class TestSupport {
         .setTableId(tableId).setNewDisplayName(newName).build()).getTable();
   }
 
-  public static void deleteTable(ResourceMutationGrpc.ResourceMutationBlockingStub mutation, ResourceId namespaceId, ResourceId tableId) {
+  public static void deleteTable(ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      ResourceId namespaceId, ResourceId tableId) {
     mutation.deleteTable(DeleteTableRequest.newBuilder().setTableId(tableId).build());
   }
 
@@ -150,7 +158,8 @@ public final class TestSupport {
         .setCatalogId(catalogId).setRequireEmpty(requireEmpty).build());
   }
 
-  public static ai.floedb.metacat.common.rpc.Error unpackMcError(StatusRuntimeException ex) throws Exception {
+  public static ai.floedb.metacat.common.rpc.Error unpackMcError(
+      StatusRuntimeException ex) throws Exception {
     var st = StatusProto.fromThrowable(ex);
     if (st == null) return null;
     for (Any any : st.getDetailsList()) {
@@ -208,7 +217,7 @@ public final class TestSupport {
     var catPtr = ptr.get(catIdxKey).orElseThrow(
         () -> new AssertionError("catalog by-name pointer missing: " + catIdxKey));
 
-   Catalog cat;
+    Catalog cat;
     try {
       cat = Catalog.parseFrom(blobs.get(catPtr.getBlobUri()));
     } catch (Exception e) {

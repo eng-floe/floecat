@@ -101,6 +101,7 @@ class CatalogPagingIT {
 
     var page2 = resourceAccess.listCatalogs(page2Req);
     assertEquals(LIMIT, page2.getCatalogsCount(), "second page should have the remainder");
-    assertEquals(total, page2.getPage().getTotalSize(), "total_size should remain TOTAL across pages");
+    assertEquals(total, page2.getPage().getTotalSize(),
+        "total_size should remain TOTAL across pages");
   }
 }

@@ -33,97 +33,105 @@ public class StatsMutationImpl extends BaseServiceImpl implements StatsMutation 
   @Inject Authorizer authz;
   @Inject IdempotencyStore idempotencyStore;
 
-  public StatsMutationImpl() {
-  }
-
   @Override
-  public Uni<PutTableStatsResponse> putTableStats(PutTableStatsRequest req) {
+  public Uni<PutTableStatsResponse> putTableStats(PutTableStatsRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      authz.require(p, "table.write");
+      var principalContext = principal.get();
+
+      authz.require(principalContext, "table.write");
 
       var tsNow = nowTs();
 
-      tables.get(req.getTableId()).orElseThrow(() -> GrpcErrors.notFound(
-          corrId(),"table", Map.of("id", req.getTableId().getId())));
-      snapshots.get(req.getTableId(), req.getSnapshotId())
+      tables.get(request.getTableId()).orElseThrow(() -> GrpcErrors.notFound(
+          correlationId(), "table",
+              Map.of("id", request.getTableId().getId())));
+
+      snapshots.get(request.getTableId(), request.getSnapshotId())
           .orElseThrow(() -> GrpcErrors.notFound(
-              corrId(),"snapshot", Map.of("id", Long.toString(req.getSnapshotId()))));
+              correlationId(), "snapshot",
+                  Map.of("id", Long.toString(request.getSnapshotId()))));
 
-      final var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
+      var idemKey = request.hasIdempotency() ? request.getIdempotency().getKey() : "";
 
-      var normalized = req.getStats().toBuilder()
-          .setTableId(req.getTableId())
-          .setSnapshotId(req.getSnapshotId())
+      var normalized = request.getStats().toBuilder()
+          .setTableId(request.getTableId())
+          .setSnapshotId(request.getSnapshotId())
           .build();
-      final byte[] fp = normalized.toByteArray();
+      byte[] fingerprint = normalized.toByteArray();
 
-      var out = MutationOps.createProto(
-          p.getTenantId(),
+      var tableStatsProto = MutationOps.createProto(
+          principalContext.getTenantId(),
           "PutTableStats",
           idemKey,
-          () -> fp,
+          () -> fingerprint,
           () -> {
-          stats.putTableStats(req.getTableId(), req.getSnapshotId(), normalized);
+          stats.putTableStats(request.getTableId(), request.getSnapshotId(), normalized);
           return new IdempotencyGuard.CreateResult<>(
-              normalized, req.getTableId());
+              normalized, request.getTableId());
           },
-          (ts) -> stats.metaForTableStats(req.getTableId(), req.getSnapshotId(), tsNow),
+          (ignored) -> stats.metaForTableStats(
+              request.getTableId(), request.getSnapshotId(), tsNow),
           idempotencyStore,
           tsNow,
           IDEMPOTENCY_TTL_SECONDS,
-          this::corrId,
+          this::correlationId,
           TableStats::parseFrom
       );
 
       return PutTableStatsResponse.newBuilder()
           .setStats(normalized)
-          .setMeta(out.meta)
+          .setMeta(tableStatsProto.meta)
           .build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<PutColumnStatsBatchResponse> putColumnStatsBatch(PutColumnStatsBatchRequest req) {
+  public Uni<PutColumnStatsBatchResponse> putColumnStatsBatch(PutColumnStatsBatchRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      authz.require(p, "table.write");
+      var principalContext = principal.get();
+
+      authz.require(principalContext, "table.write");
 
       var tsNow = nowTs();
       
-      tables.get(req.getTableId()).orElseThrow(() -> GrpcErrors.notFound(
-          corrId(),"table", Map.of("id", req.getTableId().getId())));
-      snapshots.get(req.getTableId(), req.getSnapshotId())
-          .orElseThrow(() -> GrpcErrors.notFound(
-              corrId(),"snapshot", Map.of("id", Long.toString(req.getSnapshotId()))));
+      tables.get(request.getTableId()).orElseThrow(() -> GrpcErrors.notFound(
+          correlationId(), "table",
+              Map.of("id", request.getTableId().getId())));
 
-      final var tenant = p.getTenantId();
-      final var baseKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
+      snapshots.get(request.getTableId(), request.getSnapshotId())
+          .orElseThrow(() -> GrpcErrors.notFound(
+              correlationId(), "snapshot",
+                  Map.of("id", Long.toString(request.getSnapshotId()))));
+
+      var tenant = principalContext.getTenantId();
+      var baseKey = request.hasIdempotency() ? request.getIdempotency().getKey() : "";
 
       int upserted = 0;
-      for (var raw : req.getColumnsList()) {
-        var cs = raw.toBuilder()
-            .setTableId(req.getTableId())
-            .setSnapshotId(req.getSnapshotId())
+      for (var raw : request.getColumnsList()) {
+        var columnStats = raw.toBuilder()
+            .setTableId(request.getTableId())
+            .setSnapshotId(request.getSnapshotId())
             .build();
 
-        final byte[] fp = cs.toByteArray();
-        final String itemKey = baseKey.isBlank() ? "" : (baseKey + "/col/" + cs.getColumnId());
+        byte[] fingerprint = columnStats.toByteArray();
+        String idempotencyKey = baseKey.isBlank()
+            ? "" : (baseKey + "/col/" + columnStats.getColumnId());
 
         MutationOps.createProto(
             tenant,
             "PutColumnStats",
-            itemKey,
-            () -> fp,
+            idempotencyKey,
+            () -> fingerprint,
             () -> {
-              stats.putColumnStats(req.getTableId(), req.getSnapshotId(), cs);
-              return new IdempotencyGuard.CreateResult<>(cs, req.getTableId());
+              stats.putColumnStats(request.getTableId(), request.getSnapshotId(), columnStats);
+              return new IdempotencyGuard.CreateResult<>(columnStats, request.getTableId());
             },
-            (ignored) -> stats.metaForColumnStats(req.getTableId(), req.getSnapshotId(), cs.getColumnId(), tsNow),
+            (colStats) -> stats.metaForColumnStats(
+                request.getTableId(), request.getSnapshotId(), colStats.getColumnId(), tsNow),
             idempotencyStore,
             tsNow,
             IDEMPOTENCY_TTL_SECONDS,
-            this::corrId,
+            this::correlationId,
             ColumnStats::parseFrom
         );
 
@@ -133,6 +141,6 @@ public class StatsMutationImpl extends BaseServiceImpl implements StatsMutation 
       return PutColumnStatsBatchResponse.newBuilder()
           .setUpserted(upserted)
           .build();
-    }), corrId());
+    }), correlationId());
   }
 }

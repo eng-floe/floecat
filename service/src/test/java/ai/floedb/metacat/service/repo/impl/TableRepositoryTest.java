@@ -1,11 +1,5 @@
 package ai.floedb.metacat.service.repo.impl;
 
-import java.time.Clock;
-import java.util.UUID;
-
-import org.junit.jupiter.api.Test;
-import com.google.protobuf.util.Timestamps;
-
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.Catalog;
@@ -18,6 +12,10 @@ import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
+import com.google.protobuf.util.Timestamps;
+import java.time.Clock;
+import java.util.UUID;
+import org.junit.jupiter.api.Test;
 
 class TableRepositoryTest {
 
@@ -27,10 +25,10 @@ class TableRepositoryTest {
   void putAndGetRoundTrip() {
     var ptr = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
-    var snapshotRepo = new SnapshotRepository(ptr, blobs);
-    var tableRepo = new TableRepository(ptr, blobs);
-    var repo = new NamespaceRepository(ptr, blobs);
-    var catRepo = new CatalogRepository(ptr, blobs);
+    final var snapshotRepo = new SnapshotRepository(ptr, blobs);
+    final var tableRepo = new TableRepository(ptr, blobs);
+    final var repo = new NamespaceRepository(ptr, blobs);
+    final var catRepo = new CatalogRepository(ptr, blobs);
 
     var tenant = "t-0001";
     var catRid = ResourceId.newBuilder()
@@ -78,15 +76,15 @@ class TableRepositoryTest {
     tableRepo.create(td);
 
     String nsKeyRow = Keys.tblByNamePtr(tenant, catRid.getId(), nsRid.getId(), "orders");
-    var pRow = ptr.get(nsKeyRow);
-    assertTrue(pRow.isPresent(), "by-namespace ROW pointer missing");
+    var pointerRow = ptr.get(nsKeyRow);
+    assertTrue(pointerRow.isPresent(), "by-namespace ROW pointer missing");
 
     String nsKeyPfx = Keys.tblByNamePrefix(tenant, catRid.getId(), nsRid.getId());
     var rowsUnderPfx = ptr.listPointersByPrefix(nsKeyPfx, 100, "", new StringBuilder());
     assertTrue(rowsUnderPfx.stream().anyMatch(r -> r.key().equals(nsKeyRow)),
         "prefix scan doesn't see the row key you just wrote");
 
-    String uri = pRow.get().getBlobUri();
+    String uri = pointerRow.get().getBlobUri();
     assertNotNull(uri);
     assertNotNull(blobs.head(uri).orElse(null), "blob header missing for by-namespace row");
     assertNotNull(blobs.get(uri), "blob bytes missing for by-namespace row");

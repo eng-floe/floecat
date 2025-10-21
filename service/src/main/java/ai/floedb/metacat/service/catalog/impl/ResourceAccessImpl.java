@@ -45,31 +45,35 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
   @Inject Authorizer authz;
 
   @Override
-  public Uni<GetCatalogResponse> getCatalog(GetCatalogRequest req) {
+  public Uni<GetCatalogResponse> getCatalog(GetCatalogRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      authz.require(p, "catalog.read");
+      var principalContext = principal.get();
+      
+      authz.require(principalContext, "catalog.read");
 
-      return catalogRepo.getById(req.getCatalogId())
+      return catalogRepo.getById(request.getCatalogId())
               .map(c -> GetCatalogResponse.newBuilder().setCatalog(c).build())
               .orElseThrow(() -> GrpcErrors.notFound(
-                  corrId(), "catalog", Map.of("id", req.getCatalogId().getId())));
-    }), corrId());
+                  correlationId(), "catalog", Map.of("id", request.getCatalogId().getId())));
+    }), correlationId());
   }
 
   @Override
-  public Uni<ListCatalogsResponse> listCatalogs(ListCatalogsRequest req) {
+  public Uni<ListCatalogsResponse> listCatalogs(ListCatalogsRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      authz.require(p, "catalog.read");
+      var principalContext = principal.get();
 
-      final int limit = (req.hasPage() && req.getPage().getPageSize() > 0)
-          ? req.getPage().getPageSize() : 50;
-      final String token = req.hasPage() ? req.getPage().getPageToken() : "";
+      authz.require(principalContext, "catalog.read");
+
+      final int limit = (request.hasPage() && request.getPage().getPageSize() > 0)
+          ? request.getPage().getPageSize() : 50;
+      final String token = request.hasPage() ? request.getPage().getPageToken() : "";
       final StringBuilder next = new StringBuilder();
 
-      var catalogs = catalogRepo.listByName(p.getTenantId(), Math.max(1, limit), token, next);
-      int total = catalogRepo.countAll(p.getTenantId());
+      var catalogs = catalogRepo.listByName(
+          principalContext.getTenantId(), Math.max(1, limit), token, next);
+
+      int total = catalogRepo.countAll(principalContext.getTenantId());
 
       var page = PageResponse.newBuilder()
           .setNextPageToken(next.toString())
@@ -80,46 +84,48 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
           .addAllCatalogs(catalogs)
           .setPage(page)
           .build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<GetNamespaceResponse> getNamespace(GetNamespaceRequest req) {
+  public Uni<GetNamespaceResponse> getNamespace(GetNamespaceRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      authz.require(p, "namespace.read");
+      var principalContext = principal.get();
 
-      var nsRid = req.getNamespaceId();
+      authz.require(principalContext, "namespace.read");
 
-      var catId = nsRepo.findOwnerCatalog(p.getTenantId(), nsRid.getId())
+      var namespaceId = request.getNamespaceId();
+
+      var catalogId = nsRepo.findOwnerCatalog(principalContext.getTenantId(), namespaceId.getId())
           .orElseThrow(() -> GrpcErrors.notFound(
-              corrId(), "namespace", Map.of("id", nsRid.getId())));
+              correlationId(), "namespace", Map.of("id", namespaceId.getId())));
 
-      var ns = nsRepo.get(catId, nsRid)
+      var namespace = nsRepo.get(catalogId, namespaceId)
           .orElseThrow(() -> GrpcErrors.notFound(
-              corrId(), "namespace", Map.of("id", nsRid.getId())));
+              correlationId(), "namespace", Map.of("id", namespaceId.getId())));
 
-      return GetNamespaceResponse.newBuilder().setNamespace(ns).build();
-    }), corrId());
+      return GetNamespaceResponse.newBuilder().setNamespace(namespace).build();
+    }), correlationId());
   }
 
   @Override
-  public Uni<ListNamespacesResponse> listNamespaces(ListNamespacesRequest req) {
+  public Uni<ListNamespacesResponse> listNamespaces(ListNamespacesRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      authz.require(p, "namespace.read");
+      var principalContext = principal.get();
 
-      var catRid = req.getCatalogId();
-      catalogRepo.getById(catRid).orElseThrow(() -> GrpcErrors.notFound(
-          corrId(), "catalog", Map.of("id", catRid.getId())));
+      authz.require(principalContext, "namespace.read");
 
-      final int limit = (req.hasPage() && req.getPage().getPageSize() > 0)
-          ? req.getPage().getPageSize() : 50;
-      final String token = req.hasPage() ? req.getPage().getPageToken() : "";
+      var catalogId = request.getCatalogId();
+      catalogRepo.getById(catalogId).orElseThrow(() -> GrpcErrors.notFound(
+          correlationId(), "catalog", Map.of("id", catalogId.getId())));
+
+      final int limit = (request.hasPage() && request.getPage().getPageSize() > 0)
+          ? request.getPage().getPageSize() : 50;
+      final String token = request.hasPage() ? request.getPage().getPageToken() : "";
       final StringBuilder next = new StringBuilder();
 
-      var namespaces = nsRepo.list(catRid, null, Math.max(1, limit), token, next);
-      int total = nsRepo.countUnderCatalog(catRid);
+      var namespaces = nsRepo.list(catalogId, null, Math.max(1, limit), token, next);
+      int total = nsRepo.countUnderCatalog(catalogId);
 
       var page = PageResponse.newBuilder()
           .setNextPageToken(next.toString())
@@ -130,43 +136,47 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
           .addAllNamespaces(namespaces)
           .setPage(page)
           .build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<GetTableDescriptorResponse> getTableDescriptor(GetTableDescriptorRequest req) {
+  public Uni<GetTableDescriptorResponse> getTableDescriptor(GetTableDescriptorRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      authz.require(p, "table.read");
+      var principalContext = principal.get();
 
-      var table = tableRepo.get(req.getTableId())
+      authz.require(principalContext, "table.read");
+
+      var table = tableRepo.get(request.getTableId())
           .orElseThrow(() -> GrpcErrors.notFound(
-              corrId(), "table", Map.of("id", req.getTableId().getId())));
+              correlationId(), "table", Map.of("id", request.getTableId().getId())));
       return GetTableDescriptorResponse.newBuilder().setTable(table).build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<ListTablesResponse> listTables(ListTablesRequest req) {
+  public Uni<ListTablesResponse> listTables(ListTablesRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      authz.require(p, "table.read");
+      var principalContext = principal.get();
 
-      var nsId = req.getNamespaceId();
-      var catId = nsRepo.findOwnerCatalog(p.getTenantId(), nsId.getId())
+      authz.require(principalContext, "table.read");
+
+      var namespaceId = request.getNamespaceId();
+      var catalogId = nsRepo.findOwnerCatalog(principalContext.getTenantId(), namespaceId.getId())
           .orElseThrow(() -> GrpcErrors.notFound(
-              corrId(), "namespace", Map.of("id", nsId.getId())));
+              correlationId(), "namespace", Map.of("id", namespaceId.getId())));
 
-      nsRepo.get(catId, nsId).orElseThrow(() -> GrpcErrors.notFound(
-          corrId(), "namespace", Map.of("id", nsId.getId())));
+      nsRepo.get(catalogId, namespaceId).orElseThrow(() -> GrpcErrors.notFound(
+          correlationId(), "namespace", Map.of("id", namespaceId.getId())));
 
-      final int limit = (req.hasPage() && req.getPage().getPageSize() > 0)
-          ? req.getPage().getPageSize() : 50;
-      final String token = req.hasPage() ? req.getPage().getPageToken() : "";
+      final int limit = (request.hasPage() && request.getPage().getPageSize() > 0)
+          ? request.getPage().getPageSize() : 50;
+      final String token = request.hasPage() ? request.getPage().getPageToken() : "";
       final StringBuilder next = new StringBuilder();
 
-      var items = tableRepo.listByNamespace(catId, nsId, Math.max(1, limit), token, next);
-      int total = tableRepo.countUnderNamespace(catId, nsId);
+      var items = tableRepo.listByNamespace(
+          catalogId, namespaceId, Math.max(1, limit), token, next);
+          
+      int total = tableRepo.countUnderNamespace(catalogId, namespaceId);
 
       var page = PageResponse.newBuilder()
           .setNextPageToken(next.toString())
@@ -177,25 +187,26 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
           .addAllTables(items)
           .setPage(page)
           .build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<ListSnapshotsResponse> listSnapshots(ListSnapshotsRequest req) {
+  public Uni<ListSnapshotsResponse> listSnapshots(ListSnapshotsRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      authz.require(p, "table.read");
+      var principalContext = principal.get();
 
-      tableRepo.get(req.getTableId()).orElseThrow(() -> GrpcErrors.notFound(
-          corrId(), "table", Map.of("id", req.getTableId().getId())));
+      authz.require(principalContext, "table.read");
 
-      final int limit = (req.hasPage() && req.getPage().getPageSize() > 0)
-          ? req.getPage().getPageSize() : 50;
-      final String token = req.hasPage() ? req.getPage().getPageToken() : "";
+      tableRepo.get(request.getTableId()).orElseThrow(() -> GrpcErrors.notFound(
+          correlationId(), "table", Map.of("id", request.getTableId().getId())));
+
+      final int limit = (request.hasPage() && request.getPage().getPageSize() > 0)
+          ? request.getPage().getPageSize() : 50;
+      final String token = request.hasPage() ? request.getPage().getPageToken() : "";
       final StringBuilder next = new StringBuilder();
 
-      var snaps = snapshotRepo.list(req.getTableId(), Math.max(1, limit), token, next);
-      int total = snapshotRepo.count(req.getTableId());
+      var snaps = snapshotRepo.list(request.getTableId(), Math.max(1, limit), token, next);
+      int total = snapshotRepo.count(request.getTableId());
 
       var page = PageResponse.newBuilder()
           .setNextPageToken(next.toString())
@@ -206,23 +217,25 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
           .addAllSnapshots(snaps)
           .setPage(page)
           .build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<GetCurrentSnapshotResponse> getCurrentSnapshot(GetCurrentSnapshotRequest req) {
+  public Uni<GetCurrentSnapshotResponse> getCurrentSnapshot(GetCurrentSnapshotRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      authz.require(p, "table.read");
+      var principalContext = principal.get();
 
-      tableRepo.get(req.getTableId()).orElseThrow(() -> GrpcErrors.notFound(
-          corrId(), "table", Map.of("id", req.getTableId().getId())));
+      authz.require(principalContext, "table.read");
 
-      var snap = snapshotRepo.getCurrentSnapshot(req.getTableId())
+      tableRepo.get(request.getTableId()).orElseThrow(() -> GrpcErrors.notFound(
+          correlationId(), "table", Map.of("id", request.getTableId().getId())));
+
+      var snap = snapshotRepo.getCurrentSnapshot(request.getTableId())
           .orElseThrow(() -> GrpcErrors.notFound(
-              corrId(), "snapshot", Map.of("reason", "no_snapshots", "table_id", req.getTableId().getId())));
+              correlationId(), "snapshot",
+                  Map.of("reason", "no_snapshots", "table_id", request.getTableId().getId())));
 
       return GetCurrentSnapshotResponse.newBuilder().setSnapshot(snap).build();
-    }), corrId());
+    }), correlationId());
   }
 }

@@ -34,17 +34,18 @@ class TableMutationIT {
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
 
-  String T_PREFIX = this.getClass().getSimpleName() + "_";
+  String tablePrefix = this.getClass().getSimpleName() + "_";
 
   @Test
-  void Table_rename_and_updateSchema_with_preconditions() throws Exception {
-    var cat = TestSupport.createCatalog(mutation, T_PREFIX + "cat1", "tcat1");
-    String tenantId = TestSupport.seedTenantId(directory, T_PREFIX + "cat1");
+  void table_rename_and_updateSchema_with_preconditions() throws Exception {
+    var cat = TestSupport.createCatalog(mutation, tablePrefix + "cat1", "tcat1");
+    String tenantId = TestSupport.seedTenantId(directory, tablePrefix + "cat1");
     assertEquals(tenantId, cat.getResourceId().getTenantId());
 
     var parents = List.of("db_tbl","schema_tbl");
     var nsLeaf = "it_ns";
-    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), nsLeaf, parents, "ns for tables");
+    var ns = TestSupport.createNamespace(mutation,
+        cat.getResourceId(), nsLeaf, parents, "ns for tables");
     var nsId = ns.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
 
@@ -57,12 +58,14 @@ class TableMutationIT {
 
     var tbl = TestSupport.createTable(
         mutation, cat.getResourceId(), nsId,
-        "orders", "s3://bucket/orders", "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}", "none");
+        "orders", "s3://bucket/orders",
+        "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}", "none");
     var tblId = tbl.getResourceId();
     assertEquals(ResourceKind.RK_TABLE, tblId.getKind());
 
     var tblResolved = directory.resolveTable(ResolveTableRequest.newBuilder()
-        .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath).setName("orders"))
+        .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName())
+            .addAllPath(nsPath).setName("orders"))
         .build());
     assertEquals(tblId.getId(), tblResolved.getResourceId().getId());
 
@@ -80,14 +83,16 @@ class TableMutationIT {
 
     // New resolve must succeed
     var resolvedRenamed = directory.resolveTable(ResolveTableRequest.newBuilder()
-        .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath).setName("orders_v2"))
+        .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName())
+            .addAllPath(nsPath).setName("orders_v2"))
         .build());
     assertEquals(tblId.getId(), resolvedRenamed.getResourceId().getId());
 
     // Old path must be NOT_FOUND
     var nfOld = assertThrows(StatusRuntimeException.class, () ->
         directory.resolveTable(ResolveTableRequest.newBuilder()
-            .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath).setName("orders"))
+            .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName())
+                .addAllPath(nsPath).setName("orders"))
             .build()));
     TestSupport.assertGrpcAndMc(nfOld, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
 
@@ -104,7 +109,8 @@ class TableMutationIT {
         ErrorCode.MC_PRECONDITION_FAILED, "mismatch");
 
     var beforeSchema = TestSupport.metaForTable(ptr, blob, tblId);
-    var newSchema = "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"},{\"name\":\"ts\",\"type\":\"timestamp\"}]}";
+    var newSchema = "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}"
+        + ",{\"name\":\"ts\",\"type\":\"timestamp\"}]}";
     var s1 = mutation.updateTableSchema(UpdateTableSchemaRequest.newBuilder()
         .setTableId(tblId)
         .setSchemaJson(newSchema)
@@ -116,7 +122,8 @@ class TableMutationIT {
     var sm1 = s1.getMeta();
     assertTrue(sm1.getPointerVersion() > beforeSchema.getPointerVersion());
 
-    var readTbl = access.getTableDescriptor(GetTableDescriptorRequest.newBuilder().setTableId(tblId).build());
+    var readTbl = access.getTableDescriptor(
+        GetTableDescriptorRequest.newBuilder().setTableId(tblId).build());
     assertEquals(newSchema, readTbl.getTable().getSchemaJson());
 
     var staleSchema = assertThrows(StatusRuntimeException.class, () ->
@@ -143,27 +150,29 @@ class TableMutationIT {
     assertNotNull(noop.getMeta().getPointerKey());
 
     assertEquals(before.getPointerVersion(), noop.getMeta().getPointerVersion(),
-    "version should not bump on identical rename");
+        "version should not bump on identical rename");
     assertEquals(before.getEtag(), noop.getMeta().getEtag(),
         "etag should not change on identical rename");
   }
 
   @Test
-  void Table_move_with_preconditions() throws Exception {
-    var catName = T_PREFIX + "cat2";
+  void table_move_with_preconditions() throws Exception {
+    var catName = tablePrefix + "cat2";
     var cat = TestSupport.createCatalog(mutation, catName, "tcat2");
     String tenantId = TestSupport.seedTenantId(directory, catName);
     assertEquals(tenantId, cat.getResourceId().getTenantId());
 
     var parents = List.of("db_tbl","schema_tbl");
     var nsLeaf = "it_ns";
-    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), nsLeaf, parents, "ns for tables");
+    var ns = TestSupport.createNamespace(mutation,
+        cat.getResourceId(), nsLeaf, parents, "ns for tables");
     var nsId = ns.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
 
     var parents2 = List.of("db_tbl","schema_tbl");
     var nsLeaf2 = "it_ns2";
-    var ns2 = TestSupport.createNamespace(mutation, cat.getResourceId(), nsLeaf2, parents2, "ns for tables");
+    var ns2 = TestSupport.createNamespace(mutation,
+        cat.getResourceId(), nsLeaf2, parents2, "ns for tables");
     var nsId2 = ns2.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId2.getKind());
 
@@ -189,7 +198,8 @@ class TableMutationIT {
     assertEquals(ResourceKind.RK_TABLE, tblId.getKind());
 
     var tblResolved = directory.resolveTable(ResolveTableRequest.newBuilder()
-        .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath).setName("orders"))
+        .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName())
+            .addAllPath(nsPath).setName("orders"))
         .build());
     assertEquals(tblId.getId(), tblResolved.getResourceId().getId());
 
@@ -207,14 +217,16 @@ class TableMutationIT {
 
     // New resolve must succeed
     var resolvedRenamed = directory.resolveTable(ResolveTableRequest.newBuilder()
-        .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath2).setName("orders"))
+        .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName())
+            .addAllPath(nsPath2).setName("orders"))
         .build());
     assertEquals(tblId.getId(), resolvedRenamed.getResourceId().getId());
 
     // Old path must be NOT_FOUND
     var nfOld = assertThrows(StatusRuntimeException.class, () ->
         directory.resolveTable(ResolveTableRequest.newBuilder()
-            .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath).setName("orders"))
+            .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName())
+                .addAllPath(nsPath).setName("orders"))
             .build()));
     TestSupport.assertGrpcAndMc(nfOld, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
 
@@ -232,21 +244,23 @@ class TableMutationIT {
     assertTrue(m2.getPointerVersion() > beforeRename.getPointerVersion());
 
     resolvedRenamed = directory.resolveTable(ResolveTableRequest.newBuilder()
-        .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath2).setName("orders_v2"))
+        .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName())
+            .addAllPath(nsPath2).setName("orders_v2"))
         .build());
     assertEquals(tblId.getId(), resolvedRenamed.getResourceId().getId());
 
     // Old path must be NOT_FOUND
     nfOld = assertThrows(StatusRuntimeException.class, () ->
         directory.resolveTable(ResolveTableRequest.newBuilder()
-            .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath).setName("orders"))
+            .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName())
+                .addAllPath(nsPath).setName("orders"))
             .build()));
     TestSupport.assertGrpcAndMc(nfOld, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
   }
 
   @Test
-  void Snapshot_create_delete() throws Exception {
-    var catName = T_PREFIX + "snap1";
+  void snapshot_create_delete() throws Exception {
+    var catName = tablePrefix + "snap1";
     var cat = TestSupport.createCatalog(mutation, catName, "snap1");
     String tenantId = TestSupport.seedTenantId(directory, catName);
     assertEquals(tenantId, cat.getResourceId().getTenantId());
@@ -266,20 +280,21 @@ class TableMutationIT {
     assertEquals(ResourceKind.RK_TABLE, tblId.getKind());
 
     for (int i = 0; i < 100; i++) {
-        TestSupport.createSnapshot(mutation, tbl.getResourceId(), i, System.currentTimeMillis() + i * 1_000L);
+      TestSupport.createSnapshot(mutation, tbl.getResourceId(), i,
+          System.currentTimeMillis() + i * 1_000L);
     }  
     
     ListSnapshotsRequest req = ListSnapshotsRequest.newBuilder()
-            .setTableId(tblId)
-            .setPage(PageRequest.newBuilder().setPageSize(1000).build())
-            .build();
+        .setTableId(tblId)
+        .setPage(PageRequest.newBuilder().setPageSize(1000).build())
+        .build();
     ListSnapshotsResponse resp = access.listSnapshots(req);
     assertEquals(100, resp.getSnapshotsCount());
     assertTrue(resp.getPage().getNextPageToken().isEmpty());
 
     List<Snapshot> snaps = resp.getSnapshotsList();
     for (int i = 0; i < 100; i++) {
-        assertEquals(i, snaps.get(i).getSnapshotId());
+      assertEquals(i, snaps.get(i).getSnapshotId());
     }  
   }
 }

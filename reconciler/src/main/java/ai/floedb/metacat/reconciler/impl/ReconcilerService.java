@@ -82,7 +82,9 @@ public class ReconcilerService {
           .build());
       return response.getResourceId();
     } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) throw e;
+      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
+        throw e;
+      }
     }
     var request = CreateCatalogRequest.newBuilder()
         .setSpec(CatalogSpec.newBuilder().setDisplayName(displayName).build())
@@ -103,12 +105,15 @@ public class ReconcilerService {
           ResolveNamespaceRequest.newBuilder().setRef(nameRef).build()
       ).getResourceId();
     } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) throw e;
+      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
+        throw e;
+      }
     }
     var spec = NamespaceSpec.newBuilder()
         .setCatalogId(catalogId).setDisplayName(parts.leaf).addAllPath(parts.parents).build();
     var request = CreateNamespaceRequest.newBuilder()
-        .setSpec(spec).setIdempotency(idem("CreateNamespace|" + key(catalogId) + "|" + namespaceFq)).build();
+        .setSpec(spec).setIdempotency(
+            idem("CreateNamespace|" + key(catalogId) + "|" + namespaceFq)).build();
     return clients.mutation().createNamespace(request).getNamespace().getResourceId();
   }
 
@@ -128,7 +133,9 @@ public class ReconcilerService {
       maybeBumpTableSchema(tableId, upstreamTable);
       return tableId;
     } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) throw e;
+      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
+        throw e;
+      }
     }
 
     var spec = TableSpec.newBuilder()
@@ -144,7 +151,8 @@ public class ReconcilerService {
     var request = CreateTableRequest.newBuilder()
         .setSpec(spec)
         .setIdempotency(idem(
-            "CreateTable|"+ key(catalogId)
+            "CreateTable|" 
+            + key(catalogId)
             + "|" + key(namespaceId)
             + "|" + upstreamTable.tableName()))
         .build();
@@ -161,7 +169,9 @@ public class ReconcilerService {
     try {
       clients.mutation().updateTableSchema(request);
     } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.FAILED_PRECONDITION) throw e;
+      if (e.getStatus().getCode() != Status.Code.FAILED_PRECONDITION) {
+        throw e;
+      }
     }
   }
 
@@ -173,13 +183,18 @@ public class ReconcilerService {
         .setIngestedAt(Timestamps.fromMillis(System.currentTimeMillis()))
         .build();
     var request = CreateSnapshotRequest.newBuilder()
-        .setSpec(spec).setIdempotency(idem("CreateSnapshot|" + key(tableId) + "|" + snapshotId)).build();
+        .setSpec(spec).setIdempotency(idem(
+            "CreateSnapshot|"
+            + key(tableId)
+            + "|" + snapshotId)).build();
     try {
       clients.mutation().createSnapshot(request); 
     }
     catch (StatusRuntimeException e) {
       var c = e.getStatus().getCode();
-      if (c != Status.Code.ALREADY_EXISTS && c != Status.Code.ABORTED && c != Status.Code.FAILED_PRECONDITION) {
+      if (c != Status.Code.ALREADY_EXISTS
+          && c != Status.Code.ABORTED
+          && c != Status.Code.FAILED_PRECONDITION) {
         throw e;
       }
     }

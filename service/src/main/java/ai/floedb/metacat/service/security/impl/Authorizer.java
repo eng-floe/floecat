@@ -9,17 +9,17 @@ import ai.floedb.metacat.common.rpc.PrincipalContext;
 
 @ApplicationScoped
 public class Authorizer {
-  public void require(PrincipalContext p, String permission) {
-    if (p.getPermissionsList().contains(permission)) {
+  public void require(PrincipalContext principalContext, String permission) {
+    if (principalContext.getPermissionsList().contains(permission)) {
       return;
     }
     throw Status.PERMISSION_DENIED.withDescription(
         "missing permission: " + permission).asRuntimeException();
   }
 
-  public void require(PrincipalContext p, List<String> permissions) {
+  public void require(PrincipalContext principalContext, List<String> permissions) {
     for (String permission : permissions) {
-      if (p.getPermissionsList().contains(permission)) {
+      if (principalContext.getPermissionsList().contains(permission)) {
         return;
       }
     }

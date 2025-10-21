@@ -91,38 +91,47 @@ protected <T> Uni<T> runWithRetry(Supplier<T> body) {
         corrId, null, Map.of("cause", t.getClass().getName()));
   }
 
-  protected void ensureKind(ResourceId rid, ResourceKind want, String field, String corrId) {
-    if (rid == null || rid.getKind() != want) {
-      throw GrpcErrors.invalidArgument(corrId, "field", Map.of("field", field));
+  protected void ensureKind(ResourceId resourceId, ResourceKind expected, String field, String correlationId) {
+    if (resourceId == null || resourceId.getKind() != expected) {
+      throw GrpcErrors.invalidArgument(correlationId, "field", Map.of("field", field));
     }
   }
 
-  protected String mustNonEmpty(String v, String name, String corrId) {
-    if (v == null || v.isBlank()) {
+  protected String mustNonEmpty(String inputString, String name, String corrId) {
+    if (inputString == null || inputString.isBlank()) {
       throw GrpcErrors.invalidArgument(corrId, "kind", Map.of("field", name));
     }
-    return v;
+    return inputString;
   }
 
-  protected void enforcePreconditions(String corrId, MutationMeta cur, Precondition pc) {
-    if (pc == null) return;
-    boolean checkVer = pc.getExpectedVersion() > 0;
-    boolean checkTag = pc.getExpectedEtag() != null && !pc.getExpectedEtag().isBlank();
-    if (checkVer && cur.getPointerVersion() != pc.getExpectedVersion()) {
-      throw GrpcErrors.preconditionFailed(
-          corrId, "version_mismatch",
-          Map.of("expected", Long.toString(pc.getExpectedVersion()),
-              "actual", Long.toString(cur.getPointerVersion())));
+  protected void enforcePreconditions(String correlationId, MutationMeta metadata, Precondition precondition) {
+    if (precondition == null) {
+      return;
     }
-    if (checkTag && !cur.getEtag().equals(pc.getExpectedEtag())) {
+
+    boolean checkVer = precondition.getExpectedVersion() > 0;
+
+    boolean checkTag = precondition.getExpectedEtag()
+        != null && !precondition.getExpectedEtag().isBlank();
+
+    if (checkVer && metadata.getPointerVersion() != precondition.getExpectedVersion()) {
       throw GrpcErrors.preconditionFailed(
-          corrId, "etag_mismatch",
-              Map.of("expected", pc.getExpectedEtag(), "actual", cur.getEtag()));
+          correlationId, "version_mismatch",
+              Map.of("expected", Long.toString(precondition.getExpectedVersion()),
+                  "actual", Long.toString(metadata.getPointerVersion())));
+    }
+    if (checkTag && !metadata.getEtag().equals(precondition.getExpectedEtag())) {
+      throw GrpcErrors.preconditionFailed(
+          correlationId, "etag_mismatch",
+              Map.of("expected", precondition.getExpectedEtag(), "actual", metadata.getEtag()));
     }
   }
 
   protected int parseIntToken(String token, String corrId) {
-    if (token == null || token.isEmpty()) return 0;
+    if (token == null || token.isEmpty()) {
+      return 0;
+    }
+    
     try {
       return Integer.parseInt(token);
     } catch (NumberFormatException nfe) {
@@ -130,7 +139,7 @@ protected <T> Uni<T> runWithRetry(Supplier<T> body) {
     }
   }
 
-  protected String corrId() {
+  protected String correlationId() {
     var pctx = principal != null ? principal.get() : null;
     return pctx != null ? pctx.getCorrelationId() : "";
   }

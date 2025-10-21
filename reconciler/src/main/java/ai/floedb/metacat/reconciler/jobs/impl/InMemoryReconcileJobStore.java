@@ -43,7 +43,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   public Optional<LeasedJob> leaseNext() {
     for (;;) {
       String id = ready.poll();
-      if (id == null) return Optional.empty();
+      if (id == null) {
+        return Optional.empty();
+      }
 
       var job = jobs.get(id);
 
