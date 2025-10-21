@@ -237,7 +237,6 @@ public class ConnectorIT {
 
   @Test
   void ValidateConnector_ok_and_failures() throws Exception {
-    // OK (dummy UNITY connector)
     var ok = connectors.validateConnector(ValidateConnectorRequest.newBuilder()
         .setSpec(ConnectorSpec.newBuilder()
             .setDisplayName("v-ok").setKind(ConnectorKind.CK_UNITY)
@@ -245,7 +244,6 @@ public class ConnectorIT {
         .build());
     assertTrue(ok.getOk());
 
-    // INVALID_ARGUMENT for unspecified kind
     var ex = assertThrows(StatusRuntimeException.class, () ->
       connectors.validateConnector(ValidateConnectorRequest.newBuilder()
           .setSpec(ConnectorSpec.newBuilder()
@@ -254,6 +252,6 @@ public class ConnectorIT {
           .build()));
 
     TestSupport.assertGrpcAndMc(ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT,
-      "Invalid value");
+      "Invalid argument");
   }
 }

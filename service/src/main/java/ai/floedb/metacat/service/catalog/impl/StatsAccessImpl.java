@@ -30,6 +30,7 @@ public class StatsAccessImpl extends BaseServiceImpl implements StatsAccess {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
 
+  @Override
   public Uni<GetTableStatsResponse> getTableStats(GetTableStatsRequest req) {
     return mapFailures(run(() -> {
       var p = principal.get();

@@ -31,7 +31,7 @@ import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 public abstract class BaseServiceImpl {
   @Inject PrincipalProvider principal;
 
-  private final Clock clock = Clock.systemUTC();
+  protected final Clock clock = Clock.systemUTC();
 
   protected static final Duration BACKOFF_MIN = Duration.ofMillis(5);
   protected static final Duration BACKOFF_MAX = Duration.ofMillis(200);
@@ -62,48 +62,44 @@ protected <T> Uni<T> runWithRetry(Supplier<T> body) {
     if (t instanceof StatusRuntimeException sre) return sre;
 
     if (t instanceof BaseRepository.NameConflictException) {
-      return GrpcErrors.conflict(corrId, "conflict.name_already_exists",
-          Map.of("cause", t.getClass().getSimpleName()));
+      return GrpcErrors.conflict(corrId, null, Map.of());
     }
     if (t instanceof BaseRepository.PreconditionFailedException) {
-      return GrpcErrors.preconditionFailed(corrId, "precondition.failed",
-          Map.of("cause", "optimistic_concurrency"));
+      return GrpcErrors.preconditionFailed(corrId, null, Map.of());
     }
     if (t instanceof BaseRepository.NotFoundException) {
-      return GrpcErrors.notFound(corrId, "not_found", Map.of());
+      return GrpcErrors.notFound(corrId, null, Map.of());
     }
     if (t instanceof BaseRepository.AbortRetryableException) {
-      return GrpcErrors.aborted(corrId, "aborted.retryable", Map.of());
+      return GrpcErrors.aborted(corrId, null, Map.of());
     }
     if (t instanceof BaseRepository.CorruptionException) {
-      return GrpcErrors.internal(corrId, "internal.corruption", Map.of());
+      return GrpcErrors.internal(corrId, null, Map.of());
     }
 
     if (t instanceof IllegalArgumentException) {
-      return GrpcErrors.invalidArgument(corrId, "invalid_argument", Map.of());
+      return GrpcErrors.invalidArgument(corrId, null, Map.of());
     }
     if (t instanceof TimeoutException) {
-      return GrpcErrors.timeout(corrId, "timeout", Map.of());
+      return GrpcErrors.timeout(corrId, null, Map.of());
     }
     if (t instanceof CancellationException) {
-      return GrpcErrors.cancelled(corrId, "cancelled", Map.of());
+      return GrpcErrors.cancelled(corrId, null, Map.of());
     }
 
     return GrpcErrors.internal(
-        corrId,
-        "internal.unexpected",
-        Map.of("cause", t.getClass().getName()));
+        corrId, null, Map.of("cause", t.getClass().getName()));
   }
 
   protected void ensureKind(ResourceId rid, ResourceKind want, String field, String corrId) {
     if (rid == null || rid.getKind() != want) {
-      throw GrpcErrors.invalidArgument(corrId, null, Map.of("field", field));
+      throw GrpcErrors.invalidArgument(corrId, "field", Map.of("field", field));
     }
   }
 
   protected String mustNonEmpty(String v, String name, String corrId) {
     if (v == null || v.isBlank()) {
-      throw GrpcErrors.invalidArgument(corrId, null, Map.of("field", name));
+      throw GrpcErrors.invalidArgument(corrId, "kind", Map.of("field", name));
     }
     return v;
   }
@@ -116,12 +112,12 @@ protected <T> Uni<T> runWithRetry(Supplier<T> body) {
       throw GrpcErrors.preconditionFailed(
           corrId, "version_mismatch",
           Map.of("expected", Long.toString(pc.getExpectedVersion()),
-                 "actual",   Long.toString(cur.getPointerVersion())));
+              "actual", Long.toString(cur.getPointerVersion())));
     }
     if (checkTag && !cur.getEtag().equals(pc.getExpectedEtag())) {
       throw GrpcErrors.preconditionFailed(
           corrId, "etag_mismatch",
-          Map.of("expected", pc.getExpectedEtag(), "actual", cur.getEtag()));
+              Map.of("expected", pc.getExpectedEtag(), "actual", cur.getEtag()));
     }
   }
 

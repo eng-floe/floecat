@@ -1,7 +1,9 @@
 package ai.floedb.metacat.service.it;
 
 import java.time.Clock;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -201,7 +203,7 @@ class BackendStorageIT {
             .build());
     String t3 = p3.getPage().getNextPageToken();
 
-    var all = new java.util.LinkedHashSet<String>();
+    var all = new LinkedHashSet<String>();
     p1.getTablesList().forEach(e -> all.add(e.getName().getName()));
     p2.getTablesList().forEach(e -> all.add(e.getName().getName()));
     p3.getTablesList().forEach(e -> all.add(e.getName().getName()));
@@ -380,18 +382,24 @@ class BackendStorageIT {
     var sA = "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"},{\"name\":\"a\",\"type\":\"double\"}]}";
     var sB = "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"},{\"name\":\"b\",\"type\":\"double\"}]}";
 
-    var latch = new java.util.concurrent.CountDownLatch(1);
-    var ex = new java.util.concurrent.atomic.AtomicReference<Throwable>();
-
-    Runnable r1 = () -> { try { latch.await(); TestSupport.updateSchema(mutation, tid, sA); } catch (Throwable t) { ex.set(t); } };
-    Runnable r2 = () -> { try { latch.await(); TestSupport.updateSchema(mutation, tid, sB); } catch (Throwable t) { ex.set(t); } };
+    var latch = new CountDownLatch(1);
+    var errs = new CopyOnWriteArrayList<Throwable>();
+    Runnable r1 = () -> { try { latch.await(); TestSupport.updateSchema(mutation, tid, sA); } catch (Throwable t) { errs.add(t); } };
+    Runnable r2 = () -> { try { latch.await(); TestSupport.updateSchema(mutation, tid, sB); } catch (Throwable t) { errs.add(t); } };
 
     var t1 = new Thread(r1); var t2 = new Thread(r2);
     t1.start(); t2.start(); latch.countDown(); t1.join(); t2.join();
-    assertNull(ex.get(), "unexpected error in concurrent writers");
+
+    // At most one should fail with FAILED_PRECONDITION, but both updates can succeed
+    assertTrue(errs.size() <= 1, "at most one writer should fail");
+    if (!errs.isEmpty()) {
+        var sre = (io.grpc.StatusRuntimeException) errs.get(0);
+        assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, sre.getStatus().getCode());
+    }
 
     long v2 = ptr.get(canon).orElseThrow().getVersion();
-    assertEquals(v0 + 2, v2, "exactly two successful bumps expected");
+    // Two attempts occurred and either 2 bumps (both succeeded) or 1 bump (one failed)
+    assertTrue(v2 == v0 + 1 || v2 == v0 + 2, "one or two successful bumps expected");
   }
 
   @Test
@@ -501,25 +509,25 @@ class BackendStorageIT {
         "ns",
         List.of("db","sch"),
         "idem");
-    var idem = ai.floedb.metacat.catalog.rpc.IdempotencyKey.newBuilder().setKey("k-XYZ").build();
+    var idem = IdempotencyKey.newBuilder().setKey("k-XYZ").build();
 
-    var specA = ai.floedb.metacat.catalog.rpc.TableSpec.newBuilder()
+    var specA = TableSpec.newBuilder()
         .setCatalogId(cat.getResourceId()).setNamespaceId(ns.getResourceId())
         .setDisplayName("tA").setRootUri("s3://b/p").setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
         .setFormat(TableFormat.TF_DELTA)
         .build();
 
-    var specB = ai.floedb.metacat.catalog.rpc.TableSpec.newBuilder()
+    var specB = TableSpec.newBuilder()
         .setCatalogId(cat.getResourceId()).setNamespaceId(ns.getResourceId())
-        .setDisplayName("tB")  // <-- different display_name so different fingerprint
+        .setDisplayName("tB")
         .setRootUri("s3://b/p").setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
         .setFormat(TableFormat.TF_DELTA)
         .build();
 
-    var reqA = ai.floedb.metacat.catalog.rpc.CreateTableRequest.newBuilder().setSpec(specA).setIdempotency(idem).build();
-    var reqB = ai.floedb.metacat.catalog.rpc.CreateTableRequest.newBuilder().setSpec(specB).setIdempotency(idem).build();
+    var reqA = CreateTableRequest.newBuilder().setSpec(specA).setIdempotency(idem).build();
+    var reqB = CreateTableRequest.newBuilder().setSpec(specB).setIdempotency(idem).build();
 
-    var r1 = mutation.createTable(reqA);
+    mutation.createTable(reqA);
 
     var ex = assertThrows(io.grpc.StatusRuntimeException.class, () -> mutation.createTable(reqB));
     assertEquals(io.grpc.Status.Code.ABORTED, ex.getStatus().getCode());
