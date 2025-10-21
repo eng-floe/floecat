@@ -9,7 +9,9 @@ public final class DummyConnector implements MetacatConnector {
 
   private final String id;
 
-  private DummyConnector(String id) { this.id = id; }
+  private DummyConnector(String id) {
+    this.id = id;
+  }
 
   public static MetacatConnector create() {
     return new DummyConnector("dummy");
@@ -44,13 +46,14 @@ public final class DummyConnector implements MetacatConnector {
         {"id":1,"name":"id","type":"long","required":true},
         {"id":2,"name":"ts","type":"timestamp","required":false}
       ]}
-      """.trim();
+        """.trim();
+
     String location = "s3://dummy/" + namespaceFq.replace('.','/') + "/" + tableName;
 
     Optional<Long> sid = Optional.of(42L);
     Optional<Long> ts = Optional.of(1_700_000_000_000L);
 
-    Map<String,String> props = Map.of("upstream","dummy","owner","tests");
+    Map<String, String> props = Map.of("upstream","dummy","owner","tests");
 
     List<String> pks = List.of("ts");
 

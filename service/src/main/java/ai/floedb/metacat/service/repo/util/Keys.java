@@ -5,7 +5,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 public final class Keys {
-  private Keys() {}
+
+  private Keys() {
+  }
 
   private static String enc(String s) {
     return URLEncoder.encode(s, StandardCharsets.UTF_8);
@@ -31,11 +33,13 @@ public final class Keys {
 
   // ========= Namespace =========
   public static String nsPtr(String tid, String catId, String nsId) {
-    return "/tenants/" + normTenant(tid) + "/catalogs/" + enc(catId) + "/namespaces/by-id/" + enc(nsId);
+    return "/tenants/"
+        + normTenant(tid) + "/catalogs/" + enc(catId) + "/namespaces/by-id/" + enc(nsId);
   }
   public static String nsByPathPtr(String tid, String catId, List<String> fullPath) {
     String joined = String.join("/", fullPath.stream().map(Keys::enc).toArray(String[]::new));
-    return "/tenants/" + normTenant(tid) + "/catalogs/" + enc(catId) + "/namespaces/by-path/" + joined;
+    return "/tenants/"
+        + normTenant(tid) + "/catalogs/" + enc(catId) + "/namespaces/by-path/" + joined;
   }
   public static String nsByPathPrefix(String tid, String catId, List<String> parentsOrEmpty) {
     String joined = String.join("/", parentsOrEmpty.stream().map(Keys::enc).toArray(String[]::new));
@@ -64,26 +68,26 @@ public final class Keys {
 
   // ========= Snapshots =========
   public static String snapPtrById(String tid, String tblId, long sid) {
-      return String.format(
-          "/tenants/%s/tables/%s/snapshots/by-id/%019d",
-          normTenant(tid), enc(tblId), sid);
+    return String.format(
+        "/tenants/%s/tables/%s/snapshots/by-id/%019d",
+        normTenant(tid), enc(tblId), sid);
   }
   public static String snapPtrByIdPrefix(String tid, String tblId) {
     return String.format("/tenants/%s/tables/%s/snapshots/by-id/", normTenant(tid), enc(tblId));
   }
   public static String snapPtrByTime(String tid, String tblId, long sid, long upstreamCreatedAtMs) {
-      long inv = Long.MAX_VALUE - upstreamCreatedAtMs;
-      return String.format(
-          "/tenants/%s/tables/%s/snapshots/by-time/%019d-%019d",
-          normTenant(tid), enc(tblId), inv, sid);
+    long inv = Long.MAX_VALUE - upstreamCreatedAtMs;
+    return String.format(
+        "/tenants/%s/tables/%s/snapshots/by-time/%019d-%019d",
+        normTenant(tid), enc(tblId), inv, sid);
   }
   public static String snapPtrByTimePrefix(String tid, String tblId) {
     return String.format("/tenants/%s/tables/%s/snapshots/by-time/", normTenant(tid), enc(tblId));
   }
   public static String snapBlob(String tid, String tblId, long sid) {
-      return String.format(
-          "mem://tenants/%s/tables/%s/snapshots/%019d/snapshot.pb",
-          normTenant(tid), enc(tblId), sid);
+    return String.format(
+        "mem://tenants/%s/tables/%s/snapshots/%019d/snapshot.pb",
+        normTenant(tid), enc(tblId), sid);
   }
 
   // ========= Stats =========

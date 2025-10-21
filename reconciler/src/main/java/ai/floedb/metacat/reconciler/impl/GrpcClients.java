@@ -2,6 +2,7 @@ package ai.floedb.metacat.reconciler.impl;
 
 import io.quarkus.grpc.GrpcClient;
 import jakarta.enterprise.context.ApplicationScoped;
+
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
 
@@ -11,7 +12,15 @@ public class GrpcClients {
   @GrpcClient("resource-mutation") ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
   @GrpcClient("connectors") ConnectorsGrpc.ConnectorsBlockingStub connector;
 
-  public DirectoryGrpc.DirectoryBlockingStub directory() { return directory; }
-  public ResourceMutationGrpc.ResourceMutationBlockingStub mutation() { return mutation; }
-  public ConnectorsGrpc.ConnectorsBlockingStub connector() { return connector; }
+  public DirectoryGrpc.DirectoryBlockingStub directory() {
+    return directory;
+  }
+
+  public ResourceMutationGrpc.ResourceMutationBlockingStub mutation() {
+    return mutation;
+  }
+
+  public ConnectorsGrpc.ConnectorsBlockingStub connector() {
+    return connector;
+  }
 }

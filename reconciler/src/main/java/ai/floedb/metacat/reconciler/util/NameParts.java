@@ -9,9 +9,9 @@ public final class NameParts {
     public final List<String> parents; 
     public final String leaf;
 
-    public Ns(List<String> p, String l) { 
-      this.parents = p;
-      this.leaf = l;
+    public Ns(List<String> parents, String leaf) { 
+      this.parents = parents;
+      this.leaf = leaf;
     }
   }
 

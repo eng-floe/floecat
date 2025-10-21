@@ -45,41 +45,55 @@ public class PlanContextStoreImpl implements PlanContextStore {
 
   @Override
   public Optional<PlanContext> get(String planId) {
-    PlanContext ctx = cache.getIfPresent(planId);
-    if (ctx == null) return Optional.empty();
+    PlanContext planContext = cache.getIfPresent(planId);
+
+    if (planContext == null) {
+      return Optional.empty();
+    }
 
     long now = clock.millis();
-    if (now > ctx.getExpiresAtMs() && ctx.getState() == PlanContext.State.ACTIVE) {
+    if (now > planContext.getExpiresAtMs() && planContext.getState() == PlanContext.State.ACTIVE) {
       long ver = versionGen.incrementAndGet();
-      PlanContext expired = ctx.asExpired(ver);
+      PlanContext expired = planContext.asExpired(ver);
       cache.put(planId, expired);
       return Optional.of(expired);
     }
-    return Optional.of(ctx);
+    return Optional.of(planContext);
   }
 
   @Override
-  public void put(PlanContext ctx) {
-    cache.asMap().compute(ctx.getPlanId(), (k, existing) -> existing != null ? existing : ctx);
+  public void put(PlanContext planContext) {
+    cache.asMap().compute(
+        planContext.getPlanId(), (k, existing) -> existing != null ? existing : planContext);
   }
 
   @Override
   public Optional<PlanContext> extendLease(String planId, long requestedExpiresAtMs) {
     final long now = clock.millis();
-    return Optional.ofNullable(cache.asMap().computeIfPresent(planId, (k, cur) -> {
-      if (cur.getState() != PlanContext.State.ACTIVE) return cur;
-      long newExp = Math.max(cur.getExpiresAtMs(), Math.max(now, requestedExpiresAtMs));
-      if (newExp == cur.getExpiresAtMs()) return cur;
-      return cur.extendLease(newExp, versionGen.incrementAndGet());
+    return Optional.ofNullable(cache.asMap().computeIfPresent(planId, (k, planContext) -> {
+      if (planContext.getState() != PlanContext.State.ACTIVE) {
+        return planContext;
+      }
+
+      long newExp = Math.max(planContext.getExpiresAtMs(), Math.max(now, requestedExpiresAtMs));
+      if (newExp == planContext.getExpiresAtMs()) {
+        return planContext;
+      }
+
+      return planContext.extendLease(newExp, versionGen.incrementAndGet());
     }));
   }
 
   @Override
   public Optional<PlanContext> end(String planId, boolean commit) {
     final long newExp = clock.millis() + endedGraceMs;
-    return Optional.ofNullable(cache.asMap().computeIfPresent(planId, (k, cur) -> {
-      if (cur.getState() == PlanContext.State.ENDED_ABORT || cur.getState() == PlanContext.State.ENDED_COMMIT) return cur;
-      return cur.end(commit, newExp, versionGen.incrementAndGet());
+    return Optional.ofNullable(cache.asMap().computeIfPresent(planId, (k, planContext) -> {
+      if (planContext.getState() == PlanContext.State.ENDED_ABORT
+          || planContext.getState() == PlanContext.State.ENDED_COMMIT) {
+        return planContext;
+      }
+
+      return planContext.end(commit, newExp, versionGen.incrementAndGet());
     }));
   }
 

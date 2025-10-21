@@ -36,44 +36,46 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   @Inject ReconcileJobStore jobs;
 
   @Override
-  public Uni<CreateConnectorResponse> createConnector(CreateConnectorRequest req) {
+  public Uni<CreateConnectorResponse> createConnector(CreateConnectorRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "connector.manage");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
 
-      final var tenant = p.getTenantId();
-      var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
+      authz.require(principalContext, "connector.manage");
+
+      var tenant = principalContext.getTenantId();
+      var idempotencyKey = request.hasIdempotency() ? request.getIdempotency().getKey() : "";
       var tsNow = nowTs();
 
-      var spec = req.getSpec();
-      byte[] fp = spec.toBuilder().clearPolicy().build().toByteArray();
+      var spec = request.getSpec();
+      byte[] fingerprint = spec.toBuilder().clearPolicy().build().toByteArray();
 
-      var out = MutationOps.createProto(
+      var connectorProto = MutationOps.createProto(
           tenant,
           "CreateConnector",
-          idemKey,
-          () -> fp,
+          idempotencyKey,
+          () -> fingerprint,
           () -> {
-            final String connUuid =
-            !idemKey.isBlank()
-                ? deterministicUuid(tenant, "connector", idemKey)
-                : UUID.randomUUID().toString();
+              String connUuid =
+                  !idempotencyKey.isBlank()
+                      ? deterministicUuid(tenant, "connector", idempotencyKey)
+                      : UUID.randomUUID().toString();
 
-            var rid = ResourceId.newBuilder()
+            var connectorId = ResourceId.newBuilder()
                 .setTenantId(tenant)
                 .setId(connUuid)
                 .setKind(ResourceKind.RK_CONNECTOR)
                 .build();
 
             var c = Connector.newBuilder()
-                .setResourceId(rid)
-                .setDisplayName(mustNonEmpty(spec.getDisplayName(), "display_name", corr))
+                .setResourceId(connectorId)
+                .setDisplayName(mustNonEmpty(spec.getDisplayName(), "display_name", correlationId))
                 .setKind(spec.getKind())
                 .setTargetCatalogDisplayName(mustNonEmpty(
-                    spec.getTargetCatalogDisplayName(), "target_catalog_display_name", corr))
+                    spec.getTargetCatalogDisplayName(), 
+                        "target_catalog_display_name", correlationId))
                 .setTargetTenantId(tenant)
-                .setUri(mustNonEmpty(spec.getUri(), "uri", corr))
+                .setUri(mustNonEmpty(spec.getUri(), "uri", correlationId))
                 .putAllOptions(spec.getOptionsMap())
                 .setAuth(spec.getAuth())
                 .setPolicy(spec.getPolicy())
@@ -84,61 +86,64 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
             try {
               connectors.create(c);
             } catch (BaseRepository.NameConflictException nce) {
-            if (!idemKey.isBlank()) {
-              var existing = connectors.getById(rid)
+            if (!idempotencyKey.isBlank()) {
+              var existing = connectors.getById(connectorId)
                   .or(() -> connectors.getByName(tenant, c.getDisplayName()));
               if (existing.isPresent()) {
-                return new IdempotencyGuard.CreateResult<>(existing.get(), existing.get().getResourceId());
+                return new IdempotencyGuard.CreateResult<>(
+                    existing.get(), existing.get().getResourceId());
               }
             }
-            throw GrpcErrors.conflict(corr, "connector.already_exists",
+            throw GrpcErrors.conflict(correlationId, "connector.already_exists",
                 Map.of("display_name", c.getDisplayName()));
             }
 
-            return new IdempotencyGuard.CreateResult<>(c, rid);
+            return new IdempotencyGuard.CreateResult<>(c, connectorId);
           },
           (conn) -> connectors.metaFor(conn.getResourceId(), tsNow),
           idempotencyStore,
           tsNow,
           IDEMPOTENCY_TTL_SECONDS,
-          this::corrId,
+          this::correlationId,
           Connector::parseFrom
       );
 
       return CreateConnectorResponse.newBuilder()
-          .setConnector(out.body)
-          .setMeta(out.meta)
+          .setConnector(connectorProto.body)
+          .setMeta(connectorProto.meta)
           .build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<GetConnectorResponse> getConnector(GetConnectorRequest req) {
+  public Uni<GetConnectorResponse> getConnector(GetConnectorRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "connector.manage");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
 
-      var rid = req.getConnectorId();
-      ensureKind(rid, ResourceKind.RK_CONNECTOR, "connector_id", corr);
+      authz.require(principalContext, "connector.manage");
 
-      var c = connectors.getById(rid)
+      var connectorId = request.getConnectorId();
+      ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", correlationId);
+
+      var connector = connectors.getById(connectorId)
           .orElseThrow(() -> GrpcErrors.notFound(
-              corr, "connector", Map.of("id", rid.getId())));
+              correlationId, "connector", Map.of("id", connectorId.getId())));
 
-      return GetConnectorResponse.newBuilder().setConnector(c).build();
-    }), corrId());
+      return GetConnectorResponse.newBuilder().setConnector(connector).build();
+    }), correlationId());
   }
 
   @Override
-  public Uni<ListConnectorsResponse> listConnectors(ListConnectorsRequest req) {
+  public Uni<ListConnectorsResponse> listConnectors(ListConnectorsRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      authz.require(p, "connector.manage");
+      var principalContext = principal.get();
 
-      var tenant = p.getTenantId();
+      authz.require(principalContext, "connector.manage");
 
-      var page = req.getPage();
+      var tenant = principalContext.getTenantId();
+
+      var page = request.getPage();
       int limit = page.getPageSize() > 0 ? page.getPageSize() : 100;
       String token = page.getPageToken();
 
@@ -153,134 +158,136 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
               .setTotalSize(total)
               .build())
           .build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<UpdateConnectorResponse> updateConnector(UpdateConnectorRequest req) {
+  public Uni<UpdateConnectorResponse> updateConnector(UpdateConnectorRequest request) {
     return mapFailures(runWithRetry(() -> {
       var p = principal.get();
-      var corr = p.getCorrelationId();
+      var correlationId = p.getCorrelationId();
+
       authz.require(p, "connector.manage");
 
-      var rid = req.getConnectorId();
-      ensureKind(rid, ResourceKind.RK_CONNECTOR, "connector_id", corr);
+      var connectorId = request.getConnectorId();
+      ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", correlationId);
 
-      var cur = connectors.getById(rid)
+      var connector = connectors.getById(connectorId)
           .orElseThrow(() -> GrpcErrors.notFound(
-              corr, "connector", Map.of("id", rid.getId())));
+              correlationId, "connector", Map.of("id", connectorId.getId())));
 
       var tsNow = nowTs();
-      var curMeta = connectors.metaFor(rid, tsNow);
-      enforcePreconditions(corr, curMeta, req.getPrecondition());
+      var currentMeta = connectors.metaFor(connectorId, tsNow);
+      enforcePreconditions(correlationId, currentMeta, request.getPrecondition());
 
-      var spec = req.getSpec();
-      var desired = cur.toBuilder()
+      var spec = request.getSpec();
+      var desired = connector.toBuilder()
           .setDisplayName(spec.getDisplayName().isBlank()
-              ? cur.getDisplayName() : spec.getDisplayName())
+              ? connector.getDisplayName() : spec.getDisplayName())
           .setKind(spec.getKind() == ConnectorKind.CK_UNSPECIFIED
-              ? cur.getKind() : spec.getKind())
+              ? connector.getKind() : spec.getKind())
           .setTargetCatalogDisplayName(
               spec.getTargetCatalogDisplayName().isBlank()
-                  ? cur.getTargetCatalogDisplayName()
+                  ? connector.getTargetCatalogDisplayName()
                   : spec.getTargetCatalogDisplayName())
           .setTargetTenantId(p.getTenantId())
-          .setUri(spec.getUri().isBlank() ? cur.getUri() : spec.getUri())
+          .setUri(spec.getUri().isBlank() ? connector.getUri() : spec.getUri())
           .clearOptions().putAllOptions(spec.getOptionsMap().isEmpty()
-              ? cur.getOptionsMap()
+              ? connector.getOptionsMap()
               : spec.getOptionsMap())
-          .setAuth(spec.hasAuth() ? spec.getAuth() : cur.getAuth())
-          .setPolicy(spec.hasPolicy() ? spec.getPolicy() : cur.getPolicy())
+          .setAuth(spec.hasAuth() ? spec.getAuth() : connector.getAuth())
+          .setPolicy(spec.hasPolicy() ? spec.getPolicy() : connector.getPolicy())
           .setUpdatedAt(tsNow)
           .build();
 
-      if (desired.equals(cur)) {
+      if (desired.equals(connector)) {
         return UpdateConnectorResponse.newBuilder()
-            .setConnector(cur)
-            .setMeta(curMeta)
+            .setConnector(connector)
+            .setMeta(currentMeta)
             .build();
       }
 
-      boolean nameChanged = !desired.getDisplayName().equals(cur.getDisplayName());
+      boolean nameChanged = !desired.getDisplayName().equals(connector.getDisplayName());
       if (nameChanged) {
         try {
-          connectors.rename(desired, cur.getDisplayName(), curMeta.getPointerVersion());
+          connectors.rename(desired, connector.getDisplayName(), currentMeta.getPointerVersion());
         } catch (BaseRepository.NameConflictException nce) {
-          throw GrpcErrors.conflict(corr, "connector.already_exists",
+          throw GrpcErrors.conflict(correlationId, "connector.already_exists",
               Map.of("display_name", desired.getDisplayName()));
         } catch (BaseRepository.PreconditionFailedException pfe) {
-        var nowMeta = connectors.metaFor(rid, tsNow);
-        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-            Map.of("expected", Long.toString(curMeta.getPointerVersion()),
-                "actual", Long.toString(nowMeta.getPointerVersion())));
+          var nowMeta = connectors.metaFor(connectorId, tsNow);
+          throw GrpcErrors.preconditionFailed(correlationId, "version_mismatch",
+              Map.of("expected", Long.toString(currentMeta.getPointerVersion()),
+                  "actual", Long.toString(nowMeta.getPointerVersion())));
         }
       } else {
         try {
-          connectors.update(desired, curMeta.getPointerVersion());
+          connectors.update(desired, currentMeta.getPointerVersion());
         } catch (BaseRepository.PreconditionFailedException pfe) {
-          var nowMeta = connectors.metaFor(rid, tsNow);
-          throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-              Map.of("expected", Long.toString(curMeta.getPointerVersion()),
+          var nowMeta = connectors.metaFor(connectorId, tsNow);
+          throw GrpcErrors.preconditionFailed(correlationId, "version_mismatch",
+              Map.of("expected", Long.toString(currentMeta.getPointerVersion()),
                   "actual", Long.toString(nowMeta.getPointerVersion())));
         }
       }
 
-      var outMeta = connectors.metaFor(rid, tsNow);
-      var outConn = connectors.getById(rid).orElse(desired);
+      var outMeta = connectors.metaFor(connectorId, tsNow);
+      var outConn = connectors.getById(connectorId).orElse(desired);
 
       return UpdateConnectorResponse.newBuilder()
           .setConnector(outConn)
           .setMeta(outMeta)
           .build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<DeleteConnectorResponse> deleteConnector(DeleteConnectorRequest req) {
+  public Uni<DeleteConnectorResponse> deleteConnector(DeleteConnectorRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "connector.manage");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
 
-      var rid = req.getConnectorId();
-      ensureKind(rid, ResourceKind.RK_CONNECTOR, "connector_id", corr);
+      authz.require(principalContext, "connector.manage");
+
+      var connectorId = request.getConnectorId();
+      ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", correlationId);
 
       var tsNow = nowTs();
 
-      var meta = connectors.metaForSafe(rid, tsNow);
-      if (connectors.getById(rid).isEmpty()) {
-        return DeleteConnectorResponse.newBuilder().setMeta(meta).build();
+      var currentMeta = connectors.metaForSafe(connectorId, tsNow);
+      if (connectors.getById(connectorId).isEmpty()) {
+        return DeleteConnectorResponse.newBuilder().setMeta(currentMeta).build();
       }
 
-      var curMeta = connectors.metaFor(rid, tsNow);
-      enforcePreconditions(corr, curMeta, req.getPrecondition());
+      currentMeta = connectors.metaFor(connectorId, tsNow);
+      enforcePreconditions(correlationId, currentMeta, request.getPrecondition());
 
-      var cur = connectors.metaForSafe(rid, tsNow);
       try {
-        connectors.deleteWithPrecondition(rid, curMeta.getPointerVersion());
-    } catch (BaseRepository.PreconditionFailedException pfe) {
-      var nowMeta = connectors.metaFor(rid, tsNow);
-      throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-          Map.of("expected", Long.toString(curMeta.getPointerVersion()),
-              "actual", Long.toString(nowMeta.getPointerVersion())));
-    } catch (BaseRepository.NotFoundException nfe) {
-      throw GrpcErrors.notFound(corr, "connector", Map.of("id", rid.getId()));
-    }
+        connectors.deleteWithPrecondition(connectorId, currentMeta.getPointerVersion());
+      } catch (BaseRepository.PreconditionFailedException pfe) {
+        var nowMeta = connectors.metaFor(connectorId, tsNow);
+        throw GrpcErrors.preconditionFailed(correlationId, "version_mismatch",
+            Map.of("expected", Long.toString(currentMeta.getPointerVersion()),
+                "actual", Long.toString(nowMeta.getPointerVersion())));
+      } catch (BaseRepository.NotFoundException nfe) {
+        throw GrpcErrors.notFound(correlationId, "connector", Map.of("id", connectorId.getId()));
+      }
 
-    return DeleteConnectorResponse.newBuilder()
-        .setMeta(curMeta)
-        .build();
-    }), corrId());
+      return DeleteConnectorResponse.newBuilder()
+          .setMeta(currentMeta)
+          .build();
+    }), correlationId());
   }
 
   @Override
-  public Uni<ValidateConnectorResponse> validateConnector(ValidateConnectorRequest req) {
+  public Uni<ValidateConnectorResponse> validateConnector(ValidateConnectorRequest request) {
     return mapFailures(run(() -> {
       var p = principal.get();
-      var corr = p.getCorrelationId();
+      var correlationId = p.getCorrelationId();
+
       authz.require(p, "connector.manage");
 
-      var spec = req.getSpec();
+      var spec = request.getSpec();
 
       var kind = switch (spec.getKind()) {
         case CK_ICEBERG_REST -> Kind.ICEBERG_REST;
@@ -288,7 +295,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         case CK_GLUE         -> Kind.GLUE;
         case CK_UNITY        -> Kind.UNITY;
         default -> throw GrpcErrors.invalidArgument(
-            corr, null, Map.of("field", "kind"));
+            correlationId, null, Map.of("field", "kind"));
       };
 
       var auth = new ConnectorConfig.Auth(
@@ -308,15 +315,15 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           auth
       );
 
-      try (var c = ConnectorFactory.create(cfg)) {
-        var namespaces = c.listNamespaces();
+      try (var connector = ConnectorFactory.create(cfg)) {
+        var namespaces = connector.listNamespaces();
         return ValidateConnectorResponse.newBuilder()
             .setOk(true)
             .setSummary(
                 "OK: " + (namespaces.isEmpty()
                     ? "no namespaces"
                     : "namespaces=" + namespaces.size()))
-            .putCapabilities("supportsStats", Boolean.toString(c.supportsTableStats()))
+            .putCapabilities("supportsStats", Boolean.toString(connector.supportsTableStats()))
             .build();
       } catch (Exception e) {
         return ValidateConnectorResponse.newBuilder()
@@ -324,57 +331,64 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
             .setSummary("Validation failed: " + e.getMessage())
             .build();
       }
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<TriggerReconcileResponse> triggerReconcile(TriggerReconcileRequest req) {
+  public Uni<TriggerReconcileResponse> triggerReconcile(TriggerReconcileRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "connector.manage");
+      var princpalContext = principal.get();
+      var correlationId = princpalContext.getCorrelationId();
 
-      var rid = req.getConnectorId();
-      ensureKind(rid, ResourceKind.RK_CONNECTOR, "connector_id", corr);
-      connectors.getById(rid)
+      authz.require(princpalContext, "connector.manage");
+
+      var connectorId = request.getConnectorId();
+      ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", correlationId);
+      connectors.getById(connectorId)
           .orElseThrow(() -> GrpcErrors.notFound(
-              corr, "connector", Map.of("id", rid.getId())));
+              correlationId, "connector", Map.of("id", connectorId.getId())));
 
-      var jobId = jobs.enqueue(rid.getTenantId(), rid.getId(), req.getFullRescan());
+      var jobId = jobs.enqueue(
+          connectorId.getTenantId(), connectorId.getId(), request.getFullRescan());
+
       return TriggerReconcileResponse.newBuilder().setJobId(jobId).build();
-      }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<GetReconcileJobResponse> getReconcileJob(GetReconcileJobRequest req) {
+  public Uni<GetReconcileJobResponse> getReconcileJob(GetReconcileJobRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "connector.manage");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
 
-      var j = jobs.get(req.getJobId())
+      authz.require(principalContext, "connector.manage");
+
+      var job = jobs.get(request.getJobId())
           .orElseThrow(() -> GrpcErrors.notFound(
-              corr, "job", Map.of("id", req.getJobId())));
+              correlationId, "job", Map.of("id", request.getJobId())));
 
       return GetReconcileJobResponse.newBuilder()
-          .setJobId(j.jobId)
-          .setConnectorId(j.connectorId)
-          .setState(toProtoState(j.state))
-          .setMessage(j.message == null ? "" : j.message)
-          .setStartedAt(Timestamps.fromMillis(j.startedAtMs))
-          .setFinishedAt(j.finishedAtMs == 0
+          .setJobId(job.jobId)
+          .setConnectorId(job.connectorId)
+          .setState(toProtoState(job.state))
+          .setMessage(job.message == null ? "" : job.message)
+          .setStartedAt(Timestamps.fromMillis(job.startedAtMs))
+          .setFinishedAt(job.finishedAtMs == 0
               ? Timestamps.fromMillis(0)
-              : Timestamps.fromMillis(j.finishedAtMs))
-          .setTablesScanned(j.tablesScanned)
-          .setTablesChanged(j.tablesChanged)
-          .setErrors(j.errors)
+              : Timestamps.fromMillis(job.finishedAtMs))
+          .setTablesScanned(job.tablesScanned)
+          .setTablesChanged(job.tablesChanged)
+          .setErrors(job.errors)
           .build();
-    }), corrId());
+    }), correlationId());
   }
 
-  private static JobState toProtoState(String s) {
-    if (s == null) return JobState.JS_UNSPECIFIED;
-    return switch (s) {
+  private static JobState toProtoState(String state) {
+    if (state == null) {
+      return JobState.JS_UNSPECIFIED;
+    }
+
+    return switch (state) {
       case "JS_QUEUED"    -> JobState.JS_QUEUED;
       case "JS_RUNNING"   -> JobState.JS_RUNNING;
       case "JS_SUCCEEDED" -> JobState.JS_SUCCEEDED;

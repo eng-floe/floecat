@@ -57,23 +57,26 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
   long defaultTtlMs;
 
   @Override
-  public Uni<BeginPlanResponse> beginPlan(BeginPlanRequest req) {
+  public Uni<BeginPlanResponse> beginPlan(BeginPlanRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "catalog.read");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
 
-      if (req.getInputsCount() == 0) {
-        throw GrpcErrors.invalidArgument(corr, "plan.inputs.required", Map.of());
+      authz.require(principalContext, "catalog.read");
+
+      if (request.getInputsCount() == 0) {
+        throw GrpcErrors.invalidArgument(correlationId, "plan.inputs.required", Map.of());
       }
 
-      final long ttlMs = (req.getTtlSeconds() > 0 ? req.getTtlSeconds() : (int) (defaultTtlMs / 1000)) * 1000L;
-      final Optional<Timestamp> asOfDefault = req.hasAsOfDefault()
-          ? Optional.of(req.getAsOfDefault())
+      final long ttlMs = (request.getTtlSeconds() > 0 ? request.getTtlSeconds()
+          : (int) (defaultTtlMs / 1000)) * 1000L;
+          
+      final Optional<Timestamp> asOfDefault = request.hasAsOfDefault()
+          ? Optional.of(request.getAsOfDefault())
           : Optional.empty();
 
-      final List<Resolved> resolved = new ArrayList<>();
-      for (var in : req.getInputsList()) {
+      final List<Resolved> resolvedInputs = new ArrayList<>();
+      for (var in : request.getInputsList()) {
         switch (in.getTargetCase()) {
           case NAME -> {
             var nr = in.getName();
@@ -91,35 +94,36 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
               isTable = false;
             }
             long snapId = computeSnapshotPin(in.getSnapshot(), asOfDefault, isTable, rid);
-            resolved.add(new Resolved(rid, isTable, snapId));
+            resolvedInputs.add(new Resolved(rid, isTable, snapId));
           }
           case TABLE_ID -> {
             var rid = in.getTableId();
-            ensureKind(rid, ResourceKind.RK_TABLE, "table_id", corr);
+            ensureKind(rid, ResourceKind.RK_TABLE, "table_id", correlationId);
             long snapId = computeSnapshotPin(in.getSnapshot(), asOfDefault, true, rid);
-            resolved.add(new Resolved(rid, true, snapId));
+            resolvedInputs.add(new Resolved(rid, true, snapId));
           }
           case VIEW_ID -> {
             var rid = in.getViewId();
-            ensureKind(rid, ResourceKind.RK_OVERLAY, "view_id", corr);
-            resolved.add(new Resolved(rid, false, 0L));
+            ensureKind(rid, ResourceKind.RK_OVERLAY, "view_id", correlationId);
+            resolvedInputs.add(new Resolved(rid, false, 0L));
           }
-          case TARGET_NOT_SET -> throw GrpcErrors.invalidArgument(
-              corr, "plan.target.required", Map.of());
+
+          default -> throw GrpcErrors.invalidArgument(
+              correlationId, "plan.target.required", Map.of());
         }
       }
 
       var expansion = ExpansionMap.newBuilder().build();
 
       var snapshots = SnapshotSet.newBuilder();
-      for (var r : resolved) {
-        if (r.isTable && r.snapshotId > 0) {
+      for (var input : resolvedInputs) {
+        if (input.isTable && input.snapshotId > 0) {
           snapshots.addPins(SnapshotPin.newBuilder()
-              .setTableId(r.rid)
-              .setSnapshotId(r.snapshotId));
-        } else if (r.isTable && r.snapshotId == 0 && asOfDefault.isPresent()) {
+              .setTableId(input.rid)
+              .setSnapshotId(input.snapshotId));
+        } else if (input.isTable && input.snapshotId == 0 && asOfDefault.isPresent()) {
           snapshots.addPins(SnapshotPin.newBuilder()
-              .setTableId(r.rid)
+              .setTableId(input.rid)
               .setAsOf(asOfDefault.get()));
         }
       }
@@ -128,103 +132,113 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
       byte[] expansionBytes = expansion.toByteArray();
       byte[] snapshotBytes = snapshots.build().toByteArray();
 
-      var ctx = PlanContext.newActive(
+      var planContext = PlanContext.newActive(
           planId,
-          p.getTenantId(),
-          p,
+          principalContext.getTenantId(),
+          principalContext,
           expansionBytes,
           snapshotBytes,
           ttlMs,
           1L
       );
-      plans.put(ctx);
+      plans.put(planContext);
 
       try {
         return BeginPlanResponse.newBuilder()
             .setPlanId(planId)
-            .setExpiresAt(ts(ctx.getExpiresAtMs()))
+            .setExpiresAt(ts(planContext.getExpiresAtMs()))
             .setSnapshots(SnapshotSet.parseFrom(snapshotBytes))
             .setExpansion(ExpansionMap.parseFrom(expansionBytes))
             .build();
       } catch (InvalidProtocolBufferException e) {
-        throw GrpcErrors.internal(corr, "plan.expansion.parse_failed", Map.of("plan_id", planId));
+        throw GrpcErrors.internal(correlationId, "plan.expansion.parse_failed",
+            Map.of("plan_id", planId));
       }
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<RenewPlanResponse> renewPlan(RenewPlanRequest req) {
+  public Uni<RenewPlanResponse> renewPlan(RenewPlanRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "catalog.read");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
 
-      String planId = mustNonEmpty(req.getPlanId(), "plan_id", corr);
-      final long ttlMs = (req.getTtlSeconds() > 0 ? req.getTtlSeconds() : (int) (defaultTtlMs / 1000)) * 1000L;
+      authz.require(principalContext, "catalog.read");
+
+      String planId = mustNonEmpty(request.getPlanId(), "plan_id", correlationId);
+      final long ttlMs = (request.getTtlSeconds() > 0
+          ? request.getTtlSeconds()
+              : (int) (defaultTtlMs / 1000)) * 1000L;
       final long requestedExp = clock.millis() + ttlMs;
 
       var updated = plans.extendLease(planId, requestedExp);
       if (updated.isEmpty()) {
-        throw GrpcErrors.notFound(corr, "plan.not_found", Map.of("plan_id", planId));
+        throw GrpcErrors.notFound(correlationId,  
+            "plan.not_found", Map.of("plan_id", planId));
       }
       return RenewPlanResponse.newBuilder()
           .setPlanId(planId)
           .setExpiresAt(ts(updated.get().getExpiresAtMs()))
           .build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<EndPlanResponse> endPlan(EndPlanRequest req) {
+  public Uni<EndPlanResponse> endPlan(EndPlanRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "catalog.read");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
 
-      String planId = mustNonEmpty(req.getPlanId(), "plan_id", corr);
-      var ended = plans.end(planId, req.getCommit());
+      authz.require(principalContext, "catalog.read");
+
+      String planId = mustNonEmpty(request.getPlanId(), "plan_id", correlationId);
+      var ended = plans.end(planId, request.getCommit());
       if (ended.isEmpty()) {
-        throw GrpcErrors.notFound(corr, "plan.not_found", Map.of("plan_id", planId));
+        throw GrpcErrors.notFound(correlationId, "plan.not_found", Map.of("plan_id", planId));
       }
       return EndPlanResponse.newBuilder().setPlanId(planId).build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<GetPlanResponse> getPlan(GetPlanRequest req) {
+  public Uni<GetPlanResponse> getPlan(GetPlanRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "catalog.read");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
+      authz.require(principalContext, "catalog.read");
 
-      String planId = mustNonEmpty(req.getPlanId(), "plan_id", corr);
-      var ctxOpt = plans.get(planId);
-      if (ctxOpt.isEmpty()) {
-        throw GrpcErrors.notFound(corr, "plan.not_found", Map.of("plan_id", planId));
+      String planId = mustNonEmpty(request.getPlanId(), "plan_id", correlationId);
+      var planContextOpt = plans.get(planId);
+      if (planContextOpt.isEmpty()) {
+        throw GrpcErrors.notFound(correlationId, "plan.not_found", Map.of("plan_id", planId));
       }
-      var ctx = ctxOpt.get();
+      var planContext = planContextOpt.get();
 
-      var pd = PlanDescriptor.newBuilder()
-          .setPlanId(ctx.getPlanId())
-          .setTenantId(ctx.getTenantId())
-          .setCreatedAt(ts(ctx.getCreatedAtMs()))
-          .setExpiresAt(ts(ctx.getExpiresAtMs()));
+      var planDescriptor = PlanDescriptor.newBuilder()
+          .setPlanId(planContext.getPlanId())
+          .setTenantId(planContext.getTenantId())
+          .setCreatedAt(ts(planContext.getCreatedAtMs()))
+          .setExpiresAt(ts(planContext.getExpiresAtMs()));
 
-      if (ctx.getSnapshotSet() != null) {
-        try { pd.setSnapshots(SnapshotSet.parseFrom(ctx.getSnapshotSet())); }
-        catch (InvalidProtocolBufferException e) {
-          throw GrpcErrors.internal(corr, "plan.snapshot.parse_failed", Map.of("plan_id", planId));
+      if (planContext.getSnapshotSet() != null) {
+        try {
+          planDescriptor.setSnapshots(SnapshotSet.parseFrom(planContext.getSnapshotSet()));
+        } catch (InvalidProtocolBufferException e) {
+          throw GrpcErrors.internal(correlationId, "plan.snapshot.parse_failed",
+              Map.of("plan_id", planId));
         }
       }
-      if (ctx.getExpansionMap() != null) {
-        try { pd.setExpansion(ExpansionMap.parseFrom(ctx.getExpansionMap())); }
-        catch (InvalidProtocolBufferException e) {
-          throw GrpcErrors.internal(corr, "plan.expansion.parse_failed", Map.of("plan_id", planId));
+      if (planContext.getExpansionMap() != null) {
+        try {
+          planDescriptor.setExpansion(ExpansionMap.parseFrom(planContext.getExpansionMap()));
+        } catch (InvalidProtocolBufferException e) {
+          throw GrpcErrors.internal(correlationId, "plan.expansion.parse_failed",
+              Map.of("plan_id", planId));
         }
       }
 
-      return GetPlanResponse.newBuilder().setPlan(pd.build()).build();
-    }), corrId());
+      return GetPlanResponse.newBuilder().setPlan(planDescriptor.build()).build();
+    }), correlationId());
   }
 
   private static Timestamp ts(long millis) {
@@ -233,36 +247,39 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
     return Timestamp.newBuilder().setSeconds(s).setNanos(n).build();
   }
 
-  private void checkNameRef(NameRef nr) {
-    if (nr.getCatalog() == null || nr.getCatalog().isBlank()) {
-      throw GrpcErrors.invalidArgument(corrId(), "catalog.missing", Map.of());
+  private void checkNameRef(NameRef nameRef) {
+    if (nameRef.getCatalog() == null || nameRef.getCatalog().isBlank()) {
+      throw GrpcErrors.invalidArgument(correlationId(), "catalog.missing", Map.of());
     }
-    for (String seg : nr.getPathList()) {
-      if (seg == null || seg.isBlank()) {
-        throw GrpcErrors.invalidArgument(corrId(), "path.segment.blank", Map.of());
+    for (String pathSegment : nameRef.getPathList()) {
+      if (pathSegment == null || pathSegment.isBlank()) {
+        throw GrpcErrors.invalidArgument(correlationId(), "path.segment.blank", Map.of());
       }
-      if (seg.contains("/")) {
-        throw GrpcErrors.invalidArgument(corrId(), "path.segment.contains_slash", Map.of("segment", seg));
+      if (pathSegment.contains("/")) {
+        throw GrpcErrors.invalidArgument(correlationId(), "path.segment.contains_slash",
+            Map.of("segment", pathSegment));
       }
     }
   }
 
   private long computeSnapshotPin(
-      SnapshotRef sr,
+      SnapshotRef snapshotRef,
       Optional<Timestamp> asOfDefault,
       boolean isTable,
-      ResourceId rid) {
+      ResourceId tableId) {
 
-    if (!isTable) return 0L;
+    if (!isTable) {
+      return 0L;
+    }
 
-    if (sr == null || sr.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
+    if (snapshotRef == null || snapshotRef.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
       var cur = access.getCurrentSnapshot(
-          GetCurrentSnapshotRequest.newBuilder().setTableId(rid).build());
+          GetCurrentSnapshotRequest.newBuilder().setTableId(tableId).build());
       return cur.hasSnapshot() ? cur.getSnapshot().getSnapshotId() : 0L;
     }
 
     return access.getCurrentSnapshot(
-        GetCurrentSnapshotRequest.newBuilder().setTableId(rid).build())
+        GetCurrentSnapshotRequest.newBuilder().setTableId(tableId).build())
         .getSnapshot().getSnapshotId();
   }
 

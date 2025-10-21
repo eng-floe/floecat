@@ -43,18 +43,19 @@ class StatsIT {
   @GrpcClient("stats-access")
   StatsAccessGrpc.StatsAccessBlockingStub statsAccess;
 
-  String T_PREFIX = this.getClass().getSimpleName() + "_";
+  String tablePrefix = this.getClass().getSimpleName() + "_";
 
   @Test
-  void Snapshot_stats_create_list_get_and_current() throws Exception {
-    var catName = T_PREFIX + "cat_stats";
+  void snapshot_stats_create_list_get_and_current() throws Exception {
+    var catName = tablePrefix + "cat_stats";
     var cat = TestSupport.createCatalog(mutation, catName, "cat for stats");
     String tenantId = TestSupport.seedTenantId(directory, catName);
     assertEquals(tenantId, cat.getResourceId().getTenantId());
 
     var parents = List.of("db_stats","schema_stats");
     var nsLeaf = "it_ns";
-    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), nsLeaf, parents, "ns for stats");
+    var ns = TestSupport.createNamespace(mutation,
+        cat.getResourceId(), nsLeaf, parents, "ns for stats");
     var nsId = ns.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
 
@@ -62,7 +63,8 @@ class StatsIT {
     var tbl = TestSupport.createTable(
         mutation, cat.getResourceId(), nsId,
         "fact_orders", "s3://bucket/fact_orders",
-        "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"},{\"name\":\"ts\",\"type\":\"timestamp\"}]}", "none");
+        "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"},"
+        + "{\"name\":\"ts\",\"type\":\"timestamp\"}]}", "none");
     var tblId = tbl.getResourceId();
     assertEquals(ResourceKind.RK_TABLE, tblId.getKind());
 
@@ -72,7 +74,7 @@ class StatsIT {
     TestSupport.createSnapshot(mutation, tblId, snapOld, System.currentTimeMillis() - 86_400_000L);
     TestSupport.createSnapshot(mutation, tblId, snapNew, System.currentTimeMillis());
 
-    var tStatsOld = TableStats.newBuilder()
+    var tableStatsOld = TableStats.newBuilder()
         .setTableId(tblId)
         .setSnapshotId(snapOld)
         .setUpstream(UpstreamStamp.newBuilder()
@@ -91,7 +93,7 @@ class StatsIT {
         PutTableStatsRequest.newBuilder()
             .setTableId(tblId)
             .setSnapshotId(snapOld)
-            .setStats(tStatsOld)
+            .setStats(tableStatsOld)
             .build());
     assertNotNull(putTableRespOld.getMeta().getPointerKey());
 
@@ -102,7 +104,7 @@ class StatsIT {
         .setNullCount(0)
         .setNdv(Ndv.newBuilder().setKind(NdvKind.NK_EXACT).setExact(1_000).build())
         .setMin("1").setMax("1000")
-        .setUpstream(tStatsOld.getUpstream())
+        .setUpstream(tableStatsOld.getUpstream())
         .build();
 
     var colTsStats = ColumnStats.newBuilder()
@@ -114,7 +116,7 @@ class StatsIT {
             .setKind(NdvKind.NK_HLL)
             .setHllSketch(ByteString.copyFrom(new byte[]{1,2,3,4})))
         .setMin("2024-01-01T00:00:00Z").setMax("2024-12-31T23:59:59Z")
-        .setUpstream(tStatsOld.getUpstream())
+        .setUpstream(tableStatsOld.getUpstream())
         .build();
 
     var putColsRespOld = statsMutation.putColumnStatsBatch(
@@ -144,12 +146,12 @@ class StatsIT {
     assertEquals(2, listColsOld.getColumnsCount());
     assertEquals("id", listColsOld.getColumns(0).getColumnId());
 
-    var tStatsNew = tStatsOld.toBuilder()
+    var tStatsNew = tableStatsOld.toBuilder()
         .setSnapshotId(snapNew)
         .setRowCount(2_500)
         .setDataFileCount(9)
         .setTotalSizeBytes(987_654)
-        .setUpstream(tStatsOld.getUpstream().toBuilder()
+        .setUpstream(tableStatsOld.getUpstream().toBuilder()
             .setCommitRef(Long.toString(snapNew))
             .setFetchedAt(Timestamps.fromMillis(System.currentTimeMillis()))
             .build())
@@ -167,7 +169,8 @@ class StatsIT {
                 .setNdv(Ndv.newBuilder().setKind(NdvKind.NK_EXACT).setExact(2_500)))
             .addColumns(colTsStats.toBuilder()
                 .setSnapshotId(snapNew)
-                .setNdv(Ndv.newBuilder().setKind(NdvKind.NK_HLL).setHllSketch(ByteString.copyFrom(new byte[]{5,6}))))
+                .setNdv(Ndv.newBuilder().setKind(NdvKind.NK_HLL)
+                    .setHllSketch(ByteString.copyFrom(new byte[]{5, 6}))))
             .build());
 
     var currentTableStats = statsAccess.getTableStats(
@@ -182,8 +185,8 @@ class StatsIT {
     var currentCols = statsAccess.listColumnStats(
         ListColumnStatsRequest.newBuilder()
             .setTableId(tblId)
-            .setSnapshot(ai.floedb.metacat.common.rpc.SnapshotRef.newBuilder()
-                .setSpecial(ai.floedb.metacat.common.rpc.SpecialSnapshot.SS_CURRENT))
+            .setSnapshot(SnapshotRef.newBuilder()
+                .setSpecial(SpecialSnapshot.SS_CURRENT))
             .setPage(PageRequest.newBuilder().setPageSize(100).build())
             .build());
     assertTrue(currentCols.getColumnsCount() >= 2);

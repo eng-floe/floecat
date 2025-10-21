@@ -39,7 +39,7 @@ public class ConnectorIT {
   @Inject SnapshotRepository snaps;
 
   @Test
-  void Connector_end_to_end() throws Exception {
+  void connector_end_to_end() throws Exception {
     var conn = TestSupport.createConnector(connectors,
         ConnectorSpec.newBuilder()
             .setDisplayName("dummy-conn")
@@ -90,7 +90,7 @@ public class ConnectorIT {
 
     var dbNsId = namespaces.getByPath("t-0001", catId, List.of("db")).orElseThrow();
     var anaNsId = namespaces.getByPath(
-        "t-0001", catId, List.of("analytics","sales")).orElseThrow();
+        "t-0001", catId, List.of("analytics", "sales")).orElseThrow();
 
     assertEquals(2, tables.listByNamespace(
         catId, dbNsId, 50, "", new StringBuilder()).size());
@@ -103,7 +103,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void CreateConnector_idempotent() {
+  void createConnector_idempotent() {
     var spec = ConnectorSpec.newBuilder()
         .setDisplayName("idem-1")
         .setKind(ConnectorKind.CK_UNITY)
@@ -124,8 +124,8 @@ public class ConnectorIT {
     assertEquals(r1.getMeta().getPointerVersion(), r2.getMeta().getPointerVersion());
   }
 
-@Test
-  void GetConnector_notFound() {
+  @Test
+  void getConnector_notFound() {
     var badRid = ResourceId.newBuilder()
         .setTenantId("t-0001").setId("nope").setKind(ResourceKind.RK_CONNECTOR).build();
     var ex = assertThrows(io.grpc.StatusRuntimeException.class, () ->
@@ -134,7 +134,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void ListConnectors_pagination() {
+  void listConnectors_pagination() {
     for (int i = 0; i < 5; i++) {
       TestSupport.createConnector(connectors, ConnectorSpec.newBuilder()
           .setDisplayName("p-" + i).setKind(ConnectorKind.CK_UNITY)
@@ -149,13 +149,15 @@ public class ConnectorIT {
           .build());
       total += resp.getConnectorsCount();
       token = resp.getPage().getNextPageToken();
-      if (token.isEmpty()) break;
+      if (token.isEmpty()) {
+        break;
+      }
     }
     assertTrue(total >= 5);
   }
 
   @Test
-  void UpdateConnector_rename_and_conflict() throws Exception {
+  void updateConnector_rename_and_conflict() throws Exception {
     var a = TestSupport.createConnector(connectors, ConnectorSpec.newBuilder()
         .setDisplayName("u-a").setKind(ConnectorKind.CK_UNITY)
         .setTargetCatalogDisplayName("cat-u").setUri("dummy://x").build());
@@ -182,7 +184,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void UpdateConnector_preconditionMismatch() throws Exception {
+  void updateConnector_preconditionMismatch() throws Exception {
     var c = TestSupport.createConnector(connectors, ConnectorSpec.newBuilder()
         .setDisplayName("pre-a").setKind(ConnectorKind.CK_UNITY)
         .setTargetCatalogDisplayName("cat-pre").setUri("dummy://x").build());
@@ -195,12 +197,13 @@ public class ConnectorIT {
                 .setExpectedVersion(9999)) // wrong version
             .build()));
 
-    TestSupport.assertGrpcAndMc(ex, Status.Code.FAILED_PRECONDITION, ErrorCode.MC_PRECONDITION_FAILED,
-        "Version mismatch");
+    TestSupport.assertGrpcAndMc(ex,
+        Status.Code.FAILED_PRECONDITION, ErrorCode.MC_PRECONDITION_FAILED,
+            "Version mismatch");
   }
 
   @Test
-  void DeleteConnector_ok_and_idempotent() {
+  void deleteConnector_ok_and_idempotent() {
     var c = TestSupport.createConnector(connectors, ConnectorSpec.newBuilder()
         .setDisplayName("del-1").setKind(ConnectorKind.CK_UNITY)
         .setTargetCatalogDisplayName("cat-del").setUri("dummy://x").build());
@@ -214,7 +217,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void TriggerReconcile_notFound() throws Exception {
+  void triggerReconcile_notFound() throws Exception {
     var rid = ai.floedb.metacat.common.rpc.ResourceId.newBuilder()
         .setTenantId("t-0001").setId("missing").setKind(ResourceKind.RK_CONNECTOR).build();
     var ex = assertThrows(StatusRuntimeException.class, () ->
@@ -226,7 +229,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void GetReconcileJob_notFound() throws Exception {
+  void getReconcileJob_notFound() throws Exception {
     var ex = assertThrows(StatusRuntimeException.class, () ->
         connectors.getReconcileJob(GetReconcileJobRequest.newBuilder()
             .setJobId("zzz").build()));
@@ -236,7 +239,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void ValidateConnector_ok_and_failures() throws Exception {
+  void validateConnector_ok_and_failures() throws Exception {
     var ok = connectors.validateConnector(ValidateConnectorRequest.newBuilder()
         .setSpec(ConnectorSpec.newBuilder()
             .setDisplayName("v-ok").setKind(ConnectorKind.CK_UNITY)
@@ -245,13 +248,13 @@ public class ConnectorIT {
     assertTrue(ok.getOk());
 
     var ex = assertThrows(StatusRuntimeException.class, () ->
-      connectors.validateConnector(ValidateConnectorRequest.newBuilder()
-          .setSpec(ConnectorSpec.newBuilder()
-              .setDisplayName("v-bad").setKind(ConnectorKind.CK_UNSPECIFIED)
-              .setTargetCatalogDisplayName("cat-v").setUri("dummy://x"))
-          .build()));
+        connectors.validateConnector(ValidateConnectorRequest.newBuilder()
+            .setSpec(ConnectorSpec.newBuilder()
+                .setDisplayName("v-bad").setKind(ConnectorKind.CK_UNSPECIFIED)
+                .setTargetCatalogDisplayName("cat-v").setUri("dummy://x"))
+            .build()));
 
     TestSupport.assertGrpcAndMc(ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT,
-      "Invalid argument");
+        "Invalid argument");
   }
 }

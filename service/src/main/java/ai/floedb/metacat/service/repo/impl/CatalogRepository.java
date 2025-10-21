@@ -18,11 +18,9 @@ import ai.floedb.metacat.service.storage.PointerStore;
 @ApplicationScoped
 public class CatalogRepository extends BaseRepository<Catalog> {
 
-  protected CatalogRepository() { super(); }
-
   @Inject
-  public CatalogRepository(PointerStore ptr, BlobStore blobs) {
-    super(ptr, blobs, Catalog::parseFrom, Catalog::toByteArray, "application/x-protobuf");
+  public CatalogRepository(PointerStore pointerStore, BlobStore blobs) {
+    super(pointerStore, blobs, Catalog::parseFrom, Catalog::toByteArray, "application/x-protobuf");
   }
 
   public Optional<Catalog> getById(ResourceId rid) {
@@ -52,100 +50,112 @@ public class CatalogRepository extends BaseRepository<Catalog> {
 
     var byName = Keys.catByNamePtr(tid, cat.getDisplayName());
     var byId = Keys.catPtr(tid, rid.getId());
-    var blob = Keys.catBlob(tid, rid.getId());
+    var blobUri = Keys.catBlob(tid, rid.getId());
 
-    putBlob(blob, cat);
-    reserveAllOrRollback(byId, blob, byName, blob);
+    putBlob(blobUri, cat);
+    reserveAllOrRollback(byId, blobUri, byName, blobUri);
   }
 
   public boolean update(Catalog updated, long expectedPointerVersion) {
     var rid = updated.getResourceId();
     var tid = rid.getTenantId();
     var byId = Keys.catPtr(tid, rid.getId());
-    var blob = Keys.catBlob(tid, rid.getId());
+    var blobUri = Keys.catBlob(tid, rid.getId());
 
-    putBlob(blob, updated);
-    advancePointer(byId, blob, expectedPointerVersion);
+    putBlob(blobUri, updated);
+    advancePointer(byId, blobUri, expectedPointerVersion);
     return true;
   }
 
   public boolean rename(String tenant, ResourceId catId, String newName, long expectedVersion) {
     var byId = Keys.catPtr(tenant, catId.getId());
-    var cur = get(byId).orElseThrow(() -> new NotFoundException("catalog not found: " + catId.getId()));
-    if (newName.equals(cur.getDisplayName())) {
+    var catalog = get(byId).orElseThrow(
+        () -> new NotFoundException("catalog not found: " + catId.getId()));
+
+    if (newName.equals(catalog.getDisplayName())) {
       return true;
     }
 
-    var blob = Keys.catBlob(tenant, catId.getId());
+    var blobUri = Keys.catBlob(tenant, catId.getId());
     var newByName = Keys.catByNamePtr(tenant, newName);
-    var oldByName = Keys.catByNamePtr(tenant, cur.getDisplayName());
 
-    var updated = cur.toBuilder().setDisplayName(newName).build();
-    putBlob(blob, updated);
+    var updated = catalog.toBuilder().setDisplayName(newName).build();
+    putBlob(blobUri, updated);
 
-    reserveAllOrRollback(newByName, blob);
+    reserveAllOrRollback(newByName, blobUri);
 
-    advancePointer(byId, blob, expectedVersion);
+    advancePointer(byId, blobUri, expectedVersion);
 
-    ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(oldByName, p.getVersion()));
+    var oldByName = Keys.catByNamePtr(tenant, catalog.getDisplayName());
+    pointerStore.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(oldByName, p.getVersion()));
+
     return true;
   }
 
   public boolean delete(ResourceId catalogId) {
     var tid = catalogId.getTenantId();
     var byId = Keys.catPtr(tid, catalogId.getId());
-    var blob = Keys.catBlob(tid, catalogId.getId());
+    var blobUri = Keys.catBlob(tid, catalogId.getId());
 
-    var pIdOpt = ptr.get(byId);
-    if (pIdOpt.isEmpty()) {
-      deleteQuietly(() -> blobs.delete(blob));
+    var pointerIdOpt = pointerStore.get(byId);
+    if (pointerIdOpt.isEmpty()) {
+      deleteQuietly(() -> blobStore.delete(blobUri));
       return true;
     }
-    var pId = pIdOpt.get();
+    var pointerId = pointerIdOpt.get();
 
-    var catOpt = getById(catalogId);
-    var byName = catOpt.map(
-        c -> Keys.catByNamePtr(tid, c.getDisplayName())).orElse(null);
+    var catalogOpt = getById(catalogId);
+    var byName = catalogOpt.map(
+        catalog -> Keys.catByNamePtr(tid, catalog.getDisplayName())).orElse(null);
 
     if (byName != null) {
-      ptr.get(byName).ifPresent(
-          p -> compareAndDeleteOrFalse(byName, p.getVersion()));
+      pointerStore.get(byName).ifPresent(
+          pointer -> compareAndDeleteOrFalse(byName, pointer.getVersion()));
     }
 
-    if (!compareAndDeleteOrFalse(byId, pId.getVersion())) return false;
+    if (!compareAndDeleteOrFalse(byId, pointerId.getVersion())) {
+      return false;
+    }
 
-    deleteQuietly(() -> blobs.delete(blob));
+    deleteQuietly(() -> blobStore.delete(blobUri));
     return true;
   }
 
   public boolean deleteWithPrecondition(ResourceId catalogId, long expectedVersion) {
     var tid = catalogId.getTenantId();
     var byId = Keys.catPtr(tid, catalogId.getId());
-    var blob = Keys.catBlob(tid, catalogId.getId());
+    var blobUri = Keys.catBlob(tid, catalogId.getId());
 
-    var catOpt = getById(catalogId);
-    var byName = catOpt.map(
-        c -> Keys.catByNamePtr(tid, c.getDisplayName())).orElse(null);
+    var catalogOpt = getById(catalogId);
+    var byName = catalogOpt.map(
+        catalog -> Keys.catByNamePtr(tid, catalog.getDisplayName())).orElse(null);
 
-    if (!compareAndDeleteOrFalse(byId, expectedVersion)) return false;
-    if (byName != null) ptr.get(byName).ifPresent(
-        p -> compareAndDeleteOrFalse(byName, p.getVersion()));
-    deleteQuietly(() -> blobs.delete(blob));
+    if (!compareAndDeleteOrFalse(byId, expectedVersion)) {
+      return false;
+    }
+
+    if (byName != null) {
+      pointerStore.get(byName).ifPresent(
+          pointer -> compareAndDeleteOrFalse(byName, pointer.getVersion()));
+    }
+
+    deleteQuietly(() -> blobStore.delete(blobUri));
+
     return true;
   }
 
   public MutationMeta metaFor(ResourceId catalogId, Timestamp nowTs) {
-    var t = catalogId.getTenantId();
-    var key = Keys.catPtr(t, catalogId.getId());
-    var p = ptr.get(key).orElseThrow(() -> new IllegalStateException(
+    var tenant = catalogId.getTenantId();
+    var key = Keys.catPtr(tenant, catalogId.getId());
+    var pointer = pointerStore.get(key).orElseThrow(() -> new IllegalStateException(
         "Pointer missing for catalog: " + catalogId.getId()));
-    return safeMetaOrDefault(key, p.getBlobUri(), nowTs);
+    return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
   }
 
   public MutationMeta metaForSafe(ResourceId catalogId, Timestamp nowTs) {
-    var t = catalogId.getTenantId();
-    var key = Keys.catPtr(t, catalogId.getId());
-    var blob = Keys.catBlob(t, catalogId.getId());
-    return safeMetaOrDefault(key, blob, nowTs);
+    var tenant = catalogId.getTenantId();
+    var key = Keys.catPtr(tenant, catalogId.getId());
+    var blobUri = Keys.catBlob(tenant, catalogId.getId());
+    return safeMetaOrDefault(key, blobUri, nowTs);
   }
 }

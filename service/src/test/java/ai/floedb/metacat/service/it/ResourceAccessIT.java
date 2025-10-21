@@ -29,7 +29,8 @@ class ResourceAccessIT {
   @Test
   void getCatalog_returnsSeeded_and_notFound_hasErrorPayload() throws Exception {
     var salesId = TestSupport.resolveCatalogId(directory, "sales");
-    var sales = resourceAccess.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(salesId).build());
+    var sales = resourceAccess.getCatalog(
+        GetCatalogRequest.newBuilder().setCatalogId(salesId).build());
     assertEquals("sales", sales.getCatalog().getDisplayName());
 
     var missingRid = salesId.toBuilder().setId("00000000-0000-0000-0000-000000000000").build();
@@ -37,6 +38,7 @@ class ResourceAccessIT {
     StatusRuntimeException ex = assertThrows(StatusRuntimeException.class, () ->
         resourceAccess.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(missingRid).build()));
 
-    TestSupport.assertGrpcAndMc(ex, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Catalog not found");
+    TestSupport.assertGrpcAndMc(ex, Status.Code.NOT_FOUND,
+        ErrorCode.MC_NOT_FOUND, "Catalog not found");
   }
 }

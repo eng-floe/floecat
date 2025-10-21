@@ -71,124 +71,133 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
   @Inject IdempotencyStore idempotencyStore;
 
   @Override
-  public Uni<CreateCatalogResponse> createCatalog(CreateCatalogRequest req) {
+  public Uni<CreateCatalogResponse> createCatalog(CreateCatalogRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "catalog.write");
+      final var principalContext = principal.get();
+      final var correlationId = principalContext.getCorrelationId();
+      final var tenantId = principalContext.getTenantId();
 
-      final var tenant = p.getTenantId();
-      final var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
-      final byte[] fp = req.getSpec().toBuilder().clearDescription().build().toByteArray();
+      authz.require(principalContext, "catalog.write");
+
+      final var idempotencyKey = request.hasIdempotency()
+          ? request.getIdempotency().getKey() : "";
+
+      final byte[] fingerprint = request.getSpec().toBuilder()
+          .clearDescription().build().toByteArray();
+
       var tsNow = nowTs();
 
-      var out = MutationOps.createProto(
-          tenant,
+      var catalogProto = MutationOps.createProto(
+          tenantId,
           "CreateCatalog",
-          idemKey,
-          () -> fp,
+          idempotencyKey,
+          () -> fingerprint,
           () -> {
-            final String catalogUuid =
-              !idemKey.isBlank()
-                ? deterministicUuid(tenant, "catalog", idemKey)
-                : UUID.randomUUID().toString();
+            String catalogUuid =
+                !idempotencyKey.isBlank()
+                    ? deterministicUuid(tenantId, "catalog", idempotencyKey)
+                    : UUID.randomUUID().toString();
 
             var catalogId = ResourceId.newBuilder()
-                .setTenantId(tenant)
+                .setTenantId(tenantId)
                 .setId(catalogUuid)
                 .setKind(ResourceKind.RK_CATALOG)
                 .build();
 
             var built = Catalog.newBuilder()
                 .setResourceId(catalogId)
-                .setDisplayName(mustNonEmpty(req.getSpec().getDisplayName(), "display_name", corr))
-                .setDescription(req.getSpec().getDescription())
+                .setDisplayName(mustNonEmpty(
+                    request.getSpec().getDisplayName(), "display_name", correlationId))
+                .setDescription(request.getSpec().getDescription())
                 .setCreatedAt(tsNow)
                 .build();
 
             try {
               catalogs.create(built);
             } catch (BaseRepository.NameConflictException e) {
-              if (!idemKey.isBlank()) {
-                var existing = catalogs.getByName(tenant, built.getDisplayName());
+              if (!idempotencyKey.isBlank()) {
+                var existing = catalogs.getByName(tenantId, built.getDisplayName());
                 if (existing.isPresent()) {
-                  return new IdempotencyGuard.CreateResult<>(existing.get(), existing.get().getResourceId());
+                  return new IdempotencyGuard.CreateResult<>(
+                      existing.get(), existing.get().getResourceId());
                 }
               }
               throw GrpcErrors.conflict(
-                  corr, "catalog.already_exists",
-                  Map.of("display_name", built.getDisplayName()));
+                  correlationId, "catalog.already_exists",
+                      Map.of("display_name", built.getDisplayName()));
             }
 
             return new IdempotencyGuard.CreateResult<>(built, catalogId);
           },
-          (c) -> catalogs.metaFor(c.getResourceId(), tsNow),
+          (catalog) -> catalogs.metaFor(catalog.getResourceId(), tsNow),
           idempotencyStore,
           tsNow,
           IDEMPOTENCY_TTL_SECONDS,
-          this::corrId,
+          this::correlationId,
           Catalog::parseFrom
       );
 
       return CreateCatalogResponse.newBuilder()
-          .setCatalog(out.body)
-          .setMeta(out.meta)
+          .setCatalog(catalogProto.body)
+          .setMeta(catalogProto.meta)
           .build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<UpdateCatalogResponse> updateCatalog(UpdateCatalogRequest req) {
+  public Uni<UpdateCatalogResponse> updateCatalog(UpdateCatalogRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "catalog.write");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
+
+      authz.require(principalContext, "catalog.write");
 
       var tsNow = nowTs();
 
-      var catalogId = req.getCatalogId();
-      ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", corr);
+      var catalogId = request.getCatalogId();
+      ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", correlationId);
 
       var prev = catalogs.getById(catalogId)
           .orElseThrow(() -> GrpcErrors.notFound(
-                corr, "catalog", Map.of("id", catalogId.getId())));
+                correlationId, "catalog", Map.of("id", catalogId.getId())));
 
-      var desiredName = mustNonEmpty(req.getSpec().getDisplayName(), "display_name", corr);
-      var desiredDesc = req.getSpec().getDescription();
+      var desiredName = mustNonEmpty(
+          request.getSpec().getDisplayName(), "display_name", correlationId);
+      var desiredDescription = request.getSpec().getDescription();
 
       var meta = catalogs.metaFor(catalogId, tsNow);
       long expectedVersion = meta.getPointerVersion();
-      enforcePreconditions(corr, meta, req.getPrecondition());
+      enforcePreconditions(correlationId, meta, request.getPrecondition());
 
-      if (desiredName.equals(prev.getDisplayName()) &&
-          Objects.equals(desiredDesc, prev.getDescription())) {
+      if (desiredName.equals(prev.getDisplayName())
+          && Objects.equals(desiredDescription, prev.getDescription())) {
         return UpdateCatalogResponse.newBuilder().setCatalog(prev).setMeta(meta).build();
       }
 
       if (!desiredName.equals(prev.getDisplayName())) {
         try {
-          catalogs.rename(p.getTenantId(), catalogId, desiredName, expectedVersion);
+          catalogs.rename(principalContext.getTenantId(), catalogId, desiredName, expectedVersion);
         } catch (BaseRepository.NameConflictException nce) {
-          throw GrpcErrors.conflict(corr, "catalog.already_exists",
+          throw GrpcErrors.conflict(correlationId, "catalog.already_exists",
               Map.of("display_name", desiredName));
         } catch (BaseRepository.PreconditionFailedException pfe) {
           var nowMeta = catalogs.metaFor(catalogId, tsNow);
-          throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+          throw GrpcErrors.preconditionFailed(correlationId, "version_mismatch",
                 Map.of("expected", Long.toString(expectedVersion),
                     "actual", Long.toString(nowMeta.getPointerVersion())));
         }
 
-        if (!Objects.equals(desiredDesc, prev.getDescription())) {
+        if (!Objects.equals(desiredDescription, prev.getDescription())) {
           meta = catalogs.metaFor(catalogId, tsNow);
           expectedVersion = meta.getPointerVersion();
           var renamedObj = catalogs.getById(catalogId).orElse(prev);
-          var withDesc = renamedObj.toBuilder().setDescription(desiredDesc).build();
+          var withDesc = renamedObj.toBuilder().setDescription(desiredDescription).build();
 
           try {
             catalogs.update(withDesc, meta.getPointerVersion());
           } catch (BaseRepository.PreconditionFailedException pfe) {
             var nowMeta = catalogs.metaFor(catalogId, tsNow);
-            throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+            throw GrpcErrors.preconditionFailed(correlationId, "version_mismatch",
                 Map.of("expected", Long.toString(expectedVersion),
                     "actual", Long.toString(nowMeta.getPointerVersion())));
           }
@@ -197,13 +206,13 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
       } else {
         meta = catalogs.metaFor(catalogId, tsNow);
         expectedVersion = meta.getPointerVersion();
-        var updated = prev.toBuilder().setDescription(desiredDesc).build();
+        var updated = prev.toBuilder().setDescription(desiredDescription).build();
 
         try {
           catalogs.update(updated, meta.getPointerVersion());
         } catch (BaseRepository.PreconditionFailedException pfe) {
           var nowMeta = catalogs.metaFor(catalogId, tsNow);
-          throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+          throw GrpcErrors.preconditionFailed(correlationId, "version_mismatch",
               Map.of("expected", Long.toString(expectedVersion),
                   "actual", Long.toString(nowMeta.getPointerVersion())));
         }
@@ -213,20 +222,21 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
           .setCatalog(catalogs.getById(catalogId).orElse(prev))
           .setMeta(catalogs.metaFor(catalogId, tsNow))
           .build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<DeleteCatalogResponse> deleteCatalog(DeleteCatalogRequest req) {
+  public Uni<DeleteCatalogResponse> deleteCatalog(DeleteCatalogRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "catalog.write");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
+
+      authz.require(principalContext, "catalog.write");
 
       var tsNow = nowTs();
 
-      var catalogId = req.getCatalogId();
-      ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", corr);
+      var catalogId = request.getCatalogId();
+      ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", correlationId);
 
       var key = Keys.catPtr(catalogId.getTenantId(), catalogId.getId());
       if (ptr.get(key).isEmpty()) {
@@ -235,173 +245,185 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
         return DeleteCatalogResponse.newBuilder().setMeta(safe).build();
       }
 
-      if (req.getRequireEmpty() && namespaces.countUnderCatalog(catalogId) > 0) {
-        var cur = catalogs.getById(catalogId).orElse(null);
-        var displayName = (cur != null && !cur.getDisplayName().isBlank())
-            ? cur.getDisplayName() : catalogId.getId();
-        throw GrpcErrors.conflict(corr, "catalog.not_empty", Map.of("display_name", displayName));
+      if (request.getRequireEmpty() && namespaces.countUnderCatalog(catalogId) > 0) {
+        var currentNamespace = catalogs.getById(catalogId).orElse(null);
+        var displayName = (currentNamespace != null && !currentNamespace.getDisplayName().isBlank())
+            ? currentNamespace.getDisplayName() : catalogId.getId();
+        throw GrpcErrors.conflict(
+            correlationId, "catalog.not_empty", Map.of("display_name", displayName));
       }
 
       var meta = catalogs.metaFor(catalogId, tsNow);
       long expectedVersion = meta.getPointerVersion();
-      enforcePreconditions(corr, meta, req.getPrecondition());
+      enforcePreconditions(correlationId, meta, request.getPrecondition());
 
       try {
         catalogs.deleteWithPrecondition(catalogId, expectedVersion);
       } catch (BaseRepository.PreconditionFailedException pfe) {
         var nowMeta = catalogs.metaFor(catalogId, tsNow);
-        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+        throw GrpcErrors.preconditionFailed(correlationId, "version_mismatch",
             Map.of("expected", Long.toString(expectedVersion),
                 "actual", Long.toString(nowMeta.getPointerVersion())));
       } catch (BaseRepository.NotFoundException nfe) {
-        throw GrpcErrors.notFound(corr,
-            "catalog", Map.of("id", catalogId.getId()));
+        throw GrpcErrors.notFound(correlationId, "catalog",
+            Map.of("id", catalogId.getId()));
       }
 
       return DeleteCatalogResponse.newBuilder().setMeta(meta).build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<CreateNamespaceResponse> createNamespace(CreateNamespaceRequest req) {
+  public Uni<CreateNamespaceResponse> createNamespace(CreateNamespaceRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "namespace.write");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
+
+      authz.require(principalContext, "namespace.write");
 
       var tsNow = nowTs();
 
-      var tenant = p.getTenantId();
-      var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
-      byte[] fp = req.getSpec().toBuilder().clearDescription().build().toByteArray();
+      var tenantId = principalContext.getTenantId();
+      var idempotencyKey = request.hasIdempotency() ? request.getIdempotency().getKey() : "";
+      byte[] fingerprint = request.getSpec().toBuilder().clearDescription().build().toByteArray();
 
-      var out = MutationOps.createProto(
-          tenant,
+      var namespaceProto = MutationOps.createProto(
+          tenantId,
           "CreateNamespace",
-          idemKey,
-          () -> fp,
+          idempotencyKey,
+          () -> fingerprint,
           () -> {
-            final String namespaceUuid =
-              !idemKey.isBlank()
-                ? deterministicUuid(tenant, "namespace", idemKey)
-                : UUID.randomUUID().toString();
+            String namespaceUuid =
+                !idempotencyKey.isBlank()
+                    ? deterministicUuid(tenantId, "namespace", idempotencyKey)
+                    : UUID.randomUUID().toString();
 
             var namespaceId = ResourceId.newBuilder()
-                .setTenantId(tenant)
+                .setTenantId(tenantId)
                 .setId(namespaceUuid)
                 .setKind(ResourceKind.RK_NAMESPACE)
                 .build();
 
-            if (catalogs.getById(req.getSpec().getCatalogId()).isEmpty()) {
-              throw GrpcErrors.notFound(corr, "catalog",
-                  Map.of("id", req.getSpec().getCatalogId().getId()));
+            if (catalogs.getById(request.getSpec().getCatalogId()).isEmpty()) {
+              throw GrpcErrors.notFound(correlationId, "catalog",
+                  Map.of("id", request.getSpec().getCatalogId().getId()));
             }
 
             var built = Namespace.newBuilder()
                 .setResourceId(namespaceId)
                 .setDisplayName(mustNonEmpty(
-                    req.getSpec().getDisplayName(), "display_name", corr))
-                .addAllParents(req.getSpec().getPathList())
-                .setDescription(req.getSpec().getDescription())
+                    request.getSpec().getDisplayName(), "display_name", correlationId))
+                .addAllParents(request.getSpec().getPathList())
+                .setDescription(request.getSpec().getDescription())
                 .setCreatedAt(tsNow)
                 .build();
 
             try {
-              namespaces.create(built, req.getSpec().getCatalogId());
+              namespaces.create(built, request.getSpec().getCatalogId());
             } catch (BaseRepository.NameConflictException e) {
-              if (!idemKey.isBlank()) {
-                var fullPath = new ArrayList<>(req.getSpec().getPathList());
-                fullPath.add(req.getSpec().getDisplayName());
-                var existingId = namespaces.getByPath(tenant, req.getSpec().getCatalogId(), fullPath);
+              if (!idempotencyKey.isBlank()) {
+                var fullPath = new ArrayList<>(request.getSpec().getPathList());
+                fullPath.add(request.getSpec().getDisplayName());
+                var existingId = namespaces.getByPath(
+                    tenantId, request.getSpec().getCatalogId(), fullPath);
                 if (existingId.isPresent()) {
-                  var existing = namespaces.get(req.getSpec().getCatalogId(), existingId.get());
+                  var existing = namespaces.get(request.getSpec().getCatalogId(), existingId.get());
                   if (existing.isPresent()) {
                     return new IdempotencyGuard.CreateResult<>(existing.get(), existingId.get());
                   }
                 }
               }
-              var pretty = prettyNamespacePath(req.getSpec().getPathList(), req.getSpec().getDisplayName());
+              var pretty = prettyNamespacePath(
+                  request.getSpec().getPathList(), request.getSpec().getDisplayName());
+
               throw GrpcErrors.conflict(
-                  corr, "namespace.already_exists",
-                  Map.of("catalog", req.getSpec().getCatalogId().getId(),
+                  correlationId, "namespace.already_exists",
+                  Map.of("catalog", request.getSpec().getCatalogId().getId(),
                         "path", pretty));
             }
 
             return new IdempotencyGuard.CreateResult<>(built, namespaceId);
           },
-          (n) -> namespaces.metaFor(req.getSpec().getCatalogId(), n.getResourceId(), tsNow),
+          (namespace) -> namespaces.metaFor(
+              request.getSpec().getCatalogId(), namespace.getResourceId(), tsNow),
           idempotencyStore,
           tsNow,
           IDEMPOTENCY_TTL_SECONDS,
-          this::corrId,
+          this::correlationId,
           Namespace::parseFrom
       );
 
       return CreateNamespaceResponse.newBuilder()
-          .setNamespace(out.body)
-          .setMeta(out.meta)
+          .setNamespace(namespaceProto.body)
+          .setMeta(namespaceProto.meta)
           .build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<RenameNamespaceResponse> renameNamespace(RenameNamespaceRequest req) {
+  public Uni<RenameNamespaceResponse> renameNamespace(RenameNamespaceRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "namespace.write");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
+
+      authz.require(principalContext, "namespace.write");
 
       var tsNow = nowTs();
 
-      var nsId = req.getNamespaceId();
-      ensureKind(nsId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
+      var namespaceId = request.getNamespaceId();
+      ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId);
 
-      var tenant = p.getTenantId();
+      var tenantId = principalContext.getTenantId();
 
-      var curCatalogId = namespaces.findOwnerCatalog(tenant, nsId.getId())
-          .orElseThrow(() -> GrpcErrors.notFound(corr, "namespace", Map.of("id", nsId.getId())));
+      var currentCatalogId = namespaces.findOwnerCatalog(tenantId, namespaceId.getId())
+          .orElseThrow(() -> GrpcErrors.notFound(
+              correlationId, "namespace", Map.of("id", namespaceId.getId())));
 
-      Namespace cur = namespaces.get(curCatalogId, nsId).orElseThrow(() ->
-          GrpcErrors.notFound(corr, "namespace", Map.of("id", nsId.getId())));
+      Namespace currentNamespace = namespaces.get(currentCatalogId, namespaceId).orElseThrow(() ->
+          GrpcErrors.notFound(correlationId, "namespace", Map.of("id", namespaceId.getId())));
 
-      var pathProvided = !req.getNewPathList().isEmpty();
+      var pathProvided = !request.getNewPathList().isEmpty();
       var newLeaf = pathProvided
-          ? req.getNewPath(req.getNewPathCount() - 1)
-          : (req.getNewDisplayName().isBlank() ? cur.getDisplayName() : req.getNewDisplayName());
+          ? request.getNewPath(request.getNewPathCount() - 1)
+          : (request.getNewDisplayName().isBlank()
+              ? currentNamespace.getDisplayName() : request.getNewDisplayName());
 
-      var curParents = cur.getParentsList();
+      var currentParents = currentNamespace.getParentsList();
       var newParents = pathProvided
-          ? List.copyOf(req.getNewPathList().subList(0, req.getNewPathCount() - 1))
-          : curParents;
+          ? List.copyOf(request.getNewPathList().subList(0, request.getNewPathCount() - 1))
+          : currentParents;
 
-      var targetCatalogId = (req.hasNewCatalogId() && !req.getNewCatalogId().getId().isBlank())
-          ? req.getNewCatalogId()
-          : curCatalogId;
+      var targetCatalogId = (request.hasNewCatalogId()
+          && !request.getNewCatalogId().getId().isBlank())
+              ? request.getNewCatalogId()
+              : currentCatalogId;
 
       if (catalogs.getById(targetCatalogId).isEmpty()) {
-        throw GrpcErrors.notFound(corr, "catalog", Map.of("id", targetCatalogId.getId()));
+        throw GrpcErrors.notFound(correlationId, "catalog", Map.of("id", targetCatalogId.getId()));
       }
 
-      var sameCatalog = targetCatalogId.getId().equals(curCatalogId.getId());
-      var sameLeaf = newLeaf.equals(cur.getDisplayName());
-      var sameParents = Objects.equals(curParents, newParents);
+      var sameCatalog = targetCatalogId.getId().equals(currentCatalogId.getId());
+      var sameLeaf = newLeaf.equals(currentNamespace.getDisplayName());
+      var sameParents = Objects.equals(currentParents, newParents);
 
-      var meta = namespaces.metaFor(curCatalogId, nsId, tsNow);
+      var meta = namespaces.metaFor(currentCatalogId, namespaceId, tsNow);
       long expectedVersion = meta.getPointerVersion();
-      enforcePreconditions(corr, meta, req.getPrecondition());
+      enforcePreconditions(correlationId, meta, request.getPrecondition());
 
       if (sameCatalog && sameLeaf && sameParents) {
-        return RenameNamespaceResponse.newBuilder().setNamespace(cur).setMeta(meta).build();
+        return RenameNamespaceResponse.newBuilder()
+            .setNamespace(currentNamespace).setMeta(meta).build();
       }
 
-      var updated = cur.toBuilder().setDisplayName(newLeaf).clearParents().addAllParents(newParents).build();
+      var updated = currentNamespace.toBuilder().setDisplayName(newLeaf)
+          .clearParents().addAllParents(newParents).build();
 
       try {
         namespaces.renameOrMove(
             updated,
-            curCatalogId,
-            curParents,
-            cur.getDisplayName(),
+            currentCatalogId,
+            currentParents,
+            currentNamespace.getDisplayName(),
             targetCatalogId,
             newParents,
             expectedVersion);
@@ -410,41 +432,42 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
         parts.add(newLeaf);
         var pretty = String.join("/", parts);
         throw GrpcErrors.conflict(
-            corr, "namespace.already_exists",
+            correlationId, "namespace.already_exists",
                 Map.of("catalog", targetCatalogId.getId(),
                     "path", pretty));
       } catch (BaseRepository.PreconditionFailedException pfe) {
-        var nowMeta = namespaces.metaFor(curCatalogId, nsId, tsNow);
+        var nowMeta = namespaces.metaFor(currentCatalogId, namespaceId, tsNow);
         throw GrpcErrors.preconditionFailed(
-            corr, "version_mismatch",
+            correlationId, "version_mismatch",
             Map.of("expected", Long.toString(expectedVersion),
                 "actual", Long.toString(nowMeta.getPointerVersion())));
       }
 
-      var outMeta = namespaces.metaFor(targetCatalogId, nsId, tsNow);
+      var outMeta = namespaces.metaFor(targetCatalogId, namespaceId, tsNow);
       return RenameNamespaceResponse.newBuilder()
           .setNamespace(updated)
           .setMeta(outMeta).build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<DeleteNamespaceResponse> deleteNamespace(DeleteNamespaceRequest req) {
+  public Uni<DeleteNamespaceResponse> deleteNamespace(DeleteNamespaceRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "namespace.write");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
+
+      authz.require(principalContext, "namespace.write");
 
       var tsNow = nowTs();
 
-      final var tenantId = p.getTenantId();
-      final var namespaceId = req.getNamespaceId();
-      ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
+      final var tenantId = principalContext.getTenantId();
+      final var namespaceId = request.getNamespaceId();
+      ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId);
 
-      var catId = namespaces.findOwnerCatalog(tenantId, namespaceId.getId())
+      var catalogId = namespaces.findOwnerCatalog(tenantId, namespaceId.getId())
           .orElse(null);
 
-      if (catId == null) {
+      if (catalogId == null) {
         var safe = namespaces.metaForSafe(ResourceId.newBuilder()
             .setTenantId(tenantId)
             .setId("_unknown_")
@@ -453,413 +476,434 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
         return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
       }
 
-      if (req.getRequireEmpty() && tables.countUnderNamespace(catId, namespaceId) > 0) {
-        var cur = namespaces.get(catId, namespaceId).orElse(null);
-        final String display = (cur != null)
-            ? prettyNamespacePath(cur.getParentsList(), cur.getDisplayName())
+      if (request.getRequireEmpty() && tables.countUnderNamespace(catalogId, namespaceId) > 0) {
+        var currentNamespace = namespaces.get(catalogId, namespaceId).orElse(null);
+        String displayName = (currentNamespace != null)
+            ? prettyNamespacePath(
+                currentNamespace.getParentsList(), currentNamespace.getDisplayName())
             : namespaceId.getId();
         throw GrpcErrors.conflict(
-            corr, "namespace.not_empty", Map.of("display_name", display));
+            correlationId, "namespace.not_empty", Map.of("display_name", displayName));
       }
 
-      var meta = namespaces.metaFor(catId, namespaceId, tsNow);
+      var meta = namespaces.metaFor(catalogId, namespaceId, tsNow);
       long expectedVersion = meta.getPointerVersion();
-      enforcePreconditions(corr, meta, req.getPrecondition());
+      enforcePreconditions(correlationId, meta, request.getPrecondition());
 
       try {
-        namespaces.deleteWithPrecondition(catId, namespaceId, expectedVersion);
+        namespaces.deleteWithPrecondition(catalogId, namespaceId, expectedVersion);
       } catch (BaseRepository.PreconditionFailedException pfe) {
-        var nowMeta = namespaces.metaFor(catId, namespaceId, tsNow);
-        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+        var nowMeta = namespaces.metaFor(catalogId, namespaceId, tsNow);
+        throw GrpcErrors.preconditionFailed(correlationId, "version_mismatch",
             Map.of("expected", Long.toString(expectedVersion),
                 "actual", Long.toString(nowMeta.getPointerVersion())));
       } catch (BaseRepository.NotFoundException nfe) {
-        throw GrpcErrors.notFound(corr,
+        throw GrpcErrors.notFound(correlationId,
             "namespace", Map.of("id", namespaceId.getId()));
       }
 
       return DeleteNamespaceResponse.newBuilder().setMeta(meta).build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<CreateTableResponse> createTable(CreateTableRequest req) {
+  public Uni<CreateTableResponse> createTable(CreateTableRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "table.write");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
+
+      authz.require(principalContext, "table.write");
 
       var tsNow = nowTs();
 
-      var tenant = p.getTenantId();
-      var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
-
-      if (catalogs.getById(req.getSpec().getCatalogId()).isEmpty()) {
-        throw GrpcErrors.notFound(corr, "catalog",
-            Map.of("id", req.getSpec().getCatalogId().getId()));
+      if (catalogs.getById(request.getSpec().getCatalogId()).isEmpty()) {
+        throw GrpcErrors.notFound(correlationId, "catalog",
+            Map.of("id", request.getSpec().getCatalogId().getId()));
       }
-      if (namespaces.get(req.getSpec().getCatalogId(), req.getSpec().getNamespaceId()).isEmpty()) {
-        throw GrpcErrors.notFound(corr, "namespace",
-            Map.of("id", req.getSpec().getNamespaceId().getId()));
+      if (namespaces.get(
+          request.getSpec().getCatalogId(), request.getSpec().getNamespaceId()).isEmpty()) {
+        throw GrpcErrors.notFound(correlationId, "namespace",
+            Map.of("id", request.getSpec().getNamespaceId().getId()));
       }
 
-      byte[] fp = req.getSpec().toBuilder().clearDescription().build().toByteArray();
+      var idempotencyKey = request.hasIdempotency() ? request.getIdempotency().getKey() : "";
+      byte[] fingerprint = request.getSpec().toBuilder().clearDescription().build().toByteArray();
 
-      var out = MutationOps.createProto(
-          tenant,
+      var tenantId = principalContext.getTenantId();
+      var tableProto = MutationOps.createProto(
+          tenantId,
           "CreateTable",
-          idemKey,
-          () -> fp,
+          idempotencyKey,
+          () -> fingerprint,
           () -> {
-            final String tableUuid =
-              !idemKey.isBlank()
-                ? deterministicUuid(tenant, "table", idemKey)
-                : UUID.randomUUID().toString();
+            String tableUuid =
+                !idempotencyKey.isBlank()
+                    ? deterministicUuid(tenantId, "table", idempotencyKey)
+                    : UUID.randomUUID().toString();
 
             var tableId = ResourceId.newBuilder()
-                .setTenantId(tenant)
+                .setTenantId(tenantId)
                 .setId(tableUuid)
                 .setKind(ResourceKind.RK_TABLE)
                 .build();
 
-            var td = Table.newBuilder()
+            var table = Table.newBuilder()
                 .setResourceId(tableId)
                 .setDisplayName(mustNonEmpty(
-                    req.getSpec().getDisplayName(), "display_name", corr))
-                .setDescription(req.getSpec().getDescription())
-                .setFormat(req.getSpec().getFormat())
-                .setCatalogId(req.getSpec().getCatalogId())
-                .setNamespaceId(req.getSpec().getNamespaceId())
+                    request.getSpec().getDisplayName(), "display_name", correlationId))
+                .setDescription(request.getSpec().getDescription())
+                .setFormat(request.getSpec().getFormat())
+                .setCatalogId(request.getSpec().getCatalogId())
+                .setNamespaceId(request.getSpec().getNamespaceId())
                 .setRootUri(mustNonEmpty(
-                      req.getSpec().getRootUri(), "root_uri", corr))
+                      request.getSpec().getRootUri(), "root_uri", correlationId))
                 .setSchemaJson(
-                    mustNonEmpty(req.getSpec().getSchemaJson(), "schema_json", corr))
+                    mustNonEmpty(request.getSpec().getSchemaJson(), "schema_json", correlationId))
                 .setCreatedAt(tsNow)
                 .build();
 
             try {
-              tables.create(td);
+              tables.create(table);
             }  catch (BaseRepository.NameConflictException e) {
-              if (!idemKey.isBlank()) {
+              if (!idempotencyKey.isBlank()) {
                 return tables
-                    .getByName(req.getSpec().getCatalogId(),
-                              req.getSpec().getNamespaceId(),
-                              td.getDisplayName())
+                    .getByName(request.getSpec().getCatalogId(),
+                              request.getSpec().getNamespaceId(),
+                              table.getDisplayName())
                     .map(ex -> new IdempotencyGuard.CreateResult<>(ex, ex.getResourceId()))
                     .orElseThrow(() -> GrpcErrors.conflict(
-                        corr, "table.already_exists", Map.of("display_name", td.getDisplayName())));
+                        correlationId, "table.already_exists",
+                            Map.of("display_name", table.getDisplayName())));
               }
-              throw GrpcErrors.conflict(corr, "table.already_exists",
-                  Map.of("display_name", td.getDisplayName()));
+              throw GrpcErrors.conflict(correlationId, "table.already_exists",
+                  Map.of("display_name", table.getDisplayName()));
             }
 
-            return new IdempotencyGuard.CreateResult<>(td, tableId);
+            return new IdempotencyGuard.CreateResult<>(table, tableId);
           },
-          (t) -> tables.metaFor(t.getResourceId(), tsNow),
+          (table) -> tables.metaFor(table.getResourceId(), tsNow),
           idempotencyStore,
           tsNow,
           IDEMPOTENCY_TTL_SECONDS,
-          this::corrId,
+          this::correlationId,
           Table::parseFrom
       );
 
-      return CreateTableResponse.newBuilder().setTable(out.body).setMeta(out.meta).build();
-    }), corrId());
+      return CreateTableResponse.newBuilder()
+          .setTable(tableProto.body).setMeta(tableProto.meta).build();
+    }), correlationId());
   }
 
   @Override
-  public Uni<UpdateTableSchemaResponse> updateTableSchema(UpdateTableSchemaRequest req) {
+  public Uni<UpdateTableSchemaResponse> updateTableSchema(UpdateTableSchemaRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "table.write");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
+
+      authz.require(principalContext, "table.write");
 
       var tsNow = nowTs();
 
-      var tableId = req.getTableId();
-      ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
+      var tableId = request.getTableId();
+      ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
 
-      var cur = tables.get(tableId).orElseThrow(() ->
-          GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
+      var currentNamespace = tables.get(tableId).orElseThrow(() ->
+          GrpcErrors.notFound(correlationId, "table", Map.of("id", tableId.getId())));
 
-      var updated = cur.toBuilder()
-          .setSchemaJson(req.getSchemaJson())
+      var updated = currentNamespace.toBuilder()
+          .setSchemaJson(request.getSchemaJson())
           .build();
 
-      if (updated.equals(cur)) {
+      if (updated.equals(currentNamespace)) {
         var metaNoop = tables.metaFor(tableId, tsNow);
-        enforcePreconditions(corr, metaNoop, req.getPrecondition());
+        enforcePreconditions(correlationId, metaNoop, request.getPrecondition());
         return UpdateTableSchemaResponse.newBuilder()
-            .setTable(cur)
+            .setTable(currentNamespace)
             .setMeta(metaNoop)
             .build();
       }
 
       var meta = tables.metaFor(tableId, tsNow);
       long expectedVersion = meta.getPointerVersion();
-      enforcePreconditions(corr, meta, req.getPrecondition());
+      enforcePreconditions(correlationId, meta, request.getPrecondition());
 
       try {
         tables.update(updated, expectedVersion);
       } catch (BaseRepository.PreconditionFailedException pfe) {
         var nowMeta = tables.metaFor(tableId, tsNow);
-        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+        throw GrpcErrors.preconditionFailed(correlationId, "version_mismatch",
             Map.of("expected", Long.toString(expectedVersion),
                 "actual", Long.toString(nowMeta.getPointerVersion())));
       }
 
       var outMeta = tables.metaFor(tableId, tsNow);
+
       return UpdateTableSchemaResponse.newBuilder()
               .setTable(updated)
               .setMeta(outMeta)
               .build();
-      }), corrId()
-    );
+    }), correlationId());
   }
 
   @Override
-  public Uni<RenameTableResponse> renameTable(RenameTableRequest req) {
+  public Uni<RenameTableResponse> renameTable(RenameTableRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "table.write");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
+
+      authz.require(principalContext, "table.write");
 
       var tsNow = nowTs();
 
-      var tableId = req.getTableId();
-      ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
+      var tableId = request.getTableId();
+      ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
 
-      var cur = tables.get(tableId).orElseThrow(() ->
-          GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
+      var currentNamespace = tables.get(tableId).orElseThrow(() ->
+          GrpcErrors.notFound(correlationId, "table", Map.of("id", tableId.getId())));
 
-      var newName = mustNonEmpty(req.getNewDisplayName(), "display_name", corr);
-      if (newName.equals(cur.getDisplayName())) {
+      var newName = mustNonEmpty(request.getNewDisplayName(), "display_name", correlationId);
+      if (newName.equals(currentNamespace.getDisplayName())) {
         var metaNoop = tables.metaFor(tableId, tsNow);
-        enforcePreconditions(corr, metaNoop, req.getPrecondition());
-        return RenameTableResponse.newBuilder().setTable(cur).setMeta(metaNoop).build();
+        enforcePreconditions(correlationId, metaNoop, request.getPrecondition());
+
+        return RenameTableResponse.newBuilder()
+            .setTable(currentNamespace).setMeta(metaNoop).build();
       }
 
       var meta = tables.metaFor(tableId, tsNow);
       long expectedVersion = meta.getPointerVersion();
-      enforcePreconditions(corr, meta, req.getPrecondition());
+      enforcePreconditions(correlationId, meta, request.getPrecondition());
 
       try {
         tables.rename(tableId, newName, expectedVersion);
       } catch (BaseRepository.NameConflictException nce) {
-        throw GrpcErrors.conflict(corr, "table.already_exists",
+        throw GrpcErrors.conflict(correlationId, "table.already_exists",
             Map.of("display_name", newName));
       } catch (BaseRepository.PreconditionFailedException pfe) {
         var nowMeta = tables.metaFor(tableId, tsNow);
-        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+        throw GrpcErrors.preconditionFailed(correlationId, "version_mismatch",
             Map.of("expected", Long.toString(expectedVersion),
                 "actual", Long.toString(nowMeta.getPointerVersion())));
       }
 
       var outMeta = tables.metaFor(tableId, tsNow);
-      var updated = tables.get(tableId).orElse(cur);
+      var updated = tables.get(tableId).orElse(currentNamespace);
+
       return RenameTableResponse.newBuilder().setTable(updated).setMeta(outMeta).build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<MoveTableResponse> moveTable(MoveTableRequest req) {
+  public Uni<MoveTableResponse> moveTable(MoveTableRequest request) {
     return mapFailures(runWithRetry(() -> {
-      final var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "table.write");
+      final var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
 
-      var tsNow = nowTs();
+      authz.require(principalContext, "table.write");
 
-      final var tableId = req.getTableId();
-      ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
+      final var tableId = request.getTableId();
+      ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
 
-      final var tenant = p.getTenantId();
+      final var tenantId = principalContext.getTenantId();
 
-      final var cur = tables.get(tableId).orElseThrow(() ->
-          GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
+      final var currentNamespace = tables.get(tableId).orElseThrow(() ->
+          GrpcErrors.notFound(correlationId, "table", Map.of("id", tableId.getId())));
 
-      if (!req.hasNewNamespaceId() || req.getNewNamespaceId().getId().isBlank()) {
-        throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "new_namespace_id"));
+      if (!request.hasNewNamespaceId() || request.getNewNamespaceId().getId().isBlank()) {
+        throw GrpcErrors.invalidArgument(correlationId, null, Map.of("field", "new_namespace_id"));
       }
 
-      final var newNsId = req.getNewNamespaceId();
-      ensureKind(newNsId, ResourceKind.RK_NAMESPACE, "new_namespace_id", corr);
+      final var newNamespaceId = request.getNewNamespaceId();
+      ensureKind(newNamespaceId, ResourceKind.RK_NAMESPACE, "new_namespace_id", correlationId);
 
-      final var newCatId = namespaces.findOwnerCatalog(tenant, newNsId.getId())
+      final var tsNow = nowTs();
+      final var newCatalogId = namespaces.findOwnerCatalog(tenantId, newNamespaceId.getId())
           .orElseThrow(() -> GrpcErrors.notFound(
-              corr, "catalog", Map.of("reason", "namespace_owner_missing", "namespace_id", newNsId.getId())));
+              correlationId, "catalog",
+                  Map.of("reason", "namespace_owner_missing",
+                      "namespace_id", newNamespaceId.getId())));
 
-      if (namespaces.get(newCatId, newNsId).isEmpty()) {
-        throw GrpcErrors.notFound(corr, "namespace", Map.of("id", newNsId.getId()));
+      if (namespaces.get(newCatalogId, newNamespaceId).isEmpty()) {
+        throw GrpcErrors.notFound(correlationId, "namespace", Map.of("id", newNamespaceId.getId()));
       }
 
       final var targetName =
-          (req.getNewDisplayName() != null && !req.getNewDisplayName().isBlank())
-              ? req.getNewDisplayName()
-              : cur.getDisplayName();
+          (request.getNewDisplayName() != null && !request.getNewDisplayName().isBlank())
+              ? request.getNewDisplayName()
+              : currentNamespace.getDisplayName();
 
-      final boolean sameNs = cur.getNamespaceId().getId().equals(newNsId.getId());
-      final boolean sameName = cur.getDisplayName().equals(targetName);
+      final boolean sameNs = currentNamespace
+          .getNamespaceId().getId().equals(newNamespaceId.getId());
+      final boolean sameName = currentNamespace.getDisplayName().equals(targetName);
       if (sameNs && sameName) {
         final var metaNoop = tables.metaFor(tableId, tsNow);
-        enforcePreconditions(corr, metaNoop, req.getPrecondition());
-        return MoveTableResponse.newBuilder().setTable(cur).setMeta(metaNoop).build();
+        enforcePreconditions(correlationId, metaNoop, request.getPrecondition());
+
+        return MoveTableResponse.newBuilder().setTable(currentNamespace).setMeta(metaNoop).build();
       }
 
-      final var updated = cur.toBuilder()
+      final var updated = currentNamespace.toBuilder()
           .setDisplayName(targetName)
-          .setCatalogId(newCatId)
-          .setNamespaceId(newNsId)
+          .setCatalogId(newCatalogId)
+          .setNamespaceId(newNamespaceId)
           .build();
 
       var meta = tables.metaFor(tableId, tsNow);
       long expectedVersion = meta.getPointerVersion();
-      enforcePreconditions(corr, meta, req.getPrecondition());
+      enforcePreconditions(correlationId, meta, request.getPrecondition());
 
       try {
-        tables.move(updated, cur.getDisplayName(), cur.getCatalogId(), cur.getNamespaceId(),
-            newCatId, newNsId, expectedVersion);
+        tables.move(updated, currentNamespace.getDisplayName(),
+            currentNamespace.getCatalogId(), currentNamespace.getNamespaceId(),
+                newCatalogId, newNamespaceId, expectedVersion);
       } catch (BaseRepository.NameConflictException nce) {
-        throw GrpcErrors.conflict(corr, "table.already_exists",
+        throw GrpcErrors.conflict(correlationId, "table.already_exists",
             Map.of("display_name", targetName));
       } catch (BaseRepository.PreconditionFailedException pfe) {
         var nowMeta = tables.metaFor(tableId, tsNow);
-        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+        throw GrpcErrors.preconditionFailed(correlationId, "version_mismatch",
             Map.of("expected", Long.toString(expectedVersion),
                 "actual", Long.toString(nowMeta.getPointerVersion())));
       }
 
       final var outMeta = tables.metaFor(tableId, tsNow);
+
       return MoveTableResponse.newBuilder().setTable(updated).setMeta(outMeta).build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<DeleteTableResponse> deleteTable(DeleteTableRequest req) {
+  public Uni<DeleteTableResponse> deleteTable(DeleteTableRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "table.write");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
+
+      authz.require(principalContext, "table.write");
 
       var tsNow = nowTs();
 
-      var tableId = req.getTableId();
-      ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
+      var tableId = request.getTableId();
+      ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
 
-      var tenant = tableId.getTenantId();
-      var canonKey = Keys.tblCanonicalPtr(tenant, tableId.getId());
-      var canonPtr = ptr.get(canonKey);
+      var tenantId = tableId.getTenantId();
+      var cannonicalKey = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+      var cannonicalPtr = ptr.get(cannonicalKey);
 
-      if (canonPtr.isEmpty()) {
+      if (cannonicalPtr.isEmpty()) {
         tables.delete(tableId);
         var safe = tables.metaForSafe(tableId, tsNow);
+        
         return DeleteTableResponse.newBuilder().setMeta(safe).build();
       }
 
       var meta = tables.metaFor(tableId, tsNow);
       long expectedVersion = meta.getPointerVersion();
-      enforcePreconditions(corr, meta, req.getPrecondition());
+      enforcePreconditions(correlationId, meta, request.getPrecondition());
 
       try {
         tables.deleteWithPrecondition(tableId, expectedVersion);
-        } catch (BaseRepository.PreconditionFailedException pfe) {
-          var nowMeta = tables.metaFor(tableId, tsNow);
-          throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
-              Map.of("expected", Long.toString(expectedVersion),
-                  "actual", Long.toString(nowMeta.getPointerVersion())));
-        } catch (BaseRepository.NotFoundException nfe) {
-          throw GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId()));
-        }
+      } catch (BaseRepository.PreconditionFailedException pfe) {
+        var nowMeta = tables.metaFor(tableId, tsNow);
+        throw GrpcErrors.preconditionFailed(correlationId, "version_mismatch",
+            Map.of("expected", Long.toString(expectedVersion),
+                "actual", Long.toString(nowMeta.getPointerVersion())));
+      } catch (BaseRepository.NotFoundException nfe) {
+        throw GrpcErrors.notFound(correlationId, "table", Map.of("id", tableId.getId()));
+      }
 
       return DeleteTableResponse.newBuilder().setMeta(meta).build();
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<CreateSnapshotResponse> createSnapshot(CreateSnapshotRequest req) {
+  public Uni<CreateSnapshotResponse> createSnapshot(CreateSnapshotRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "table.write");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
+
+      authz.require(principalContext, "table.write");
 
       var tsNow = nowTs();
 
-      var tenant = p.getTenantId();
-      var idemKey = req.hasIdempotency() ? req.getIdempotency().getKey() : "";
+      var tenantId = principalContext.getTenantId();
+      var idempotencyKey = request.hasIdempotency() ? request.getIdempotency().getKey() : "";
 
-      byte[] fp = req.getSpec().toBuilder().build().toByteArray();
+      byte[] fingerprint = request.getSpec().toBuilder().build().toByteArray();
 
-      var out = MutationOps.createProto(
-          tenant,
+      var snapshotProto = MutationOps.createProto(
+          tenantId,
           "CreateSnapshot",
-          idemKey,
-          () -> fp,
+          idempotencyKey,
+          () -> fingerprint,
           () -> {
             var snap = Snapshot.newBuilder()
-                .setTableId(req.getSpec().getTableId())
-                .setSnapshotId(req.getSpec().getSnapshotId())
+                .setTableId(request.getSpec().getTableId())
+                .setSnapshotId(request.getSpec().getSnapshotId())
                 .setIngestedAt(tsNow)
-                .setUpstreamCreatedAt(req.getSpec().getUpstreamCreatedAt())
-                .setParentSnapshotId(req.getSpec().getParentSnapshotId())
+                .setUpstreamCreatedAt(request.getSpec().getUpstreamCreatedAt())
+                .setParentSnapshotId(request.getSpec().getParentSnapshotId())
                 .build();
             try {
               snapshots.create(snap);
             } catch (BaseRepository.NameConflictException e) {
-              if (!idemKey.isBlank()) {
-                var existing = snapshots.get(req.getSpec().getTableId(), req.getSpec().getSnapshotId());
+              if (!idempotencyKey.isBlank()) {
+                var existing = snapshots.get(
+                    request.getSpec().getTableId(), request.getSpec().getSnapshotId());
                 if (existing.isPresent()) {
-                  return new IdempotencyGuard.CreateResult<>(existing.get(), existing.get().getTableId());
+                  return new IdempotencyGuard.CreateResult<>(
+                      existing.get(), existing.get().getTableId());
                 }
               }
               throw GrpcErrors.conflict(
-                  corr, "snapshot.already_exists",
-                  Map.of("id", Long.toString(req.getSpec().getSnapshotId())));
+                  correlationId, "snapshot.already_exists",
+                  Map.of("id", Long.toString(request.getSpec().getSnapshotId())));
             }
 
             return new IdempotencyGuard.CreateResult<>(snap, snap.getTableId());
           },
-          (s) -> snapshots.metaFor(s.getTableId(), s.getSnapshotId(), tsNow),
+          (snapshot) -> snapshots.metaFor(snapshot.getTableId(), snapshot.getSnapshotId(), tsNow),
           idempotencyStore,
           tsNow,
           IDEMPOTENCY_TTL_SECONDS,
-          this::corrId,
+          this::correlationId,
           Snapshot::parseFrom
       );
 
-      return CreateSnapshotResponse.newBuilder().setMeta(out.meta).build();
-    }), corrId());
+      return CreateSnapshotResponse.newBuilder().setMeta(snapshotProto.meta).build();
+    }), correlationId());
   }
 
   @Override
-  public Uni<DeleteSnapshotResponse> deleteSnapshot(DeleteSnapshotRequest req) {
+  public Uni<DeleteSnapshotResponse> deleteSnapshot(DeleteSnapshotRequest request) {
     return mapFailures(runWithRetry(() -> {
-      var p = principal.get();
-      var corr = p.getCorrelationId();
-      authz.require(p, "table.write");
+      var principalContext = principal.get();
+      var correlationId = principalContext.getCorrelationId();
+
+      authz.require(principalContext, "table.write");
 
       var tsNow = nowTs();
       
-      var tableId = req.getTableId();
-      long snapshotId = req.getSnapshotId();
-      ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
+      var tableId = request.getTableId();
+      long snapshotId = request.getSnapshotId();
+      ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
 
       var meta = snapshots.metaFor(tableId, snapshotId, tsNow);
       long expectedVersion = meta.getPointerVersion();
-      enforcePreconditions(corr, meta, req.getPrecondition());
+      enforcePreconditions(correlationId, meta, request.getPrecondition());
 
       try {
         snapshots.deleteWithPrecondition(tableId, snapshotId, expectedVersion);
       } catch (BaseRepository.PreconditionFailedException pfe) {
         var nowMeta = snapshots.metaFor(tableId, snapshotId, tsNow);
-        throw GrpcErrors.preconditionFailed(corr, "version_mismatch",
+        throw GrpcErrors.preconditionFailed(correlationId, "version_mismatch",
             Map.of("expected", Long.toString(expectedVersion),
                 "actual", Long.toString(nowMeta.getPointerVersion())));
       } catch (BaseRepository.NotFoundException nfe) {
-        throw GrpcErrors.notFound(corr, "snapshot",
+        throw GrpcErrors.notFound(correlationId, "snapshot",
             Map.of("id", Long.toString(snapshotId)));
       }
 
       return DeleteSnapshotResponse.newBuilder().setMeta(meta).build();
-    }), corrId());
+    }), correlationId());
   }
 }

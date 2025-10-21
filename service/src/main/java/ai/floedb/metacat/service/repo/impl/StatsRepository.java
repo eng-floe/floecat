@@ -20,11 +20,10 @@ import ai.floedb.metacat.service.storage.PointerStore;
 @ApplicationScoped
 public class StatsRepository extends BaseRepository<TableStats> {
 
-  protected StatsRepository() { super(); }
-
   @Inject
-  public StatsRepository(PointerStore ptr, BlobStore blobs) {
-    super(ptr, blobs, TableStats::parseFrom, TableStats::toByteArray, "application/x-protobuf");
+  public StatsRepository(PointerStore pointerStore, BlobStore blobs) {
+    super(pointerStore, blobs, TableStats::parseFrom,
+        TableStats::toByteArray, "application/x-protobuf");
   }
 
   public Optional<TableStats> getTableStats(ResourceId tableId, long snapshotId) {
@@ -33,94 +32,109 @@ public class StatsRepository extends BaseRepository<TableStats> {
   }
 
   public void putTableStats(ResourceId tableId, long snapshotId, TableStats stats) {
-    final String tid = tableId.getTenantId();
-    final String tbl = tableId.getId();
-    final String key = Keys.snapTableStatsPtr(tid, tbl, snapshotId);
-    final String blob = Keys.snapTableStatsBlob(tid, tbl, snapshotId);
+    final String tenantId = tableId.getTenantId();
+    final String key = Keys.snapTableStatsPtr(tenantId, tableId.getId(), snapshotId);
+    final String blobUri = Keys.snapTableStatsBlob(tenantId, tableId.getId(), snapshotId);
 
-    putBlob(blob, stats);
-    reserveAllOrRollback(key, blob);
+    putBlob(blobUri, stats);
+    reserveAllOrRollback(key, blobUri);
   }
 
   public boolean deleteTableStats(ResourceId tableId, long snapshotId) {
-    final String tid = tableId.getTenantId();
-    final String tbl = tableId.getId();
-    final String key = Keys.snapTableStatsPtr(tid, tbl, snapshotId);
-    final String blob = Keys.snapTableStatsBlob(tid, tbl, snapshotId);
+    final String tenantId = tableId.getTenantId();
+    final String key = Keys.snapTableStatsPtr(tenantId, tableId.getId(), snapshotId);
+    final String blobUri = Keys.snapTableStatsBlob(tenantId, tableId.getId(), snapshotId);
 
-    ptr.get(key).ifPresent(p -> compareAndDeleteOrFalse(key, p.getVersion()));
-    deleteQuietly(() -> blobs.delete(blob));
+    pointerStore.get(key).ifPresent(pointer -> compareAndDeleteOrFalse(key, pointer.getVersion()));
+    deleteQuietly(() -> blobStore.delete(blobUri));
     return true;
   }
 
   public Optional<ColumnStats> getColumnStats(ResourceId tableId, long snapshotId, String columnId) {
-    final String key = Keys.snapColStatsPtr(tableId.getTenantId(), tableId.getId(), snapshotId, columnId);
-    var p = ptr.get(key);
-    if (p.isEmpty()) return Optional.empty();
+    final String key = Keys.snapColStatsPtr(
+        tableId.getTenantId(), tableId.getId(), snapshotId, columnId);
+
+    var pointer = pointerStore.get(key);
+    if (pointer.isEmpty()) {
+      return Optional.empty();
+    }
+
     try {
-      return Optional.of(ColumnStats.parseFrom(blobs.get(p.get().getBlobUri())));
+      return Optional.of(ColumnStats.parseFrom(blobStore.get(pointer.get().getBlobUri())));
     } catch (Exception e) {
-      throw new CorruptionException("parse failed: " + p.get().getBlobUri(), e);
+      throw new CorruptionException("parse failed: " + pointer.get().getBlobUri(), e);
     }
   }
 
   public void putColumnStats(ResourceId tableId, long snapshotId, ColumnStats cs) {
-    final String tid = tableId.getTenantId();
-    final String tbl = tableId.getId();
-    final String key = Keys.snapColStatsPtr(tid, tbl, snapshotId, cs.getColumnId());
-    final String blob = Keys.snapColStatsBlob(tid, tbl, snapshotId, cs.getColumnId());
+    final String tenantId = tableId.getTenantId();
+    final String key = Keys.snapColStatsPtr(
+        tenantId, tableId.getId(), snapshotId, cs.getColumnId());
+    final String blobUri = Keys.snapColStatsBlob(
+        tenantId, tableId.getId(), snapshotId, cs.getColumnId());
     
-    putBlobStrictBytes(blob, cs.toByteArray());
-    reserveAllOrRollback(key, blob);
+    putBlobStrictBytes(blobUri, cs.toByteArray());
+    reserveAllOrRollback(key, blobUri);
   }
 
-  public int putColumnStatsBatch(ResourceId tableId, long snapshotId, List<ColumnStats> cols) {
+  public int putColumnStatsBatch(ResourceId tableId,
+      long snapshotId, List<ColumnStats> columnStatsBatch) {
     int created = 0;
-    for (var cs : cols) {
-      final var key = Keys.snapColStatsPtr(tableId.getTenantId(), tableId.getId(), snapshotId, cs.getColumnId());
-      if (ptr.get(key).isEmpty()) {
+    for (var columnStats : columnStatsBatch) {
+      final var key = Keys.snapColStatsPtr(
+          tableId.getTenantId(), tableId.getId(), snapshotId, columnStats.getColumnId());
+      if (pointerStore.get(key).isEmpty()) {
         created++;
       }
-      putColumnStats(tableId, snapshotId, cs);
+      putColumnStats(tableId, snapshotId, columnStats);
     }
     return created;
   }
 
-  public List<ColumnStats> listColumnStats(ResourceId tableId, long snapshotId, int limit, String token, StringBuilder nextOut) {
-    final String pfx = Keys.snapColStatsPrefix(tableId.getTenantId(), tableId.getId(), snapshotId);
-    var rows = ptr.listPointersByPrefix(pfx, Math.max(1, limit), token, nextOut);
+  public List<ColumnStats> listColumnStats(ResourceId tableId,
+      long snapshotId, int limit, String token, StringBuilder nextOut) {
+    final String columnStatsPrefix = Keys.snapColStatsPrefix(
+        tableId.getTenantId(), tableId.getId(), snapshotId);
+    var rows = pointerStore.listPointersByPrefix(
+        columnStatsPrefix, Math.max(1, limit), token, nextOut);
 
     var uris = new ArrayList<String>(rows.size());
-    for (var r : rows) uris.add(r.blobUri());
+    for (var row : rows) {
+      uris.add(row.blobUri());
+    }
 
-    var blobsMap = blobs.getBatch(uris);
-    var out = new ArrayList<ColumnStats>(rows.size());
-    for (var r : rows) {
-      byte[] bytes = blobsMap.get(r.blobUri());
+    var blobsMap = blobStore.getBatch(uris);
+    var columnStats = new ArrayList<ColumnStats>(rows.size());
+    for (var row : rows) {
+      byte[] bytes = blobsMap.get(row.blobUri());
       if (bytes == null) {
         continue;
       }
-      try { out.add(ColumnStats.parseFrom(bytes)); }
+      try {
+        columnStats.add(ColumnStats.parseFrom(bytes));
+      }
       catch (Exception e) {
-        throw new CorruptionException("parse failed: " + r.blobUri(), e);
+        throw new CorruptionException("parse failed: " + row.blobUri(), e);
       }
     }
-    return out;
+    return columnStats;
   }
 
   public boolean deleteAllStatsForSnapshot(ResourceId tableId, long snapshotId) {
-    final String tid = tableId.getTenantId();
-    final String tbl = tableId.getId();
+    final String tenantId = tableId.getTenantId();
 
     deleteTableStats(tableId, snapshotId);
 
-    final String pfx = Keys.snapColStatsPrefix(tid, tbl, snapshotId);
-    String token = ""; var next = new StringBuilder();
+    final String pfx = Keys.snapColStatsPrefix(tenantId, tableId.getId(), snapshotId);
+    String token = "";
+    var next = new StringBuilder();
     do {
-      var rows = ptr.listPointersByPrefix(pfx, 200, token, next);
-      for (var r : rows) {
-        ptr.get(r.key()).ifPresent(p -> compareAndDeleteOrFalse(r.key(), p.getVersion()));
-        deleteQuietly(() -> blobs.delete(r.blobUri()));
+      var rows = pointerStore.listPointersByPrefix(pfx, 200, token, next);
+      for (var row : rows) {
+        pointerStore.get(row.key()).ifPresent(
+            pointer -> compareAndDeleteOrFalse(row.key(), pointer.getVersion()));
+
+        deleteQuietly(() -> blobStore.delete(row.blobUri()));
       }
       token = next.toString(); next.setLength(0);
     } while (!token.isEmpty());
@@ -129,21 +143,22 @@ public class StatsRepository extends BaseRepository<TableStats> {
   }
 
   public MutationMeta metaForTableStats(ResourceId tableId, long snapshotId, Timestamp nowTs) {
-    final String t = tableId.getTenantId();
-    final String tbl = tableId.getId();
-    final String key = Keys.snapTableStatsPtr(t, tbl, snapshotId);
-    final var p = ptr.get(key).orElseThrow(() ->
-        new IllegalStateException("Pointer missing for table-stats: " + tbl + "@" + snapshotId));
-    return safeMetaOrDefault(key, p.getBlobUri(), nowTs);
+    final String tenantId = tableId.getTenantId();
+    final String key = Keys.snapTableStatsPtr(tenantId, tableId.getId(), snapshotId);
+    final var pointer = pointerStore.get(key).orElseThrow(() ->
+        new IllegalStateException("Pointer missing for table-stats: " + tableId.getId() + "@" + snapshotId));
+        
+    return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
   }
 
   public MutationMeta metaForColumnStats(ResourceId tableId, long snapshotId, String columnId, Timestamp nowTs) {
-    final String t = tableId.getTenantId();
-    final String tbl = tableId.getId();
-    final String key = Keys.snapColStatsPtr(t, tbl, snapshotId, columnId);
-    final var p = ptr.get(key).orElseThrow(() ->
+    final String tenantId = tableId.getTenantId();
+    final String key = Keys.snapColStatsPtr(tenantId, tableId.getId(), snapshotId, columnId);
+    final var pointer = pointerStore.get(key).orElseThrow(() ->
         new IllegalStateException(
-            "Pointer missing for column-stats: " + tbl + "/" + columnId + "@" + snapshotId));
-    return safeMetaOrDefault(key, p.getBlobUri(), nowTs);
+            "Pointer missing for column-stats: "
+                + tableId.getId() + "/" + columnId + "@" + snapshotId));
+
+    return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
   }
 }

@@ -17,9 +17,9 @@ import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
 @ApplicationScoped
 public class ReconcilerScheduler {
 
-  @Inject GrpcClients mc;
+  @Inject GrpcClients clients;
   @Inject ReconcileJobStore jobs;
-  @Inject ReconcilerService svc;
+  @Inject ReconcilerService reconcilerService;
 
   private final AtomicBoolean running = new AtomicBoolean(false);
 
@@ -27,69 +27,72 @@ public class ReconcilerScheduler {
     pollOnce();
   }
 
-  @Scheduled(every = "{reconciler.pollEvery:10s}", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+  @Scheduled(
+      every = "{reconciler.pollEvery:10s}",
+      concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
   void pollOnce() {
     if (!running.compareAndSet(false, true)) {
       return;
     }
     try {
       var lease = jobs.leaseNext().orElse(null);
-      if (lease == null) return;
+      if (lease == null) {
+        return;
+      }
 
-      long now = System.currentTimeMillis();
-      jobs.markRunning(lease.jobId, now);
+      jobs.markRunning(lease.jobId, System.currentTimeMillis());
 
       try {
-        var rid = ResourceId.newBuilder()
+        var resourceId = ResourceId.newBuilder()
             .setTenantId(lease.tenantId)
             .setId(lease.connectorId)
             .setKind(ResourceKind.RK_CONNECTOR)
             .build();
 
-        Connector conn = mc.connector().getConnector(
-            GetConnectorRequest.newBuilder().setConnectorId(rid).build()
+        Connector connector = clients.connector().getConnector(
+            GetConnectorRequest.newBuilder().setConnectorId(resourceId).build()
         ).getConnector();
 
-        ConnectorConfig cfg = toConfig(conn);
+        ConnectorConfig cfg = toConfig(connector);
 
-        var result = svc.reconcile(cfg, lease.fullRescan);
+        var result = reconcilerService.reconcile(cfg, lease.fullRescan);
 
         long finished = System.currentTimeMillis();
         if (result.ok()) {
           jobs.markSucceeded(lease.jobId, finished, result.scanned, result.changed);
         } else {
-          jobs.markFailed(lease.jobId, finished, result.message(), result.scanned, result.changed, result.errors);
+          jobs.markFailed(lease.jobId, finished, result.message(),
+              result.scanned, result.changed, result.errors);
         }
       } catch (Exception e) {
-        long finished = System.currentTimeMillis();
-        jobs.markFailed(lease.jobId, finished, e.getMessage(), 0, 0, 1);
+        jobs.markFailed(lease.jobId, System.currentTimeMillis(), e.getMessage(), 0, 0, 1);
       }
     } finally {
       running.set(false);
     }
   }
 
-  private static ConnectorConfig toConfig(Connector c) {
-    Kind kind = switch (c.getKind()) {
+  private static ConnectorConfig toConfig(Connector connector) {
+    Kind kind = switch (connector.getKind()) {
       case CK_ICEBERG_REST -> Kind.ICEBERG_REST;
       case CK_DELTA        -> Kind.DELTA;
       case CK_GLUE         -> Kind.GLUE;
       case CK_UNITY        -> Kind.UNITY;
-      default -> throw new IllegalArgumentException("Unsupported kind: " + c.getKind());
+      default -> throw new IllegalArgumentException("Unsupported kind: " + connector.getKind());
     };
     var auth = new ConnectorConfig.Auth(
-        c.getAuth().getScheme(),
-        c.getAuth().getPropsMap(),
-        c.getAuth().getHeaderHintsMap(),
-        c.getAuth().getSecretRef()
+        connector.getAuth().getScheme(),
+        connector.getAuth().getPropsMap(),
+        connector.getAuth().getHeaderHintsMap(),
+        connector.getAuth().getSecretRef()
     );
     return new ConnectorConfig(
         kind,
-        c.getDisplayName(),
-        c.getTargetCatalogDisplayName(),
-        c.getTargetTenantId(),
-        c.getUri(),
-        c.getOptionsMap(),
+        connector.getDisplayName(),
+        connector.getTargetCatalogDisplayName(),
+        connector.getTargetTenantId(),
+        connector.getUri(),
+        connector.getOptionsMap(),
         auth
     );
   }

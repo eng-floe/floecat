@@ -22,8 +22,9 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
   protected SnapshotRepository() { super(); }
 
   @Inject
-  public SnapshotRepository(PointerStore ptr, BlobStore blobs) {
-    super(ptr, blobs, Snapshot::parseFrom, Snapshot::toByteArray, "application/x-protobuf");
+  public SnapshotRepository(PointerStore pointerStore, BlobStore blobs) {
+    super(pointerStore, blobs, Snapshot::parseFrom,
+        Snapshot::toByteArray, "application/x-protobuf");
   }
 
   public Optional<Snapshot> get(ResourceId tableId, long snapshotId) {
@@ -46,14 +47,14 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     final String token = "";
     final StringBuilder next = new StringBuilder();
 
-    var rows = ptr.listPointersByPrefix(pfx, 1, token, next);
+    var rows = pointerStore.listPointersByPrefix(pfx, 1, token, next);
     if (rows.isEmpty()) {
       return Optional.empty();
     }
 
     var latest = rows.get(0);
     try {
-      return Optional.of(Snapshot.parseFrom(blobs.get(latest.blobUri())));
+      return Optional.of(Snapshot.parseFrom(blobStore.get(latest.blobUri())));
     } catch (Exception e) {
       throw new CorruptionException("parse failed: " + latest.blobUri(), e);
     }
@@ -61,8 +62,7 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
 
   public Optional<Snapshot> getAsOf(ResourceId tableId, Timestamp asOf) {
     final String tenantId = tableId.getTenantId();
-    final String tableUUID = tableId.getId();
-    final String pfx = Keys.snapPtrByTimePrefix(tenantId, tableUUID);
+    final String pfx = Keys.snapPtrByTimePrefix(tenantId, tableId.getId());
 
     final long asOfMs = Timestamps.toMillis(asOf);
 
@@ -70,24 +70,24 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     StringBuilder next = new StringBuilder();
 
     do {
-      var rows = ptr.listPointersByPrefix(pfx, 200, token, next);
-      for (var r : rows) {
+      var rows = pointerStore.listPointersByPrefix(pfx, 200, token, next);
+      for (var row : rows) {
         final byte[] bytes;
         try {
-          bytes = blobs.get(r.blobUri());
+          bytes = blobStore.get(row.blobUri());
         } catch (Exception e) {
-          throw new CorruptionException("parse failed: " + r.blobUri(), e);
+          throw new CorruptionException("parse failed: " + row.blobUri(), e);
         }
-        final Snapshot snap;
+        final Snapshot snapshot;
         try {
-          snap = Snapshot.parseFrom(bytes);
+          snapshot = Snapshot.parseFrom(bytes);
         } catch (Exception e) {
-          throw new CorruptionException("parse failed: " + r.blobUri(), e);
+          throw new CorruptionException("parse failed: " + row.blobUri(), e);
         }
 
-        long createdMs = Timestamps.toMillis(snap.getUpstreamCreatedAt());
+        long createdMs = Timestamps.toMillis(snapshot.getUpstreamCreatedAt());
         if (createdMs <= asOfMs) {
-          return Optional.of(snap);
+          return Optional.of(snapshot);
         }
       }
 
@@ -101,65 +101,74 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
   public void create(Snapshot snapshot) {
     var tableId = snapshot.getTableId();
     var tenantId = tableId.getTenantId();
-    var tableUUID = tableId.getId();
     long snapId = snapshot.getSnapshotId();
-    long created = com.google.protobuf.util.Timestamps.toMillis(snapshot.getUpstreamCreatedAt());
+    long created = Timestamps.toMillis(snapshot.getUpstreamCreatedAt());
 
-    String byId = Keys.snapPtrById(tenantId, tableUUID, snapId);
-    String byTime = Keys.snapPtrByTime(tenantId, tableUUID, snapId, created);
-    String blob = Keys.snapBlob(tenantId, tableUUID, snapId);
+    String byId = Keys.snapPtrById(tenantId, tableId.getId(), snapId);
+    String byTime = Keys.snapPtrByTime(tenantId, tableId.getId(), snapId, created);
+    String blobUri = Keys.snapBlob(tenantId, tableId.getId(), snapId);
 
-    putBlob(blob, snapshot);
-    reserveAllOrRollback(byId, blob, byTime, blob);
+    putBlob(blobUri, snapshot);
+    reserveAllOrRollback(byId, blobUri, byTime, blobUri);
   }
 
   public boolean delete(ResourceId tableId, long snapshotId) {
-    var tid = tableId.getTenantId();
-    var tbl = tableId.getId();
+    var tenantId = tableId.getTenantId();
 
-    String byId = Keys.snapPtrById(tid, tbl, snapshotId);
+    String byId = Keys.snapPtrById(tenantId, tableId.getId(), snapshotId);
     long createdMs = get(byId)
         .map(s -> com.google.protobuf.util.Timestamps.toMillis(s.getUpstreamCreatedAt()))
         .orElse(0L);
-    String byTime = Keys.snapPtrByTime(tid, tbl, snapshotId, createdMs);
-    String blob = Keys.snapBlob(tid, tbl, snapshotId);
+    String byTime = Keys.snapPtrByTime(tenantId, tableId.getId(), snapshotId, createdMs);
+    String blobUri = Keys.snapBlob(tenantId, tableId.getId(), snapshotId);
 
-    ptr.get(byTime).ifPresent(p -> compareAndDeleteOrFalse(byTime, p.getVersion()));
-    ptr.get(byId).ifPresent(p -> compareAndDeleteOrFalse(byId, p.getVersion()));
-    deleteQuietly(() -> blobs.delete(blob));
+    pointerStore.get(byTime).ifPresent(
+        pointer -> compareAndDeleteOrFalse(byTime, pointer.getVersion()));
+    pointerStore.get(byId).ifPresent(
+        pointer -> compareAndDeleteOrFalse(byId, pointer.getVersion()));
+
+    deleteQuietly(() -> blobStore.delete(blobUri));
+
     return true;
   }
 
   public boolean deleteWithPrecondition(ResourceId tableId, long snapshotId, long expectedVersion) {
-    var tid = tableId.getTenantId();
-    var tbl = tableId.getId();
+    var tenantId = tableId.getTenantId();
 
-    String byId = Keys.snapPtrById(tid, tbl, snapshotId);
+    String byId = Keys.snapPtrById(tenantId, tableId.getId(), snapshotId);
     long createdMs = get(byId)
-        .map(s -> com.google.protobuf.util.Timestamps.toMillis(s.getUpstreamCreatedAt()))
+        .map(s -> Timestamps.toMillis(s.getUpstreamCreatedAt()))
         .orElse(0L);
-    String byTime = Keys.snapPtrByTime(tid, tbl, snapshotId, createdMs);
-    String blob = Keys.snapBlob(tid, tbl, snapshotId);
+    String byTime = Keys.snapPtrByTime(tenantId, tableId.getId(), snapshotId, createdMs);
+    String blobUri = Keys.snapBlob(tenantId, tableId.getId(), snapshotId);
 
-    if (!compareAndDeleteOrFalse(byId, expectedVersion)) return false;
-    ptr.get(byTime).ifPresent(p -> compareAndDeleteOrFalse(byTime, p.getVersion()));
-    deleteQuietly(() -> blobs.delete(blob));
+    if (!compareAndDeleteOrFalse(byId, expectedVersion)) {
+      return false;
+    }
+
+    pointerStore.get(byTime).ifPresent(
+        pointer -> compareAndDeleteOrFalse(byTime, pointer.getVersion()));
+
+    deleteQuietly(() -> blobStore.delete(blobUri));
+
     return true;
   }
 
   public MutationMeta metaFor(ResourceId tableId, long snapshotId, Timestamp nowTs) {
-    var t = tableId.getTenantId();
-    var key = Keys.snapPtrById(t, tableId.getId(), snapshotId);
-    var p = ptr.get(key).orElseThrow(
+    var tenantId = tableId.getTenantId();
+    var key = Keys.snapPtrById(tenantId, tableId.getId(), snapshotId);
+
+    var pointer = pointerStore.get(key).orElseThrow(
         () -> new IllegalStateException(
             "Pointer missing for snapshot: " + Long.toString(snapshotId)));
-    return safeMetaOrDefault(key, p.getBlobUri(), nowTs);
+
+    return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
   }
 
   public MutationMeta metaForSafe(ResourceId tableId, long snapshotId, Timestamp nowTs) {
-    var t = tableId.getTenantId();
-    var key = Keys.snapPtrById(t, tableId.getId(), snapshotId);
-    var blob = Keys.snapBlob(t, tableId.getId(), snapshotId);
-    return safeMetaOrDefault(key, blob, nowTs);
+    var tenantId = tableId.getTenantId();
+    var key = Keys.snapPtrById(tenantId, tableId.getId(), snapshotId);
+    var blobUri = Keys.snapBlob(tenantId, tableId.getId(), snapshotId);
+    return safeMetaOrDefault(key, blobUri, nowTs);
   }
 }

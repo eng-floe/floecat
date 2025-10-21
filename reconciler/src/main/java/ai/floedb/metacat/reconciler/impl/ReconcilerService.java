@@ -22,24 +22,26 @@ import static ai.floedb.metacat.reconciler.util.NameParts.split;
 @ApplicationScoped
 public class ReconcilerService {
 
-  @Inject GrpcClients mc;
+  @Inject GrpcClients clients;
 
   public Result reconcile(ConnectorConfig cfg, boolean fullRescan) throws Exception {
-    long scanned = 0, changed = 0, errors = 0;
+    long scanned = 0;
+    long changed = 0;
+    long errors = 0;
 
-    try (MetacatConnector c = ConnectorFactory.create(cfg)) {
-      var catId = ensureCatalog(cfg.targetCatalogDisplayName());
+    try (MetacatConnector connector = ConnectorFactory.create(cfg)) {
+      var catalogId = ensureCatalog(cfg.targetCatalogDisplayName());
 
-      for (String ns : c.listNamespaces()) {
-        var nsId = ensureNamespace(catId, ns);
-        for (String tbl : c.listTables(ns)) {
+      for (String namespace : connector.listNamespaces()) {
+        var namespaceId = ensureNamespace(catalogId, namespace);
+        for (String tbl : connector.listTables(namespace)) {
           try {
             scanned++;
-            var up = c.describe(ns, tbl);
-            var tblId = ensureTable(catId, nsId, up, c.format());
-            if (up.currentSnapshotId().isPresent()) {
-              ensureSnapshot(tblId, up.currentSnapshotId().get(),
-                  up.currentSnapshotTsMillis().orElse(System.currentTimeMillis()));
+            var upstreamTable = connector.describe(namespace, tbl);
+            var tableId = ensureTable(catalogId, namespaceId, upstreamTable, connector.format());
+            if (upstreamTable.currentSnapshotId().isPresent()) {
+              ensureSnapshot(tableId, upstreamTable.currentSnapshotId().get(),
+                  upstreamTable.currentSnapshotTsMillis().orElse(System.currentTimeMillis()));
             }
             changed++;
           } catch (Exception te) {
@@ -75,88 +77,101 @@ public class ReconcilerService {
 
   private ResourceId ensureCatalog(String displayName) {
     try {
-      var res = mc.directory().resolveCatalog(ResolveCatalogRequest.newBuilder()
+      var response = clients.directory().resolveCatalog(ResolveCatalogRequest.newBuilder()
           .setRef(NameRef.newBuilder().setCatalog(displayName).build())
           .build());
-      return res.getResourceId();
+      return response.getResourceId();
     } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) throw e;
+      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
+        throw e;
+      }
     }
-    var req = CreateCatalogRequest.newBuilder()
+    var request = CreateCatalogRequest.newBuilder()
         .setSpec(CatalogSpec.newBuilder().setDisplayName(displayName).build())
         .setIdempotency(idem("CreateCatalog|" + displayName))
         .build();
-    return mc.mutation().createCatalog(req).getCatalog().getResourceId();
+    return clients.mutation().createCatalog(request).getCatalog().getResourceId();
   }
 
    private ResourceId ensureNamespace(ResourceId catalogId, String namespaceFq) {
     var parts = split(namespaceFq);
     try {
-      var ref = NameRef.newBuilder()
+      var nameRef = NameRef.newBuilder()
           .setCatalog(lookupCatalogName(catalogId))
           .addAllPath(parts.parents)
           .setName(parts.leaf)
           .build();
-      return mc.directory().resolveNamespace(
-          ResolveNamespaceRequest.newBuilder().setRef(ref).build()
+      return clients.directory().resolveNamespace(
+          ResolveNamespaceRequest.newBuilder().setRef(nameRef).build()
       ).getResourceId();
     } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) throw e;
+      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
+        throw e;
+      }
     }
     var spec = NamespaceSpec.newBuilder()
         .setCatalogId(catalogId).setDisplayName(parts.leaf).addAllPath(parts.parents).build();
-    var req = CreateNamespaceRequest.newBuilder()
-        .setSpec(spec).setIdempotency(idem("CreateNamespace|" + key(catalogId) + "|" + namespaceFq)).build();
-    return mc.mutation().createNamespace(req).getNamespace().getResourceId();
+    var request = CreateNamespaceRequest.newBuilder()
+        .setSpec(spec).setIdempotency(
+            idem("CreateNamespace|" + key(catalogId) + "|" + namespaceFq)).build();
+    return clients.mutation().createNamespace(request).getNamespace().getResourceId();
   }
 
   private ResourceId ensureTable(ResourceId catalogId,
                                  ResourceId namespaceId,
-                                 MetacatConnector.UpstreamTable up,
-                                 ConnectorFormat fmt) {
+                                 MetacatConnector.UpstreamTable upstreamTable,
+                                 ConnectorFormat format) {
     try {
-      var ref = NameRef.newBuilder()
+      var nameRef = NameRef.newBuilder()
           .setCatalog(lookupCatalogName(catalogId))
-          .addAllPath(split(up.namespaceFq()).parents)
-          .setName(up.tableName())
+          .addAllPath(split(upstreamTable.namespaceFq()).parents)
+          .setName(upstreamTable.tableName())
           .build();
-      var tid = mc.directory().resolveTable(
-          ResolveTableRequest.newBuilder().setRef(ref).build()
+      var tableId = clients.directory().resolveTable(
+          ResolveTableRequest.newBuilder().setRef(nameRef).build()
       ).getResourceId();
-      maybeBumpTableSchema(tid, up);
-      return tid;
+      maybeBumpTableSchema(tableId, upstreamTable);
+      return tableId;
     } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) throw e;
+      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
+        throw e;
+      }
     }
 
     var spec = TableSpec.newBuilder()
         .setCatalogId(catalogId)
         .setNamespaceId(namespaceId)
-        .setDisplayName(up.tableName())
-        .setRootUri(up.location())
-        .setSchemaJson(up.schemaJson())
-        .setFormat(toTableFormat(fmt))
-        .putAllProperties(up.properties())
+        .setDisplayName(upstreamTable.tableName())
+        .setRootUri(upstreamTable.location())
+        .setSchemaJson(upstreamTable.schemaJson())
+        .setFormat(toTableFormat(format))
+        .putAllProperties(upstreamTable.properties())
         .build();
 
-    var req = CreateTableRequest.newBuilder()
+    var request = CreateTableRequest.newBuilder()
         .setSpec(spec)
-        .setIdempotency(idem("CreateTable|" + key(catalogId) + "|" + key(namespaceId) + "|" + up.tableName()))
+        .setIdempotency(idem(
+            "CreateTable|" 
+            + key(catalogId)
+            + "|" + key(namespaceId)
+            + "|" + upstreamTable.tableName()))
         .build();
-    return mc.mutation().createTable(req).getTable().getResourceId();
+    return clients.mutation().createTable(request).getTable().getResourceId();
   }
 
-  private void maybeBumpTableSchema(ResourceId tableId, MetacatConnector.UpstreamTable up) {
-    var upd = UpdateTableSchemaRequest.newBuilder()
+  private void maybeBumpTableSchema(ResourceId tableId, MetacatConnector.UpstreamTable upstreamTable) {
+    var request = UpdateTableSchemaRequest.newBuilder()
         .setTableId(tableId)
-        .setSchemaJson(up.schemaJson())
-        .addAllPartitionKeys(up.partitionKeys())
-        .putAllProperties(up.properties())
+        .setSchemaJson(upstreamTable.schemaJson())
+        .addAllPartitionKeys(upstreamTable.partitionKeys())
+        .putAllProperties(upstreamTable.properties())
         .build();
     try {
-      mc.mutation().updateTableSchema(upd);
+      clients.mutation().updateTableSchema(request);
     } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.FAILED_PRECONDITION) throw e;
+      if (e.getStatus().getCode() != Status.Code.FAILED_PRECONDITION) {
+        throw e;
+      }
     }
   }
 
@@ -167,35 +182,46 @@ public class ReconcilerService {
         .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamTsMs))
         .setIngestedAt(Timestamps.fromMillis(System.currentTimeMillis()))
         .build();
-    var req = CreateSnapshotRequest.newBuilder()
-        .setSpec(spec).setIdempotency(idem("CreateSnapshot|" + key(tableId) + "|" + snapshotId)).build();
-    try { mc.mutation().createSnapshot(req); }
+    var request = CreateSnapshotRequest.newBuilder()
+        .setSpec(spec).setIdempotency(idem(
+            "CreateSnapshot|"
+            + key(tableId)
+            + "|" + snapshotId)).build();
+    try {
+      clients.mutation().createSnapshot(request); 
+    }
     catch (StatusRuntimeException e) {
       var c = e.getStatus().getCode();
-      if (c != Status.Code.ALREADY_EXISTS && c != Status.Code.ABORTED && c != Status.Code.FAILED_PRECONDITION) throw e;
+      if (c != Status.Code.ALREADY_EXISTS
+          && c != Status.Code.ABORTED
+          && c != Status.Code.FAILED_PRECONDITION) {
+        throw e;
+      }
     }
   }
 
-  private static IdempotencyKey idem(String s) {
+  private static IdempotencyKey idem(String rawKey) {
     var key = Base64.getUrlEncoder().withoutPadding()
-        .encodeToString(s.getBytes(StandardCharsets.UTF_8));
+        .encodeToString(rawKey.getBytes(StandardCharsets.UTF_8));
     return IdempotencyKey.newBuilder().setKey(key).build();
   }
 
-  private static String key(ResourceId id) {
-    return id.getTenantId() + ":" + id.getId(); 
+  private static String key(ResourceId resourceId) {
+    return resourceId.getTenantId() + ":" + resourceId.getId();
   }
 
   private String lookupCatalogName(ResourceId catalogId) {
-    return mc.directory().lookupCatalog(
+    return clients.directory().lookupCatalog(
         LookupCatalogRequest.newBuilder().setResourceId(catalogId).build()
     ).getDisplayName();
   }
 
-  private static TableFormat toTableFormat(ConnectorFormat src) {
-    if (src == null) return TableFormat.TF_UNSPECIFIED;
+  private static TableFormat toTableFormat(ConnectorFormat format) {
+    if (format == null) {
+      return TableFormat.TF_UNSPECIFIED;
+    }
 
-    String name = src.name();
+    String name = format.name();
     int i = name.indexOf('_');
     String stem = (i >= 0 && i + 1 < name.length()) ? name.substring(i + 1) : name;
 

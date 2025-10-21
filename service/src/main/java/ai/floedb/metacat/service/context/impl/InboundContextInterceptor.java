@@ -50,66 +50,70 @@ public class InboundContextInterceptor implements ServerInterceptor {
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
       ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
 
-    String corr = Optional.ofNullable(headers.get(CORR))
-      .filter(s -> !s.isBlank())
-      .orElse(UUID.randomUUID().toString());
+    String correlationId = Optional.ofNullable(headers.get(CORR))
+        .filter(s -> !s.isBlank())
+        .orElse(UUID.randomUUID().toString());
 
-    String planIdHdr = Optional.ofNullable(headers.get(PLAN_ID)).orElse("");
+    String planIdHeader = Optional.ofNullable(headers.get(PLAN_ID)).orElse("");
 
-    ResolvedContext rc = resolvePrincipalAndPlan(headers, planIdHdr);
+    ResolvedContext resolvedContext = resolvePrincipalAndPlan(headers, planIdHeader);
 
-    PrincipalContext pc = rc.pc();
-    String planId = rc.planId();
+    PrincipalContext principalContext = resolvedContext.pc();
+    String planId = resolvedContext.planId();
 
-    Context ctx = Context.current()
-      .withValue(PC_KEY, pc)
-      .withValue(PLAN_KEY, planId)
-      .withValue(CORR_KEY, corr);
+    Context context = Context.current()
+        .withValue(PC_KEY, principalContext)
+        .withValue(PLAN_KEY, planId)
+        .withValue(CORR_KEY, correlationId);
 
     MDC.put("plan_id", planId);
-    MDC.put("correlation_id", corr);
+    MDC.put("correlation_id", correlationId);
 
     var baggage = Baggage.current().toBuilder()
-      .put("plan_id", planId)
-      .put("correlation_id", corr)
-      .build();
+        .put("plan_id", planId)
+        .put("correlation_id", correlationId)
+        .build();
 
     var otelCtx = baggage.storeInContext(io.opentelemetry.context.Context.current());
 
     var span = Span.fromContext(otelCtx);
     if (span.getSpanContext().isValid()) {
       span.setAttribute("plan_id", planId);
-      span.setAttribute("correlation_id", corr);
-      span.setAttribute("tenant_id", pc.getTenantId());
-      span.setAttribute("subject", pc.getSubject());
+      span.setAttribute("correlation_id", correlationId);
+      span.setAttribute("tenant_id", principalContext.getTenantId());
+      span.setAttribute("subject", principalContext.getSubject());
     }
 
     var forwarding = new SimpleForwardingServerCall<ReqT, RespT>(call) {
-      @Override public void sendHeaders(Metadata h) { h.put(CORR, corr); super.sendHeaders(h); }
-      @Override public void close(Status s, Metadata t) {
+      @Override public void sendHeaders(Metadata h) {
+        h.put(CORR, correlationId);
+        super.sendHeaders(h);
+      }
+
+      @Override public void close(Status status, Metadata metadata) {
         try {
-          t.put(CORR, corr);
+          metadata.put(CORR, correlationId);
         } finally {
           MDC.remove("plan_id"); MDC.remove("correlation_id");
         }
-        super.close(s, t);
+        super.close(status, metadata);
       }
     };
 
-    var listener = Contexts.interceptCall(ctx, forwarding, headers, next);
+    var listener = Contexts.interceptCall(context, forwarding, headers, next);
 
     span = io.opentelemetry.api.trace.Span.current();
     if (span.getSpanContext().isValid()) {
       span.setAttribute("plan_id", planId);
-      span.setAttribute("correlation_id", corr);
-      span.setAttribute("tenant_id", pc.getTenantId());
-      span.setAttribute("subject", pc.getSubject());
+      span.setAttribute("correlation_id", correlationId);
+      span.setAttribute("tenant_id", principalContext.getTenantId());
+      span.setAttribute("subject", principalContext.getSubject());
     }
 
     return listener;
   }
 
-  private ResolvedContext resolvePrincipalAndPlan(Metadata headers, String planIdHdr) {
+  private ResolvedContext resolvePrincipalAndPlan(Metadata headers, String planIdHeader) {
     byte[] pcBytes = headers.get(PRINC_BIN);
 
     if (pcBytes != null) {
@@ -117,56 +121,58 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
       validateTenant(pc.getTenantId());
 
-      if (!isBlank(planIdHdr) && !isBlank(pc.getPlanId()) && !pc.getPlanId().equals(planIdHdr)) {
+      if (!isBlank(planIdHeader)
+          && !isBlank(pc.getPlanId())
+          && !pc.getPlanId().equals(planIdHeader)) {
         throw Status.FAILED_PRECONDITION
           .withDescription("plan_id mismatch between header and principal")
           .asRuntimeException();
       }
 
-      String canonicalPlan = !isBlank(pc.getPlanId()) ? pc.getPlanId() : planIdHdr;
+      String canonicalPlan = !isBlank(pc.getPlanId()) ? pc.getPlanId() : planIdHeader;
       return new ResolvedContext(pc, canonicalPlan);
     }
 
-    if (!isBlank(planIdHdr)) {
-      PlanContext ctx = planStore.get(planIdHdr)
-        .orElseThrow(() -> Status.UNAUTHENTICATED
-          .withDescription("unknown x-plan-id")
-          .asRuntimeException());
+    if (!isBlank(planIdHeader)) {
+      PlanContext ctx = planStore.get(planIdHeader)
+          .orElseThrow(() -> Status.UNAUTHENTICATED
+              .withDescription("unknown x-plan-id")
+              .asRuntimeException());
 
       long now = clock.millis();
       if (ctx.getState() != PlanContext.State.ACTIVE) {
         throw Status.FAILED_PRECONDITION
-          .withDescription("plan not active")
-          .asRuntimeException();
+            .withDescription("plan not active")
+            .asRuntimeException();
       }
       if (ctx.getExpiresAtMs() < now) {
         throw Status.FAILED_PRECONDITION
-          .withDescription("plan lease expired")
-          .asRuntimeException();
+            .withDescription("plan lease expired")
+            .asRuntimeException();
       }
 
-      PrincipalContext pc = ctx.getPrincipal();
-      if (!isBlank(pc.getPlanId()) && !pc.getPlanId().equals(planIdHdr)) {
+      PrincipalContext principalContext = ctx.getPrincipal();
+      if (!isBlank(principalContext.getPlanId()) && !principalContext.getPlanId().equals(planIdHeader)) {
         throw Status.FAILED_PRECONDITION
-          .withDescription("plan_id mismatch (store vs principal)")
-          .asRuntimeException();
+            .withDescription("plan_id mismatch (store vs principal)")
+            .asRuntimeException();
       }
 
-      if (!ctx.getTenantId().equals(pc.getTenantId())) {
+      if (!ctx.getTenantId().equals(principalContext.getTenantId())) {
         throw Status.FAILED_PRECONDITION
-          .withDescription("tenant mismatch (store vs principal)")
-          .asRuntimeException();
+            .withDescription("tenant mismatch (store vs principal)")
+            .asRuntimeException();
       }
 
-      return new ResolvedContext(pc, planIdHdr);
+      return new ResolvedContext(principalContext, planIdHeader);
     }
 
     return new ResolvedContext(devContext(), "");
   }
 
-  private static PrincipalContext parsePrincipal(byte[] bin) {
+  private static PrincipalContext parsePrincipal(byte[] encoded) {
     try {
-      return PrincipalContext.parseFrom(bin);
+      return PrincipalContext.parseFrom(encoded);
     } catch (Exception e) {
       throw Status.UNAUTHENTICATED
         .withDescription("invalid x-principal-bin")
@@ -175,8 +181,8 @@ public class InboundContextInterceptor implements ServerInterceptor {
     }
   }
 
-  private static boolean isBlank(String s) {
-    return s == null || s.isBlank();
+  private static boolean isBlank(String inputString) {
+    return inputString == null || inputString.isBlank();
   }
 
   private static PrincipalContext devContext() {

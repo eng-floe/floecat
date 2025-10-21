@@ -18,11 +18,10 @@ import ai.floedb.metacat.service.storage.PointerStore;
 @ApplicationScoped
 public class ConnectorRepository extends BaseRepository<Connector> {
 
-  protected ConnectorRepository() { super(); }
-
   @Inject
-  public ConnectorRepository(PointerStore ptr, BlobStore blobs) {
-    super(ptr, blobs, Connector::parseFrom, Connector::toByteArray, "application/x-protobuf");
+  public ConnectorRepository(PointerStore pointerStore, BlobStore blobs) {
+    super(pointerStore, blobs, Connector::parseFrom,
+        Connector::toByteArray, "application/x-protobuf");
   }
 
   public Optional<Connector> getById(ResourceId rid) {
@@ -41,26 +40,27 @@ public class ConnectorRepository extends BaseRepository<Connector> {
     return countByPrefix(Keys.connByNamePrefix(tenantId));
   }
 
-  public void create(Connector c) {
-    var rid = c.getResourceId();
-    var tid = rid.getTenantId();
-    var byId = Keys.connByIdPtr(tid, rid.getId());
-    var byName = Keys.connByNamePtr(tid, c.getDisplayName());
-    var blob = Keys.connBlob(tid, rid.getId());
+  public void create(Connector connector) {
+    var resourceId = connector.getResourceId();
+    var tenantId = resourceId.getTenantId();
+    var byId = Keys.connByIdPtr(tenantId, resourceId.getId());
+    var byName = Keys.connByNamePtr(tenantId, connector.getDisplayName());
+    var blobUri = Keys.connBlob(tenantId, resourceId.getId());
 
-    putBlob(blob, c);
-    reserveAllOrRollback(byId, blob, byName, blob);
+    putBlob(blobUri, connector);
+    reserveAllOrRollback(byId, blobUri, byName, blobUri);
   }
 
   public boolean update(Connector updated, long expectedPointerVersion) {
-    var rid = updated.getResourceId();
-    var tid = rid.getTenantId();
+    var resourceId = updated.getResourceId();
+    var tenantId = resourceId.getTenantId();
 
-    var byId = Keys.connByIdPtr(tid, rid.getId());
-    var blob = Keys.connBlob(tid, rid.getId());
+    var byId = Keys.connByIdPtr(tenantId, resourceId.getId());
+    var blobUri = Keys.connBlob(tenantId, resourceId.getId());
 
-    putBlob(blob, updated);
-    advancePointer(byId, blob, expectedPointerVersion);
+    putBlob(blobUri, updated);
+    advancePointer(byId, blobUri, expectedPointerVersion);
+
     return true;
   }
 
@@ -70,53 +70,71 @@ public class ConnectorRepository extends BaseRepository<Connector> {
 
     var newByName = Keys.connByNamePtr(tid, updated.getDisplayName());
     var oldByName = Keys.connByNamePtr(tid, oldDisplayName);
-    var blob = Keys.connBlob(tid, rid.getId());
+    var blobUri = Keys.connBlob(tid, rid.getId());
 
-    putBlob(blob, updated);
-    reserveAllOrRollback(newByName, blob);
-    ptr.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(oldByName, p.getVersion()));
+    putBlob(blobUri, updated);
+    reserveAllOrRollback(newByName, blobUri);
+    pointerStore.get(oldByName).ifPresent(
+        pointer -> compareAndDeleteOrFalse(oldByName, pointer.getVersion()));
+
     return true;
   }
 
   public boolean delete(ResourceId rid) {
     var tid = rid.getTenantId();
     var byId = Keys.connByIdPtr(tid, rid.getId());
-    var blob = Keys.connBlob(tid, rid.getId());
+    var blobUri = Keys.connBlob(tid, rid.getId());
 
-    var cOpt = getById(rid);
-    var byName = cOpt.map(c -> Keys.connByNamePtr(tid, c.getDisplayName())).orElse(null);
+    var connectorOpt = getById(rid);
+    var byName = connectorOpt.map(c -> Keys.connByNamePtr(tid, c.getDisplayName())).orElse(null);
 
-    if (byName != null) ptr.get(byName).ifPresent(p -> compareAndDeleteOrFalse(byName, p.getVersion()));
-    ptr.get(byId).ifPresent(p -> compareAndDeleteOrFalse(byId, p.getVersion()));
-    deleteQuietly(() -> blobs.delete(blob));
+    if (byName != null) {
+      pointerStore.get(byName).ifPresent(
+          pointer -> compareAndDeleteOrFalse(byName, pointer.getVersion()));
+    }
+
+    pointerStore.get(byId).ifPresent(
+        pointer -> compareAndDeleteOrFalse(byId, pointer.getVersion()));
+
+    deleteQuietly(() -> blobStore.delete(blobUri));
+
     return true;
   }
 
   public boolean deleteWithPrecondition(ResourceId rid, long expectedVersion) {
     var tid = rid.getTenantId();
     var byId = Keys.connByIdPtr(tid, rid.getId());
-    var blob = Keys.connBlob(tid, rid.getId());
+    var blobUri = Keys.connBlob(tid, rid.getId());
 
-    var cOpt = getById(rid);
-    var byName = cOpt.map(c -> Keys.connByNamePtr(tid, c.getDisplayName())).orElse(null);
+    var connectorOpt = getById(rid);
+    var byName = connectorOpt.map(c -> Keys.connByNamePtr(tid, c.getDisplayName())).orElse(null);
 
-    if (!compareAndDeleteOrFalse(byId, expectedVersion)) return false;
-    if (byName != null) ptr.get(byName).ifPresent(p -> compareAndDeleteOrFalse(byName, p.getVersion()));
-    deleteQuietly(() -> blobs.delete(blob));
+    if (!compareAndDeleteOrFalse(byId, expectedVersion)) {
+      return false;
+    }
+
+    if (byName != null) pointerStore.get(byName).ifPresent(p -> compareAndDeleteOrFalse(byName, p.getVersion()));
+
+    deleteQuietly(() -> blobStore.delete(blobUri));
+
     return true;
   }
 
-  public MutationMeta metaFor(ResourceId rid, Timestamp nowTs) {
-    var t = rid.getTenantId();
-    var key = Keys.connByIdPtr(t, rid.getId());
-    var p = ptr.get(key).orElseThrow(() -> new IllegalStateException("Pointer missing for connector: " + rid.getId()));
-    return safeMetaOrDefault(key, p.getBlobUri(), nowTs);
+  public MutationMeta metaFor(ResourceId resourceId, Timestamp nowTs) {
+    var tenantId = resourceId.getTenantId();
+    var key = Keys.connByIdPtr(tenantId, resourceId.getId());
+
+    var pointer = pointerStore.get(key).orElseThrow(() -> new IllegalStateException(
+        "Pointer missing for connector: " + resourceId.getId()));
+
+    return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
   }
 
-  public MutationMeta metaForSafe(ResourceId rid, Timestamp nowTs) {
-    var t = rid.getTenantId();
-    var key = Keys.connByIdPtr(t, rid.getId());
-    var blob = Keys.connBlob(t, rid.getId());
-    return safeMetaOrDefault(key, blob, nowTs);
+  public MutationMeta metaForSafe(ResourceId resourceId, Timestamp nowTs) {
+    var tenantId = resourceId.getTenantId();
+    var key = Keys.connByIdPtr(tenantId, resourceId.getId());
+    var blobUri = Keys.connBlob(tenantId, resourceId.getId());
+
+    return safeMetaOrDefault(key, blobUri, nowTs);
   }
 }

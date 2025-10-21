@@ -31,15 +31,16 @@ public class StatsAccessImpl extends BaseServiceImpl implements StatsAccess {
   @Inject Authorizer authz;
 
   @Override
-  public Uni<GetTableStatsResponse> getTableStats(GetTableStatsRequest req) {
+  public Uni<GetTableStatsResponse> getTableStats(GetTableStatsRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      authz.require(p, "catalog.read");
+      var principalContext = principal.get();
 
-      final var tableId = req.getTableId();
-      final var ref = req.getSnapshot();
+      authz.require(principalContext, "catalog.read");
+
+      final var tableId = request.getTableId();
+      final var ref = request.getSnapshot();
       if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
-        throw GrpcErrors.invalidArgument(corrId(), "snapshot.missing", Map.of());
+        throw GrpcErrors.invalidArgument(correlationId(), "snapshot.missing", Map.of());
       }
 
       final long snapId;
@@ -48,47 +49,48 @@ public class StatsAccessImpl extends BaseServiceImpl implements StatsAccess {
         case SPECIAL -> {
           if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
             throw GrpcErrors.invalidArgument(
-                corrId(), "snapshot.special.missing", Map.of());
+                correlationId(), "snapshot.special.missing", Map.of());
           }
           snapId = snapshots.getCurrentSnapshot(tableId)
               .map(Snapshot::getSnapshotId)
               .orElseThrow(() -> GrpcErrors.notFound(
-                  corrId(), "snapshot", Map.of("id", tableId.getId())));
+                  correlationId(), "snapshot", Map.of("id", tableId.getId())));
         }
         case AS_OF -> {
           var asOf = ref.getAsOf();
           snapId = snapshots.getAsOf(tableId, asOf)
               .map(Snapshot::getSnapshotId)
               .orElseThrow(() -> GrpcErrors.notFound(
-                  corrId(), "snapshot",
+                  correlationId(), "snapshot",
                   Map.of("id", tableId.getId())));
         }
-        default -> throw GrpcErrors.invalidArgument(corrId(), "snapshot.missing", Map.of());
+        default -> throw GrpcErrors.invalidArgument(correlationId(), "snapshot.missing", Map.of());
       }
 
       return stats.getTableStats(tableId, snapId)
               .map(s -> GetTableStatsResponse.newBuilder().setStats(s).build())
               .orElseThrow(() -> GrpcErrors.notFound(
-                  corrId(), "table_stats",
+                  correlationId(), "table_stats",
                   Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(snapId))));
-    }), corrId());
+    }), correlationId());
   }
 
   @Override
-  public Uni<ListColumnStatsResponse> listColumnStats(ListColumnStatsRequest req) {
+  public Uni<ListColumnStatsResponse> listColumnStats(ListColumnStatsRequest request) {
     return mapFailures(run(() -> {
-      var p = principal.get();
-      authz.require(p, "catalog.read");
+      var principalContext = principal.get();
 
-      final int limit = (req.hasPage() && req.getPage().getPageSize() > 0)
-          ? req.getPage().getPageSize() : 200;
-      final String token = req.hasPage() ? req.getPage().getPageToken() : "";
+      authz.require(principalContext, "catalog.read");
+
+      final int limit = (request.hasPage() && request.getPage().getPageSize() > 0)
+          ? request.getPage().getPageSize() : 200;
+      final String token = request.hasPage() ? request.getPage().getPageToken() : "";
       final StringBuilder next = new StringBuilder();
 
-      final var tableId = req.getTableId();
-      final var ref = req.getSnapshot();
+      final var tableId = request.getTableId();
+      final var ref = request.getSnapshot();
       if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
-        throw GrpcErrors.invalidArgument(corrId(), "snapshot.missing", Map.of());
+        throw GrpcErrors.invalidArgument(correlationId(), "snapshot.missing", Map.of());
       }
 
       final long snapId;
@@ -97,15 +99,15 @@ public class StatsAccessImpl extends BaseServiceImpl implements StatsAccess {
         case SPECIAL -> {
           if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
             throw GrpcErrors.invalidArgument(
-                corrId(), "snapshot.special.missing", Map.of());
+                correlationId(), "snapshot.special.missing", Map.of());
           }
           snapId = snapshots.getCurrentSnapshot(tableId)
               .map(Snapshot::getSnapshotId)
               .orElseThrow(() -> GrpcErrors.notFound(
-                  corrId(), "snapshot", Map.of("id", tableId.getId())));
+                  correlationId(), "snapshot", Map.of("id", tableId.getId())));
         }
         default -> throw GrpcErrors.invalidArgument(
-            corrId(), "snapshot.missing", Map.of());
+            correlationId(), "snapshot.missing", Map.of());
       }
 
       var items = stats.listColumnStats(tableId, snapId, Math.max(1, limit), token, next);
@@ -119,6 +121,6 @@ public class StatsAccessImpl extends BaseServiceImpl implements StatsAccess {
               .setTotalSize(total)
               .build())
           .build();
-    }), corrId());
+    }), correlationId());
   }
 }
