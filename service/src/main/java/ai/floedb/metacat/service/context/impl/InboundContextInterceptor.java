@@ -51,8 +51,8 @@ public class InboundContextInterceptor implements ServerInterceptor {
       ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
 
     String corr = Optional.ofNullable(headers.get(CORR))
-      .filter(s -> !s.isBlank())
-      .orElse(UUID.randomUUID().toString());
+        .filter(s -> !s.isBlank())
+        .orElse(UUID.randomUUID().toString());
 
     String planIdHdr = Optional.ofNullable(headers.get(PLAN_ID)).orElse("");
 

@@ -17,9 +17,9 @@ import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
 @ApplicationScoped
 public class ReconcilerScheduler {
 
-  @Inject GrpcClients mc;
+  @Inject GrpcClients clients;
   @Inject ReconcileJobStore jobs;
-  @Inject ReconcilerService svc;
+  @Inject ReconcilerService reconcilerService;
 
   private final AtomicBoolean running = new AtomicBoolean(false);
 
@@ -34,10 +34,11 @@ public class ReconcilerScheduler {
     }
     try {
       var lease = jobs.leaseNext().orElse(null);
-      if (lease == null) return;
+      if (lease == null) {
+        return;
+      }
 
-      long now = System.currentTimeMillis();
-      jobs.markRunning(lease.jobId, now);
+      jobs.markRunning(lease.jobId, System.currentTimeMillis());
 
       try {
         var rid = ResourceId.newBuilder()
@@ -46,13 +47,13 @@ public class ReconcilerScheduler {
             .setKind(ResourceKind.RK_CONNECTOR)
             .build();
 
-        Connector conn = mc.connector().getConnector(
+        Connector connector = clients.connector().getConnector(
             GetConnectorRequest.newBuilder().setConnectorId(rid).build()
         ).getConnector();
 
-        ConnectorConfig cfg = toConfig(conn);
+        ConnectorConfig cfg = toConfig(connector);
 
-        var result = svc.reconcile(cfg, lease.fullRescan);
+        var result = reconcilerService.reconcile(cfg, lease.fullRescan);
 
         long finished = System.currentTimeMillis();
         if (result.ok()) {
@@ -61,8 +62,7 @@ public class ReconcilerScheduler {
           jobs.markFailed(lease.jobId, finished, result.message(), result.scanned, result.changed, result.errors);
         }
       } catch (Exception e) {
-        long finished = System.currentTimeMillis();
-        jobs.markFailed(lease.jobId, finished, e.getMessage(), 0, 0, 1);
+        jobs.markFailed(lease.jobId, System.currentTimeMillis(), e.getMessage(), 0, 0, 1);
       }
     } finally {
       running.set(false);

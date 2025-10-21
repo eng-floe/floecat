@@ -11,7 +11,15 @@ public class GrpcClients {
   @GrpcClient("resource-mutation") ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
   @GrpcClient("connectors") ConnectorsGrpc.ConnectorsBlockingStub connector;
 
-  public DirectoryGrpc.DirectoryBlockingStub directory() { return directory; }
-  public ResourceMutationGrpc.ResourceMutationBlockingStub mutation() { return mutation; }
-  public ConnectorsGrpc.ConnectorsBlockingStub connector() { return connector; }
+  public DirectoryGrpc.DirectoryBlockingStub directory() {
+    return directory;
+  }
+
+  public ResourceMutationGrpc.ResourceMutationBlockingStub mutation() {
+    return mutation;
+  }
+
+  public ConnectorsGrpc.ConnectorsBlockingStub connector() {
+    return connector;
+  }
 }

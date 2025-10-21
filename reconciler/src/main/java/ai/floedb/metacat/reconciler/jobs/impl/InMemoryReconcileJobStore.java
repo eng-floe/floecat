@@ -21,7 +21,6 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   @Override
   public String enqueue(String tenantId, String connectorId, boolean fullRescan) {
     String id = UUID.randomUUID().toString();
-    long now = System.currentTimeMillis();
     var job = new ReconcileJob(
         id, tenantId, connectorId,
         "JS_QUEUED",
@@ -46,53 +45,59 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       String id = ready.poll();
       if (id == null) return Optional.empty();
 
-      var j = jobs.get(id);
-      if (j == null) continue;
-      if (!"JS_QUEUED".equals(j.state)) continue;
+      var job = jobs.get(id);
+
+      if (job == null) {
+        continue;
+      }
+
+      if (!"JS_QUEUED".equals(job.state)) {
+        continue;
+      }
 
       if (leased.add(id)) {
-        return Optional.of(new LeasedJob(j.jobId, j.tenantId, j.connectorId, j.fullRescan));
+        return Optional.of(new LeasedJob(job.jobId, job.tenantId, job.connectorId, job.fullRescan));
       }
     }
   }
 
   @Override
   public void markRunning(String jobId, long startedAtMs) {
-    jobs.computeIfPresent(jobId, (id, j) ->
+    jobs.computeIfPresent(jobId, (id, job) ->
         new ReconcileJob(
-            j.jobId, j.tenantId, j.connectorId,
+            job.jobId, job.tenantId, job.connectorId,
             "JS_RUNNING",
             "Running",
             startedAtMs, 0L,
-            j.tablesScanned, j.tablesChanged, j.errors,
-            j.fullRescan
+            job.tablesScanned, job.tablesChanged, job.errors,
+            job.fullRescan
         ));
   }
 
   @Override
   public void markProgress(String jobId, long scanned, long changed, long errors, String message) {
-    jobs.computeIfPresent(jobId, (id, j) ->
+    jobs.computeIfPresent(jobId, (id, job) ->
         new ReconcileJob(
-            j.jobId, j.tenantId, j.connectorId,
-            j.state, message == null ? (j.message == null ? "" : j.message) : message,
-            j.startedAtMs, j.finishedAtMs,
+            job.jobId, job.tenantId, job.connectorId,
+            job.state, message == null ? (job.message == null ? "" : job.message) : message,
+            job.startedAtMs, job.finishedAtMs,
             scanned, changed, errors,
-            j.fullRescan
+            job.fullRescan
         ));
   }
 
   @Override
   public void markSucceeded(String jobId, long finishedAtMs, long scanned, long changed) {
-    jobs.computeIfPresent(jobId, (id, j) -> {
+    jobs.computeIfPresent(jobId, (id, job) -> {
       leased.remove(id);
       return new ReconcileJob(
-          j.jobId, j.tenantId, j.connectorId,
+          job.jobId, job.tenantId, job.connectorId,
           "JS_SUCCEEDED",
           "Succeeded",
-          j.startedAtMs == 0 ? finishedAtMs : j.startedAtMs,
+          job.startedAtMs == 0 ? finishedAtMs : job.startedAtMs,
           finishedAtMs,
-          scanned, changed, j.errors,
-          j.fullRescan
+          scanned, changed, job.errors,
+          job.fullRescan
       );
     });
   }
@@ -100,16 +105,16 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   @Override
   public void markFailed(String jobId, long finishedAtMs, String message,
                          long scanned, long changed, long errors) {
-    jobs.computeIfPresent(jobId, (id, j) -> {
+    jobs.computeIfPresent(jobId, (id, job) -> {
       leased.remove(id);
       return new ReconcileJob(
-          j.jobId, j.tenantId, j.connectorId,
+          job.jobId, job.tenantId, job.connectorId,
           "JS_FAILED",
           message == null ? "Failed" : message,
-          j.startedAtMs == 0 ? finishedAtMs : j.startedAtMs,
+          job.startedAtMs == 0 ? finishedAtMs : job.startedAtMs,
           finishedAtMs,
           scanned, changed, errors,
-          j.fullRescan
+          job.fullRescan
       );
     });
   }
