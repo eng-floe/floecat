@@ -1,11 +1,10 @@
 package ai.floedb.metacat.service.error.impl;
 
+import ai.floedb.metacat.common.rpc.Error;
+import ai.floedb.metacat.common.rpc.ErrorCode;
 import java.util.Locale;
 import java.util.Map;
 import java.util.ResourceBundle;
-
-import ai.floedb.metacat.common.rpc.Error;
-import ai.floedb.metacat.common.rpc.ErrorCode;
 
 public final class MessageCatalog {
   private final ResourceBundle bundle;
@@ -16,13 +15,12 @@ public final class MessageCatalog {
 
   public String render(Error e) {
     String base = e.getCode().name();
-    String key = !e.getMessageKey().isBlank()
-        ? base + "." + e.getMessageKey()
-        : base;
+    String key = !e.getMessageKey().isBlank() ? base + "." + e.getMessageKey() : base;
 
-    String template = bundle.containsKey(key)
-        ? bundle.getString(key)
-        : (bundle.containsKey(base) ? bundle.getString(base) : defaultTemplate(e.getCode()));
+    String template =
+        bundle.containsKey(key)
+            ? bundle.getString(key)
+            : (bundle.containsKey(base) ? bundle.getString(base) : defaultTemplate(e.getCode()));
 
     return format(template, e.getParamsMap());
   }

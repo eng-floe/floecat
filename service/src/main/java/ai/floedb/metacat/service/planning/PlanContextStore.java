@@ -1,8 +1,7 @@
 package ai.floedb.metacat.service.planning;
 
-import java.util.Optional;
-
 import ai.floedb.metacat.service.planning.impl.PlanContext;
+import java.util.Optional;
 
 public interface PlanContextStore extends AutoCloseable {
   Optional<PlanContext> get(String planId);
@@ -17,5 +16,6 @@ public interface PlanContextStore extends AutoCloseable {
 
   long size();
 
-  @Override void close();
+  @Override
+  void close();
 }

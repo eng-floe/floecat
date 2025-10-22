@@ -5,7 +5,8 @@ import ai.floedb.metacat.connector.spi.ConnectorProvider;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
 
 public final class DummyConnectorProvider implements ConnectorProvider {
-  @Override public String kind() {
+  @Override
+  public String kind() {
     return "unity";
   }
 

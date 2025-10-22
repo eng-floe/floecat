@@ -1,18 +1,16 @@
 package ai.floedb.metacat.service.error.impl;
 
-import java.util.Locale;
-import java.util.Optional;
-
-import jakarta.enterprise.context.ApplicationScoped;
-import io.grpc.*;
-import io.quarkus.grpc.GlobalInterceptor;
+import ai.floedb.metacat.common.rpc.Error;
+import ai.floedb.metacat.common.rpc.PrincipalContext;
 import com.google.protobuf.Any;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.rpc.Status;
+import io.grpc.*;
 import io.grpc.protobuf.StatusProto;
-
-import ai.floedb.metacat.common.rpc.Error;
-import ai.floedb.metacat.common.rpc.PrincipalContext;
+import io.quarkus.grpc.GlobalInterceptor;
+import jakarta.enterprise.context.ApplicationScoped;
+import java.util.Locale;
+import java.util.Optional;
 
 @GlobalInterceptor
 @ApplicationScoped
@@ -30,44 +28,50 @@ public class LocalizeErrorsInterceptor implements ServerInterceptor {
     PrincipalContext principal = tryParsePrincipal(principalContextBytes);
 
     String tag = pickLocaleTag(headers, principal);
-    final Locale locale = Optional.ofNullable(Locale.forLanguageTag(tag))
-        .filter(l -> !l.toLanguageTag().isEmpty())
-        .orElse(Locale.ENGLISH);
+    final Locale locale =
+        Optional.ofNullable(Locale.forLanguageTag(tag))
+            .filter(l -> !l.toLanguageTag().isEmpty())
+            .orElse(Locale.ENGLISH);
 
-    return next.startCall(new ForwardingServerCall.SimpleForwardingServerCall<>(call) {
-      @Override
-      public void close(io.grpc.Status status, Metadata trailers) {
-        try {
-          var exception = status.asRuntimeException(trailers);
-          var statusProto = StatusProto.fromThrowable(exception);
-          if (status != null) {
-            Error error = extract(statusProto);
-            if (error != null) {
-              String rendered = new MessageCatalog(locale).render(error);
-              var newError = Error.newBuilder(error).setMessage(rendered).build();
-              var newStatus = com.google.rpc.Status.newBuilder(statusProto)
-                  .setMessage(rendered)
-                  .clearDetails().addDetails(Any.pack(newError))
-                  .build();
+    return next.startCall(
+        new ForwardingServerCall.SimpleForwardingServerCall<>(call) {
+          @Override
+          public void close(io.grpc.Status status, Metadata trailers) {
+            try {
+              var exception = status.asRuntimeException(trailers);
+              var statusProto = StatusProto.fromThrowable(exception);
+              if (status != null) {
+                Error error = extract(statusProto);
+                if (error != null) {
+                  String rendered = new MessageCatalog(locale).render(error);
+                  var newError = Error.newBuilder(error).setMessage(rendered).build();
+                  var newStatus =
+                      com.google.rpc.Status.newBuilder(statusProto)
+                          .setMessage(rendered)
+                          .clearDetails()
+                          .addDetails(Any.pack(newError))
+                          .build();
 
-              var localeTrailers = StatusProto.toStatusRuntimeException(newStatus).getTrailers();
+                  var localeTrailers =
+                      StatusProto.toStatusRuntimeException(newStatus).getTrailers();
 
-              Metadata metadata = new Metadata();
-              metadata.merge(trailers);
-              if (localeTrailers != null) {
-                metadata.merge(localeTrailers);
+                  Metadata metadata = new Metadata();
+                  metadata.merge(trailers);
+                  if (localeTrailers != null) {
+                    metadata.merge(localeTrailers);
+                  }
+
+                  super.close(status.withDescription(rendered), metadata);
+                  return;
+                }
               }
-
-              super.close(status.withDescription(rendered), metadata);
-              return;
+            } catch (Throwable ignore) {
+              // ignore
             }
+            super.close(status, trailers);
           }
-        } catch (Throwable ignore) {
-          // ignore
-        }
-        super.close(status, trailers);
-      }
-    }, headers);
+        },
+        headers);
   }
 
   private static Error extract(Status status) throws Exception {

@@ -1,11 +1,9 @@
 package ai.floedb.metacat.service.security.impl;
 
-import java.util.List;
-
+import ai.floedb.metacat.common.rpc.PrincipalContext;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
-
-import ai.floedb.metacat.common.rpc.PrincipalContext;
+import java.util.List;
 
 @ApplicationScoped
 public class Authorizer {
@@ -13,8 +11,9 @@ public class Authorizer {
     if (principalContext.getPermissionsList().contains(permission)) {
       return;
     }
-    throw Status.PERMISSION_DENIED.withDescription(
-        "missing permission: " + permission).asRuntimeException();
+    throw Status.PERMISSION_DENIED
+        .withDescription("missing permission: " + permission)
+        .asRuntimeException();
   }
 
   public void require(PrincipalContext principalContext, List<String> permissions) {
@@ -23,7 +22,8 @@ public class Authorizer {
         return;
       }
     }
-    throw Status.PERMISSION_DENIED.withDescription(
-        "missing permissions: " + permissions).asRuntimeException();
+    throw Status.PERMISSION_DENIED
+        .withDescription("missing permissions: " + permissions)
+        .asRuntimeException();
   }
 }

@@ -1,6 +1,6 @@
 package ai.floedb.metacat.reconciler.util;
 
-import java.util.*;
+import java.util.List;
 
 public final class NameParts {
   private NameParts() {}

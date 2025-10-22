@@ -1,14 +1,14 @@
 package ai.floedb.metacat.connector.iceberg.impl;
 
-import java.util.HashMap;
-import java.util.Map;
-
 import ai.floedb.metacat.connector.spi.ConnectorConfig;
 import ai.floedb.metacat.connector.spi.ConnectorProvider;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
+import java.util.HashMap;
+import java.util.Map;
 
 public final class IcebergConnectorProvider implements ConnectorProvider {
-  @Override public String kind() {
+  @Override
+  public String kind() {
     return "iceberg-rest";
   }
 
@@ -21,7 +21,6 @@ public final class IcebergConnectorProvider implements ConnectorProvider {
         options,
         auth.scheme(),
         new HashMap<>(auth.props()),
-        new HashMap<>(auth.headerHints())
-    );
+        new HashMap<>(auth.headerHints()));
   }
 }

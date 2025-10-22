@@ -1,25 +1,5 @@
 package ai.floedb.metacat.service.common;
 
-import java.nio.charset.StandardCharsets;
-import java.time.Clock;
-import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
-import java.util.function.Supplier;
-
-import com.google.protobuf.Timestamp;
-import com.google.protobuf.util.Timestamps;
-
-import java.util.concurrent.CancellationException;
-import java.util.concurrent.TimeoutException;
-
-import io.grpc.StatusRuntimeException;
-import io.smallrye.mutiny.Uni;
-import io.smallrye.mutiny.infrastructure.Infrastructure;
-import jakarta.inject.Inject;
-
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.catalog.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -27,6 +7,22 @@ import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
+import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
+import io.grpc.StatusRuntimeException;
+import io.smallrye.mutiny.Uni;
+import io.smallrye.mutiny.infrastructure.Infrastructure;
+import jakarta.inject.Inject;
+import java.nio.charset.StandardCharsets;
+import java.time.Clock;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Supplier;
 
 public abstract class BaseServiceImpl {
   @Inject PrincipalProvider principal;
@@ -45,14 +41,14 @@ public abstract class BaseServiceImpl {
     return u.runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
 
-protected <T> Uni<T> runWithRetry(Supplier<T> body) {
-  return run(body)
-    .onFailure(BaseRepository.AbortRetryableException.class)
-    .retry()
-      .withBackOff(BACKOFF_MIN, BACKOFF_MAX)
-      .withJitter(JITTER)
-      .atMost(RETRIES);
-}
+  protected <T> Uni<T> runWithRetry(Supplier<T> body) {
+    return run(body)
+        .onFailure(BaseRepository.AbortRetryableException.class)
+        .retry()
+        .withBackOff(BACKOFF_MIN, BACKOFF_MAX)
+        .withJitter(JITTER)
+        .atMost(RETRIES);
+  }
 
   protected <T> Uni<T> mapFailures(Uni<T> u, String corrId) {
     return u.onFailure().transform(t -> toStatus(t, corrId));
@@ -87,11 +83,11 @@ protected <T> Uni<T> runWithRetry(Supplier<T> body) {
       return GrpcErrors.cancelled(corrId, null, Map.of());
     }
 
-    return GrpcErrors.internal(
-        corrId, null, Map.of("cause", t.getClass().getName()));
+    return GrpcErrors.internal(corrId, null, Map.of("cause", t.getClass().getName()));
   }
 
-  protected void ensureKind(ResourceId resourceId, ResourceKind expected, String field, String correlationId) {
+  protected void ensureKind(
+      ResourceId resourceId, ResourceKind expected, String field, String correlationId) {
     if (resourceId == null || resourceId.getKind() != expected) {
       throw GrpcErrors.invalidArgument(correlationId, "field", Map.of("field", field));
     }
@@ -104,26 +100,32 @@ protected <T> Uni<T> runWithRetry(Supplier<T> body) {
     return inputString;
   }
 
-  protected void enforcePreconditions(String correlationId, MutationMeta metadata, Precondition precondition) {
+  protected void enforcePreconditions(
+      String correlationId, MutationMeta metadata, Precondition precondition) {
     if (precondition == null) {
       return;
     }
 
     boolean checkVer = precondition.getExpectedVersion() > 0;
 
-    boolean checkTag = precondition.getExpectedEtag()
-        != null && !precondition.getExpectedEtag().isBlank();
+    boolean checkTag =
+        precondition.getExpectedEtag() != null && !precondition.getExpectedEtag().isBlank();
 
     if (checkVer && metadata.getPointerVersion() != precondition.getExpectedVersion()) {
       throw GrpcErrors.preconditionFailed(
-          correlationId, "version_mismatch",
-              Map.of("expected", Long.toString(precondition.getExpectedVersion()),
-                  "actual", Long.toString(metadata.getPointerVersion())));
+          correlationId,
+          "version_mismatch",
+          Map.of(
+              "expected",
+              Long.toString(precondition.getExpectedVersion()),
+              "actual",
+              Long.toString(metadata.getPointerVersion())));
     }
     if (checkTag && !metadata.getEtag().equals(precondition.getExpectedEtag())) {
       throw GrpcErrors.preconditionFailed(
-          correlationId, "etag_mismatch",
-              Map.of("expected", precondition.getExpectedEtag(), "actual", metadata.getEtag()));
+          correlationId,
+          "etag_mismatch",
+          Map.of("expected", precondition.getExpectedEtag(), "actual", metadata.getEtag()));
     }
   }
 

@@ -1,8 +1,7 @@
 package ai.floedb.metacat.service.tenancy.impl;
 
-import java.util.Set;
-
 import jakarta.enterprise.context.ApplicationScoped;
+import java.util.Set;
 
 @ApplicationScoped
 public class TenantRegistry {

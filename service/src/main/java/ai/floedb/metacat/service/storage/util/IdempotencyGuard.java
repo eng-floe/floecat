@@ -1,21 +1,19 @@
 package ai.floedb.metacat.service.storage.util;
 
-import java.security.NoSuchAlgorithmException;
-import java.util.Base64;
-import java.util.Map;
-import java.util.function.Function;
-import java.util.function.Supplier;
-
-import com.google.protobuf.Duration;
-import com.google.protobuf.Timestamp;
-import com.google.protobuf.util.Timestamps;
-
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.IdempotencyStore;
 import ai.floedb.metacat.storage.rpc.IdempotencyRecord;
+import com.google.protobuf.Duration;
+import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
+import java.security.NoSuchAlgorithmException;
+import java.util.Base64;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 public final class IdempotencyGuard {
   public record CreateResult<T>(T resource, ResourceId resourceId) {}
@@ -45,8 +43,8 @@ public final class IdempotencyGuard {
     if (existing.isPresent()) {
       var rec = existing.get();
       if (!rec.getRequestHash().equals(requestHash)) {
-        throw GrpcErrors.conflict(corrId.get(), "idempotency_mismatch",
-            Map.of("op", opName, "key", idempotencyKey));
+        throw GrpcErrors.conflict(
+            corrId.get(), "idempotency_mismatch", Map.of("op", opName, "key", idempotencyKey));
       }
       if (rec.getStatus() == IdempotencyRecord.Status.SUCCEEDED) {
         return parser.apply(rec.getPayload().toByteArray());
@@ -54,22 +52,25 @@ public final class IdempotencyGuard {
     }
 
     long ttlMillis = Math.max(1, ttlSeconds) * 1000L;
-    Timestamp expiresAt = Timestamps.add(now, Duration.newBuilder()
-        .setSeconds(ttlMillis / 1000)
-        .setNanos((int) ((ttlMillis % 1000) * 1_000_000))
-        .build());
+    Timestamp expiresAt =
+        Timestamps.add(
+            now,
+            Duration.newBuilder()
+                .setSeconds(ttlMillis / 1000)
+                .setNanos((int) ((ttlMillis % 1000) * 1_000_000))
+                .build());
 
     if (!store.createPending(key, opName, requestHash, now, expiresAt)) {
       var again = store.get(key).orElseThrow();
       if (!again.getRequestHash().equals(requestHash)) {
-        throw GrpcErrors.conflict(corrId.get(), "idempotency_mismatch",
-            Map.of("op", opName, "key", idempotencyKey));
+        throw GrpcErrors.conflict(
+            corrId.get(), "idempotency_mismatch", Map.of("op", opName, "key", idempotencyKey));
       }
       if (again.getStatus() == IdempotencyRecord.Status.SUCCEEDED) {
         return parser.apply(again.getPayload().toByteArray());
       }
-      throw GrpcErrors.preconditionFailed(corrId.get(), "idempotency_pending",
-          Map.of("op", opName, "key", idempotencyKey));
+      throw GrpcErrors.preconditionFailed(
+          corrId.get(), "idempotency_pending", Map.of("op", opName, "key", idempotencyKey));
     }
 
     try {

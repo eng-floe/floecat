@@ -1,15 +1,5 @@
 package ai.floedb.metacat.service.bootstrap.impl;
 
-import java.time.Clock;
-import java.util.List;
-import java.util.UUID;
-
-import com.google.protobuf.util.Timestamps;
-import io.quarkus.runtime.StartupEvent;
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.enterprise.event.Observes;
-import jakarta.inject.Inject;
-
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
@@ -21,10 +11,16 @@ import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
-import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
-import ai.floedb.metacat.common.rpc.Pointer;
+import com.google.protobuf.util.Timestamps;
+import io.quarkus.runtime.StartupEvent;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
+import jakarta.inject.Inject;
+import java.time.Clock;
+import java.util.List;
+import java.util.UUID;
 
 @ApplicationScoped
 public class SeedRunner {
@@ -60,84 +56,105 @@ public class SeedRunner {
 
   private ResourceId seedCatalog(String tenant, String displayName, String description, long now) {
     String id = uuidFor(tenant + "/catalog:" + displayName);
-    var rid = ResourceId.newBuilder()
-        .setTenantId(tenant)
-        .setId(id)
-        .setKind(ResourceKind.RK_CATALOG).build();
-    var cat = Catalog.newBuilder()
-        .setResourceId(rid)
-        .setDisplayName(displayName)
-        .setDescription(description)
-        .setCreatedAt(Timestamps
-        .fromMillis(now)).build();
+    var rid =
+        ResourceId.newBuilder()
+            .setTenantId(tenant)
+            .setId(id)
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    var cat =
+        Catalog.newBuilder()
+            .setResourceId(rid)
+            .setDisplayName(displayName)
+            .setDescription(description)
+            .setCreatedAt(Timestamps.fromMillis(now))
+            .build();
     catalogs.create(cat);
     return rid;
   }
 
-  private ResourceId seedNamespace(String tenant,
-                                   ResourceId catalogId,
-                                   List<String> path,
-                                   String display,
-                                   long now) {
+  private ResourceId seedNamespace(
+      String tenant, ResourceId catalogId, List<String> path, String display, long now) {
     List<String> clean = (path == null) ? List.of() : path;
     List<String> parents = clean.isEmpty() ? List.of() : clean.subList(0, clean.size() - 1);
     String leaf = clean.isEmpty() ? display : clean.get(clean.size() - 1);
 
     String nsId = uuidFor(tenant + "/ns:" + displayPathKey(catalogId.getId(), clean));
 
-    ResourceId nsRid = ResourceId.newBuilder()
-        .setTenantId(tenant)
-        .setId(nsId)
-        .setKind(ResourceKind.RK_NAMESPACE)
-        .build();
+    ResourceId nsRid =
+        ResourceId.newBuilder()
+            .setTenantId(tenant)
+            .setId(nsId)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
 
-    Namespace ns = Namespace.newBuilder()
-        .setResourceId(nsRid)
-        .setDisplayName(leaf)
-        .addAllParents(parents)
-        .setDescription(leaf + " namespace")
-        .setCreatedAt(Timestamps.fromMillis(now))
-        .build();
+    Namespace ns =
+        Namespace.newBuilder()
+            .setResourceId(nsRid)
+            .setDisplayName(leaf)
+            .addAllParents(parents)
+            .setDescription(leaf + " namespace")
+            .setCreatedAt(Timestamps.fromMillis(now))
+            .build();
 
     namespaces.create(ns, catalogId);
     return nsRid;
   }
 
-  private ResourceId seedTable(String tenant, ResourceId catalogId,
-      String namespaceId, String name, long snapshotId, long now) {
+  private ResourceId seedTable(
+      String tenant,
+      ResourceId catalogId,
+      String namespaceId,
+      String name,
+      long snapshotId,
+      long now) {
     String tableId = uuidFor(tenant + "/tbl:" + name);
-    var tableRid = ResourceId.newBuilder()
-        .setTenantId(tenant).setId(tableId).setKind(ResourceKind.RK_TABLE).build();
-    var nsRid = ResourceId.newBuilder()
-        .setTenantId(tenant).setId(namespaceId).setKind(ResourceKind.RK_NAMESPACE).build();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setTenantId(tenant)
+            .setId(tableId)
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    var nsRid =
+        ResourceId.newBuilder()
+            .setTenantId(tenant)
+            .setId(namespaceId)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
 
-    String rootUri = "s3://seed-data/" + tenant + "/"
-        + catalogId + "/" + namespaceId + "/" + name + "/";
+    String rootUri =
+        "s3://seed-data/" + tenant + "/" + catalogId + "/" + namespaceId + "/" + name + "/";
 
-    var td = Table.newBuilder()
-        .setResourceId(tableRid)
-        .setDisplayName(name)
-        .setDescription(name + " table")
-        .setFormat(TableFormat.TF_ICEBERG)
-        .setCatalogId(catalogId)
-        .setNamespaceId(nsRid)
-        .setRootUri(rootUri)
-        .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
-        .setCreatedAt(Timestamps.fromMillis(now))
-        .build();
+    var td =
+        Table.newBuilder()
+            .setResourceId(tableRid)
+            .setDisplayName(name)
+            .setDescription(name + " table")
+            .setFormat(TableFormat.TF_ICEBERG)
+            .setCatalogId(catalogId)
+            .setNamespaceId(nsRid)
+            .setRootUri(rootUri)
+            .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
+            .setCreatedAt(Timestamps.fromMillis(now))
+            .build();
 
     tables.create(td);
     return tableRid;
   }
 
-  private void seedSnapshot(String tenant, ResourceId tableId,
-      long snapshotId, long ingestedAtMs, long upstreamCreatedAt) {
-    var snap = Snapshot.newBuilder()
-        .setTableId(tableId)
-        .setSnapshotId(snapshotId)
-        .setIngestedAt(Timestamps.fromMillis(ingestedAtMs))
-        .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedAt))
-        .build();
+  private void seedSnapshot(
+      String tenant,
+      ResourceId tableId,
+      long snapshotId,
+      long ingestedAtMs,
+      long upstreamCreatedAt) {
+    var snap =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .setIngestedAt(Timestamps.fromMillis(ingestedAtMs))
+            .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedAt))
+            .build();
 
     snapshots.create(snap);
   }

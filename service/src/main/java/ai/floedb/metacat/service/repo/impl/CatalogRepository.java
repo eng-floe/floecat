@@ -1,12 +1,5 @@
 package ai.floedb.metacat.service.repo.impl;
 
-import java.util.List;
-import java.util.Optional;
-
-import com.google.protobuf.Timestamp;
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -14,6 +7,11 @@ import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
+import com.google.protobuf.Timestamp;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import java.util.List;
+import java.util.Optional;
 
 @ApplicationScoped
 public class CatalogRepository extends BaseRepository<Catalog> {
@@ -72,8 +70,8 @@ public class CatalogRepository extends BaseRepository<Catalog> {
 
   public boolean rename(String tenant, ResourceId catId, String newName, long expectedVersion) {
     var byId = Keys.catPtr(tenant, catId.getId());
-    var catalog = get(byId).orElseThrow(
-        () -> new NotFoundException("catalog not found: " + catId.getId()));
+    var catalog =
+        get(byId).orElseThrow(() -> new NotFoundException("catalog not found: " + catId.getId()));
 
     if (newName.equals(catalog.getDisplayName())) {
       return true;
@@ -108,12 +106,13 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     var pointerId = pointerIdOpt.get();
 
     var catalogOpt = getById(catalogId);
-    var byName = catalogOpt.map(
-        catalog -> Keys.catByNamePtr(tid, catalog.getDisplayName())).orElse(null);
+    var byName =
+        catalogOpt.map(catalog -> Keys.catByNamePtr(tid, catalog.getDisplayName())).orElse(null);
 
     if (byName != null) {
-      pointerStore.get(byName).ifPresent(
-          pointer -> compareAndDeleteOrFalse(byName, pointer.getVersion()));
+      pointerStore
+          .get(byName)
+          .ifPresent(pointer -> compareAndDeleteOrFalse(byName, pointer.getVersion()));
     }
 
     if (!compareAndDeleteOrFalse(byId, pointerId.getVersion())) {
@@ -130,16 +129,17 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     var blobUri = Keys.catBlob(tid, catalogId.getId());
 
     var catalogOpt = getById(catalogId);
-    var byName = catalogOpt.map(
-        catalog -> Keys.catByNamePtr(tid, catalog.getDisplayName())).orElse(null);
+    var byName =
+        catalogOpt.map(catalog -> Keys.catByNamePtr(tid, catalog.getDisplayName())).orElse(null);
 
     if (!compareAndDeleteOrFalse(byId, expectedVersion)) {
       return false;
     }
 
     if (byName != null) {
-      pointerStore.get(byName).ifPresent(
-          pointer -> compareAndDeleteOrFalse(byName, pointer.getVersion()));
+      pointerStore
+          .get(byName)
+          .ifPresent(pointer -> compareAndDeleteOrFalse(byName, pointer.getVersion()));
     }
 
     deleteQuietly(() -> blobStore.delete(blobUri));
@@ -150,8 +150,12 @@ public class CatalogRepository extends BaseRepository<Catalog> {
   public MutationMeta metaFor(ResourceId catalogId, Timestamp nowTs) {
     var tenant = catalogId.getTenantId();
     var key = Keys.catPtr(tenant, catalogId.getId());
-    var pointer = pointerStore.get(key).orElseThrow(() -> new IllegalStateException(
-        "Pointer missing for catalog: " + catalogId.getId()));
+    var pointer =
+        pointerStore
+            .get(key)
+            .orElseThrow(
+                () ->
+                    new IllegalStateException("Pointer missing for catalog: " + catalogId.getId()));
     return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
   }
 

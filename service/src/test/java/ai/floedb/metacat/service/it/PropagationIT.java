@@ -1,16 +1,5 @@
 package ai.floedb.metacat.service.it;
 
-import java.util.Optional;
-import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
-
-import org.junit.jupiter.api.Test;
-import io.grpc.*;
-import io.grpc.stub.MetadataUtils;
-import io.quarkus.grpc.GrpcClient;
-import io.quarkus.test.junit.QuarkusTest;
-import jakarta.inject.Inject;
-
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.*;
@@ -19,6 +8,15 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.planning.PlanContextStore;
 import ai.floedb.metacat.service.planning.impl.PlanContext;
+import io.grpc.*;
+import io.grpc.stub.MetadataUtils;
+import io.quarkus.grpc.GrpcClient;
+import io.quarkus.test.junit.QuarkusTest;
+import jakarta.inject.Inject;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.Test;
 
 @QuarkusTest
 class PropagationIT {
@@ -36,8 +34,10 @@ class PropagationIT {
 
   private static PrincipalContext pc(String tenant) {
     return PrincipalContext.newBuilder()
-        .setTenantId(tenant).setSubject("it-user")
-        .addPermissions("catalog.read").build();
+        .setTenantId(tenant)
+        .setSubject("it-user")
+        .addPermissions("catalog.read")
+        .build();
   }
 
   @Test
@@ -49,39 +49,43 @@ class PropagationIT {
     m.put(CORR, corr);
 
     RespHeadersCaptureInterceptor capture = new RespHeadersCaptureInterceptor();
-    var client = resourceAccess
-        .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
-        .withInterceptors(capture);
+    var client =
+        resourceAccess
+            .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
+            .withInterceptors(capture);
 
     client.listCatalogs(ListCatalogsRequest.getDefaultInstance());
 
     String echoed =
         Optional.ofNullable(capture.responseHeaders.get())
             .map(h -> h.get(CORR))
-            .orElseGet(() -> Optional.ofNullable(capture.responseTrailers.get())
-                .map(t -> t.get(CORR)).orElse(null));
+            .orElseGet(
+                () ->
+                    Optional.ofNullable(capture.responseTrailers.get())
+                        .map(t -> t.get(CORR))
+                        .orElse(null));
 
     assertEquals(corr, echoed, "server should echo x-correlation-id");
 
-    var rid = ResourceId.newBuilder()
-        .setTenantId("t-0001")
-        .setKind(ResourceKind.RK_CATALOG)
-        .setId("00000000-0000-0000-0000-000000000000")
-        .build();
+    var rid =
+        ResourceId.newBuilder()
+            .setTenantId("t-0001")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("00000000-0000-0000-0000-000000000000")
+            .build();
 
     RespHeadersCaptureInterceptor captureErr = new RespHeadersCaptureInterceptor();
-    var errClient = resourceAccess
-        .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
-        .withInterceptors(captureErr);
+    var errClient =
+        resourceAccess
+            .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
+            .withInterceptors(captureErr);
 
     assertThrows(
         StatusRuntimeException.class,
         () -> errClient.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(rid).build()));
 
     String echoedOnErr =
-        Optional.ofNullable(captureErr.responseTrailers.get())
-            .map(t -> t.get(CORR))
-            .orElse(null);
+        Optional.ofNullable(captureErr.responseTrailers.get()).map(t -> t.get(CORR)).orElse(null);
     assertEquals(corr, echoedOnErr, "server should echo x-correlation-id in trailers on error");
   }
 
@@ -90,14 +94,7 @@ class PropagationIT {
     String planId = "plan-" + UUID.randomUUID();
     var seededPc = pc("t-4242").toBuilder().setPlanId(planId).build();
 
-    planStore.put(PlanContext.newActive(
-        planId,
-        "t-4242",
-        seededPc,
-        null, null,
-        60_000L,
-        1L
-    ));
+    planStore.put(PlanContext.newActive(planId, "t-4242", seededPc, null, null, 60_000L, 1L));
 
     String corr = "it-corr-" + UUID.randomUUID();
 
@@ -106,17 +103,21 @@ class PropagationIT {
     m.put(CORR, corr);
 
     RespHeadersCaptureInterceptor capture = new RespHeadersCaptureInterceptor();
-    var client = resourceAccess
-        .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
-        .withInterceptors(capture);
+    var client =
+        resourceAccess
+            .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
+            .withInterceptors(capture);
 
     client.listCatalogs(ListCatalogsRequest.getDefaultInstance());
 
     String echoed =
         Optional.ofNullable(capture.responseHeaders.get())
             .map(h -> h.get(CORR))
-            .orElseGet(() -> Optional.ofNullable(capture.responseTrailers.get())
-                .map(t -> t.get(CORR)).orElse(null));
+            .orElseGet(
+                () ->
+                    Optional.ofNullable(capture.responseTrailers.get())
+                        .map(t -> t.get(CORR))
+                        .orElse(null));
     assertEquals(corr, echoed, "server should echo x-correlation-id");
   }
 
@@ -129,19 +130,24 @@ class PropagationIT {
         MethodDescriptor<ReqT, RespT> method, CallOptions callOptions, Channel next) {
       ClientCall<ReqT, RespT> call = next.newCall(method, callOptions);
       return new ForwardingClientCall.SimpleForwardingClientCall<>(call) {
-        @Override public void start(Listener<RespT> responseListener, Metadata headersIn) {
-          super.start(new ForwardingClientCallListener
-              .SimpleForwardingClientCallListener<>(responseListener) {
-            @Override public void onHeaders(Metadata h) {
-              responseHeaders.set(h);
-              super.onHeaders(h);
-            }
+        @Override
+        public void start(Listener<RespT> responseListener, Metadata headersIn) {
+          super.start(
+              new ForwardingClientCallListener.SimpleForwardingClientCallListener<>(
+                  responseListener) {
+                @Override
+                public void onHeaders(Metadata h) {
+                  responseHeaders.set(h);
+                  super.onHeaders(h);
+                }
 
-            @Override public void onClose(Status status, Metadata t) {
-              responseTrailers.set(t);
-              super.onClose(status, t);
-            }
-          }, headersIn);
+                @Override
+                public void onClose(Status status, Metadata t) {
+                  responseTrailers.set(t);
+                  super.onClose(status, t);
+                }
+              },
+              headersIn);
         }
       };
     }

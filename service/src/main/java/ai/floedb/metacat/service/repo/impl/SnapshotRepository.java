@@ -1,13 +1,5 @@
 package ai.floedb.metacat.service.repo.impl;
 
-import java.util.List;
-import java.util.Optional;
-
-import com.google.protobuf.Timestamp;
-import com.google.protobuf.util.Timestamps;
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -15,6 +7,12 @@ import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
+import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import java.util.List;
+import java.util.Optional;
 
 @ApplicationScoped
 public class SnapshotRepository extends BaseRepository<Snapshot> {
@@ -24,8 +22,8 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
 
   @Inject
   public SnapshotRepository(PointerStore pointerStore, BlobStore blobs) {
-    super(pointerStore, blobs, Snapshot::parseFrom,
-        Snapshot::toByteArray, "application/x-protobuf");
+    super(
+        pointerStore, blobs, Snapshot::parseFrom, Snapshot::toByteArray, "application/x-protobuf");
   }
 
   public Optional<Snapshot> get(ResourceId tableId, long snapshotId) {
@@ -33,7 +31,8 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     return get(key);
   }
 
-  public List<Snapshot> list(ResourceId tableId, int limit, String pageToken, StringBuilder nextOut) {
+  public List<Snapshot> list(
+      ResourceId tableId, int limit, String pageToken, StringBuilder nextOut) {
     String prefix = Keys.snapPtrByIdPrefix(tableId.getTenantId(), tableId.getId());
     return listByPrefix(prefix, limit, pageToken, nextOut);
   }
@@ -117,16 +116,19 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     var tenantId = tableId.getTenantId();
 
     String byId = Keys.snapPtrById(tenantId, tableId.getId(), snapshotId);
-    long createdMs = get(byId)
-        .map(s -> com.google.protobuf.util.Timestamps.toMillis(s.getUpstreamCreatedAt()))
-        .orElse(0L);
+    long createdMs =
+        get(byId)
+            .map(s -> com.google.protobuf.util.Timestamps.toMillis(s.getUpstreamCreatedAt()))
+            .orElse(0L);
     String byTime = Keys.snapPtrByTime(tenantId, tableId.getId(), snapshotId, createdMs);
     String blobUri = Keys.snapBlob(tenantId, tableId.getId(), snapshotId);
 
-    pointerStore.get(byTime).ifPresent(
-        pointer -> compareAndDeleteOrFalse(byTime, pointer.getVersion()));
-    pointerStore.get(byId).ifPresent(
-        pointer -> compareAndDeleteOrFalse(byId, pointer.getVersion()));
+    pointerStore
+        .get(byTime)
+        .ifPresent(pointer -> compareAndDeleteOrFalse(byTime, pointer.getVersion()));
+    pointerStore
+        .get(byId)
+        .ifPresent(pointer -> compareAndDeleteOrFalse(byId, pointer.getVersion()));
 
     deleteQuietly(() -> blobStore.delete(blobUri));
 
@@ -137,9 +139,7 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     var tenantId = tableId.getTenantId();
 
     String byId = Keys.snapPtrById(tenantId, tableId.getId(), snapshotId);
-    long createdMs = get(byId)
-        .map(s -> Timestamps.toMillis(s.getUpstreamCreatedAt()))
-        .orElse(0L);
+    long createdMs = get(byId).map(s -> Timestamps.toMillis(s.getUpstreamCreatedAt())).orElse(0L);
     String byTime = Keys.snapPtrByTime(tenantId, tableId.getId(), snapshotId, createdMs);
     String blobUri = Keys.snapBlob(tenantId, tableId.getId(), snapshotId);
 
@@ -147,8 +147,9 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
       return false;
     }
 
-    pointerStore.get(byTime).ifPresent(
-        pointer -> compareAndDeleteOrFalse(byTime, pointer.getVersion()));
+    pointerStore
+        .get(byTime)
+        .ifPresent(pointer -> compareAndDeleteOrFalse(byTime, pointer.getVersion()));
 
     deleteQuietly(() -> blobStore.delete(blobUri));
 
@@ -159,9 +160,13 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     var tenantId = tableId.getTenantId();
     var key = Keys.snapPtrById(tenantId, tableId.getId(), snapshotId);
 
-    var pointer = pointerStore.get(key).orElseThrow(
-        () -> new IllegalStateException(
-            "Pointer missing for snapshot: " + Long.toString(snapshotId)));
+    var pointer =
+        pointerStore
+            .get(key)
+            .orElseThrow(
+                () ->
+                    new IllegalStateException(
+                        "Pointer missing for snapshot: " + Long.toString(snapshotId)));
 
     return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
   }
