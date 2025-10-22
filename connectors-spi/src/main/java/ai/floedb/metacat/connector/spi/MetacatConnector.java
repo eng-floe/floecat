@@ -22,8 +22,7 @@ public interface MetacatConnector extends Closeable {
       Optional<Long> currentSnapshotId,
       Optional<Long> currentSnapshotTsMillis,
       Map<String, String> properties,
-      List<String> partitionKeys
-  ) {}
+      List<String> partitionKeys) {}
 
   UpstreamTable describe(String namespaceFq, String tableName);
 
@@ -31,5 +30,6 @@ public interface MetacatConnector extends Closeable {
     return false;
   }
 
-  @Override void close();
+  @Override
+  void close();
 }

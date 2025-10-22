@@ -1,5 +1,13 @@
 package ai.floedb.metacat.service.repo.util;
 
+import ai.floedb.metacat.catalog.rpc.MutationMeta;
+import ai.floedb.metacat.common.rpc.BlobHeader;
+import ai.floedb.metacat.common.rpc.Pointer;
+import ai.floedb.metacat.service.repo.Repository;
+import ai.floedb.metacat.service.storage.BlobStore;
+import ai.floedb.metacat.service.storage.PointerStore;
+import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -10,16 +18,6 @@ import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Function;
 
-import com.google.protobuf.Timestamp;
-import com.google.protobuf.util.Timestamps;
-
-import ai.floedb.metacat.catalog.rpc.MutationMeta;
-import ai.floedb.metacat.common.rpc.BlobHeader;
-import ai.floedb.metacat.common.rpc.Pointer;
-import ai.floedb.metacat.service.repo.Repository;
-import ai.floedb.metacat.service.storage.BlobStore;
-import ai.floedb.metacat.service.storage.PointerStore;
-
 public abstract class BaseRepository<T> implements Repository<T> {
   protected PointerStore pointerStore;
   protected BlobStore blobStore;
@@ -28,6 +26,10 @@ public abstract class BaseRepository<T> implements Repository<T> {
   protected String contentType;
 
   public static final int CAS_MAX = 10;
+
+  public BaseRepository() {
+    super();
+  }
 
   public static class RepoException extends RuntimeException {
     public RepoException(String msg) {
@@ -67,9 +69,6 @@ public abstract class BaseRepository<T> implements Repository<T> {
     public CorruptionException(String msg, Throwable cause) {
       super(msg, cause);
     }
-  }
-
-  protected BaseRepository() {
   }
 
   protected BaseRepository(
@@ -163,7 +162,7 @@ public abstract class BaseRepository<T> implements Repository<T> {
     String want = sha256B64(bytes);
     var before = blobStore.head(blobUri);
 
-    if (before.isPresent() && want.equals(before.get().getEtag())){
+    if (before.isPresent() && want.equals(before.get().getEtag())) {
       return;
     }
 
@@ -193,12 +192,20 @@ public abstract class BaseRepository<T> implements Repository<T> {
         }
       } else {
         if (pointerOpt.getVersion() != expectedVersion) {
-          throw new PreconditionFailedException("version mismatch: " + key
-              + " expected=" + expectedVersion + " actual=" + pointerOpt.getVersion());
+          throw new PreconditionFailedException(
+              "version mismatch: "
+                  + key
+                  + " expected="
+                  + expectedVersion
+                  + " actual="
+                  + pointerOpt.getVersion());
         }
 
-        var nextPointer = pointerOpt.toBuilder()
-            .setBlobUri(blobUri).setVersion(pointerOpt.getVersion() + 1).build();
+        var nextPointer =
+            pointerOpt.toBuilder()
+                .setBlobUri(blobUri)
+                .setVersion(pointerOpt.getVersion() + 1)
+                .build();
 
         if (pointerStore.compareAndSet(key, expectedVersion, nextPointer)) {
           return;
@@ -291,8 +298,12 @@ public abstract class BaseRepository<T> implements Repository<T> {
       }
 
       throw new PreconditionFailedException(
-          "delete version mismatch for " + key +
-          " expected=" + expectedVersion + " actual=" + cur.getVersion());
+          "delete version mismatch for "
+              + key
+              + " expected="
+              + expectedVersion
+              + " actual="
+              + cur.getVersion());
     }
   }
 
@@ -312,8 +323,10 @@ public abstract class BaseRepository<T> implements Repository<T> {
     String token = "";
     var stringBuilder = new StringBuilder(512);
     stringBuilder.append("== DUMP prefix=").append(prefix).append(" ==\n");
-    stringBuilder.append(String.format("%-5s %-8s %-36s %-24s %-24s  %s -> %s%n",
-        "#", "version", "etag", "created_at", "last_modified", "pointer", "blobUri"));
+    stringBuilder.append(
+        String.format(
+            "%-5s %-8s %-36s %-24s %-24s  %s -> %s%n",
+            "#", "version", "etag", "created_at", "last_modified", "pointer", "blobUri"));
 
     int rowNumber = 0;
     do {
@@ -324,13 +337,17 @@ public abstract class BaseRepository<T> implements Repository<T> {
         rowNumber++;
         var blobHeaderOpt = blobStore.head(r.blobUri());
         String etag = blobHeaderOpt.map(BlobHeader::getEtag).orElse("-");
-        String created = blobHeaderOpt.map(
-            header -> Timestamps.toString(header.getCreatedAt())).orElse("-");
-        String modified = blobHeaderOpt.map(
-            header -> Timestamps.toString(header.getLastModifiedAt())).orElse("-");
+        String created =
+            blobHeaderOpt.map(header -> Timestamps.toString(header.getCreatedAt())).orElse("-");
+        String modified =
+            blobHeaderOpt
+                .map(header -> Timestamps.toString(header.getLastModifiedAt()))
+                .orElse("-");
 
-        stringBuilder.append(String.format("%-5d %-8d %-36s %-24s %-24s  %s -> %s%n",
-            rowNumber, r.version(), etag, created, modified, r.key(), r.blobUri()));
+        stringBuilder.append(
+            String.format(
+                "%-5d %-8d %-36s %-24s %-24s  %s -> %s%n",
+                rowNumber, r.version(), etag, created, modified, r.key(), r.blobUri()));
       }
 
       token = next.toString();
@@ -350,13 +367,23 @@ public abstract class BaseRepository<T> implements Repository<T> {
     String etag = blobHeader.map(BlobHeader::getEtag).orElse("-");
     String created = blobHeader.map(h -> Timestamps.toString(h.getCreatedAt())).orElse("-");
     String modified = blobHeader.map(h -> Timestamps.toString(h.getLastModifiedAt())).orElse("-");
-    String resourceId = blobHeader.map(header -> {
-      var id = header.getResourceId();
-      return id.getTenantId() + ":" + id.getId() + ":" + id.getKind().name();
-    }).orElse("-");
+    String resourceId =
+        blobHeader
+            .map(
+                header -> {
+                  var id = header.getResourceId();
+                  return id.getTenantId() + ":" + id.getId() + ":" + id.getKind().name();
+                })
+            .orElse("-");
 
-    return String.format("version=%d etag=%s created=%s modified=%s rid=%s %s -> %s",
-        pointer.getVersion(), etag, created,
-            modified, resourceId, pointer.getKey(), pointer.getBlobUri());
+    return String.format(
+        "version=%d etag=%s created=%s modified=%s rid=%s %s -> %s",
+        pointer.getVersion(),
+        etag,
+        created,
+        modified,
+        resourceId,
+        pointer.getKey(),
+        pointer.getBlobUri());
   }
 }

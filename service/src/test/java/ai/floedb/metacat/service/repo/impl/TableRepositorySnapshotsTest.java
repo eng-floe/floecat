@@ -1,11 +1,5 @@
 package ai.floedb.metacat.service.repo.impl;
 
-import java.time.Clock;
-import java.util.UUID;
-
-import org.junit.jupiter.api.Test;
-import com.google.protobuf.util.Timestamps;
-
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.Snapshot;
@@ -15,9 +9,12 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
+import com.google.protobuf.util.Timestamps;
+import java.time.Clock;
+import java.util.UUID;
+import org.junit.jupiter.api.Test;
 
 class TableRepositorySnapshotsTest {
-
   private final Clock clock = Clock.systemUTC();
 
   @Test
@@ -32,30 +29,43 @@ class TableRepositorySnapshotsTest {
     String nsId = UUID.randomUUID().toString();
     String tblId = UUID.randomUUID().toString();
 
-    var catalogRid = ResourceId.newBuilder().setTenantId(tenant)
-        .setId(catalogId).setKind(ResourceKind.RK_CATALOG).build();
-    var nsRid = ResourceId.newBuilder().setTenantId(tenant)
-        .setId(nsId).setKind(ResourceKind.RK_NAMESPACE).build();
-    var tableRid = ResourceId.newBuilder().setTenantId(tenant)
-        .setId(tblId).setKind(ResourceKind.RK_TABLE).build();
+    var catalogRid =
+        ResourceId.newBuilder()
+            .setTenantId(tenant)
+            .setId(catalogId)
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    var nsRid =
+        ResourceId.newBuilder()
+            .setTenantId(tenant)
+            .setId(nsId)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setTenantId(tenant)
+            .setId(tblId)
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
 
-    var td = Table.newBuilder()
-        .setResourceId(tableRid)
-        .setDisplayName("orders")
-        .setDescription("Orders table")
-        .setFormat(TableFormat.TF_DELTA)
-        .setCatalogId(catalogRid)
-        .setNamespaceId(nsRid)
-        .setRootUri("s3://upstream/tables/orders/")
-        .setSchemaJson("{}")
-        .setCreatedAt(Timestamps.fromMillis(clock.millis()))
-        .build();
+    var td =
+        Table.newBuilder()
+            .setResourceId(tableRid)
+            .setDisplayName("orders")
+            .setDescription("Orders table")
+            .setFormat(TableFormat.TF_DELTA)
+            .setCatalogId(catalogRid)
+            .setNamespaceId(nsRid)
+            .setRootUri("s3://upstream/tables/orders/")
+            .setSchemaJson("{}")
+            .setCreatedAt(Timestamps.fromMillis(clock.millis()))
+            .build();
     tableRepo.create(td);
 
-    seedSnapshot(snapshotRepo, tenant, tableRid, 199,
-        clock.millis() - 20_000, clock.millis() - 60_000);
-    seedSnapshot(snapshotRepo, tenant, tableRid, 200,
-        clock.millis() - 10_000, clock.millis() - 50_000);
+    seedSnapshot(
+        snapshotRepo, tenant, tableRid, 199, clock.millis() - 20_000, clock.millis() - 60_000);
+    seedSnapshot(
+        snapshotRepo, tenant, tableRid, 200, clock.millis() - 10_000, clock.millis() - 50_000);
 
     StringBuilder next = new StringBuilder();
     var page1 = snapshotRepo.list(tableRid, 1, "", next);
@@ -82,15 +92,14 @@ class TableRepositorySnapshotsTest {
       long snapshotId,
       long ingestedAtMs,
       long upstreamCreatedAt) {
-    var snap = Snapshot.newBuilder()
-        .setTableId(tableId)
-        .setSnapshotId(snapshotId)
-        .setIngestedAt(Timestamps.fromMillis(ingestedAtMs))
-        .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedAt))
-        .build();
-
+    var snap =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .setIngestedAt(Timestamps.fromMillis(ingestedAtMs))
+            .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedAt))
+            .build();
 
     snapshotRepo.create(snap);
   }
 }
-

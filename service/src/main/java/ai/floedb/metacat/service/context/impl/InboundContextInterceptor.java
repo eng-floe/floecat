@@ -1,30 +1,28 @@
 package ai.floedb.metacat.service.context.impl;
 
-import java.time.Clock;
-import java.util.Optional;
-import java.util.UUID;
-
-import org.jboss.logging.MDC;
+import ai.floedb.metacat.common.rpc.PrincipalContext;
+import ai.floedb.metacat.service.planning.PlanContextStore;
+import ai.floedb.metacat.service.planning.impl.PlanContext;
+import ai.floedb.metacat.service.security.impl.PrincipalProvider;
+import ai.floedb.metacat.service.tenancy.impl.TenantRegistry;
 import io.grpc.Context;
 import io.grpc.Contexts;
+import io.grpc.ForwardingServerCall.SimpleForwardingServerCall;
 import io.grpc.Metadata;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.Status;
-import io.grpc.ForwardingServerCall.SimpleForwardingServerCall;
 import io.opentelemetry.api.baggage.Baggage;
 import io.opentelemetry.api.trace.Span;
 import io.quarkus.grpc.GlobalInterceptor;
 import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-
-import ai.floedb.metacat.common.rpc.PrincipalContext;
-import ai.floedb.metacat.service.planning.PlanContextStore;
-import ai.floedb.metacat.service.planning.impl.PlanContext;
-import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import ai.floedb.metacat.service.tenancy.impl.TenantRegistry;
+import java.time.Clock;
+import java.util.Optional;
+import java.util.UUID;
+import org.jboss.logging.MDC;
 
 @ApplicationScoped
 @GlobalInterceptor
@@ -50,9 +48,10 @@ public class InboundContextInterceptor implements ServerInterceptor {
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
       ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
 
-    String correlationId = Optional.ofNullable(headers.get(CORR))
-        .filter(s -> !s.isBlank())
-        .orElse(UUID.randomUUID().toString());
+    String correlationId =
+        Optional.ofNullable(headers.get(CORR))
+            .filter(s -> !s.isBlank())
+            .orElse(UUID.randomUUID().toString());
 
     String planIdHeader = Optional.ofNullable(headers.get(PLAN_ID)).orElse("");
 
@@ -61,18 +60,20 @@ public class InboundContextInterceptor implements ServerInterceptor {
     PrincipalContext principalContext = resolvedContext.pc();
     String planId = resolvedContext.planId();
 
-    Context context = Context.current()
-        .withValue(PC_KEY, principalContext)
-        .withValue(PLAN_KEY, planId)
-        .withValue(CORR_KEY, correlationId);
+    Context context =
+        Context.current()
+            .withValue(PC_KEY, principalContext)
+            .withValue(PLAN_KEY, planId)
+            .withValue(CORR_KEY, correlationId);
 
     MDC.put("plan_id", planId);
     MDC.put("correlation_id", correlationId);
 
-    var baggage = Baggage.current().toBuilder()
-        .put("plan_id", planId)
-        .put("correlation_id", correlationId)
-        .build();
+    var baggage =
+        Baggage.current().toBuilder()
+            .put("plan_id", planId)
+            .put("correlation_id", correlationId)
+            .build();
 
     var otelCtx = baggage.storeInContext(io.opentelemetry.context.Context.current());
 
@@ -84,22 +85,25 @@ public class InboundContextInterceptor implements ServerInterceptor {
       span.setAttribute("subject", principalContext.getSubject());
     }
 
-    var forwarding = new SimpleForwardingServerCall<ReqT, RespT>(call) {
-      @Override public void sendHeaders(Metadata h) {
-        h.put(CORR, correlationId);
-        super.sendHeaders(h);
-      }
+    var forwarding =
+        new SimpleForwardingServerCall<ReqT, RespT>(call) {
+          @Override
+          public void sendHeaders(Metadata h) {
+            h.put(CORR, correlationId);
+            super.sendHeaders(h);
+          }
 
-      @Override public void close(Status status, Metadata metadata) {
-        try {
-          metadata.put(CORR, correlationId);
-        } finally {
-          MDC.remove("plan_id");
-          MDC.remove("correlation_id");
-        }
-        super.close(status, metadata);
-      }
-    };
+          @Override
+          public void close(Status status, Metadata metadata) {
+            try {
+              metadata.put(CORR, correlationId);
+            } finally {
+              MDC.remove("plan_id");
+              MDC.remove("correlation_id");
+            }
+            super.close(status, metadata);
+          }
+        };
 
     var listener = Contexts.interceptCall(context, forwarding, headers, next);
 
@@ -126,8 +130,8 @@ public class InboundContextInterceptor implements ServerInterceptor {
           && !isBlank(pc.getPlanId())
           && !pc.getPlanId().equals(planIdHeader)) {
         throw Status.FAILED_PRECONDITION
-          .withDescription("plan_id mismatch between header and principal")
-          .asRuntimeException();
+            .withDescription("plan_id mismatch between header and principal")
+            .asRuntimeException();
       }
 
       String canonicalPlan = !isBlank(pc.getPlanId()) ? pc.getPlanId() : planIdHeader;
@@ -135,21 +139,21 @@ public class InboundContextInterceptor implements ServerInterceptor {
     }
 
     if (!isBlank(planIdHeader)) {
-      PlanContext ctx = planStore.get(planIdHeader)
-          .orElseThrow(() -> Status.UNAUTHENTICATED
-              .withDescription("unknown x-plan-id")
-              .asRuntimeException());
+      PlanContext ctx =
+          planStore
+              .get(planIdHeader)
+              .orElseThrow(
+                  () ->
+                      Status.UNAUTHENTICATED
+                          .withDescription("unknown x-plan-id")
+                          .asRuntimeException());
 
       long now = clock.millis();
       if (ctx.getState() != PlanContext.State.ACTIVE) {
-        throw Status.FAILED_PRECONDITION
-            .withDescription("plan not active")
-            .asRuntimeException();
+        throw Status.FAILED_PRECONDITION.withDescription("plan not active").asRuntimeException();
       }
       if (ctx.getExpiresAtMs() < now) {
-        throw Status.FAILED_PRECONDITION
-            .withDescription("plan lease expired")
-            .asRuntimeException();
+        throw Status.FAILED_PRECONDITION.withDescription("plan lease expired").asRuntimeException();
       }
 
       PrincipalContext principalContext = ctx.getPrincipal();
@@ -177,9 +181,9 @@ public class InboundContextInterceptor implements ServerInterceptor {
       return PrincipalContext.parseFrom(encoded);
     } catch (Exception e) {
       throw Status.UNAUTHENTICATED
-        .withDescription("invalid x-principal-bin")
-        .withCause(e)
-        .asRuntimeException();
+          .withDescription("invalid x-principal-bin")
+          .withCause(e)
+          .asRuntimeException();
     }
   }
 
@@ -189,25 +193,25 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
   private static PrincipalContext devContext() {
     return PrincipalContext.newBuilder()
-      .setTenantId("t-0001")
-      .setSubject("dev-user")
-      .setLocale("en")
-      .addPermissions("catalog.read")
-      .addPermissions("catalog.write")
-      .addPermissions("namespace.read")
-      .addPermissions("namespace.write")
-      .addPermissions("table.read")
-      .addPermissions("table.write")
-      .addPermissions("table.write")
-      .addPermissions("connector.manage")
-      .build();
+        .setTenantId("t-0001")
+        .setSubject("dev-user")
+        .setLocale("en")
+        .addPermissions("catalog.read")
+        .addPermissions("catalog.write")
+        .addPermissions("namespace.read")
+        .addPermissions("namespace.write")
+        .addPermissions("table.read")
+        .addPermissions("table.write")
+        .addPermissions("table.write")
+        .addPermissions("connector.manage")
+        .build();
   }
 
   private void validateTenant(String tenantId) {
     if (isBlank(tenantId) || !tenantRegistry.exists(tenantId)) {
       throw Status.UNAUTHENTICATED
-        .withDescription("invalid or unknown tenant: " + tenantId)
-        .asRuntimeException();
+          .withDescription("invalid or unknown tenant: " + tenantId)
+          .asRuntimeException();
     }
   }
 

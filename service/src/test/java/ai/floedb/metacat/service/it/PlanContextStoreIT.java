@@ -1,42 +1,35 @@
 package ai.floedb.metacat.service.it;
 
-import java.time.Clock;
-import java.util.Map;
-
-import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.junit.QuarkusTestProfile;
-import jakarta.inject.Inject;
-import org.junit.jupiter.api.Test;
-
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.common.rpc.PrincipalContext;
-import ai.floedb.metacat.service.planning.impl.PlanContextStoreImpl;
 import ai.floedb.metacat.service.planning.impl.PlanContext;
+import ai.floedb.metacat.service.planning.impl.PlanContextStoreImpl;
+import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.QuarkusTestProfile;
+import jakarta.inject.Inject;
+import java.time.Clock;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
 
 @QuarkusTest
 class PlanContextStoreIT {
-
   public static class StoreTestProfile implements QuarkusTestProfile {
     @Override
     public Map<String, String> getConfigOverrides() {
       return Map.of(
           "metacat.plan.default-ttl-ms", "100",
           "metacat.plan.ended-grace-ms", "80",
-          "metacat.plan.max-size", "1000"
-      );
+          "metacat.plan.max-size", "1000");
     }
   }
 
-  @Inject
-  PlanContextStoreImpl store;
+  @Inject PlanContextStoreImpl store;
 
   private final Clock clock = Clock.systemUTC();
 
   private static PrincipalContext pc(String tenant, String planId) {
-    var b = PrincipalContext.newBuilder()
-        .setTenantId(tenant)
-        .setSubject("it-user");
+    var b = PrincipalContext.newBuilder().setTenantId(tenant).setSubject("it-user");
     if (planId != null) {
       b.setPlanId(planId);
     }
@@ -44,11 +37,7 @@ class PlanContextStoreIT {
   }
 
   private static PlanContext newPlan(String planId, String tenant, long ttlMs) {
-    return PlanContext.newActive(
-        planId, tenant, pc(tenant, planId),
-        null, null,
-        ttlMs, 1
-    );
+    return PlanContext.newActive(planId, tenant, pc(tenant, planId), null, null, ttlMs, 1);
   }
 
   @Test
@@ -112,7 +101,7 @@ class PlanContextStoreIT {
     var ctx = newPlan(planId, "t-001", 100);
     store.put(ctx);
 
-    var ended = store.end(planId, /*commit*/true).orElseThrow();
+    var ended = store.end(planId, /*commit*/ true).orElseThrow();
     assertEquals(PlanContext.State.ENDED_COMMIT, ended.getState());
 
     assertTrue(ended.getExpiresAtMs() >= clock.millis());

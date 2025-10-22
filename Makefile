@@ -148,7 +148,8 @@ docker:
 # ---------- Lint/format (optional hook points) ----------
 .PHONY: fmt
 fmt:
-	@echo "==> [FMT] (add spotless/google-java-format if desired)"
+	@echo "==> [FMT] (google-java-format)"
+	$(MVN) -q fmt:format
 
 .PHONY: help
 help:

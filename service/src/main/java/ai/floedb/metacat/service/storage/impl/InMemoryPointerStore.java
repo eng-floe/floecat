@@ -1,17 +1,15 @@
 package ai.floedb.metacat.service.storage.impl;
 
+import ai.floedb.metacat.common.rpc.Pointer;
+import ai.floedb.metacat.service.storage.PointerStore;
+import io.quarkus.arc.properties.IfBuildProperty;
+import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
-
-import jakarta.enterprise.context.ApplicationScoped;
-import io.quarkus.arc.properties.IfBuildProperty;
-
-import ai.floedb.metacat.common.rpc.Pointer;
-import ai.floedb.metacat.service.storage.PointerStore;
 
 @ApplicationScoped
 @IfBuildProperty(name = "metacat.blob", stringValue = "memory")
@@ -25,38 +23,36 @@ public class InMemoryPointerStore implements PointerStore {
 
   @Override
   public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
-    final boolean[] updated = { false };
-    map.compute(key, (k, cur) -> {
-      if (cur == null) {
-        if (expectedVersion == 0L) {
-          updated[0] = true;
-          return next;
-        }
-        return null;
-      }
-      if (cur.getVersion() == expectedVersion) {
-        updated[0] = true;
-        return next;
-      }
-      return cur;
-    });
+    final boolean[] updated = {false};
+    map.compute(
+        key,
+        (k, cur) -> {
+          if (cur == null) {
+            if (expectedVersion == 0L) {
+              updated[0] = true;
+              return next;
+            }
+            return null;
+          }
+          if (cur.getVersion() == expectedVersion) {
+            updated[0] = true;
+            return next;
+          }
+          return cur;
+        });
 
     return updated[0];
   }
 
   @Override
   public List<Row> listPointersByPrefix(
-      String prefix,
-      int limit,
-      String pageToken,
-      StringBuilder nextTokenOut) {
+      String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
     final String pfx = prefix == null ? "" : prefix;
     final int lim = Math.max(1, limit);
 
     List<String> keys = new ArrayList<>();
     for (String k : map.keySet()) {
-      if (k.startsWith(pfx))
-      {
+      if (k.startsWith(pfx)) {
         keys.add(k);
       }
     }
@@ -115,20 +111,21 @@ public class InMemoryPointerStore implements PointerStore {
 
   @Override
   public boolean compareAndDelete(String key, long expectedVersion) {
-    final boolean[] deleted = { false };
-    map.compute(key, (k, cur) -> {
+    final boolean[] deleted = {false};
+    map.compute(
+        key,
+        (k, cur) -> {
+          if (cur == null) {
+            return null;
+          }
 
-      if (cur == null) {
-        return null;
-      }
+          if (cur.getVersion() == expectedVersion) {
+            deleted[0] = true;
+            return null;
+          }
 
-      if (cur.getVersion() == expectedVersion) {
-        deleted[0] = true;
-        return null;
-      }
-
-      return cur;
-    });
+          return cur;
+        });
 
     return deleted[0];
   }

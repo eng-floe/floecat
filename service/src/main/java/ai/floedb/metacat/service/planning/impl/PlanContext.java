@@ -1,16 +1,9 @@
 package ai.floedb.metacat.service.planning.impl;
 
+import ai.floedb.metacat.common.rpc.PrincipalContext;
 import java.time.Clock;
 import java.util.Arrays;
 import java.util.Objects;
-import java.util.Optional;
-
-import com.github.benmanes.caffeine.cache.Cache;
-import com.google.protobuf.InvalidProtocolBufferException;
-
-import ai.floedb.metacat.common.rpc.PrincipalContext;
-import ai.floedb.metacat.planning.rpc.ExpansionMap;
-import ai.floedb.metacat.planning.rpc.SnapshotSet;
 
 public final class PlanContext {
 
@@ -55,38 +48,39 @@ public final class PlanContext {
     this.version = builder.version < 0 ? 0 : builder.version;
   }
 
-  public static PlanContext newActive(String planId,
-                                      String tenantId,
-                                      PrincipalContext principal,
-                                      byte[] expansionMap,
-                                      byte[] snapshotSet,
-                                      long ttlMs,
-                                      long version) {
+  public static PlanContext newActive(
+      String planId,
+      String tenantId,
+      PrincipalContext principal,
+      byte[] expansionMap,
+      byte[] snapshotSet,
+      long ttlMs,
+      long version) {
     long now = clock.millis();
     return builder()
-      .planId(planId)
-      .tenantId(tenantId)
-      .principal(principal)
-      .expansionMap(expansionMap)
-      .snapshotSet(snapshotSet)
-      .createdAtMs(now)
-      .expiresAtMs(now + Math.max(1, ttlMs))
-      .state(State.ACTIVE)
-      .version(version)
-      .build();
+        .planId(planId)
+        .tenantId(tenantId)
+        .principal(principal)
+        .expansionMap(expansionMap)
+        .snapshotSet(snapshotSet)
+        .createdAtMs(now)
+        .expiresAtMs(now + Math.max(1, ttlMs))
+        .state(State.ACTIVE)
+        .version(version)
+        .build();
   }
 
   public Builder toBuilder() {
     return builder()
-      .planId(planId)
-      .tenantId(tenantId)
-      .principal(principal)
-      .expansionMap(expansionMap)
-      .snapshotSet(snapshotSet)
-      .createdAtMs(createdAtMs)
-      .expiresAtMs(expiresAtMs)
-      .state(state)
-      .version(version);
+        .planId(planId)
+        .tenantId(tenantId)
+        .principal(principal)
+        .expansionMap(expansionMap)
+        .snapshotSet(snapshotSet)
+        .createdAtMs(createdAtMs)
+        .expiresAtMs(expiresAtMs)
+        .state(state)
+        .version(version);
   }
 
   public static Builder builder() {
@@ -128,8 +122,8 @@ public final class PlanContext {
 
   public String getPlanId() {
     return planId;
-
   }
+
   public String getTenantId() {
     return tenantId;
   }
@@ -153,6 +147,7 @@ public final class PlanContext {
   public long getExpiresAtMs() {
     return expiresAtMs;
   }
+
   public State getState() {
     return state;
   }
@@ -175,7 +170,8 @@ public final class PlanContext {
     private Builder() {}
 
     public Builder planId(String v) {
-      this.planId = v; return this;
+      this.planId = v;
+      return this;
     }
 
     public Builder tenantId(String v) {
@@ -247,7 +243,8 @@ public final class PlanContext {
     return Arrays.copyOf(in, in.length);
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o) {
       return true;
     }
@@ -258,33 +255,43 @@ public final class PlanContext {
 
     PlanContext that = (PlanContext) o;
     return createdAtMs == that.createdAtMs
-           && expiresAtMs == that.expiresAtMs
-           && version == that.version
-           && planId.equals(that.planId)
-           && tenantId.equals(that.tenantId)
-           && principal.equals(that.principal)
-           && Arrays.equals(expansionMap, that.expansionMap)
-           && Arrays.equals(snapshotSet, that.snapshotSet)
-           && state == that.state;
+        && expiresAtMs == that.expiresAtMs
+        && version == that.version
+        && planId.equals(that.planId)
+        && tenantId.equals(that.tenantId)
+        && principal.equals(that.principal)
+        && Arrays.equals(expansionMap, that.expansionMap)
+        && Arrays.equals(snapshotSet, that.snapshotSet)
+        && state == that.state;
   }
 
-  @Override public int hashCode() {
-    int result = Objects.hash(
-        planId, tenantId, principal, createdAtMs, expiresAtMs, state, version);
+  @Override
+  public int hashCode() {
+    int result =
+        Objects.hash(planId, tenantId, principal, createdAtMs, expiresAtMs, state, version);
 
     result = 31 * result + Arrays.hashCode(expansionMap);
     result = 31 * result + Arrays.hashCode(snapshotSet);
     return result;
   }
 
-  @Override public String toString() {
-    return "PlanContext{" +
-        "planId='" + planId + '\''
-        + ", tenantId='" + tenantId + '\''
-        + ", createdAtMs=" + createdAtMs
-        + ", expiresAtMs=" + expiresAtMs
-        + ", state=" + state
-        + ", version=" + version
+  @Override
+  public String toString() {
+    return "PlanContext{"
+        + "planId='"
+        + planId
+        + '\''
+        + ", tenantId='"
+        + tenantId
+        + '\''
+        + ", createdAtMs="
+        + createdAtMs
+        + ", expiresAtMs="
+        + expiresAtMs
+        + ", state="
+        + state
+        + ", version="
+        + version
         + '}';
   }
 }

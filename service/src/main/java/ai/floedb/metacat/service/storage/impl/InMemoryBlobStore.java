@@ -1,5 +1,11 @@
 package ai.floedb.metacat.service.storage.impl;
 
+import ai.floedb.metacat.common.rpc.BlobHeader;
+import ai.floedb.metacat.common.rpc.Tag;
+import ai.floedb.metacat.service.storage.BlobStore;
+import com.google.protobuf.util.Timestamps;
+import io.quarkus.arc.properties.IfBuildProperty;
+import jakarta.enterprise.context.ApplicationScoped;
 import java.time.Clock;
 import java.util.Arrays;
 import java.util.Collections;
@@ -10,18 +16,9 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
-import com.google.protobuf.util.Timestamps;
-import jakarta.enterprise.context.ApplicationScoped;
-import io.quarkus.arc.properties.IfBuildProperty;
-
-import ai.floedb.metacat.common.rpc.BlobHeader;
-import ai.floedb.metacat.common.rpc.Tag;
-import ai.floedb.metacat.service.storage.BlobStore;
-
 @ApplicationScoped
 @IfBuildProperty(name = "metacat.blob", stringValue = "memory")
 public class InMemoryBlobStore implements BlobStore {
-
   private static final String TAG_CONTENT_TYPE = "contentType";
   private static final String TAG_CONTENT_LENGTH = "contentLength";
   private static final String TAG_LAST_MODIFIED = "lastModified";
@@ -50,10 +47,11 @@ public class InMemoryBlobStore implements BlobStore {
 
     String etag = sha256B64(copy);
     long now = clock.millis();
-    BlobHeader.Builder hb = BlobHeader.newBuilder()
-        .setSchemaVersion("v1")
-        .setEtag(etag)
-        .setCreatedAt(Timestamps.fromMillis(now));
+    BlobHeader.Builder hb =
+        BlobHeader.newBuilder()
+            .setSchemaVersion("v1")
+            .setEtag(etag)
+            .setCreatedAt(Timestamps.fromMillis(now));
 
     addTag(hb, TAG_CONTENT_TYPE, contentType);
     addTag(hb, TAG_CONTENT_LENGTH, Integer.toString(copy.length));

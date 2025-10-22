@@ -1,12 +1,5 @@
 package ai.floedb.metacat.service.repo.impl;
 
-import java.util.List;
-import java.util.Optional;
-
-import com.google.protobuf.Timestamp;
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.rpc.Connector;
@@ -14,14 +7,26 @@ import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
+import com.google.protobuf.Timestamp;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import java.util.List;
+import java.util.Optional;
 
 @ApplicationScoped
 public class ConnectorRepository extends BaseRepository<Connector> {
+  public ConnectorRepository() {
+    super();
+  }
 
   @Inject
   public ConnectorRepository(PointerStore pointerStore, BlobStore blobs) {
-    super(pointerStore, blobs, Connector::parseFrom,
-        Connector::toByteArray, "application/x-protobuf");
+    super(
+        pointerStore,
+        blobs,
+        Connector::parseFrom,
+        Connector::toByteArray,
+        "application/x-protobuf");
   }
 
   public Optional<Connector> getById(ResourceId rid) {
@@ -74,8 +79,9 @@ public class ConnectorRepository extends BaseRepository<Connector> {
 
     putBlob(blobUri, updated);
     reserveAllOrRollback(newByName, blobUri);
-    pointerStore.get(oldByName).ifPresent(
-        pointer -> compareAndDeleteOrFalse(oldByName, pointer.getVersion()));
+    pointerStore
+        .get(oldByName)
+        .ifPresent(pointer -> compareAndDeleteOrFalse(oldByName, pointer.getVersion()));
 
     return true;
   }
@@ -89,12 +95,14 @@ public class ConnectorRepository extends BaseRepository<Connector> {
     var byName = connectorOpt.map(c -> Keys.connByNamePtr(tid, c.getDisplayName())).orElse(null);
 
     if (byName != null) {
-      pointerStore.get(byName).ifPresent(
-          pointer -> compareAndDeleteOrFalse(byName, pointer.getVersion()));
+      pointerStore
+          .get(byName)
+          .ifPresent(pointer -> compareAndDeleteOrFalse(byName, pointer.getVersion()));
     }
 
-    pointerStore.get(byId).ifPresent(
-        pointer -> compareAndDeleteOrFalse(byId, pointer.getVersion()));
+    pointerStore
+        .get(byId)
+        .ifPresent(pointer -> compareAndDeleteOrFalse(byId, pointer.getVersion()));
 
     deleteQuietly(() -> blobStore.delete(blobUri));
 
@@ -113,7 +121,8 @@ public class ConnectorRepository extends BaseRepository<Connector> {
       return false;
     }
 
-    if (byName != null) pointerStore.get(byName).ifPresent(p -> compareAndDeleteOrFalse(byName, p.getVersion()));
+    if (byName != null)
+      pointerStore.get(byName).ifPresent(p -> compareAndDeleteOrFalse(byName, p.getVersion()));
 
     deleteQuietly(() -> blobStore.delete(blobUri));
 
@@ -124,8 +133,13 @@ public class ConnectorRepository extends BaseRepository<Connector> {
     var tenantId = resourceId.getTenantId();
     var key = Keys.connByIdPtr(tenantId, resourceId.getId());
 
-    var pointer = pointerStore.get(key).orElseThrow(() -> new IllegalStateException(
-        "Pointer missing for connector: " + resourceId.getId()));
+    var pointer =
+        pointerStore
+            .get(key)
+            .orElseThrow(
+                () ->
+                    new IllegalStateException(
+                        "Pointer missing for connector: " + resourceId.getId()));
 
     return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
   }

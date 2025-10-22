@@ -1,10 +1,5 @@
 package ai.floedb.metacat.service.storage.impl;
 
-import java.util.Optional;
-
-import com.google.protobuf.ByteString;
-import com.google.protobuf.Timestamp;
-
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -14,8 +9,11 @@ import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.IdempotencyStore;
 import ai.floedb.metacat.service.storage.PointerStore;
 import ai.floedb.metacat.storage.rpc.IdempotencyRecord;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.Optional;
 
 @ApplicationScoped
 public final class IdempotencyStoreImpl implements IdempotencyStore {
@@ -45,18 +43,15 @@ public final class IdempotencyStoreImpl implements IdempotencyStore {
 
   @Override
   public boolean createPending(
-      String key,
-      String opName,
-      String requestHash,
-      Timestamp createdAt,
-      Timestamp expiresAt) {
-    var rec = IdempotencyRecord.newBuilder()
-        .setOpName(opName)
-        .setRequestHash(requestHash)
-        .setStatus(IdempotencyRecord.Status.PENDING)
-        .setCreatedAt(createdAt)
-        .setExpiresAt(expiresAt)
-        .build();
+      String key, String opName, String requestHash, Timestamp createdAt, Timestamp expiresAt) {
+    var rec =
+        IdempotencyRecord.newBuilder()
+            .setOpName(opName)
+            .setRequestHash(requestHash)
+            .setStatus(IdempotencyRecord.Status.PENDING)
+            .setCreatedAt(createdAt)
+            .setExpiresAt(expiresAt)
+            .build();
 
     String uri = Keys.memUriFor(key, "record.pb");
 
@@ -83,16 +78,17 @@ public final class IdempotencyStoreImpl implements IdempotencyStore {
       byte[] payloadBytes,
       Timestamp createdAt,
       Timestamp expiresAt) {
-    var rec = IdempotencyRecord.newBuilder()
-        .setOpName(opName)
-        .setRequestHash(requestHash)
-        .setStatus(IdempotencyRecord.Status.SUCCEEDED)
-        .setResourceId(resourceId)
-        .setMeta(meta)
-        .setPayload(ByteString.copyFrom(payloadBytes))
-        .setCreatedAt(createdAt)
-        .setExpiresAt(expiresAt)
-        .build();
+    var rec =
+        IdempotencyRecord.newBuilder()
+            .setOpName(opName)
+            .setRequestHash(requestHash)
+            .setStatus(IdempotencyRecord.Status.SUCCEEDED)
+            .setResourceId(resourceId)
+            .setMeta(meta)
+            .setPayload(ByteString.copyFrom(payloadBytes))
+            .setCreatedAt(createdAt)
+            .setExpiresAt(expiresAt)
+            .build();
 
     String uri = Keys.memUriFor(key, "record.pb");
     blobs.put(uri, rec.toByteArray(), "application/x-protobuf");
@@ -116,7 +112,7 @@ public final class IdempotencyStoreImpl implements IdempotencyStore {
     var uri = p.get().getBlobUri();
     var ok = ptr.delete(key);
     blobs.delete(uri);
-    
+
     return ok;
   }
 }

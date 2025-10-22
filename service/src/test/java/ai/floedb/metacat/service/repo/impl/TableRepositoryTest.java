@@ -18,7 +18,6 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class TableRepositoryTest {
-
   private final Clock clock = Clock.systemUTC();
 
   @Test
@@ -31,48 +30,50 @@ class TableRepositoryTest {
     final var catRepo = new CatalogRepository(ptr, blobs);
 
     var tenant = "t-0001";
-    var catRid = ResourceId.newBuilder()
-        .setTenantId(tenant)
-        .setId(UUID.randomUUID().toString())
-        .setKind(ResourceKind.RK_CATALOG)
-        .build();
+    var catRid =
+        ResourceId.newBuilder()
+            .setTenantId(tenant)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
 
-    Catalog cat = Catalog.newBuilder()
-        .setResourceId(catRid)
-        .setDisplayName("sales")
-        .build();
+    Catalog cat = Catalog.newBuilder().setResourceId(catRid).setDisplayName("sales").build();
     catRepo.create(cat);
 
-    var nsRid = ResourceId.newBuilder()
-        .setTenantId(tenant)
-        .setId(UUID.randomUUID().toString())
-        .setKind(ResourceKind.RK_NAMESPACE)
-        .build();
+    var nsRid =
+        ResourceId.newBuilder()
+            .setTenantId(tenant)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
 
-    var ns = Namespace.newBuilder()
-        .setResourceId(nsRid)
-        .setDisplayName("core")
-        .setDescription("Core namespace")
-        .build();
+    var ns =
+        Namespace.newBuilder()
+            .setResourceId(nsRid)
+            .setDisplayName("core")
+            .setDescription("Core namespace")
+            .build();
     repo.create(ns, catRid);
 
-    var tableRid = ResourceId.newBuilder()
-        .setTenantId(tenant)
-        .setId(UUID.randomUUID().toString())
-        .setKind(ResourceKind.RK_TABLE)
-        .build();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setTenantId(tenant)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
 
-    var td = Table.newBuilder()
-        .setResourceId(tableRid)
-        .setDisplayName("orders")
-        .setDescription("Orders table")
-        .setFormat(TableFormat.TF_ICEBERG)
-        .setCatalogId(catRid)
-        .setNamespaceId(nsRid)
-        .setRootUri("s3://upstream/tables/orders")
-        .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
-        .setCreatedAt(Timestamps.fromMillis(clock.millis()))
-        .build();
+    var td =
+        Table.newBuilder()
+            .setResourceId(tableRid)
+            .setDisplayName("orders")
+            .setDescription("Orders table")
+            .setFormat(TableFormat.TF_ICEBERG)
+            .setCatalogId(catRid)
+            .setNamespaceId(nsRid)
+            .setRootUri("s3://upstream/tables/orders")
+            .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
+            .setCreatedAt(Timestamps.fromMillis(clock.millis()))
+            .build();
     tableRepo.create(td);
 
     String nsKeyRow = Keys.tblByNamePtr(tenant, catRid.getId(), nsRid.getId(), "orders");
@@ -81,7 +82,8 @@ class TableRepositoryTest {
 
     String nsKeyPfx = Keys.tblByNamePrefix(tenant, catRid.getId(), nsRid.getId());
     var rowsUnderPfx = ptr.listPointersByPrefix(nsKeyPfx, 100, "", new StringBuilder());
-    assertTrue(rowsUnderPfx.stream().anyMatch(r -> r.key().equals(nsKeyRow)),
+    assertTrue(
+        rowsUnderPfx.stream().anyMatch(r -> r.key().equals(nsKeyRow)),
         "prefix scan doesn't see the row key you just wrote");
 
     String uri = pointerRow.get().getBlobUri();
@@ -89,11 +91,12 @@ class TableRepositoryTest {
     assertNotNull(blobs.head(uri).orElse(null), "blob header missing for by-namespace row");
     assertNotNull(blobs.get(uri), "blob bytes missing for by-namespace row");
 
-    var snap = Snapshot.newBuilder()
-        .setTableId(tableRid)
-        .setSnapshotId(42)
-        .setIngestedAt(Timestamps.fromMillis(clock.millis()))
-        .build();
+    var snap =
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(42)
+            .setIngestedAt(Timestamps.fromMillis(clock.millis()))
+            .build();
     snapshotRepo.create(snap);
 
     var fetched = tableRepo.get(tableRid).orElseThrow();

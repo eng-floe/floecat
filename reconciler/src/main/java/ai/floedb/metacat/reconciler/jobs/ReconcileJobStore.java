@@ -3,16 +3,20 @@ package ai.floedb.metacat.reconciler.jobs;
 import java.util.Optional;
 
 public interface ReconcileJobStore {
-
   String enqueue(String tenantId, String connectorId, boolean fullRescan);
+
   Optional<ReconcileJob> get(String jobId);
 
-
   Optional<LeasedJob> leaseNext();
+
   void markRunning(String jobId, long startedAtMs);
+
   void markProgress(String jobId, long scanned, long changed, long errors, String message);
+
   void markSucceeded(String jobId, long finishedAtMs, long scanned, long changed);
-  void markFailed(String jobId, long finishedAtMs, String message, long scanned, long changed, long errors);
+
+  void markFailed(
+      String jobId, long finishedAtMs, String message, long scanned, long changed, long errors);
 
   final class ReconcileJob {
     public final String jobId;
@@ -28,10 +32,16 @@ public interface ReconcileJobStore {
     public final boolean fullRescan;
 
     public ReconcileJob(
-        String jobId, String tenantId,
-        String connectorId, String state, String message,
-        long startedAtMs, long finishedAtMs,
-        long tablesScanned, long tablesChanged, long errors,
+        String jobId,
+        String tenantId,
+        String connectorId,
+        String state,
+        String message,
+        long startedAtMs,
+        long finishedAtMs,
+        long tablesScanned,
+        long tablesChanged,
+        long errors,
         boolean fullRescan) {
       this.jobId = jobId;
       this.tenantId = tenantId;

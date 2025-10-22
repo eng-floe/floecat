@@ -1,11 +1,5 @@
 package ai.floedb.metacat.service.catalog.impl;
 
-import java.util.Map;
-
-import io.quarkus.grpc.GrpcService;
-import io.smallrye.mutiny.Uni;
-import jakarta.inject.Inject;
-
 import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.GetCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.GetCurrentSnapshotRequest;
@@ -33,6 +27,10 @@ import ai.floedb.metacat.service.repo.impl.StatsRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
+import io.quarkus.grpc.GrpcService;
+import io.smallrye.mutiny.Uni;
+import jakarta.inject.Inject;
+import java.util.Map;
 
 @GrpcService
 public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAccess {
@@ -46,196 +44,283 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
 
   @Override
   public Uni<GetCatalogResponse> getCatalog(GetCatalogRequest request) {
-    return mapFailures(run(() -> {
-      var principalContext = principal.get();
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principal.get();
 
-      authz.require(principalContext, "catalog.read");
+              authz.require(principalContext, "catalog.read");
 
-      return catalogRepo.getById(request.getCatalogId())
-              .map(c -> GetCatalogResponse.newBuilder().setCatalog(c).build())
-              .orElseThrow(() -> GrpcErrors.notFound(
-                  correlationId(), "catalog", Map.of("id", request.getCatalogId().getId())));
-    }), correlationId());
+              return catalogRepo
+                  .getById(request.getCatalogId())
+                  .map(c -> GetCatalogResponse.newBuilder().setCatalog(c).build())
+                  .orElseThrow(
+                      () ->
+                          GrpcErrors.notFound(
+                              correlationId(),
+                              "catalog",
+                              Map.of("id", request.getCatalogId().getId())));
+            }),
+        correlationId());
   }
 
   @Override
   public Uni<ListCatalogsResponse> listCatalogs(ListCatalogsRequest request) {
-    return mapFailures(run(() -> {
-      var principalContext = principal.get();
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principal.get();
 
-      authz.require(principalContext, "catalog.read");
+              authz.require(principalContext, "catalog.read");
 
-      final int limit = (request.hasPage() && request.getPage().getPageSize() > 0)
-          ? request.getPage().getPageSize() : 50;
-      final String token = request.hasPage() ? request.getPage().getPageToken() : "";
-      final StringBuilder next = new StringBuilder();
+              final int limit =
+                  (request.hasPage() && request.getPage().getPageSize() > 0)
+                      ? request.getPage().getPageSize()
+                      : 50;
+              final String token = request.hasPage() ? request.getPage().getPageToken() : "";
+              final StringBuilder next = new StringBuilder();
 
-      var catalogs = catalogRepo.listByName(
-          principalContext.getTenantId(), Math.max(1, limit), token, next);
+              var catalogs =
+                  catalogRepo.listByName(
+                      principalContext.getTenantId(), Math.max(1, limit), token, next);
 
-      int total = catalogRepo.countAll(principalContext.getTenantId());
+              int total = catalogRepo.countAll(principalContext.getTenantId());
 
-      var page = PageResponse.newBuilder()
-          .setNextPageToken(next.toString())
-          .setTotalSize(total)
-          .build();
+              var page =
+                  PageResponse.newBuilder()
+                      .setNextPageToken(next.toString())
+                      .setTotalSize(total)
+                      .build();
 
-      return ListCatalogsResponse.newBuilder()
-          .addAllCatalogs(catalogs)
-          .setPage(page)
-          .build();
-    }), correlationId());
+              return ListCatalogsResponse.newBuilder()
+                  .addAllCatalogs(catalogs)
+                  .setPage(page)
+                  .build();
+            }),
+        correlationId());
   }
 
   @Override
   public Uni<GetNamespaceResponse> getNamespace(GetNamespaceRequest request) {
-    return mapFailures(run(() -> {
-      var principalContext = principal.get();
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principal.get();
 
-      authz.require(principalContext, "namespace.read");
+              authz.require(principalContext, "namespace.read");
 
-      var namespaceId = request.getNamespaceId();
+              var namespaceId = request.getNamespaceId();
 
-      var catalogId = nsRepo.findOwnerCatalog(principalContext.getTenantId(), namespaceId.getId())
-          .orElseThrow(() -> GrpcErrors.notFound(
-              correlationId(), "namespace", Map.of("id", namespaceId.getId())));
+              var catalogId =
+                  nsRepo
+                      .findOwnerCatalog(principalContext.getTenantId(), namespaceId.getId())
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(), "namespace", Map.of("id", namespaceId.getId())));
 
-      var namespace = nsRepo.get(catalogId, namespaceId)
-          .orElseThrow(() -> GrpcErrors.notFound(
-              correlationId(), "namespace", Map.of("id", namespaceId.getId())));
+              var namespace =
+                  nsRepo
+                      .get(catalogId, namespaceId)
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(), "namespace", Map.of("id", namespaceId.getId())));
 
-      return GetNamespaceResponse.newBuilder().setNamespace(namespace).build();
-    }), correlationId());
+              return GetNamespaceResponse.newBuilder().setNamespace(namespace).build();
+            }),
+        correlationId());
   }
 
   @Override
   public Uni<ListNamespacesResponse> listNamespaces(ListNamespacesRequest request) {
-    return mapFailures(run(() -> {
-      var principalContext = principal.get();
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principal.get();
 
-      authz.require(principalContext, "namespace.read");
+              authz.require(principalContext, "namespace.read");
 
-      var catalogId = request.getCatalogId();
-      catalogRepo.getById(catalogId).orElseThrow(() -> GrpcErrors.notFound(
-          correlationId(), "catalog", Map.of("id", catalogId.getId())));
+              var catalogId = request.getCatalogId();
+              catalogRepo
+                  .getById(catalogId)
+                  .orElseThrow(
+                      () ->
+                          GrpcErrors.notFound(
+                              correlationId(), "catalog", Map.of("id", catalogId.getId())));
 
-      final int limit = (request.hasPage() && request.getPage().getPageSize() > 0)
-          ? request.getPage().getPageSize() : 50;
-      final String token = request.hasPage() ? request.getPage().getPageToken() : "";
-      final StringBuilder next = new StringBuilder();
+              final int limit =
+                  (request.hasPage() && request.getPage().getPageSize() > 0)
+                      ? request.getPage().getPageSize()
+                      : 50;
+              final String token = request.hasPage() ? request.getPage().getPageToken() : "";
+              final StringBuilder next = new StringBuilder();
 
-      var namespaces = nsRepo.list(catalogId, null, Math.max(1, limit), token, next);
-      int total = nsRepo.countUnderCatalog(catalogId);
+              var namespaces = nsRepo.list(catalogId, null, Math.max(1, limit), token, next);
+              int total = nsRepo.countUnderCatalog(catalogId);
 
-      var page = PageResponse.newBuilder()
-          .setNextPageToken(next.toString())
-          .setTotalSize(total)
-          .build();
+              var page =
+                  PageResponse.newBuilder()
+                      .setNextPageToken(next.toString())
+                      .setTotalSize(total)
+                      .build();
 
-      return ListNamespacesResponse.newBuilder()
-          .addAllNamespaces(namespaces)
-          .setPage(page)
-          .build();
-    }), correlationId());
+              return ListNamespacesResponse.newBuilder()
+                  .addAllNamespaces(namespaces)
+                  .setPage(page)
+                  .build();
+            }),
+        correlationId());
   }
 
   @Override
   public Uni<GetTableDescriptorResponse> getTableDescriptor(GetTableDescriptorRequest request) {
-    return mapFailures(run(() -> {
-      var principalContext = principal.get();
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principal.get();
 
-      authz.require(principalContext, "table.read");
+              authz.require(principalContext, "table.read");
 
-      var table = tableRepo.get(request.getTableId())
-          .orElseThrow(() -> GrpcErrors.notFound(
-              correlationId(), "table", Map.of("id", request.getTableId().getId())));
-      return GetTableDescriptorResponse.newBuilder().setTable(table).build();
-    }), correlationId());
+              var table =
+                  tableRepo
+                      .get(request.getTableId())
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(),
+                                  "table",
+                                  Map.of("id", request.getTableId().getId())));
+              return GetTableDescriptorResponse.newBuilder().setTable(table).build();
+            }),
+        correlationId());
   }
 
   @Override
   public Uni<ListTablesResponse> listTables(ListTablesRequest request) {
-    return mapFailures(run(() -> {
-      var principalContext = principal.get();
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principal.get();
 
-      authz.require(principalContext, "table.read");
+              authz.require(principalContext, "table.read");
 
-      var namespaceId = request.getNamespaceId();
-      var catalogId = nsRepo.findOwnerCatalog(principalContext.getTenantId(), namespaceId.getId())
-          .orElseThrow(() -> GrpcErrors.notFound(
-              correlationId(), "namespace", Map.of("id", namespaceId.getId())));
+              var namespaceId = request.getNamespaceId();
+              var catalogId =
+                  nsRepo
+                      .findOwnerCatalog(principalContext.getTenantId(), namespaceId.getId())
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(), "namespace", Map.of("id", namespaceId.getId())));
 
-      nsRepo.get(catalogId, namespaceId).orElseThrow(() -> GrpcErrors.notFound(
-          correlationId(), "namespace", Map.of("id", namespaceId.getId())));
+              nsRepo
+                  .get(catalogId, namespaceId)
+                  .orElseThrow(
+                      () ->
+                          GrpcErrors.notFound(
+                              correlationId(), "namespace", Map.of("id", namespaceId.getId())));
 
-      final int limit = (request.hasPage() && request.getPage().getPageSize() > 0)
-          ? request.getPage().getPageSize() : 50;
-      final String token = request.hasPage() ? request.getPage().getPageToken() : "";
-      final StringBuilder next = new StringBuilder();
+              final int limit =
+                  (request.hasPage() && request.getPage().getPageSize() > 0)
+                      ? request.getPage().getPageSize()
+                      : 50;
+              final String token = request.hasPage() ? request.getPage().getPageToken() : "";
+              final StringBuilder next = new StringBuilder();
 
-      var items = tableRepo.listByNamespace(
-          catalogId, namespaceId, Math.max(1, limit), token, next);
+              var items =
+                  tableRepo.listByNamespace(
+                      catalogId, namespaceId, Math.max(1, limit), token, next);
 
-      int total = tableRepo.countUnderNamespace(catalogId, namespaceId);
+              int total = tableRepo.countUnderNamespace(catalogId, namespaceId);
 
-      var page = PageResponse.newBuilder()
-          .setNextPageToken(next.toString())
-          .setTotalSize(total)
-          .build();
+              var page =
+                  PageResponse.newBuilder()
+                      .setNextPageToken(next.toString())
+                      .setTotalSize(total)
+                      .build();
 
-      return ListTablesResponse.newBuilder()
-          .addAllTables(items)
-          .setPage(page)
-          .build();
-    }), correlationId());
+              return ListTablesResponse.newBuilder().addAllTables(items).setPage(page).build();
+            }),
+        correlationId());
   }
 
   @Override
   public Uni<ListSnapshotsResponse> listSnapshots(ListSnapshotsRequest request) {
-    return mapFailures(run(() -> {
-      var principalContext = principal.get();
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principal.get();
 
-      authz.require(principalContext, "table.read");
+              authz.require(principalContext, "table.read");
 
-      tableRepo.get(request.getTableId()).orElseThrow(() -> GrpcErrors.notFound(
-          correlationId(), "table", Map.of("id", request.getTableId().getId())));
+              tableRepo
+                  .get(request.getTableId())
+                  .orElseThrow(
+                      () ->
+                          GrpcErrors.notFound(
+                              correlationId(),
+                              "table",
+                              Map.of("id", request.getTableId().getId())));
 
-      final int limit = (request.hasPage() && request.getPage().getPageSize() > 0)
-          ? request.getPage().getPageSize() : 50;
-      final String token = request.hasPage() ? request.getPage().getPageToken() : "";
-      final StringBuilder next = new StringBuilder();
+              final int limit =
+                  (request.hasPage() && request.getPage().getPageSize() > 0)
+                      ? request.getPage().getPageSize()
+                      : 50;
+              final String token = request.hasPage() ? request.getPage().getPageToken() : "";
+              final StringBuilder next = new StringBuilder();
 
-      var snaps = snapshotRepo.list(request.getTableId(), Math.max(1, limit), token, next);
-      int total = snapshotRepo.count(request.getTableId());
+              var snaps = snapshotRepo.list(request.getTableId(), Math.max(1, limit), token, next);
+              int total = snapshotRepo.count(request.getTableId());
 
-      var page = PageResponse.newBuilder()
-          .setNextPageToken(next.toString())
-          .setTotalSize(total)
-          .build();
+              var page =
+                  PageResponse.newBuilder()
+                      .setNextPageToken(next.toString())
+                      .setTotalSize(total)
+                      .build();
 
-      return ListSnapshotsResponse.newBuilder()
-          .addAllSnapshots(snaps)
-          .setPage(page)
-          .build();
-    }), correlationId());
+              return ListSnapshotsResponse.newBuilder()
+                  .addAllSnapshots(snaps)
+                  .setPage(page)
+                  .build();
+            }),
+        correlationId());
   }
 
   @Override
   public Uni<GetCurrentSnapshotResponse> getCurrentSnapshot(GetCurrentSnapshotRequest request) {
-    return mapFailures(run(() -> {
-      var principalContext = principal.get();
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principal.get();
 
-      authz.require(principalContext, "table.read");
+              authz.require(principalContext, "table.read");
 
-      tableRepo.get(request.getTableId()).orElseThrow(() -> GrpcErrors.notFound(
-          correlationId(), "table", Map.of("id", request.getTableId().getId())));
+              tableRepo
+                  .get(request.getTableId())
+                  .orElseThrow(
+                      () ->
+                          GrpcErrors.notFound(
+                              correlationId(),
+                              "table",
+                              Map.of("id", request.getTableId().getId())));
 
-      var snap = snapshotRepo.getCurrentSnapshot(request.getTableId())
-          .orElseThrow(() -> GrpcErrors.notFound(
-              correlationId(), "snapshot",
-                  Map.of("reason", "no_snapshots", "table_id", request.getTableId().getId())));
+              var snap =
+                  snapshotRepo
+                      .getCurrentSnapshot(request.getTableId())
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(),
+                                  "snapshot",
+                                  Map.of(
+                                      "reason",
+                                      "no_snapshots",
+                                      "table_id",
+                                      request.getTableId().getId())));
 
-      return GetCurrentSnapshotResponse.newBuilder().setSnapshot(snap).build();
-    }), correlationId());
+              return GetCurrentSnapshotResponse.newBuilder().setSnapshot(snap).build();
+            }),
+        correlationId());
   }
 }

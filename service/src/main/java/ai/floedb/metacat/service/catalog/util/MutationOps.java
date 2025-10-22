@@ -1,25 +1,22 @@
 package ai.floedb.metacat.service.catalog.util;
 
-import java.util.function.Function;
-import java.util.function.Supplier;
-
-import com.google.protobuf.Message;
-import com.google.protobuf.Timestamp;
-
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.service.storage.IdempotencyStore;
 import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
+import com.google.protobuf.Message;
+import com.google.protobuf.Timestamp;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 public final class MutationOps {
-
-  private MutationOps() { }
 
   public static final class OpResult<T> {
     public final T body;
     public final MutationMeta meta;
 
     public OpResult(T body, MutationMeta meta) {
-      this.body = body; this.meta = meta;
+      this.body = body;
+      this.meta = meta;
     }
   }
 
@@ -52,20 +49,20 @@ public final class MutationOps {
       long ttlSeconds,
       Supplier<String> corrIdSupplier) {
 
-    T body = IdempotencyGuard.runOnce(
-        tenant,
-        operationName,
-        idempotencyKey,
-        fingerprint.fingerprint(),
-        creator::create,
-        metaOf,
-        serializer,
-        parser,
-        idemStore,
-        ttlSeconds,
-        now,
-        corrIdSupplier
-    );
+    T body =
+        IdempotencyGuard.runOnce(
+            tenant,
+            operationName,
+            idempotencyKey,
+            fingerprint.fingerprint(),
+            creator::create,
+            metaOf,
+            serializer,
+            parser,
+            idemStore,
+            ttlSeconds,
+            now,
+            corrIdSupplier);
 
     return new OpResult<>(body, metaOf.apply(body));
   }
@@ -84,17 +81,23 @@ public final class MutationOps {
       ThrowingParser<T> parser) {
 
     return create(
-        tenant, operationName, idempotencyKey, fingerprint, creator, metaOf,
+        tenant,
+        operationName,
+        idempotencyKey,
+        fingerprint,
+        creator,
+        metaOf,
         Message::toByteArray,
         bytes -> {
           try {
             return parser.parse(bytes);
-          }
-          catch (Exception e) {
+          } catch (Exception e) {
             throw new IllegalStateException(e);
           }
         },
-        idempotencyStore, now, ttlSeconds, correlationIdSupplier
-    );
+        idempotencyStore,
+        now,
+        ttlSeconds,
+        correlationIdSupplier);
   }
 }
