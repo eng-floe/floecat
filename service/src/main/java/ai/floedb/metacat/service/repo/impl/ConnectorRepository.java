@@ -8,6 +8,7 @@ import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
@@ -129,6 +130,10 @@ public class ConnectorRepository extends BaseRepository<Connector> {
     return true;
   }
 
+  public MutationMeta metaFor(ResourceId id) {
+    return metaFor(id, Timestamps.fromMillis(clock.millis()));
+  }
+
   public MutationMeta metaFor(ResourceId resourceId, Timestamp nowTs) {
     var tenantId = resourceId.getTenantId();
     var key = Keys.connByIdPtr(tenantId, resourceId.getId());
@@ -138,10 +143,14 @@ public class ConnectorRepository extends BaseRepository<Connector> {
             .get(key)
             .orElseThrow(
                 () ->
-                    new IllegalStateException(
+                    new BaseRepository.NotFoundException(
                         "Pointer missing for connector: " + resourceId.getId()));
 
     return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
+  }
+
+  public MutationMeta metaForSafe(ResourceId id) {
+    return metaForSafe(id, Timestamps.fromMillis(clock.millis()));
   }
 
   public MutationMeta metaForSafe(ResourceId resourceId, Timestamp nowTs) {

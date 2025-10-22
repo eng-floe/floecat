@@ -135,7 +135,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
                         return new IdempotencyGuard.CreateResult<>(built, catalogId);
                       },
-                      (catalog) -> catalogs.metaFor(catalog.getResourceId(), tsNow),
+                      (catalog) -> catalogs.metaForSafe(catalog.getResourceId()),
                       idempotencyStore,
                       tsNow,
                       IDEMPOTENCY_TTL_SECONDS,
@@ -177,13 +177,16 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                   mustNonEmpty(request.getSpec().getDisplayName(), "display_name", correlationId);
               var desiredDescription = request.getSpec().getDescription();
 
-              var meta = catalogs.metaFor(catalogId, tsNow);
+              var meta = catalogs.metaFor(catalogId);
               long expectedVersion = meta.getPointerVersion();
               enforcePreconditions(correlationId, meta, request.getPrecondition());
 
               if (desiredName.equals(prev.getDisplayName())
                   && Objects.equals(desiredDescription, prev.getDescription())) {
-                return UpdateCatalogResponse.newBuilder().setCatalog(prev).setMeta(meta).build();
+                return UpdateCatalogResponse.newBuilder()
+                    .setCatalog(prev)
+                    .setMeta(catalogs.metaForSafe(catalogId))
+                    .build();
               }
 
               if (!desiredName.equals(prev.getDisplayName())) {
@@ -194,7 +197,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                   throw GrpcErrors.conflict(
                       correlationId, "catalog.already_exists", Map.of("display_name", desiredName));
                 } catch (BaseRepository.PreconditionFailedException pfe) {
-                  var nowMeta = catalogs.metaFor(catalogId, tsNow);
+                  var nowMeta = catalogs.metaForSafe(catalogId);
                   throw GrpcErrors.preconditionFailed(
                       correlationId,
                       "version_mismatch",
@@ -206,7 +209,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                 }
 
                 if (!Objects.equals(desiredDescription, prev.getDescription())) {
-                  meta = catalogs.metaFor(catalogId, tsNow);
+                  meta = catalogs.metaFor(catalogId);
                   expectedVersion = meta.getPointerVersion();
                   var renamedObj = catalogs.getById(catalogId).orElse(prev);
                   var withDesc = renamedObj.toBuilder().setDescription(desiredDescription).build();
@@ -214,7 +217,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                   try {
                     catalogs.update(withDesc, meta.getPointerVersion());
                   } catch (BaseRepository.PreconditionFailedException pfe) {
-                    var nowMeta = catalogs.metaFor(catalogId, tsNow);
+                    var nowMeta = catalogs.metaForSafe(catalogId);
                     throw GrpcErrors.preconditionFailed(
                         correlationId,
                         "version_mismatch",
@@ -226,14 +229,14 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                   }
                 }
               } else {
-                meta = catalogs.metaFor(catalogId, tsNow);
+                meta = catalogs.metaFor(catalogId);
                 expectedVersion = meta.getPointerVersion();
                 var updated = prev.toBuilder().setDescription(desiredDescription).build();
 
                 try {
                   catalogs.update(updated, meta.getPointerVersion());
                 } catch (BaseRepository.PreconditionFailedException pfe) {
-                  var nowMeta = catalogs.metaFor(catalogId, tsNow);
+                  var nowMeta = catalogs.metaForSafe(catalogId);
                   throw GrpcErrors.preconditionFailed(
                       correlationId,
                       "version_mismatch",
@@ -247,7 +250,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               return UpdateCatalogResponse.newBuilder()
                   .setCatalog(catalogs.getById(catalogId).orElse(prev))
-                  .setMeta(catalogs.metaFor(catalogId, tsNow))
+                  .setMeta(catalogs.metaForSafe(catalogId))
                   .build();
             }),
         correlationId());
@@ -263,15 +266,13 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               authz.require(principalContext, "catalog.write");
 
-              var tsNow = nowTs();
-
               var catalogId = request.getCatalogId();
               ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", correlationId);
 
               var key = Keys.catPtr(catalogId.getTenantId(), catalogId.getId());
               if (ptr.get(key).isEmpty()) {
                 catalogs.delete(catalogId);
-                var safe = catalogs.metaForSafe(catalogId, tsNow);
+                var safe = catalogs.metaForSafe(catalogId);
                 return DeleteCatalogResponse.newBuilder().setMeta(safe).build();
               }
 
@@ -285,14 +286,14 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                     correlationId, "catalog.not_empty", Map.of("display_name", displayName));
               }
 
-              var meta = catalogs.metaFor(catalogId, tsNow);
+              var meta = catalogs.metaFor(catalogId);
               long expectedVersion = meta.getPointerVersion();
               enforcePreconditions(correlationId, meta, request.getPrecondition());
 
               try {
                 catalogs.deleteWithPrecondition(catalogId, expectedVersion);
               } catch (BaseRepository.PreconditionFailedException pfe) {
-                var nowMeta = catalogs.metaFor(catalogId, tsNow);
+                var nowMeta = catalogs.metaForSafe(catalogId);
                 throw GrpcErrors.preconditionFailed(
                     correlationId,
                     "version_mismatch",
@@ -405,8 +406,8 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                         return new IdempotencyGuard.CreateResult<>(built, namespaceId);
                       },
                       (namespace) ->
-                          namespaces.metaFor(
-                              request.getSpec().getCatalogId(), namespace.getResourceId(), tsNow),
+                          namespaces.metaForSafe(
+                              request.getSpec().getCatalogId(), namespace.getResourceId()),
                       idempotencyStore,
                       tsNow,
                       IDEMPOTENCY_TTL_SECONDS,
@@ -431,8 +432,6 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               authz.require(principalContext, "namespace.write");
 
-              var tsNow = nowTs();
-
               var namespaceId = request.getNamespaceId();
               ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId);
 
@@ -446,7 +445,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                               GrpcErrors.notFound(
                                   correlationId, "namespace", Map.of("id", namespaceId.getId())));
 
-              Namespace currentNamespace =
+              var currentNamespace =
                   namespaces
                       .get(currentCatalogId, namespaceId)
                       .orElseThrow(
@@ -483,14 +482,15 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
               var sameLeaf = newLeaf.equals(currentNamespace.getDisplayName());
               var sameParents = Objects.equals(currentParents, newParents);
 
-              var meta = namespaces.metaFor(currentCatalogId, namespaceId, tsNow);
+              var meta = namespaces.metaFor(currentCatalogId, namespaceId);
               long expectedVersion = meta.getPointerVersion();
               enforcePreconditions(correlationId, meta, request.getPrecondition());
 
               if (sameCatalog && sameLeaf && sameParents) {
+                var metaNoop = namespaces.metaForSafe(currentCatalogId, namespaceId);
                 return RenameNamespaceResponse.newBuilder()
                     .setNamespace(currentNamespace)
-                    .setMeta(meta)
+                    .setMeta(metaNoop)
                     .build();
               }
 
@@ -519,7 +519,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                     "namespace.already_exists",
                     Map.of("catalog", targetCatalogId.getId(), "path", pretty));
               } catch (BaseRepository.PreconditionFailedException pfe) {
-                var nowMeta = namespaces.metaFor(currentCatalogId, namespaceId, tsNow);
+                var nowMeta = namespaces.metaForSafe(currentCatalogId, namespaceId);
                 throw GrpcErrors.preconditionFailed(
                     correlationId,
                     "version_mismatch",
@@ -530,7 +530,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                         Long.toString(nowMeta.getPointerVersion())));
               }
 
-              var outMeta = namespaces.metaFor(targetCatalogId, namespaceId, tsNow);
+              var outMeta = namespaces.metaForSafe(targetCatalogId, namespaceId);
               return RenameNamespaceResponse.newBuilder()
                   .setNamespace(updated)
                   .setMeta(outMeta)
@@ -549,8 +549,6 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               authz.require(principalContext, "namespace.write");
 
-              var tsNow = nowTs();
-
               final var tenantId = principalContext.getTenantId();
               final var namespaceId = request.getNamespaceId();
               ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId);
@@ -566,8 +564,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                             .setId("_unknown_")
                             .setKind(ResourceKind.RK_CATALOG)
                             .build(),
-                        namespaceId,
-                        tsNow);
+                        namespaceId);
                 return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
               }
 
@@ -583,14 +580,14 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                     correlationId, "namespace.not_empty", Map.of("display_name", displayName));
               }
 
-              var meta = namespaces.metaFor(catalogId, namespaceId, tsNow);
+              var meta = namespaces.metaFor(catalogId, namespaceId);
               long expectedVersion = meta.getPointerVersion();
               enforcePreconditions(correlationId, meta, request.getPrecondition());
 
               try {
                 namespaces.deleteWithPrecondition(catalogId, namespaceId, expectedVersion);
               } catch (BaseRepository.PreconditionFailedException pfe) {
-                var nowMeta = namespaces.metaFor(catalogId, namespaceId, tsNow);
+                var nowMeta = namespaces.metaForSafe(catalogId, namespaceId);
                 throw GrpcErrors.preconditionFailed(
                     correlationId,
                     "version_mismatch",
@@ -711,7 +708,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
                         return new IdempotencyGuard.CreateResult<>(table, tableId);
                       },
-                      (table) -> tables.metaFor(table.getResourceId(), tsNow),
+                      (table) -> tables.metaForSafe(table.getResourceId()),
                       idempotencyStore,
                       tsNow,
                       IDEMPOTENCY_TTL_SECONDS,
@@ -736,8 +733,6 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               authz.require(principalContext, "table.write");
 
-              var tsNow = nowTs();
-
               var tableId = request.getTableId();
               ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
 
@@ -753,7 +748,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                   currentNamespace.toBuilder().setSchemaJson(request.getSchemaJson()).build();
 
               if (updated.equals(currentNamespace)) {
-                var metaNoop = tables.metaFor(tableId, tsNow);
+                var metaNoop = tables.metaForSafe(tableId);
                 enforcePreconditions(correlationId, metaNoop, request.getPrecondition());
                 return UpdateTableSchemaResponse.newBuilder()
                     .setTable(currentNamespace)
@@ -761,14 +756,14 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                     .build();
               }
 
-              var meta = tables.metaFor(tableId, tsNow);
+              var meta = tables.metaFor(tableId);
               long expectedVersion = meta.getPointerVersion();
               enforcePreconditions(correlationId, meta, request.getPrecondition());
 
               try {
                 tables.update(updated, expectedVersion);
               } catch (BaseRepository.PreconditionFailedException pfe) {
-                var nowMeta = tables.metaFor(tableId, tsNow);
+                var nowMeta = tables.metaForSafe(tableId);
                 throw GrpcErrors.preconditionFailed(
                     correlationId,
                     "version_mismatch",
@@ -779,8 +774,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                         Long.toString(nowMeta.getPointerVersion())));
               }
 
-              var outMeta = tables.metaFor(tableId, tsNow);
-
+              var outMeta = tables.metaForSafe(tableId);
               return UpdateTableSchemaResponse.newBuilder()
                   .setTable(updated)
                   .setMeta(outMeta)
@@ -799,8 +793,6 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               authz.require(principalContext, "table.write");
 
-              var tsNow = nowTs();
-
               var tableId = request.getTableId();
               ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
 
@@ -815,7 +807,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
               var newName =
                   mustNonEmpty(request.getNewDisplayName(), "display_name", correlationId);
               if (newName.equals(currentNamespace.getDisplayName())) {
-                var metaNoop = tables.metaFor(tableId, tsNow);
+                var metaNoop = tables.metaForSafe(tableId);
                 enforcePreconditions(correlationId, metaNoop, request.getPrecondition());
 
                 return RenameTableResponse.newBuilder()
@@ -824,7 +816,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                     .build();
               }
 
-              var meta = tables.metaFor(tableId, tsNow);
+              var meta = tables.metaFor(tableId);
               long expectedVersion = meta.getPointerVersion();
               enforcePreconditions(correlationId, meta, request.getPrecondition());
 
@@ -834,7 +826,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                 throw GrpcErrors.conflict(
                     correlationId, "table.already_exists", Map.of("display_name", newName));
               } catch (BaseRepository.PreconditionFailedException pfe) {
-                var nowMeta = tables.metaFor(tableId, tsNow);
+                var nowMeta = tables.metaForSafe(tableId);
                 throw GrpcErrors.preconditionFailed(
                     correlationId,
                     "version_mismatch",
@@ -845,7 +837,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                         Long.toString(nowMeta.getPointerVersion())));
               }
 
-              var outMeta = tables.metaFor(tableId, tsNow);
+              var outMeta = tables.metaForSafe(tableId);
               var updated = tables.get(tableId).orElse(currentNamespace);
 
               return RenameTableResponse.newBuilder().setTable(updated).setMeta(outMeta).build();
@@ -885,7 +877,6 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
               ensureKind(
                   newNamespaceId, ResourceKind.RK_NAMESPACE, "new_namespace_id", correlationId);
 
-              final var tsNow = nowTs();
               final var newCatalogId =
                   namespaces
                       .findOwnerCatalog(tenantId, newNamespaceId.getId())
@@ -914,7 +905,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                   currentNamespace.getNamespaceId().getId().equals(newNamespaceId.getId());
               final boolean sameName = currentNamespace.getDisplayName().equals(targetName);
               if (sameNs && sameName) {
-                final var metaNoop = tables.metaFor(tableId, tsNow);
+                final var metaNoop = tables.metaForSafe(tableId);
                 enforcePreconditions(correlationId, metaNoop, request.getPrecondition());
 
                 return MoveTableResponse.newBuilder()
@@ -930,7 +921,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                       .setNamespaceId(newNamespaceId)
                       .build();
 
-              var meta = tables.metaFor(tableId, tsNow);
+              var meta = tables.metaFor(tableId);
               long expectedVersion = meta.getPointerVersion();
               enforcePreconditions(correlationId, meta, request.getPrecondition());
 
@@ -947,7 +938,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                 throw GrpcErrors.conflict(
                     correlationId, "table.already_exists", Map.of("display_name", targetName));
               } catch (BaseRepository.PreconditionFailedException pfe) {
-                var nowMeta = tables.metaFor(tableId, tsNow);
+                var nowMeta = tables.metaForSafe(tableId);
                 throw GrpcErrors.preconditionFailed(
                     correlationId,
                     "version_mismatch",
@@ -958,7 +949,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                         Long.toString(nowMeta.getPointerVersion())));
               }
 
-              final var outMeta = tables.metaFor(tableId, tsNow);
+              final var outMeta = tables.metaForSafe(tableId);
 
               return MoveTableResponse.newBuilder().setTable(updated).setMeta(outMeta).build();
             }),
@@ -975,8 +966,6 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               authz.require(principalContext, "table.write");
 
-              var tsNow = nowTs();
-
               var tableId = request.getTableId();
               ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
 
@@ -986,19 +975,19 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               if (cannonicalPtr.isEmpty()) {
                 tables.delete(tableId);
-                var safe = tables.metaForSafe(tableId, tsNow);
+                var safe = tables.metaForSafe(tableId);
 
                 return DeleteTableResponse.newBuilder().setMeta(safe).build();
               }
 
-              var meta = tables.metaFor(tableId, tsNow);
+              var meta = tables.metaFor(tableId);
               long expectedVersion = meta.getPointerVersion();
               enforcePreconditions(correlationId, meta, request.getPrecondition());
 
               try {
                 tables.deleteWithPrecondition(tableId, expectedVersion);
               } catch (BaseRepository.PreconditionFailedException pfe) {
-                var nowMeta = tables.metaFor(tableId, tsNow);
+                var nowMeta = tables.metaForSafe(tableId);
                 throw GrpcErrors.preconditionFailed(
                     correlationId,
                     "version_mismatch",
@@ -1071,7 +1060,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                         return new IdempotencyGuard.CreateResult<>(snap, snap.getTableId());
                       },
                       (snapshot) ->
-                          snapshots.metaFor(snapshot.getTableId(), snapshot.getSnapshotId(), tsNow),
+                          snapshots.metaForSafe(snapshot.getTableId(), snapshot.getSnapshotId()),
                       idempotencyStore,
                       tsNow,
                       IDEMPOTENCY_TTL_SECONDS,
@@ -1093,20 +1082,18 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               authz.require(principalContext, "table.write");
 
-              var tsNow = nowTs();
-
               var tableId = request.getTableId();
               long snapshotId = request.getSnapshotId();
               ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
 
-              var meta = snapshots.metaFor(tableId, snapshotId, tsNow);
+              var meta = snapshots.metaFor(tableId, snapshotId);
               long expectedVersion = meta.getPointerVersion();
               enforcePreconditions(correlationId, meta, request.getPrecondition());
 
               try {
                 snapshots.deleteWithPrecondition(tableId, snapshotId, expectedVersion);
               } catch (BaseRepository.PreconditionFailedException pfe) {
-                var nowMeta = snapshots.metaFor(tableId, snapshotId, tsNow);
+                var nowMeta = snapshots.metaForSafe(tableId, snapshotId);
                 throw GrpcErrors.preconditionFailed(
                     correlationId,
                     "version_mismatch",

@@ -21,7 +21,7 @@ class PlanningIT {
   @GrpcClient("planning")
   PlanningGrpc.PlanningBlockingStub planning;
 
-  @GrpcClient("mutation")
+  @GrpcClient("resource-mutation")
   ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
 
   @GrpcClient("directory")

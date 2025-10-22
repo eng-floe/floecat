@@ -156,6 +156,10 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
     return true;
   }
 
+  public MutationMeta metaFor(ResourceId id, long snapshotId) {
+    return metaFor(id, snapshotId, Timestamps.fromMillis(clock.millis()));
+  }
+
   public MutationMeta metaFor(ResourceId tableId, long snapshotId, Timestamp nowTs) {
     var tenantId = tableId.getTenantId();
     var key = Keys.snapPtrById(tenantId, tableId.getId(), snapshotId);
@@ -165,10 +169,14 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
             .get(key)
             .orElseThrow(
                 () ->
-                    new IllegalStateException(
+                    new BaseRepository.NotFoundException(
                         "Pointer missing for snapshot: " + Long.toString(snapshotId)));
 
     return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
+  }
+
+  public MutationMeta metaForSafe(ResourceId id, long snapshotId) {
+    return metaForSafe(id, snapshotId, Timestamps.fromMillis(clock.millis()));
   }
 
   public MutationMeta metaForSafe(ResourceId tableId, long snapshotId, Timestamp nowTs) {

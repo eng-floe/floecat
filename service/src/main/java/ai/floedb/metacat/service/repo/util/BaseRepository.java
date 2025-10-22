@@ -10,6 +10,7 @@ import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -26,6 +27,8 @@ public abstract class BaseRepository<T> implements Repository<T> {
   protected String contentType;
 
   public static final int CAS_MAX = 10;
+
+  protected static final Clock clock = Clock.systemUTC();
 
   public BaseRepository() {
     super();

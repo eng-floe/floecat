@@ -1,6 +1,7 @@
 package ai.floedb.metacat.service.catalog.util;
 
 import ai.floedb.metacat.catalog.rpc.MutationMeta;
+import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.storage.IdempotencyStore;
 import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 import com.google.protobuf.Message;
@@ -92,7 +93,7 @@ public final class MutationOps {
           try {
             return parser.parse(bytes);
           } catch (Exception e) {
-            throw new IllegalStateException(e);
+            throw new BaseRepository.CorruptionException("idempotency_parse_failed", e);
           }
         },
         idempotencyStore,

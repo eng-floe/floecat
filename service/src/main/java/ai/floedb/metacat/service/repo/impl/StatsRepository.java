@@ -158,7 +158,7 @@ public class StatsRepository extends BaseRepository<TableStats> {
             .get(key)
             .orElseThrow(
                 () ->
-                    new IllegalStateException(
+                    new BaseRepository.NotFoundException(
                         "Pointer missing for table-stats: " + tableId.getId() + "@" + snapshotId));
 
     return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
@@ -173,7 +173,7 @@ public class StatsRepository extends BaseRepository<TableStats> {
             .get(key)
             .orElseThrow(
                 () ->
-                    new IllegalStateException(
+                    new BaseRepository.NotFoundException(
                         "Pointer missing for column-stats: "
                             + tableId.getId()
                             + "/"

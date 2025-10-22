@@ -8,6 +8,7 @@ import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
@@ -73,7 +74,8 @@ public class TableRepository extends BaseRepository<Table> {
 
   public boolean rename(ResourceId tableId, String newDisplayName, long expectedVersion) {
     var tenantId = tableId.getTenantId();
-    var table = get(tableId).orElseThrow(() -> new IllegalStateException("table not found"));
+    var table =
+        get(tableId).orElseThrow(() -> new BaseRepository.NotFoundException("table not found"));
     if (newDisplayName.equals(table.getDisplayName())) {
       return true;
     }
@@ -216,6 +218,10 @@ public class TableRepository extends BaseRepository<Table> {
     return true;
   }
 
+  public MutationMeta metaFor(ResourceId id) {
+    return metaFor(id, Timestamps.fromMillis(clock.millis()));
+  }
+
   public MutationMeta metaFor(ResourceId tableId, Timestamp nowTs) {
     var tenantId = tableId.getTenantId();
     var key = Keys.tblCanonicalPtr(tenantId, tableId.getId());
@@ -223,8 +229,14 @@ public class TableRepository extends BaseRepository<Table> {
         pointerStore
             .get(key)
             .orElseThrow(
-                () -> new IllegalStateException("Pointer missing for table: " + tableId.getId()));
+                () ->
+                    new BaseRepository.NotFoundException(
+                        "Pointer missing for table: " + tableId.getId()));
     return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
+  }
+
+  public MutationMeta metaForSafe(ResourceId id) {
+    return metaForSafe(id, Timestamps.fromMillis(clock.millis()));
   }
 
   public MutationMeta metaForSafe(ResourceId tableId, Timestamp nowTs) {

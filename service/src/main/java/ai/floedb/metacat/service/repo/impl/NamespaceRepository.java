@@ -9,6 +9,7 @@ import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URLDecoder;
@@ -245,6 +246,10 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     return true;
   }
 
+  public MutationMeta metaFor(ResourceId catalogId, ResourceId namespaceId) {
+    return metaFor(catalogId, namespaceId, Timestamps.fromMillis(clock.millis()));
+  }
+
   public MutationMeta metaFor(ResourceId catalogId, ResourceId namespaceId, Timestamp nowTs) {
     var tenantId = namespaceId.getTenantId();
     var key = Keys.nsPtr(tenantId, catalogId.getId(), namespaceId.getId());
@@ -253,10 +258,14 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
             .get(key)
             .orElseThrow(
                 () ->
-                    new IllegalStateException(
+                    new BaseRepository.NotFoundException(
                         "Pointer missing for namespace: " + namespaceId.getId()));
 
     return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
+  }
+
+  public MutationMeta metaForSafe(ResourceId catalogId, ResourceId namespaceId) {
+    return metaForSafe(catalogId, namespaceId, Timestamps.fromMillis(clock.millis()));
   }
 
   public MutationMeta metaForSafe(ResourceId catalogId, ResourceId namespaceId, Timestamp nowTs) {

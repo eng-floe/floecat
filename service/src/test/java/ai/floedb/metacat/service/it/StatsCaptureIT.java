@@ -7,7 +7,7 @@ import org.junit.jupiter.api.Test;
 
 @QuarkusTest
 public class StatsCaptureIT {
-  @GrpcClient("statscapture")
+  @GrpcClient("stats-capture")
   StatsCaptureGrpc.StatsCaptureBlockingStub statscapture;
 
   @Test

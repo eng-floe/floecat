@@ -8,6 +8,7 @@ import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
@@ -147,6 +148,10 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     return true;
   }
 
+  public MutationMeta metaFor(ResourceId id) {
+    return metaFor(id, Timestamps.fromMillis(clock.millis()));
+  }
+
   public MutationMeta metaFor(ResourceId catalogId, Timestamp nowTs) {
     var tenant = catalogId.getTenantId();
     var key = Keys.catPtr(tenant, catalogId.getId());
@@ -155,8 +160,13 @@ public class CatalogRepository extends BaseRepository<Catalog> {
             .get(key)
             .orElseThrow(
                 () ->
-                    new IllegalStateException("Pointer missing for catalog: " + catalogId.getId()));
+                    new BaseRepository.NotFoundException(
+                        "Pointer missing for catalog: " + catalogId.getId()));
     return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
+  }
+
+  public MutationMeta metaForSafe(ResourceId id) {
+    return metaForSafe(id, Timestamps.fromMillis(clock.millis()));
   }
 
   public MutationMeta metaForSafe(ResourceId catalogId, Timestamp nowTs) {

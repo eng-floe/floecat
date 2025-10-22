@@ -111,7 +111,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                         return new IdempotencyGuard.CreateResult<>(c, connectorId);
                       },
-                      (conn) -> connectors.metaFor(conn.getResourceId(), tsNow),
+                      (conn) -> connectors.metaFor(conn.getResourceId()),
                       idempotencyStore,
                       tsNow,
                       IDEMPOTENCY_TTL_SECONDS,
@@ -205,7 +205,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                   correlationId, "connector", Map.of("id", connectorId.getId())));
 
               var tsNow = nowTs();
-              var currentMeta = connectors.metaFor(connectorId, tsNow);
+              var currentMeta = connectors.metaFor(connectorId);
               enforcePreconditions(correlationId, currentMeta, request.getPrecondition());
 
               var spec = request.getSpec();
@@ -253,7 +253,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       "connector.already_exists",
                       Map.of("display_name", desired.getDisplayName()));
                 } catch (BaseRepository.PreconditionFailedException pfe) {
-                  var nowMeta = connectors.metaFor(connectorId, tsNow);
+                  var nowMeta = connectors.metaForSafe(connectorId);
                   throw GrpcErrors.preconditionFailed(
                       correlationId,
                       "version_mismatch",
@@ -267,7 +267,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                 try {
                   connectors.update(desired, currentMeta.getPointerVersion());
                 } catch (BaseRepository.PreconditionFailedException pfe) {
-                  var nowMeta = connectors.metaFor(connectorId, tsNow);
+                  var nowMeta = connectors.metaForSafe(connectorId);
                   throw GrpcErrors.preconditionFailed(
                       correlationId,
                       "version_mismatch",
@@ -279,7 +279,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                 }
               }
 
-              var outMeta = connectors.metaFor(connectorId, tsNow);
+              var outMeta = connectors.metaForSafe(connectorId);
               var outConn = connectors.getById(connectorId).orElse(desired);
 
               return UpdateConnectorResponse.newBuilder()
@@ -303,20 +303,18 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
               var connectorId = request.getConnectorId();
               ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", correlationId);
 
-              var tsNow = nowTs();
-
-              var currentMeta = connectors.metaForSafe(connectorId, tsNow);
+              var currentMeta = connectors.metaForSafe(connectorId);
               if (connectors.getById(connectorId).isEmpty()) {
                 return DeleteConnectorResponse.newBuilder().setMeta(currentMeta).build();
               }
 
-              currentMeta = connectors.metaFor(connectorId, tsNow);
+              currentMeta = connectors.metaFor(connectorId);
               enforcePreconditions(correlationId, currentMeta, request.getPrecondition());
 
               try {
                 connectors.deleteWithPrecondition(connectorId, currentMeta.getPointerVersion());
               } catch (BaseRepository.PreconditionFailedException pfe) {
-                var nowMeta = connectors.metaFor(connectorId, tsNow);
+                var nowMeta = connectors.metaForSafe(connectorId);
                 throw GrpcErrors.preconditionFailed(
                     correlationId,
                     "version_mismatch",
@@ -330,7 +328,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     correlationId, "connector", Map.of("id", connectorId.getId()));
               }
 
-              return DeleteConnectorResponse.newBuilder().setMeta(currentMeta).build();
+              var outMeta = connectors.metaForSafe(connectorId);
+              return DeleteConnectorResponse.newBuilder().setMeta(outMeta).build();
             }),
         correlationId());
   }

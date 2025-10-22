@@ -121,7 +121,7 @@ class PropagationIT {
     assertEquals(corr, echoed, "server should echo x-correlation-id");
   }
 
-  static final class RespHeadersCaptureInterceptor implements ClientInterceptor {
+  private static final class RespHeadersCaptureInterceptor implements ClientInterceptor {
     final AtomicReference<Metadata> responseHeaders = new AtomicReference<>();
     final AtomicReference<Metadata> responseTrailers = new AtomicReference<>();
 

@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
-        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-        xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>ai.floedb.metacat</groupId>
@@ -19,11 +18,11 @@
   <dependencyManagement>
     <dependencies>
       <dependency>
-      <groupId>io.quarkus.platform</groupId>
-      <artifactId>quarkus-bom</artifactId>
-      <version>${quarkus.platform.version}</version>
-      <type>pom</type>
-      <scope>import</scope>
+        <groupId>io.quarkus.platform</groupId>
+        <artifactId>quarkus-bom</artifactId>
+        <version>${quarkus.platform.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
       </dependency>
     </dependencies>
   </dependencyManagement>
@@ -84,14 +83,21 @@
       <artifactId>metacat-reconciler</artifactId>
       <version>${project.version}</version>
     </dependency>
+
+    <dependency>
+      <groupId>org.jboss.logmanager</groupId>
+      <artifactId>jboss-logmanager</artifactId>
+      <version>3.1.2.FINAL</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
     <plugins>
       <plugin>
-      <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-maven-plugin</artifactId>
-      <version>${quarkus.platform.version}</version>
+        <groupId>io.quarkus</groupId>
+        <artifactId>quarkus-maven-plugin</artifactId>
+        <version>${quarkus.platform.version}</version>
         <executions>
           <execution>
             <goals>
@@ -135,10 +141,13 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.4</version>
         <configuration>
+          <useSystemClassLoader>false</useSystemClassLoader>
           <includes>
             <include>**/*Test.java</include>
           </includes>
-          <argLine>--add-opens java.base/java.lang=ALL-UNNAMED</argLine>
+          <argLine>
+            --add-opens java.base/java.lang=ALL-UNNAMED -Djava.util.logging.manager=org.jboss.logmanager.LogManager -Dcom.google.protobuf.useUnsafe=false -Dio.netty.noUnsafe=true
+          </argLine>
         </configuration>
       </plugin>
 
@@ -154,10 +163,13 @@
           </execution>
         </executions>
         <configuration>
+          <useSystemClassLoader>false</useSystemClassLoader>
           <includes>
             <include>**/*IT.java</include>
           </includes>
-          <argLine>--add-opens java.base/java.lang=ALL-UNNAMED</argLine>
+          <argLine>
+            --add-opens java.base/java.lang=ALL-UNNAMED -Djava.util.logging.manager=org.jboss.logmanager.LogManager -Dcom.google.protobuf.useUnsafe=false -Dio.netty.noUnsafe=true
+          </argLine>
         </configuration>
       </plugin>
     </plugins>
