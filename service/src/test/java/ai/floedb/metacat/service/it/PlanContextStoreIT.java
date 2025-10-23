@@ -3,8 +3,10 @@ package ai.floedb.metacat.service.it;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.common.rpc.PrincipalContext;
+import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.planning.impl.PlanContext;
 import ai.floedb.metacat.service.planning.impl.PlanContextStoreImpl;
+import ai.floedb.metacat.service.util.TestSupport;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import jakarta.inject.Inject;
@@ -28,36 +30,37 @@ class PlanContextStoreIT {
 
   private final Clock clock = Clock.systemUTC();
 
-  private static PrincipalContext pc(String tenant, String planId) {
-    var b = PrincipalContext.newBuilder().setTenantId(tenant).setSubject("it-user");
+  private static PrincipalContext pc(String planId) {
+    ResourceId tenantId = TestSupport.createTenantId("/tenant:t-0001");
+    var b = PrincipalContext.newBuilder().setTenantId(tenantId).setSubject("it-user");
     if (planId != null) {
       b.setPlanId(planId);
     }
     return b.build();
   }
 
-  private static PlanContext newPlan(String planId, String tenant, long ttlMs) {
-    return PlanContext.newActive(planId, tenant, pc(tenant, planId), null, null, ttlMs, 1);
+  private static PlanContext newPlan(String planId, long ttlMs) {
+    return PlanContext.newActive(planId, pc(planId), null, null, ttlMs, 1);
   }
 
   @Test
-  void putGet_roundTrip_active() {
+  void planPutGet() {
     String planId = "p-rt-1";
-    var ctx = newPlan(planId, "t-001", 500);
+
+    var ctx = newPlan(planId, 500);
     store.put(ctx);
 
     var got = store.get(planId).orElseThrow();
     assertEquals(PlanContext.State.ACTIVE, got.getState());
     assertEquals(planId, got.getPlanId());
-    assertEquals("t-001", got.getTenantId());
     assertEquals(ctx.getPrincipal(), got.getPrincipal());
     assertTrue(got.getExpiresAtMs() >= ctx.getCreatedAtMs());
   }
 
   @Test
-  void get_afterTtl_marksExpiredSoftly() throws Exception {
+  void planExpired() throws Exception {
     String planId = "p-exp-1";
-    var ctx = newPlan(planId, "t-001", 50);
+    var ctx = newPlan(planId, 50);
     store.put(ctx);
 
     Thread.sleep(70);
@@ -67,9 +70,9 @@ class PlanContextStoreIT {
   }
 
   @Test
-  void extendLease_monotonic_whenActive() {
+  void planExtendLease() {
     String planId = "p-extend-1";
-    var ctx = newPlan(planId, "t-001", 100);
+    var ctx = newPlan(planId, 100);
     store.put(ctx);
 
     var before = store.get(planId).orElseThrow();
@@ -84,9 +87,9 @@ class PlanContextStoreIT {
   }
 
   @Test
-  void extendLease_noop_whenEnded() {
+  void planNoExtendIfExpired() {
     String planId = "p-extend-ended";
-    var ctx = newPlan(planId, "t-001", 100);
+    var ctx = newPlan(planId, 100);
     store.put(ctx);
 
     store.end(planId, true).orElseThrow();
@@ -96,21 +99,21 @@ class PlanContextStoreIT {
   }
 
   @Test
-  void end_setsStateAndGrace() {
+  void planEndCommit() {
     String planId = "p-end-1";
-    var ctx = newPlan(planId, "t-001", 100);
+    var ctx = newPlan(planId, 100);
     store.put(ctx);
 
-    var ended = store.end(planId, /*commit*/ true).orElseThrow();
+    var ended = store.end(planId, true).orElseThrow();
     assertEquals(PlanContext.State.ENDED_COMMIT, ended.getState());
 
     assertTrue(ended.getExpiresAtMs() >= clock.millis());
   }
 
   @Test
-  void delete_and_size() {
+  void planDelete() {
     String planId = "p-del-1";
-    var ctx = newPlan(planId, "t-001", 200);
+    var ctx = newPlan(planId, 200);
     store.put(ctx);
 
     assertTrue(store.size() >= 1);

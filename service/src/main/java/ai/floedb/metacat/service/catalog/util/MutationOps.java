@@ -1,6 +1,6 @@
 package ai.floedb.metacat.service.catalog.util;
 
-import ai.floedb.metacat.catalog.rpc.MutationMeta;
+import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.storage.IdempotencyStore;
 import ai.floedb.metacat.service.storage.util.IdempotencyGuard;

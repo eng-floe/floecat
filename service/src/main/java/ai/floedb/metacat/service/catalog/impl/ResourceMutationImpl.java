@@ -74,7 +74,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
             () -> {
               final var principalContext = principal.get();
               final var correlationId = principalContext.getCorrelationId();
-              final var tenantId = principalContext.getTenantId();
+              final var tenantId = principalContext.getTenantId().getId();
 
               authz.require(principalContext, "catalog.write");
 
@@ -192,7 +192,10 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
               if (!desiredName.equals(prev.getDisplayName())) {
                 try {
                   catalogs.rename(
-                      principalContext.getTenantId(), catalogId, desiredName, expectedVersion);
+                      principalContext.getTenantId().getId(),
+                      catalogId,
+                      desiredName,
+                      expectedVersion);
                 } catch (BaseRepository.NameConflictException nce) {
                   throw GrpcErrors.conflict(
                       correlationId, "catalog.already_exists", Map.of("display_name", desiredName));
@@ -276,7 +279,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                 return DeleteCatalogResponse.newBuilder().setMeta(safe).build();
               }
 
-              if (request.getRequireEmpty() && namespaces.countUnderCatalog(catalogId) > 0) {
+              if (request.getRequireEmpty() && namespaces.count(catalogId) > 0) {
                 var currentNamespace = catalogs.getById(catalogId).orElse(null);
                 var displayName =
                     (currentNamespace != null && !currentNamespace.getDisplayName().isBlank())
@@ -324,7 +327,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               var tsNow = nowTs();
 
-              var tenantId = principalContext.getTenantId();
+              var tenantId = principalContext.getTenantId().getId();
               var idempotencyKey =
                   request.hasIdempotency() ? request.getIdempotency().getKey() : "";
               byte[] fingerprint =
@@ -435,7 +438,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
               var namespaceId = request.getNamespaceId();
               ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId);
 
-              var tenantId = principalContext.getTenantId();
+              var tenantId = principalContext.getTenantId().getId();
 
               var currentCatalogId =
                   namespaces
@@ -549,7 +552,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               authz.require(principalContext, "namespace.write");
 
-              final var tenantId = principalContext.getTenantId();
+              final var tenantId = principalContext.getTenantId().getId();
               final var namespaceId = request.getNamespaceId();
               ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId);
 
@@ -568,8 +571,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                 return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
               }
 
-              if (request.getRequireEmpty()
-                  && tables.countUnderNamespace(catalogId, namespaceId) > 0) {
+              if (request.getRequireEmpty() && tables.count(catalogId, namespaceId) > 0) {
                 var currentNamespace = namespaces.get(catalogId, namespaceId).orElse(null);
                 String displayName =
                     (currentNamespace != null)
@@ -638,7 +640,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
               byte[] fingerprint =
                   request.getSpec().toBuilder().clearDescription().build().toByteArray();
 
-              var tenantId = principalContext.getTenantId();
+              var tenantId = principalContext.getTenantId().getId();
               var tableProto =
                   MutationOps.createProto(
                       tenantId,
@@ -858,7 +860,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
               final var tableId = request.getTableId();
               ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
 
-              final var tenantId = principalContext.getTenantId();
+              final var tenantId = principalContext.getTenantId().getId();
 
               final var currentNamespace =
                   tables
@@ -970,7 +972,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
               ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
 
               var tenantId = tableId.getTenantId();
-              var cannonicalKey = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+              var cannonicalKey = Keys.tblByIdPtr(tenantId, tableId.getId());
               var cannonicalPtr = ptr.get(cannonicalKey);
 
               if (cannonicalPtr.isEmpty()) {
@@ -1017,7 +1019,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               var tsNow = nowTs();
 
-              var tenantId = principalContext.getTenantId();
+              var tenantId = principalContext.getTenantId().getId();
               var idempotencyKey =
                   request.hasIdempotency() ? request.getIdempotency().getKey() : "";
 

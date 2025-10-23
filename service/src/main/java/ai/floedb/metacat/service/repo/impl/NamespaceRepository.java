@@ -1,7 +1,7 @@
 package ai.floedb.metacat.service.repo.impl;
 
-import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.catalog.rpc.Namespace;
+import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
@@ -50,9 +50,8 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     return listByPrefix(pfx, limit, token, next);
   }
 
-  public int countUnderCatalog(ResourceId catalogId) {
+  public int count(ResourceId catalogId) {
     var pfx = Keys.nsByPathPrefix(catalogId.getTenantId(), catalogId.getId(), List.of());
-
     return countByPrefix(pfx);
   }
 

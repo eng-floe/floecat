@@ -11,8 +11,10 @@ import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
+import ai.floedb.metacat.service.repo.impl.TenantRepository;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.tenancy.rpc.Tenant;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -24,6 +26,7 @@ import java.util.UUID;
 
 @ApplicationScoped
 public class SeedRunner {
+  @Inject TenantRepository tenants;
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;
   @Inject TableRepository tables;
@@ -32,26 +35,43 @@ public class SeedRunner {
   @Inject PointerStore ptr;
 
   void onStart(@Observes StartupEvent ev) {
-    final String tenant = "t-0001";
     final Clock clock = Clock.systemUTC();
     final long now = clock.millis();
 
-    var salesId = seedCatalog(tenant, "sales", "Sales catalog", now);
+    var tenantId = seedTenant("t-0001", "First tentant", now);
 
-    var salesCoreNsId = seedNamespace(tenant, salesId, null, "core", now);
-    var ordersId = seedTable(tenant, salesId, salesCoreNsId.getId(), "orders", 0L, now);
-    seedTable(tenant, salesId, salesCoreNsId.getId(), "lineitem", 0L, now);
-    seedSnapshot(tenant, ordersId, 101L, now - 60_000L, now - 100_000L);
-    seedSnapshot(tenant, ordersId, 102L, now, now - 80_000L);
+    var salesId = seedCatalog(tenantId.getId(), "sales", "Sales catalog", now);
 
-    var salesStg25NsId = seedNamespace(tenant, salesId, List.of("staging"), "2025", now);
-    seedTable(tenant, salesId, salesStg25NsId.getId(), "orders_2025", 0L, now);
-    seedTable(tenant, salesId, salesStg25NsId.getId(), "staging_events", 0L, now);
+    var salesCoreNsId = seedNamespace(tenantId.getId(), salesId, null, "core", now);
+    var ordersId = seedTable(tenantId.getId(), salesId, salesCoreNsId.getId(), "orders", 0L, now);
+    seedTable(tenantId.getId(), salesId, salesCoreNsId.getId(), "lineitem", 0L, now);
+    seedSnapshot(tenantId.getId(), ordersId, 101L, now - 60_000L, now - 100_000L);
+    seedSnapshot(tenantId.getId(), ordersId, 102L, now, now - 80_000L);
 
-    var financeId = seedCatalog(tenant, "finance", "Finance catalog", now);
-    var financeCoreNsId = seedNamespace(tenant, financeId, null, "core", now);
-    var glEntriesId = seedTable(tenant, financeId, financeCoreNsId.getId(), "gl_entries", 0L, now);
-    seedSnapshot(tenant, glEntriesId, 201L, now, now - 20_000L);
+    var salesStg25NsId = seedNamespace(tenantId.getId(), salesId, List.of("staging"), "2025", now);
+    seedTable(tenantId.getId(), salesId, salesStg25NsId.getId(), "orders_2025", 0L, now);
+    seedTable(tenantId.getId(), salesId, salesStg25NsId.getId(), "staging_events", 0L, now);
+
+    var financeId = seedCatalog(tenantId.getId(), "finance", "Finance catalog", now);
+    var financeCoreNsId = seedNamespace(tenantId.getId(), financeId, null, "core", now);
+    var glEntriesId =
+        seedTable(tenantId.getId(), financeId, financeCoreNsId.getId(), "gl_entries", 0L, now);
+    seedSnapshot(tenantId.getId(), glEntriesId, 201L, now, now - 20_000L);
+  }
+
+  private ResourceId seedTenant(String displayName, String description, long now) {
+    String id = uuidFor("/tenant:" + displayName);
+    var rid =
+        ResourceId.newBuilder().setTenantId(id).setId(id).setKind(ResourceKind.RK_TENANT).build();
+    var tenant =
+        Tenant.newBuilder()
+            .setResourceId(rid)
+            .setDisplayName(displayName)
+            .setDescription(description)
+            .setCreatedAt(Timestamps.fromMillis(now))
+            .build();
+    tenants.create(tenant);
+    return rid;
   }
 
   private ResourceId seedCatalog(String tenant, String displayName, String description, long now) {

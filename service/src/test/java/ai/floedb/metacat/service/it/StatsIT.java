@@ -10,6 +10,7 @@ import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.common.rpc.SpecialSnapshot;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.service.util.TestSupport;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
@@ -44,7 +45,7 @@ class StatsIT {
   String tablePrefix = this.getClass().getSimpleName() + "_";
 
   @Test
-  void snapshot_stats_create_list_get_and_current() throws Exception {
+  void statsCreateListGetCurrent() throws Exception {
     var catName = tablePrefix + "cat_stats";
     var cat = TestSupport.createCatalog(mutation, catName, "cat for stats");
     String tenantId = TestSupport.seedTenantId(directory, catName);

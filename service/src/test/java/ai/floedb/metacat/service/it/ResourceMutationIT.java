@@ -2,11 +2,24 @@ package ai.floedb.metacat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.catalog.rpc.Catalog;
+import ai.floedb.metacat.catalog.rpc.CatalogSpec;
+import ai.floedb.metacat.catalog.rpc.DeleteCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
+import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.Namespace;
+import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.ResourceAccessGrpc;
+import ai.floedb.metacat.catalog.rpc.ResourceMutationGrpc;
+import ai.floedb.metacat.catalog.rpc.Table;
+import ai.floedb.metacat.catalog.rpc.UpdateCatalogRequest;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.NameRef;
+import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.service.util.TestSupport;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -30,7 +43,7 @@ class ResourceMutationIT {
   private final Clock clock = Clock.systemUTC();
 
   @Test
-  void resources_exist() throws Exception {
+  void resourcesExist() throws Exception {
     var cat = TestSupport.createCatalog(mutation, "cat1", "cat1");
     var ns =
         TestSupport.createNamespace(
@@ -74,7 +87,7 @@ class ResourceMutationIT {
   }
 
   @Test
-  void endtoEndCrud() throws Exception {
+  void catalogCreateUpdateDelete() throws Exception {
     String catName = "it_mutation_cat_" + clock.millis();
     Catalog cat = TestSupport.createCatalog(mutation, catName, "IT cat");
     String tenantId = TestSupport.seedTenantId(directory, catName);
@@ -168,7 +181,7 @@ class ResourceMutationIT {
   }
 
   @Test
-  void create_update_delete_catalog_with_preconditions() throws Exception {
+  void catalogCreateUpdateDeletePrecondition() throws Exception {
     var c1 = TestSupport.createCatalog(mutation, "cat_pre", "desc");
     var id = c1.getResourceId();
     var m1 =

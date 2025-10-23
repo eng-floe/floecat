@@ -10,6 +10,7 @@ import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
+import ai.floedb.metacat.service.util.TestSupport;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.ClientInterceptor;
 import io.grpc.Metadata;
@@ -37,14 +38,16 @@ class CatalogPagingIT {
 
   @BeforeAll
   void seedAndClient() {
+    var tenantId = TestSupport.createTenantId(TENANT);
+
     for (int i = 1; i <= TOTAL; i++) {
       String name = String.format("it-cat-%03d", i);
-      String id = UUID.nameUUIDFromBytes((TENANT + "/" + name).getBytes()).toString();
+      String cid = UUID.nameUUIDFromBytes((TENANT + "/" + name).getBytes()).toString();
 
       var rid =
           ResourceId.newBuilder()
-              .setTenantId(TENANT)
-              .setId(id)
+              .setTenantId(tenantId.getId())
+              .setId(cid)
               .setKind(ResourceKind.RK_CATALOG)
               .build();
 
@@ -61,7 +64,7 @@ class CatalogPagingIT {
 
     var pc =
         PrincipalContext.newBuilder()
-            .setTenantId(TENANT)
+            .setTenantId(tenantId)
             .setSubject("it-user")
             .addPermissions("catalog.read")
             .build();
@@ -76,7 +79,7 @@ class CatalogPagingIT {
   }
 
   @Test
-  void listCatalogs_pagingAndTotals() {
+  void listCatalogsPagingAndTotals() {
     var pageAllReq =
         ListCatalogsRequest.newBuilder()
             .setPage(PageRequest.newBuilder().setPageSize(1000))

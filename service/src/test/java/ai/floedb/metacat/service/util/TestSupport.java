@@ -1,7 +1,31 @@
-package ai.floedb.metacat.service.it;
+package ai.floedb.metacat.service.util;
 
-import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.catalog.rpc.Catalog;
+import ai.floedb.metacat.catalog.rpc.CatalogSpec;
+import ai.floedb.metacat.catalog.rpc.CreateCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.CreateSnapshotRequest;
+import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
+import ai.floedb.metacat.catalog.rpc.DeleteCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.DeleteSnapshotRequest;
+import ai.floedb.metacat.catalog.rpc.DeleteTableRequest;
+import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
+import ai.floedb.metacat.catalog.rpc.Namespace;
+import ai.floedb.metacat.catalog.rpc.NamespaceSpec;
+import ai.floedb.metacat.catalog.rpc.RenameTableRequest;
+import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
+import ai.floedb.metacat.catalog.rpc.ResourceMutationGrpc;
+import ai.floedb.metacat.catalog.rpc.Snapshot;
+import ai.floedb.metacat.catalog.rpc.SnapshotSpec;
+import ai.floedb.metacat.catalog.rpc.Table;
+import ai.floedb.metacat.catalog.rpc.TableFormat;
+import ai.floedb.metacat.catalog.rpc.TableSpec;
+import ai.floedb.metacat.catalog.rpc.UpdateTableSchemaRequest;
 import ai.floedb.metacat.common.rpc.ErrorCode;
+import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
@@ -12,6 +36,10 @@ import ai.floedb.metacat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.tenancy.rpc.CreateTenantRequest;
+import ai.floedb.metacat.tenancy.rpc.TenancyGrpc;
+import ai.floedb.metacat.tenancy.rpc.Tenant;
+import ai.floedb.metacat.tenancy.rpc.TenantSpec;
 import com.google.protobuf.Any;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
@@ -20,6 +48,7 @@ import io.grpc.protobuf.StatusProto;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 public final class TestSupport {
   private TestSupport() {}
@@ -44,6 +73,28 @@ public final class TestSupport {
                 .setRef(NameRef.newBuilder().setCatalog(seededCatalogName))
                 .build());
     return seeded.getResourceId().getTenantId();
+  }
+
+  public static ResourceId createTenantId(String tid) {
+    String tidUUID = UUID.nameUUIDFromBytes(("/tenant:" + tid).getBytes()).toString();
+    ResourceId tenantId =
+        ResourceId.newBuilder()
+            .setTenantId(tidUUID)
+            .setId(tidUUID)
+            .setKind(ResourceKind.RK_TENANT)
+            .build();
+    return tenantId;
+  }
+
+  private static Tenant createTenant(
+      TenancyGrpc.TenancyBlockingStub tenants, String displayName, String description, long now) {
+    var resp =
+        tenants.createTenant(
+            CreateTenantRequest.newBuilder()
+                .setSpec(
+                    TenantSpec.newBuilder().setDisplayName(displayName).setDescription(description))
+                .build());
+    return resp.getTenant();
   }
 
   public static Catalog createCatalog(
@@ -323,7 +374,7 @@ public final class TestSupport {
   public static MutationMeta metaForTable(PointerStore ptr, BlobStore blobs, ResourceId tableId) {
 
     var tenant = tableId.getTenantId();
-    var tblPtrKey = Keys.tblCanonicalPtr(tenant, tableId.getId());
+    var tblPtrKey = Keys.tblByIdPtr(tenant, tableId.getId());
     var tblBlob = Keys.tblBlob(tenant, tableId.getId());
 
     var tblPtr =

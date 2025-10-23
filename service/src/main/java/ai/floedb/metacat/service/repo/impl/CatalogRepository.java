@@ -1,7 +1,7 @@
 package ai.floedb.metacat.service.repo.impl;
 
 import ai.floedb.metacat.catalog.rpc.Catalog;
-import ai.floedb.metacat.catalog.rpc.MutationMeta;
+import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
@@ -37,12 +37,7 @@ public class CatalogRepository extends BaseRepository<Catalog> {
     return listByPrefix(Keys.catByNamePrefix(tenantId), limit, token, next);
   }
 
-  public int countUnderCatalog(ResourceId catalogId) {
-    var pfx = Keys.nsByPathPrefix(catalogId.getTenantId(), catalogId.getId(), List.of());
-    return countByPrefix(pfx);
-  }
-
-  public int countAll(String tenantId) {
+  public int count(String tenantId) {
     return countByPrefix(Keys.catByNamePrefix(tenantId));
   }
 
@@ -86,7 +81,14 @@ public class CatalogRepository extends BaseRepository<Catalog> {
 
     reserveAllOrRollback(newByName, blobUri);
 
-    advancePointer(byId, blobUri, expectedVersion);
+    try {
+      advancePointer(byId, blobUri, expectedVersion);
+    } catch (PreconditionFailedException e) {
+      pointerStore
+          .get(newByName)
+          .ifPresent(p -> compareAndDeleteOrFalse(newByName, p.getVersion()));
+      return false;
+    }
 
     var oldByName = Keys.catByNamePtr(tenant, catalog.getDisplayName());
     pointerStore.get(oldByName).ifPresent(p -> compareAndDeleteOrFalse(oldByName, p.getVersion()));

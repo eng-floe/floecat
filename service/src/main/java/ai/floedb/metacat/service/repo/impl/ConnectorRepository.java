@@ -1,6 +1,6 @@
 package ai.floedb.metacat.service.repo.impl;
 
-import ai.floedb.metacat.catalog.rpc.MutationMeta;
+import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.rpc.Connector;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
@@ -42,7 +42,7 @@ public class ConnectorRepository extends BaseRepository<Connector> {
     return listByPrefix(Keys.connByNamePrefix(tenantId), limit, token, next);
   }
 
-  public int countAll(String tenantId) {
+  public int count(String tenantId) {
     return countByPrefix(Keys.connByNamePrefix(tenantId));
   }
 
@@ -73,6 +73,7 @@ public class ConnectorRepository extends BaseRepository<Connector> {
   public boolean rename(Connector updated, String oldDisplayName, long expectedVersion) {
     var rid = updated.getResourceId();
     var tid = rid.getTenantId();
+    var byId = Keys.connByIdPtr(tid, rid.getId());
 
     var newByName = Keys.connByNamePtr(tid, updated.getDisplayName());
     var oldByName = Keys.connByNamePtr(tid, oldDisplayName);
@@ -80,6 +81,16 @@ public class ConnectorRepository extends BaseRepository<Connector> {
 
     putBlob(blobUri, updated);
     reserveAllOrRollback(newByName, blobUri);
+
+    try {
+      advancePointer(byId, blobUri, expectedVersion);
+    } catch (PreconditionFailedException e) {
+      pointerStore
+          .get(newByName)
+          .ifPresent(p -> compareAndDeleteOrFalse(newByName, p.getVersion()));
+      return false;
+    }
+
     pointerStore
         .get(oldByName)
         .ifPresent(pointer -> compareAndDeleteOrFalse(oldByName, pointer.getVersion()));

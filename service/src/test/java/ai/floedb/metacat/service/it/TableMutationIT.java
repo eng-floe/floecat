@@ -2,13 +2,26 @@ package ai.floedb.metacat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
+import ai.floedb.metacat.catalog.rpc.GetTableDescriptorRequest;
+import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
+import ai.floedb.metacat.catalog.rpc.ListSnapshotsResponse;
+import ai.floedb.metacat.catalog.rpc.MoveTableRequest;
+import ai.floedb.metacat.catalog.rpc.RenameTableRequest;
+import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
+import ai.floedb.metacat.catalog.rpc.ResourceAccessGrpc;
+import ai.floedb.metacat.catalog.rpc.ResourceMutationGrpc;
+import ai.floedb.metacat.catalog.rpc.Snapshot;
+import ai.floedb.metacat.catalog.rpc.UpdateTableSchemaRequest;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageRequest;
+import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.service.util.TestSupport;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -35,7 +48,7 @@ class TableMutationIT {
   String tablePrefix = this.getClass().getSimpleName() + "_";
 
   @Test
-  void table_rename_and_updateSchema_with_preconditions() throws Exception {
+  void tableRenameUpdate() throws Exception {
     var cat = TestSupport.createCatalog(mutation, tablePrefix + "cat1", "tcat1");
     String tenantId = TestSupport.seedTenantId(directory, tablePrefix + "cat1");
     assertEquals(tenantId, cat.getResourceId().getTenantId());
@@ -202,7 +215,7 @@ class TableMutationIT {
   }
 
   @Test
-  void table_move_with_preconditions() throws Exception {
+  void tableMove() throws Exception {
     var catName = tablePrefix + "cat2";
     var cat = TestSupport.createCatalog(mutation, catName, "tcat2");
     String tenantId = TestSupport.seedTenantId(directory, catName);
@@ -351,7 +364,7 @@ class TableMutationIT {
   }
 
   @Test
-  void snapshot_create_delete() throws Exception {
+  void snapshotCreate() throws Exception {
     var catName = tablePrefix + "snap1";
     var cat = TestSupport.createCatalog(mutation, catName, "snap1");
     String tenantId = TestSupport.seedTenantId(directory, catName);

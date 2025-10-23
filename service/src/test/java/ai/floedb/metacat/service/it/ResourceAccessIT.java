@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.ErrorCode;
+import ai.floedb.metacat.service.util.TestSupport;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -19,13 +20,13 @@ class ResourceAccessIT {
   DirectoryGrpc.DirectoryBlockingStub directory;
 
   @Test
-  void listCatalogs_returnsSeeded() {
+  void listCatalogs() {
     var resp = resourceAccess.listCatalogs(ListCatalogsRequest.newBuilder().build());
     assertTrue(resp.getCatalogsCount() >= 2, "Expected seeded catalogs");
   }
 
   @Test
-  void getCatalog_returnsSeeded_and_notFound_hasErrorPayload() throws Exception {
+  void getCatalogNotFound() throws Exception {
     var salesId = TestSupport.resolveCatalogId(directory, "sales");
     var sales =
         resourceAccess.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(salesId).build());

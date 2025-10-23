@@ -3,7 +3,9 @@ package ai.floedb.metacat.service.repo.impl;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.common.rpc.PrincipalContext;
+import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.planning.impl.PlanContext;
+import ai.floedb.metacat.service.util.TestSupport;
 import java.time.Clock;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -11,10 +13,10 @@ import org.junit.jupiter.api.function.Executable;
 class PlanContextTest {
   private final Clock clock = Clock.systemUTC();
 
-  private static PrincipalContext pc(String tenant, String subject, String planId) {
+  private static PrincipalContext pc(ResourceId tenantId, String subject, String planId) {
     var b =
         PrincipalContext.newBuilder()
-            .setTenantId(tenant)
+            .setTenantId(tenantId)
             .setSubject(subject == null ? "test-user" : subject);
     if (planId != null) {
       b.setPlanId(planId);
@@ -24,11 +26,11 @@ class PlanContextTest {
 
   @Test
   void newActive_valid() {
-    var pc = pc("t-001", "alice", "plan-123");
-    var ctx = PlanContext.newActive("plan-123", "t-001", pc, null, null, 1_000, 1);
+    ResourceId tenantId = TestSupport.createTenantId("t-001");
+    var pc = pc(tenantId, "alice", "plan-123");
+    var ctx = PlanContext.newActive("plan-123", pc, null, null, 1_000, 1);
 
     assertEquals("plan-123", ctx.getPlanId());
-    assertEquals("t-001", ctx.getTenantId());
     assertEquals(pc, ctx.getPrincipal());
     assertEquals(PlanContext.State.ACTIVE, ctx.getState());
     assertTrue(ctx.getExpiresAtMs() > ctx.getCreatedAtMs());
@@ -37,21 +39,13 @@ class PlanContextTest {
   }
 
   @Test
-  void newActive_rejectsTenantMismatch() {
-    var pc = pc("t-002", "alice", "plan-123");
-    Executable ex = () -> PlanContext.newActive("plan-123", "t-001", pc, null, null, 1000, 1);
-    var err = assertThrows(IllegalArgumentException.class, ex);
-    assertTrue(err.getMessage().contains("tenantId must match"));
-  }
-
-  @Test
   void builder_rejectsExpiresBeforeCreated() {
-    var pc = pc("t-001", "alice", "p1");
+    ResourceId tenantId = TestSupport.createTenantId("t-001");
+    var pc = pc(tenantId, "alice", "p1");
     Executable ex =
         () ->
             PlanContext.builder()
                 .planId("p1")
-                .tenantId("t-001")
                 .principal(pc)
                 .createdAtMs(2000)
                 .expiresAtMs(1000)
@@ -62,8 +56,9 @@ class PlanContextTest {
 
   @Test
   void extendLease_isMonotonic() {
-    var pc = pc("t-001", "alice", "p1");
-    var ctx = PlanContext.newActive("p1", "t-001", pc, null, null, 200, 1);
+    ResourceId tenantId = TestSupport.createTenantId("t-001");
+    var pc = pc(tenantId, "alice", "p1");
+    var ctx = PlanContext.newActive("p1", pc, null, null, 200, 1);
     long originalExp = ctx.getExpiresAtMs();
 
     var same = ctx.extendLease(originalExp - 50, 2);
@@ -77,8 +72,9 @@ class PlanContextTest {
 
   @Test
   void end_commit_setsStateAndGrace() {
-    var pc = pc("t-001", "alice", "p1");
-    var ctx = PlanContext.newActive("p1", "t-001", pc, null, null, 100, 1);
+    ResourceId tenantId = TestSupport.createTenantId("t-001");
+    var pc = pc(tenantId, "alice", "p1");
+    var ctx = PlanContext.newActive("p1", pc, null, null, 100, 1);
     long targetGrace = clock.millis() + 500;
     var ended = ctx.end(true, targetGrace, 2);
 
@@ -89,8 +85,9 @@ class PlanContextTest {
 
   @Test
   void asExpired_onlyIfActive() {
-    var pc = pc("t-001", "alice", "p1");
-    var ctx = PlanContext.newActive("p1", "t-001", pc, null, null, 100, 1);
+    ResourceId tenantId = TestSupport.createTenantId("t-001");
+    var pc = pc(tenantId, "alice", "p1");
+    var ctx = PlanContext.newActive("p1", pc, null, null, 100, 1);
 
     var expired = ctx.asExpired(2);
     assertEquals(PlanContext.State.EXPIRED, expired.getState());

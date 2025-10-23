@@ -11,6 +11,7 @@ import ai.floedb.metacat.planning.rpc.EndPlanRequest;
 import ai.floedb.metacat.planning.rpc.PlanInput;
 import ai.floedb.metacat.planning.rpc.PlanningGrpc;
 import ai.floedb.metacat.planning.rpc.RenewPlanRequest;
+import ai.floedb.metacat.service.util.TestSupport;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import java.util.List;
@@ -30,7 +31,7 @@ class PlanningIT {
   String catalogPrefix = this.getClass().getSimpleName() + "_";
 
   @Test
-  void beginRenewEnd_flow() {
+  void planBeginRenewEnd() {
     var catName = catalogPrefix + "cat1";
     var cat = TestSupport.createCatalog(mutation, catName, "");
     TestSupport.seedTenantId(directory, cat.getDisplayName());

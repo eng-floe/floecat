@@ -1,7 +1,7 @@
 package ai.floedb.metacat.service.repo.impl;
 
-import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.catalog.rpc.Table;
+import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
@@ -26,7 +26,7 @@ public class TableRepository extends BaseRepository<Table> {
   }
 
   public Optional<Table> get(ResourceId tableId) {
-    return get(Keys.tblCanonicalPtr(tableId.getTenantId(), tableId.getId()));
+    return get(Keys.tblByIdPtr(tableId.getTenantId(), tableId.getId()));
   }
 
   public Optional<Table> getByName(ResourceId catalogId, ResourceId nsId, String name) {
@@ -39,8 +39,9 @@ public class TableRepository extends BaseRepository<Table> {
     return listByPrefix(prefix, limit, token, next);
   }
 
-  public int countUnderNamespace(ResourceId catalogId, ResourceId nsId) {
-    var prefix = Keys.tblByNamePrefix(nsId.getTenantId(), catalogId.getId(), nsId.getId());
+  public int count(ResourceId catalogId, ResourceId namespaceId) {
+    var prefix =
+        Keys.tblByNamePrefix(namespaceId.getTenantId(), catalogId.getId(), namespaceId.getId());
     return countByPrefix(prefix);
   }
 
@@ -51,7 +52,7 @@ public class TableRepository extends BaseRepository<Table> {
     var catalogId = table.getCatalogId();
     var namespaceId = table.getNamespaceId();
 
-    var canonicalPointer = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    var canonicalPointer = Keys.tblByIdPtr(tenantId, tableId.getId());
     var byName =
         Keys.tblByNamePtr(tenantId, catalogId.getId(), namespaceId.getId(), table.getDisplayName());
     var blobUri = Keys.tblBlob(tenantId, tableId.getId());
@@ -63,7 +64,7 @@ public class TableRepository extends BaseRepository<Table> {
   public boolean update(Table updated, long expectedVersion) {
     requireOwnerIds(updated);
     var tenantId = updated.getResourceId().getTenantId();
-    var canonicalPointer = Keys.tblCanonicalPtr(tenantId, updated.getResourceId().getId());
+    var canonicalPointer = Keys.tblByIdPtr(tenantId, updated.getResourceId().getId());
     var blobUri = Keys.tblBlob(tenantId, updated.getResourceId().getId());
 
     putBlob(blobUri, updated);
@@ -81,7 +82,7 @@ public class TableRepository extends BaseRepository<Table> {
     }
 
     var blobUri = Keys.tblBlob(tenantId, tableId.getId());
-    var canonicalPointer = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    var canonicalPointer = Keys.tblByIdPtr(tenantId, tableId.getId());
     var updated = table.toBuilder().setDisplayName(newDisplayName).build();
 
     putBlob(blobUri, updated);
@@ -127,7 +128,7 @@ public class TableRepository extends BaseRepository<Table> {
     var tenantId = updated.getResourceId().getTenantId();
     var tableId = updated.getResourceId();
 
-    var canonicalPointer = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    var canonicalPointer = Keys.tblByIdPtr(tenantId, tableId.getId());
     var blobUri = Keys.tblBlob(tenantId, tableId.getId());
 
     putBlob(blobUri, updated);
@@ -158,7 +159,7 @@ public class TableRepository extends BaseRepository<Table> {
 
   public boolean delete(ResourceId tableId) {
     var tenantId = tableId.getTenantId();
-    var canonicalPointer = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    var canonicalPointer = Keys.tblByIdPtr(tenantId, tableId.getId());
     var blobUri = Keys.tblBlob(tenantId, tableId.getId());
 
     var tdOpt = get(tableId);
@@ -189,7 +190,7 @@ public class TableRepository extends BaseRepository<Table> {
 
   public boolean deleteWithPrecondition(ResourceId tableId, long expectedVersion) {
     var tenantId = tableId.getTenantId();
-    var canonicalPointer = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    var canonicalPointer = Keys.tblByIdPtr(tenantId, tableId.getId());
     var blobUri = Keys.tblBlob(tenantId, tableId.getId());
 
     var tableObt = get(tableId);
@@ -224,7 +225,7 @@ public class TableRepository extends BaseRepository<Table> {
 
   public MutationMeta metaFor(ResourceId tableId, Timestamp nowTs) {
     var tenantId = tableId.getTenantId();
-    var key = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    var key = Keys.tblByIdPtr(tenantId, tableId.getId());
     var pointer =
         pointerStore
             .get(key)
@@ -241,7 +242,7 @@ public class TableRepository extends BaseRepository<Table> {
 
   public MutationMeta metaForSafe(ResourceId tableId, Timestamp nowTs) {
     var tenantId = tableId.getTenantId();
-    var key = Keys.tblCanonicalPtr(tenantId, tableId.getId());
+    var key = Keys.tblByIdPtr(tenantId, tableId.getId());
     var blobUri = Keys.tblBlob(tenantId, tableId.getId());
     return safeMetaOrDefault(key, blobUri, nowTs);
   }

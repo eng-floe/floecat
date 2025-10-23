@@ -153,7 +153,7 @@ class TableRepositoryTest {
             .build();
     tbls.create(seed);
 
-    String canonKey = Keys.tblCanonicalPtr(tenant, tblId.getId());
+    String canonKey = Keys.tblByIdPtr(tenant, tblId.getId());
     long v0 = ptr.get(canonKey).orElseThrow().getVersion();
 
     int WORKERS = 48;

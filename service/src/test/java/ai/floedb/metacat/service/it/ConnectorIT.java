@@ -2,16 +2,18 @@ package ai.floedb.metacat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import ai.floedb.metacat.catalog.rpc.IdempotencyKey;
-import ai.floedb.metacat.catalog.rpc.Precondition;
+import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
 import ai.floedb.metacat.common.rpc.ErrorCode;
+import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.PageRequest;
+import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.connector.rpc.*;
 import ai.floedb.metacat.reconciler.impl.ReconcilerScheduler;
 import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.metacat.service.repo.impl.*;
+import ai.floedb.metacat.service.util.TestSupport;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -26,6 +28,9 @@ public class ConnectorIT {
   @GrpcClient("connectors")
   ConnectorsGrpc.ConnectorsBlockingStub connectors;
 
+  @GrpcClient("directory")
+  DirectoryGrpc.DirectoryBlockingStub directory;
+
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerScheduler scheduler;
   @Inject CatalogRepository catalogs;
@@ -34,7 +39,8 @@ public class ConnectorIT {
   @Inject SnapshotRepository snaps;
 
   @Test
-  void connector_end_to_end() throws Exception {
+  void connectorEndToEnd() throws Exception {
+    var tenantId = TestSupport.createTenantId("t-0001");
     var conn =
         TestSupport.createConnector(
             connectors,
@@ -42,7 +48,7 @@ public class ConnectorIT {
                 .setDisplayName("dummy-conn")
                 .setKind(ConnectorKind.CK_UNITY)
                 .setTargetCatalogDisplayName("cat-e2e")
-                .setTargetTenantId("t-0001")
+                .setTargetTenantId(tenantId)
                 .setUri("dummy://ignored")
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
                 .build());
@@ -74,13 +80,13 @@ public class ConnectorIT {
     assertNotNull(job);
     assertEquals("JS_SUCCEEDED", job.state);
 
-    var catId = catalogs.getByName("t-0001", "cat-e2e").orElseThrow().getResourceId();
+    var catId = catalogs.getByName(tenantId.getId(), "cat-e2e").orElseThrow().getResourceId();
 
-    assertEquals(2, namespaces.countUnderCatalog(catId));
+    assertEquals(2, namespaces.count(catId));
 
-    var dbNsId = namespaces.getByPath("t-0001", catId, List.of("db")).orElseThrow();
+    var dbNsId = namespaces.getByPath(tenantId.getId(), catId, List.of("db")).orElseThrow();
     var anaNsId =
-        namespaces.getByPath("t-0001", catId, List.of("analytics", "sales")).orElseThrow();
+        namespaces.getByPath(tenantId.getId(), catId, List.of("analytics", "sales")).orElseThrow();
 
     assertEquals(2, tables.listByNamespace(catId, dbNsId, 50, "", new StringBuilder()).size());
     assertEquals(1, tables.listByNamespace(catId, anaNsId, 50, "", new StringBuilder()).size());
@@ -91,7 +97,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void createConnector_idempotent() {
+  void createConnectorIdempotent() {
     var spec =
         ConnectorSpec.newBuilder()
             .setDisplayName("idem-1")
@@ -115,7 +121,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void getConnector_notFound() {
+  void getConnectorNotFound() {
     var badRid =
         ResourceId.newBuilder()
             .setTenantId("t-0001")
@@ -132,7 +138,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void listConnectors_pagination() {
+  void listConnectorsPagination() {
     for (int i = 0; i < 5; i++) {
       TestSupport.createConnector(
           connectors,
@@ -161,7 +167,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void updateConnector_rename_and_conflict() throws Exception {
+  void updateConnectorRenameConflict() throws Exception {
     var a =
         TestSupport.createConnector(
             connectors,
@@ -206,7 +212,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void updateConnector_preconditionMismatch() throws Exception {
+  void updateConnectorPreconditionMismatch() throws Exception {
     var c =
         TestSupport.createConnector(
             connectors,
@@ -234,7 +240,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void deleteConnector_ok_and_idempotent() {
+  void deleteConnectorIdempotent() {
     var c =
         TestSupport.createConnector(
             connectors,
@@ -254,7 +260,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void triggerReconcile_notFound() throws Exception {
+  void triggerReconcileNotFound() throws Exception {
     var rid =
         ai.floedb.metacat.common.rpc.ResourceId.newBuilder()
             .setTenantId("t-0001")
@@ -273,7 +279,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void getReconcileJob_notFound() throws Exception {
+  void getReconcileJobNotFound() throws Exception {
     var ex =
         assertThrows(
             StatusRuntimeException.class,
@@ -285,7 +291,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void validateConnector_ok_and_failures() throws Exception {
+  void validateConnectorOkAndFail() throws Exception {
     var ok =
         connectors.validateConnector(
             ValidateConnectorRequest.newBuilder()

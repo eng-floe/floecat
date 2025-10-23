@@ -1,7 +1,7 @@
 package ai.floedb.metacat.service.repo.util;
 
-import ai.floedb.metacat.catalog.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.BlobHeader;
+import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.service.repo.Repository;
 import ai.floedb.metacat.service.storage.BlobStore;

@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.catalog.impl;
+package ai.floedb.metacat.service.statistic.impl;
 
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.PutColumnStatsBatchRequest;
@@ -71,7 +71,7 @@ public class StatsMutationImpl extends BaseServiceImpl implements StatsMutation 
 
               var tableStatsProto =
                   MutationOps.createProto(
-                      principalContext.getTenantId(),
+                      principalContext.getTenantId().getId(),
                       "PutTableStats",
                       idemKey,
                       () -> fingerprint,
@@ -127,7 +127,7 @@ public class StatsMutationImpl extends BaseServiceImpl implements StatsMutation 
                               "snapshot",
                               Map.of("id", Long.toString(request.getSnapshotId()))));
 
-              var tenant = principalContext.getTenantId();
+              var tenant = principalContext.getTenantId().getId();
               var baseKey = request.hasIdempotency() ? request.getIdempotency().getKey() : "";
 
               int upserted = 0;

@@ -27,7 +27,7 @@ import java.util.UUID;
 @GrpcService
 public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   @Inject ConnectorRepository connectors;
-  @Inject PrincipalProvider principal;
+  @Inject PrincipalProvider principalProvider;
   @Inject Authorizer authz;
   @Inject IdempotencyStore idempotencyStore;
   @Inject ReconcileJobStore jobs;
@@ -37,12 +37,12 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     return mapFailures(
         runWithRetry(
             () -> {
-              var principalContext = principal.get();
+              var principalContext = principalProvider.get();
               var correlationId = principalContext.getCorrelationId();
 
               authz.require(principalContext, "connector.manage");
 
-              var tenant = principalContext.getTenantId();
+              var tenantId = principalContext.getTenantId();
               var idempotencyKey =
                   request.hasIdempotency() ? request.getIdempotency().getKey() : "";
               var tsNow = nowTs();
@@ -52,19 +52,19 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
               var connectorProto =
                   MutationOps.createProto(
-                      tenant,
+                      tenantId.getId(),
                       "CreateConnector",
                       idempotencyKey,
                       () -> fingerprint,
                       () -> {
                         String connUuid =
                             !idempotencyKey.isBlank()
-                                ? deterministicUuid(tenant, "connector", idempotencyKey)
+                                ? deterministicUuid(tenantId.getId(), "connector", idempotencyKey)
                                 : UUID.randomUUID().toString();
 
                         var connectorId =
                             ResourceId.newBuilder()
-                                .setTenantId(tenant)
+                                .setTenantId(tenantId.getId())
                                 .setId(connUuid)
                                 .setKind(ResourceKind.RK_CONNECTOR)
                                 .build();
@@ -81,7 +81,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                         spec.getTargetCatalogDisplayName(),
                                         "target_catalog_display_name",
                                         correlationId))
-                                .setTargetTenantId(tenant)
+                                .setTargetTenantId(tenantId)
                                 .setUri(mustNonEmpty(spec.getUri(), "uri", correlationId))
                                 .putAllOptions(spec.getOptionsMap())
                                 .setAuth(spec.getAuth())
@@ -97,7 +97,10 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                             var existing =
                                 connectors
                                     .getById(connectorId)
-                                    .or(() -> connectors.getByName(tenant, c.getDisplayName()));
+                                    .or(
+                                        () ->
+                                            connectors.getByName(
+                                                tenantId.getId(), c.getDisplayName()));
                             if (existing.isPresent()) {
                               return new IdempotencyGuard.CreateResult<>(
                                   existing.get(), existing.get().getResourceId());
@@ -131,7 +134,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     return mapFailures(
         run(
             () -> {
-              var principalContext = principal.get();
+              var principalContext = principalProvider.get();
               var correlationId = principalContext.getCorrelationId();
 
               authz.require(principalContext, "connector.manage");
@@ -157,11 +160,11 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     return mapFailures(
         run(
             () -> {
-              var principalContext = principal.get();
+              var principalContext = principalProvider.get();
 
               authz.require(principalContext, "connector.manage");
 
-              var tenant = principalContext.getTenantId();
+              var tenant = principalContext.getTenantId().getId();
 
               var page = request.getPage();
               int limit = page.getPageSize() > 0 ? page.getPageSize() : 100;
@@ -169,7 +172,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
               var next = new StringBuilder();
               var list = connectors.listByName(tenant, limit, token, next);
-              int total = connectors.countAll(tenant);
+              int total = connectors.count(tenant);
 
               return ListConnectorsResponse.newBuilder()
                   .addAllConnectors(list)
@@ -188,10 +191,10 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     return mapFailures(
         runWithRetry(
             () -> {
-              var p = principal.get();
-              var correlationId = p.getCorrelationId();
+              var principalContext = principalProvider.get();
+              var correlationId = principalContext.getCorrelationId();
 
-              authz.require(p, "connector.manage");
+              authz.require(principalContext, "connector.manage");
 
               var connectorId = request.getConnectorId();
               ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", correlationId);
@@ -223,7 +226,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           spec.getTargetCatalogDisplayName().isBlank()
                               ? connector.getTargetCatalogDisplayName()
                               : spec.getTargetCatalogDisplayName())
-                      .setTargetTenantId(p.getTenantId())
+                      .setTargetTenantId(principalContext.getTenantId())
                       .setUri(spec.getUri().isBlank() ? connector.getUri() : spec.getUri())
                       .clearOptions()
                       .putAllOptions(
@@ -295,7 +298,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     return mapFailures(
         runWithRetry(
             () -> {
-              var principalContext = principal.get();
+              var principalContext = principalProvider.get();
               var correlationId = principalContext.getCorrelationId();
 
               authz.require(principalContext, "connector.manage");
@@ -339,7 +342,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     return mapFailures(
         run(
             () -> {
-              var p = principal.get();
+              var p = principalProvider.get();
               var correlationId = p.getCorrelationId();
 
               authz.require(p, "connector.manage");
@@ -369,7 +372,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       kind,
                       spec.getDisplayName(),
                       spec.getTargetCatalogDisplayName(),
-                      spec.getTargetTenantId(),
+                      spec.getTargetTenantId().getId(),
                       spec.getUri(),
                       spec.getOptionsMap(),
                       auth);
@@ -401,7 +404,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     return mapFailures(
         run(
             () -> {
-              var princpalContext = principal.get();
+              var princpalContext = principalProvider.get();
               var correlationId = princpalContext.getCorrelationId();
 
               authz.require(princpalContext, "connector.manage");
@@ -429,7 +432,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     return mapFailures(
         run(
             () -> {
-              var principalContext = principal.get();
+              var principalContext = principalProvider.get();
               var correlationId = principalContext.getCorrelationId();
 
               authz.require(principalContext, "connector.manage");

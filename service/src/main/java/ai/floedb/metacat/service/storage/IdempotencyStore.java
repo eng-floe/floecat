@@ -1,6 +1,6 @@
 package ai.floedb.metacat.service.storage;
 
-import ai.floedb.metacat.catalog.rpc.MutationMeta;
+import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.Timestamp;

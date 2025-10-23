@@ -2,13 +2,23 @@ package ai.floedb.metacat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
+import ai.floedb.metacat.catalog.rpc.NamespaceSpec;
+import ai.floedb.metacat.catalog.rpc.RenameNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.ResourceAccessGrpc;
+import ai.floedb.metacat.catalog.rpc.ResourceMutationGrpc;
 import ai.floedb.metacat.common.rpc.ErrorCode;
+import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.NameRef;
+import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.service.util.TestSupport;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -35,7 +45,7 @@ class NamespaceMutationIT {
   String namespacePrefix = this.getClass().getSimpleName() + "_";
 
   @Test
-  void namespace_exists() throws Exception {
+  void namespaceExists() throws Exception {
     var cat = TestSupport.createCatalog(mutation, namespacePrefix + "cat1", "cat1");
 
     TestSupport.createNamespace(
@@ -55,7 +65,7 @@ class NamespaceMutationIT {
   }
 
   @Test
-  void namespace_create_rename_move_delete_with_preconditions() throws Exception {
+  void namespaceCreateRenameDelete() throws Exception {
     var cat = TestSupport.createCatalog(mutation, namespacePrefix + "cat2", "cat2");
     String tenantId = TestSupport.seedTenantId(directory, namespacePrefix + "cat2");
     assertEquals(tenantId, cat.getResourceId().getTenantId());
@@ -235,7 +245,7 @@ class NamespaceMutationIT {
   }
 
   @Test
-  void namespace_create_is_idempotent_sameKey_sameSpec() throws Exception {
+  void namespaceCreateIdempotent() throws Exception {
     var cat = TestSupport.createCatalog(mutation, namespacePrefix + "cat3", "cat3");
     TestSupport.seedTenantId(directory, cat.getDisplayName());
 
@@ -263,7 +273,7 @@ class NamespaceMutationIT {
   }
 
   @Test
-  void namespace_create_idempotency_mismatch_sameKey_differentSpec_conflict() throws Exception {
+  void namespaceCreateIdempotencyMismatch() throws Exception {
     var cat = TestSupport.createCatalog(mutation, namespacePrefix + "cat4", "cat4");
     var key = IdempotencyKey.newBuilder().setKey(namespacePrefix + "k-ns-2").build();
 

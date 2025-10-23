@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package ai.floedb.metacat.tenancy.rpc;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.tenancy.rpc";
+option java_outer_classname = "TenancyProto";
+
+import "common/common.proto";
+
+import "google/protobuf/timestamp.proto";
+
+message Tenant {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  string display_name = 2;
+  string description = 3;
+  google.protobuf.Timestamp created_at = 10;
+}
+
+message TenantSpec {
+  string display_name = 1;
+  string description = 2;
+}
+
+// ====== Requests / Responses ======
+
+message ListTenantsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  string name_prefix = 3;
+}
+
+message ListTenantsResponse {
+  repeated Tenant tenants = 1;
+  string next_page_token = 2;
+}
+
+message CreateTenantRequest {
+  TenantSpec spec = 1;
+  ai.floedb.metacat.common.IdempotencyKey idempotency = 98;
+}
+
+message CreateTenantResponse {
+  Tenant tenant = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
+}
+
+message GetTenantRequest {
+  ai.floedb.metacat.common.ResourceId tenant_id = 1;
+}
+
+message GetTenantResponse {
+  Tenant tenant = 1;
+}
+
+message UpdateTenantRequest {
+  ai.floedb.metacat.common.ResourceId tenant_id = 1;
+  TenantSpec spec = 2;
+  ai.floedb.metacat.common.Precondition precondition = 98;
+}
+
+message UpdateTenantResponse {
+  Tenant tenant = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
+}
+
+message DeleteTenantRequest {
+  ai.floedb.metacat.common.ResourceId tenant_id = 1;
+  ai.floedb.metacat.common.Precondition precondition = 98;
+}
+
+message DeleteTenantResponse {
+  ai.floedb.metacat.common.MutationMeta meta = 1;
+}
+
+// ====== Service ======
+
+service Tenancy {
+  rpc ListTenants (ListTenantsRequest) returns (ListTenantsResponse);
+  rpc CreateTenant (CreateTenantRequest) returns (CreateTenantResponse);
+  rpc GetTenant (GetTenantRequest) returns (GetTenantResponse);
+  rpc UpdateTenant (UpdateTenantRequest) returns (UpdateTenantResponse);
+  rpc DeleteTenant (DeleteTenantRequest) returns (DeleteTenantResponse);
+}

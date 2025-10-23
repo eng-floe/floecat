@@ -23,7 +23,7 @@ message Connector {
   string display_name = 2;
   ConnectorKind kind = 3;
   string target_catalog_display_name = 4;
-  string target_tenant_id = 5;
+  ai.floedb.metacat.common.ResourceId target_tenant_id = 5;
   string uri = 10;
   map<string,string> options = 11;
   AuthConfig auth = 12;
@@ -58,7 +58,7 @@ message ConnectorSpec {
   string display_name = 1;
   ConnectorKind kind = 2;
   string target_catalog_display_name = 3;
-  string target_tenant_id = 4;
+  ai.floedb.metacat.common.ResourceId target_tenant_id = 4;
   string uri = 10;
   map<string,string> options = 11;
   AuthConfig auth = 12;
@@ -67,11 +67,11 @@ message ConnectorSpec {
 
 message CreateConnectorRequest {
   ConnectorSpec spec = 1;
-  ai.floedb.metacat.catalog.IdempotencyKey idempotency = 2;
+  ai.floedb.metacat.common.IdempotencyKey idempotency = 2;
 }
 message CreateConnectorResponse {
   Connector connector = 1;
-  ai.floedb.metacat.catalog.MutationMeta meta = 2;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
 }
 
 message GetConnectorRequest {
@@ -83,7 +83,7 @@ message GetConnectorResponse {
 
 message ListConnectorsRequest {
   ai.floedb.metacat.common.PageRequest page = 1;
-  string tenant_id = 2;
+  ai.floedb.metacat.common.ResourceId tenant_id = 2;
   string kind = 3;
 }
 message ListConnectorsResponse {
@@ -94,21 +94,20 @@ message ListConnectorsResponse {
 message UpdateConnectorRequest {
   ai.floedb.metacat.common.ResourceId connector_id = 1;
   ConnectorSpec spec = 2;
-  ai.floedb.metacat.catalog.Precondition precondition = 3;
+  ai.floedb.metacat.common.Precondition precondition = 3;
 }
 message UpdateConnectorResponse {
   Connector connector = 1;
-  ai.floedb.metacat.catalog.MutationMeta meta = 2;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
 }
 
 message DeleteConnectorRequest {
   ai.floedb.metacat.common.ResourceId connector_id = 1;
-  ai.floedb.metacat.catalog.Precondition precondition = 2;
+  ai.floedb.metacat.common.Precondition precondition = 2;
 }
 message DeleteConnectorResponse {
-  ai.floedb.metacat.catalog.MutationMeta meta = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 1;
 }
-
 
 message ValidateConnectorRequest {
   ConnectorSpec spec = 1;

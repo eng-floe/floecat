@@ -1,7 +1,7 @@
 package ai.floedb.metacat.service.common;
 
-import ai.floedb.metacat.catalog.rpc.MutationMeta;
-import ai.floedb.metacat.catalog.rpc.Precondition;
+import ai.floedb.metacat.common.rpc.MutationMeta;
+import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;

@@ -82,9 +82,9 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
 
               var catalogs =
                   catalogRepo.listByName(
-                      principalContext.getTenantId(), Math.max(1, limit), token, next);
+                      principalContext.getTenantId().getId(), Math.max(1, limit), token, next);
 
-              int total = catalogRepo.countAll(principalContext.getTenantId());
+              int total = catalogRepo.count(principalContext.getTenantId().getId());
 
               var page =
                   PageResponse.newBuilder()
@@ -113,7 +113,7 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
 
               var catalogId =
                   nsRepo
-                      .findOwnerCatalog(principalContext.getTenantId(), namespaceId.getId())
+                      .findOwnerCatalog(principalContext.getTenantId().getId(), namespaceId.getId())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -157,7 +157,7 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
               final StringBuilder next = new StringBuilder();
 
               var namespaces = nsRepo.list(catalogId, null, Math.max(1, limit), token, next);
-              int total = nsRepo.countUnderCatalog(catalogId);
+              int total = nsRepo.count(catalogId);
 
               var page =
                   PageResponse.newBuilder()
@@ -208,7 +208,7 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
               var namespaceId = request.getNamespaceId();
               var catalogId =
                   nsRepo
-                      .findOwnerCatalog(principalContext.getTenantId(), namespaceId.getId())
+                      .findOwnerCatalog(principalContext.getTenantId().getId(), namespaceId.getId())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -232,7 +232,7 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
                   tableRepo.listByNamespace(
                       catalogId, namespaceId, Math.max(1, limit), token, next);
 
-              int total = tableRepo.countUnderNamespace(catalogId, namespaceId);
+              int total = tableRepo.count(catalogId, namespaceId);
 
               var page =
                   PageResponse.newBuilder()

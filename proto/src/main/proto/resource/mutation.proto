@@ -9,25 +9,6 @@ import "catalog/catalog.proto";
 
 import "google/protobuf/timestamp.proto";
 
-// ---------- Common mutation helpers ----------
-
-message IdempotencyKey {
-  string key = 1;
-}
-
-message Precondition {
-  int64 expected_version = 1;
-  string expected_etag = 2;
-}
-
-message MutationMeta {
-  string pointer_key = 1;
-  string blob_uri = 2;
-  int64 pointer_version = 3;
-  string etag = 4;
-  google.protobuf.Timestamp updated_at = 5;
-}
-
 // ---------- Catalog ----------
 
 message CatalogSpec {
@@ -40,30 +21,30 @@ message CatalogSpec {
 
 message CreateCatalogRequest {
   CatalogSpec spec = 1;
-  IdempotencyKey idempotency = 2;
+  ai.floedb.metacat.common.IdempotencyKey idempotency = 2;
 }
 message CreateCatalogResponse {
   Catalog catalog = 1;
-  MutationMeta meta = 2;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
 }
 
 message UpdateCatalogRequest {
   ai.floedb.metacat.common.ResourceId catalog_id = 1;
   CatalogSpec spec = 2;
-  Precondition precondition = 3;
+  ai.floedb.metacat.common.Precondition precondition = 3;
 }
 message UpdateCatalogResponse {
   Catalog catalog = 1;
-  MutationMeta meta = 2;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
 }
 
 message DeleteCatalogRequest {
   ai.floedb.metacat.common.ResourceId catalog_id = 1;
   bool require_empty = 2;
-  Precondition precondition = 3;
+  ai.floedb.metacat.common.Precondition precondition = 3;
 }
 message DeleteCatalogResponse {
-  MutationMeta meta = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 1;
 }
 
 // ---------- Namespace ----------
@@ -79,11 +60,11 @@ message NamespaceSpec {
 
 message CreateNamespaceRequest {
   NamespaceSpec spec = 1;
-  IdempotencyKey idempotency = 2;
+  ai.floedb.metacat.common.IdempotencyKey idempotency = 2;
 }
 message CreateNamespaceResponse {
   Namespace namespace = 1;
-  MutationMeta meta = 2;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
 }
 
 message RenameNamespaceRequest {
@@ -91,20 +72,20 @@ message RenameNamespaceRequest {
   string new_display_name = 2;
   repeated string new_path = 3;
   ai.floedb.metacat.common.ResourceId new_catalog_id = 4;
-  Precondition precondition = 5;
+  ai.floedb.metacat.common.Precondition precondition = 5;
 }
 message RenameNamespaceResponse {
   Namespace namespace = 1;
-  MutationMeta meta = 2;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
 }
 
 message DeleteNamespaceRequest {
   ai.floedb.metacat.common.ResourceId namespace_id = 1;
   bool require_empty = 2;
-  Precondition precondition = 3;
+  ai.floedb.metacat.common.Precondition precondition = 3;
 }
 message DeleteNamespaceResponse {
-  MutationMeta meta = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 1;
 }
 
 // ---------- Table ----------
@@ -124,11 +105,11 @@ message TableSpec {
 
 message CreateTableRequest {
   TableSpec spec = 1;
-  IdempotencyKey idempotency = 2;
+  ai.floedb.metacat.common.IdempotencyKey idempotency = 2;
 }
 message CreateTableResponse {
   Table table = 1;
-  MutationMeta meta = 2;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
 }
 
 message UpdateTableSchemaRequest {
@@ -136,21 +117,21 @@ message UpdateTableSchemaRequest {
   string schema_json = 2;
   repeated string partition_keys = 3;
   map<string,string> properties = 4;
-  Precondition precondition = 5;
+  ai.floedb.metacat.common.Precondition precondition = 5;
 }
 message UpdateTableSchemaResponse {
   Table table = 1;
-  MutationMeta meta = 2;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
 }
 
 message RenameTableRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
   string new_display_name = 2;
-  Precondition precondition = 3;
+  ai.floedb.metacat.common.Precondition precondition = 3;
 }
 message RenameTableResponse {
   Table table = 1;
-  MutationMeta meta = 2;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
 }
 
 message MoveTableRequest {
@@ -159,21 +140,21 @@ message MoveTableRequest {
 
   ai.floedb.metacat.common.ResourceId new_namespace_id = 3;
 
-  Precondition precondition = 5;
+  ai.floedb.metacat.common.Precondition precondition = 5;
 }
 message MoveTableResponse {
   Table table = 1;
-  MutationMeta meta = 2;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
 }
 
 message DeleteTableRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
   bool purge_stats = 2;
   bool purge_snapshots = 3;
-  Precondition precondition = 4;
+  ai.floedb.metacat.common.Precondition precondition = 4;
 }
 message DeleteTableResponse {
-  MutationMeta meta = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 1;
 }
 
 // ---------- Snapshot ----------
@@ -188,20 +169,20 @@ message SnapshotSpec {
 
 message CreateSnapshotRequest {
   SnapshotSpec spec = 1;
-  IdempotencyKey idempotency = 2;
+  ai.floedb.metacat.common.IdempotencyKey idempotency = 2;
 }
 message CreateSnapshotResponse {
   Snapshot snapshot = 1;
-  MutationMeta meta = 2;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
 }
 
 message DeleteSnapshotRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
   int64 snapshot_id = 2;
-  Precondition precondition = 3;
+  ai.floedb.metacat.common.Precondition precondition = 3;
 }
 message DeleteSnapshotResponse {
-  MutationMeta meta = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 1;
 }
 
 // ---------- Service ----------

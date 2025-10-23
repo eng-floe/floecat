@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.catalog.impl;
+package ai.floedb.metacat.service.directory;
 
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.Directory;
@@ -53,10 +53,10 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
 
               authz.require(principalContext, "catalog.read");
 
-              var tenant = principalContext.getTenantId();
+              var tenantId = principalContext.getTenantId();
               Catalog cat =
                   catalogs
-                      .getByName(tenant, request.getRef().getCatalog())
+                      .getByName(tenantId.getId(), request.getRef().getCatalog())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -97,11 +97,11 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
 
               var ref = request.getRef();
               validateNameRefOrThrow(ref);
-              var tenant = principalContext.getTenantId();
+              var tenantId = principalContext.getTenantId();
 
               Catalog cat =
                   catalogs
-                      .getByName(tenant, ref.getCatalog())
+                      .getByName(tenantId.getId(), ref.getCatalog())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -114,7 +114,7 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
 
               ResourceId nsId =
                   namespaces
-                      .getByPath(tenant, cat.getResourceId(), fullPath)
+                      .getByPath(tenantId.getId(), cat.getResourceId(), fullPath)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -140,10 +140,10 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
 
               authz.require(principalContext, "catalog.read");
 
-              var tenant = principalContext.getTenantId();
+              var tenantId = principalContext.getTenantId();
               var namespaceId = request.getResourceId();
 
-              var catalogId = namespaces.findOwnerCatalog(tenant, namespaceId.getId());
+              var catalogId = namespaces.findOwnerCatalog(tenantId.getId(), namespaceId.getId());
               if (catalogId.isEmpty()) {
                 return LookupNamespaceResponse.newBuilder().build();
               }
@@ -181,11 +181,11 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
               validateNameRefOrThrow(nameRef);
               validateTableNameOrThrow(nameRef);
 
-              var tenant = principalContext.getTenantId();
+              var tenantId = principalContext.getTenantId();
 
               Catalog catalog =
                   catalogs
-                      .getByName(tenant, nameRef.getCatalog())
+                      .getByName(tenantId.getId(), nameRef.getCatalog())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -193,7 +193,7 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
 
               ResourceId namespaceId =
                   namespaces
-                      .getByPath(tenant, catalog.getResourceId(), nameRef.getPathList())
+                      .getByPath(tenantId.getId(), catalog.getResourceId(), nameRef.getPathList())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -286,7 +286,7 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
               final String token = request.hasPage() ? request.getPage().getPageToken() : "";
 
               var builder = ResolveFQTablesResponse.newBuilder();
-              var tenant = principalContext.getTenantId();
+              var tenantId = principalContext.getTenantId();
 
               if (request.hasList()) {
                 var names = request.getList().getNamesList();
@@ -311,10 +311,11 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
                     validateTableNameOrThrow(nameRef);
 
                     Catalog catalog =
-                        catalogs.getByName(tenant, nameRef.getCatalog()).orElseThrow();
+                        catalogs.getByName(tenantId.getId(), nameRef.getCatalog()).orElseThrow();
                     ResourceId namespaceId =
                         namespaces
-                            .getByPath(tenant, catalog.getResourceId(), nameRef.getPathList())
+                            .getByPath(
+                                tenantId.getId(), catalog.getResourceId(), nameRef.getPathList())
                             .orElseThrow();
 
                     Optional<Table> tableOpt =
@@ -367,7 +368,7 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
 
                 Catalog catalog =
                     catalogs
-                        .getByName(tenant, prefix.getCatalog())
+                        .getByName(tenantId.getId(), prefix.getCatalog())
                         .orElseThrow(
                             () ->
                                 GrpcErrors.notFound(
@@ -375,7 +376,7 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
 
                 ResourceId namespaceId =
                     namespaces
-                        .getByPath(tenant, catalog.getResourceId(), prefix.getPathList())
+                        .getByPath(tenantId.getId(), catalog.getResourceId(), prefix.getPathList())
                         .orElseThrow(
                             () ->
                                 GrpcErrors.notFound(
@@ -391,7 +392,7 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
                 var entries =
                     tables.listByNamespace(
                         catalog.getResourceId(), namespaceId, Math.max(1, limit), token, next);
-                int total = tables.countUnderNamespace(catalog.getResourceId(), namespaceId);
+                int total = tables.count(catalog.getResourceId(), namespaceId);
 
                 for (Table table : entries) {
                   var nr =

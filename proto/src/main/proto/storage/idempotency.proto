@@ -5,7 +5,6 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.metacat.storage.rpc";
 
 import "common/common.proto";
-import "resource/mutation.proto";
 
 import "google/protobuf/timestamp.proto";
 
@@ -22,7 +21,7 @@ message IdempotencyRecord {
   Status status = 3;
 
   ai.floedb.metacat.common.ResourceId resource_id = 4;
-  ai.floedb.metacat.catalog.MutationMeta meta = 5;
+  ai.floedb.metacat.common.MutationMeta meta = 5;
 
   bytes payload = 6;
 

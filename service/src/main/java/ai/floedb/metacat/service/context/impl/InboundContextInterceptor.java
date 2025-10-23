@@ -1,10 +1,12 @@
 package ai.floedb.metacat.service.context.impl;
 
 import ai.floedb.metacat.common.rpc.PrincipalContext;
+import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.planning.PlanContextStore;
 import ai.floedb.metacat.service.planning.impl.PlanContext;
+import ai.floedb.metacat.service.repo.impl.TenantRepository;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import ai.floedb.metacat.service.tenancy.impl.TenantRegistry;
 import io.grpc.Context;
 import io.grpc.Contexts;
 import io.grpc.ForwardingServerCall.SimpleForwardingServerCall;
@@ -42,7 +44,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
   private Clock clock = Clock.systemUTC();
 
   @Inject PlanContextStore planStore;
-  @Inject TenantRegistry tenantRegistry;
+  @Inject TenantRepository tenantRepository;
 
   @Override
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
@@ -81,7 +83,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
     if (span.getSpanContext().isValid()) {
       span.setAttribute("plan_id", planId);
       span.setAttribute("correlation_id", correlationId);
-      span.setAttribute("tenant_id", principalContext.getTenantId());
+      span.setAttribute("tenant_id", principalContext.getTenantId().getId());
       span.setAttribute("subject", principalContext.getSubject());
     }
 
@@ -111,7 +113,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
     if (span.getSpanContext().isValid()) {
       span.setAttribute("plan_id", planId);
       span.setAttribute("correlation_id", correlationId);
-      span.setAttribute("tenant_id", principalContext.getTenantId());
+      span.setAttribute("tenant_id", principalContext.getTenantId().getId());
       span.setAttribute("subject", principalContext.getSubject());
     }
 
@@ -164,12 +166,6 @@ public class InboundContextInterceptor implements ServerInterceptor {
             .asRuntimeException();
       }
 
-      if (!ctx.getTenantId().equals(principalContext.getTenantId())) {
-        throw Status.FAILED_PRECONDITION
-            .withDescription("tenant mismatch (store vs principal)")
-            .asRuntimeException();
-      }
-
       return new ResolvedContext(principalContext, planIdHeader);
     }
 
@@ -192,23 +188,29 @@ public class InboundContextInterceptor implements ServerInterceptor {
   }
 
   private static PrincipalContext devContext() {
+    var id = UUID.nameUUIDFromBytes("/tenant:t-0001".getBytes()).toString();
+    var rid =
+        ResourceId.newBuilder().setTenantId(id).setId(id).setKind(ResourceKind.RK_TENANT).build();
     return PrincipalContext.newBuilder()
-        .setTenantId("t-0001")
+        .setTenantId(rid)
         .setSubject("dev-user")
         .setLocale("en")
+        .addPermissions("tenant.read")
+        .addPermissions("tenant.write")
         .addPermissions("catalog.read")
         .addPermissions("catalog.write")
         .addPermissions("namespace.read")
         .addPermissions("namespace.write")
         .addPermissions("table.read")
         .addPermissions("table.write")
-        .addPermissions("table.write")
         .addPermissions("connector.manage")
         .build();
   }
 
-  private void validateTenant(String tenantId) {
-    if (isBlank(tenantId) || !tenantRegistry.exists(tenantId)) {
+  private void validateTenant(ResourceId tenantId) {
+    if (tenantId == null
+        || isBlank(tenantId.getId())
+        || tenantRepository.getById(tenantId).isEmpty()) {
       throw Status.UNAUTHENTICATED
           .withDescription("invalid or unknown tenant: " + tenantId)
           .asRuntimeException();

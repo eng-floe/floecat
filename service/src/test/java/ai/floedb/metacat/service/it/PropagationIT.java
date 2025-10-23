@@ -8,6 +8,7 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.planning.PlanContextStore;
 import ai.floedb.metacat.service.planning.impl.PlanContext;
+import ai.floedb.metacat.service.util.TestSupport;
 import io.grpc.*;
 import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
@@ -32,20 +33,22 @@ class PropagationIT {
   private static final Metadata.Key<String> CORR =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
 
-  private static PrincipalContext pc(String tenant) {
+  private static PrincipalContext pc() {
+    ResourceId tenantId = TestSupport.createTenantId("t-0001");
     return PrincipalContext.newBuilder()
-        .setTenantId(tenant)
+        .setTenantId(tenantId)
         .setSubject("it-user")
         .addPermissions("catalog.read")
         .build();
   }
 
   @Test
-  void corr_is_echoed_and_principal_is_parsed_on_success() {
+  void correlationIdEchoed() {
+    ResourceId tenantId = TestSupport.createTenantId("t-0001");
     String corr = "it-corr-" + UUID.randomUUID();
 
     Metadata m = new Metadata();
-    m.put(PRINCIPAL_BIN, pc("t-0001").toByteArray());
+    m.put(PRINCIPAL_BIN, pc().toByteArray());
     m.put(CORR, corr);
 
     RespHeadersCaptureInterceptor capture = new RespHeadersCaptureInterceptor();
@@ -69,7 +72,7 @@ class PropagationIT {
 
     var rid =
         ResourceId.newBuilder()
-            .setTenantId("t-0001")
+            .setTenantId(tenantId.getId())
             .setKind(ResourceKind.RK_CATALOG)
             .setId("00000000-0000-0000-0000-000000000000")
             .build();
@@ -90,11 +93,11 @@ class PropagationIT {
   }
 
   @Test
-  void principal_loads_from_plan_store_when_header_missing() {
+  void loadPrincipalFromStore() {
     String planId = "plan-" + UUID.randomUUID();
-    var seededPc = pc("t-4242").toBuilder().setPlanId(planId).build();
+    var seededPc = pc().toBuilder().setPlanId(planId).build();
 
-    planStore.put(PlanContext.newActive(planId, "t-4242", seededPc, null, null, 60_000L, 1L));
+    planStore.put(PlanContext.newActive(planId, seededPc, null, null, 60_000L, 1L));
 
     String corr = "it-corr-" + UUID.randomUUID();
 

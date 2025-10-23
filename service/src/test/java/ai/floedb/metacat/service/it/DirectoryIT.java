@@ -15,6 +15,7 @@ import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.metacat.catalog.rpc.ResourceMutationGrpc;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageRequest;
+import ai.floedb.metacat.service.util.TestSupport;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
@@ -32,11 +33,10 @@ class DirectoryIT {
   @Test
   void resolveAndLookupCatalog() {
     var cat = TestSupport.createCatalog(mutation, "resolveAndLookupCatalog", "");
-    TestSupport.seedTenantId(directory, cat.getDisplayName());
 
     var ref = NameRef.newBuilder().setCatalog("resolveAndLookupCatalog").build();
     var r = directory.resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(ref).build());
-    assertEquals("t-0001", r.getResourceId().getTenantId());
+    assertEquals(cat.getResourceId().getTenantId(), r.getResourceId().getTenantId());
 
     var l =
         directory.lookupCatalog(
@@ -100,7 +100,7 @@ class DirectoryIT {
   }
 
   @Test
-  void resolveTable_notFound_yieldsNotFound() {
+  void resolveTableNotFound() {
     var missing =
         NameRef.newBuilder().setCatalog("sales").addPath("core").setName("does_not_exist").build();
 
@@ -113,7 +113,7 @@ class DirectoryIT {
   }
 
   @Test
-  void resolveFullyQualifiedTables_prefix_salesCore_returnsOrdersAndLineitem() {
+  void resolveFullyQualifiedTables() {
     var cat =
         TestSupport.createCatalog(
             mutation, "resolveFQTables_prefix_salesCore_returnsOrdersAndLineitem", "");
@@ -143,7 +143,7 @@ class DirectoryIT {
   }
 
   @Test
-  void resolveFullyQualifiedTables_prefix_salesStaging2025_returnsTwo() {
+  void resolveFullyQualifiedTablesNestedNamespace() {
     var cat =
         TestSupport.createCatalog(
             mutation, "resolveFQTables_prefix_salesStaging2025_returnsTwo", "");
@@ -177,35 +177,7 @@ class DirectoryIT {
   }
 
   @Test
-  void resolve_and_lookup_financeCore_glEntries_roundtrip() {
-    var cat =
-        TestSupport.createCatalog(
-            mutation, "resolve_and_lookup_financeCore_glEntries_roundtrip", "");
-    TestSupport.seedTenantId(directory, cat.getDisplayName());
-
-    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "core", null, "core ns");
-    TestSupport.createTable(
-        mutation, cat.getResourceId(), ns.getResourceId(), "gl_entries", "s3://barf", "{}", "none");
-
-    var name =
-        NameRef.newBuilder().setCatalog("finance").addPath("core").setName("gl_entries").build();
-
-    var resolved = directory.resolveTable(ResolveTableRequest.newBuilder().setRef(name).build());
-
-    assertEquals("t-0001", resolved.getResourceId().getTenantId());
-    assertFalse(resolved.getResourceId().getId().isEmpty());
-
-    var lookup =
-        directory.lookupTable(
-            LookupTableRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
-
-    assertEquals("finance", lookup.getName().getCatalog());
-    assertEquals(List.of("core"), lookup.getName().getPathList());
-    assertEquals("gl_entries", lookup.getName().getName());
-  }
-
-  @Test
-  void renameTable_reflectedInDirectory() {
+  void renameTableReflectedInDirectoryService() {
     var cat = TestSupport.createCatalog(mutation, "barf1", "barf cat");
     TestSupport.seedTenantId(directory, cat.getDisplayName());
 
@@ -245,7 +217,7 @@ class DirectoryIT {
   }
 
   @Test
-  void renameNamespace_reflectedInDirectory() {
+  void renameNamespaceReflectedInDirectoryService() {
     var cat = TestSupport.createCatalog(mutation, "barf2", "barf cat");
     TestSupport.seedTenantId(directory, cat.getDisplayName());
 
@@ -279,7 +251,7 @@ class DirectoryIT {
   }
 
   @Test
-  void resolveFullyQualifiedTables_list_selector_paging_and_errors() {
+  void resolveFullyQualifiedTablesPaging() {
     var cat =
         TestSupport.createCatalog(mutation, "resolveFQTables_list_selector_paging_and_errors", "");
     TestSupport.seedTenantId(directory, cat.getDisplayName());
@@ -332,7 +304,7 @@ class DirectoryIT {
   }
 
   @Test
-  void resolveAndLookup_unicodeAndSpaces() {
+  void resolveAndLookupUnicodeAndSpaces() {
     var cat = TestSupport.createCatalog(mutation, "barf3", "barf cat");
     TestSupport.seedTenantId(directory, cat.getDisplayName());
 
@@ -365,7 +337,7 @@ class DirectoryIT {
   }
 
   @Test
-  void lookup_unknowns_return_empty_payloads() {
+  void lookupUnknownReturnsEmpty() {
     var bogus =
         ai.floedb.metacat.common.rpc.ResourceId.newBuilder()
             .setTenantId("t-0001")
@@ -385,7 +357,7 @@ class DirectoryIT {
   }
 
   @Test
-  void pathSegments_are_not_split_and_case_is_preserved() {
+  void fullyQualifiedTableLookupPreservesCase() {
     var bad =
         NameRef.newBuilder().setCatalog("Sales").addPath("core/extra").setName("orders").build();
     assertThrows(

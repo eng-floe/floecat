@@ -72,18 +72,18 @@ message PutTableStatsRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
   int64 snapshot_id = 2;
   TableStats stats = 3;
-  IdempotencyKey idempotency = 4;
+  ai.floedb.metacat.common.IdempotencyKey idempotency = 4;
 }
 message PutTableStatsResponse {
   TableStats stats = 1;
-  MutationMeta meta = 2;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
 }
 
 message PutColumnStatsBatchRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
   int64 snapshot_id = 2;
   repeated ColumnStats columns = 3;
-  IdempotencyKey idempotency = 4;
+  ai.floedb.metacat.common.IdempotencyKey idempotency = 4;
 }
 message PutColumnStatsBatchResponse {
   int32 upserted = 1;

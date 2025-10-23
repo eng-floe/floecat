@@ -143,13 +143,7 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
 
               var planContext =
                   PlanContext.newActive(
-                      planId,
-                      principalContext.getTenantId(),
-                      principalContext,
-                      expansionBytes,
-                      snapshotBytes,
-                      ttlMs,
-                      1L);
+                      planId, principalContext, expansionBytes, snapshotBytes, ttlMs, 1L);
               plans.put(planContext);
 
               try {
@@ -239,7 +233,7 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
               var planDescriptor =
                   PlanDescriptor.newBuilder()
                       .setPlanId(planContext.getPlanId())
-                      .setTenantId(planContext.getTenantId())
+                      .setTenantId(principalContext.getTenantId())
                       .setCreatedAt(ts(planContext.getCreatedAtMs()))
                       .setExpiresAt(ts(planContext.getExpiresAtMs()));
 

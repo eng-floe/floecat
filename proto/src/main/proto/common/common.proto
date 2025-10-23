@@ -57,7 +57,7 @@ message Pointer {
 }
 
 message BlobHeader {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  ResourceId resource_id = 1;
   string schema_version = 2;
   string etag = 3;
   google.protobuf.Timestamp created_at = 4;
@@ -73,7 +73,7 @@ message Tag {
 // ----- Auth: Principal context carried on internal gRPC -----
 
 message PrincipalContext {
-  string tenant_id = 1;
+  ResourceId tenant_id = 1;
   string subject = 2;
   string client_id = 3;
   repeated string groups = 4;
@@ -126,4 +126,21 @@ message Error {
   map<string, string> context = 4;
   string message_key = 5;
   string correlation_id = 6;
+}
+
+message IdempotencyKey {
+  string key = 1;
+}
+
+message Precondition {
+  int64 expected_version = 1;
+  string expected_etag = 2;
+}
+
+message MutationMeta {
+  string pointer_key = 1;
+  string blob_uri = 2;
+  int64 pointer_version = 3;
+  string etag = 4;
+  google.protobuf.Timestamp updated_at = 5;
 }

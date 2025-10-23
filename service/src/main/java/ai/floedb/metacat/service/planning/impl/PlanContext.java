@@ -15,7 +15,6 @@ public final class PlanContext {
   }
 
   private final String planId;
-  private final String tenantId;
   private final PrincipalContext principal;
   private final byte[] expansionMap;
   private final byte[] snapshotSet;
@@ -28,13 +27,7 @@ public final class PlanContext {
 
   private PlanContext(Builder builder) {
     this.planId = requireNonEmpty(builder.planId, "planId");
-    this.tenantId = requireNonEmpty(builder.tenantId, "tenantId");
     this.principal = Objects.requireNonNull(builder.principal, "principal");
-
-    if (!tenantId.equals(principal.getTenantId())) {
-      throw new IllegalArgumentException("tenantId must match principal.tenant_id");
-    }
-
     this.expansionMap = copyOrNull(builder.expansionMap);
     this.snapshotSet = copyOrNull(builder.snapshotSet);
     this.createdAtMs = positive(builder.createdAtMs, "createdAtMs");
@@ -50,7 +43,6 @@ public final class PlanContext {
 
   public static PlanContext newActive(
       String planId,
-      String tenantId,
       PrincipalContext principal,
       byte[] expansionMap,
       byte[] snapshotSet,
@@ -59,7 +51,6 @@ public final class PlanContext {
     long now = clock.millis();
     return builder()
         .planId(planId)
-        .tenantId(tenantId)
         .principal(principal)
         .expansionMap(expansionMap)
         .snapshotSet(snapshotSet)
@@ -73,7 +64,6 @@ public final class PlanContext {
   public Builder toBuilder() {
     return builder()
         .planId(planId)
-        .tenantId(tenantId)
         .principal(principal)
         .expansionMap(expansionMap)
         .snapshotSet(snapshotSet)
@@ -124,10 +114,6 @@ public final class PlanContext {
     return planId;
   }
 
-  public String getTenantId() {
-    return tenantId;
-  }
-
   public PrincipalContext getPrincipal() {
     return principal;
   }
@@ -158,7 +144,6 @@ public final class PlanContext {
 
   public static final class Builder {
     private String planId;
-    private String tenantId;
     private PrincipalContext principal;
     private byte[] expansionMap;
     private byte[] snapshotSet;
@@ -171,11 +156,6 @@ public final class PlanContext {
 
     public Builder planId(String v) {
       this.planId = v;
-      return this;
-    }
-
-    public Builder tenantId(String v) {
-      this.tenantId = v;
       return this;
     }
 
@@ -258,7 +238,6 @@ public final class PlanContext {
         && expiresAtMs == that.expiresAtMs
         && version == that.version
         && planId.equals(that.planId)
-        && tenantId.equals(that.tenantId)
         && principal.equals(that.principal)
         && Arrays.equals(expansionMap, that.expansionMap)
         && Arrays.equals(snapshotSet, that.snapshotSet)
@@ -267,8 +246,7 @@ public final class PlanContext {
 
   @Override
   public int hashCode() {
-    int result =
-        Objects.hash(planId, tenantId, principal, createdAtMs, expiresAtMs, state, version);
+    int result = Objects.hash(planId, principal, createdAtMs, expiresAtMs, state, version);
 
     result = 31 * result + Arrays.hashCode(expansionMap);
     result = 31 * result + Arrays.hashCode(snapshotSet);
@@ -280,9 +258,6 @@ public final class PlanContext {
     return "PlanContext{"
         + "planId='"
         + planId
-        + '\''
-        + ", tenantId='"
-        + tenantId
         + '\''
         + ", createdAtMs="
         + createdAtMs

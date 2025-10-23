@@ -2,8 +2,22 @@ package ai.floedb.metacat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.catalog.rpc.Catalog;
+import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
+import ai.floedb.metacat.catalog.rpc.CreateTableResponse;
+import ai.floedb.metacat.catalog.rpc.DeleteTableRequest;
+import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
+import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.LookupNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.LookupTableRequest;
+import ai.floedb.metacat.catalog.rpc.Namespace;
+import ai.floedb.metacat.catalog.rpc.ResolveFQTablesRequest;
+import ai.floedb.metacat.catalog.rpc.ResourceMutationGrpc;
+import ai.floedb.metacat.catalog.rpc.Table;
+import ai.floedb.metacat.catalog.rpc.TableFormat;
+import ai.floedb.metacat.catalog.rpc.TableSpec;
 import ai.floedb.metacat.common.rpc.ErrorCode;
+import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.Pointer;
@@ -11,6 +25,7 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.service.util.TestSupport;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -38,7 +53,7 @@ class BackendStorageIT {
   private final Clock clock = Clock.systemUTC();
 
   @Test
-  void storage_invariants_pointerBlobVersion_indexKeys_idempotence_and_deletes() {
+  void storageInvariants() {
     String catName = "it_storage_cat_" + clock.millis();
     Catalog cat = TestSupport.createCatalog(mutation, catName, "storage cat");
     String tenantId = TestSupport.seedTenantId(directory, catName);
@@ -80,7 +95,7 @@ class BackendStorageIT {
             mutation, catId, nsId, "it_tbl", "s3://bucket/prefix/it", schemaV1, "storage table");
     ResourceId tblId = tbl.getResourceId();
     String keyTblByName = Keys.tblByNamePtr(tenantId, catId.getId(), nsId.getId(), "it_tbl");
-    String keyTblCanon = Keys.tblCanonicalPtr(tenantId, tblId.getId());
+    String keyTblCanon = Keys.tblByIdPtr(tenantId, tblId.getId());
     String tblBlobUri = Keys.tblBlob(tenantId, tblId.getId());
 
     assertTrue(ptr.get(keyTblByName).isPresent(), "table by-name pointer missing");
@@ -93,7 +108,7 @@ class BackendStorageIT {
     assertEquals(List.of("db_it", "schema_it", "it_ns"), tblLookup.getName().getPathList());
     assertEquals("it_tbl", tblLookup.getName().getName());
 
-    String canonPtrKey = Keys.tblCanonicalPtr(tenantId, tblId.getId());
+    String canonPtrKey = Keys.tblByIdPtr(tenantId, tblId.getId());
     Pointer tpCanon =
         ptr.get(canonPtrKey).orElseThrow(() -> new AssertionError("canonical pointer missing"));
     assertEquals(tblBlobUri, tpCanon.getBlobUri());
@@ -154,7 +169,7 @@ class BackendStorageIT {
   }
 
   @Test
-  void listTables_pagination_noRepeatsNoSkips() {
+  void listTablesPagination() {
     var catName = "cat_pg_" + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation, catName, "pag");
     TestSupport.seedTenantId(directory, catName);
@@ -193,10 +208,7 @@ class BackendStorageIT {
         directory.resolveFQTables(
             ResolveFQTablesRequest.newBuilder()
                 .setPrefix(prefixRef)
-                .setPage(
-                    ai.floedb.metacat.common.rpc.PageRequest.newBuilder()
-                        .setPageSize(pageSize)
-                        .setPageToken(t1))
+                .setPage(PageRequest.newBuilder().setPageSize(pageSize).setPageToken(t1))
                 .build());
     String t2 = p2.getPage().getNextPageToken();
 
@@ -204,10 +216,7 @@ class BackendStorageIT {
         directory.resolveFQTables(
             ResolveFQTablesRequest.newBuilder()
                 .setPrefix(prefixRef)
-                .setPage(
-                    ai.floedb.metacat.common.rpc.PageRequest.newBuilder()
-                        .setPageSize(pageSize)
-                        .setPageToken(t2))
+                .setPage(PageRequest.newBuilder().setPageSize(pageSize).setPageToken(t2))
                 .build());
 
     var all = new LinkedHashSet<String>();
@@ -220,7 +229,7 @@ class BackendStorageIT {
   }
 
   @Test
-  void encodedNames_preservePrefixScan() {
+  void encodedNamesPreservePrefixScan() {
     var catName = "cat_enc_" + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation, catName, "enc");
 
@@ -266,7 +275,7 @@ class BackendStorageIT {
   }
 
   @Test
-  void update_bumpsBothPointers() {
+  void updateBumpsBothPointers() {
     var catName = "cat_ver_" + System.currentTimeMillis() + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation, catName, "ver");
     TestSupport.seedTenantId(directory, catName);
@@ -284,7 +293,7 @@ class BackendStorageIT {
             "d");
     var tid = tbl.getResourceId();
     var tenant = tid.getTenantId();
-    String canon = Keys.tblCanonicalPtr(tenant, tid.getId());
+    String canon = Keys.tblByIdPtr(tenant, tid.getId());
     long verCanon = ptr.get(canon).orElseThrow().getVersion();
 
     TestSupport.updateSchema(
@@ -297,7 +306,7 @@ class BackendStorageIT {
   }
 
   @Test
-  void etag_changesOnlyOnContentChange() {
+  void etagChangesOnlyOnContentChange() {
     var catName = "cat_etag_" + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation, catName, "etag");
     var tenantId = TestSupport.seedTenantId(directory, catName);
@@ -334,7 +343,7 @@ class BackendStorageIT {
   }
 
   @Test
-  void delete_skewTolerance() throws Exception {
+  void deleteSkewTolerance() throws Exception {
     var catName = "cat_del_" + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation, catName, "del");
     var tenantId = TestSupport.seedTenantId(directory, catName);
@@ -352,7 +361,7 @@ class BackendStorageIT {
             "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
             "d");
 
-    Keys.tblCanonicalPtr(tenantId, tbl.getResourceId().getId());
+    Keys.tblByIdPtr(tenantId, tbl.getResourceId().getId());
 
     // Simulate blob missing
     assertTrue(blobs.delete(Keys.tblBlob(tenantId, tbl.getResourceId().getId())));
@@ -376,7 +385,7 @@ class BackendStorageIT {
             "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
             "d");
     var tid2 = tbl2.getResourceId();
-    String canon2 = Keys.tblCanonicalPtr(tenantId, tid2.getId());
+    String canon2 = Keys.tblByIdPtr(tenantId, tid2.getId());
     String blob2 = Keys.tblBlob(tenantId, tid2.getId());
 
     // Simulate canonical ptr missing
@@ -386,7 +395,7 @@ class BackendStorageIT {
   }
 
   @Test
-  void casContention_twoConcurrentUpdates() throws InterruptedException {
+  void casContentionTwoConcurrentUpdates() throws InterruptedException {
     var catName = "cat_cas_" + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation, catName, "cas");
 
@@ -434,7 +443,7 @@ class BackendStorageIT {
         };
 
     var tenantId = TestSupport.seedTenantId(directory, catName);
-    String canon = Keys.tblCanonicalPtr(tenantId, tid.getId());
+    String canon = Keys.tblByIdPtr(tenantId, tid.getId());
     long v0 = ptr.get(canon).orElseThrow().getVersion();
 
     var t1 = new Thread(r1);
@@ -458,7 +467,7 @@ class BackendStorageIT {
   }
 
   @Test
-  void countByPrefix_matchesInsertsDeletes() {
+  void countByPrefixMatchesInsertsDeletes() {
     var catName = "cat_cnt_" + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation, catName, "cnt");
     String tenantId = TestSupport.seedTenantId(directory, catName);
@@ -498,7 +507,7 @@ class BackendStorageIT {
   }
 
   @Test
-  void createTable_idempotent_sameKeySameSpec_returnsSameId_and_singleWrite() {
+  void createTableIdempotent() {
     var catName = "cat_idem_" + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation, catName, "idem");
     var tenantId = TestSupport.seedTenantId(directory, catName);
@@ -533,7 +542,7 @@ class BackendStorageIT {
     var t2 = resp2.getTable().getResourceId();
     assertEquals(t1.getId(), t2.getId(), "idempotent create must return the same table id");
 
-    var canonPtrKey = Keys.tblCanonicalPtr(tenantId, t1.getId());
+    var canonPtrKey = Keys.tblByIdPtr(tenantId, t1.getId());
     var blobUri = Keys.tblBlob(tenantId, t1.getId());
     assertTrue(ptr.get(canonPtrKey).isPresent(), "canonical pointer missing");
     assertTrue(blobs.head(blobUri).isPresent(), "blob missing");
@@ -548,7 +557,7 @@ class BackendStorageIT {
   }
 
   @Test
-  void createTable_idempotent_mismatchSameKey_conflict() {
+  void createTableIdempotentMismatch() {
     var catName = "cat_idem_conf_" + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation, catName, "idem");
     TestSupport.seedTenantId(directory, catName);
@@ -588,7 +597,7 @@ class BackendStorageIT {
   }
 
   @Test
-  void createTable_idempotent_concurrent_twoWriters_singleCreate() throws InterruptedException {
+  void createTableIdempotentConcurrent() throws InterruptedException {
     var catName = "cat_idem_cc_" + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation, catName, "idem");
 
@@ -654,7 +663,7 @@ class BackendStorageIT {
 
     var tenantId = TestSupport.seedTenantId(directory, catName);
     var tid = a.getTable().getResourceId();
-    var canonPtrKey = Keys.tblCanonicalPtr(tenantId, tid.getId());
+    var canonPtrKey = Keys.tblByIdPtr(tenantId, tid.getId());
     var blobUri = Keys.tblBlob(tenantId, tid.getId());
     assertTrue(ptr.get(canonPtrKey).isPresent());
     assertTrue(blobs.head(blobUri).isPresent());
