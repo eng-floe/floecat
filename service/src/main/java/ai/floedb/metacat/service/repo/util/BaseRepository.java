@@ -16,7 +16,6 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Function;
 
 public abstract class BaseRepository<T> implements Repository<T> {
@@ -162,71 +161,69 @@ public abstract class BaseRepository<T> implements Repository<T> {
   }
 
   protected void putBlobStrictBytes(String blobUri, byte[] bytes) {
-    String want = sha256B64(bytes);
-    var before = blobStore.head(blobUri);
+    final String want = sha256B64(bytes);
 
-    if (before.isPresent() && want.equals(before.get().getEtag())) {
+    if (blobStore.head(blobUri).map(h -> want.equals(h.getEtag())).orElse(false)) {
       return;
     }
 
     blobStore.put(blobUri, bytes, contentType);
 
-    var after = blobStore.head(blobUri);
-
-    if (after.isEmpty() || !want.equals(after.get().getEtag())) {
+    if (!blobStore.head(blobUri).map(h -> want.equals(h.getEtag())).orElse(false)) {
       throw new AbortRetryableException("blob write verification failed: " + blobUri);
     }
   }
 
   @Override
   public void advancePointer(String key, String blobUri, long expectedVersion) {
-    for (int casAttempt = 0; casAttempt < CAS_MAX; casAttempt++) {
-      var pointerOpt = pointerStore.get(key).orElse(null);
-      if (pointerOpt == null) {
-        if (expectedVersion != 0L) {
-          throw new PreconditionFailedException(
-              "missing pointer: " + key + " expected=" + expectedVersion);
-        }
+    var pointer = pointerStore.get(key).orElse(null);
 
-        var created = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
-
-        if (pointerStore.compareAndSet(key, 0L, created)) {
-          return;
-        }
-      } else {
-        if (pointerOpt.getVersion() != expectedVersion) {
-          throw new PreconditionFailedException(
-              "version mismatch: "
-                  + key
-                  + " expected="
-                  + expectedVersion
-                  + " actual="
-                  + pointerOpt.getVersion());
-        }
-
-        var nextPointer =
-            pointerOpt.toBuilder()
-                .setBlobUri(blobUri)
-                .setVersion(pointerOpt.getVersion() + 1)
-                .build();
-
-        if (pointerStore.compareAndSet(key, expectedVersion, nextPointer)) {
-          return;
-        }
+    if (pointer == null) {
+      if (expectedVersion != 0L) {
+        throw new PreconditionFailedException(
+            "missing pointer: " + key + " expected=" + expectedVersion);
       }
-      backoff(casAttempt);
-    }
-    throw new AbortRetryableException("CAS retries exhausted: " + key);
-  }
+      var created = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
+      if (pointerStore.compareAndSet(key, 0L, created)) {
+        return;
+      }
 
-  private static void backoff(int attempt) {
-    try {
-      long base = Math.min(5L * (1L << attempt), 50L);
-      long jitter = ThreadLocalRandom.current().nextLong(0, 5);
-      Thread.sleep(base + jitter);
-    } catch (InterruptedException ignored) {
-      // ignore
+      var after = pointerStore.get(key).orElse(null);
+      if (after == null) {
+        throw new AbortRetryableException("pointer vanished during create: " + key);
+      }
+
+      throw new PreconditionFailedException(
+          "version mismatch: " + key + " expected=0 actual=" + after.getVersion());
     }
+
+    if (pointer.getVersion() != expectedVersion) {
+      throw new PreconditionFailedException(
+          "version mismatch: "
+              + key
+              + " expected="
+              + expectedVersion
+              + " actual="
+              + pointer.getVersion());
+    }
+
+    var next = pointer.toBuilder().setBlobUri(blobUri).setVersion(pointer.getVersion() + 1).build();
+    if (pointerStore.compareAndSet(key, expectedVersion, next)) {
+      return;
+    }
+
+    var after = pointerStore.get(key).orElse(null);
+    if (after == null) {
+      throw new AbortRetryableException("pointer vanished during advance: " + key);
+    }
+
+    throw new PreconditionFailedException(
+        "version mismatch: "
+            + key
+            + " expected="
+            + expectedVersion
+            + " actual="
+            + after.getVersion());
   }
 
   @Override

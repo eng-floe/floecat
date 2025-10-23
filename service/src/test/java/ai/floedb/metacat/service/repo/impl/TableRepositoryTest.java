@@ -9,19 +9,29 @@ import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
 import com.google.protobuf.util.Timestamps;
 import java.time.Clock;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.LongAdder;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 class TableRepositoryTest {
   private final Clock clock = Clock.systemUTC();
 
   @Test
-  void putAndGetRoundTrip() {
+  void tableRepoCreateTable() {
     var ptr = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
     final var snapshotRepo = new SnapshotRepository(ptr, blobs);
@@ -107,5 +117,144 @@ class TableRepositoryTest {
 
     var cur = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
     assertEquals(42, cur.getSnapshotId());
+  }
+
+  @Test
+  @Timeout(30)
+  void tableRepoConcurrentMutations() throws Exception {
+    var ptr = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var cats = new CatalogRepository(ptr, blobs);
+    var nss = new NamespaceRepository(ptr, blobs);
+    var tbls = new TableRepository(ptr, blobs);
+
+    String tenant = "t-0001";
+    var catId = rid(tenant, ResourceKind.RK_CATALOG);
+    var ns1Id = rid(tenant, ResourceKind.RK_NAMESPACE);
+    var ns2Id = rid(tenant, ResourceKind.RK_NAMESPACE);
+    var tblId = rid(tenant, ResourceKind.RK_TABLE);
+
+    var cat = Catalog.newBuilder().setResourceId(catId).setDisplayName("sales").build();
+    cats.create(cat);
+    nss.create(Namespace.newBuilder().setResourceId(ns1Id).setDisplayName("ns1").build(), catId);
+    nss.create(Namespace.newBuilder().setResourceId(ns2Id).setDisplayName("ns2").build(), catId);
+
+    var seed =
+        Table.newBuilder()
+            .setResourceId(tblId)
+            .setDisplayName("seed")
+            .setDescription("seed")
+            .setFormat(TableFormat.TF_DELTA)
+            .setCatalogId(catId)
+            .setNamespaceId(ns1Id)
+            .setRootUri("s3://b/p")
+            .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
+            .setCreatedAt(Timestamps.fromMillis(clock.millis()))
+            .build();
+    tbls.create(seed);
+
+    String canonKey = Keys.tblCanonicalPtr(tenant, tblId.getId());
+    long v0 = ptr.get(canonKey).orElseThrow().getVersion();
+
+    int WORKERS = 48;
+    int OPS = 200;
+    var pool = Executors.newFixedThreadPool(WORKERS);
+    var start = new CountDownLatch(1);
+    var unexpected = new ConcurrentLinkedQueue<Throwable>();
+    var expectedCounts = new ConcurrentHashMap<String, LongAdder>();
+    var seedDeleted = new AtomicBoolean(false);
+
+    Runnable worker =
+        () -> {
+          try {
+            start.await();
+            var rnd = ThreadLocalRandom.current();
+            for (int i = 0; i < OPS; i++) {
+              int pick = rnd.nextInt(100);
+              try {
+                if (pick < 35) { // UPDATE schema
+                  if (seedDeleted.get()) continue;
+                  String col = "c" + rnd.nextInt(1000);
+                  var curMeta = tbls.metaFor(tblId);
+                  var cur = tbls.get(tblId).orElseThrow();
+                  var updated =
+                      cur.toBuilder()
+                          .setSchemaJson(
+                              "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"},"
+                                  + "{\"name\":\""
+                                  + col
+                                  + "\",\"type\":\"double\"}]}")
+                          .build();
+                  tbls.update(updated, curMeta.getPointerVersion());
+                } else if (pick < 60) {
+                  if (seedDeleted.get()) continue;
+                  var curMeta = tbls.metaFor(tblId);
+                  String target = "seed_" + rnd.nextInt(5);
+                  tbls.rename(tblId, target, curMeta.getPointerVersion());
+                } else if (pick < 85) {
+                  if (seedDeleted.get()) continue;
+                  var curMeta = tbls.metaFor(tblId);
+                  var cur = tbls.get(tblId).orElseThrow();
+                  var toNs = rnd.nextBoolean() ? ns1Id : ns2Id;
+                  var updated = cur.toBuilder().setNamespaceId(toNs).build();
+                  tbls.move(
+                      updated,
+                      cur.getDisplayName(),
+                      cur.getCatalogId(),
+                      cur.getNamespaceId(),
+                      catId,
+                      toNs,
+                      curMeta.getPointerVersion());
+                } else {
+                  if (seedDeleted.compareAndSet(false, true)) {
+                    var curMeta = tbls.metaFor(tblId);
+                    tbls.deleteWithPrecondition(tblId, curMeta.getPointerVersion());
+                  }
+                }
+              } catch (BaseRepository.PreconditionFailedException
+                  | BaseRepository.NameConflictException
+                  | BaseRepository.NotFoundException
+                  | BaseRepository.AbortRetryableException e) {
+                expectedCounts
+                    .computeIfAbsent(e.getClass().getSimpleName(), k -> new LongAdder())
+                    .increment();
+              } catch (Throwable t) {
+                unexpected.add(t);
+              }
+            }
+          } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            unexpected.add(ie);
+          }
+        };
+
+    for (int i = 0; i < WORKERS; i++) pool.submit(worker);
+    start.countDown();
+    pool.shutdown();
+    assertTrue(pool.awaitTermination(30, TimeUnit.SECONDS), "workers timed out");
+
+    if (!unexpected.isEmpty()) unexpected.peek().printStackTrace();
+    assertTrue(unexpected.isEmpty(), "unexpected exceptions: " + unexpected.size());
+
+    var p = ptr.get(canonKey);
+    if (seedDeleted.get()) {
+      assertTrue(
+          p.isEmpty() || !tbls.get(tblId).isPresent(), "deleted table should not be resolvable");
+      assertDoesNotThrow(() -> tbls.metaForSafe(tblId));
+    } else {
+      long vN = p.orElseThrow().getVersion();
+      assertTrue(vN >= v0, "pointer version should be >= initial");
+      var cur = tbls.get(tblId).orElseThrow();
+      assertNotNull(cur.getNamespaceId());
+      assertNotNull(cur.getCatalogId());
+    }
+  }
+
+  private static ResourceId rid(String tenant, ResourceKind kind) {
+    return ResourceId.newBuilder()
+        .setTenantId(tenant)
+        .setId(UUID.randomUUID().toString())
+        .setKind(kind)
+        .build();
   }
 }

@@ -41,23 +41,32 @@ public class InMemoryBlobStore implements BlobStore {
   public void put(String uri, byte[] bytes, String contentType) {
     Objects.requireNonNull(uri, "uri");
     Objects.requireNonNull(bytes, "bytes");
-    if (contentType == null || contentType.isBlank()) contentType = "application/octet-stream";
+    final String ct =
+        (contentType == null || contentType.isBlank()) ? "application/octet-stream" : contentType;
 
-    byte[] copy = Arrays.copyOf(bytes, bytes.length);
+    final byte[] copy = Arrays.copyOf(bytes, bytes.length);
+    final String etag = sha256B64(copy);
+    final long now = clock.millis();
 
-    String etag = sha256B64(copy);
-    long now = clock.millis();
-    BlobHeader.Builder hb =
-        BlobHeader.newBuilder()
-            .setSchemaVersion("v1")
-            .setEtag(etag)
-            .setCreatedAt(Timestamps.fromMillis(now));
+    map.compute(
+        uri,
+        (k, prev) -> {
+          final BlobHeader prevHdr = prev == null ? null : prev.hdr;
+          final com.google.protobuf.Timestamp createdAt =
+              prevHdr == null ? Timestamps.fromMillis(now) : prevHdr.getCreatedAt();
 
-    addTag(hb, TAG_CONTENT_TYPE, contentType);
-    addTag(hb, TAG_CONTENT_LENGTH, Integer.toString(copy.length));
-    addTag(hb, TAG_LAST_MODIFIED, Long.toString(now));
+          BlobHeader.Builder hb =
+              BlobHeader.newBuilder()
+                  .setSchemaVersion("v1")
+                  .setEtag(etag)
+                  .setCreatedAt(createdAt)
+                  .setLastModifiedAt(Timestamps.fromMillis(now));
 
-    map.put(uri, new Blob(copy, hb.build()));
+          addTag(hb, TAG_CONTENT_TYPE, ct);
+          addTag(hb, TAG_CONTENT_LENGTH, Integer.toString(copy.length));
+
+          return new Blob(copy, hb.build());
+        });
   }
 
   @Override

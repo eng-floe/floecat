@@ -1,0 +1,62 @@
+package ai.floedb.metacat.service.repo.impl;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.common.rpc.*;
+import ai.floedb.metacat.service.repo.util.BaseRepository;
+import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
+import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
+import com.google.protobuf.util.Timestamps;
+import java.time.Clock;
+import java.util.UUID;
+import org.junit.jupiter.api.Test;
+
+class MetaForBehaviorTest {
+
+  final Clock clock = Clock.systemUTC();
+
+  @Test
+  void metaForExceptionTest() {
+    var ptr = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var tbls = new TableRepository(ptr, blobs);
+
+    var tblId =
+        ResourceId.newBuilder()
+            .setTenantId("t-1")
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    assertThrows(BaseRepository.NotFoundException.class, () -> tbls.metaFor(tblId));
+
+    assertDoesNotThrow(() -> tbls.metaForSafe(tblId));
+  }
+
+  @Test
+  void metaForVersionTest() {
+    var ptr = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var cats = new CatalogRepository(ptr, blobs);
+
+    var catId =
+        ResourceId.newBuilder()
+            .setTenantId("t-1")
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    cats.create(
+        Catalog.newBuilder()
+            .setResourceId(catId)
+            .setDisplayName("sales")
+            .setCreatedAt(Timestamps.fromMillis(clock.millis()))
+            .build());
+
+    var m1 = cats.metaFor(catId);
+    cats.rename("t-1", catId, "sales_new", m1.getPointerVersion());
+    var m2 = cats.metaFor(catId);
+
+    assertTrue(m2.getPointerVersion() > m1.getPointerVersion(), "pointer version must increase");
+  }
+}
