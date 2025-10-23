@@ -8,6 +8,7 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
+import ai.floedb.metacat.service.util.TestSupport;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -19,8 +20,7 @@ class NamespaceRepositoryTest {
     var repo = new NamespaceRepository(ptr, blob);
     var catRepo = new CatalogRepository(ptr, blob);
 
-    String tenant = "t-0001";
-
+    String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
     var catRid =
         ResourceId.newBuilder()
             .setTenantId(tenant)
@@ -43,10 +43,11 @@ class NamespaceRepositoryTest {
             .setResourceId(nsRid)
             .setDisplayName("core")
             .setDescription("Core namespace")
+            .setCatalogId(catRid)
             .build();
-    repo.create(ns, catRid);
+    repo.create(ns);
 
-    var fetched = repo.get(catRid, nsRid).orElseThrow();
+    var fetched = repo.getById(nsRid).orElseThrow();
     assertEquals("core", fetched.getDisplayName());
   }
 }

@@ -113,11 +113,12 @@ public class SeedRunner {
             .setResourceId(nsRid)
             .setDisplayName(leaf)
             .addAllParents(parents)
+            .setCatalogId(catalogId)
             .setDescription(leaf + " namespace")
             .setCreatedAt(Timestamps.fromMillis(now))
             .build();
 
-    namespaces.create(ns, catalogId);
+    namespaces.create(ns);
     return nsRid;
   }
 

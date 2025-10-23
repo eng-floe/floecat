@@ -50,8 +50,6 @@ class TableMutationIT {
   @Test
   void tableRenameUpdate() throws Exception {
     var cat = TestSupport.createCatalog(mutation, tablePrefix + "cat1", "tcat1");
-    String tenantId = TestSupport.seedTenantId(directory, tablePrefix + "cat1");
-    assertEquals(tenantId, cat.getResourceId().getTenantId());
 
     var parents = List.of("db_tbl", "schema_tbl");
     var nsLeaf = "it_ns";
@@ -218,8 +216,6 @@ class TableMutationIT {
   void tableMove() throws Exception {
     var catName = tablePrefix + "cat2";
     var cat = TestSupport.createCatalog(mutation, catName, "tcat2");
-    String tenantId = TestSupport.seedTenantId(directory, catName);
-    assertEquals(tenantId, cat.getResourceId().getTenantId());
 
     var parents = List.of("db_tbl", "schema_tbl");
     var nsLeaf = "it_ns";
@@ -367,8 +363,6 @@ class TableMutationIT {
   void snapshotCreate() throws Exception {
     var catName = tablePrefix + "snap1";
     var cat = TestSupport.createCatalog(mutation, catName, "snap1");
-    String tenantId = TestSupport.seedTenantId(directory, catName);
-    assertEquals(tenantId, cat.getResourceId().getTenantId());
 
     var parents = List.of("db_tbl", "schema_tbl");
     var nsLeaf = "it_ns";

@@ -38,7 +38,8 @@ message Namespace {
   string display_name = 2;
   repeated string parents = 3;
   string description = 4;
-  google.protobuf.Timestamp created_at = 5;
+  ai.floedb.metacat.common.ResourceId catalog_id = 5;
+  google.protobuf.Timestamp created_at = 6;
 }
 
 message ResolveNamespaceRequest {

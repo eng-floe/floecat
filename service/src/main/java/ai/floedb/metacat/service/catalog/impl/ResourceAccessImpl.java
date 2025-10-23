@@ -111,17 +111,9 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
 
               var namespaceId = request.getNamespaceId();
 
-              var catalogId =
-                  nsRepo
-                      .findOwnerCatalog(principalContext.getTenantId().getId(), namespaceId.getId())
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId(), "namespace", Map.of("id", namespaceId.getId())));
-
               var namespace =
                   nsRepo
-                      .get(catalogId, namespaceId)
+                      .getById(namespaceId)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -156,7 +148,7 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
               final String token = request.hasPage() ? request.getPage().getPageToken() : "";
               final StringBuilder next = new StringBuilder();
 
-              var namespaces = nsRepo.list(catalogId, null, Math.max(1, limit), token, next);
+              var namespaces = nsRepo.listByName(catalogId, null, Math.max(1, limit), token, next);
               int total = nsRepo.count(catalogId);
 
               var page =
@@ -184,7 +176,7 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
 
               var table =
                   tableRepo
-                      .get(request.getTableId())
+                      .getById(request.getTableId())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -206,20 +198,13 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
               authz.require(principalContext, "table.read");
 
               var namespaceId = request.getNamespaceId();
-              var catalogId =
+              var namespace =
                   nsRepo
-                      .findOwnerCatalog(principalContext.getTenantId().getId(), namespaceId.getId())
+                      .getById(namespaceId)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
                                   correlationId(), "namespace", Map.of("id", namespaceId.getId())));
-
-              nsRepo
-                  .get(catalogId, namespaceId)
-                  .orElseThrow(
-                      () ->
-                          GrpcErrors.notFound(
-                              correlationId(), "namespace", Map.of("id", namespaceId.getId())));
 
               final int limit =
                   (request.hasPage() && request.getPage().getPageSize() > 0)
@@ -228,6 +213,7 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
               final String token = request.hasPage() ? request.getPage().getPageToken() : "";
               final StringBuilder next = new StringBuilder();
 
+              var catalogId = namespace.getCatalogId();
               var items =
                   tableRepo.listByNamespace(
                       catalogId, namespaceId, Math.max(1, limit), token, next);
@@ -255,7 +241,7 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
               authz.require(principalContext, "table.read");
 
               tableRepo
-                  .get(request.getTableId())
+                  .getById(request.getTableId())
                   .orElseThrow(
                       () ->
                           GrpcErrors.notFound(
@@ -297,7 +283,7 @@ public class ResourceAccessImpl extends BaseServiceImpl implements ResourceAcces
               authz.require(principalContext, "table.read");
 
               tableRepo
-                  .get(request.getTableId())
+                  .getById(request.getTableId())
                   .orElseThrow(
                       () ->
                           GrpcErrors.notFound(

@@ -4,8 +4,6 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.metacat.connector.rpc";
 
 import "common/common.proto";
-import "catalog/catalog.proto";
-import "resource/mutation.proto";
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/duration.proto";
@@ -83,7 +81,6 @@ message GetConnectorResponse {
 
 message ListConnectorsRequest {
   ai.floedb.metacat.common.PageRequest page = 1;
-  ai.floedb.metacat.common.ResourceId tenant_id = 2;
   string kind = 3;
 }
 message ListConnectorsResponse {

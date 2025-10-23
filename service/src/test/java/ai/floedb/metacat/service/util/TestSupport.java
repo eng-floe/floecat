@@ -53,6 +53,8 @@ import java.util.UUID;
 public final class TestSupport {
   private TestSupport() {}
 
+  public static final String DEFAULT_SEED_TENANT = "t-0001";
+
   public static ResourceId rid(String tenantId, String id, ResourceKind kind) {
     return ResourceId.newBuilder().setTenantId(tenantId).setId(id).setKind(kind).build();
   }
@@ -63,16 +65,6 @@ public final class TestSupport {
       b.setName(name);
     }
     return b.build();
-  }
-
-  public static String seedTenantId(
-      DirectoryGrpc.DirectoryBlockingStub directory, String seededCatalogName) {
-    var seeded =
-        directory.resolveCatalog(
-            ResolveCatalogRequest.newBuilder()
-                .setRef(NameRef.newBuilder().setCatalog(seededCatalogName))
-                .build());
-    return seeded.getResourceId().getTenantId();
   }
 
   public static ResourceId createTenantId(String tid) {
@@ -350,7 +342,7 @@ public final class TestSupport {
     var nsRid = ns.getResourceId();
     var nsTenant = nsRid.getTenantId();
 
-    var nsPtrKey = Keys.nsPtr(nsTenant, catalogId, nsRid.getId());
+    var nsPtrKey = Keys.nsPtr(nsTenant, nsRid.getId());
     var nsBlob = Keys.nsBlob(nsTenant, nsRid.getId());
 
     var nsPtr =

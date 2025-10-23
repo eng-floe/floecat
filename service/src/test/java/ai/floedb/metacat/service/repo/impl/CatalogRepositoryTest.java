@@ -9,6 +9,7 @@ import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
+import ai.floedb.metacat.service.util.TestSupport;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -20,9 +21,10 @@ class CatalogRepositoryTest {
     var blobs = new InMemoryBlobStore();
     var catalogRepo = new CatalogRepository(ptr, blobs);
 
+    String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
     var rid =
         ResourceId.newBuilder()
-            .setTenantId("t-0001")
+            .setTenantId(tenant)
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_CATALOG)
             .build();
@@ -45,7 +47,7 @@ class CatalogRepositoryTest {
     var catalogRepo = new CatalogRepository(ptr, blobs);
     var namespaceRepo = new NamespaceRepository(ptr, blobs);
 
-    String tenant = "t-0001";
+    String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
     var catRid =
         ResourceId.newBuilder()
             .setTenantId(tenant)
@@ -72,8 +74,9 @@ class CatalogRepositoryTest {
             .setResourceId(nsRid)
             .setDisplayName("eu")
             .setDescription("EU namespace")
+            .setCatalogId(catRid)
             .build();
-    namespaceRepo.create(ns, catRid);
+    namespaceRepo.create(ns);
 
     nsRid =
         ResourceId.newBuilder()
@@ -86,8 +89,9 @@ class CatalogRepositoryTest {
             .setResourceId(nsRid)
             .setDisplayName("us")
             .setDescription("US namespace")
+            .setCatalogId(catRid)
             .build();
-    namespaceRepo.create(ns, catRid);
+    namespaceRepo.create(ns);
 
     var next = new StringBuilder();
     List<Catalog> catalogs = catalogRepo.listByName(tenant, 10, "", next);
@@ -99,7 +103,7 @@ class CatalogRepositoryTest {
     assertTrue(catKeys.get(0).key().startsWith(catsPrefix));
 
     var nsNext = new StringBuilder();
-    var nss = namespaceRepo.list(catRid, null, 10, "", nsNext);
+    var nss = namespaceRepo.listByName(catRid, null, 10, "", nsNext);
     assertEquals(2, nss.size());
   }
 }

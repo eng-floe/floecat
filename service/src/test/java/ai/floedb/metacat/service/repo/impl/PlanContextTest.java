@@ -26,7 +26,7 @@ class PlanContextTest {
 
   @Test
   void newActive_valid() {
-    ResourceId tenantId = TestSupport.createTenantId("t-001");
+    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     var pc = pc(tenantId, "alice", "plan-123");
     var ctx = PlanContext.newActive("plan-123", pc, null, null, 1_000, 1);
 
@@ -40,7 +40,7 @@ class PlanContextTest {
 
   @Test
   void builder_rejectsExpiresBeforeCreated() {
-    ResourceId tenantId = TestSupport.createTenantId("t-001");
+    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     var pc = pc(tenantId, "alice", "p1");
     Executable ex =
         () ->
@@ -56,7 +56,7 @@ class PlanContextTest {
 
   @Test
   void extendLease_isMonotonic() {
-    ResourceId tenantId = TestSupport.createTenantId("t-001");
+    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     var pc = pc(tenantId, "alice", "p1");
     var ctx = PlanContext.newActive("p1", pc, null, null, 200, 1);
     long originalExp = ctx.getExpiresAtMs();
@@ -72,7 +72,7 @@ class PlanContextTest {
 
   @Test
   void end_commit_setsStateAndGrace() {
-    ResourceId tenantId = TestSupport.createTenantId("t-001");
+    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     var pc = pc(tenantId, "alice", "p1");
     var ctx = PlanContext.newActive("p1", pc, null, null, 100, 1);
     long targetGrace = clock.millis() + 500;
@@ -85,7 +85,7 @@ class PlanContextTest {
 
   @Test
   void asExpired_onlyIfActive() {
-    ResourceId tenantId = TestSupport.createTenantId("t-001");
+    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     var pc = pc(tenantId, "alice", "p1");
     var ctx = PlanContext.newActive("p1", pc, null, null, 100, 1);
 

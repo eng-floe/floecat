@@ -10,6 +10,7 @@ import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
+import ai.floedb.metacat.service.util.TestSupport;
 import com.google.protobuf.util.Timestamps;
 import java.time.Clock;
 import java.util.UUID;
@@ -34,7 +35,7 @@ class SnapshotRepositoryTest {
     var snapshotRepo = new SnapshotRepository(ptr, blobs);
     var tableRepo = new TableRepository(ptr, blobs);
 
-    String tenant = "t-0001";
+    String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
     String catalogId = UUID.randomUUID().toString();
     String nsId = UUID.randomUUID().toString();
     String tblId = UUID.randomUUID().toString();
@@ -125,7 +126,7 @@ class SnapshotRepositoryTest {
     var blobs = new InMemoryBlobStore();
     var snaps = new SnapshotRepository(ptr, blobs);
 
-    String tenant = "t-0001";
+    String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
     var tblId =
         ResourceId.newBuilder()
             .setTenantId(tenant)

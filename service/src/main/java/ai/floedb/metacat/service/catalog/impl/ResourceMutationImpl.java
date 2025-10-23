@@ -369,11 +369,12 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                                         correlationId))
                                 .addAllParents(request.getSpec().getPathList())
                                 .setDescription(request.getSpec().getDescription())
+                                .setCatalogId(request.getSpec().getCatalogId())
                                 .setCreatedAt(tsNow)
                                 .build();
 
                         try {
-                          namespaces.create(built, request.getSpec().getCatalogId());
+                          namespaces.create(built);
                         } catch (BaseRepository.NameConflictException e) {
                           if (!idempotencyKey.isBlank()) {
                             var fullPath = new ArrayList<>(request.getSpec().getPathList());
@@ -382,9 +383,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                                 namespaces.getByPath(
                                     tenantId, request.getSpec().getCatalogId(), fullPath);
                             if (existingId.isPresent()) {
-                              var existing =
-                                  namespaces.get(
-                                      request.getSpec().getCatalogId(), existingId.get());
+                              var existing = namespaces.getById(existingId.get());
                               if (existing.isPresent()) {
                                 return new IdempotencyGuard.CreateResult<>(
                                     existing.get(), existingId.get());
@@ -440,22 +439,14 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               var tenantId = principalContext.getTenantId().getId();
 
-              var currentCatalogId =
-                  namespaces
-                      .findOwnerCatalog(tenantId, namespaceId.getId())
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId, "namespace", Map.of("id", namespaceId.getId())));
-
               var currentNamespace =
                   namespaces
-                      .get(currentCatalogId, namespaceId)
+                      .getById(namespaceId)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
                                   correlationId, "namespace", Map.of("id", namespaceId.getId())));
-
+              var currentCatalogId = currentNamespace.getCatalogId();
               var pathProvided = !request.getNewPathList().isEmpty();
               var newLeaf =
                   pathProvided
@@ -556,8 +547,15 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
               final var namespaceId = request.getNamespaceId();
               ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId);
 
-              var catalogId =
-                  namespaces.findOwnerCatalog(tenantId, namespaceId.getId()).orElse(null);
+              var namespace =
+                  namespaces
+                      .getById(namespaceId)
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId, "namespace", Map.of("id", namespaceId.getId())));
+
+              var catalogId = namespace.getCatalogId();
 
               if (catalogId == null) {
                 var safe =
@@ -572,7 +570,14 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
               }
 
               if (request.getRequireEmpty() && tables.count(catalogId, namespaceId) > 0) {
-                var currentNamespace = namespaces.get(catalogId, namespaceId).orElse(null);
+                var currentNamespace =
+                    namespaces
+                        .getById(namespaceId)
+                        .orElseThrow(
+                            () ->
+                                GrpcErrors.notFound(
+                                    correlationId, "namespace", Map.of("id", namespaceId.getId())));
+
                 String displayName =
                     (currentNamespace != null)
                         ? prettyNamespacePath(
@@ -620,20 +625,23 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               var tsNow = nowTs();
 
-              if (catalogs.getById(request.getSpec().getCatalogId()).isEmpty()) {
-                throw GrpcErrors.notFound(
-                    correlationId,
-                    "catalog",
-                    Map.of("id", request.getSpec().getCatalogId().getId()));
-              }
-              if (namespaces
-                  .get(request.getSpec().getCatalogId(), request.getSpec().getNamespaceId())
-                  .isEmpty()) {
-                throw GrpcErrors.notFound(
-                    correlationId,
-                    "namespace",
-                    Map.of("id", request.getSpec().getNamespaceId().getId()));
-              }
+              catalogs
+                  .getById(request.getSpec().getCatalogId())
+                  .orElseThrow(
+                      () ->
+                          GrpcErrors.notFound(
+                              correlationId,
+                              "catalog",
+                              Map.of("id", request.getSpec().getCatalogId().getId())));
+
+              namespaces
+                  .getById(request.getSpec().getNamespaceId())
+                  .orElseThrow(
+                      () ->
+                          GrpcErrors.notFound(
+                              correlationId,
+                              "namespace",
+                              Map.of("id", request.getSpec().getNamespaceId().getId())));
 
               var idempotencyKey =
                   request.hasIdempotency() ? request.getIdempotency().getKey() : "";
@@ -740,7 +748,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               var currentNamespace =
                   tables
-                      .get(tableId)
+                      .getById(tableId)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -800,7 +808,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
 
               var currentNamespace =
                   tables
-                      .get(tableId)
+                      .getById(tableId)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -840,7 +848,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
               }
 
               var outMeta = tables.metaForSafe(tableId);
-              var updated = tables.get(tableId).orElse(currentNamespace);
+              var updated = tables.getById(tableId).orElse(currentNamespace);
 
               return RenameTableResponse.newBuilder().setTable(updated).setMeta(outMeta).build();
             }),
@@ -852,97 +860,90 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
     return mapFailures(
         runWithRetry(
             () -> {
-              final var principalContext = principal.get();
-              var correlationId = principalContext.getCorrelationId();
+              final var pc = principal.get();
+              final var corr = pc.getCorrelationId();
 
-              authz.require(principalContext, "table.write");
+              authz.require(pc, "table.write");
 
               final var tableId = request.getTableId();
-              ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
+              ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
 
-              final var tenantId = principalContext.getTenantId().getId();
-
-              final var currentNamespace =
+              final var currentTable =
                   tables
-                      .get(tableId)
+                      .getById(tableId)
+                      .orElseThrow(
+                          () -> GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
+
+              final var currentNs =
+                  namespaces
+                      .getById(currentTable.getNamespaceId())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
-                                  correlationId, "table", Map.of("id", tableId.getId())));
+                                  corr,
+                                  "namespace",
+                                  Map.of("id", currentTable.getNamespaceId().getId())));
 
               if (!request.hasNewNamespaceId() || request.getNewNamespaceId().getId().isBlank()) {
-                throw GrpcErrors.invalidArgument(
-                    correlationId, null, Map.of("field", "new_namespace_id"));
+                throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "new_namespace_id"));
               }
 
-              final var newNamespaceId = request.getNewNamespaceId();
-              ensureKind(
-                  newNamespaceId, ResourceKind.RK_NAMESPACE, "new_namespace_id", correlationId);
+              final var newNsId = request.getNewNamespaceId();
+              ensureKind(newNsId, ResourceKind.RK_NAMESPACE, "new_namespace_id", corr);
 
-              final var newCatalogId =
+              final var newNs =
                   namespaces
-                      .findOwnerCatalog(tenantId, newNamespaceId.getId())
+                      .getById(newNsId)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
-                                  correlationId,
-                                  "catalog",
-                                  Map.of(
-                                      "reason",
-                                      "namespace_owner_missing",
-                                      "namespace_id",
-                                      newNamespaceId.getId())));
-
-              if (namespaces.get(newCatalogId, newNamespaceId).isEmpty()) {
-                throw GrpcErrors.notFound(
-                    correlationId, "namespace", Map.of("id", newNamespaceId.getId()));
-              }
+                                  corr, "namespace", Map.of("id", newNsId.getId())));
+              final var newCatId = newNs.getCatalogId();
 
               final var targetName =
                   (request.getNewDisplayName() != null && !request.getNewDisplayName().isBlank())
                       ? request.getNewDisplayName()
-                      : currentNamespace.getDisplayName();
+                      : currentTable.getDisplayName();
 
-              final boolean sameNs =
-                  currentNamespace.getNamespaceId().getId().equals(newNamespaceId.getId());
-              final boolean sameName = currentNamespace.getDisplayName().equals(targetName);
+              final boolean sameNs = currentNs.getResourceId().getId().equals(newNsId.getId());
+              final boolean sameName = currentTable.getDisplayName().equals(targetName);
+
               if (sameNs && sameName) {
                 final var metaNoop = tables.metaForSafe(tableId);
-                enforcePreconditions(correlationId, metaNoop, request.getPrecondition());
-
+                enforcePreconditions(corr, metaNoop, request.getPrecondition());
                 return MoveTableResponse.newBuilder()
-                    .setTable(currentNamespace)
+                    .setTable(currentTable)
                     .setMeta(metaNoop)
                     .build();
               }
 
               final var updated =
-                  currentNamespace.toBuilder()
+                  currentTable.toBuilder()
                       .setDisplayName(targetName)
-                      .setCatalogId(newCatalogId)
-                      .setNamespaceId(newNamespaceId)
+                      .setCatalogId(newCatId)
+                      .setNamespaceId(newNsId)
                       .build();
 
-              var meta = tables.metaFor(tableId);
-              long expectedVersion = meta.getPointerVersion();
-              enforcePreconditions(correlationId, meta, request.getPrecondition());
+              final var meta = tables.metaFor(tableId);
+              final long expectedVersion = meta.getPointerVersion();
+              enforcePreconditions(corr, meta, request.getPrecondition());
 
               try {
                 tables.move(
                     updated,
-                    currentNamespace.getDisplayName(),
-                    currentNamespace.getCatalogId(),
-                    currentNamespace.getNamespaceId(),
-                    newCatalogId,
-                    newNamespaceId,
+                    currentTable.getDisplayName(),
+                    currentTable.getCatalogId(),
+                    currentTable.getNamespaceId(),
+                    newCatId,
+                    newNsId,
                     expectedVersion);
               } catch (BaseRepository.NameConflictException nce) {
                 throw GrpcErrors.conflict(
-                    correlationId, "table.already_exists", Map.of("display_name", targetName));
+                    corr, "table.already_exists", Map.of("display_name", targetName));
               } catch (BaseRepository.PreconditionFailedException pfe) {
-                var nowMeta = tables.metaForSafe(tableId);
+                final var nowMeta = tables.metaForSafe(tableId);
                 throw GrpcErrors.preconditionFailed(
-                    correlationId,
+                    corr,
                     "version_mismatch",
                     Map.of(
                         "expected",
@@ -952,7 +953,6 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
               }
 
               final var outMeta = tables.metaForSafe(tableId);
-
               return MoveTableResponse.newBuilder().setTable(updated).setMeta(outMeta).build();
             }),
         correlationId());
@@ -1045,7 +1045,7 @@ public class ResourceMutationImpl extends BaseServiceImpl implements ResourceMut
                         } catch (BaseRepository.NameConflictException e) {
                           if (!idempotencyKey.isBlank()) {
                             var existing =
-                                snapshots.get(
+                                snapshots.getById(
                                     request.getSpec().getTableId(),
                                     request.getSpec().getSnapshotId());
                             if (existing.isPresent()) {

@@ -30,7 +30,7 @@ class CatalogPagingIT {
   @GrpcClient("resource-access")
   ResourceAccessGrpc.ResourceAccessBlockingStub resourceAccess;
 
-  private static final String TENANT = "t-0001";
+  private static final String TENANT = TestSupport.DEFAULT_SEED_TENANT;
   private static final int LIMIT = 10;
   private static final int TOTAL = 25;
 

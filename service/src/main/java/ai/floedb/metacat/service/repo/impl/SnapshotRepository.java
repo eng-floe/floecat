@@ -26,7 +26,7 @@ public class SnapshotRepository extends BaseRepository<Snapshot> {
         pointerStore, blobs, Snapshot::parseFrom, Snapshot::toByteArray, "application/x-protobuf");
   }
 
-  public Optional<Snapshot> get(ResourceId tableId, long snapshotId) {
+  public Optional<Snapshot> getById(ResourceId tableId, long snapshotId) {
     String key = Keys.snapPtrById(tableId.getTenantId(), tableId.getId(), snapshotId);
     return get(key);
   }

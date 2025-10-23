@@ -8,7 +8,6 @@ import ai.floedb.metacat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.LookupNamespaceResponse;
 import ai.floedb.metacat.catalog.rpc.LookupTableRequest;
 import ai.floedb.metacat.catalog.rpc.LookupTableResponse;
-import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.ResolveFQTablesRequest;
@@ -79,9 +78,14 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
               authz.require(principalContext, "catalog.read");
 
               var catalogOpt = catalogs.getById(request.getResourceId());
-              var display = catalogOpt.map(Catalog::getDisplayName).orElse("");
+              if (catalogOpt.isEmpty()) {
+                return LookupCatalogResponse.newBuilder().build();
+              }
+              var catalog = catalogOpt.get();
 
-              return LookupCatalogResponse.newBuilder().setDisplayName(display).build();
+              return LookupCatalogResponse.newBuilder()
+                  .setDisplayName(catalog.getDisplayName())
+                  .build();
             }),
         correlationId());
   }
@@ -140,21 +144,22 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
 
               authz.require(principalContext, "catalog.read");
 
-              var tenantId = principalContext.getTenantId();
               var namespaceId = request.getResourceId();
+              var namespaceOpt = namespaces.getById(namespaceId);
 
-              var catalogId = namespaces.findOwnerCatalog(tenantId.getId(), namespaceId.getId());
-              if (catalogId.isEmpty()) {
-                return LookupNamespaceResponse.newBuilder().build();
-              }
-              var catalogOpt = catalogs.getById(catalogId.get());
-              Catalog catalog = catalogOpt.get();
-
-              var namespaceOpt = namespaces.get(catalogId.get(), namespaceId);
               if (namespaceOpt.isEmpty()) {
                 return LookupNamespaceResponse.newBuilder().build();
               }
-              Namespace namespace = namespaceOpt.get();
+              var namespace = namespaceOpt.get();
+
+              var catalogId = namespace.getCatalogId();
+              var catalog =
+                  catalogs
+                      .getById(catalogId)
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(), "catalog", Map.of("id", catalogId.getId())));
 
               var nr =
                   NameRef.newBuilder()
@@ -237,14 +242,14 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
 
               var tableId = request.getResourceId();
 
-              var tableOpt = tables.get(tableId);
+              var tableOpt = tables.getById(tableId);
               if (tableOpt.isEmpty()) {
                 return LookupTableResponse.newBuilder().build();
               }
               var table = tableOpt.get();
 
               var catalogOpt = catalogs.getById(table.getCatalogId());
-              var namespaceOpt = namespaces.get(table.getCatalogId(), table.getNamespaceId());
+              var namespaceOpt = namespaces.getById(table.getNamespaceId());
 
               if (catalogOpt.isEmpty() || namespaceOpt.isEmpty()) {
                 return LookupTableResponse.newBuilder().build();

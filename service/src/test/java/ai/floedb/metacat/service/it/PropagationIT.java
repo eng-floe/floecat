@@ -34,7 +34,7 @@ class PropagationIT {
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
 
   private static PrincipalContext pc() {
-    ResourceId tenantId = TestSupport.createTenantId("t-0001");
+    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     return PrincipalContext.newBuilder()
         .setTenantId(tenantId)
         .setSubject("it-user")
@@ -44,7 +44,7 @@ class PropagationIT {
 
   @Test
   void correlationIdEchoed() {
-    ResourceId tenantId = TestSupport.createTenantId("t-0001");
+    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     String corr = "it-corr-" + UUID.randomUUID();
 
     Metadata m = new Metadata();

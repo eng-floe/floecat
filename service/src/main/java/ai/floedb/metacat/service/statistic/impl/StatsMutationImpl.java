@@ -43,7 +43,7 @@ public class StatsMutationImpl extends BaseServiceImpl implements StatsMutation 
               var tsNow = nowTs();
 
               tables
-                  .get(request.getTableId())
+                  .getById(request.getTableId())
                   .orElseThrow(
                       () ->
                           GrpcErrors.notFound(
@@ -52,7 +52,7 @@ public class StatsMutationImpl extends BaseServiceImpl implements StatsMutation 
                               Map.of("id", request.getTableId().getId())));
 
               snapshots
-                  .get(request.getTableId(), request.getSnapshotId())
+                  .getById(request.getTableId(), request.getSnapshotId())
                   .orElseThrow(
                       () ->
                           GrpcErrors.notFound(
@@ -110,7 +110,7 @@ public class StatsMutationImpl extends BaseServiceImpl implements StatsMutation 
               var tsNow = nowTs();
 
               tables
-                  .get(request.getTableId())
+                  .getById(request.getTableId())
                   .orElseThrow(
                       () ->
                           GrpcErrors.notFound(
@@ -119,7 +119,7 @@ public class StatsMutationImpl extends BaseServiceImpl implements StatsMutation 
                               Map.of("id", request.getTableId().getId())));
 
               snapshots
-                  .get(request.getTableId(), request.getSnapshotId())
+                  .getById(request.getTableId(), request.getSnapshotId())
                   .orElseThrow(
                       () ->
                           GrpcErrors.notFound(

@@ -25,7 +25,7 @@ public class TableRepository extends BaseRepository<Table> {
     super(pointerStore, blobs, Table::parseFrom, Table::toByteArray, "application/x-protobuf");
   }
 
-  public Optional<Table> get(ResourceId tableId) {
+  public Optional<Table> getById(ResourceId tableId) {
     return get(Keys.tblByIdPtr(tableId.getTenantId(), tableId.getId()));
   }
 
@@ -76,7 +76,7 @@ public class TableRepository extends BaseRepository<Table> {
   public boolean rename(ResourceId tableId, String newDisplayName, long expectedVersion) {
     var tenantId = tableId.getTenantId();
     var table =
-        get(tableId).orElseThrow(() -> new BaseRepository.NotFoundException("table not found"));
+        getById(tableId).orElseThrow(() -> new BaseRepository.NotFoundException("table not found"));
     if (newDisplayName.equals(table.getDisplayName())) {
       return true;
     }
@@ -162,7 +162,7 @@ public class TableRepository extends BaseRepository<Table> {
     var canonicalPointer = Keys.tblByIdPtr(tenantId, tableId.getId());
     var blobUri = Keys.tblBlob(tenantId, tableId.getId());
 
-    var tdOpt = get(tableId);
+    var tdOpt = getById(tableId);
     var byName =
         tdOpt
             .map(
@@ -193,7 +193,7 @@ public class TableRepository extends BaseRepository<Table> {
     var canonicalPointer = Keys.tblByIdPtr(tenantId, tableId.getId());
     var blobUri = Keys.tblBlob(tenantId, tableId.getId());
 
-    var tableObt = get(tableId);
+    var tableObt = getById(tableId);
     var byName =
         tableObt
             .map(

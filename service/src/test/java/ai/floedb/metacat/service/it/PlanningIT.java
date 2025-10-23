@@ -34,7 +34,6 @@ class PlanningIT {
   void planBeginRenewEnd() {
     var catName = catalogPrefix + "cat1";
     var cat = TestSupport.createCatalog(mutation, catName, "");
-    TestSupport.seedTenantId(directory, cat.getDisplayName());
     var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "sch", List.of("db"), "");
     var tbl =
         TestSupport.createTable(

@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package ai.floedb.metacat.tenancy.rpc;
+package ai.floedb.metacat.tenancy;
 
 option java_multiple_files = true;
 option java_package = "ai.floedb.metacat.tenancy.rpc";

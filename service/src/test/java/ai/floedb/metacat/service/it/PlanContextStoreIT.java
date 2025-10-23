@@ -31,7 +31,7 @@ class PlanContextStoreIT {
   private final Clock clock = Clock.systemUTC();
 
   private static PrincipalContext pc(String planId) {
-    ResourceId tenantId = TestSupport.createTenantId("/tenant:t-0001");
+    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     var b = PrincipalContext.newBuilder().setTenantId(tenantId).setSubject("it-user");
     if (planId != null) {
       b.setPlanId(planId);

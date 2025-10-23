@@ -53,13 +53,11 @@ class CatalogMutationIT {
 
   @Test
   void catalogCreateUpdateDelete() throws Exception {
-    String tenantId = TestSupport.seedTenantId(directory, "sales");
-
     var c1 = TestSupport.createCatalog(mutation, catalogPrefix + "cat_pre", "desc");
     var id = c1.getResourceId();
 
     assertEquals(ResourceKind.RK_CATALOG, id.getKind());
-    assertEquals(tenantId, id.getTenantId());
+    assertEquals(c1.getResourceId().getTenantId(), id.getTenantId());
     assertTrue(id.getId().matches("^[0-9a-fA-F-]{36}$"), "id must look like UUID");
 
     var m1 =

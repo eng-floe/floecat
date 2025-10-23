@@ -63,7 +63,6 @@ class ConcurrencyOCCIdempotencyIT {
   void tableConncurrencyTest() throws Exception {
     var catName = "cat_stress_" + System.currentTimeMillis();
     var cat = TestSupport.createCatalog(mutation, catName, "stress");
-    var tenantId = TestSupport.seedTenantId(directory, catName);
 
     var ns1 =
         TestSupport.createNamespace(
@@ -83,7 +82,7 @@ class ConcurrencyOCCIdempotencyIT {
             "seed");
 
     var seedTid = base.getResourceId();
-    String canonSeed = Keys.tblByIdPtr(tenantId, seedTid.getId());
+    String canonSeed = Keys.tblByIdPtr(seedTid.getTenantId(), seedTid.getId());
     long v0 = ptr.get(canonSeed).orElseThrow().getVersion();
 
     final int WORKERS = 48;
@@ -227,8 +226,8 @@ class ConcurrencyOCCIdempotencyIT {
     }
 
     for (ResourceId id : createdTableIds) {
-      var canonKey = Keys.tblByIdPtr(tenantId, id.getId());
-      var blobUri = Keys.tblBlob(tenantId, id.getId());
+      var canonKey = Keys.tblByIdPtr(id.getTenantId(), id.getId());
+      var blobUri = Keys.tblBlob(id.getTenantId(), id.getId());
       assertTrue(ptr.get(canonKey).isPresent(), "canon pointer must exist for created table");
       assertTrue(blobs.head(blobUri).isPresent(), "blob must exist for created table");
     }

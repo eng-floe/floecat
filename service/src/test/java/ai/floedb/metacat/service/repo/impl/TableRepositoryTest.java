@@ -13,6 +13,7 @@ import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
+import ai.floedb.metacat.service.util.TestSupport;
 import com.google.protobuf.util.Timestamps;
 import java.time.Clock;
 import java.util.UUID;
@@ -39,7 +40,7 @@ class TableRepositoryTest {
     final var repo = new NamespaceRepository(ptr, blobs);
     final var catRepo = new CatalogRepository(ptr, blobs);
 
-    var tenant = "t-0001";
+    String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
     var catRid =
         ResourceId.newBuilder()
             .setTenantId(tenant)
@@ -62,8 +63,9 @@ class TableRepositoryTest {
             .setResourceId(nsRid)
             .setDisplayName("core")
             .setDescription("Core namespace")
+            .setCatalogId(catRid)
             .build();
-    repo.create(ns, catRid);
+    repo.create(ns);
 
     var tableRid =
         ResourceId.newBuilder()
@@ -109,7 +111,7 @@ class TableRepositoryTest {
             .build();
     snapshotRepo.create(snap);
 
-    var fetched = tableRepo.get(tableRid).orElseThrow();
+    var fetched = tableRepo.getById(tableRid).orElseThrow();
     assertEquals("orders", fetched.getDisplayName());
 
     var list = tableRepo.listByNamespace(catRid, nsRid, 50, "", new StringBuilder());
@@ -128,7 +130,7 @@ class TableRepositoryTest {
     var nss = new NamespaceRepository(ptr, blobs);
     var tbls = new TableRepository(ptr, blobs);
 
-    String tenant = "t-0001";
+    String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
     var catId = rid(tenant, ResourceKind.RK_CATALOG);
     var ns1Id = rid(tenant, ResourceKind.RK_NAMESPACE);
     var ns2Id = rid(tenant, ResourceKind.RK_NAMESPACE);
@@ -136,8 +138,18 @@ class TableRepositoryTest {
 
     var cat = Catalog.newBuilder().setResourceId(catId).setDisplayName("sales").build();
     cats.create(cat);
-    nss.create(Namespace.newBuilder().setResourceId(ns1Id).setDisplayName("ns1").build(), catId);
-    nss.create(Namespace.newBuilder().setResourceId(ns2Id).setDisplayName("ns2").build(), catId);
+    nss.create(
+        Namespace.newBuilder()
+            .setResourceId(ns1Id)
+            .setDisplayName("ns1")
+            .setCatalogId(catId)
+            .build());
+    nss.create(
+        Namespace.newBuilder()
+            .setResourceId(ns2Id)
+            .setDisplayName("ns2")
+            .setCatalogId(catId)
+            .build());
 
     var seed =
         Table.newBuilder()
@@ -176,7 +188,7 @@ class TableRepositoryTest {
                   if (seedDeleted.get()) continue;
                   String col = "c" + rnd.nextInt(1000);
                   var curMeta = tbls.metaFor(tblId);
-                  var cur = tbls.get(tblId).orElseThrow();
+                  var cur = tbls.getById(tblId).orElseThrow();
                   var updated =
                       cur.toBuilder()
                           .setSchemaJson(
@@ -194,7 +206,7 @@ class TableRepositoryTest {
                 } else if (pick < 85) {
                   if (seedDeleted.get()) continue;
                   var curMeta = tbls.metaFor(tblId);
-                  var cur = tbls.get(tblId).orElseThrow();
+                  var cur = tbls.getById(tblId).orElseThrow();
                   var toNs = rnd.nextBoolean() ? ns1Id : ns2Id;
                   var updated = cur.toBuilder().setNamespaceId(toNs).build();
                   tbls.move(
@@ -239,12 +251,13 @@ class TableRepositoryTest {
     var p = ptr.get(canonKey);
     if (seedDeleted.get()) {
       assertTrue(
-          p.isEmpty() || !tbls.get(tblId).isPresent(), "deleted table should not be resolvable");
+          p.isEmpty() || !tbls.getById(tblId).isPresent(),
+          "deleted table should not be resolvable");
       assertDoesNotThrow(() -> tbls.metaForSafe(tblId));
     } else {
       long vN = p.orElseThrow().getVersion();
       assertTrue(vN >= v0, "pointer version should be >= initial");
-      var cur = tbls.get(tblId).orElseThrow();
+      var cur = tbls.getById(tblId).orElseThrow();
       assertNotNull(cur.getNamespaceId());
       assertNotNull(cur.getCatalogId());
     }

@@ -48,7 +48,6 @@ class DirectoryIT {
   @Test
   void resolveAndLookupNamespace() {
     var cat = TestSupport.createCatalog(mutation, "resolveAndLookupNamespace", "");
-    TestSupport.seedTenantId(directory, cat.getDisplayName());
 
     var ns =
         TestSupport.createNamespace(
@@ -75,7 +74,6 @@ class DirectoryIT {
   @Test
   void resolveAndLookupTable() {
     var cat = TestSupport.createCatalog(mutation, "resolveAndLookupTable", "");
-    TestSupport.seedTenantId(directory, cat.getDisplayName());
 
     var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "core", null, "core ns");
     TestSupport.createTable(
@@ -117,7 +115,6 @@ class DirectoryIT {
     var cat =
         TestSupport.createCatalog(
             mutation, "resolveFQTables_prefix_salesCore_returnsOrdersAndLineitem", "");
-    TestSupport.seedTenantId(directory, cat.getDisplayName());
 
     var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "core", null, "core ns");
     TestSupport.createTable(
@@ -147,7 +144,6 @@ class DirectoryIT {
     var cat =
         TestSupport.createCatalog(
             mutation, "resolveFQTables_prefix_salesStaging2025_returnsTwo", "");
-    TestSupport.seedTenantId(directory, cat.getDisplayName());
 
     var ns =
         TestSupport.createNamespace(
@@ -179,7 +175,6 @@ class DirectoryIT {
   @Test
   void renameTableReflectedInDirectoryService() {
     var cat = TestSupport.createCatalog(mutation, "barf1", "barf cat");
-    TestSupport.seedTenantId(directory, cat.getDisplayName());
 
     var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "core", null, "core ns");
     TestSupport.createTable(
@@ -219,7 +214,6 @@ class DirectoryIT {
   @Test
   void renameNamespaceReflectedInDirectoryService() {
     var cat = TestSupport.createCatalog(mutation, "barf2", "barf cat");
-    TestSupport.seedTenantId(directory, cat.getDisplayName());
 
     var ns =
         TestSupport.createNamespace(mutation, cat.getResourceId(), "a", List.of("p"), "core ns");
@@ -254,7 +248,6 @@ class DirectoryIT {
   void resolveFullyQualifiedTablesPaging() {
     var cat =
         TestSupport.createCatalog(mutation, "resolveFQTables_list_selector_paging_and_errors", "");
-    TestSupport.seedTenantId(directory, cat.getDisplayName());
 
     var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "core", null, "core ns");
     TestSupport.createTable(
@@ -306,7 +299,6 @@ class DirectoryIT {
   @Test
   void resolveAndLookupUnicodeAndSpaces() {
     var cat = TestSupport.createCatalog(mutation, "barf3", "barf cat");
-    TestSupport.seedTenantId(directory, cat.getDisplayName());
 
     var ns =
         TestSupport.createNamespace(
@@ -340,7 +332,7 @@ class DirectoryIT {
   void lookupUnknownReturnsEmpty() {
     var bogus =
         ai.floedb.metacat.common.rpc.ResourceId.newBuilder()
-            .setTenantId("t-0001")
+            .setTenantId(TestSupport.DEFAULT_SEED_TENANT)
             .setId("nope")
             .build();
 

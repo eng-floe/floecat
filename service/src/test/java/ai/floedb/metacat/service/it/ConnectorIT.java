@@ -40,7 +40,7 @@ public class ConnectorIT {
 
   @Test
   void connectorEndToEnd() throws Exception {
-    var tenantId = TestSupport.createTenantId("t-0001");
+    var tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     var conn =
         TestSupport.createConnector(
             connectors,
@@ -93,7 +93,7 @@ public class ConnectorIT {
 
     var anyTable =
         tables.listByNamespace(catId, dbNsId, 50, "", new StringBuilder()).get(0).getResourceId();
-    assertTrue(snaps.get(anyTable, 42L).isPresent());
+    assertTrue(snaps.getById(anyTable, 42L).isPresent());
   }
 
   @Test
@@ -124,7 +124,7 @@ public class ConnectorIT {
   void getConnectorNotFound() {
     var badRid =
         ResourceId.newBuilder()
-            .setTenantId("t-0001")
+            .setTenantId(TestSupport.DEFAULT_SEED_TENANT)
             .setId("nope")
             .setKind(ResourceKind.RK_CONNECTOR)
             .build();
@@ -263,7 +263,7 @@ public class ConnectorIT {
   void triggerReconcileNotFound() throws Exception {
     var rid =
         ai.floedb.metacat.common.rpc.ResourceId.newBuilder()
-            .setTenantId("t-0001")
+            .setTenantId(TestSupport.DEFAULT_SEED_TENANT)
             .setId("missing")
             .setKind(ResourceKind.RK_CONNECTOR)
             .build();

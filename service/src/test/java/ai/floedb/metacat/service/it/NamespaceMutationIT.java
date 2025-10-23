@@ -67,8 +67,6 @@ class NamespaceMutationIT {
   @Test
   void namespaceCreateRenameDelete() throws Exception {
     var cat = TestSupport.createCatalog(mutation, namespacePrefix + "cat2", "cat2");
-    String tenantId = TestSupport.seedTenantId(directory, namespacePrefix + "cat2");
-    assertEquals(tenantId, cat.getResourceId().getTenantId());
 
     var parents = List.of("db_it", "schema_it");
     var leaf = "it_schema";
@@ -95,11 +93,19 @@ class NamespaceMutationIT {
                         Precondition.newBuilder()
                             .setExpectedVersion(
                                 TestSupport.metaForNamespace(
-                                        ptr, blob, tenantId, cat.getDisplayName(), full)
+                                        ptr,
+                                        blob,
+                                        cat.getResourceId().getTenantId(),
+                                        cat.getDisplayName(),
+                                        full)
                                     .getPointerVersion())
                             .setExpectedEtag(
                                 TestSupport.metaForNamespace(
-                                        ptr, blob, tenantId, cat.getDisplayName(), full)
+                                        ptr,
+                                        blob,
+                                        cat.getResourceId().getTenantId(),
+                                        cat.getDisplayName(),
+                                        full)
                                     .getEtag())
                             .build())
                     .build())
@@ -155,7 +161,11 @@ class NamespaceMutationIT {
 
     var before =
         TestSupport.metaForNamespace(
-            ptr, blob, tenantId, cat.getDisplayName(), List.of(leaf + "_root"));
+            ptr,
+            blob,
+            cat.getResourceId().getTenantId(),
+            cat.getDisplayName(),
+            List.of(leaf + "_root"));
 
     // Bump the version
     var m3Resp =
@@ -247,7 +257,6 @@ class NamespaceMutationIT {
   @Test
   void namespaceCreateIdempotent() throws Exception {
     var cat = TestSupport.createCatalog(mutation, namespacePrefix + "cat3", "cat3");
-    TestSupport.seedTenantId(directory, cat.getDisplayName());
 
     var key = IdempotencyKey.newBuilder().setKey(namespacePrefix + "k-ns-1").build();
     var spec =

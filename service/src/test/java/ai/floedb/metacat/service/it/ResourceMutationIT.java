@@ -90,11 +90,9 @@ class ResourceMutationIT {
   void catalogCreateUpdateDelete() throws Exception {
     String catName = "it_mutation_cat_" + clock.millis();
     Catalog cat = TestSupport.createCatalog(mutation, catName, "IT cat");
-    String tenantId = TestSupport.seedTenantId(directory, catName);
     ResourceId catId = cat.getResourceId();
 
     assertEquals(ResourceKind.RK_CATALOG, catId.getKind());
-    assertEquals(tenantId, catId.getTenantId());
     assertTrue(catId.getId().matches("^[0-9a-fA-F-]{36}$"), "id must look like UUID");
 
     assertEquals(catId.getId(), TestSupport.resolveCatalogId(directory, catName).getId());

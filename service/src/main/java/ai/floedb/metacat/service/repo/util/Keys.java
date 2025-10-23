@@ -45,8 +45,8 @@ public final class Keys {
   }
 
   // ========= Namespace =========
-  public static String nsPtr(String tid, String catId, String nsId) {
-    return "/tenants/" + enc(tid) + "/catalogs/" + enc(catId) + "/namespaces/by-id/" + enc(nsId);
+  public static String nsPtr(String tid, String nsId) {
+    return "/tenants/" + enc(tid) + "/namespaces/by-id/" + enc(nsId);
   }
 
   public static String nsByPathPtr(String tid, String catId, List<String> fullPath) {

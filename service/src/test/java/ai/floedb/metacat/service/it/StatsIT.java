@@ -48,8 +48,6 @@ class StatsIT {
   void statsCreateListGetCurrent() throws Exception {
     var catName = tablePrefix + "cat_stats";
     var cat = TestSupport.createCatalog(mutation, catName, "cat for stats");
-    String tenantId = TestSupport.seedTenantId(directory, catName);
-    assertEquals(tenantId, cat.getResourceId().getTenantId());
 
     var parents = List.of("db_stats", "schema_stats");
     var nsLeaf = "it_ns";

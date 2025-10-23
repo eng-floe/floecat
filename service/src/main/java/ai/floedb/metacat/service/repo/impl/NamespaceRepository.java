@@ -3,7 +3,6 @@ package ai.floedb.metacat.service.repo.impl;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
-import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
@@ -12,9 +11,6 @@ import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.net.URLDecoder;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -35,11 +31,17 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
         "application/x-protobuf");
   }
 
-  public Optional<Namespace> get(ResourceId catalogId, ResourceId namespaceId) {
-    return get(Keys.nsPtr(namespaceId.getTenantId(), catalogId.getId(), namespaceId.getId()));
+  public Optional<Namespace> getById(ResourceId namespaceId) {
+    return get(Keys.nsPtr(namespaceId.getTenantId(), namespaceId.getId()));
   }
 
-  public List<Namespace> list(
+  public Optional<ResourceId> getByPath(String tenantId, ResourceId catalogId, List<String> path) {
+    var key = Keys.nsByPathPtr(tenantId, catalogId.getId(), path);
+
+    return get(key).map(Namespace::getResourceId);
+  }
+
+  public List<Namespace> listByName(
       ResourceId catalogId, List<String> pathPrefix, int limit, String token, StringBuilder next) {
     var pfx =
         Keys.nsByPathPrefix(
@@ -55,49 +57,13 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
     return countByPrefix(pfx);
   }
 
-  public Optional<ResourceId> findOwnerCatalog(String tenantId, String namespaceId) {
-    final String root = "/tenants/" + tenantId.toLowerCase() + "/catalogs/";
-    final String suffix =
-        "/namespaces/by-id/" + URLEncoder.encode(namespaceId, StandardCharsets.UTF_8);
-    String token = "";
-    var next = new StringBuilder();
-
-    do {
-      var rows = pointerStore.listPointersByPrefix(root, 200, token, next);
-      for (var row : rows) {
-        if (row.key().endsWith(suffix)) {
-          var parts = row.key().split("/");
-          String catalogId =
-              parts.length > 5 ? URLDecoder.decode(parts[4], StandardCharsets.UTF_8) : "";
-          if (!catalogId.isBlank()) {
-            return Optional.of(
-                ResourceId.newBuilder()
-                    .setTenantId(tenantId)
-                    .setId(catalogId)
-                    .setKind(ResourceKind.RK_CATALOG)
-                    .build());
-          }
-        }
-      }
-      token = next.toString();
-      next.setLength(0);
-    } while (!token.isEmpty());
-
-    return Optional.empty();
-  }
-
-  public Optional<ResourceId> getByPath(String tenantId, ResourceId catalogId, List<String> path) {
-    var key = Keys.nsByPathPtr(tenantId, catalogId.getId(), path);
-
-    return get(key).map(Namespace::getResourceId);
-  }
-
-  public void create(Namespace namespace, ResourceId catalogId) {
+  public void create(Namespace namespace) {
+    var catalogId = namespace.getCatalogId();
     requireCatalogId(catalogId);
     var namespaceId = namespace.getResourceId();
     var tenantId = namespaceId.getTenantId();
 
-    var byId = Keys.nsPtr(tenantId, catalogId.getId(), namespaceId.getId());
+    var byId = Keys.nsPtr(tenantId, namespaceId.getId());
     var blobUri = Keys.nsBlob(tenantId, namespaceId.getId());
     var fullNamespacePath = new ArrayList<>(namespace.getParentsList());
     if (!namespace.getDisplayName().isBlank()) {
@@ -112,7 +78,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
   public boolean update(Namespace updated, ResourceId catalogId, long expectedVersion) {
     requireCatalogId(catalogId);
     var tenantId = updated.getResourceId().getTenantId();
-    var byId = Keys.nsPtr(tenantId, catalogId.getId(), updated.getResourceId().getId());
+    var byId = Keys.nsPtr(tenantId, updated.getResourceId().getId());
     var blobUri = Keys.nsBlob(tenantId, updated.getResourceId().getId());
 
     putBlob(blobUri, updated);
@@ -149,7 +115,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
 
     putBlob(blobUri, updated);
 
-    var oldById = Keys.nsPtr(tenantId, oldCatalogId.getId(), namespaceId);
+    var oldById = Keys.nsPtr(tenantId, namespaceId);
     if (sameCatalog) {
       reserveAllOrRollback(newByPath, blobUri);
       try {
@@ -161,7 +127,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
         return false;
       }
     } else {
-      var newById = Keys.nsPtr(tenantId, newCatalogId.getId(), namespaceId);
+      var newById = Keys.nsPtr(tenantId, namespaceId);
       reserveAllOrRollback(newById, blobUri, newByPath, blobUri);
       if (!compareAndDeleteOrFalse(oldById, expectedVersion)) {
         pointerStore
@@ -185,10 +151,10 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
 
   public boolean delete(ResourceId catalogId, ResourceId namespaceId) {
     var tenantId = namespaceId.getTenantId();
-    var byId = Keys.nsPtr(tenantId, catalogId.getId(), namespaceId.getId());
+    var byId = Keys.nsPtr(tenantId, namespaceId.getId());
     var blobUri = Keys.nsBlob(tenantId, namespaceId.getId());
 
-    var namespaceOpt = get(catalogId, namespaceId);
+    var namespaceOpt = getById(namespaceId);
     var byPath =
         namespaceOpt
             .map(
@@ -216,10 +182,10 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
   public boolean deleteWithPrecondition(
       ResourceId catalogId, ResourceId namespaceId, long expectedVersion) {
     var tenantId = namespaceId.getTenantId();
-    var byId = Keys.nsPtr(tenantId, catalogId.getId(), namespaceId.getId());
+    var byId = Keys.nsPtr(tenantId, namespaceId.getId());
     var blobUri = Keys.nsBlob(tenantId, namespaceId.getId());
 
-    var namespaceOpt = get(catalogId, namespaceId);
+    var namespaceOpt = getById(namespaceId);
     var byPath =
         namespaceOpt
             .map(
@@ -251,7 +217,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
 
   public MutationMeta metaFor(ResourceId catalogId, ResourceId namespaceId, Timestamp nowTs) {
     var tenantId = namespaceId.getTenantId();
-    var key = Keys.nsPtr(tenantId, catalogId.getId(), namespaceId.getId());
+    var key = Keys.nsPtr(tenantId, namespaceId.getId());
     var pointer =
         pointerStore
             .get(key)
@@ -269,7 +235,7 @@ public class NamespaceRepository extends BaseRepository<Namespace> {
 
   public MutationMeta metaForSafe(ResourceId catalogId, ResourceId namespaceId, Timestamp nowTs) {
     var tenantId = namespaceId.getTenantId();
-    var key = Keys.nsPtr(tenantId, catalogId.getId(), namespaceId.getId());
+    var key = Keys.nsPtr(tenantId, namespaceId.getId());
     var blobUri = Keys.nsBlob(tenantId, namespaceId.getId());
 
     return safeMetaOrDefault(key, blobUri, nowTs);
