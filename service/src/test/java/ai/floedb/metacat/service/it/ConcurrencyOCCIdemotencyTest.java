@@ -21,14 +21,17 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 class ConcurrencyOCCIdempotencyIT {
 
-  @GrpcClient("resource-mutation")
-  ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
-
-  @GrpcClient("resource-access")
-  ResourceAccessGrpc.ResourceAccessBlockingStub access;
-
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
+
+  @GrpcClient("catalog-service")
+  CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
+
+  @GrpcClient("namespace-service")
+  NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
+
+  @GrpcClient("table-service")
+  TableServiceGrpc.TableServiceBlockingStub table;
 
   @jakarta.inject.Inject ai.floedb.metacat.service.storage.PointerStore ptr;
 
@@ -62,18 +65,18 @@ class ConcurrencyOCCIdempotencyIT {
   @Test
   void tableConncurrencyTest() throws Exception {
     var catName = "cat_stress_" + System.currentTimeMillis();
-    var cat = TestSupport.createCatalog(mutation, catName, "stress");
+    var cat = TestSupport.createCatalog(catalog, catName, "stress");
 
     var ns1 =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), "ns1", List.of("db", "sch"), "ns1");
+            namespace, cat.getResourceId(), "ns1", List.of("db", "sch"), "ns1");
     var ns2 =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), "ns2", List.of("db", "sch"), "ns2");
+            namespace, cat.getResourceId(), "ns2", List.of("db", "sch"), "ns2");
 
     var base =
         TestSupport.createTable(
-            mutation,
+            table,
             cat.getResourceId(),
             ns1.getResourceId(),
             "seed",
@@ -128,7 +131,7 @@ class ConcurrencyOCCIdempotencyIT {
                             .build();
 
                     try {
-                      var resp = mutation.createTable(req);
+                      var resp = table.createTable(req);
                       var tid = resp.getTable().getResourceId();
                       successfulCreatesByIdem.putIfAbsent(idemStem, tid);
                       createdTableNames.add(display);
@@ -147,7 +150,7 @@ class ConcurrencyOCCIdempotencyIT {
                             + col
                             + "\",\"type\":\"double\"}]}";
                     try {
-                      TestSupport.updateSchema(mutation, seedTid, sj);
+                      TestSupport.updateSchema(table, seedTid, sj);
                     } catch (Throwable t) {
                       recordOutcome(op, t);
                     }
@@ -157,7 +160,7 @@ class ConcurrencyOCCIdempotencyIT {
                     if (seedDeleted.get()) break;
                     String newName = "seed_" + rnd.nextInt(50);
                     try {
-                      TestSupport.renameTable(mutation, seedTid, newName);
+                      TestSupport.renameTable(table, seedTid, newName);
                     } catch (Throwable t) {
                       recordOutcome(op, t);
                     }
@@ -167,7 +170,7 @@ class ConcurrencyOCCIdempotencyIT {
                     if (seedDeleted.get()) break;
                     try {
                       var targetNs = rnd.nextBoolean() ? ns1.getResourceId() : ns2.getResourceId();
-                      mutation.moveTable(
+                      table.moveTable(
                           MoveTableRequest.newBuilder()
                               .setTableId(seedTid)
                               .setNewNamespaceId(targetNs)
@@ -180,7 +183,7 @@ class ConcurrencyOCCIdempotencyIT {
                   case DELETE_SEED -> {
                     if (seedDeleted.compareAndSet(false, true)) {
                       try {
-                        mutation.deleteTable(
+                        table.deleteTable(
                             DeleteTableRequest.newBuilder().setTableId(seedTid).build());
                       } catch (Throwable t) {
                         recordOutcome(op, t);

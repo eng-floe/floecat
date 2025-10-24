@@ -1,10 +1,6 @@
 package ai.floedb.metacat.service.planning.impl;
 
-import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
-import ai.floedb.metacat.catalog.rpc.GetCurrentSnapshotRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
-import ai.floedb.metacat.catalog.rpc.ResourceAccessGrpc;
+import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
@@ -44,8 +40,8 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
 
-  @GrpcClient("resource-access")
-  ResourceAccessGrpc.ResourceAccessBlockingStub access;
+  @GrpcClient("snapshot-service")
+  SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
 
   @Inject PlanContextStore plans;
 
@@ -293,12 +289,12 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
 
     if (snapshotRef == null || snapshotRef.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
       var cur =
-          access.getCurrentSnapshot(
+          snapshot.getCurrentSnapshot(
               GetCurrentSnapshotRequest.newBuilder().setTableId(tableId).build());
       return cur.hasSnapshot() ? cur.getSnapshot().getSnapshotId() : 0L;
     }
 
-    return access
+    return snapshot
         .getCurrentSnapshot(GetCurrentSnapshotRequest.newBuilder().setTableId(tableId).build())
         .getSnapshot()
         .getSnapshotId();

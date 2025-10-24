@@ -5,8 +5,7 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.metacat.catalog.rpc";
 
 import "common/common.proto";
-import "catalog/catalog.proto";
-import "resource/mutation.proto";
+import "catalog/table.proto";
 
 import "google/protobuf/timestamp.proto";
 
@@ -109,12 +108,9 @@ message ListColumnStatsResponse {
 
 // ---------- Services ----------
 
-service StatsAccess {
+service TableStatisticService {
   rpc GetTableStats(GetTableStatsRequest) returns (GetTableStatsResponse);
   rpc ListColumnStats(ListColumnStatsRequest) returns (ListColumnStatsResponse);
-}
-
-service StatsMutation {
   rpc PutTableStats(PutTableStatsRequest) returns (PutTableStatsResponse);
   rpc PutColumnStatsBatch(PutColumnStatsBatchRequest) returns (PutColumnStatsBatchResponse);
 }

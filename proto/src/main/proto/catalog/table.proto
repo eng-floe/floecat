@@ -1,0 +1,127 @@
+syntax = "proto3";
+package ai.floedb.metacat.catalog;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.catalog.rpc";
+
+import "common/common.proto";
+import "google/protobuf/timestamp.proto";
+
+// ----- Table -----
+
+enum TableFormat {
+  TF_UNSPECIFIED = 0;
+  TF_ICEBERG = 1;
+  TF_DELTA = 2;
+  TF_UNKNOWN = 10;
+}
+
+message Table {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  string display_name = 2;
+  string description = 3;
+  ai.floedb.metacat.common.ResourceId catalog_id = 4;
+  ai.floedb.metacat.common.ResourceId namespace_id = 5;
+  string root_uri = 6;
+  google.protobuf.Timestamp created_at = 7;
+  string schema_json = 8;
+  repeated string partition_keys = 9;
+  TableFormat format = 10;
+  map<string,string> properties = 11;
+}
+
+message ListTablesRequest {
+  ai.floedb.metacat.common.ResourceId namespace_id = 1;
+  ai.floedb.metacat.common.PageRequest page = 2;
+}
+message ListTablesResponse {
+  repeated Table tables = 1;
+  ai.floedb.metacat.common.PageResponse page = 2;
+}
+
+message GetTableDescriptorRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  optional ai.floedb.metacat.common.SnapshotRef snapshot = 2;
+}
+message GetTableDescriptorResponse {
+  Table table = 1;
+}
+
+message TableSpec {
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;
+  ai.floedb.metacat.common.ResourceId namespace_id = 2;
+  string display_name = 3;
+  string description = 4;
+  string root_uri = 5;
+  string schema_json = 6;
+  repeated string partition_keys = 7;
+  TableFormat format = 8;
+  map<string,string> properties = 9;
+  string policy_ref = 10;
+}
+
+message CreateTableRequest {
+  TableSpec spec = 1;
+  ai.floedb.metacat.common.IdempotencyKey idempotency = 2;
+}
+message CreateTableResponse {
+  Table table = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
+}
+
+message UpdateTableSchemaRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  string schema_json = 2;
+  repeated string partition_keys = 3;
+  map<string,string> properties = 4;
+  ai.floedb.metacat.common.Precondition precondition = 5;
+}
+message UpdateTableSchemaResponse {
+  Table table = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
+}
+
+message RenameTableRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  string new_display_name = 2;
+  ai.floedb.metacat.common.Precondition precondition = 3;
+}
+message RenameTableResponse {
+  Table table = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
+}
+
+message MoveTableRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  string new_display_name = 2;
+
+  ai.floedb.metacat.common.ResourceId new_namespace_id = 3;
+
+  ai.floedb.metacat.common.Precondition precondition = 5;
+}
+message MoveTableResponse {
+  Table table = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
+}
+
+message DeleteTableRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  bool purge_stats = 2;
+  bool purge_snapshots = 3;
+  ai.floedb.metacat.common.Precondition precondition = 4;
+}
+message DeleteTableResponse {
+  ai.floedb.metacat.common.MutationMeta meta = 1;
+}
+
+// ----- Services -----
+
+service TableService {
+  rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
+  rpc CreateTable(CreateTableRequest) returns (CreateTableResponse);
+  rpc GetTableDescriptor(GetTableDescriptorRequest) returns (GetTableDescriptorResponse);
+  rpc UpdateTableSchema(UpdateTableSchemaRequest) returns (UpdateTableSchemaResponse);
+  rpc RenameTable(RenameTableRequest) returns (RenameTableResponse);
+  rpc MoveTable(MoveTableRequest) returns (MoveTableResponse);
+  rpc DeleteTable(DeleteTableRequest) returns (DeleteTableResponse);
+}

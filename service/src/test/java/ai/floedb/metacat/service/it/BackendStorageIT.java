@@ -2,20 +2,7 @@ package ai.floedb.metacat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import ai.floedb.metacat.catalog.rpc.Catalog;
-import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
-import ai.floedb.metacat.catalog.rpc.CreateTableResponse;
-import ai.floedb.metacat.catalog.rpc.DeleteTableRequest;
-import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
-import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
-import ai.floedb.metacat.catalog.rpc.LookupNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.LookupTableRequest;
-import ai.floedb.metacat.catalog.rpc.Namespace;
-import ai.floedb.metacat.catalog.rpc.ResolveFQTablesRequest;
-import ai.floedb.metacat.catalog.rpc.ResourceMutationGrpc;
-import ai.floedb.metacat.catalog.rpc.Table;
-import ai.floedb.metacat.catalog.rpc.TableFormat;
-import ai.floedb.metacat.catalog.rpc.TableSpec;
+import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.NameRef;
@@ -41,11 +28,18 @@ import org.junit.jupiter.api.Test;
 
 @QuarkusTest
 class BackendStorageIT {
-  @GrpcClient("resource-mutation")
-  ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
 
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
+
+  @GrpcClient("catalog-service")
+  CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
+
+  @GrpcClient("namespace-service")
+  NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
+
+  @GrpcClient("table-service")
+  TableServiceGrpc.TableServiceBlockingStub table;
 
   @Inject PointerStore ptr;
   @Inject BlobStore blobs;
@@ -55,7 +49,7 @@ class BackendStorageIT {
   @Test
   void storageInvariants() {
     String catName = "it_storage_cat_" + clock.millis();
-    Catalog cat = TestSupport.createCatalog(mutation, catName, "storage cat");
+    Catalog cat = TestSupport.createCatalog(catalog, catName, "storage cat");
 
     ResourceId catId = cat.getResourceId();
     String keyCatByName =
@@ -68,7 +62,7 @@ class BackendStorageIT {
     assertEquals(cat.getDisplayName(), catLookup.getDisplayName());
 
     var nsPath = List.of("db_it", "schema_it");
-    Namespace ns = TestSupport.createNamespace(mutation, catId, "it_ns", nsPath, "storage ns");
+    Namespace ns = TestSupport.createNamespace(namespace, catId, "it_ns", nsPath, "storage ns");
     ResourceId nsId = ns.getResourceId();
     var fullPath = List.of("db_it", "schema_it", "it_ns");
     String keyNsByPath =
@@ -93,7 +87,7 @@ class BackendStorageIT {
             .trim();
     Table tbl =
         TestSupport.createTable(
-            mutation, catId, nsId, "it_tbl", "s3://bucket/prefix/it", schemaV1, "storage table");
+            table, catId, nsId, "it_tbl", "s3://bucket/prefix/it", schemaV1, "storage table");
     ResourceId tblId = tbl.getResourceId();
     String keyTblByName =
         Keys.tblByNamePtr(cat.getResourceId().getTenantId(), catId.getId(), nsId.getId(), "it_tbl");
@@ -122,7 +116,7 @@ class BackendStorageIT {
         {"type":"struct","fields":[{"name":"id","type":"long"},{"name":"amount","type":"double"}]}
         """
             .trim();
-    TestSupport.updateSchema(mutation, tblId, schemaV2);
+    TestSupport.updateSchema(table, tblId, schemaV2);
 
     Pointer tpCanonAfter = ptr.get(canonPtrKey).orElseThrow();
     assertTrue(tpCanonAfter.getVersion() > verCanonBefore, "version must bump on content change");
@@ -130,7 +124,7 @@ class BackendStorageIT {
         tblBlobUri, tpCanonAfter.getBlobUri(), "blob URI stable; content updated behind it");
 
     long verBeforeIdempotent = tpCanonAfter.getVersion();
-    TestSupport.updateSchema(mutation, tblId, schemaV2);
+    TestSupport.updateSchema(table, tblId, schemaV2);
     Pointer tpCanonAfterIdem = ptr.get(canonPtrKey).orElseThrow();
     assertEquals(
         tpCanonAfterIdem.getVersion(),
@@ -139,29 +133,29 @@ class BackendStorageIT {
 
     String oldName = tbl.getDisplayName();
     String newName = "it_tbl_renamed";
-    TestSupport.renameTable(mutation, tblId, newName);
+    TestSupport.renameTable(table, tblId, newName);
     String idxOldKey = Keys.tblByNamePtr(catId.getTenantId(), catId.getId(), nsId.getId(), oldName);
     String idxNewKey = Keys.tblByNamePtr(catId.getTenantId(), catId.getId(), nsId.getId(), newName);
     assertTrue(ptr.get(idxNewKey).isPresent(), "new by-name pointer must exist");
     assertTrue(ptr.get(idxOldKey).isEmpty(), "old by-name pointer must be removed");
 
-    TestSupport.deleteTable(mutation, nsId, tblId);
-    TestSupport.deleteTable(mutation, nsId, tblId);
+    TestSupport.deleteTable(table, nsId, tblId);
+    TestSupport.deleteTable(table, nsId, tblId);
     assertTrue(ptr.get(keyTblCanon).isEmpty());
     assertTrue(ptr.get(keyTblByName).isEmpty()); // use the current name’s key
     assertTrue(blobs.head(tblBlobUri).isEmpty());
     // Call again
-    TestSupport.deleteTable(mutation, nsId, tblId);
+    TestSupport.deleteTable(table, nsId, tblId);
     assertTrue(ptr.get(keyTblCanon).isEmpty());
     assertTrue(ptr.get(keyTblByName).isEmpty()); // use the current name’s key
     assertTrue(blobs.head(tblBlobUri).isEmpty());
 
-    TestSupport.deleteNamespace(mutation, nsId, true);
+    TestSupport.deleteNamespace(namespace, nsId, true);
     assertTrue(ptr.get(keyNsByPath).isEmpty(), "ns by-path pointer should be deleted");
     assertTrue(ptr.get(keyNsPtr).isEmpty(), "ns canonical pointer should be deleted");
     assertTrue(blobs.head(keyNsBlob).isEmpty(), "ns blob should be deleted");
 
-    TestSupport.deleteCatalog(mutation, catId, true);
+    TestSupport.deleteCatalog(catalog, catId, true);
     String catByIdKey = Keys.catPtr(catId.getTenantId(), catId.getId());
     String catByNameKey = Keys.catByNamePtr(catId.getTenantId(), catName);
     String catBlobUri = Keys.catBlob(catId.getTenantId(), catId.getId());
@@ -173,13 +167,13 @@ class BackendStorageIT {
   @Test
   void listTablesPagination() {
     var catName = "cat_pg_" + System.currentTimeMillis();
-    var cat = TestSupport.createCatalog(mutation, catName, "pag");
+    var cat = TestSupport.createCatalog(catalog, catName, "pag");
 
     var nsPath = List.of("db", "sch");
-    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns_pg", nsPath, "pg");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "ns_pg", nsPath, "pg");
     for (int i = 0; i < 5; i++) {
       TestSupport.createTable(
-          mutation,
+          table,
           cat.getResourceId(),
           ns.getResourceId(),
           "t" + i,
@@ -232,13 +226,13 @@ class BackendStorageIT {
   @Test
   void encodedNamesPreservePrefixScan() {
     var catName = "cat_enc_" + System.currentTimeMillis();
-    var cat = TestSupport.createCatalog(mutation, catName, "enc");
+    var cat = TestSupport.createCatalog(catalog, catName, "enc");
 
     var nsPath = List.of("db it", "sch🧪", "Q4 Europe");
-    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "ns_enc", nsPath, "enc");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "ns_enc", nsPath, "enc");
 
     TestSupport.createTable(
-        mutation,
+        table,
         cat.getResourceId(),
         ns.getResourceId(),
         "α",
@@ -246,7 +240,7 @@ class BackendStorageIT {
         "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
         "d");
     TestSupport.createTable(
-        mutation,
+        table,
         cat.getResourceId(),
         ns.getResourceId(),
         "β",
@@ -281,13 +275,13 @@ class BackendStorageIT {
   @Test
   void updateBumpsBothPointers() {
     var catName = "cat_ver_" + System.currentTimeMillis() + System.currentTimeMillis();
-    var cat = TestSupport.createCatalog(mutation, catName, "ver");
+    var cat = TestSupport.createCatalog(catalog, catName, "ver");
     var ns =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), "ns", List.of("db", "sch"), "ver");
+            namespace, cat.getResourceId(), "ns", List.of("db", "sch"), "ver");
     var tbl =
         TestSupport.createTable(
-            mutation,
+            table,
             cat.getResourceId(),
             ns.getResourceId(),
             "t",
@@ -300,7 +294,7 @@ class BackendStorageIT {
     long verCanon = ptr.get(canon).orElseThrow().getVersion();
 
     TestSupport.updateSchema(
-        mutation,
+        table,
         tid,
         "{\"type\":\"struct\",\"fields\""
             + ":[{\"name\":\"id\",\"type\":\"long\"},{\"name\":\"x\",\"type\":\"double\"}]}");
@@ -311,14 +305,14 @@ class BackendStorageIT {
   @Test
   void etagChangesOnlyOnContentChange() {
     var catName = "cat_etag_" + System.currentTimeMillis();
-    var cat = TestSupport.createCatalog(mutation, catName, "etag");
+    var cat = TestSupport.createCatalog(catalog, catName, "etag");
 
     var ns =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), "ns", List.of("db", "sch"), "etag");
+            namespace, cat.getResourceId(), "ns", List.of("db", "sch"), "etag");
     var tbl =
         TestSupport.createTable(
-            mutation,
+            table,
             cat.getResourceId(),
             ns.getResourceId(),
             "t",
@@ -330,12 +324,12 @@ class BackendStorageIT {
 
     var e1 = blobs.head(blob).orElseThrow().getEtag();
     TestSupport.updateSchema(
-        mutation, tid, "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}");
+        table, tid, "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}");
     var e2 = blobs.head(blob).orElseThrow().getEtag();
     assertEquals(e1, e2);
 
     TestSupport.updateSchema(
-        mutation,
+        table,
         tid,
         "{\"type\":\"struct\",\"fields\""
             + ":[{\"name\":\"id\",\"type\":\"long\"},{\"name\":\"y\",\"type\":\"double\"}]}");
@@ -347,14 +341,14 @@ class BackendStorageIT {
   @Test
   void deleteSkewTolerance() throws Exception {
     var catName = "cat_del_" + System.currentTimeMillis();
-    var cat = TestSupport.createCatalog(mutation, catName, "del");
+    var cat = TestSupport.createCatalog(catalog, catName, "del");
 
     var ns =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), "ns", List.of("db", "sch"), "del");
+            namespace, cat.getResourceId(), "ns", List.of("db", "sch"), "del");
     var tbl =
         TestSupport.createTable(
-            mutation,
+            table,
             cat.getResourceId(),
             ns.getResourceId(),
             "t",
@@ -372,14 +366,14 @@ class BackendStorageIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                mutation.deleteTable(
+                table.deleteTable(
                     DeleteTableRequest.newBuilder().setTableId(tbl.getResourceId()).build()));
     TestSupport.assertGrpcAndMc(
         bad, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Table not found");
 
     var tbl2 =
         TestSupport.createTable(
-            mutation,
+            table,
             cat.getResourceId(),
             ns.getResourceId(),
             "t2",
@@ -392,21 +386,21 @@ class BackendStorageIT {
 
     // Simulate canonical ptr missing
     assertTrue(ptr.delete(canon2));
-    TestSupport.deleteTable(mutation, ns.getResourceId(), tid2);
+    TestSupport.deleteTable(table, ns.getResourceId(), tid2);
     assertTrue(blobs.head(blob2).isEmpty());
   }
 
   @Test
   void casContentionTwoConcurrentUpdates() throws InterruptedException {
     var catName = "cat_cas_" + System.currentTimeMillis();
-    var cat = TestSupport.createCatalog(mutation, catName, "cas");
+    var cat = TestSupport.createCatalog(catalog, catName, "cas");
 
     var ns =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), "ns", List.of("db", "sch"), "cas");
+            namespace, cat.getResourceId(), "ns", List.of("db", "sch"), "cas");
     var tbl =
         TestSupport.createTable(
-            mutation,
+            table,
             cat.getResourceId(),
             ns.getResourceId(),
             "t",
@@ -428,7 +422,7 @@ class BackendStorageIT {
         () -> {
           try {
             latch.await();
-            TestSupport.updateSchema(mutation, tid, schemaA);
+            TestSupport.updateSchema(table, tid, schemaA);
           } catch (Throwable t) {
             errs.add(t);
           }
@@ -438,7 +432,7 @@ class BackendStorageIT {
         () -> {
           try {
             latch.await();
-            TestSupport.updateSchema(mutation, tid, schemaB);
+            TestSupport.updateSchema(table, tid, schemaB);
           } catch (Throwable t) {
             errs.add(t);
           }
@@ -470,11 +464,11 @@ class BackendStorageIT {
   @Test
   void countByPrefixMatchesInsertsDeletes() {
     var catName = "cat_cnt_" + System.currentTimeMillis();
-    var cat = TestSupport.createCatalog(mutation, catName, "cnt");
+    var cat = TestSupport.createCatalog(catalog, catName, "cnt");
 
     var ns =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), "ns", List.of("db", "sch"), "cnt");
+            namespace, cat.getResourceId(), "ns", List.of("db", "sch"), "cnt");
 
     var prefix =
         Keys.tblByNamePrefix(
@@ -485,7 +479,7 @@ class BackendStorageIT {
 
     var tableA =
         TestSupport.createTable(
-            mutation,
+            table,
             cat.getResourceId(),
             ns.getResourceId(),
             "a",
@@ -493,7 +487,7 @@ class BackendStorageIT {
             "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
             "d");
     TestSupport.createTable(
-        mutation,
+        table,
         cat.getResourceId(),
         ns.getResourceId(),
         "b",
@@ -504,7 +498,7 @@ class BackendStorageIT {
     int mid = ptr.countByPrefix(prefix);
     assertEquals(before + 2, mid);
 
-    TestSupport.deleteTable(mutation, ns.getResourceId(), tableA.getResourceId());
+    TestSupport.deleteTable(table, ns.getResourceId(), tableA.getResourceId());
     int after = ptr.countByPrefix(prefix);
     assertEquals(before + 1, after);
   }
@@ -512,11 +506,11 @@ class BackendStorageIT {
   @Test
   void createTableIdempotent() {
     var catName = "cat_idem_" + System.currentTimeMillis();
-    var cat = TestSupport.createCatalog(mutation, catName, "idem");
+    var cat = TestSupport.createCatalog(catalog, catName, "idem");
 
     var ns =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), "ns", List.of("db", "sch"), "idem");
+            namespace, cat.getResourceId(), "ns", List.of("db", "sch"), "idem");
 
     var spec =
         TableSpec.newBuilder()
@@ -533,8 +527,8 @@ class BackendStorageIT {
 
     var req = CreateTableRequest.newBuilder().setSpec(spec).setIdempotency(key).build();
 
-    var resp1 = mutation.createTable(req);
-    var resp2 = mutation.createTable(req);
+    var resp1 = table.createTable(req);
+    var resp2 = table.createTable(req);
 
     var idemKey = Keys.idemKey(cat.getResourceId().getTenantId(), "CreateTable", "k-123");
     var idemPtr = ptr.get(idemKey);
@@ -565,11 +559,11 @@ class BackendStorageIT {
   @Test
   void createTableIdempotentMismatch() {
     var catName = "cat_idem_conf_" + System.currentTimeMillis();
-    var cat = TestSupport.createCatalog(mutation, catName, "idem");
+    var cat = TestSupport.createCatalog(catalog, catName, "idem");
 
     var ns =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), "ns", List.of("db", "sch"), "idem");
+            namespace, cat.getResourceId(), "ns", List.of("db", "sch"), "idem");
     var idem = IdempotencyKey.newBuilder().setKey("k-XYZ").build();
 
     var specA =
@@ -595,20 +589,20 @@ class BackendStorageIT {
     var reqA = CreateTableRequest.newBuilder().setSpec(specA).setIdempotency(idem).build();
     var reqB = CreateTableRequest.newBuilder().setSpec(specB).setIdempotency(idem).build();
 
-    mutation.createTable(reqA);
+    table.createTable(reqA);
 
-    var ex = assertThrows(io.grpc.StatusRuntimeException.class, () -> mutation.createTable(reqB));
+    var ex = assertThrows(io.grpc.StatusRuntimeException.class, () -> table.createTable(reqB));
     assertEquals(io.grpc.Status.Code.ABORTED, ex.getStatus().getCode());
   }
 
   @Test
   void createTableIdempotentConcurrent() throws InterruptedException {
     var catName = "cat_idem_cc_" + System.currentTimeMillis();
-    var cat = TestSupport.createCatalog(mutation, catName, "idem");
+    var cat = TestSupport.createCatalog(catalog, catName, "idem");
 
     var ns =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), "ns", List.of("db", "sch"), "idem");
+            namespace, cat.getResourceId(), "ns", List.of("db", "sch"), "idem");
 
     var spec =
         TableSpec.newBuilder()
@@ -632,7 +626,7 @@ class BackendStorageIT {
         () -> {
           try {
             latch.await();
-            out1.compareAndSet(null, mutation.createTable(req));
+            out1.compareAndSet(null, table.createTable(req));
           } catch (Throwable t) {
             err.set(t);
           }
@@ -641,7 +635,7 @@ class BackendStorageIT {
         () -> {
           try {
             latch.await();
-            out2.compareAndSet(null, mutation.createTable(req));
+            out2.compareAndSet(null, table.createTable(req));
           } catch (Throwable t) {
             err.set(t);
           }

@@ -1,0 +1,83 @@
+syntax = "proto3";
+package ai.floedb.metacat.catalog;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.catalog.rpc";
+
+import "common/common.proto";
+
+message ResolveCatalogRequest {
+  ai.floedb.metacat.common.NameRef ref = 1;
+}
+message ResolveCatalogResponse
+{
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+}
+message LookupCatalogRequest {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+}
+message LookupCatalogResponse {
+  string display_name = 1;
+}
+
+message ResolveNamespaceRequest {
+  ai.floedb.metacat.common.NameRef ref = 1;
+}
+message ResolveNamespaceResponse {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+}
+message LookupNamespaceRequest {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+}
+message LookupNamespaceResponse {
+  ai.floedb.metacat.common.NameRef ref = 1;
+}
+
+message ResolveTableRequest {
+  ai.floedb.metacat.common.NameRef ref = 1;
+}
+message ResolveTableResponse {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+}
+
+message ResolveFQTablesRequest {
+  oneof selector {
+    NameList list = 1;
+    ai.floedb.metacat.common.NameRef prefix = 2;
+  }
+  ai.floedb.metacat.common.PageRequest page = 10;
+}
+
+message NameList {
+  repeated ai.floedb.metacat.common.NameRef names = 1;
+}
+
+message ResolveFQTablesResponse {
+  message Entry {
+    ai.floedb.metacat.common.ResourceId resource_id = 1;
+    ai.floedb.metacat.common.NameRef name = 2;
+  }
+  repeated Entry tables = 1;
+  ai.floedb.metacat.common.PageResponse page = 2;
+}
+
+message LookupTableRequest {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+}
+message LookupTableResponse {
+  ai.floedb.metacat.common.NameRef name = 1;
+}
+
+// ----- Services -----
+
+service Directory {
+  rpc ResolveCatalog(ResolveCatalogRequest) returns (ResolveCatalogResponse);
+  rpc LookupCatalog(LookupCatalogRequest) returns (LookupCatalogResponse);
+
+  rpc ResolveNamespace(ResolveNamespaceRequest) returns (ResolveNamespaceResponse);
+  rpc LookupNamespace(LookupNamespaceRequest) returns (LookupNamespaceResponse);
+
+  rpc ResolveTable(ResolveTableRequest) returns (ResolveTableResponse);
+  rpc ResolveFQTables(ResolveFQTablesRequest) returns (ResolveFQTablesResponse);
+  rpc LookupTable(LookupTableRequest) returns (LookupTableResponse);
+}

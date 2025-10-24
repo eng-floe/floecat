@@ -2,18 +2,7 @@ package ai.floedb.metacat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import ai.floedb.metacat.catalog.rpc.Catalog;
-import ai.floedb.metacat.catalog.rpc.CatalogSpec;
-import ai.floedb.metacat.catalog.rpc.DeleteCatalogRequest;
-import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
-import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
-import ai.floedb.metacat.catalog.rpc.Namespace;
-import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
-import ai.floedb.metacat.catalog.rpc.ResourceAccessGrpc;
-import ai.floedb.metacat.catalog.rpc.ResourceMutationGrpc;
-import ai.floedb.metacat.catalog.rpc.Table;
-import ai.floedb.metacat.catalog.rpc.UpdateCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.Precondition;
@@ -31,11 +20,14 @@ import org.junit.jupiter.api.Test;
 
 @QuarkusTest
 class ResourceMutationIT {
-  @GrpcClient("resource-mutation")
-  ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
+  @GrpcClient("catalog-service")
+  CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
-  @GrpcClient("resource-access")
-  ResourceAccessGrpc.ResourceAccessBlockingStub access;
+  @GrpcClient("namespace-service")
+  NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
+
+  @GrpcClient("table-service")
+  TableServiceGrpc.TableServiceBlockingStub table;
 
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
@@ -44,17 +36,16 @@ class ResourceMutationIT {
 
   @Test
   void resourcesExist() throws Exception {
-    var cat = TestSupport.createCatalog(mutation, "cat1", "cat1");
+    var cat = TestSupport.createCatalog(catalog, "cat1", "cat1");
     var ns =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
+            namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
     TestSupport.createTable(
-        mutation, cat.getResourceId(), ns.getResourceId(), "events", "s3://events", "{}", "none");
+        table, cat.getResourceId(), ns.getResourceId(), "events", "s3://events", "{}", "none");
 
     StatusRuntimeException catExists =
         assertThrows(
-            StatusRuntimeException.class,
-            () -> TestSupport.createCatalog(mutation, "cat1", "cat1"));
+            StatusRuntimeException.class, () -> TestSupport.createCatalog(catalog, "cat1", "cat1"));
     TestSupport.assertGrpcAndMc(
         catExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Catalog \"cat1\" already exists");
 
@@ -63,7 +54,7 @@ class ResourceMutationIT {
             StatusRuntimeException.class,
             () ->
                 TestSupport.createNamespace(
-                    mutation, cat.getResourceId(), "2025", List.of("staging"), "2025 ns"));
+                    namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 ns"));
     TestSupport.assertGrpcAndMc(
         nsExists,
         Status.Code.ABORTED,
@@ -75,7 +66,7 @@ class ResourceMutationIT {
             StatusRuntimeException.class,
             () ->
                 TestSupport.createTable(
-                    mutation,
+                    table,
                     cat.getResourceId(),
                     ns.getResourceId(),
                     "events",
@@ -89,7 +80,7 @@ class ResourceMutationIT {
   @Test
   void catalogCreateUpdateDelete() throws Exception {
     String catName = "it_mutation_cat_" + clock.millis();
-    Catalog cat = TestSupport.createCatalog(mutation, catName, "IT cat");
+    Catalog cat = TestSupport.createCatalog(catalog, catName, "IT cat");
     ResourceId catId = cat.getResourceId();
 
     assertEquals(ResourceKind.RK_CATALOG, catId.getKind());
@@ -98,14 +89,14 @@ class ResourceMutationIT {
     assertEquals(catId.getId(), TestSupport.resolveCatalogId(directory, catName).getId());
     assertEquals(
         catName,
-        access
+        catalog
             .getCatalog(GetCatalogRequest.newBuilder().setCatalogId(catId).build())
             .getCatalog()
             .getDisplayName());
 
     var nsPath = List.of("db_it", "schema_it");
     String nsLeaf = "it_schema";
-    Namespace ns = TestSupport.createNamespace(mutation, catId, nsLeaf, nsPath, "IT ns");
+    Namespace ns = TestSupport.createNamespace(namespace, catId, nsLeaf, nsPath, "IT ns");
     ResourceId nsId = ns.getResourceId();
     var nsFullPath = new ArrayList<>(nsPath);
     nsFullPath.add(nsLeaf);
@@ -119,7 +110,7 @@ class ResourceMutationIT {
             .trim();
     Table tbl =
         TestSupport.createTable(
-            mutation, catId, nsId, "orders_it", "s3://bucket/prefix/it", schema, "IT table");
+            table, catId, nsId, "orders_it", "s3://bucket/prefix/it", schema, "IT table");
     ResourceId tblId = tbl.getResourceId();
     assertEquals(
         tblId.getId(),
@@ -130,11 +121,11 @@ class ResourceMutationIT {
         {"type":"struct","fields":[{"name":"id","type":"long"},{"name":"amount","type":"double"}]}
         """
             .trim();
-    Table upd = TestSupport.updateSchema(mutation, tblId, schemaV2);
+    Table upd = TestSupport.updateSchema(table, tblId, schemaV2);
     assertEquals(schemaV2, upd.getSchemaJson());
 
     String newName = "orders_it_renamed";
-    Table renamed = TestSupport.renameTable(mutation, tblId, newName);
+    Table renamed = TestSupport.renameTable(table, tblId, newName);
     assertEquals(newName, renamed.getDisplayName());
     assertEquals(
         tblId.getId(), TestSupport.resolveTableId(directory, catName, nsFullPath, newName).getId());
@@ -149,7 +140,7 @@ class ResourceMutationIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                mutation.deleteNamespace(
+                namespace.deleteNamespace(
                     DeleteNamespaceRequest.newBuilder()
                         .setNamespaceId(nsId)
                         .setRequireEmpty(true)
@@ -160,7 +151,7 @@ class ResourceMutationIT {
         ErrorCode.MC_CONFLICT,
         "Namespace \"db_it/schema_it/it_schema\" contains tables and/or children.");
 
-    TestSupport.deleteTable(mutation, nsId, tblId);
+    TestSupport.deleteTable(table, nsId, tblId);
 
     StatusRuntimeException tblGone =
         assertThrows(
@@ -168,8 +159,8 @@ class ResourceMutationIT {
             () -> TestSupport.resolveTableId(directory, catName, nsFullPath, newName));
     TestSupport.assertGrpcAndMc(tblGone, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, null);
 
-    TestSupport.deleteNamespace(mutation, nsId, true);
-    TestSupport.deleteCatalog(mutation, catId, true);
+    TestSupport.deleteNamespace(namespace, nsId, true);
+    TestSupport.deleteCatalog(catalog, catId, true);
 
     StatusRuntimeException catGone =
         assertThrows(
@@ -180,10 +171,10 @@ class ResourceMutationIT {
 
   @Test
   void catalogCreateUpdateDeletePrecondition() throws Exception {
-    var c1 = TestSupport.createCatalog(mutation, "cat_pre", "desc");
+    var c1 = TestSupport.createCatalog(catalog, "cat_pre", "desc");
     var id = c1.getResourceId();
     var m1 =
-        mutation
+        catalog
             .updateCatalog(
                 UpdateCatalogRequest.newBuilder()
                     .setCatalogId(id)
@@ -205,7 +196,7 @@ class ResourceMutationIT {
     var spec2 =
         CatalogSpec.newBuilder().setDisplayName("cat_pre_2").setDescription("desc2").build();
     var updOk =
-        mutation.updateCatalog(
+        catalog.updateCatalog(
             UpdateCatalogRequest.newBuilder()
                 .setCatalogId(id)
                 .setSpec(spec2)
@@ -222,7 +213,7 @@ class ResourceMutationIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                mutation.updateCatalog(
+                catalog.updateCatalog(
                     UpdateCatalogRequest.newBuilder()
                         .setCatalogId(id)
                         .setSpec(CatalogSpec.newBuilder().setDisplayName("cat_pre_3"))
@@ -237,7 +228,7 @@ class ResourceMutationIT {
 
     var m2 = updOk.getMeta();
     var delOk =
-        mutation.deleteCatalog(
+        catalog.deleteCatalog(
             DeleteCatalogRequest.newBuilder()
                 .setCatalogId(id)
                 .setRequireEmpty(true)

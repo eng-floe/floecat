@@ -2,8 +2,7 @@ package ai.floedb.metacat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
-import ai.floedb.metacat.catalog.rpc.ResourceMutationGrpc;
+import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.planning.rpc.BeginPlanRequest;
@@ -22,8 +21,17 @@ class PlanningIT {
   @GrpcClient("planning")
   PlanningGrpc.PlanningBlockingStub planning;
 
-  @GrpcClient("resource-mutation")
-  ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
+  @GrpcClient("catalog-service")
+  CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
+
+  @GrpcClient("namespace-service")
+  NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
+
+  @GrpcClient("table-service")
+  TableServiceGrpc.TableServiceBlockingStub table;
+
+  @GrpcClient("snapshot-service")
+  SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
 
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
@@ -33,11 +41,11 @@ class PlanningIT {
   @Test
   void planBeginRenewEnd() {
     var catName = catalogPrefix + "cat1";
-    var cat = TestSupport.createCatalog(mutation, catName, "");
-    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "sch", List.of("db"), "");
+    var cat = TestSupport.createCatalog(catalog, catName, "");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "sch", List.of("db"), "");
     var tbl =
         TestSupport.createTable(
-            mutation,
+            table,
             cat.getResourceId(),
             ns.getResourceId(),
             "orders",
@@ -46,7 +54,7 @@ class PlanningIT {
             "none");
     var snap =
         TestSupport.createSnapshot(
-            mutation, tbl.getResourceId(), 0L, System.currentTimeMillis() - 10_000L);
+            snapshot, tbl.getResourceId(), 0L, System.currentTimeMillis() - 10_000L);
 
     var name =
         NameRef.newBuilder()

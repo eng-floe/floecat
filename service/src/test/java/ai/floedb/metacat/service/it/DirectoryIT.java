@@ -2,17 +2,7 @@ package ai.floedb.metacat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
-import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
-import ai.floedb.metacat.catalog.rpc.LookupNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.LookupTableRequest;
-import ai.floedb.metacat.catalog.rpc.NameList;
-import ai.floedb.metacat.catalog.rpc.RenameNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveFQTablesRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
-import ai.floedb.metacat.catalog.rpc.ResourceMutationGrpc;
+import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.service.util.TestSupport;
@@ -27,12 +17,18 @@ class DirectoryIT {
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
 
-  @GrpcClient("resource-mutation")
-  ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
+  @GrpcClient("catalog-service")
+  CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
+
+  @GrpcClient("namespace-service")
+  NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
+
+  @GrpcClient("table-service")
+  TableServiceGrpc.TableServiceBlockingStub table;
 
   @Test
   void resolveAndLookupCatalog() {
-    var cat = TestSupport.createCatalog(mutation, "resolveAndLookupCatalog", "");
+    var cat = TestSupport.createCatalog(catalog, "resolveAndLookupCatalog", "");
 
     var ref = NameRef.newBuilder().setCatalog("resolveAndLookupCatalog").build();
     var r = directory.resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(ref).build());
@@ -47,11 +43,11 @@ class DirectoryIT {
 
   @Test
   void resolveAndLookupNamespace() {
-    var cat = TestSupport.createCatalog(mutation, "resolveAndLookupNamespace", "");
+    var cat = TestSupport.createCatalog(catalog, "resolveAndLookupNamespace", "");
 
     var ns =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), "2025", List.of("staging"), "core ns");
+            namespace, cat.getResourceId(), "2025", List.of("staging"), "core ns");
 
     var ref =
         NameRef.newBuilder()
@@ -73,11 +69,11 @@ class DirectoryIT {
 
   @Test
   void resolveAndLookupTable() {
-    var cat = TestSupport.createCatalog(mutation, "resolveAndLookupTable", "");
+    var cat = TestSupport.createCatalog(catalog, "resolveAndLookupTable", "");
 
-    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "core", null, "core ns");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "core ns");
     TestSupport.createTable(
-        mutation, cat.getResourceId(), ns.getResourceId(), "orders", "s3://barf", "{}", "none");
+        table, cat.getResourceId(), ns.getResourceId(), "orders", "s3://barf", "{}", "none");
 
     var nameRef =
         NameRef.newBuilder()
@@ -114,13 +110,13 @@ class DirectoryIT {
   void resolveFullyQualifiedTables() {
     var cat =
         TestSupport.createCatalog(
-            mutation, "resolveFQTables_prefix_salesCore_returnsOrdersAndLineitem", "");
+            catalog, "resolveFQTables_prefix_salesCore_returnsOrdersAndLineitem", "");
 
-    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "core", null, "core ns");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "core ns");
     TestSupport.createTable(
-        mutation, cat.getResourceId(), ns.getResourceId(), "orders", "s3://barf", "{}", "none");
+        table, cat.getResourceId(), ns.getResourceId(), "orders", "s3://barf", "{}", "none");
     TestSupport.createTable(
-        mutation, cat.getResourceId(), ns.getResourceId(), "lineitem", "s3://barf", "{}", "none");
+        table, cat.getResourceId(), ns.getResourceId(), "lineitem", "s3://barf", "{}", "none");
 
     var prefix = NameRef.newBuilder().setCatalog(cat.getDisplayName()).addPath("core").build();
 
@@ -143,15 +139,15 @@ class DirectoryIT {
   void resolveFullyQualifiedTablesNestedNamespace() {
     var cat =
         TestSupport.createCatalog(
-            mutation, "resolveFQTables_prefix_salesStaging2025_returnsTwo", "");
+            catalog, "resolveFQTables_prefix_salesStaging2025_returnsTwo", "");
 
     var ns =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), "2025", List.of("staging"), "core ns");
+            namespace, cat.getResourceId(), "2025", List.of("staging"), "core ns");
     TestSupport.createTable(
-        mutation, cat.getResourceId(), ns.getResourceId(), "orders", "s3://barf", "{}", "none");
+        table, cat.getResourceId(), ns.getResourceId(), "orders", "s3://barf", "{}", "none");
     TestSupport.createTable(
-        mutation, cat.getResourceId(), ns.getResourceId(), "lineitem", "s3://barf", "{}", "none");
+        table, cat.getResourceId(), ns.getResourceId(), "lineitem", "s3://barf", "{}", "none");
 
     var prefix =
         NameRef.newBuilder()
@@ -174,11 +170,11 @@ class DirectoryIT {
 
   @Test
   void renameTableReflectedInDirectoryService() {
-    var cat = TestSupport.createCatalog(mutation, "barf1", "barf cat");
+    var cat = TestSupport.createCatalog(catalog, "barf1", "barf cat");
 
-    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "core", null, "core ns");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "core ns");
     TestSupport.createTable(
-        mutation, cat.getResourceId(), ns.getResourceId(), "t0", "s3://barf", "{}", "none");
+        table, cat.getResourceId(), ns.getResourceId(), "t0", "s3://barf", "{}", "none");
     var path = List.of("core");
 
     var oldRef =
@@ -192,7 +188,7 @@ class DirectoryIT {
             .resolveTable(ResolveTableRequest.newBuilder().setRef(oldRef).build())
             .getResourceId();
 
-    TestSupport.renameTable(mutation, id, "t1");
+    TestSupport.renameTable(table, id, "t1");
 
     assertThrows(
         io.grpc.StatusRuntimeException.class,
@@ -213,15 +209,15 @@ class DirectoryIT {
 
   @Test
   void renameNamespaceReflectedInDirectoryService() {
-    var cat = TestSupport.createCatalog(mutation, "barf2", "barf cat");
+    var cat = TestSupport.createCatalog(catalog, "barf2", "barf cat");
 
     var ns =
-        TestSupport.createNamespace(mutation, cat.getResourceId(), "a", List.of("p"), "core ns");
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "a", List.of("p"), "core ns");
     var id = ns.getResourceId();
     var oldRef =
         NameRef.newBuilder().setCatalog(cat.getDisplayName()).addPath("p").addPath("a").build();
 
-    mutation
+    namespace
         .renameNamespace(
             RenameNamespaceRequest.newBuilder().setNamespaceId(id).setNewDisplayName("b").build())
         .getNamespace();
@@ -247,13 +243,13 @@ class DirectoryIT {
   @Test
   void resolveFullyQualifiedTablesPaging() {
     var cat =
-        TestSupport.createCatalog(mutation, "resolveFQTables_list_selector_paging_and_errors", "");
+        TestSupport.createCatalog(catalog, "resolveFQTables_list_selector_paging_and_errors", "");
 
-    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), "core", null, "core ns");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "core ns");
     TestSupport.createTable(
-        mutation, cat.getResourceId(), ns.getResourceId(), "orders", "s3://barf", "{}", "none");
+        table, cat.getResourceId(), ns.getResourceId(), "orders", "s3://barf", "{}", "none");
     TestSupport.createTable(
-        mutation, cat.getResourceId(), ns.getResourceId(), "lineitem", "s3://barf", "{}", "none");
+        table, cat.getResourceId(), ns.getResourceId(), "lineitem", "s3://barf", "{}", "none");
 
     var names =
         List.of(
@@ -298,13 +294,13 @@ class DirectoryIT {
 
   @Test
   void resolveAndLookupUnicodeAndSpaces() {
-    var cat = TestSupport.createCatalog(mutation, "barf3", "barf cat");
+    var cat = TestSupport.createCatalog(catalog, "barf3", "barf cat");
 
     var ns =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
+            namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
     TestSupport.createTable(
-        mutation,
+        table,
         cat.getResourceId(),
         ns.getResourceId(),
         "staging events 🧪",
