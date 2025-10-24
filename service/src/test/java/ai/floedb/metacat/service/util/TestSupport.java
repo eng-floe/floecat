@@ -1,29 +1,6 @@
 package ai.floedb.metacat.service.util;
 
-import ai.floedb.metacat.catalog.rpc.Catalog;
-import ai.floedb.metacat.catalog.rpc.CatalogSpec;
-import ai.floedb.metacat.catalog.rpc.CreateCatalogRequest;
-import ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.CreateSnapshotRequest;
-import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
-import ai.floedb.metacat.catalog.rpc.DeleteCatalogRequest;
-import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.DeleteSnapshotRequest;
-import ai.floedb.metacat.catalog.rpc.DeleteTableRequest;
-import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
-import ai.floedb.metacat.catalog.rpc.Namespace;
-import ai.floedb.metacat.catalog.rpc.NamespaceSpec;
-import ai.floedb.metacat.catalog.rpc.RenameTableRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
-import ai.floedb.metacat.catalog.rpc.ResourceMutationGrpc;
-import ai.floedb.metacat.catalog.rpc.Snapshot;
-import ai.floedb.metacat.catalog.rpc.SnapshotSpec;
-import ai.floedb.metacat.catalog.rpc.Table;
-import ai.floedb.metacat.catalog.rpc.TableFormat;
-import ai.floedb.metacat.catalog.rpc.TableSpec;
-import ai.floedb.metacat.catalog.rpc.UpdateTableSchemaRequest;
+import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.NameRef;
@@ -90,7 +67,7 @@ public final class TestSupport {
   }
 
   public static Catalog createCatalog(
-      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      CatalogServiceGrpc.CatalogServiceBlockingStub mutation,
       String displayName,
       String description) {
     var resp =
@@ -105,7 +82,7 @@ public final class TestSupport {
   }
 
   public static Namespace createNamespace(
-      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      NamespaceServiceGrpc.NamespaceServiceBlockingStub mutation,
       ResourceId catalogId,
       String displayName,
       List<String> path,
@@ -123,7 +100,7 @@ public final class TestSupport {
   }
 
   public static Table createTable(
-      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      TableServiceGrpc.TableServiceBlockingStub mutation,
       ResourceId catalogId,
       ResourceId namespaceId,
       String displayName,
@@ -147,7 +124,7 @@ public final class TestSupport {
   }
 
   public static Snapshot createSnapshot(
-      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub mutation,
       ResourceId tableId,
       long snapshotId,
       long upstreamCreatedAtMs) {
@@ -200,7 +177,7 @@ public final class TestSupport {
   }
 
   public static Table updateSchema(
-      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      TableServiceGrpc.TableServiceBlockingStub mutation,
       ResourceId tableId,
       String newSchemaJson) {
     return mutation
@@ -213,7 +190,7 @@ public final class TestSupport {
   }
 
   public static Table renameTable(
-      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+          TableServiceGrpc.TableServiceBlockingStub mutation,
       ResourceId tableId,
       String newName) {
     return mutation
@@ -223,14 +200,14 @@ public final class TestSupport {
   }
 
   public static void deleteTable(
-      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+          TableServiceGrpc.TableServiceBlockingStub mutation,
       ResourceId namespaceId,
       ResourceId tableId) {
     mutation.deleteTable(DeleteTableRequest.newBuilder().setTableId(tableId).build());
   }
 
   public static void deleteSnapshot(
-      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub mutation,
       ResourceId tableId,
       long snapshotId) {
     mutation.deleteSnapshot(
@@ -238,7 +215,7 @@ public final class TestSupport {
   }
 
   public static void deleteNamespace(
-      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      NamespaceServiceGrpc.NamespaceServiceBlockingStub mutation,
       ResourceId nsId,
       boolean requireEmpty) {
     mutation.deleteNamespace(
@@ -249,7 +226,7 @@ public final class TestSupport {
   }
 
   public static void deleteCatalog(
-      ResourceMutationGrpc.ResourceMutationBlockingStub mutation,
+      CatalogServiceGrpc.CatalogServiceBlockingStub mutation,
       ResourceId catalogId,
       boolean requireEmpty) {
     mutation.deleteCatalog(

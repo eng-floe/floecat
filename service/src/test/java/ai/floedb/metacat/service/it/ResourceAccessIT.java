@@ -13,15 +13,15 @@ import org.junit.jupiter.api.Test;
 
 @QuarkusTest
 class ResourceAccessIT {
-  @GrpcClient("resource-access")
-  ResourceAccessGrpc.ResourceAccessBlockingStub resourceAccess;
+  @GrpcClient("catalog-service")
+  CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
 
   @Test
   void listCatalogs() {
-    var resp = resourceAccess.listCatalogs(ListCatalogsRequest.newBuilder().build());
+    var resp = catalog.listCatalogs(ListCatalogsRequest.newBuilder().build());
     assertTrue(resp.getCatalogsCount() >= 2, "Expected seeded catalogs");
   }
 
@@ -29,7 +29,7 @@ class ResourceAccessIT {
   void getCatalogNotFound() throws Exception {
     var salesId = TestSupport.resolveCatalogId(directory, "sales");
     var sales =
-        resourceAccess.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(salesId).build());
+        catalog.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(salesId).build());
     assertEquals("sales", sales.getCatalog().getDisplayName());
 
     var missingRid = salesId.toBuilder().setId("00000000-0000-0000-0000-000000000000").build();
@@ -38,7 +38,7 @@ class ResourceAccessIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                resourceAccess.getCatalog(
+                catalog.getCatalog(
                     GetCatalogRequest.newBuilder().setCatalogId(missingRid).build()));
 
     TestSupport.assertGrpcAndMc(

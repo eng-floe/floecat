@@ -110,7 +110,7 @@ public class ReconcilerService {
             .setSpec(CatalogSpec.newBuilder().setDisplayName(displayName).build())
             .setIdempotency(idem("CreateCatalog|" + displayName))
             .build();
-    return clients.mutation().createCatalog(request).getCatalog().getResourceId();
+    return clients.catalog().createCatalog(request).getCatalog().getResourceId();
   }
 
   private ResourceId ensureNamespace(ResourceId catalogId, String namespaceFq) {
@@ -142,7 +142,7 @@ public class ReconcilerService {
             .setSpec(spec)
             .setIdempotency(idem("CreateNamespace|" + key(catalogId) + "|" + namespaceFq))
             .build();
-    return clients.mutation().createNamespace(request).getNamespace().getResourceId();
+    return clients.namespace().createNamespace(request).getNamespace().getResourceId();
   }
 
   private ResourceId ensureTable(
@@ -193,7 +193,7 @@ public class ReconcilerService {
                         + "|"
                         + upstreamTable.tableName()))
             .build();
-    return clients.mutation().createTable(request).getTable().getResourceId();
+    return clients.table().createTable(request).getTable().getResourceId();
   }
 
   private void maybeBumpTableSchema(
@@ -206,7 +206,7 @@ public class ReconcilerService {
             .putAllProperties(upstreamTable.properties())
             .build();
     try {
-      clients.mutation().updateTableSchema(request);
+      clients.table().updateTableSchema(request);
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() != Status.Code.FAILED_PRECONDITION) {
         throw e;
@@ -228,7 +228,7 @@ public class ReconcilerService {
             .setIdempotency(idem("CreateSnapshot|" + key(tableId) + "|" + snapshotId))
             .build();
     try {
-      clients.mutation().createSnapshot(request);
+      clients.snapshot().createSnapshot(request);
     } catch (StatusRuntimeException e) {
       var c = e.getStatus().getCode();
       if (c != Status.Code.ALREADY_EXISTS

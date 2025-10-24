@@ -2,14 +2,7 @@ package ai.floedb.metacat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
-import ai.floedb.metacat.catalog.rpc.NamespaceSpec;
-import ai.floedb.metacat.catalog.rpc.RenameNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.ResourceAccessGrpc;
-import ai.floedb.metacat.catalog.rpc.ResourceMutationGrpc;
+import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.NameRef;
@@ -33,11 +26,14 @@ class NamespaceMutationIT {
   @Inject PointerStore ptr;
   @Inject BlobStore blob;
 
-  @GrpcClient("resource-mutation")
-  ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
+  @GrpcClient("catalog-service")
+  CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
-  @GrpcClient("resource-access")
-  ResourceAccessGrpc.ResourceAccessBlockingStub access;
+  @GrpcClient("namespace-service")
+  NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
+
+  @GrpcClient("table-service")
+  TableServiceGrpc.TableServiceBlockingStub table;
 
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
@@ -46,17 +42,17 @@ class NamespaceMutationIT {
 
   @Test
   void namespaceExists() throws Exception {
-    var cat = TestSupport.createCatalog(mutation, namespacePrefix + "cat1", "cat1");
+    var cat = TestSupport.createCatalog(catalog, namespacePrefix + "cat1", "cat1");
 
     TestSupport.createNamespace(
-        mutation, cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
+        namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
 
     StatusRuntimeException nsExists =
         assertThrows(
             StatusRuntimeException.class,
             () ->
                 TestSupport.createNamespace(
-                    mutation, cat.getResourceId(), "2025", List.of("staging"), "2025 ns"));
+                    namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 ns"));
     TestSupport.assertGrpcAndMc(
         nsExists,
         Status.Code.ABORTED,
@@ -66,11 +62,11 @@ class NamespaceMutationIT {
 
   @Test
   void namespaceCreateRenameDelete() throws Exception {
-    var cat = TestSupport.createCatalog(mutation, namespacePrefix + "cat2", "cat2");
+    var cat = TestSupport.createCatalog(catalog, namespacePrefix + "cat2", "cat2");
 
     var parents = List.of("db_it", "schema_it");
     var leaf = "it_schema";
-    var ns = TestSupport.createNamespace(mutation, cat.getResourceId(), leaf, parents, "ns desc");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), leaf, parents, "ns desc");
     ResourceId nsId = ns.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
 
@@ -84,7 +80,7 @@ class NamespaceMutationIT {
     assertEquals(nsId.getId(), resolved.getResourceId().getId());
 
     var m1 =
-        mutation
+        namespace
             .renameNamespace(
                 RenameNamespaceRequest.newBuilder()
                     .setNamespaceId(nsId)
@@ -121,7 +117,7 @@ class NamespaceMutationIT {
     assertEquals(nsId.getId(), resolvedRen.getResourceId().getId());
 
     var m2Resp =
-        mutation.renameNamespace(
+        namespace.renameNamespace(
             RenameNamespaceRequest.newBuilder()
                 .setNamespaceId(nsId)
                 .addAllNewPath(List.of(leaf + "_root"))
@@ -146,7 +142,7 @@ class NamespaceMutationIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                mutation.renameNamespace(
+                namespace.renameNamespace(
                     RenameNamespaceRequest.newBuilder()
                         .setNamespaceId(nsId)
                         .setNewDisplayName(leaf + "_root2")
@@ -169,7 +165,7 @@ class NamespaceMutationIT {
 
     // Bump the version
     var m3Resp =
-        mutation.renameNamespace(
+        namespace.renameNamespace(
             RenameNamespaceRequest.newBuilder()
                 .setNamespaceId(nsId)
                 .setNewDisplayName(leaf + "_root3")
@@ -186,7 +182,7 @@ class NamespaceMutationIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                mutation.deleteNamespace(
+                namespace.deleteNamespace(
                     DeleteNamespaceRequest.newBuilder()
                         .setNamespaceId(nsId)
                         .setRequireEmpty(true)
@@ -202,13 +198,13 @@ class NamespaceMutationIT {
 
     var tbl =
         TestSupport.createTable(
-            mutation, cat.getResourceId(), nsId, "orders", "s3://ns/orders", "{}", "none");
+            table, cat.getResourceId(), nsId, "orders", "s3://ns/orders", "{}", "none");
 
     StatusRuntimeException nsDelBlocked =
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                mutation.deleteNamespace(
+                namespace.deleteNamespace(
                     DeleteNamespaceRequest.newBuilder()
                         .setNamespaceId(nsId)
                         .setRequireEmpty(true)
@@ -224,10 +220,10 @@ class NamespaceMutationIT {
         ErrorCode.MC_CONFLICT,
         "Namespace \"" + leaf + "_root3" + "\" contains tables and/or children.");
 
-    TestSupport.deleteTable(mutation, nsId, tbl.getResourceId());
+    TestSupport.deleteTable(table, nsId, tbl.getResourceId());
 
     var delOk =
-        mutation.deleteNamespace(
+        namespace.deleteNamespace(
             DeleteNamespaceRequest.newBuilder()
                 .setNamespaceId(nsId)
                 .setRequireEmpty(true)
@@ -256,7 +252,7 @@ class NamespaceMutationIT {
 
   @Test
   void namespaceCreateIdempotent() throws Exception {
-    var cat = TestSupport.createCatalog(mutation, namespacePrefix + "cat3", "cat3");
+    var cat = TestSupport.createCatalog(catalog, namespacePrefix + "cat3", "cat3");
 
     var key = IdempotencyKey.newBuilder().setKey(namespacePrefix + "k-ns-1").build();
     var spec =
@@ -268,10 +264,10 @@ class NamespaceMutationIT {
             .build();
 
     var r1 =
-        mutation.createNamespace(
+        namespace.createNamespace(
             CreateNamespaceRequest.newBuilder().setSpec(spec).setIdempotency(key).build());
     var r2 =
-        mutation.createNamespace(
+        namespace.createNamespace(
             CreateNamespaceRequest.newBuilder().setSpec(spec).setIdempotency(key).build());
 
     assertEquals(
@@ -283,10 +279,10 @@ class NamespaceMutationIT {
 
   @Test
   void namespaceCreateIdempotencyMismatch() throws Exception {
-    var cat = TestSupport.createCatalog(mutation, namespacePrefix + "cat4", "cat4");
+    var cat = TestSupport.createCatalog(catalog, namespacePrefix + "cat4", "cat4");
     var key = IdempotencyKey.newBuilder().setKey(namespacePrefix + "k-ns-2").build();
 
-    mutation.createNamespace(
+    namespace.createNamespace(
         CreateNamespaceRequest.newBuilder()
             .setSpec(
                 NamespaceSpec.newBuilder()
@@ -301,7 +297,7 @@ class NamespaceMutationIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                mutation.createNamespace(
+                namespace.createNamespace(
                     CreateNamespaceRequest.newBuilder()
                         .setSpec(
                             NamespaceSpec.newBuilder()

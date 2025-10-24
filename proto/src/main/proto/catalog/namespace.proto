@@ -1,0 +1,87 @@
+syntax = "proto3";
+package ai.floedb.metacat.catalog;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.catalog.rpc";
+
+import "common/common.proto";
+import "google/protobuf/timestamp.proto";
+
+// ----- Namespace -----
+
+message Namespace {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  string display_name = 2;
+  repeated string parents = 3;
+  string description = 4;
+  ai.floedb.metacat.common.ResourceId catalog_id = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+message ListNamespacesRequest {
+  oneof parent {
+    ai.floedb.metacat.common.ResourceId catalog_id = 1;
+    ai.floedb.metacat.common.ResourceId namespace_id = 2;
+  }
+  ai.floedb.metacat.common.PageRequest page = 3;
+}
+message ListNamespacesResponse {
+  repeated Namespace namespaces = 1;
+  ai.floedb.metacat.common.PageResponse page = 2;
+}
+
+message GetNamespaceRequest {
+  ai.floedb.metacat.common.ResourceId namespace_id = 1;
+}
+message GetNamespaceResponse {
+  Namespace namespace = 1;
+}
+
+message NamespaceSpec {
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;
+  string display_name = 2;
+  string description = 3;
+  repeated string path = 4;
+  map<string,string> annotations = 5;
+  string policy_ref = 6;
+}
+
+message CreateNamespaceRequest {
+  NamespaceSpec spec = 1;
+  ai.floedb.metacat.common.IdempotencyKey idempotency = 2;
+}
+message CreateNamespaceResponse {
+  Namespace namespace = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
+}
+
+message RenameNamespaceRequest {
+  ai.floedb.metacat.common.ResourceId namespace_id = 1;
+  string new_display_name = 2;
+  repeated string new_path = 3;
+  ai.floedb.metacat.common.ResourceId new_catalog_id = 4;
+  ai.floedb.metacat.common.Precondition precondition = 5;
+}
+message RenameNamespaceResponse {
+  Namespace namespace = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
+}
+
+message DeleteNamespaceRequest {
+  ai.floedb.metacat.common.ResourceId namespace_id = 1;
+  bool require_empty = 2;
+  ai.floedb.metacat.common.Precondition precondition = 3;
+}
+message DeleteNamespaceResponse {
+  ai.floedb.metacat.common.MutationMeta meta = 1;
+}
+
+// ----- Services -----
+
+service NamespaceService {
+  rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
+  rpc GetNamespace(GetNamespaceRequest) returns (GetNamespaceResponse);
+  rpc CreateNamespace(CreateNamespaceRequest) returns (CreateNamespaceResponse);
+  rpc RenameNamespace(RenameNamespaceRequest) returns (RenameNamespaceResponse);
+  rpc DeleteNamespace(DeleteNamespaceRequest) returns (DeleteNamespaceResponse);
+}

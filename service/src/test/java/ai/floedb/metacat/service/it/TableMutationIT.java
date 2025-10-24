@@ -2,18 +2,7 @@ package ai.floedb.metacat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
-import ai.floedb.metacat.catalog.rpc.GetTableDescriptorRequest;
-import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
-import ai.floedb.metacat.catalog.rpc.ListSnapshotsResponse;
-import ai.floedb.metacat.catalog.rpc.MoveTableRequest;
-import ai.floedb.metacat.catalog.rpc.RenameTableRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
-import ai.floedb.metacat.catalog.rpc.ResourceAccessGrpc;
-import ai.floedb.metacat.catalog.rpc.ResourceMutationGrpc;
-import ai.floedb.metacat.catalog.rpc.Snapshot;
-import ai.floedb.metacat.catalog.rpc.UpdateTableSchemaRequest;
+import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageRequest;
@@ -36,11 +25,17 @@ class TableMutationIT {
   @Inject PointerStore ptr;
   @Inject BlobStore blob;
 
-  @GrpcClient("resource-mutation")
-  ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
+  @GrpcClient("catalog-service")
+  CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
-  @GrpcClient("resource-access")
-  ResourceAccessGrpc.ResourceAccessBlockingStub access;
+  @GrpcClient("namespace-service")
+  NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
+
+  @GrpcClient("table-service")
+  TableServiceGrpc.TableServiceBlockingStub table;
+
+  @GrpcClient("snapshot-service")
+  SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
 
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
@@ -49,13 +44,13 @@ class TableMutationIT {
 
   @Test
   void tableRenameUpdate() throws Exception {
-    var cat = TestSupport.createCatalog(mutation, tablePrefix + "cat1", "tcat1");
+    var cat = TestSupport.createCatalog(catalog, tablePrefix + "cat1", "tcat1");
 
     var parents = List.of("db_tbl", "schema_tbl");
     var nsLeaf = "it_ns";
     var ns =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), nsLeaf, parents, "ns for tables");
+            namespace, cat.getResourceId(), nsLeaf, parents, "ns for tables");
     var nsId = ns.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
 
@@ -70,7 +65,7 @@ class TableMutationIT {
 
     var tbl =
         TestSupport.createTable(
-            mutation,
+            table,
             cat.getResourceId(),
             nsId,
             "orders",
@@ -93,7 +88,7 @@ class TableMutationIT {
 
     var beforeRename = TestSupport.metaForTable(ptr, blob, tblId);
     var r1 =
-        mutation.renameTable(
+        table.renameTable(
             RenameTableRequest.newBuilder()
                 .setTableId(tblId)
                 .setNewDisplayName("orders_v2")
@@ -137,7 +132,7 @@ class TableMutationIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                mutation.renameTable(
+                table.renameTable(
                     RenameTableRequest.newBuilder()
                         .setTableId(tblId)
                         .setNewDisplayName("orders_v3")
@@ -155,7 +150,7 @@ class TableMutationIT {
         "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}"
             + ",{\"name\":\"ts\",\"type\":\"timestamp\"}]}";
     var s1 =
-        mutation.updateTableSchema(
+        table.updateTableSchema(
             UpdateTableSchemaRequest.newBuilder()
                 .setTableId(tblId)
                 .setSchemaJson(newSchema)
@@ -169,14 +164,14 @@ class TableMutationIT {
     assertTrue(sm1.getPointerVersion() > beforeSchema.getPointerVersion());
 
     var readTbl =
-        access.getTableDescriptor(GetTableDescriptorRequest.newBuilder().setTableId(tblId).build());
+        table.getTableDescriptor(GetTableDescriptorRequest.newBuilder().setTableId(tblId).build());
     assertEquals(newSchema, readTbl.getTable().getSchemaJson());
 
     var staleSchema =
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                mutation.updateTableSchema(
+                table.updateTableSchema(
                     UpdateTableSchemaRequest.newBuilder()
                         .setTableId(tblId)
                         .setSchemaJson(
@@ -192,7 +187,7 @@ class TableMutationIT {
 
     var before = TestSupport.metaForTable(ptr, blob, tblId);
     var noop =
-        mutation.renameTable(
+        table.renameTable(
             RenameTableRequest.newBuilder()
                 .setTableId(tblId)
                 .setNewDisplayName("orders_v2") // same name
@@ -215,13 +210,13 @@ class TableMutationIT {
   @Test
   void tableMove() throws Exception {
     var catName = tablePrefix + "cat2";
-    var cat = TestSupport.createCatalog(mutation, catName, "tcat2");
+    var cat = TestSupport.createCatalog(catalog, catName, "tcat2");
 
     var parents = List.of("db_tbl", "schema_tbl");
     var nsLeaf = "it_ns";
     var ns =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), nsLeaf, parents, "ns for tables");
+            namespace, cat.getResourceId(), nsLeaf, parents, "ns for tables");
     var nsId = ns.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
 
@@ -229,7 +224,7 @@ class TableMutationIT {
     var nsLeaf2 = "it_ns2";
     var ns2 =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), nsLeaf2, parents2, "ns for tables");
+            namespace, cat.getResourceId(), nsLeaf2, parents2, "ns for tables");
     var nsId2 = ns2.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId2.getKind());
 
@@ -253,7 +248,7 @@ class TableMutationIT {
 
     var tbl =
         TestSupport.createTable(
-            mutation,
+            table,
             cat.getResourceId(),
             nsId,
             "orders",
@@ -276,7 +271,7 @@ class TableMutationIT {
 
     var beforeRename = TestSupport.metaForTable(ptr, blob, tblId);
     var r1 =
-        mutation.moveTable(
+        table.moveTable(
             MoveTableRequest.newBuilder()
                 .setTableId(tblId)
                 .setNewNamespaceId(nsId2)
@@ -318,7 +313,7 @@ class TableMutationIT {
 
     beforeRename = TestSupport.metaForTable(ptr, blob, tblId);
     var r2 =
-        mutation.moveTable(
+        table.moveTable(
             MoveTableRequest.newBuilder()
                 .setTableId(tblId)
                 .setNewDisplayName("orders_v2")
@@ -362,19 +357,19 @@ class TableMutationIT {
   @Test
   void snapshotCreate() throws Exception {
     var catName = tablePrefix + "snap1";
-    var cat = TestSupport.createCatalog(mutation, catName, "snap1");
+    var cat = TestSupport.createCatalog(catalog, catName, "snap1");
 
     var parents = List.of("db_tbl", "schema_tbl");
     var nsLeaf = "it_ns";
     var ns =
         TestSupport.createNamespace(
-            mutation, cat.getResourceId(), nsLeaf, parents, "ns for tables");
+            namespace, cat.getResourceId(), nsLeaf, parents, "ns for tables");
     var nsId = ns.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
 
     var tbl =
         TestSupport.createTable(
-            mutation,
+            table,
             cat.getResourceId(),
             nsId,
             "orders",
@@ -386,7 +381,7 @@ class TableMutationIT {
 
     for (int i = 0; i < 100; i++) {
       TestSupport.createSnapshot(
-          mutation, tbl.getResourceId(), i, System.currentTimeMillis() + i * 1_000L);
+          snapshot, tbl.getResourceId(), i, System.currentTimeMillis() + i * 1_000L);
     }
 
     ListSnapshotsRequest req =
@@ -394,7 +389,7 @@ class TableMutationIT {
             .setTableId(tblId)
             .setPage(PageRequest.newBuilder().setPageSize(1000).build())
             .build();
-    ListSnapshotsResponse resp = access.listSnapshots(req);
+    ListSnapshotsResponse resp = snapshot.listSnapshots(req);
     assertEquals(100, resp.getSnapshotsCount());
     assertTrue(resp.getPage().getNextPageToken().isEmpty());
 

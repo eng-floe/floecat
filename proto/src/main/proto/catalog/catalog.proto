@@ -5,7 +5,6 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.metacat.catalog.rpc";
 
 import "common/common.proto";
-
 import "google/protobuf/timestamp.proto";
 
 // ----- Catalog -----
@@ -17,120 +16,63 @@ message Catalog {
   google.protobuf.Timestamp created_at = 4;
 }
 
-message ResolveCatalogRequest {
-  ai.floedb.metacat.common.NameRef ref = 1;
+message ListCatalogsRequest {
+  ai.floedb.metacat.common.PageRequest page = 1;
 }
-message ResolveCatalogResponse
-{
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
-}
-message LookupCatalogRequest {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
-}
-message LookupCatalogResponse {
-  string display_name = 1;
-}
-
-// ----- Namespace -----
-
-message Namespace {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
-  string display_name = 2;
-  repeated string parents = 3;
-  string description = 4;
-  ai.floedb.metacat.common.ResourceId catalog_id = 5;
-  google.protobuf.Timestamp created_at = 6;
-}
-
-message ResolveNamespaceRequest {
-  ai.floedb.metacat.common.NameRef ref = 1;
-}
-message ResolveNamespaceResponse {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
-}
-message LookupNamespaceRequest {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
-}
-message LookupNamespaceResponse {
-  ai.floedb.metacat.common.NameRef ref = 1;
-}
-
-// ----- Table -----
-
-message ResolveTableRequest {
-  ai.floedb.metacat.common.NameRef ref = 1;
-}
-message ResolveTableResponse {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
-}
-
-message ResolveFQTablesRequest {
-  oneof selector {
-    NameList list = 1;
-    ai.floedb.metacat.common.NameRef prefix = 2;
-  }
-  ai.floedb.metacat.common.PageRequest page = 10;
-}
-
-message NameList {
-  repeated ai.floedb.metacat.common.NameRef names = 1;
-}
-
-message ResolveFQTablesResponse {
-  message Entry {
-    ai.floedb.metacat.common.ResourceId resource_id = 1;
-    ai.floedb.metacat.common.NameRef name = 2;
-  }
-  repeated Entry tables = 1;
+message ListCatalogsResponse {
+  repeated Catalog catalogs = 1;
   ai.floedb.metacat.common.PageResponse page = 2;
 }
 
-message LookupTableRequest {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
+message GetCatalogRequest {
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;
 }
-message LookupTableResponse {
-  ai.floedb.metacat.common.NameRef name = 1;
-}
-
-enum TableFormat {
-  TF_UNSPECIFIED = 0;
-  TF_ICEBERG = 1;
-  TF_DELTA = 2;
-  TF_UNKNOWN = 10;
+message GetCatalogResponse {
+  Catalog catalog = 1;
 }
 
-message Table {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
-  string display_name = 2;
-  string description = 3;
-  ai.floedb.metacat.common.ResourceId catalog_id = 4;
-  ai.floedb.metacat.common.ResourceId namespace_id = 5;
-  string root_uri = 6;
-  google.protobuf.Timestamp created_at = 7;
-  string schema_json = 8;
-  repeated string partition_keys = 9;
-  TableFormat format = 10;
-  map<string,string> properties = 11;
+message CatalogSpec {
+  string display_name = 1;
+  string description = 2;
+  string connector_ref = 3;
+  map<string,string> options = 4;
+  string policy_ref = 5;
 }
 
-message Snapshot {
-  ai.floedb.metacat.common.ResourceId table_id = 1;
-  int64 snapshot_id = 2;
-  google.protobuf.Timestamp upstream_created_at = 3;
-  google.protobuf.Timestamp ingested_at = 4;
-  int64 parent_snapshot_id = 5;
+message CreateCatalogRequest {
+  CatalogSpec spec = 1;
+  ai.floedb.metacat.common.IdempotencyKey idempotency = 2;
+}
+message CreateCatalogResponse {
+  Catalog catalog = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
+}
+
+message UpdateCatalogRequest {
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;
+  CatalogSpec spec = 2;
+  ai.floedb.metacat.common.Precondition precondition = 3;
+}
+message UpdateCatalogResponse {
+  Catalog catalog = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
+}
+
+message DeleteCatalogRequest {
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;
+  bool require_empty = 2;
+  ai.floedb.metacat.common.Precondition precondition = 3;
+}
+message DeleteCatalogResponse {
+  ai.floedb.metacat.common.MutationMeta meta = 1;
 }
 
 // ----- Services -----
 
-service Directory {
-  rpc ResolveCatalog(ResolveCatalogRequest) returns (ResolveCatalogResponse);
-  rpc LookupCatalog(LookupCatalogRequest) returns (LookupCatalogResponse);
-
-  rpc ResolveNamespace(ResolveNamespaceRequest) returns (ResolveNamespaceResponse);
-  rpc LookupNamespace(LookupNamespaceRequest) returns (LookupNamespaceResponse);
-
-  rpc ResolveTable(ResolveTableRequest) returns (ResolveTableResponse);
-  rpc ResolveFQTables(ResolveFQTablesRequest) returns (ResolveFQTablesResponse);
-  rpc LookupTable(LookupTableRequest) returns (LookupTableResponse);
+service CatalogService {
+  rpc ListCatalogs(ListCatalogsRequest) returns (ListCatalogsResponse);
+  rpc GetCatalog(GetCatalogRequest) returns (GetCatalogResponse);
+  rpc CreateCatalog(CreateCatalogRequest) returns (CreateCatalogResponse);
+  rpc UpdateCatalog(UpdateCatalogRequest) returns (UpdateCatalogResponse);
+  rpc DeleteCatalog(DeleteCatalogRequest) returns (DeleteCatalogResponse);
 }

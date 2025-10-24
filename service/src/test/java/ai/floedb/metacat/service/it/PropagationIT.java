@@ -21,8 +21,8 @@ import org.junit.jupiter.api.Test;
 
 @QuarkusTest
 class PropagationIT {
-  @GrpcClient("resource-access")
-  ResourceAccessGrpc.ResourceAccessBlockingStub resourceAccess;
+  @GrpcClient("catalog-service")
+  CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
   @Inject PlanContextStore planStore;
 
@@ -53,7 +53,7 @@ class PropagationIT {
 
     RespHeadersCaptureInterceptor capture = new RespHeadersCaptureInterceptor();
     var client =
-        resourceAccess
+            catalog
             .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
             .withInterceptors(capture);
 
@@ -79,7 +79,7 @@ class PropagationIT {
 
     RespHeadersCaptureInterceptor captureErr = new RespHeadersCaptureInterceptor();
     var errClient =
-        resourceAccess
+            catalog
             .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
             .withInterceptors(captureErr);
 
@@ -107,7 +107,7 @@ class PropagationIT {
 
     RespHeadersCaptureInterceptor capture = new RespHeadersCaptureInterceptor();
     var client =
-        resourceAccess
+            catalog
             .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
             .withInterceptors(capture);
 

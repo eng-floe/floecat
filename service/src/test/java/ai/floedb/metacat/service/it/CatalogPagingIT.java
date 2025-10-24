@@ -3,8 +3,8 @@ package ai.floedb.metacat.service.it;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.Catalog;
+import ai.floedb.metacat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
-import ai.floedb.metacat.catalog.rpc.ResourceAccessGrpc;
 import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -27,8 +27,8 @@ import org.junit.jupiter.api.*;
 class CatalogPagingIT {
   @Inject CatalogRepository repo;
 
-  @GrpcClient("resource-access")
-  ResourceAccessGrpc.ResourceAccessBlockingStub resourceAccess;
+  @GrpcClient("catalog-service")
+  CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
   private static final String TENANT = TestSupport.DEFAULT_SEED_TENANT;
   private static final int LIMIT = 10;
@@ -75,7 +75,7 @@ class CatalogPagingIT {
     headers.put(pincipalContextBytes, pc.toByteArray());
 
     ClientInterceptor attach = MetadataUtils.newAttachHeadersInterceptor(headers);
-    this.resourceAccess = resourceAccess.withInterceptors(attach);
+    this.catalog = catalog.withInterceptors(attach);
   }
 
   @Test
@@ -84,7 +84,7 @@ class CatalogPagingIT {
         ListCatalogsRequest.newBuilder()
             .setPage(PageRequest.newBuilder().setPageSize(1000))
             .build();
-    var pageAll = resourceAccess.listCatalogs(pageAllReq);
+    var pageAll = catalog.listCatalogs(pageAllReq);
     var total = pageAll.getPage().getTotalSize();
     assertTrue(total >= TOTAL);
 
@@ -93,7 +93,7 @@ class CatalogPagingIT {
             .setPage(PageRequest.newBuilder().setPageSize(LIMIT))
             .build();
 
-    var page1 = resourceAccess.listCatalogs(page1Req);
+    var page1 = catalog.listCatalogs(page1Req);
     assertEquals(LIMIT, page1.getCatalogsCount(), "first page should return LIMIT items");
     assertFalse(page1.getPage().getNextPageToken().isEmpty(), "next_page_token should be set");
     assertEquals(total, page1.getPage().getTotalSize(), "total_size should be TOTAL");
@@ -106,7 +106,7 @@ class CatalogPagingIT {
                     .setPageToken(page1.getPage().getNextPageToken()))
             .build();
 
-    var page2 = resourceAccess.listCatalogs(page2Req);
+    var page2 = catalog.listCatalogs(page2Req);
     assertEquals(LIMIT, page2.getCatalogsCount(), "second page should have the remainder");
     assertEquals(
         total, page2.getPage().getTotalSize(), "total_size should remain TOTAL across pages");

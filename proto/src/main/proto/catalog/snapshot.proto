@@ -1,0 +1,69 @@
+syntax = "proto3";
+package ai.floedb.metacat.catalog;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.catalog.rpc";
+
+import "common/common.proto";
+import "google/protobuf/timestamp.proto";
+
+// ----- Snapshot -----
+
+message Snapshot {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  google.protobuf.Timestamp upstream_created_at = 3;
+  google.protobuf.Timestamp ingested_at = 4;
+  int64 parent_snapshot_id = 5;
+}
+
+message ListSnapshotsRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  ai.floedb.metacat.common.PageRequest page = 2;
+}
+message ListSnapshotsResponse {
+  repeated Snapshot snapshots = 1;
+  ai.floedb.metacat.common.PageResponse page = 2;
+}
+
+message GetCurrentSnapshotRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+}
+message GetCurrentSnapshotResponse {
+  Snapshot snapshot = 1;
+}
+
+message SnapshotSpec {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  google.protobuf.Timestamp upstream_created_at = 3;
+  google.protobuf.Timestamp ingested_at = 4;
+  int64 parent_snapshot_id = 5;
+}
+
+message CreateSnapshotRequest {
+  SnapshotSpec spec = 1;
+  ai.floedb.metacat.common.IdempotencyKey idempotency = 2;
+}
+message CreateSnapshotResponse {
+  Snapshot snapshot = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
+}
+
+message DeleteSnapshotRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  ai.floedb.metacat.common.Precondition precondition = 3;
+}
+message DeleteSnapshotResponse {
+  ai.floedb.metacat.common.MutationMeta meta = 1;
+}
+
+// ----- Services -----
+
+service SnapshotService {
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+  rpc GetCurrentSnapshot(GetCurrentSnapshotRequest) returns (GetCurrentSnapshotResponse);
+  rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
+  rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
+}

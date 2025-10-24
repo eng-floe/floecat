@@ -27,32 +27,35 @@ class StatsIT {
   @Inject PointerStore ptr;
   @Inject BlobStore blob;
 
-  @GrpcClient("resource-mutation")
-  ResourceMutationGrpc.ResourceMutationBlockingStub mutation;
-
-  @GrpcClient("resource-access")
-  ResourceAccessGrpc.ResourceAccessBlockingStub access;
-
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
 
-  @GrpcClient("stats-mutation")
-  StatsMutationGrpc.StatsMutationBlockingStub statsMutation;
+  @GrpcClient("catalog-service")
+  CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
-  @GrpcClient("stats-access")
-  StatsAccessGrpc.StatsAccessBlockingStub statsAccess;
+  @GrpcClient("namespace-service")
+  NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
+
+  @GrpcClient("table-service")
+  TableServiceGrpc.TableServiceBlockingStub table;
+
+  @GrpcClient("snapshot-service")
+  SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
+
+  @GrpcClient("table-statistic-service")
+  TableStatisticServiceGrpc.TableStatisticServiceBlockingStub statistic;
 
   String tablePrefix = this.getClass().getSimpleName() + "_";
 
   @Test
   void statsCreateListGetCurrent() throws Exception {
     var catName = tablePrefix + "cat_stats";
-    var cat = TestSupport.createCatalog(mutation, catName, "cat for stats");
+    var cat = TestSupport.createCatalog(catalog, catName, "cat for stats");
 
     var parents = List.of("db_stats", "schema_stats");
     var nsLeaf = "it_ns";
     var ns =
-        TestSupport.createNamespace(mutation, cat.getResourceId(), nsLeaf, parents, "ns for stats");
+        TestSupport.createNamespace(namespace, cat.getResourceId(), nsLeaf, parents, "ns for stats");
     var nsId = ns.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
 
@@ -60,7 +63,7 @@ class StatsIT {
     nsPath.add(nsLeaf);
     var tbl =
         TestSupport.createTable(
-            mutation,
+            table,
             cat.getResourceId(),
             nsId,
             "fact_orders",
@@ -74,8 +77,8 @@ class StatsIT {
     final long snapOld = 101L;
     final long snapNew = 202L;
 
-    TestSupport.createSnapshot(mutation, tblId, snapOld, System.currentTimeMillis() - 86_400_000L);
-    TestSupport.createSnapshot(mutation, tblId, snapNew, System.currentTimeMillis());
+    TestSupport.createSnapshot(snapshot, tblId, snapOld, System.currentTimeMillis() - 86_400_000L);
+    TestSupport.createSnapshot(snapshot, tblId, snapNew, System.currentTimeMillis());
 
     var tableStatsOld =
         TableStats.newBuilder()
@@ -95,7 +98,7 @@ class StatsIT {
             .build();
 
     var putTableRespOld =
-        statsMutation.putTableStats(
+        statistic.putTableStats(
             PutTableStatsRequest.newBuilder()
                 .setTableId(tblId)
                 .setSnapshotId(snapOld)
@@ -135,7 +138,7 @@ class StatsIT {
             .build();
 
     var putColsRespOld =
-        statsMutation.putColumnStatsBatch(
+        statistic.putColumnStatsBatch(
             PutColumnStatsBatchRequest.newBuilder()
                 .setTableId(tblId)
                 .setSnapshotId(snapOld)
@@ -145,7 +148,7 @@ class StatsIT {
     assertTrue(putColsRespOld.getUpserted() >= 2);
 
     var gotTableOld =
-        statsAccess.getTableStats(
+        statistic.getTableStats(
             GetTableStatsRequest.newBuilder()
                 .setTableId(tblId)
                 .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapOld).build())
@@ -154,7 +157,7 @@ class StatsIT {
     assertEquals(123_456, gotTableOld.getStats().getTotalSizeBytes());
 
     var listColsOld =
-        statsAccess.listColumnStats(
+        statistic.listColumnStats(
             ListColumnStatsRequest.newBuilder()
                 .setTableId(tblId)
                 .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapOld).build())
@@ -176,14 +179,14 @@ class StatsIT {
                     .build())
             .build();
 
-    statsMutation.putTableStats(
+    statistic.putTableStats(
         PutTableStatsRequest.newBuilder()
             .setTableId(tblId)
             .setSnapshotId(snapNew)
             .setStats(tableStatsNew)
             .build());
 
-    statsMutation.putColumnStatsBatch(
+    statistic.putColumnStatsBatch(
         PutColumnStatsBatchRequest.newBuilder()
             .setTableId(tblId)
             .setSnapshotId(snapNew)
@@ -201,7 +204,7 @@ class StatsIT {
             .build());
 
     var currentTableStats =
-        statsAccess.getTableStats(
+        statistic.getTableStats(
             GetTableStatsRequest.newBuilder()
                 .setTableId(tblId)
                 .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
@@ -210,7 +213,7 @@ class StatsIT {
     assertEquals(2_500, currentTableStats.getStats().getRowCount());
 
     var currentCols =
-        statsAccess.listColumnStats(
+        statistic.listColumnStats(
             ListColumnStatsRequest.newBuilder()
                 .setTableId(tblId)
                 .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
@@ -223,7 +226,7 @@ class StatsIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                statsAccess.getTableStats(
+                statistic.getTableStats(
                     GetTableStatsRequest.newBuilder()
                         .setTableId(tblId)
                         .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(9_999_999L).build())
