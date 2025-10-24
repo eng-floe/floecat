@@ -45,8 +45,7 @@ class ResourceMutationIT {
 
     StatusRuntimeException catExists =
         assertThrows(
-            StatusRuntimeException.class,
-            () -> TestSupport.createCatalog(catalog, "cat1", "cat1"));
+            StatusRuntimeException.class, () -> TestSupport.createCatalog(catalog, "cat1", "cat1"));
     TestSupport.assertGrpcAndMc(
         catExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Catalog \"cat1\" already exists");
 

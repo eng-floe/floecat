@@ -29,13 +29,21 @@ public class GrpcClients {
     return directory;
   }
 
-  public CatalogServiceGrpc.CatalogServiceBlockingStub catalog() { return catalog; }
+  public CatalogServiceGrpc.CatalogServiceBlockingStub catalog() {
+    return catalog;
+  }
 
-  public NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace() { return namespace; }
+  public NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace() {
+    return namespace;
+  }
 
-  public TableServiceGrpc.TableServiceBlockingStub table() { return table; }
+  public TableServiceGrpc.TableServiceBlockingStub table() {
+    return table;
+  }
 
-  public SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot() { return snapshot; }
+  public SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot() {
+    return snapshot;
+  }
 
   public ConnectorsGrpc.ConnectorsBlockingStub connector() {
     return connector;

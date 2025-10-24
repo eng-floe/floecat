@@ -190,9 +190,7 @@ public final class TestSupport {
   }
 
   public static Table renameTable(
-          TableServiceGrpc.TableServiceBlockingStub mutation,
-      ResourceId tableId,
-      String newName) {
+      TableServiceGrpc.TableServiceBlockingStub mutation, ResourceId tableId, String newName) {
     return mutation
         .renameTable(
             RenameTableRequest.newBuilder().setTableId(tableId).setNewDisplayName(newName).build())
@@ -200,7 +198,7 @@ public final class TestSupport {
   }
 
   public static void deleteTable(
-          TableServiceGrpc.TableServiceBlockingStub mutation,
+      TableServiceGrpc.TableServiceBlockingStub mutation,
       ResourceId namespaceId,
       ResourceId tableId) {
     mutation.deleteTable(DeleteTableRequest.newBuilder().setTableId(tableId).build());

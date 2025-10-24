@@ -55,7 +55,8 @@ class StatsIT {
     var parents = List.of("db_stats", "schema_stats");
     var nsLeaf = "it_ns";
     var ns =
-        TestSupport.createNamespace(namespace, cat.getResourceId(), nsLeaf, parents, "ns for stats");
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), nsLeaf, parents, "ns for stats");
     var nsId = ns.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
 

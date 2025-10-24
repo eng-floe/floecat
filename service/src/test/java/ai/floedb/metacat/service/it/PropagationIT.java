@@ -53,7 +53,7 @@ class PropagationIT {
 
     RespHeadersCaptureInterceptor capture = new RespHeadersCaptureInterceptor();
     var client =
-            catalog
+        catalog
             .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
             .withInterceptors(capture);
 
@@ -79,7 +79,7 @@ class PropagationIT {
 
     RespHeadersCaptureInterceptor captureErr = new RespHeadersCaptureInterceptor();
     var errClient =
-            catalog
+        catalog
             .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
             .withInterceptors(captureErr);
 
@@ -107,7 +107,7 @@ class PropagationIT {
 
     RespHeadersCaptureInterceptor capture = new RespHeadersCaptureInterceptor();
     var client =
-            catalog
+        catalog
             .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(m))
             .withInterceptors(capture);
 

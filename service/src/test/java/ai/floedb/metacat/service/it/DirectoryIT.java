@@ -147,7 +147,7 @@ class DirectoryIT {
     TestSupport.createTable(
         table, cat.getResourceId(), ns.getResourceId(), "orders", "s3://barf", "{}", "none");
     TestSupport.createTable(
-            table, cat.getResourceId(), ns.getResourceId(), "lineitem", "s3://barf", "{}", "none");
+        table, cat.getResourceId(), ns.getResourceId(), "lineitem", "s3://barf", "{}", "none");
 
     var prefix =
         NameRef.newBuilder()
