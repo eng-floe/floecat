@@ -51,13 +51,18 @@ build-service:
 	$(MVN) -q -DskipTests -pl service -am package
 
 # ---------- Tests ----------
-.PHONY: test
-test: unit-test integration-test
+.PHONY: test unit-test integration-test verify
+test:
+	$(MVN) -pl service -am verify
+
 unit-test:
-	$(MVN) -pl service -am test
+	$(MVN) -pl service -am -DskipITs=true test
 
 integration-test:
-	$(MVN) -pl service -am integration-test
+	$(MVN) -pl service -am -DskipUTs=true -DfailIfNoTests=false verify
+
+verify:
+	$(MVN) -pl service -am verify
 
 # ---------- Clean ----------
 .PHONY: clean clean-java clean-dev
