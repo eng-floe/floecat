@@ -12,7 +12,6 @@ import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import ai.floedb.metacat.service.storage.IdempotencyStore;
-import ai.floedb.metacat.service.storage.PointerStore;
 import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
@@ -26,7 +25,6 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   @Inject SnapshotRepository snapshotRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
-  @Inject PointerStore ptr;
   @Inject IdempotencyStore idempotencyStore;
 
   @Override
@@ -118,6 +116,16 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
               authz.require(principalContext, "table.write");
 
+              var tableId = request.getSpec().getTableId();
+              ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
+
+              tableRepo
+                  .getById(tableId)
+                  .orElseThrow(
+                      () ->
+                          GrpcErrors.notFound(
+                              correlationId, "table", Map.of("id", tableId.getId())));
+
               var tsNow = nowTs();
 
               var tenantId = principalContext.getTenantId();
@@ -135,7 +143,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                       () -> {
                         var snap =
                             Snapshot.newBuilder()
-                                .setTableId(request.getSpec().getTableId())
+                                .setTableId(tableId)
                                 .setSnapshotId(request.getSpec().getSnapshotId())
                                 .setIngestedAt(tsNow)
                                 .setUpstreamCreatedAt(request.getSpec().getUpstreamCreatedAt())
@@ -146,9 +154,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                         } catch (BaseRepository.NameConflictException e) {
                           if (!idempotencyKey.isBlank()) {
                             var existing =
-                                snapshotRepo.getById(
-                                    request.getSpec().getTableId(),
-                                    request.getSpec().getSnapshotId());
+                                snapshotRepo.getById(tableId, request.getSpec().getSnapshotId());
                             if (existing.isPresent()) {
                               return new IdempotencyGuard.CreateResult<>(
                                   existing.get(), existing.get().getTableId());
@@ -170,7 +176,10 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                       this::correlationId,
                       Snapshot::parseFrom);
 
-              return CreateSnapshotResponse.newBuilder().setMeta(snapshotProto.meta).build();
+              return CreateSnapshotResponse.newBuilder()
+                  .setSnapshot(snapshotProto.body)
+                  .setMeta(snapshotProto.meta)
+                  .build();
             }),
         correlationId());
   }

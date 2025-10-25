@@ -41,6 +41,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
               authz.require(principalContext, "table.read");
 
               var namespaceId = request.getNamespaceId();
+              ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId());
+
               var namespace =
                   nsRepo
                       .getById(namespaceId)
@@ -90,8 +92,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
               var correlationId = principalContext.getCorrelationId();
               authz.require(principalContext, "table.write");
 
-              var tsNow = nowTs();
-
               catalogRepo
                   .getById(request.getSpec().getCatalogId())
                   .orElseThrow(
@@ -109,6 +109,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               correlationId,
                               "namespace",
                               Map.of("id", request.getSpec().getNamespaceId().getId())));
+
+              var tsNow = nowTs();
 
               var idempotencyKey =
                   request.hasIdempotency() ? request.getIdempotency().getKey() : "";
@@ -209,6 +211,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
             () -> {
               var principalContext = principal.get();
               authz.require(principalContext, "table.read");
+              ensureKind(request.getTableId(), ResourceKind.RK_TABLE, "table_id", correlationId());
 
               var table =
                   tableRepo
@@ -260,7 +263,16 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
               enforcePreconditions(correlationId, meta, request.getPrecondition());
 
               try {
-                tableRepo.update(updated, expectedVersion);
+                var ok = tableRepo.update(updated, expectedVersion);
+                if (!ok) {
+                  var nowMeta = tableRepo.metaForSafe(tableId);
+                  throw GrpcErrors.preconditionFailed(
+                      correlationId,
+                      "version_mismatch",
+                      Map.of(
+                          "expected", Long.toString(expectedVersion),
+                          "actual", Long.toString(nowMeta.getPointerVersion())));
+                }
               } catch (BaseRepository.PreconditionFailedException pfe) {
                 var nowMeta = tableRepo.metaForSafe(tableId);
                 throw GrpcErrors.preconditionFailed(

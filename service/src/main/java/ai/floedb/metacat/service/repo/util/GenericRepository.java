@@ -24,14 +24,6 @@ public class GenericRepository<T, K extends ResourceKey> extends BaseRepository<
     this.schema = Objects.requireNonNull(schema, "schema");
   }
 
-  public PointerStore getPointerStore() {
-    return pointerStore;
-  }
-
-  public BlobStore getBlobStore() {
-    return blobStore;
-  }
-
   public Optional<T> getByKey(K key) {
     return get(schema.canonicalPointerForKey.apply(key));
   }
@@ -135,7 +127,10 @@ public class GenericRepository<T, K extends ResourceKey> extends BaseRepository<
             .map(m -> new HashSet<>(m.values()))
             .orElseGet(HashSet::new);
 
-    if (!compareAndDeleteOrFalse(canonicalPointer, expectedCanonicalVersion)) return false;
+    if (!compareAndDeleteOrFalse(canonicalPointer, expectedCanonicalVersion)) {
+      return false;
+    }
+
     for (String p : currentSecondary) {
       pointerStore.get(p).ifPresent(ptr -> compareAndDeleteOrFalse(p, ptr.getVersion()));
     }

@@ -15,7 +15,6 @@ import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import ai.floedb.metacat.service.storage.IdempotencyStore;
-import ai.floedb.metacat.service.storage.PointerStore;
 import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
@@ -34,7 +33,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject TableRepository tableRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
-  @Inject PointerStore ptr;
   @Inject IdempotencyStore idempotencyStore;
 
   @Override
@@ -120,6 +118,15 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
               authz.require(principalContext, "namespace.write");
 
+              catalogRepo
+                  .getById(request.getSpec().getCatalogId())
+                  .orElseThrow(
+                      () ->
+                          GrpcErrors.notFound(
+                              correlationId,
+                              "catalog",
+                              Map.of("id", request.getSpec().getCatalogId().getId())));
+
               var tsNow = nowTs();
 
               var tenantId = principalContext.getTenantId();
@@ -146,13 +153,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                 .setId(namespaceUuid)
                                 .setKind(ResourceKind.RK_NAMESPACE)
                                 .build();
-
-                        if (catalogRepo.getById(request.getSpec().getCatalogId()).isEmpty()) {
-                          throw GrpcErrors.notFound(
-                              correlationId,
-                              "catalog",
-                              Map.of("id", request.getSpec().getCatalogId().getId()));
-                        }
 
                         var built =
                             Namespace.newBuilder()

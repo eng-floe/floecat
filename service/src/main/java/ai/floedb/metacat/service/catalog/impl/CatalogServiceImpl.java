@@ -13,7 +13,6 @@ import ai.floedb.metacat.service.repo.util.BaseRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import ai.floedb.metacat.service.storage.IdempotencyStore;
-import ai.floedb.metacat.service.storage.PointerStore;
 import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
@@ -30,7 +29,6 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   @Inject NamespaceRepository namespaceRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
-  @Inject PointerStore ptr;
   @Inject IdempotencyStore idempotencyStore;
 
   @Override
@@ -200,9 +198,11 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
 
               if (desiredName.equals(current.getDisplayName())
                   && Objects.equals(desiredDescription, current.getDescription())) {
+                var metaNoop = catalogRepo.metaForSafe(catalogId);
+                enforcePreconditions(correlationId, metaNoop, request.getPrecondition());
                 return UpdateCatalogResponse.newBuilder()
                     .setCatalog(current)
-                    .setMeta(catalogRepo.metaForSafe(catalogId))
+                    .setMeta(metaNoop)
                     .build();
               }
 
