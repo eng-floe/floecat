@@ -3,7 +3,27 @@ package ai.floedb.metacat.service.connector.impl;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
-import ai.floedb.metacat.connector.rpc.*;
+import ai.floedb.metacat.connector.rpc.Connector;
+import ai.floedb.metacat.connector.rpc.ConnectorKind;
+import ai.floedb.metacat.connector.rpc.ConnectorState;
+import ai.floedb.metacat.connector.rpc.Connectors;
+import ai.floedb.metacat.connector.rpc.CreateConnectorRequest;
+import ai.floedb.metacat.connector.rpc.CreateConnectorResponse;
+import ai.floedb.metacat.connector.rpc.DeleteConnectorRequest;
+import ai.floedb.metacat.connector.rpc.DeleteConnectorResponse;
+import ai.floedb.metacat.connector.rpc.GetConnectorRequest;
+import ai.floedb.metacat.connector.rpc.GetConnectorResponse;
+import ai.floedb.metacat.connector.rpc.GetReconcileJobRequest;
+import ai.floedb.metacat.connector.rpc.GetReconcileJobResponse;
+import ai.floedb.metacat.connector.rpc.JobState;
+import ai.floedb.metacat.connector.rpc.ListConnectorsRequest;
+import ai.floedb.metacat.connector.rpc.ListConnectorsResponse;
+import ai.floedb.metacat.connector.rpc.TriggerReconcileRequest;
+import ai.floedb.metacat.connector.rpc.TriggerReconcileResponse;
+import ai.floedb.metacat.connector.rpc.UpdateConnectorRequest;
+import ai.floedb.metacat.connector.rpc.UpdateConnectorResponse;
+import ai.floedb.metacat.connector.rpc.ValidateConnectorRequest;
+import ai.floedb.metacat.connector.rpc.ValidateConnectorResponse;
 import ai.floedb.metacat.connector.spi.ConnectorConfig;
 import ai.floedb.metacat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.metacat.connector.spi.ConnectorFactory;
@@ -52,19 +72,19 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
               var connectorProto =
                   MutationOps.createProto(
-                      tenantId.getId(),
+                      tenantId,
                       "CreateConnector",
                       idempotencyKey,
                       () -> fingerprint,
                       () -> {
                         String connUuid =
                             !idempotencyKey.isBlank()
-                                ? deterministicUuid(tenantId.getId(), "connector", idempotencyKey)
+                                ? deterministicUuid(tenantId, "connector", idempotencyKey)
                                 : UUID.randomUUID().toString();
 
                         var connectorId =
                             ResourceId.newBuilder()
-                                .setTenantId(tenantId.getId())
+                                .setTenantId(tenantId)
                                 .setId(connUuid)
                                 .setKind(ResourceKind.RK_CONNECTOR)
                                 .build();
@@ -97,10 +117,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                             var existing =
                                 connectors
                                     .getById(connectorId)
-                                    .or(
-                                        () ->
-                                            connectors.getByName(
-                                                tenantId.getId(), c.getDisplayName()));
+                                    .or(() -> connectors.getByName(tenantId, c.getDisplayName()));
                             if (existing.isPresent()) {
                               return new IdempotencyGuard.CreateResult<>(
                                   existing.get(), existing.get().getResourceId());
@@ -164,14 +181,14 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
               authz.require(principalContext, "connector.manage");
 
-              var tenant = principalContext.getTenantId().getId();
+              var tenant = principalContext.getTenantId();
 
               var page = request.getPage();
               int limit = page.getPageSize() > 0 ? page.getPageSize() : 100;
               String token = page.getPageToken();
 
               var next = new StringBuilder();
-              var list = connectors.listByName(tenant, limit, token, next);
+              var list = connectors.list(tenant, limit, token, next);
               int total = connectors.count(tenant);
 
               return ListConnectorsResponse.newBuilder()
@@ -199,7 +216,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
               var connectorId = request.getConnectorId();
               ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", correlationId);
 
-              var connector =
+              var current =
                   connectors
                       .getById(connectorId)
                       .orElseThrow(
@@ -208,85 +225,70 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                   correlationId, "connector", Map.of("id", connectorId.getId())));
 
               var tsNow = nowTs();
-              var currentMeta = connectors.metaFor(connectorId);
-              enforcePreconditions(correlationId, currentMeta, request.getPrecondition());
 
               var spec = request.getSpec();
               var desired =
-                  connector.toBuilder()
+                  current.toBuilder()
                       .setDisplayName(
                           spec.getDisplayName().isBlank()
-                              ? connector.getDisplayName()
+                              ? current.getDisplayName()
                               : spec.getDisplayName())
                       .setKind(
                           spec.getKind() == ConnectorKind.CK_UNSPECIFIED
-                              ? connector.getKind()
+                              ? current.getKind()
                               : spec.getKind())
                       .setTargetCatalogDisplayName(
                           spec.getTargetCatalogDisplayName().isBlank()
-                              ? connector.getTargetCatalogDisplayName()
+                              ? current.getTargetCatalogDisplayName()
                               : spec.getTargetCatalogDisplayName())
                       .setTargetTenantId(principalContext.getTenantId())
-                      .setUri(spec.getUri().isBlank() ? connector.getUri() : spec.getUri())
+                      .setUri(spec.getUri().isBlank() ? current.getUri() : spec.getUri())
                       .clearOptions()
                       .putAllOptions(
                           spec.getOptionsMap().isEmpty()
-                              ? connector.getOptionsMap()
+                              ? current.getOptionsMap()
                               : spec.getOptionsMap())
-                      .setAuth(spec.hasAuth() ? spec.getAuth() : connector.getAuth())
-                      .setPolicy(spec.hasPolicy() ? spec.getPolicy() : connector.getPolicy())
+                      .setAuth(spec.hasAuth() ? spec.getAuth() : current.getAuth())
+                      .setPolicy(spec.hasPolicy() ? spec.getPolicy() : current.getPolicy())
                       .setUpdatedAt(tsNow)
                       .build();
 
-              if (desired.equals(connector)) {
+              if (desired.equals(current)) {
+                var metaNoop = connectors.metaForSafe(connectorId);
+                enforcePreconditions(correlationId, metaNoop, request.getPrecondition());
                 return UpdateConnectorResponse.newBuilder()
-                    .setConnector(connector)
-                    .setMeta(currentMeta)
+                    .setConnector(current)
+                    .setMeta(metaNoop)
                     .build();
               }
 
-              boolean nameChanged = !desired.getDisplayName().equals(connector.getDisplayName());
-              if (nameChanged) {
-                try {
-                  connectors.rename(
-                      desired, connector.getDisplayName(), currentMeta.getPointerVersion());
-                } catch (BaseRepository.NameConflictException nce) {
-                  throw GrpcErrors.conflict(
-                      correlationId,
-                      "connector.already_exists",
-                      Map.of("display_name", desired.getDisplayName()));
-                } catch (BaseRepository.PreconditionFailedException pfe) {
+              var currentMeta = connectors.metaFor(connectorId);
+              enforcePreconditions(correlationId, currentMeta, request.getPrecondition());
+              long expectedVersion = currentMeta.getPointerVersion();
+
+              try {
+                boolean ok = connectors.update(desired, expectedVersion);
+                if (!ok) {
                   var nowMeta = connectors.metaForSafe(connectorId);
                   throw GrpcErrors.preconditionFailed(
                       correlationId,
                       "version_mismatch",
                       Map.of(
-                          "expected",
-                          Long.toString(currentMeta.getPointerVersion()),
-                          "actual",
-                          Long.toString(nowMeta.getPointerVersion())));
+                          "expected", Long.toString(expectedVersion),
+                          "actual", Long.toString(nowMeta.getPointerVersion())));
                 }
-              } else {
-                try {
-                  connectors.update(desired, currentMeta.getPointerVersion());
-                } catch (BaseRepository.PreconditionFailedException pfe) {
-                  var nowMeta = connectors.metaForSafe(connectorId);
-                  throw GrpcErrors.preconditionFailed(
-                      correlationId,
-                      "version_mismatch",
-                      Map.of(
-                          "expected",
-                          Long.toString(currentMeta.getPointerVersion()),
-                          "actual",
-                          Long.toString(nowMeta.getPointerVersion())));
-                }
+              } catch (BaseRepository.NameConflictException nce) {
+                throw GrpcErrors.conflict(
+                    correlationId,
+                    "connector.already_exists",
+                    Map.of("display_name", desired.getDisplayName()));
               }
 
               var outMeta = connectors.metaForSafe(connectorId);
-              var outConn = connectors.getById(connectorId).orElse(desired);
+              var outConnector = connectors.getById(connectorId).orElse(desired);
 
               return UpdateConnectorResponse.newBuilder()
-                  .setConnector(outConn)
+                  .setConnector(outConnector)
                   .setMeta(outMeta)
                   .build();
             }),
@@ -306,26 +308,36 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
               var connectorId = request.getConnectorId();
               ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", correlationId);
 
-              var currentMeta = connectors.metaForSafe(connectorId);
-              if (connectors.getById(connectorId).isEmpty()) {
-                return DeleteConnectorResponse.newBuilder().setMeta(currentMeta).build();
+              var currentOpt = connectors.getById(connectorId);
+              if (currentOpt.isEmpty()) {
+                connectors.delete(connectorId);
+                var safe = connectors.metaForSafe(connectorId);
+                return DeleteConnectorResponse.newBuilder().setMeta(safe).build();
               }
 
-              currentMeta = connectors.metaFor(connectorId);
-              enforcePreconditions(correlationId, currentMeta, request.getPrecondition());
+              var meta = connectors.metaFor(connectorId);
+              long expectedVersion = meta.getPointerVersion();
+              enforcePreconditions(correlationId, meta, request.getPrecondition());
 
               try {
-                connectors.deleteWithPrecondition(connectorId, currentMeta.getPointerVersion());
+                boolean ok = connectors.deleteWithPrecondition(connectorId, expectedVersion);
+                if (!ok) {
+                  var nowMeta = connectors.metaForSafe(connectorId);
+                  throw GrpcErrors.preconditionFailed(
+                      correlationId,
+                      "version_mismatch",
+                      Map.of(
+                          "expected", Long.toString(expectedVersion),
+                          "actual", Long.toString(nowMeta.getPointerVersion())));
+                }
               } catch (BaseRepository.PreconditionFailedException pfe) {
                 var nowMeta = connectors.metaForSafe(connectorId);
                 throw GrpcErrors.preconditionFailed(
                     correlationId,
                     "version_mismatch",
                     Map.of(
-                        "expected",
-                        Long.toString(currentMeta.getPointerVersion()),
-                        "actual",
-                        Long.toString(nowMeta.getPointerVersion())));
+                        "expected", Long.toString(expectedVersion),
+                        "actual", Long.toString(nowMeta.getPointerVersion())));
               } catch (BaseRepository.NotFoundException nfe) {
                 throw GrpcErrors.notFound(
                     correlationId, "connector", Map.of("id", connectorId.getId()));
@@ -372,7 +384,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       kind,
                       spec.getDisplayName(),
                       spec.getTargetCatalogDisplayName(),
-                      spec.getTargetTenantId().getId(),
+                      spec.getTargetTenantId(),
                       spec.getUri(),
                       spec.getOptionsMap(),
                       auth);

@@ -36,7 +36,7 @@ class PropagationIT {
   private static PrincipalContext pc() {
     ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     return PrincipalContext.newBuilder()
-        .setTenantId(tenantId)
+        .setTenantId(tenantId.getId())
         .setSubject("it-user")
         .addPermissions("catalog.read")
         .build();

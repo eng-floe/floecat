@@ -10,7 +10,7 @@ import ai.floedb.metacat.connector.rpc.Connector;
 import ai.floedb.metacat.connector.rpc.ConnectorSpec;
 import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.metacat.connector.rpc.CreateConnectorRequest;
-import ai.floedb.metacat.service.repo.util.Keys;
+import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
 import ai.floedb.metacat.tenancy.rpc.CreateTenantRequest;
@@ -288,7 +288,7 @@ public final class TestSupport {
       String catalogDisplayName,
       List<String> fullPath) {
 
-    var catIdxKey = Keys.catByNamePtr(tenant, catalogDisplayName);
+    var catIdxKey = Keys.catalogPointerByName(tenant, catalogDisplayName);
     var catPtr =
         ptr.get(catIdxKey)
             .orElseThrow(() -> new AssertionError("catalog by-name pointer missing: " + catIdxKey));
@@ -301,7 +301,7 @@ public final class TestSupport {
     }
     var catalogId = cat.getResourceId().getId();
 
-    var nsIdxKey = Keys.nsByPathPtr(tenant, catalogId, fullPath);
+    var nsIdxKey = Keys.namespacePointerByPath(tenant, catalogId, fullPath);
     var nsIdxPtr =
         ptr.get(nsIdxKey)
             .orElseThrow(
@@ -317,8 +317,8 @@ public final class TestSupport {
     var nsRid = ns.getResourceId();
     var nsTenant = nsRid.getTenantId();
 
-    var nsPtrKey = Keys.nsPtr(nsTenant, nsRid.getId());
-    var nsBlob = Keys.nsBlob(nsTenant, nsRid.getId());
+    var nsPtrKey = Keys.namespacePointerById(nsTenant, nsRid.getId());
+    var nsBlob = Keys.namespaceBlobUri(nsTenant, nsRid.getId());
 
     var nsPtr =
         ptr.get(nsPtrKey)
@@ -341,8 +341,8 @@ public final class TestSupport {
   public static MutationMeta metaForTable(PointerStore ptr, BlobStore blobs, ResourceId tableId) {
 
     var tenant = tableId.getTenantId();
-    var tblPtrKey = Keys.tblByIdPtr(tenant, tableId.getId());
-    var tblBlob = Keys.tblBlob(tenant, tableId.getId());
+    var tblPtrKey = Keys.tablePointerById(tenant, tableId.getId());
+    var tblBlob = Keys.tableBlobUri(tenant, tableId.getId());
 
     var tblPtr =
         ptr.get(tblPtrKey)

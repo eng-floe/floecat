@@ -25,14 +25,12 @@ message TenantSpec {
 // ====== Requests / Responses ======
 
 message ListTenantsRequest {
-  int32 page_size = 1;
-  string page_token = 2;
-  string name_prefix = 3;
+  ai.floedb.metacat.common.PageRequest page = 1;
 }
 
 message ListTenantsResponse {
   repeated Tenant tenants = 1;
-  string next_page_token = 2;
+  ai.floedb.metacat.common.PageResponse page = 2;
 }
 
 message CreateTenantRequest {

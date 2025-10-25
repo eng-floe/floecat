@@ -2,6 +2,7 @@ package ai.floedb.metacat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.metacat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.Precondition;
@@ -10,6 +11,7 @@ import ai.floedb.metacat.service.util.TestSupport;
 import ai.floedb.metacat.tenancy.rpc.CreateTenantRequest;
 import ai.floedb.metacat.tenancy.rpc.DeleteTenantRequest;
 import ai.floedb.metacat.tenancy.rpc.GetTenantRequest;
+import ai.floedb.metacat.tenancy.rpc.ListTenantsRequest;
 import ai.floedb.metacat.tenancy.rpc.TenancyGrpc;
 import ai.floedb.metacat.tenancy.rpc.TenantSpec;
 import ai.floedb.metacat.tenancy.rpc.UpdateTenantRequest;
@@ -24,6 +26,9 @@ class TenantMutationIT {
 
   @GrpcClient("tenancy")
   TenancyGrpc.TenancyBlockingStub tenancy;
+
+  @GrpcClient("catalog")
+  CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
   String tenantPrefix = this.getClass().getSimpleName() + "_";
 
@@ -61,7 +66,6 @@ class TenantMutationIT {
 
     var id = created.getTenant().getResourceId();
     assertEquals(ResourceKind.RK_TENANT, id.getKind());
-    assertTrue(id.getId().matches("^[0-9a-fA-F-]{36}$"), "id must look like UUID");
 
     var upd1 =
         tenancy.updateTenant(
@@ -70,12 +74,16 @@ class TenantMutationIT {
                 .setSpec(
                     TenantSpec.newBuilder()
                         .setDisplayName(tenantPrefix + "t_pre")
-                        .setDescription("pre")
+                        .setDescription("desc1")
                         .build())
                 .build());
 
     var m1 = upd1.getMeta();
     assertTrue(m1.getPointerVersion() >= 1);
+    assertEquals(tenantPrefix + "t_pre", upd1.getTenant().getDisplayName());
+    assertEquals("desc1", upd1.getTenant().getDescription());
+
+    String expectedName = tenantPrefix + "t_pre_2";
 
     var updOk =
         tenancy.updateTenant(
@@ -83,7 +91,7 @@ class TenantMutationIT {
                 .setTenantId(id)
                 .setSpec(
                     TenantSpec.newBuilder()
-                        .setDisplayName(tenantPrefix + "t_pre_2")
+                        .setDisplayName(expectedName)
                         .setDescription("desc2")
                         .build())
                 .setPrecondition(
@@ -93,8 +101,22 @@ class TenantMutationIT {
                         .build())
                 .build());
 
-    assertEquals(tenantPrefix + "t_pre_2", updOk.getTenant().getDisplayName());
+    assertEquals(expectedName, updOk.getTenant().getDisplayName());
+    assertEquals("desc2", updOk.getTenant().getDescription());
     assertTrue(updOk.getMeta().getPointerVersion() > m1.getPointerVersion());
+
+    String next = "";
+    boolean hasMatch = false;
+    do {
+      var resp = tenancy.listTenants(ListTenantsRequest.newBuilder().build());
+
+      hasMatch |=
+          resp.getTenantsList().stream().anyMatch(t -> t.getDisplayName().equals(expectedName));
+
+      next = resp.getPage().getNextPageToken();
+    } while (!next.isEmpty());
+
+    assertTrue(hasMatch, "Expected to find tenant with displayName=" + expectedName);
 
     var bad =
         assertThrows(
@@ -137,6 +159,26 @@ class TenantMutationIT {
 
     TestSupport.assertGrpcAndMc(
         notFound, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Tenant not found");
+
+    var delNotEmpty =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                tenancy.deleteTenant(
+                    DeleteTenantRequest.newBuilder()
+                        .setTenantId(TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT))
+                        .setPrecondition(
+                            Precondition.newBuilder()
+                                .setExpectedVersion(m2.getPointerVersion())
+                                .setExpectedEtag(m2.getEtag())
+                                .build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        delNotEmpty,
+        Status.Code.ABORTED,
+        ErrorCode.MC_CONFLICT,
+        "Tenant \"" + TestSupport.DEFAULT_SEED_TENANT + "\" contains catalogs.");
   }
 
   @Test

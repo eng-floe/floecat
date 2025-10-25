@@ -3,172 +3,85 @@ package ai.floedb.metacat.service.repo.impl;
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.rpc.Connector;
-import ai.floedb.metacat.service.repo.util.BaseRepository;
-import ai.floedb.metacat.service.repo.util.Keys;
+import ai.floedb.metacat.service.repo.model.ConnectorKey;
+import ai.floedb.metacat.service.repo.model.Keys;
+import ai.floedb.metacat.service.repo.model.Schemas;
+import ai.floedb.metacat.service.repo.util.GenericRepository;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.PointerStore;
 import com.google.protobuf.Timestamp;
-import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Optional;
 
 @ApplicationScoped
-public class ConnectorRepository extends BaseRepository<Connector> {
-  public ConnectorRepository() {
-    super();
-  }
+public class ConnectorRepository {
+
+  private final GenericRepository<Connector, ConnectorKey> repo;
 
   @Inject
-  public ConnectorRepository(PointerStore pointerStore, BlobStore blobs) {
-    super(
-        pointerStore,
-        blobs,
-        Connector::parseFrom,
-        Connector::toByteArray,
-        "application/x-protobuf");
-  }
-
-  public Optional<Connector> getById(ResourceId rid) {
-    return get(Keys.connByIdPtr(rid.getTenantId(), rid.getId()));
-  }
-
-  public Optional<Connector> getByName(String tenantId, String displayName) {
-    return get(Keys.connByNamePtr(tenantId, displayName));
-  }
-
-  public List<Connector> listByName(String tenantId, int limit, String token, StringBuilder next) {
-    return listByPrefix(Keys.connByNamePrefix(tenantId), limit, token, next);
-  }
-
-  public int count(String tenantId) {
-    return countByPrefix(Keys.connByNamePrefix(tenantId));
+  public ConnectorRepository(PointerStore pointerStore, BlobStore blobStore) {
+    this.repo =
+        new GenericRepository<>(
+            pointerStore,
+            blobStore,
+            Schemas.CONNECTOR,
+            Connector::parseFrom,
+            Connector::toByteArray,
+            "application/x-protobuf");
   }
 
   public void create(Connector connector) {
-    var resourceId = connector.getResourceId();
-    var tenantId = resourceId.getTenantId();
-    var byId = Keys.connByIdPtr(tenantId, resourceId.getId());
-    var byName = Keys.connByNamePtr(tenantId, connector.getDisplayName());
-    var blobUri = Keys.connBlob(tenantId, resourceId.getId());
-
-    putBlob(blobUri, connector);
-    reserveAllOrRollback(byId, blobUri, byName, blobUri);
+    repo.create(connector);
   }
 
-  public boolean update(Connector updated, long expectedPointerVersion) {
-    var resourceId = updated.getResourceId();
-    var tenantId = resourceId.getTenantId();
-
-    var byId = Keys.connByIdPtr(tenantId, resourceId.getId());
-    var blobUri = Keys.connBlob(tenantId, resourceId.getId());
-
-    putBlob(blobUri, updated);
-    advancePointer(byId, blobUri, expectedPointerVersion);
-
-    return true;
+  public boolean update(Connector connector, long expectedPointerVersion) {
+    return repo.update(connector, expectedPointerVersion);
   }
 
-  public boolean rename(Connector updated, String oldDisplayName, long expectedVersion) {
-    var rid = updated.getResourceId();
-    var tid = rid.getTenantId();
-    var byId = Keys.connByIdPtr(tid, rid.getId());
-
-    var newByName = Keys.connByNamePtr(tid, updated.getDisplayName());
-    var oldByName = Keys.connByNamePtr(tid, oldDisplayName);
-    var blobUri = Keys.connBlob(tid, rid.getId());
-
-    putBlob(blobUri, updated);
-    reserveAllOrRollback(newByName, blobUri);
-
-    try {
-      advancePointer(byId, blobUri, expectedVersion);
-    } catch (PreconditionFailedException e) {
-      pointerStore
-          .get(newByName)
-          .ifPresent(p -> compareAndDeleteOrFalse(newByName, p.getVersion()));
-      return false;
-    }
-
-    pointerStore
-        .get(oldByName)
-        .ifPresent(pointer -> compareAndDeleteOrFalse(oldByName, pointer.getVersion()));
-
-    return true;
+  public boolean delete(ResourceId connectorResourceId) {
+    return repo.delete(
+        new ConnectorKey(connectorResourceId.getTenantId(), connectorResourceId.getId()));
   }
 
-  public boolean delete(ResourceId rid) {
-    var tid = rid.getTenantId();
-    var byId = Keys.connByIdPtr(tid, rid.getId());
-    var blobUri = Keys.connBlob(tid, rid.getId());
-
-    var connectorOpt = getById(rid);
-    var byName = connectorOpt.map(c -> Keys.connByNamePtr(tid, c.getDisplayName())).orElse(null);
-
-    if (byName != null) {
-      pointerStore
-          .get(byName)
-          .ifPresent(pointer -> compareAndDeleteOrFalse(byName, pointer.getVersion()));
-    }
-
-    pointerStore
-        .get(byId)
-        .ifPresent(pointer -> compareAndDeleteOrFalse(byId, pointer.getVersion()));
-
-    deleteQuietly(() -> blobStore.delete(blobUri));
-
-    return true;
+  public boolean deleteWithPrecondition(
+      ResourceId connectorResourceId, long expectedPointerVersion) {
+    return repo.deleteWithPrecondition(
+        new ConnectorKey(connectorResourceId.getTenantId(), connectorResourceId.getId()),
+        expectedPointerVersion);
   }
 
-  public boolean deleteWithPrecondition(ResourceId rid, long expectedVersion) {
-    var tid = rid.getTenantId();
-    var byId = Keys.connByIdPtr(tid, rid.getId());
-    var blobUri = Keys.connBlob(tid, rid.getId());
-
-    var connectorOpt = getById(rid);
-    var byName = connectorOpt.map(c -> Keys.connByNamePtr(tid, c.getDisplayName())).orElse(null);
-
-    if (!compareAndDeleteOrFalse(byId, expectedVersion)) {
-      return false;
-    }
-
-    if (byName != null)
-      pointerStore.get(byName).ifPresent(p -> compareAndDeleteOrFalse(byName, p.getVersion()));
-
-    deleteQuietly(() -> blobStore.delete(blobUri));
-
-    return true;
+  public Optional<Connector> getById(ResourceId connectorResourceId) {
+    return repo.getByKey(
+        new ConnectorKey(connectorResourceId.getTenantId(), connectorResourceId.getId()));
   }
 
-  public MutationMeta metaFor(ResourceId id) {
-    return metaFor(id, Timestamps.fromMillis(clock.millis()));
+  public Optional<Connector> getByName(String tenantId, String displayName) {
+    return repo.get(Keys.connectorPointerByName(tenantId, displayName));
   }
 
-  public MutationMeta metaFor(ResourceId resourceId, Timestamp nowTs) {
-    var tenantId = resourceId.getTenantId();
-    var key = Keys.connByIdPtr(tenantId, resourceId.getId());
-
-    var pointer =
-        pointerStore
-            .get(key)
-            .orElseThrow(
-                () ->
-                    new BaseRepository.NotFoundException(
-                        "Pointer missing for connector: " + resourceId.getId()));
-
-    return safeMetaOrDefault(key, pointer.getBlobUri(), nowTs);
+  public List<Connector> list(String tenantId, int limit, String pageToken, StringBuilder nextOut) {
+    return repo.listByPrefix(
+        Keys.connectorPointerByNamePrefix(tenantId), limit, pageToken, nextOut);
   }
 
-  public MutationMeta metaForSafe(ResourceId id) {
-    return metaForSafe(id, Timestamps.fromMillis(clock.millis()));
+  public int count(String tenantId) {
+    return repo.countByPrefix(Keys.connectorPointerByNamePrefix(tenantId));
   }
 
-  public MutationMeta metaForSafe(ResourceId resourceId, Timestamp nowTs) {
-    var tenantId = resourceId.getTenantId();
-    var key = Keys.connByIdPtr(tenantId, resourceId.getId());
-    var blobUri = Keys.connBlob(tenantId, resourceId.getId());
+  public MutationMeta metaFor(ResourceId connectorResourceId) {
+    return repo.metaFor(
+        new ConnectorKey(connectorResourceId.getTenantId(), connectorResourceId.getId()));
+  }
 
-    return safeMetaOrDefault(key, blobUri, nowTs);
+  public MutationMeta metaFor(ResourceId connectorResourceId, Timestamp nowTs) {
+    return repo.metaFor(
+        new ConnectorKey(connectorResourceId.getTenantId(), connectorResourceId.getId()), nowTs);
+  }
+
+  public MutationMeta metaForSafe(ResourceId connectorResourceId) {
+    return repo.metaForSafe(
+        new ConnectorKey(connectorResourceId.getTenantId(), connectorResourceId.getId()));
   }
 }

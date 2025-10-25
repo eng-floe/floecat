@@ -1,6 +1,7 @@
 package ai.floedb.metacat.service.catalog.impl;
 
 import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
@@ -19,13 +20,17 @@ import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 
 @GrpcService
 public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceService {
 
-  @Inject NamespaceRepository nsRepo;
   @Inject CatalogRepository catalogRepo;
+  @Inject NamespaceRepository namespaceRepo;
   @Inject TableRepository tableRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
@@ -56,8 +61,16 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
               final String token = request.hasPage() ? request.getPage().getPageToken() : "";
               final StringBuilder next = new StringBuilder();
 
-              var namespaces = nsRepo.listByName(catalogId, null, Math.max(1, limit), token, next);
-              int total = nsRepo.count(catalogId);
+              var namespaces =
+                  namespaceRepo.list(
+                      principalContext.getTenantId(),
+                      catalogId.getId(),
+                      List.of(),
+                      Math.max(1, limit),
+                      token,
+                      next);
+              int total =
+                  namespaceRepo.count(principalContext.getTenantId(), catalogId.getId(), List.of());
 
               var page =
                   PageResponse.newBuilder()
@@ -85,7 +98,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
               var namespaceId = request.getNamespaceId();
 
               var namespace =
-                  nsRepo
+                  namespaceRepo
                       .getById(namespaceId)
                       .orElseThrow(
                           () ->
@@ -109,7 +122,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
               var tsNow = nowTs();
 
-              var tenantId = principalContext.getTenantId().getId();
+              var tenantId = principalContext.getTenantId();
               var idempotencyKey =
                   request.hasIdempotency() ? request.getIdempotency().getKey() : "";
               byte[] fingerprint =
@@ -156,20 +169,17 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                 .build();
 
                         try {
-                          nsRepo.create(built);
+                          namespaceRepo.create(built);
                         } catch (BaseRepository.NameConflictException e) {
                           if (!idempotencyKey.isBlank()) {
                             var fullPath = new ArrayList<>(request.getSpec().getPathList());
                             fullPath.add(request.getSpec().getDisplayName());
-                            var existingId =
-                                nsRepo.getByPath(
-                                    tenantId, request.getSpec().getCatalogId(), fullPath);
-                            if (existingId.isPresent()) {
-                              var existing = nsRepo.getById(existingId.get());
-                              if (existing.isPresent()) {
-                                return new IdempotencyGuard.CreateResult<>(
-                                    existing.get(), existingId.get());
-                              }
+                            var existing =
+                                namespaceRepo.getByPath(
+                                    tenantId, request.getSpec().getCatalogId().getId(), fullPath);
+                            if (existing.isPresent()) {
+                              return new IdempotencyGuard.CreateResult<>(
+                                  existing.get(), existing.get().getResourceId());
                             }
                           }
                           var pretty =
@@ -189,9 +199,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                         return new IdempotencyGuard.CreateResult<>(built, namespaceId);
                       },
-                      (namespace) ->
-                          nsRepo.metaForSafe(
-                              request.getSpec().getCatalogId(), namespace.getResourceId()),
+                      (namespace) -> namespaceRepo.metaForSafe(namespace.getResourceId()),
                       idempotencyStore,
                       tsNow,
                       IDEMPOTENCY_TTL_SECONDS,
@@ -219,26 +227,26 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
               var namespaceId = request.getNamespaceId();
               ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId);
 
-              var tenantId = principalContext.getTenantId().getId();
-
-              var currentNamespace =
-                  nsRepo
+              var current =
+                  namespaceRepo
                       .getById(namespaceId)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
                                   correlationId, "namespace", Map.of("id", namespaceId.getId())));
-              var currentCatalogId = currentNamespace.getCatalogId();
-              var pathProvided = !request.getNewPathList().isEmpty();
-              var newLeaf =
+
+              var currentCatalogId = current.getCatalogId();
+
+              boolean pathProvided = !request.getNewPathList().isEmpty();
+              String newLeaf =
                   pathProvided
                       ? request.getNewPath(request.getNewPathCount() - 1)
                       : (request.getNewDisplayName().isBlank()
-                          ? currentNamespace.getDisplayName()
+                          ? current.getDisplayName()
                           : request.getNewDisplayName());
 
-              var currentParents = currentNamespace.getParentsList();
-              var newParents =
+              var currentParents = current.getParentsList();
+              List<String> newParents =
                   pathProvided
                       ? List.copyOf(
                           request.getNewPathList().subList(0, request.getNewPathCount() - 1))
@@ -254,39 +262,32 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     correlationId, "catalog", Map.of("id", targetCatalogId.getId()));
               }
 
-              var sameCatalog = targetCatalogId.getId().equals(currentCatalogId.getId());
-              var sameLeaf = newLeaf.equals(currentNamespace.getDisplayName());
-              var sameParents = Objects.equals(currentParents, newParents);
-
-              var meta = nsRepo.metaFor(currentCatalogId, namespaceId);
-              long expectedVersion = meta.getPointerVersion();
-              enforcePreconditions(correlationId, meta, request.getPrecondition());
-
+              boolean sameCatalog = targetCatalogId.getId().equals(currentCatalogId.getId());
+              boolean sameLeaf = newLeaf.equals(current.getDisplayName());
+              boolean sameParents = Objects.equals(currentParents, newParents);
               if (sameCatalog && sameLeaf && sameParents) {
-                var metaNoop = nsRepo.metaForSafe(currentCatalogId, namespaceId);
                 return RenameNamespaceResponse.newBuilder()
-                    .setNamespace(currentNamespace)
-                    .setMeta(metaNoop)
+                    .setNamespace(current)
+                    .setMeta(namespaceRepo.metaForSafe(namespaceId))
                     .build();
               }
 
               var updated =
-                  currentNamespace.toBuilder()
+                  current.toBuilder()
+                      .setCatalogId(targetCatalogId)
                       .setDisplayName(newLeaf)
                       .clearParents()
                       .addAllParents(newParents)
                       .build();
 
+              var meta = namespaceRepo.metaFor(namespaceId);
+              enforcePreconditions(correlationId, meta, request.getPrecondition());
+              long expectedVersion = meta.getPointerVersion();
+
+              final boolean ok;
               try {
-                nsRepo.renameOrMove(
-                    updated,
-                    currentCatalogId,
-                    currentParents,
-                    currentNamespace.getDisplayName(),
-                    targetCatalogId,
-                    newParents,
-                    expectedVersion);
-              } catch (BaseRepository.NameConflictException e) {
+                ok = namespaceRepo.update(updated, expectedVersion);
+              } catch (BaseRepository.NameConflictException nce) {
                 var parts = new ArrayList<>(newParents);
                 parts.add(newLeaf);
                 var pretty = String.join("/", parts);
@@ -294,22 +295,21 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     correlationId,
                     "namespace.already_exists",
                     Map.of("catalog", targetCatalogId.getId(), "path", pretty));
-              } catch (BaseRepository.PreconditionFailedException pfe) {
-                var nowMeta = nsRepo.metaForSafe(currentCatalogId, namespaceId);
+              }
+
+              if (!ok) {
+                var nowMeta = namespaceRepo.metaForSafe(namespaceId);
                 throw GrpcErrors.preconditionFailed(
                     correlationId,
                     "version_mismatch",
                     Map.of(
-                        "expected",
-                        Long.toString(expectedVersion),
-                        "actual",
-                        Long.toString(nowMeta.getPointerVersion())));
+                        "expected", Long.toString(expectedVersion),
+                        "actual", Long.toString(nowMeta.getPointerVersion())));
               }
 
-              var outMeta = nsRepo.metaForSafe(targetCatalogId, namespaceId);
               return RenameNamespaceResponse.newBuilder()
-                  .setNamespace(updated)
-                  .setMeta(outMeta)
+                  .setNamespace(namespaceRepo.getById(namespaceId).orElse(updated))
+                  .setMeta(namespaceRepo.metaForSafe(namespaceId))
                   .build();
             }),
         correlationId());
@@ -325,66 +325,53 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
               authz.require(principalContext, "namespace.write");
 
-              final var tenantId = principalContext.getTenantId().getId();
               final var namespaceId = request.getNamespaceId();
               ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId);
 
-              var namespace =
-                  nsRepo
-                      .getById(namespaceId)
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId, "namespace", Map.of("id", namespaceId.getId())));
+              MutationMeta meta;
+              try {
+                meta = namespaceRepo.metaFor(namespaceId);
+              } catch (BaseRepository.NotFoundException e) {
+                namespaceRepo.delete(namespaceId);
+                return DeleteNamespaceResponse.newBuilder()
+                    .setMeta(namespaceRepo.metaForSafe(namespaceId))
+                    .build();
+              }
 
-              var catalogId = namespace.getCatalogId();
+              var namespace = namespaceRepo.getById(namespaceId).orElse(null);
+              var catalogId =
+                  (namespace != null && namespace.hasCatalogId()) ? namespace.getCatalogId() : null;
 
               if (catalogId == null) {
-                var safe =
-                    nsRepo.metaForSafe(
-                        ResourceId.newBuilder()
-                            .setTenantId(tenantId)
-                            .setId("_unknown_")
-                            .setKind(ResourceKind.RK_CATALOG)
-                            .build(),
-                        namespaceId);
+                var safe = namespaceRepo.metaForSafe(namespaceId);
+                namespaceRepo.delete(namespaceId);
                 return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
               }
 
-              if (request.getRequireEmpty() && tableRepo.count(catalogId, namespaceId) > 0) {
-                var currentNamespace =
-                    nsRepo
-                        .getById(namespaceId)
-                        .orElseThrow(
-                            () ->
-                                GrpcErrors.notFound(
-                                    correlationId, "namespace", Map.of("id", namespaceId.getId())));
-
-                String displayName =
-                    (currentNamespace != null)
-                        ? prettyNamespacePath(
-                            currentNamespace.getParentsList(), currentNamespace.getDisplayName())
-                        : namespaceId.getId();
+              if (request.getRequireEmpty()
+                  && tableRepo.count(
+                          catalogId.getTenantId(), catalogId.getId(), namespaceId.getId())
+                      > 0) {
+                var pretty =
+                    prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
                 throw GrpcErrors.conflict(
-                    correlationId, "namespace.not_empty", Map.of("display_name", displayName));
+                    correlationId, "namespace.not_empty", Map.of("display_name", pretty));
               }
 
-              var meta = nsRepo.metaFor(catalogId, namespaceId);
-              long expectedVersion = meta.getPointerVersion();
               enforcePreconditions(correlationId, meta, request.getPrecondition());
+              long expectedVersion = meta.getPointerVersion();
 
               try {
-                nsRepo.deleteWithPrecondition(catalogId, namespaceId, expectedVersion);
-              } catch (BaseRepository.PreconditionFailedException pfe) {
-                var nowMeta = nsRepo.metaForSafe(catalogId, namespaceId);
-                throw GrpcErrors.preconditionFailed(
-                    correlationId,
-                    "version_mismatch",
-                    Map.of(
-                        "expected",
-                        Long.toString(expectedVersion),
-                        "actual",
-                        Long.toString(nowMeta.getPointerVersion())));
+                boolean ok = namespaceRepo.deleteWithPrecondition(namespaceId, expectedVersion);
+                if (!ok) {
+                  var nowMeta = namespaceRepo.metaForSafe(namespaceId);
+                  throw GrpcErrors.preconditionFailed(
+                      correlationId,
+                      "version_mismatch",
+                      Map.of(
+                          "expected", Long.toString(expectedVersion),
+                          "actual", Long.toString(nowMeta.getPointerVersion())));
+                }
               } catch (BaseRepository.NotFoundException nfe) {
                 throw GrpcErrors.notFound(
                     correlationId, "namespace", Map.of("id", namespaceId.getId()));

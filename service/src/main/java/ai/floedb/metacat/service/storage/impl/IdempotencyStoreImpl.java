@@ -3,8 +3,8 @@ package ai.floedb.metacat.service.storage.impl;
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
-import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.BlobStore;
 import ai.floedb.metacat.service.storage.IdempotencyStore;
 import ai.floedb.metacat.service.storage.PointerStore;
@@ -53,7 +53,7 @@ public final class IdempotencyStoreImpl implements IdempotencyStore {
             .setExpiresAt(expiresAt)
             .build();
 
-    String uri = Keys.memUriFor(key, "record.pb");
+    String uri = Keys.memoryUriForPointer(key, "record.pb");
 
     blobs.put(uri, rec.toByteArray(), "application/x-protobuf");
 
@@ -90,7 +90,7 @@ public final class IdempotencyStoreImpl implements IdempotencyStore {
             .setExpiresAt(expiresAt)
             .build();
 
-    String uri = Keys.memUriFor(key, "record.pb");
+    String uri = Keys.memoryUriForPointer(key, "record.pb");
     blobs.put(uri, rec.toByteArray(), "application/x-protobuf");
 
     for (int i = 0; i < BaseRepository.CAS_MAX; i++) {

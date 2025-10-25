@@ -9,8 +9,8 @@ import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
-import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
 import ai.floedb.metacat.service.util.TestSupport;
@@ -88,11 +88,11 @@ class TableRepositoryTest {
             .build();
     tableRepo.create(td);
 
-    String nsKeyRow = Keys.tblByNamePtr(tenant, catRid.getId(), nsRid.getId(), "orders");
+    String nsKeyRow = Keys.tablePointerByName(tenant, catRid.getId(), nsRid.getId(), "orders");
     var pointerRow = ptr.get(nsKeyRow);
     assertTrue(pointerRow.isPresent(), "by-namespace ROW pointer missing");
 
-    String nsKeyPfx = Keys.tblByNamePrefix(tenant, catRid.getId(), nsRid.getId());
+    var nsKeyPfx = Keys.tablePointerByNamePrefix(tenant, catRid.getId(), nsRid.getId());
     var rowsUnderPfx = ptr.listPointersByPrefix(nsKeyPfx, 100, "", new StringBuilder());
     assertTrue(
         rowsUnderPfx.stream().anyMatch(r -> r.key().equals(nsKeyRow)),
@@ -114,7 +114,7 @@ class TableRepositoryTest {
     var fetched = tableRepo.getById(tableRid).orElseThrow();
     assertEquals("orders", fetched.getDisplayName());
 
-    var list = tableRepo.listByNamespace(catRid, nsRid, 50, "", new StringBuilder());
+    var list = tableRepo.list(tenant, catRid.getId(), nsRid.getId(), 50, "", new StringBuilder());
     assertEquals(1, list.size());
 
     var cur = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
@@ -165,7 +165,7 @@ class TableRepositoryTest {
             .build();
     tbls.create(seed);
 
-    String canonKey = Keys.tblByIdPtr(tenant, tblId.getId());
+    String canonKey = Keys.tablePointerById(tenant, tblId.getId());
     long v0 = ptr.get(canonKey).orElseThrow().getVersion();
 
     int WORKERS = 48;
@@ -184,7 +184,7 @@ class TableRepositoryTest {
             for (int i = 0; i < OPS; i++) {
               int pick = rnd.nextInt(100);
               try {
-                if (pick < 35) { // UPDATE schema
+                if (pick < 35) {
                   if (seedDeleted.get()) continue;
                   String col = "c" + rnd.nextInt(1000);
                   var curMeta = tbls.metaFor(tblId);
@@ -197,32 +197,44 @@ class TableRepositoryTest {
                                   + col
                                   + "\",\"type\":\"double\"}]}")
                           .build();
-                  tbls.update(updated, curMeta.getPointerVersion());
+                  boolean ok = tbls.update(updated, curMeta.getPointerVersion());
+                  if (!ok) {
+                    throw new BaseRepository.PreconditionFailedException("version mismatch");
+                  }
+
                 } else if (pick < 60) {
                   if (seedDeleted.get()) continue;
                   var curMeta = tbls.metaFor(tblId);
+                  var cur = tbls.getById(tblId).orElseThrow();
                   String target = "seed_" + rnd.nextInt(5);
-                  tbls.rename(tblId, target, curMeta.getPointerVersion());
+                  var renamed = cur.toBuilder().setDisplayName(target).build();
+                  boolean ok = tbls.update(renamed, curMeta.getPointerVersion());
+                  if (!ok) {
+                    throw new BaseRepository.PreconditionFailedException("version mismatch");
+                  }
+
                 } else if (pick < 85) {
                   if (seedDeleted.get()) continue;
                   var curMeta = tbls.metaFor(tblId);
                   var cur = tbls.getById(tblId).orElseThrow();
                   var toNs = rnd.nextBoolean() ? ns1Id : ns2Id;
                   var updated = cur.toBuilder().setNamespaceId(toNs).build();
-                  tbls.move(
-                      updated,
-                      cur.getDisplayName(),
-                      cur.getCatalogId(),
-                      cur.getNamespaceId(),
-                      catId,
-                      toNs,
-                      curMeta.getPointerVersion());
+                  boolean ok = tbls.update(updated, curMeta.getPointerVersion());
+                  if (!ok) {
+                    throw new BaseRepository.PreconditionFailedException("version mismatch");
+                  }
+
                 } else {
                   if (seedDeleted.compareAndSet(false, true)) {
                     var curMeta = tbls.metaFor(tblId);
-                    tbls.deleteWithPrecondition(tblId, curMeta.getPointerVersion());
+                    boolean ok = tbls.deleteWithPrecondition(tblId, curMeta.getPointerVersion());
+                    if (!ok) {
+                      seedDeleted.set(false);
+                      throw new BaseRepository.PreconditionFailedException("version mismatch");
+                    }
                   }
                 }
+
               } catch (BaseRepository.PreconditionFailedException
                   | BaseRepository.NameConflictException
                   | BaseRepository.NotFoundException

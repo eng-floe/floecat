@@ -53,8 +53,15 @@ class MetaForBehaviorTest {
             .setCreatedAt(Timestamps.fromMillis(clock.millis()))
             .build());
 
+    var update =
+        Catalog.newBuilder()
+            .setResourceId(catId)
+            .setDisplayName("sales_new")
+            .setCreatedAt(Timestamps.fromMillis(clock.millis()))
+            .build();
+
     var m1 = cats.metaFor(catId);
-    cats.rename("t-1", catId, "sales_new", m1.getPointerVersion());
+    cats.update(update, m1.getPointerVersion());
     var m2 = cats.metaFor(catId);
 
     assertTrue(m2.getPointerVersion() > m1.getPointerVersion(), "pointer version must increase");

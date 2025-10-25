@@ -3,7 +3,7 @@ package ai.floedb.metacat.service.storage.util;
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
-import ai.floedb.metacat.service.repo.util.Keys;
+import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.storage.IdempotencyStore;
 import ai.floedb.metacat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.Duration;
@@ -36,7 +36,7 @@ public final class IdempotencyGuard {
       return result.resource();
     }
 
-    String key = Keys.idemKey(tenantId, opName, idempotencyKey);
+    String key = Keys.idempotencyKey(tenantId, opName, idempotencyKey);
     String requestHash = sha256B64(requestBytes);
 
     var existing = store.get(key);

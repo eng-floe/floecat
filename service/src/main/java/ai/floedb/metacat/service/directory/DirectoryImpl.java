@@ -8,6 +8,7 @@ import ai.floedb.metacat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.LookupNamespaceResponse;
 import ai.floedb.metacat.catalog.rpc.LookupTableRequest;
 import ai.floedb.metacat.catalog.rpc.LookupTableResponse;
+import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.ResolveFQTablesRequest;
@@ -55,7 +56,7 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
               var tenantId = principalContext.getTenantId();
               Catalog cat =
                   catalogs
-                      .getByName(tenantId.getId(), request.getRef().getCatalog())
+                      .getByName(tenantId, request.getRef().getCatalog())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -105,7 +106,7 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
 
               Catalog cat =
                   catalogs
-                      .getByName(tenantId.getId(), ref.getCatalog())
+                      .getByName(tenantId, ref.getCatalog())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -116,9 +117,9 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
                 fullPath.add(ref.getName());
               }
 
-              ResourceId nsId =
+              Namespace namespace =
                   namespaces
-                      .getByPath(tenantId.getId(), cat.getResourceId(), fullPath)
+                      .getByPath(tenantId, cat.getResourceId().getId(), fullPath)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -130,7 +131,9 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
                                       "path",
                                       String.join("/", fullPath))));
 
-              return ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build();
+              return ResolveNamespaceResponse.newBuilder()
+                  .setResourceId(namespace.getResourceId())
+                  .build();
             }),
         correlationId());
   }
@@ -190,15 +193,15 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
 
               Catalog catalog =
                   catalogs
-                      .getByName(tenantId.getId(), nameRef.getCatalog())
+                      .getByName(tenantId, nameRef.getCatalog())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
                                   correlationId(), "catalog", Map.of("id", nameRef.getCatalog())));
 
-              ResourceId namespaceId =
+              Namespace namespace =
                   namespaces
-                      .getByPath(tenantId.getId(), catalog.getResourceId(), nameRef.getPathList())
+                      .getByPath(tenantId, catalog.getResourceId().getId(), nameRef.getPathList())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -212,7 +215,11 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
 
               Table table =
                   tables
-                      .getByName(catalog.getResourceId(), namespaceId, nameRef.getName())
+                      .getByName(
+                          tenantId,
+                          catalog.getResourceId().getId(),
+                          namespace.getResourceId().getId(),
+                          nameRef.getName())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -316,18 +323,19 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
                     validateTableNameOrThrow(nameRef);
 
                     Catalog catalog =
-                        catalogs.getByName(tenantId.getId(), nameRef.getCatalog()).orElseThrow();
-                    ResourceId namespaceId =
+                        catalogs.getByName(tenantId, nameRef.getCatalog()).orElseThrow();
+                    Namespace namespace =
                         namespaces
                             .getByPath(
-                                tenantId.getId(), catalog.getResourceId(), nameRef.getPathList())
+                                tenantId, catalog.getResourceId().getId(), nameRef.getPathList())
                             .orElseThrow();
 
                     Optional<Table> tableOpt =
                         tables
-                            .listByNamespace(
-                                catalog.getResourceId(),
-                                namespaceId,
+                            .list(
+                                tenantId,
+                                catalog.getResourceId().getId(),
+                                namespace.getResourceId().getId(),
                                 Integer.MAX_VALUE,
                                 "",
                                 new StringBuilder())
@@ -373,15 +381,15 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
 
                 Catalog catalog =
                     catalogs
-                        .getByName(tenantId.getId(), prefix.getCatalog())
+                        .getByName(tenantId, prefix.getCatalog())
                         .orElseThrow(
                             () ->
                                 GrpcErrors.notFound(
                                     correlationId(), "catalog", Map.of("id", prefix.getCatalog())));
 
-                ResourceId namespaceId =
+                Namespace namespace =
                     namespaces
-                        .getByPath(tenantId.getId(), catalog.getResourceId(), prefix.getPathList())
+                        .getByPath(tenantId, catalog.getResourceId().getId(), prefix.getPathList())
                         .orElseThrow(
                             () ->
                                 GrpcErrors.notFound(
@@ -395,9 +403,18 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
 
                 StringBuilder next = new StringBuilder();
                 var entries =
-                    tables.listByNamespace(
-                        catalog.getResourceId(), namespaceId, Math.max(1, limit), token, next);
-                int total = tables.count(catalog.getResourceId(), namespaceId);
+                    tables.list(
+                        tenantId,
+                        catalog.getResourceId().getId(),
+                        namespace.getResourceId().getId(),
+                        Math.max(1, limit),
+                        token,
+                        next);
+                int total =
+                    tables.count(
+                        tenantId,
+                        catalog.getResourceId().getId(),
+                        namespace.getResourceId().getId());
 
                 for (Table table : entries) {
                   var nr =

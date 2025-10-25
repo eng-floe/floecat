@@ -6,7 +6,7 @@ import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
-import ai.floedb.metacat.service.repo.util.Keys;
+import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
 import ai.floedb.metacat.service.util.TestSupport;
@@ -94,16 +94,16 @@ class CatalogRepositoryTest {
     namespaceRepo.create(ns);
 
     var next = new StringBuilder();
-    List<Catalog> catalogs = catalogRepo.listByName(tenant, 10, "", next);
+    List<Catalog> catalogs = catalogRepo.list(tenant, 10, "", next);
     assertEquals(1, catalogs.size());
 
-    var catsPrefix = Keys.catPtr(tenant, "");
+    var catsPrefix = Keys.catalogPointerById(tenant, "");
     var catKeys = ptr.listPointersByPrefix(catsPrefix, 100, "", new StringBuilder());
     assertEquals(1, catKeys.size());
     assertTrue(catKeys.get(0).key().startsWith(catsPrefix));
 
     var nsNext = new StringBuilder();
-    var nss = namespaceRepo.listByName(catRid, null, 10, "", nsNext);
+    var nss = namespaceRepo.list(tenant, catRid.getId(), List.of(), 10, "", nsNext);
     assertEquals(2, nss.size());
   }
 }

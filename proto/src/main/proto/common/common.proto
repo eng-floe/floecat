@@ -73,7 +73,7 @@ message Tag {
 // ----- Auth: Principal context carried on internal gRPC -----
 
 message PrincipalContext {
-  ResourceId tenant_id = 1;
+  string tenant_id = 1;
   string subject = 2;
   string client_id = 3;
   repeated string groups = 4;

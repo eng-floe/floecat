@@ -10,7 +10,6 @@ import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
 import ai.floedb.metacat.service.repo.impl.StatsRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
-import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import ai.floedb.metacat.service.storage.IdempotencyStore;
@@ -137,10 +136,8 @@ public class TableStatisticServiceImpl extends BaseServiceImpl implements TableS
                     throw GrpcErrors.invalidArgument(correlationId(), "snapshot.missing", Map.of());
               }
 
-              var items = stats.listColumnStats(tableId, snapId, Math.max(1, limit), token, next);
-              var tenant = tableId.getTenantId();
-              int total =
-                  stats.countByPrefix(Keys.snapColStatsPrefix(tenant, tableId.getId(), snapId));
+              var items = stats.list(tableId, snapId, Math.max(1, limit), token, next);
+              int total = stats.count(tableId, snapId);
 
               return ListColumnStatsResponse.newBuilder()
                   .addAllColumns(items)
@@ -194,7 +191,7 @@ public class TableStatisticServiceImpl extends BaseServiceImpl implements TableS
 
               var tableStatsProto =
                   MutationOps.createProto(
-                      principalContext.getTenantId().getId(),
+                      principalContext.getTenantId(),
                       "PutTableStats",
                       idemKey,
                       () -> fingerprint,
@@ -250,7 +247,7 @@ public class TableStatisticServiceImpl extends BaseServiceImpl implements TableS
                               "snapshot",
                               Map.of("id", Long.toString(request.getSnapshotId()))));
 
-              var tenant = principalContext.getTenantId().getId();
+              var tenant = principalContext.getTenantId();
               var baseKey = request.hasIdempotency() ? request.getIdempotency().getKey() : "";
 
               int upserted = 0;

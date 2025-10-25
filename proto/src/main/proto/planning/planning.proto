@@ -55,7 +55,7 @@ message ExpansionMap {
 
 message PlanDescriptor {
   string plan_id = 1;
-  ai.floedb.metacat.common.ResourceId tenant_id = 2;
+  string tenant_id = 2;
   google.protobuf.Timestamp created_at = 3;
   google.protobuf.Timestamp expires_at = 4;
   SnapshotSet snapshots = 5;

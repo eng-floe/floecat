@@ -1,6 +1,7 @@
 package ai.floedb.metacat.service.catalog.impl;
 
 import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.catalog.util.MutationOps;
@@ -119,7 +120,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
               var tsNow = nowTs();
 
-              var tenantId = principalContext.getTenantId().getId();
+              var tenantId = principalContext.getTenantId();
               var idempotencyKey =
                   request.hasIdempotency() ? request.getIdempotency().getKey() : "";
 
@@ -188,22 +189,39 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
               long snapshotId = request.getSnapshotId();
               ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
 
-              var meta = snapshotRepo.metaFor(tableId, snapshotId);
+              MutationMeta meta;
+              try {
+                meta = snapshotRepo.metaFor(tableId, snapshotId);
+              } catch (BaseRepository.NotFoundException e) {
+                snapshotRepo.delete(tableId, snapshotId);
+                return DeleteSnapshotResponse.newBuilder()
+                    .setMeta(snapshotRepo.metaForSafe(tableId, snapshotId))
+                    .build();
+              }
+
               long expectedVersion = meta.getPointerVersion();
               enforcePreconditions(correlationId, meta, request.getPrecondition());
 
               try {
-                snapshotRepo.deleteWithPrecondition(tableId, snapshotId, expectedVersion);
+                boolean ok =
+                    snapshotRepo.deleteWithPrecondition(tableId, snapshotId, expectedVersion);
+                if (!ok) {
+                  var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
+                  throw GrpcErrors.preconditionFailed(
+                      correlationId,
+                      "version_mismatch",
+                      Map.of(
+                          "expected", Long.toString(expectedVersion),
+                          "actual", Long.toString(nowMeta.getPointerVersion())));
+                }
               } catch (BaseRepository.PreconditionFailedException pfe) {
                 var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
                 throw GrpcErrors.preconditionFailed(
                     correlationId,
                     "version_mismatch",
                     Map.of(
-                        "expected",
-                        Long.toString(expectedVersion),
-                        "actual",
-                        Long.toString(nowMeta.getPointerVersion())));
+                        "expected", Long.toString(expectedVersion),
+                        "actual", Long.toString(nowMeta.getPointerVersion())));
               } catch (BaseRepository.NotFoundException nfe) {
                 throw GrpcErrors.notFound(
                     correlationId, "snapshot", Map.of("id", Long.toString(snapshotId)));

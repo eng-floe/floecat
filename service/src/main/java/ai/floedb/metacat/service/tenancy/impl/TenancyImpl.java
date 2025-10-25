@@ -1,5 +1,7 @@
 package ai.floedb.metacat.service.tenancy.impl;
 
+import ai.floedb.metacat.common.rpc.MutationMeta;
+import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.catalog.util.MutationOps;
@@ -17,7 +19,6 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.Map;
-import java.util.Objects;
 import java.util.UUID;
 
 @GrpcService
@@ -35,7 +36,7 @@ public class TenancyImpl extends BaseServiceImpl implements Tenancy {
             () -> {
               final var principalContext = principal.get();
               final var correlationId = principalContext.getCorrelationId();
-              final var tenantId = principalContext.getTenantId().getId();
+              final var tenantId = principalContext.getTenantId();
 
               authz.require(principalContext, "tenant.write");
 
@@ -52,21 +53,21 @@ public class TenancyImpl extends BaseServiceImpl implements Tenancy {
                       idempotencyKey,
                       () -> fingerprint,
                       () -> {
-                        final String tenantUUID =
+                        final String tenantUuid =
                             !idempotencyKey.isBlank()
                                 ? deterministicUuid(tenantId, "tenant", idempotencyKey)
                                 : UUID.randomUUID().toString();
 
-                        var rid =
+                        var resourceId =
                             ResourceId.newBuilder()
                                 .setTenantId(tenantId)
-                                .setId(tenantUUID)
+                                .setId(tenantUuid)
                                 .setKind(ResourceKind.RK_TENANT)
                                 .build();
 
-                        var built =
+                        var tenant =
                             Tenant.newBuilder()
-                                .setResourceId(rid)
+                                .setResourceId(resourceId)
                                 .setDisplayName(
                                     mustNonEmpty(
                                         request.getSpec().getDisplayName(),
@@ -77,10 +78,10 @@ public class TenancyImpl extends BaseServiceImpl implements Tenancy {
                                 .build();
 
                         try {
-                          tenants.create(built);
+                          tenants.create(tenant);
                         } catch (BaseRepository.NameConflictException nce) {
                           if (!idempotencyKey.isBlank()) {
-                            var existing = tenants.getByName(built.getDisplayName());
+                            var existing = tenants.getByName(tenant.getDisplayName());
                             if (existing.isPresent()) {
                               return new IdempotencyGuard.CreateResult<>(
                                   existing.get(), existing.get().getResourceId());
@@ -89,10 +90,10 @@ public class TenancyImpl extends BaseServiceImpl implements Tenancy {
                           throw GrpcErrors.conflict(
                               correlationId,
                               "tenant.already_exists",
-                              Map.of("display_name", built.getDisplayName()));
+                              Map.of("display_name", tenant.getDisplayName()));
                         }
 
-                        return new IdempotencyGuard.CreateResult<>(built, rid);
+                        return new IdempotencyGuard.CreateResult<>(tenant, resourceId);
                       },
                       (t) -> tenants.metaFor(t.getResourceId()),
                       idempotencyStore,
@@ -118,18 +119,18 @@ public class TenancyImpl extends BaseServiceImpl implements Tenancy {
               final var correlationId = principalContext.getCorrelationId();
               authz.require(principalContext, "tenant.read");
 
-              var rid = request.getTenantId();
-              ensureKind(rid, ResourceKind.RK_TENANT, "tenant_id", correlationId);
+              var resourceId = request.getTenantId();
+              ensureKind(resourceId, ResourceKind.RK_TENANT, "tenant_id", correlationId);
 
-              var t =
+              var tenant =
                   tenants
-                      .getById(rid)
+                      .getById(resourceId)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
-                                  correlationId, "tenant", Map.of("id", rid.getId())));
+                                  correlationId, "tenant", Map.of("id", resourceId.getId())));
 
-              return GetTenantResponse.newBuilder().setTenant(t).build();
+              return GetTenantResponse.newBuilder().setTenant(tenant).build();
             }),
         correlationId());
   }
@@ -137,23 +138,30 @@ public class TenancyImpl extends BaseServiceImpl implements Tenancy {
   @Override
   public Uni<ListTenantsResponse> listTenants(ListTenantsRequest request) {
     return mapFailures(
-        runWithRetry(
+        run(
             () -> {
-              final var principalContext = principal.get();
+              var principalContext = principal.get();
+
               authz.require(principalContext, "tenant.read");
 
-              final int pageSize = Math.max(1, request.getPageSize());
-              final String token = request.getPageToken();
-              final var next = new StringBuilder();
+              final int limit =
+                  (request.hasPage() && request.getPage().getPageSize() > 0)
+                      ? request.getPage().getPageSize()
+                      : 50;
+              final String token = request.hasPage() ? request.getPage().getPageToken() : "";
+              final StringBuilder next = new StringBuilder();
 
-              var out =
-                  tenants.listByName(
-                      pageSize, Objects.toString(request.getNamePrefix(), ""), token, next);
+              var items = tenants.list(Math.max(1, limit), token, next);
 
-              return ListTenantsResponse.newBuilder()
-                  .addAllTenants(out)
-                  .setNextPageToken(next.toString())
-                  .build();
+              int total = tenants.count();
+
+              var page =
+                  PageResponse.newBuilder()
+                      .setNextPageToken(next.toString())
+                      .setTotalSize(total)
+                      .build();
+
+              return ListTenantsResponse.newBuilder().addAllTenants(items).setPage(page).build();
             }),
         correlationId());
   }
@@ -167,72 +175,44 @@ public class TenancyImpl extends BaseServiceImpl implements Tenancy {
               final var correlationId = principalContext.getCorrelationId();
               authz.require(principalContext, "tenant.write");
 
-              var rid = request.getTenantId();
-              ensureKind(rid, ResourceKind.RK_TENANT, "tenant_id", correlationId);
+              var resourceId = request.getTenantId();
+              ensureKind(resourceId, ResourceKind.RK_TENANT, "tenant_id", correlationId);
 
-              var prev =
+              var currentTenant =
                   tenants
-                      .getById(rid)
+                      .getById(resourceId)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
-                                  correlationId, "tenant", Map.of("id", rid.getId())));
+                                  correlationId, "tenant", Map.of("id", resourceId.getId())));
 
-              var desiredName =
+              var desiredDisplayName =
                   mustNonEmpty(request.getSpec().getDisplayName(), "display_name", correlationId);
-              var desiredDesc = request.getSpec().getDescription();
+              var desiredDescription = request.getSpec().getDescription();
 
-              var meta = tenants.metaFor(rid);
-              long expectedVersion = meta.getPointerVersion();
-              enforcePreconditions(correlationId, meta, request.getPrecondition());
+              var desiredTenant =
+                  currentTenant.toBuilder()
+                      .setDisplayName(desiredDisplayName)
+                      .setDescription(desiredDescription)
+                      .build();
 
-              if (desiredName.equals(prev.getDisplayName())
-                  && Objects.equals(desiredDesc, prev.getDescription())) {
+              if (desiredTenant.equals(currentTenant)) {
+                var metaNoop = tenants.metaForSafe(resourceId);
+                enforcePreconditions(correlationId, metaNoop, request.getPrecondition());
                 return UpdateTenantResponse.newBuilder()
-                    .setTenant(prev)
-                    .setMeta(tenants.metaForSafe(rid, nowTs()))
+                    .setTenant(currentTenant)
+                    .setMeta(metaNoop)
                     .build();
               }
 
-              if (!desiredName.equals(prev.getDisplayName())) {
-                try {
-                  tenants.rename(rid, desiredName, expectedVersion);
-                } catch (BaseRepository.NameConflictException nce) {
-                  throw GrpcErrors.conflict(
-                      correlationId, "tenant.already_exists", Map.of("display_name", desiredName));
-                } catch (BaseRepository.PreconditionFailedException pfe) {
-                  var now = tenants.metaForSafe(rid);
-                  throw GrpcErrors.preconditionFailed(
-                      correlationId,
-                      "version_mismatch",
-                      Map.of(
-                          "expected", Long.toString(expectedVersion),
-                          "actual", Long.toString(now.getPointerVersion())));
-                }
+              var currentMeta = tenants.metaFor(resourceId);
+              enforcePreconditions(correlationId, currentMeta, request.getPrecondition());
+              long expectedVersion = currentMeta.getPointerVersion();
 
-                if (!Objects.equals(desiredDesc, prev.getDescription())) {
-                  meta = tenants.metaFor(rid);
-                  expectedVersion = meta.getPointerVersion();
-                  var renamed = tenants.getById(rid).orElse(prev);
-                  var withDesc = renamed.toBuilder().setDescription(desiredDesc).build();
-                  try {
-                    tenants.update(withDesc, expectedVersion);
-                  } catch (BaseRepository.PreconditionFailedException pfe) {
-                    var now = tenants.metaForSafe(rid);
-                    throw GrpcErrors.preconditionFailed(
-                        correlationId,
-                        "version_mismatch",
-                        Map.of(
-                            "expected", Long.toString(expectedVersion),
-                            "actual", Long.toString(now.getPointerVersion())));
-                  }
-                }
-              } else {
-                var updated = prev.toBuilder().setDescription(desiredDesc).build();
-                try {
-                  tenants.update(updated, expectedVersion);
-                } catch (BaseRepository.PreconditionFailedException pfe) {
-                  var now = tenants.metaForSafe(rid);
+              try {
+                boolean ok = tenants.update(desiredTenant, expectedVersion);
+                if (!ok) {
+                  var now = tenants.metaForSafe(resourceId);
                   throw GrpcErrors.preconditionFailed(
                       correlationId,
                       "version_mismatch",
@@ -240,11 +220,16 @@ public class TenancyImpl extends BaseServiceImpl implements Tenancy {
                           "expected", Long.toString(expectedVersion),
                           "actual", Long.toString(now.getPointerVersion())));
                 }
+              } catch (BaseRepository.NameConflictException nce) {
+                throw GrpcErrors.conflict(
+                    correlationId,
+                    "tenant.already_exists",
+                    Map.of("display_name", desiredDisplayName));
               }
 
               return UpdateTenantResponse.newBuilder()
-                  .setTenant(tenants.getById(rid).orElse(prev))
-                  .setMeta(tenants.metaForSafe(rid))
+                  .setTenant(tenants.getById(resourceId).orElse(desiredTenant))
+                  .setMeta(tenants.metaForSafe(resourceId))
                   .build();
             }),
         correlationId());
@@ -259,38 +244,49 @@ public class TenancyImpl extends BaseServiceImpl implements Tenancy {
               final var correlationId = principalContext.getCorrelationId();
               authz.require(principalContext, "tenant.write");
 
-              var tenantId = request.getTenantId();
-              ensureKind(tenantId, ResourceKind.RK_TENANT, "tenant_id", correlationId);
+              var resourceId = request.getTenantId();
+              ensureKind(resourceId, ResourceKind.RK_TENANT, "tenant_id", correlationId);
 
-              if (catalogs.count(tenantId.getId()) > 0) {
-                var currentTenant = tenants.getById(tenantId).orElse(null);
+              if (catalogs.count(resourceId.getId()) > 0) {
+                var currentTenant = tenants.getById(resourceId).orElse(null);
                 var displayName =
                     (currentTenant != null && !currentTenant.getDisplayName().isBlank())
                         ? currentTenant.getDisplayName()
-                        : tenantId.getId();
+                        : resourceId.getId();
                 throw GrpcErrors.conflict(
                     correlationId, "tenant.not_empty", Map.of("display_name", displayName));
               }
 
-              var meta = tenants.metaFor(tenantId);
-              long expectedVersion = meta.getPointerVersion();
-              enforcePreconditions(correlationId, meta, request.getPrecondition());
-
+              MutationMeta currentMeta;
               try {
-                tenants.deleteWithPrecondition(tenantId, expectedVersion);
-              } catch (BaseRepository.PreconditionFailedException pfe) {
-                var now = tenants.metaForSafe(tenantId);
-                throw GrpcErrors.preconditionFailed(
-                    correlationId,
-                    "version_mismatch",
-                    Map.of(
-                        "expected", Long.toString(expectedVersion),
-                        "actual", Long.toString(now.getPointerVersion())));
-              } catch (BaseRepository.NotFoundException nfe) {
-                throw GrpcErrors.notFound(correlationId, "tenant", Map.of("id", tenantId.getId()));
+                currentMeta = tenants.metaFor(resourceId);
+              } catch (BaseRepository.NotFoundException pointerMissing) {
+                tenants.delete(resourceId);
+                return DeleteTenantResponse.newBuilder()
+                    .setMeta(tenants.metaForSafe(resourceId))
+                    .build();
               }
 
-              return DeleteTenantResponse.newBuilder().setMeta(meta).build();
+              enforcePreconditions(correlationId, currentMeta, request.getPrecondition());
+              long expectedVersion = currentMeta.getPointerVersion();
+
+              try {
+                boolean ok = tenants.deleteWithPrecondition(resourceId, expectedVersion);
+                if (!ok) {
+                  var now = tenants.metaForSafe(resourceId);
+                  throw GrpcErrors.preconditionFailed(
+                      correlationId,
+                      "version_mismatch",
+                      Map.of(
+                          "expected", Long.toString(expectedVersion),
+                          "actual", Long.toString(now.getPointerVersion())));
+                }
+              } catch (BaseRepository.NotFoundException nfe) {
+                throw GrpcErrors.notFound(
+                    correlationId, "tenant", Map.of("id", resourceId.getId()));
+              }
+
+              return DeleteTenantResponse.newBuilder().setMeta(currentMeta).build();
             }),
         correlationId());
   }

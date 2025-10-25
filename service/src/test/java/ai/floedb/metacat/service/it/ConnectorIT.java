@@ -48,7 +48,7 @@ public class ConnectorIT {
                 .setDisplayName("dummy-conn")
                 .setKind(ConnectorKind.CK_UNITY)
                 .setTargetCatalogDisplayName("cat-e2e")
-                .setTargetTenantId(tenantId)
+                .setTargetTenantId(tenantId.getId())
                 .setUri("dummy://ignored")
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
                 .build());
@@ -82,17 +82,48 @@ public class ConnectorIT {
 
     var catId = catalogs.getByName(tenantId.getId(), "cat-e2e").orElseThrow().getResourceId();
 
-    assertEquals(2, namespaces.count(catId));
+    assertEquals(2, namespaces.count(tenantId.getId(), catId.getId(), List.of()));
 
-    var dbNsId = namespaces.getByPath(tenantId.getId(), catId, List.of("db")).orElseThrow();
+    var dbNsId = namespaces.getByPath(tenantId.getId(), catId.getId(), List.of("db")).orElseThrow();
     var anaNsId =
-        namespaces.getByPath(tenantId.getId(), catId, List.of("analytics", "sales")).orElseThrow();
+        namespaces
+            .getByPath(tenantId.getId(), catId.getId(), List.of("analytics", "sales"))
+            .orElseThrow();
 
-    assertEquals(2, tables.listByNamespace(catId, dbNsId, 50, "", new StringBuilder()).size());
-    assertEquals(1, tables.listByNamespace(catId, anaNsId, 50, "", new StringBuilder()).size());
+    assertEquals(
+        2,
+        tables
+            .list(
+                tenantId.getId(),
+                catId.getId(),
+                dbNsId.getResourceId().getId(),
+                50,
+                "",
+                new StringBuilder())
+            .size());
+    assertEquals(
+        1,
+        tables
+            .list(
+                tenantId.getId(),
+                catId.getId(),
+                anaNsId.getResourceId().getId(),
+                50,
+                "",
+                new StringBuilder())
+            .size());
 
     var anyTable =
-        tables.listByNamespace(catId, dbNsId, 50, "", new StringBuilder()).get(0).getResourceId();
+        tables
+            .list(
+                tenantId.getId(),
+                catId.getId(),
+                dbNsId.getResourceId().getId(),
+                50,
+                "",
+                new StringBuilder())
+            .get(0)
+            .getResourceId();
     assertTrue(snaps.getById(anyTable, 42L).isPresent());
   }
 

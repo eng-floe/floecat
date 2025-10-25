@@ -83,7 +83,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
     if (span.getSpanContext().isValid()) {
       span.setAttribute("plan_id", planId);
       span.setAttribute("correlation_id", correlationId);
-      span.setAttribute("tenant_id", principalContext.getTenantId().getId());
+      span.setAttribute("tenant_id", principalContext.getTenantId());
       span.setAttribute("subject", principalContext.getSubject());
     }
 
@@ -113,7 +113,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
     if (span.getSpanContext().isValid()) {
       span.setAttribute("plan_id", planId);
       span.setAttribute("correlation_id", correlationId);
-      span.setAttribute("tenant_id", principalContext.getTenantId().getId());
+      span.setAttribute("tenant_id", principalContext.getTenantId());
       span.setAttribute("subject", principalContext.getSubject());
     }
 
@@ -192,7 +192,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
     var rid =
         ResourceId.newBuilder().setTenantId(id).setId(id).setKind(ResourceKind.RK_TENANT).build();
     return PrincipalContext.newBuilder()
-        .setTenantId(rid)
+        .setTenantId(rid.getId())
         .setSubject("dev-user")
         .setLocale("en")
         .addPermissions("tenant.read")
@@ -207,10 +207,10 @@ public class InboundContextInterceptor implements ServerInterceptor {
         .build();
   }
 
-  private void validateTenant(ResourceId tenantId) {
-    if (tenantId == null
-        || isBlank(tenantId.getId())
-        || tenantRepository.getById(tenantId).isEmpty()) {
+  private void validateTenant(String tenantId) {
+    ResourceId tenantRid =
+        ResourceId.newBuilder().setId(tenantId).setKind(ResourceKind.RK_TENANT).build();
+    if (tenantId == null || isBlank(tenantId) || tenantRepository.getById(tenantRid).isEmpty()) {
       throw Status.UNAUTHENTICATED
           .withDescription("invalid or unknown tenant: " + tenantId)
           .asRuntimeException();

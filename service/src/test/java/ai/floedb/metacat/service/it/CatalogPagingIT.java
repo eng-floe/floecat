@@ -64,7 +64,7 @@ class CatalogPagingIT {
 
     var pc =
         PrincipalContext.newBuilder()
-            .setTenantId(tenantId)
+            .setTenantId(tenantId.getId())
             .setSubject("it-user")
             .addPermissions("catalog.read")
             .build();

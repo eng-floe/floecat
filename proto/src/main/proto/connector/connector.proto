@@ -21,7 +21,7 @@ message Connector {
   string display_name = 2;
   ConnectorKind kind = 3;
   string target_catalog_display_name = 4;
-  ai.floedb.metacat.common.ResourceId target_tenant_id = 5;
+  string target_tenant_id = 5;
   string uri = 10;
   map<string,string> options = 11;
   AuthConfig auth = 12;
@@ -56,7 +56,7 @@ message ConnectorSpec {
   string display_name = 1;
   ConnectorKind kind = 2;
   string target_catalog_display_name = 3;
-  ai.floedb.metacat.common.ResourceId target_tenant_id = 4;
+  string target_tenant_id = 4;
   string uri = 10;
   map<string,string> options = 11;
   AuthConfig auth = 12;

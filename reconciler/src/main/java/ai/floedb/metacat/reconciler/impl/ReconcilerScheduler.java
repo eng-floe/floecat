@@ -96,7 +96,7 @@ public class ReconcilerScheduler {
         kind,
         connector.getDisplayName(),
         connector.getTargetCatalogDisplayName(),
-        connector.getTargetTenantId().getId(),
+        connector.getTargetTenantId(),
         connector.getUri(),
         connector.getOptionsMap(),
         auth);

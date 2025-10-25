@@ -1,6 +1,7 @@
 package ai.floedb.metacat.service.catalog.impl;
 
 import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
@@ -9,7 +10,6 @@ import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.*;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
-import ai.floedb.metacat.service.repo.util.Keys;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import ai.floedb.metacat.service.storage.IdempotencyStore;
@@ -18,6 +18,7 @@ import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -25,8 +26,8 @@ import java.util.UUID;
 @GrpcService
 public class CatalogServiceImpl extends BaseServiceImpl implements CatalogService {
 
-  @Inject NamespaceRepository nsRepo;
   @Inject CatalogRepository catalogRepo;
+  @Inject NamespaceRepository namespaceRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject PointerStore ptr;
@@ -49,10 +50,9 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
               final StringBuilder next = new StringBuilder();
 
               var catalogs =
-                  catalogRepo.listByName(
-                      principalContext.getTenantId().getId(), Math.max(1, limit), token, next);
+                  catalogRepo.list(principalContext.getTenantId(), Math.max(1, limit), token, next);
 
-              int total = catalogRepo.count(principalContext.getTenantId().getId());
+              int total = catalogRepo.count(principalContext.getTenantId());
 
               var page =
                   PageResponse.newBuilder()
@@ -97,7 +97,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
             () -> {
               final var principalContext = principal.get();
               final var correlationId = principalContext.getCorrelationId();
-              final var tenantId = principalContext.getTenantId().getId();
+              final var tenantId = principalContext.getTenantId();
 
               authz.require(principalContext, "catalog.write");
 
@@ -183,12 +183,10 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
 
               authz.require(principalContext, "catalog.write");
 
-              var tsNow = nowTs();
-
               var catalogId = request.getCatalogId();
               ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", correlationId);
 
-              var prev =
+              var current =
                   catalogRepo
                       .getById(catalogId)
                       .orElseThrow(
@@ -200,82 +198,44 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   mustNonEmpty(request.getSpec().getDisplayName(), "display_name", correlationId);
               var desiredDescription = request.getSpec().getDescription();
 
-              var meta = catalogRepo.metaFor(catalogId);
-              long expectedVersion = meta.getPointerVersion();
-              enforcePreconditions(correlationId, meta, request.getPrecondition());
-
-              if (desiredName.equals(prev.getDisplayName())
-                  && Objects.equals(desiredDescription, prev.getDescription())) {
+              if (desiredName.equals(current.getDisplayName())
+                  && Objects.equals(desiredDescription, current.getDescription())) {
                 return UpdateCatalogResponse.newBuilder()
-                    .setCatalog(prev)
+                    .setCatalog(current)
                     .setMeta(catalogRepo.metaForSafe(catalogId))
                     .build();
               }
 
-              if (!desiredName.equals(prev.getDisplayName())) {
-                try {
-                  catalogRepo.rename(
-                      principalContext.getTenantId().getId(),
-                      catalogId,
-                      desiredName,
-                      expectedVersion);
-                } catch (BaseRepository.NameConflictException nce) {
-                  throw GrpcErrors.conflict(
-                      correlationId, "catalog.already_exists", Map.of("display_name", desiredName));
-                } catch (BaseRepository.PreconditionFailedException pfe) {
-                  var nowMeta = catalogRepo.metaForSafe(catalogId);
-                  throw GrpcErrors.preconditionFailed(
-                      correlationId,
-                      "version_mismatch",
-                      Map.of(
-                          "expected",
-                          Long.toString(expectedVersion),
-                          "actual",
-                          Long.toString(nowMeta.getPointerVersion())));
-                }
+              var updated =
+                  current.toBuilder()
+                      .setDisplayName(desiredName)
+                      .setDescription(desiredDescription)
+                      .build();
 
-                if (!Objects.equals(desiredDescription, prev.getDescription())) {
-                  meta = catalogRepo.metaFor(catalogId);
-                  expectedVersion = meta.getPointerVersion();
-                  var renamedObj = catalogRepo.getById(catalogId).orElse(prev);
-                  var withDesc = renamedObj.toBuilder().setDescription(desiredDescription).build();
+              var meta = catalogRepo.metaFor(catalogId);
+              enforcePreconditions(correlationId, meta, request.getPrecondition());
+              long expectedVersion = meta.getPointerVersion();
 
-                  try {
-                    catalogRepo.update(withDesc, meta.getPointerVersion());
-                  } catch (BaseRepository.PreconditionFailedException pfe) {
-                    var nowMeta = catalogRepo.metaForSafe(catalogId);
-                    throw GrpcErrors.preconditionFailed(
-                        correlationId,
-                        "version_mismatch",
-                        Map.of(
-                            "expected",
-                            Long.toString(expectedVersion),
-                            "actual",
-                            Long.toString(nowMeta.getPointerVersion())));
-                  }
-                }
-              } else {
-                meta = catalogRepo.metaFor(catalogId);
-                expectedVersion = meta.getPointerVersion();
-                var updated = prev.toBuilder().setDescription(desiredDescription).build();
+              final boolean ok;
+              try {
+                ok = catalogRepo.update(updated, expectedVersion);
+              } catch (BaseRepository.NameConflictException nce) {
+                throw GrpcErrors.conflict(
+                    correlationId, "catalog.already_exists", Map.of("display_name", desiredName));
+              }
 
-                try {
-                  catalogRepo.update(updated, meta.getPointerVersion());
-                } catch (BaseRepository.PreconditionFailedException pfe) {
-                  var nowMeta = catalogRepo.metaForSafe(catalogId);
-                  throw GrpcErrors.preconditionFailed(
-                      correlationId,
-                      "version_mismatch",
-                      Map.of(
-                          "expected",
-                          Long.toString(expectedVersion),
-                          "actual",
-                          Long.toString(nowMeta.getPointerVersion())));
-                }
+              if (!ok) {
+                var nowMeta = catalogRepo.metaForSafe(catalogId);
+                throw GrpcErrors.preconditionFailed(
+                    correlationId,
+                    "version_mismatch",
+                    Map.of(
+                        "expected", Long.toString(expectedVersion),
+                        "actual", Long.toString(nowMeta.getPointerVersion())));
               }
 
               return UpdateCatalogResponse.newBuilder()
-                  .setCatalog(catalogRepo.getById(catalogId).orElse(prev))
+                  .setCatalog(catalogRepo.getById(catalogId).orElse(updated))
                   .setMeta(catalogRepo.metaForSafe(catalogId))
                   .build();
             }),
@@ -295,39 +255,42 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
               var catalogId = request.getCatalogId();
               ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", correlationId);
 
-              var key = Keys.catPtr(catalogId.getTenantId(), catalogId.getId());
-              if (ptr.get(key).isEmpty()) {
-                catalogRepo.delete(catalogId);
-                var safe = catalogRepo.metaForSafe(catalogId);
-                return DeleteCatalogResponse.newBuilder().setMeta(safe).build();
-              }
-
-              if (request.getRequireEmpty() && nsRepo.count(catalogId) > 0) {
-                var currentNamespace = catalogRepo.getById(catalogId).orElse(null);
+              if (request.getRequireEmpty()
+                  && namespaceRepo.count(catalogId.getTenantId(), catalogId.getId(), List.of())
+                      > 0) {
+                var current = catalogRepo.getById(catalogId).orElse(null);
                 var displayName =
-                    (currentNamespace != null && !currentNamespace.getDisplayName().isBlank())
-                        ? currentNamespace.getDisplayName()
+                    (current != null && !current.getDisplayName().isBlank())
+                        ? current.getDisplayName()
                         : catalogId.getId();
                 throw GrpcErrors.conflict(
                     correlationId, "catalog.not_empty", Map.of("display_name", displayName));
               }
 
-              var meta = catalogRepo.metaFor(catalogId);
-              long expectedVersion = meta.getPointerVersion();
+              MutationMeta meta;
+              try {
+                meta = catalogRepo.metaFor(catalogId);
+              } catch (BaseRepository.NotFoundException e) {
+                catalogRepo.delete(catalogId);
+                return DeleteCatalogResponse.newBuilder()
+                    .setMeta(catalogRepo.metaForSafe(catalogId))
+                    .build();
+              }
+
               enforcePreconditions(correlationId, meta, request.getPrecondition());
+              long expectedVersion = meta.getPointerVersion();
 
               try {
-                catalogRepo.deleteWithPrecondition(catalogId, expectedVersion);
-              } catch (BaseRepository.PreconditionFailedException pfe) {
-                var nowMeta = catalogRepo.metaForSafe(catalogId);
-                throw GrpcErrors.preconditionFailed(
-                    correlationId,
-                    "version_mismatch",
-                    Map.of(
-                        "expected",
-                        Long.toString(expectedVersion),
-                        "actual",
-                        Long.toString(nowMeta.getPointerVersion())));
+                boolean ok = catalogRepo.deleteWithPrecondition(catalogId, expectedVersion);
+                if (!ok) {
+                  var nowMeta = catalogRepo.metaForSafe(catalogId);
+                  throw GrpcErrors.preconditionFailed(
+                      correlationId,
+                      "version_mismatch",
+                      Map.of(
+                          "expected", Long.toString(expectedVersion),
+                          "actual", Long.toString(nowMeta.getPointerVersion())));
+                }
               } catch (BaseRepository.NotFoundException nfe) {
                 throw GrpcErrors.notFound(
                     correlationId, "catalog", Map.of("id", catalogId.getId()));

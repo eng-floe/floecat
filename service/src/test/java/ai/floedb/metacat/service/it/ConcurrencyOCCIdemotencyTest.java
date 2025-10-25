@@ -4,7 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.*;
-import ai.floedb.metacat.service.repo.util.Keys;
+import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.util.TestSupport;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -85,7 +85,7 @@ class ConcurrencyOCCIdempotencyIT {
             "seed");
 
     var seedTid = base.getResourceId();
-    String canonSeed = Keys.tblByIdPtr(seedTid.getTenantId(), seedTid.getId());
+    String canonSeed = Keys.tablePointerById(seedTid.getTenantId(), seedTid.getId());
     long v0 = ptr.get(canonSeed).orElseThrow().getVersion();
 
     final int WORKERS = 48;
@@ -229,8 +229,8 @@ class ConcurrencyOCCIdempotencyIT {
     }
 
     for (ResourceId id : createdTableIds) {
-      var canonKey = Keys.tblByIdPtr(id.getTenantId(), id.getId());
-      var blobUri = Keys.tblBlob(id.getTenantId(), id.getId());
+      var canonKey = Keys.tablePointerById(id.getTenantId(), id.getId());
+      var blobUri = Keys.tableBlobUri(id.getTenantId(), id.getId());
       assertTrue(ptr.get(canonKey).isPresent(), "canon pointer must exist for created table");
       assertTrue(blobs.head(blobUri).isPresent(), "blob must exist for created table");
     }

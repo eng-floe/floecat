@@ -16,7 +16,7 @@ class PlanContextTest {
   private static PrincipalContext pc(ResourceId tenantId, String subject, String planId) {
     var b =
         PrincipalContext.newBuilder()
-            .setTenantId(tenantId)
+            .setTenantId(tenantId.getId())
             .setSubject(subject == null ? "test-user" : subject);
     if (planId != null) {
       b.setPlanId(planId);
