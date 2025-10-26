@@ -5,8 +5,13 @@ import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
-import ai.floedb.metacat.service.repo.util.BaseRepository;
+import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
+import ai.floedb.metacat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.metacat.storage.errors.StorageConflictException;
+import ai.floedb.metacat.storage.errors.StorageCorruptionException;
+import ai.floedb.metacat.storage.errors.StorageNotFoundException;
+import ai.floedb.metacat.storage.errors.StoragePreconditionFailedException;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
@@ -44,7 +49,7 @@ public abstract class BaseServiceImpl {
 
   protected <T> Uni<T> runWithRetry(Supplier<T> body) {
     return run(body)
-        .onFailure(BaseRepository.AbortRetryableException.class)
+        .onFailure(BaseResourceRepository.AbortRetryableException.class)
         .retry()
         .withBackOff(BACKOFF_MIN, BACKOFF_MAX)
         .withJitter(JITTER)
@@ -58,19 +63,35 @@ public abstract class BaseServiceImpl {
   private StatusRuntimeException toStatus(Throwable t, String corrId) {
     if (t instanceof StatusRuntimeException sre) return sre;
 
-    if (t instanceof BaseRepository.NameConflictException) {
+    if (t instanceof BaseResourceRepository.NameConflictException) {
       return GrpcErrors.conflict(corrId, null, Map.of());
     }
-    if (t instanceof BaseRepository.PreconditionFailedException) {
+    if (t instanceof BaseResourceRepository.PreconditionFailedException) {
       return GrpcErrors.preconditionFailed(corrId, null, Map.of());
     }
-    if (t instanceof BaseRepository.NotFoundException) {
+    if (t instanceof BaseResourceRepository.NotFoundException) {
       return GrpcErrors.notFound(corrId, null, Map.of());
     }
-    if (t instanceof BaseRepository.AbortRetryableException) {
+    if (t instanceof BaseResourceRepository.AbortRetryableException) {
       return GrpcErrors.aborted(corrId, null, Map.of());
     }
-    if (t instanceof BaseRepository.CorruptionException) {
+    if (t instanceof BaseResourceRepository.CorruptionException) {
+      return GrpcErrors.internal(corrId, null, Map.of());
+    }
+
+    if (t instanceof StorageConflictException) {
+      return GrpcErrors.conflict(corrId, null, Map.of());
+    }
+    if (t instanceof StoragePreconditionFailedException) {
+      return GrpcErrors.preconditionFailed(corrId, null, Map.of());
+    }
+    if (t instanceof StorageNotFoundException) {
+      return GrpcErrors.notFound(corrId, null, Map.of());
+    }
+    if (t instanceof StorageAbortRetryableException) {
+      return GrpcErrors.aborted(corrId, null, Map.of());
+    }
+    if (t instanceof StorageCorruptionException) {
       return GrpcErrors.internal(corrId, null, Map.of());
     }
 

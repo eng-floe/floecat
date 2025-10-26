@@ -1,13 +1,12 @@
-package ai.floedb.metacat.service.storage.impl;
+package ai.floedb.metacat.service.repo.impl;
 
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.model.Keys;
-import ai.floedb.metacat.service.repo.util.BaseRepository;
-import ai.floedb.metacat.service.storage.BlobStore;
-import ai.floedb.metacat.service.storage.IdempotencyStore;
-import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.storage.BlobStore;
+import ai.floedb.metacat.storage.PointerStore;
 import ai.floedb.metacat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
@@ -16,9 +15,11 @@ import jakarta.inject.Inject;
 import java.util.Optional;
 
 @ApplicationScoped
-public final class IdempotencyStoreImpl implements IdempotencyStore {
+public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
   @Inject PointerStore ptr;
   @Inject BlobStore blobs;
+
+  private static final int CAS_MAX = 10;
 
   @Override
   public Optional<IdempotencyRecord> get(String key) {
@@ -53,11 +54,11 @@ public final class IdempotencyStoreImpl implements IdempotencyStore {
             .setExpiresAt(expiresAt)
             .build();
 
-    String uri = Keys.memoryUriForPointer(key, "record.pb");
+    String uri = Keys.idempotencyBlobUri(key);
 
     blobs.put(uri, rec.toByteArray(), "application/x-protobuf");
 
-    for (int i = 0; i < BaseRepository.CAS_MAX; i++) {
+    for (int i = 0; i < CAS_MAX; i++) {
       long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
       var next = Pointer.newBuilder().setKey(key).setBlobUri(uri).setVersion(expected + 1).build();
       if (ptr.compareAndSet(key, expected, next)) {
@@ -90,10 +91,10 @@ public final class IdempotencyStoreImpl implements IdempotencyStore {
             .setExpiresAt(expiresAt)
             .build();
 
-    String uri = Keys.memoryUriForPointer(key, "record.pb");
+    String uri = Keys.idempotencyBlobUri(key);
     blobs.put(uri, rec.toByteArray(), "application/x-protobuf");
 
-    for (int i = 0; i < BaseRepository.CAS_MAX; i++) {
+    for (int i = 0; i < CAS_MAX; i++) {
       long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
       var next = Pointer.newBuilder().setKey(key).setBlobUri(uri).setVersion(expected + 1).build();
       if (ptr.compareAndSet(key, expected, next)) {

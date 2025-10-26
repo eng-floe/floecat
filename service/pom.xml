@@ -85,6 +85,24 @@
     </dependency>
 
     <dependency>
+      <groupId>ai.floedb.metacat</groupId>
+      <artifactId>metacat-storage-spi</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.metacat</groupId>
+      <artifactId>metacat-storage-memory</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.metacat</groupId>
+      <artifactId>metacat-storage-aws</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
       <groupId>org.jboss.logmanager</groupId>
       <artifactId>jboss-logmanager</artifactId>
       <version>3.1.2.FINAL</version>

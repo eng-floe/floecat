@@ -15,16 +15,16 @@ import ai.floedb.metacat.catalog.rpc.UpdateNamespaceResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
-import ai.floedb.metacat.service.repo.util.BaseRepository;
+import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import ai.floedb.metacat.service.storage.IdempotencyStore;
-import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -41,7 +41,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject TableRepository tableRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
-  @Inject IdempotencyStore idempotencyStore;
+  @Inject IdempotencyRepository idempotencyStore;
 
   @Override
   public Uni<ListNamespacesResponse> listNamespaces(ListNamespacesRequest request) {
@@ -161,7 +161,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                         try {
                           namespaceRepo.create(built);
-                        } catch (BaseRepository.NameConflictException e) {
+                        } catch (BaseResourceRepository.NameConflictException e) {
                           if (!idempotencyKey.isBlank()) {
                             var fullPath = new ArrayList<>(request.getSpec().getPathList());
                             fullPath.add(request.getSpec().getDisplayName());

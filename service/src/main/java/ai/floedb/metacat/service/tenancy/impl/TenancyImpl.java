@@ -3,15 +3,15 @@ package ai.floedb.metacat.service.tenancy.impl;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.TenantRepository;
-import ai.floedb.metacat.service.repo.util.BaseRepository;
+import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import ai.floedb.metacat.service.storage.IdempotencyStore;
-import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 import ai.floedb.metacat.tenancy.rpc.*;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
@@ -25,7 +25,7 @@ public class TenancyImpl extends BaseServiceImpl implements Tenancy {
   @Inject CatalogRepository catalogRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
-  @Inject IdempotencyStore idempotencyStore;
+  @Inject IdempotencyRepository idempotencyStore;
 
   @Override
   public Uni<ListTenantsResponse> listTenants(ListTenantsRequest request) {
@@ -122,7 +122,7 @@ public class TenancyImpl extends BaseServiceImpl implements Tenancy {
 
                         try {
                           tenantRepo.create(tenant);
-                        } catch (BaseRepository.NameConflictException nce) {
+                        } catch (BaseResourceRepository.NameConflictException nce) {
                           if (!idempotencyKey.isBlank()) {
                             var existing = tenantRepo.getByName(tenant.getDisplayName());
                             if (existing.isPresent()) {

@@ -3,17 +3,17 @@ package ai.floedb.metacat.service.repo.util;
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.service.repo.model.ResourceKey;
 import ai.floedb.metacat.service.repo.model.ResourceSchema;
-import ai.floedb.metacat.service.storage.BlobStore;
-import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.storage.BlobStore;
+import ai.floedb.metacat.storage.PointerStore;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import java.util.*;
 
-public class GenericRepository<T, K extends ResourceKey> extends BaseRepository<T> {
+public class GenericResourceRepository<T, K extends ResourceKey> extends BaseResourceRepository<T> {
 
   private final ResourceSchema<T, K> schema;
 
-  public GenericRepository(
+  public GenericResourceRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
       ResourceSchema<T, K> schema,

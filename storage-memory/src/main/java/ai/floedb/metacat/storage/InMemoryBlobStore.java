@@ -1,11 +1,10 @@
-package ai.floedb.metacat.service.storage.impl;
+package ai.floedb.metacat.storage;
 
 import ai.floedb.metacat.common.rpc.BlobHeader;
 import ai.floedb.metacat.common.rpc.Tag;
-import ai.floedb.metacat.service.storage.BlobStore;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.arc.properties.IfBuildProperty;
-import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Singleton;
 import java.time.Clock;
 import java.util.Arrays;
 import java.util.Collections;
@@ -16,7 +15,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
-@ApplicationScoped
+@Singleton
 @IfBuildProperty(name = "metacat.blob", stringValue = "memory")
 public class InMemoryBlobStore implements BlobStore {
   private static final String TAG_CONTENT_TYPE = "contentType";

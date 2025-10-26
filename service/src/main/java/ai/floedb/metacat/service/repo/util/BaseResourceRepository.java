@@ -3,9 +3,9 @@ package ai.floedb.metacat.service.repo.util;
 import ai.floedb.metacat.common.rpc.BlobHeader;
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.Pointer;
-import ai.floedb.metacat.service.repo.Repository;
-import ai.floedb.metacat.service.storage.BlobStore;
-import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.service.repo.ResourceRepository;
+import ai.floedb.metacat.storage.BlobStore;
+import ai.floedb.metacat.storage.PointerStore;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import java.security.MessageDigest;
@@ -18,7 +18,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
 
-public abstract class BaseRepository<T> implements Repository<T> {
+public abstract class BaseResourceRepository<T> implements ResourceRepository<T> {
   protected PointerStore pointerStore;
   protected BlobStore blobStore;
   protected ProtoParser<T> parser;
@@ -29,7 +29,7 @@ public abstract class BaseRepository<T> implements Repository<T> {
 
   protected static final Clock clock = Clock.systemUTC();
 
-  public BaseRepository() {
+  public BaseResourceRepository() {
     super();
   }
 
@@ -73,7 +73,7 @@ public abstract class BaseRepository<T> implements Repository<T> {
     }
   }
 
-  protected BaseRepository(
+  protected BaseResourceRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
       ProtoParser<T> parser,

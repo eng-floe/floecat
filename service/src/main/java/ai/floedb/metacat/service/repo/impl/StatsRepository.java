@@ -8,9 +8,9 @@ import ai.floedb.metacat.service.repo.model.ColumnStatsKey;
 import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.repo.model.Schemas;
 import ai.floedb.metacat.service.repo.model.TableStatsKey;
-import ai.floedb.metacat.service.repo.util.GenericRepository;
-import ai.floedb.metacat.service.storage.BlobStore;
-import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.service.repo.util.GenericResourceRepository;
+import ai.floedb.metacat.storage.BlobStore;
+import ai.floedb.metacat.storage.PointerStore;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -20,13 +20,13 @@ import java.util.Optional;
 @ApplicationScoped
 public class StatsRepository {
 
-  private final GenericRepository<TableStats, TableStatsKey> tableStatsRepo;
-  private final GenericRepository<ColumnStats, ColumnStatsKey> columnStatsRepo;
+  private final GenericResourceRepository<TableStats, TableStatsKey> tableStatsRepo;
+  private final GenericResourceRepository<ColumnStats, ColumnStatsKey> columnStatsRepo;
 
   @Inject
   public StatsRepository(PointerStore pointerStore, BlobStore blobStore) {
     this.tableStatsRepo =
-        new GenericRepository<>(
+        new GenericResourceRepository<>(
             pointerStore,
             blobStore,
             Schemas.TABLE_STATS,
@@ -35,7 +35,7 @@ public class StatsRepository {
             "application/x-protobuf");
 
     this.columnStatsRepo =
-        new GenericRepository<>(
+        new GenericResourceRepository<>(
             pointerStore,
             blobStore,
             Schemas.COLUMN_STATS,

@@ -7,10 +7,10 @@ import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
-import ai.floedb.metacat.service.repo.util.BaseRepository;
-import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
-import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
+import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.util.TestSupport;
+import ai.floedb.metacat.storage.InMemoryBlobStore;
+import ai.floedb.metacat.storage.InMemoryPointerStore;
 import com.google.protobuf.util.Timestamps;
 import java.time.Clock;
 import java.util.UUID;
@@ -115,7 +115,7 @@ class SnapshotRepositoryTest {
   }
 
   private static boolean isExpectedRepoAbort(Throwable t) {
-    return t instanceof BaseRepository.AbortRetryableException
+    return t instanceof BaseResourceRepository.AbortRetryableException
         && t.getMessage().contains("blob write verification failed");
   }
 
@@ -159,11 +159,11 @@ class SnapshotRepositoryTest {
                 for (int j = 0; j < 5; j++) {
                   try {
                     snaps.create(snap);
-                  } catch (BaseRepository.AbortRetryableException e) {
+                  } catch (BaseResourceRepository.AbortRetryableException e) {
                     Thread.sleep(5L * (1L << j));
                   }
                 }
-              } catch (BaseRepository.NameConflictException e) {
+              } catch (BaseResourceRepository.NameConflictException e) {
                 conflicts.increment();
               } catch (Throwable t) {
                 if (isExpectedRepoAbort(t)) {

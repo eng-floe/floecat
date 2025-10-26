@@ -15,14 +15,14 @@ import ai.floedb.metacat.catalog.rpc.UpdateCatalogResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.*;
-import ai.floedb.metacat.service.repo.util.BaseRepository;
+import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import ai.floedb.metacat.service.storage.IdempotencyStore;
-import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -37,7 +37,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   @Inject NamespaceRepository namespaceRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
-  @Inject IdempotencyStore idempotencyStore;
+  @Inject IdempotencyRepository idempotencyStore;
 
   @Override
   public Uni<ListCatalogsResponse> listCatalogs(ListCatalogsRequest request) {
@@ -143,7 +143,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
 
                         try {
                           catalogRepo.create(built);
-                        } catch (BaseRepository.NameConflictException e) {
+                        } catch (BaseResourceRepository.NameConflictException e) {
                           if (!idempotencyKey.isBlank()) {
                             var existing = catalogRepo.getByName(tenantId, built.getDisplayName());
                             if (existing.isPresent()) {

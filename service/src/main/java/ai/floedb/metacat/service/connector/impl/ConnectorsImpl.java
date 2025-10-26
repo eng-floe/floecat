@@ -28,14 +28,14 @@ import ai.floedb.metacat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.metacat.connector.spi.ConnectorFactory;
 import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.ConnectorRepository;
-import ai.floedb.metacat.service.repo.util.BaseRepository;
+import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import ai.floedb.metacat.service.storage.IdempotencyStore;
-import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
@@ -48,7 +48,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   @Inject ConnectorRepository connectorRepo;
   @Inject PrincipalProvider principalProvider;
   @Inject Authorizer authz;
-  @Inject IdempotencyStore idempotencyStore;
+  @Inject IdempotencyRepository idempotencyStore;
   @Inject ReconcileJobStore jobs;
 
   @Override
@@ -167,7 +167,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                 .build();
                         try {
                           connectorRepo.create(c);
-                        } catch (BaseRepository.NameConflictException nce) {
+                        } catch (BaseResourceRepository.NameConflictException nce) {
                           if (!idempotencyKey.isBlank()) {
                             var existing =
                                 connectorRepo

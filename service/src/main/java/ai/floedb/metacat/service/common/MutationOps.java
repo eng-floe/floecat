@@ -5,9 +5,8 @@ import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
-import ai.floedb.metacat.service.repo.util.BaseRepository;
-import ai.floedb.metacat.service.storage.IdempotencyStore;
-import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
+import ai.floedb.metacat.service.repo.IdempotencyRepository;
+import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import com.google.protobuf.Message;
 import com.google.protobuf.Timestamp;
 import java.util.Map;
@@ -50,7 +49,7 @@ public final class MutationOps {
       Function<T, MutationMeta> metaOf,
       Function<T, byte[]> serializer,
       Function<byte[], T> parser,
-      IdempotencyStore idemStore,
+      IdempotencyRepository idemStore,
       Timestamp now,
       long ttlSeconds,
       Supplier<String> corrIdSupplier) {
@@ -80,7 +79,7 @@ public final class MutationOps {
       Fingerprinter fingerprint,
       Creator<T> creator,
       Function<T, MutationMeta> metaOf,
-      IdempotencyStore idempotencyStore,
+      IdempotencyRepository idempotencyStore,
       Timestamp now,
       long ttlSeconds,
       Supplier<String> correlationIdSupplier,
@@ -98,7 +97,7 @@ public final class MutationOps {
           try {
             return parser.parse(bytes);
           } catch (Exception e) {
-            throw new BaseRepository.CorruptionException("idempotency_parse_failed", e);
+            throw new BaseResourceRepository.CorruptionException("idempotency_parse_failed", e);
           }
         },
         idempotencyStore,
@@ -128,7 +127,8 @@ public final class MutationOps {
   @FunctionalInterface
   public interface UpdateAttempt {
     boolean run(long expectedVersion)
-        throws BaseRepository.NameConflictException, BaseRepository.PreconditionFailedException;
+        throws BaseResourceRepository.NameConflictException,
+            BaseResourceRepository.PreconditionFailedException;
   }
 
   public static void updateWithPreconditions(
@@ -156,9 +156,9 @@ public final class MutationOps {
                 "expected", Long.toString(expected),
                 "actual", Long.toString(nowMeta.getPointerVersion())));
       }
-    } catch (BaseRepository.NameConflictException nce) {
+    } catch (BaseResourceRepository.NameConflictException nce) {
       throw GrpcErrors.conflict(correlationId, entity + ".already_exists", conflictKVs);
-    } catch (BaseRepository.PreconditionFailedException pfe) {
+    } catch (BaseResourceRepository.PreconditionFailedException pfe) {
       final var nowMeta = nowMetaSupplier.get();
       throw GrpcErrors.preconditionFailed(
           correlationId,
@@ -172,7 +172,8 @@ public final class MutationOps {
   @FunctionalInterface
   public interface DeleteAttempt {
     boolean run(long expectedVersion)
-        throws BaseRepository.PreconditionFailedException, BaseRepository.NotFoundException;
+        throws BaseResourceRepository.PreconditionFailedException,
+            BaseResourceRepository.NotFoundException;
   }
 
   public static MutationMeta deleteWithPreconditions(
@@ -187,7 +188,7 @@ public final class MutationOps {
     final MutationMeta meta;
     try {
       meta = requireMeta(metaSupplier, correlationId, entity);
-    } catch (BaseRepository.NotFoundException e) {
+    } catch (BaseResourceRepository.NotFoundException e) {
       throw GrpcErrors.notFound(correlationId, entity, notFoundKVs);
     }
 
@@ -205,9 +206,9 @@ public final class MutationOps {
                 "expected", Long.toString(expected),
                 "actual", Long.toString(nowMeta.getPointerVersion())));
       }
-    } catch (BaseRepository.NotFoundException nfe) {
+    } catch (BaseResourceRepository.NotFoundException nfe) {
       throw GrpcErrors.notFound(correlationId, entity, notFoundKVs);
-    } catch (BaseRepository.PreconditionFailedException pfe) {
+    } catch (BaseResourceRepository.PreconditionFailedException pfe) {
       final var nowMeta = safeMetaSupplier.get();
       throw GrpcErrors.preconditionFailed(
           correlationId,
@@ -224,7 +225,7 @@ public final class MutationOps {
       Supplier<MutationMeta> metaSupplier, String correlationId, String entity) {
     final var m = metaSupplier.get();
     if (m == null) {
-      throw new BaseRepository.NotFoundException("meta null");
+      throw new BaseResourceRepository.NotFoundException("meta null");
     }
     return m;
   }

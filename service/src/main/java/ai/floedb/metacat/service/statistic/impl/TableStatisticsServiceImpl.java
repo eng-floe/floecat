@@ -5,15 +5,15 @@ import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.common.rpc.SpecialSnapshot;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
 import ai.floedb.metacat.service.repo.impl.StatsRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import ai.floedb.metacat.service.storage.IdempotencyStore;
-import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -27,7 +27,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
   @Inject StatsRepository stats;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
-  @Inject IdempotencyStore idempotencyStore;
+  @Inject IdempotencyRepository idempotencyStore;
 
   @Override
   public Uni<GetTableStatsResponse> getTableStats(GetTableStatsRequest request) {

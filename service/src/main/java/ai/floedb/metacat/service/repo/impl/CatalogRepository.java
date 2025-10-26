@@ -6,9 +6,9 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.model.CatalogKey;
 import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.repo.model.Schemas;
-import ai.floedb.metacat.service.repo.util.GenericRepository;
-import ai.floedb.metacat.service.storage.BlobStore;
-import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.service.repo.util.GenericResourceRepository;
+import ai.floedb.metacat.storage.BlobStore;
+import ai.floedb.metacat.storage.PointerStore;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -18,12 +18,12 @@ import java.util.Optional;
 @ApplicationScoped
 public class CatalogRepository {
 
-  private final GenericRepository<Catalog, CatalogKey> repo;
+  private final GenericResourceRepository<Catalog, CatalogKey> repo;
 
   @Inject
   public CatalogRepository(PointerStore pointerStore, BlobStore blobStore) {
     this.repo =
-        new GenericRepository<>(
+        new GenericResourceRepository<>(
             pointerStore,
             blobStore,
             Schemas.CATALOG,

@@ -10,10 +10,10 @@ import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.model.Keys;
-import ai.floedb.metacat.service.repo.util.BaseRepository;
-import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
-import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
+import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.util.TestSupport;
+import ai.floedb.metacat.storage.InMemoryBlobStore;
+import ai.floedb.metacat.storage.InMemoryPointerStore;
 import com.google.protobuf.util.Timestamps;
 import java.time.Clock;
 import java.util.UUID;
@@ -199,7 +199,8 @@ class TableRepositoryTest {
                           .build();
                   boolean ok = tbls.update(updated, curMeta.getPointerVersion());
                   if (!ok) {
-                    throw new BaseRepository.PreconditionFailedException("version mismatch");
+                    throw new BaseResourceRepository.PreconditionFailedException(
+                        "version mismatch");
                   }
 
                 } else if (pick < 60) {
@@ -210,7 +211,8 @@ class TableRepositoryTest {
                   var renamed = cur.toBuilder().setDisplayName(target).build();
                   boolean ok = tbls.update(renamed, curMeta.getPointerVersion());
                   if (!ok) {
-                    throw new BaseRepository.PreconditionFailedException("version mismatch");
+                    throw new BaseResourceRepository.PreconditionFailedException(
+                        "version mismatch");
                   }
 
                 } else if (pick < 85) {
@@ -221,7 +223,8 @@ class TableRepositoryTest {
                   var updated = cur.toBuilder().setNamespaceId(toNs).build();
                   boolean ok = tbls.update(updated, curMeta.getPointerVersion());
                   if (!ok) {
-                    throw new BaseRepository.PreconditionFailedException("version mismatch");
+                    throw new BaseResourceRepository.PreconditionFailedException(
+                        "version mismatch");
                   }
 
                 } else {
@@ -230,15 +233,16 @@ class TableRepositoryTest {
                     boolean ok = tbls.deleteWithPrecondition(tblId, curMeta.getPointerVersion());
                     if (!ok) {
                       seedDeleted.set(false);
-                      throw new BaseRepository.PreconditionFailedException("version mismatch");
+                      throw new BaseResourceRepository.PreconditionFailedException(
+                          "version mismatch");
                     }
                   }
                 }
 
-              } catch (BaseRepository.PreconditionFailedException
-                  | BaseRepository.NameConflictException
-                  | BaseRepository.NotFoundException
-                  | BaseRepository.AbortRetryableException e) {
+              } catch (BaseResourceRepository.PreconditionFailedException
+                  | BaseResourceRepository.NameConflictException
+                  | BaseResourceRepository.NotFoundException
+                  | BaseResourceRepository.AbortRetryableException e) {
                 expectedCounts
                     .computeIfAbsent(e.getClass().getSimpleName(), k -> new LongAdder())
                     .increment();

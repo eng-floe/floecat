@@ -1,9 +1,8 @@
-package ai.floedb.metacat.service.storage.impl;
+package ai.floedb.metacat.storage;
 
 import ai.floedb.metacat.common.rpc.Pointer;
-import ai.floedb.metacat.service.storage.PointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
-import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Singleton;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -11,8 +10,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
-@ApplicationScoped
-@IfBuildProperty(name = "metacat.blob", stringValue = "memory")
+@Singleton
+@IfBuildProperty(name = "metacat.kv", stringValue = "memory")
 public class InMemoryPointerStore implements PointerStore {
   private final Map<String, Pointer> map = new ConcurrentHashMap<>();
 

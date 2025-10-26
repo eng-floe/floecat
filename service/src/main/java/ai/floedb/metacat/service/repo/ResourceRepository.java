@@ -3,7 +3,7 @@ package ai.floedb.metacat.service.repo;
 import java.util.List;
 import java.util.Optional;
 
-public interface Repository<T> {
+public interface ResourceRepository<T> {
   Optional<T> get(String key);
 
   void putBlob(String blobUri, T value);

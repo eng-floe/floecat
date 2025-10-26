@@ -4,9 +4,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.*;
-import ai.floedb.metacat.service.repo.util.BaseRepository;
-import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
-import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
+import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
+import ai.floedb.metacat.storage.InMemoryBlobStore;
+import ai.floedb.metacat.storage.InMemoryPointerStore;
 import com.google.protobuf.util.Timestamps;
 import java.time.Clock;
 import java.util.UUID;
@@ -29,7 +29,7 @@ class MetaForBehaviorTest {
             .setKind(ResourceKind.RK_TABLE)
             .build();
 
-    assertThrows(BaseRepository.NotFoundException.class, () -> tbls.metaFor(tblId));
+    assertThrows(BaseResourceRepository.NotFoundException.class, () -> tbls.metaFor(tblId));
 
     assertDoesNotThrow(() -> tbls.metaForSafe(tblId));
   }

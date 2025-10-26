@@ -6,9 +6,9 @@ import ai.floedb.metacat.connector.rpc.Connector;
 import ai.floedb.metacat.service.repo.model.ConnectorKey;
 import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.repo.model.Schemas;
-import ai.floedb.metacat.service.repo.util.GenericRepository;
-import ai.floedb.metacat.service.storage.BlobStore;
-import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.service.repo.util.GenericResourceRepository;
+import ai.floedb.metacat.storage.BlobStore;
+import ai.floedb.metacat.storage.PointerStore;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -18,12 +18,12 @@ import java.util.Optional;
 @ApplicationScoped
 public class ConnectorRepository {
 
-  private final GenericRepository<Connector, ConnectorKey> repo;
+  private final GenericResourceRepository<Connector, ConnectorKey> repo;
 
   @Inject
   public ConnectorRepository(PointerStore pointerStore, BlobStore blobStore) {
     this.repo =
-        new GenericRepository<>(
+        new GenericResourceRepository<>(
             pointerStore,
             blobStore,
             Schemas.CONNECTOR,

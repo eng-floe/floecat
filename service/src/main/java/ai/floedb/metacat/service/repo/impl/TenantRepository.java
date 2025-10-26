@@ -5,9 +5,9 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.repo.model.Schemas;
 import ai.floedb.metacat.service.repo.model.TenantKey;
-import ai.floedb.metacat.service.repo.util.GenericRepository;
-import ai.floedb.metacat.service.storage.BlobStore;
-import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.service.repo.util.GenericResourceRepository;
+import ai.floedb.metacat.storage.BlobStore;
+import ai.floedb.metacat.storage.PointerStore;
 import ai.floedb.metacat.tenancy.rpc.Tenant;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -18,12 +18,12 @@ import java.util.Optional;
 @ApplicationScoped
 public class TenantRepository {
 
-  private final GenericRepository<Tenant, TenantKey> repo;
+  private final GenericResourceRepository<Tenant, TenantKey> repo;
 
   @Inject
   public TenantRepository(PointerStore pointerStore, BlobStore blobStore) {
     this.repo =
-        new GenericRepository<>(
+        new GenericResourceRepository<>(
             pointerStore,
             blobStore,
             Schemas.TENANT,

@@ -1,10 +1,10 @@
-package ai.floedb.metacat.service.storage.util;
+package ai.floedb.metacat.service.common;
 
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.model.Keys;
-import ai.floedb.metacat.service.storage.IdempotencyStore;
 import ai.floedb.metacat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.Duration;
 import com.google.protobuf.Timestamp;
@@ -27,7 +27,7 @@ public final class IdempotencyGuard {
       Function<T, MutationMeta> metaExtractor,
       Function<T, byte[]> serializer,
       Function<byte[], T> parser,
-      IdempotencyStore store,
+      IdempotencyRepository store,
       long ttlSeconds,
       Timestamp now,
       Supplier<String> corrId) {

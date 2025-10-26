@@ -1,7 +1,8 @@
-package ai.floedb.metacat.service.storage;
+package ai.floedb.metacat.storage;
 
 import ai.floedb.metacat.common.rpc.Pointer;
-import java.util.*;
+import java.util.List;
+import java.util.Optional;
 
 public interface PointerStore {
   record Row(String key, String blobUri, long version) {}

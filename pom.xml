@@ -21,9 +21,13 @@
 
   <modules>
     <module>proto</module>
+    <module>storage-spi</module>
+    <module>storage-memory</module>
+    <module>storage-aws</module>
     <module>reconciler</module>
     <module>connectors-spi</module>
     <module>connectors-iceberg</module>
+
     <module>service</module>
   </modules>
 

@@ -5,14 +5,14 @@ import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.*;
-import ai.floedb.metacat.service.repo.util.BaseRepository;
+import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import ai.floedb.metacat.service.storage.IdempotencyStore;
-import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -25,7 +25,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   @Inject SnapshotRepository snapshotRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
-  @Inject IdempotencyStore idempotencyStore;
+  @Inject IdempotencyRepository idempotencyStore;
 
   @Override
   public Uni<ListSnapshotsResponse> listSnapshots(ListSnapshotsRequest request) {
@@ -151,7 +151,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                 .build();
                         try {
                           snapshotRepo.create(snap);
-                        } catch (BaseRepository.NameConflictException e) {
+                        } catch (BaseResourceRepository.NameConflictException e) {
                           if (!idempotencyKey.isBlank()) {
                             var existing =
                                 snapshotRepo.getById(tableId, request.getSpec().getSnapshotId());
@@ -201,7 +201,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
               MutationMeta meta;
               try {
                 meta = snapshotRepo.metaFor(tableId, snapshotId);
-              } catch (BaseRepository.NotFoundException e) {
+              } catch (BaseResourceRepository.NotFoundException e) {
                 snapshotRepo.delete(tableId, snapshotId);
                 return DeleteSnapshotResponse.newBuilder()
                     .setMeta(snapshotRepo.metaForSafe(tableId, snapshotId))
@@ -223,7 +223,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                           "expected", Long.toString(expectedVersion),
                           "actual", Long.toString(nowMeta.getPointerVersion())));
                 }
-              } catch (BaseRepository.PreconditionFailedException pfe) {
+              } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                 var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
                 throw GrpcErrors.preconditionFailed(
                     correlationId,
@@ -231,7 +231,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                     Map.of(
                         "expected", Long.toString(expectedVersion),
                         "actual", Long.toString(nowMeta.getPointerVersion())));
-              } catch (BaseRepository.NotFoundException nfe) {
+              } catch (BaseResourceRepository.NotFoundException nfe) {
                 throw GrpcErrors.notFound(
                     correlationId, "snapshot", Map.of("id", Long.toString(snapshotId)));
               }

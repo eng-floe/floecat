@@ -14,11 +14,6 @@ public final class Keys {
     return String.join("/", segments.stream().map(Keys::encode).toArray(String[]::new));
   }
 
-  public static String memoryUriForPointer(String pointerKey, String leaf) {
-    String base = pointerKey.startsWith("/") ? pointerKey.substring(1) : pointerKey;
-    return "mem://" + base + (leaf.startsWith("/") ? leaf : "/" + leaf);
-  }
-
   // ===== Tenant =====
 
   public static String tenantPointerById(String tenantId) {
@@ -34,7 +29,7 @@ public final class Keys {
   }
 
   public static String tenantBlobUri(String tenantId) {
-    return "mem://tenants/" + encode(tenantId) + "/tenant.pb";
+    return "/tenants/" + encode(tenantId) + "/tenant.pb";
   }
 
   // ===== Catalog =====
@@ -52,7 +47,7 @@ public final class Keys {
   }
 
   public static String catalogBlobUri(String tenantId, String catalogId) {
-    return "mem://tenants/" + encode(tenantId) + "/catalogs/" + encode(catalogId) + "/catalog.pb";
+    return "/tenants/" + encode(tenantId) + "/catalogs/" + encode(catalogId) + "/catalog.pb";
   }
 
   // ===== Namespace =====
@@ -84,11 +79,7 @@ public final class Keys {
   }
 
   public static String namespaceBlobUri(String tenantId, String namespaceId) {
-    return "mem://tenants/"
-        + encode(tenantId)
-        + "/namespaces/"
-        + encode(namespaceId)
-        + "/namespace.pb";
+    return "/tenants/" + encode(tenantId) + "/namespaces/" + encode(namespaceId) + "/namespace.pb";
   }
 
   // ===== Table =====
@@ -121,7 +112,7 @@ public final class Keys {
   }
 
   public static String tableBlobUri(String tenantId, String tableId) {
-    return "mem://tenants/" + encode(tenantId) + "/tables/" + encode(tableId) + "/table.pb";
+    return "/tenants/" + encode(tenantId) + "/tables/" + encode(tableId) + "/table.pb";
   }
 
   // ===== Snapshot =====
@@ -152,7 +143,7 @@ public final class Keys {
 
   public static String snapshotBlobUri(String tenantId, String tableId, long snapshotId) {
     return String.format(
-        "mem://tenants/%s/tables/%s/snapshots/%019d/snapshot.pb",
+        "/tenants/%s/tables/%s/snapshots/%019d/snapshot.pb",
         encode(tenantId), encode(tableId), snapshotId);
   }
 
@@ -179,14 +170,14 @@ public final class Keys {
 
   public static String snapshotTableStatsBlobUri(String tenantId, String tableId, long snapshotId) {
     return String.format(
-        "mem://tenants/%s/tables/%s/snapshots/%d/stats/table.pb",
+        "/tenants/%s/tables/%s/snapshots/%d/stats/table.pb",
         encode(tenantId), encode(tableId), snapshotId);
   }
 
   public static String snapshotColumnStatsBlobUri(
       String tenantId, String tableId, long snapshotId, String columnId) {
     return String.format(
-        "mem://tenants/%s/tables/%s/snapshots/%d/stats/columns/%s/column.pb",
+        "/tenants/%s/tables/%s/snapshots/%d/stats/columns/%s/column.pb",
         encode(tenantId), encode(tableId), snapshotId, encode(columnId));
   }
 
@@ -213,16 +204,16 @@ public final class Keys {
   }
 
   public static String connectorBlobUri(String tenantId, String connectorId) {
-    return "mem://tenants/"
-        + encode(tenantId)
-        + "/connectors/"
-        + encode(connectorId)
-        + "/connector.pb";
+    return "/tenants/" + encode(tenantId) + "/connectors/" + encode(connectorId) + "/connector.pb";
   }
 
   // ===== Idempotency =====
 
   public static String idempotencyKey(String tenantId, String operation, String key) {
     return "/tenants/" + encode(tenantId) + "/idempotency/" + encode(operation) + "/" + encode(key);
+  }
+
+  public static String idempotencyBlobUri(String key) {
+    return encode(key) + "/idempotency.pb";
   }
 }

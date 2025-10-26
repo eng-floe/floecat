@@ -16,16 +16,16 @@ import ai.floedb.metacat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
-import ai.floedb.metacat.service.repo.util.BaseRepository;
+import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import ai.floedb.metacat.service.storage.IdempotencyStore;
-import ai.floedb.metacat.service.storage.util.IdempotencyGuard;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -40,7 +40,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject TableRepository tableRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
-  @Inject IdempotencyStore idempotencyStore;
+  @Inject IdempotencyRepository idempotencyStore;
 
   @Override
   public Uni<ListTablesResponse> listTables(ListTablesRequest request) {
@@ -185,7 +185,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
                         try {
                           tableRepo.create(table);
-                        } catch (BaseRepository.NameConflictException e) {
+                        } catch (BaseResourceRepository.NameConflictException e) {
                           if (!idempotencyKey.isBlank()) {
                             return tableRepo
                                 .getByName(
@@ -399,7 +399,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
                 return DeleteTableResponse.newBuilder().setMeta(meta).build();
 
-              } catch (BaseRepository.NotFoundException pointerMissing) {
+              } catch (BaseResourceRepository.NotFoundException pointerMissing) {
                 tableRepo.delete(tableId);
                 return DeleteTableResponse.newBuilder()
                     .setMeta(tableRepo.metaForSafe(tableId))

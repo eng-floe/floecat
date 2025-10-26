@@ -1,7 +1,10 @@
-package ai.floedb.metacat.service.storage;
+package ai.floedb.metacat.storage;
 
 import ai.floedb.metacat.common.rpc.BlobHeader;
-import java.util.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 public interface BlobStore {
   byte[] get(String uri);

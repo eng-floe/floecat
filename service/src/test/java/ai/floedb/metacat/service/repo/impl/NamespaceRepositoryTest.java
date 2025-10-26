@@ -6,9 +6,9 @@ import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
-import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
-import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
 import ai.floedb.metacat.service.util.TestSupport;
+import ai.floedb.metacat.storage.InMemoryBlobStore;
+import ai.floedb.metacat.storage.InMemoryPointerStore;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 

@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.storage;
+package ai.floedb.metacat.service.repo;
 
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -6,7 +6,7 @@ import ai.floedb.metacat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.Timestamp;
 import java.util.Optional;
 
-public interface IdempotencyStore {
+public interface IdempotencyRepository {
   Optional<IdempotencyRecord> get(String key);
 
   boolean createPending(

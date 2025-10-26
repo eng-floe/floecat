@@ -33,9 +33,9 @@ class ConcurrencyOCCIdempotencyIT {
   @GrpcClient("table-service")
   TableServiceGrpc.TableServiceBlockingStub table;
 
-  @jakarta.inject.Inject ai.floedb.metacat.service.storage.PointerStore ptr;
+  @jakarta.inject.Inject ai.floedb.metacat.storage.PointerStore ptr;
 
-  @jakarta.inject.Inject ai.floedb.metacat.service.storage.BlobStore blobs;
+  @jakarta.inject.Inject ai.floedb.metacat.storage.BlobStore blobs;
 
   final int WORKERS = 48;
   final int OPS_PER_WORKER = 200;

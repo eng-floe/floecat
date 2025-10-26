@@ -6,9 +6,9 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.repo.model.Schemas;
 import ai.floedb.metacat.service.repo.model.SnapshotKey;
-import ai.floedb.metacat.service.repo.util.GenericRepository;
-import ai.floedb.metacat.service.storage.BlobStore;
-import ai.floedb.metacat.service.storage.PointerStore;
+import ai.floedb.metacat.service.repo.util.GenericResourceRepository;
+import ai.floedb.metacat.storage.BlobStore;
+import ai.floedb.metacat.storage.PointerStore;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -19,12 +19,12 @@ import java.util.Optional;
 @ApplicationScoped
 public class SnapshotRepository {
 
-  private final GenericRepository<Snapshot, SnapshotKey> repo;
+  private final GenericResourceRepository<Snapshot, SnapshotKey> repo;
 
   @Inject
   public SnapshotRepository(PointerStore pointerStore, BlobStore blobStore) {
     this.repo =
-        new GenericRepository<>(
+        new GenericResourceRepository<>(
             pointerStore,
             blobStore,
             Schemas.SNAPSHOT,
