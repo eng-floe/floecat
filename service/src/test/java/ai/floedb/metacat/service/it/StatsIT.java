@@ -43,7 +43,7 @@ class StatsIT {
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
 
   @GrpcClient("table-statistic-service")
-  TableStatisticServiceGrpc.TableStatisticServiceBlockingStub statistic;
+  TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistic;
 
   String tablePrefix = this.getClass().getSimpleName() + "_";
 

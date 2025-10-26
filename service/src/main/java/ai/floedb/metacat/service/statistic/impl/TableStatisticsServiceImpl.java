@@ -20,7 +20,7 @@ import jakarta.inject.Inject;
 import java.util.Map;
 
 @GrpcService
-public class TableStatisticServiceImpl extends BaseServiceImpl implements TableStatisticService {
+public class TableStatisticsServiceImpl extends BaseServiceImpl implements TableStatisticsService {
 
   @Inject TableRepository tables;
   @Inject SnapshotRepository snapshots;

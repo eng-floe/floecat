@@ -108,7 +108,7 @@ message ListColumnStatsResponse {
 
 // ---------- Services ----------
 
-service TableStatisticService {
+service TableStatisticsService {
   rpc GetTableStats(GetTableStatsRequest) returns (GetTableStatsResponse);
   rpc ListColumnStats(ListColumnStatsRequest) returns (ListColumnStatsResponse);
   rpc PutTableStats(PutTableStatsRequest) returns (PutTableStatsResponse);
