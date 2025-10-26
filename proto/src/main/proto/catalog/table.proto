@@ -39,11 +39,11 @@ message ListTablesResponse {
   ai.floedb.metacat.common.PageResponse page = 2;
 }
 
-message GetTableDescriptorRequest {
+message GetTableRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
   optional ai.floedb.metacat.common.SnapshotRef snapshot = 2;
 }
-message GetTableDescriptorResponse {
+message GetTableResponse {
   Table table = 1;
 }
 
@@ -57,7 +57,6 @@ message TableSpec {
   repeated string partition_keys = 7;
   TableFormat format = 8;
   map<string,string> properties = 9;
-  string policy_ref = 10;
 }
 
 message CreateTableRequest {
@@ -69,37 +68,12 @@ message CreateTableResponse {
   ai.floedb.metacat.common.MutationMeta meta = 2;
 }
 
-message UpdateTableSchemaRequest {
+message UpdateTableRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
-  string schema_json = 2;
-  repeated string partition_keys = 3;
-  map<string,string> properties = 4;
-  ai.floedb.metacat.common.Precondition precondition = 5;
-}
-message UpdateTableSchemaResponse {
-  Table table = 1;
-  ai.floedb.metacat.common.MutationMeta meta = 2;
-}
-
-message RenameTableRequest {
-  ai.floedb.metacat.common.ResourceId table_id = 1;
-  string new_display_name = 2;
+  TableSpec spec = 2;
   ai.floedb.metacat.common.Precondition precondition = 3;
 }
-message RenameTableResponse {
-  Table table = 1;
-  ai.floedb.metacat.common.MutationMeta meta = 2;
-}
-
-message MoveTableRequest {
-  ai.floedb.metacat.common.ResourceId table_id = 1;
-  string new_display_name = 2;
-
-  ai.floedb.metacat.common.ResourceId new_namespace_id = 3;
-
-  ai.floedb.metacat.common.Precondition precondition = 5;
-}
-message MoveTableResponse {
+message UpdateTableResponse {
   Table table = 1;
   ai.floedb.metacat.common.MutationMeta meta = 2;
 }
@@ -118,10 +92,8 @@ message DeleteTableResponse {
 
 service TableService {
   rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
+  rpc GetTable(GetTableRequest) returns (GetTableResponse);
   rpc CreateTable(CreateTableRequest) returns (CreateTableResponse);
-  rpc GetTableDescriptor(GetTableDescriptorRequest) returns (GetTableDescriptorResponse);
-  rpc UpdateTableSchema(UpdateTableSchemaRequest) returns (UpdateTableSchemaResponse);
-  rpc RenameTable(RenameTableRequest) returns (RenameTableResponse);
-  rpc MoveTable(MoveTableRequest) returns (MoveTableResponse);
+  rpc UpdateTable(UpdateTableRequest) returns (UpdateTableResponse);
   rpc DeleteTable(DeleteTableRequest) returns (DeleteTableResponse);
 }

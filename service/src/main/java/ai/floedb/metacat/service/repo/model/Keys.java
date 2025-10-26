@@ -213,7 +213,11 @@ public final class Keys {
   }
 
   public static String connectorBlobUri(String tenantId, String connectorId) {
-    return "tenants/" + encode(tenantId) + "/connectors/" + encode(connectorId) + "/connector.pb";
+    return "mem://tenants/"
+        + encode(tenantId)
+        + "/connectors/"
+        + encode(connectorId)
+        + "/connector.pb";
   }
 
   // ===== Idempotency =====

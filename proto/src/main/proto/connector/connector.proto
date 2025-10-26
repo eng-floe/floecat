@@ -147,9 +147,9 @@ enum JobState {
 }
 
 service Connectors {
-  rpc CreateConnector(CreateConnectorRequest) returns (CreateConnectorResponse);
   rpc GetConnector(GetConnectorRequest) returns (GetConnectorResponse);
   rpc ListConnectors(ListConnectorsRequest) returns (ListConnectorsResponse);
+  rpc CreateConnector(CreateConnectorRequest) returns (CreateConnectorResponse);
   rpc UpdateConnector(UpdateConnectorRequest) returns (UpdateConnectorResponse);
   rpc DeleteConnector(DeleteConnectorRequest) returns (DeleteConnectorResponse);
 

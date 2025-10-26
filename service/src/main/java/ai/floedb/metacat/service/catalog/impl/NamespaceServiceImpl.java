@@ -1,12 +1,21 @@
 package ai.floedb.metacat.service.catalog.impl;
 
-import ai.floedb.metacat.catalog.rpc.*;
-import ai.floedb.metacat.common.rpc.MutationMeta;
-import ai.floedb.metacat.common.rpc.PageResponse;
+import ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.CreateNamespaceResponse;
+import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.DeleteNamespaceResponse;
+import ai.floedb.metacat.catalog.rpc.GetNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.GetNamespaceResponse;
+import ai.floedb.metacat.catalog.rpc.ListNamespacesRequest;
+import ai.floedb.metacat.catalog.rpc.ListNamespacesResponse;
+import ai.floedb.metacat.catalog.rpc.Namespace;
+import ai.floedb.metacat.catalog.rpc.NamespaceService;
+import ai.floedb.metacat.catalog.rpc.UpdateNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.UpdateNamespaceResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
-import ai.floedb.metacat.service.catalog.util.MutationOps;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
@@ -22,7 +31,6 @@ import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.UUID;
 
 @GrpcService
@@ -41,40 +49,23 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         run(
             () -> {
               var principalContext = principal.get();
-
               authz.require(principalContext, "namespace.read");
 
-              var catalogId = request.getCatalogId();
-              catalogRepo
-                  .getById(catalogId)
-                  .orElseThrow(
-                      () ->
-                          GrpcErrors.notFound(
-                              correlationId(), "catalog", Map.of("id", catalogId.getId())));
-
-              final int limit =
-                  (request.hasPage() && request.getPage().getPageSize() > 0)
-                      ? request.getPage().getPageSize()
-                      : 50;
-              final String token = request.hasPage() ? request.getPage().getPageToken() : "";
-              final StringBuilder next = new StringBuilder();
+              var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
+              var next = new StringBuilder();
 
               var namespaces =
                   namespaceRepo.list(
                       principalContext.getTenantId(),
-                      catalogId.getId(),
+                      request.getCatalogId().getId(),
                       List.of(),
-                      Math.max(1, limit),
-                      token,
+                      Math.max(1, pageIn.limit),
+                      pageIn.token,
                       next);
-              int total =
-                  namespaceRepo.count(principalContext.getTenantId(), catalogId.getId(), List.of());
 
               var page =
-                  PageResponse.newBuilder()
-                      .setNextPageToken(next.toString())
-                      .setTotalSize(total)
-                      .build();
+                  MutationOps.pageOut(
+                      next.toString(), catalogRepo.count(principalContext.getTenantId()));
 
               return ListNamespacesResponse.newBuilder()
                   .addAllNamespaces(namespaces)
@@ -215,13 +206,12 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   }
 
   @Override
-  public Uni<RenameNamespaceResponse> renameNamespace(RenameNamespaceRequest request) {
+  public Uni<UpdateNamespaceResponse> updateNamespace(UpdateNamespaceRequest request) {
     return mapFailures(
         runWithRetry(
             () -> {
               var principalContext = principal.get();
               var correlationId = principalContext.getCorrelationId();
-
               authz.require(principalContext, "namespace.write");
 
               var namespaceId = request.getNamespaceId();
@@ -235,81 +225,74 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                               GrpcErrors.notFound(
                                   correlationId, "namespace", Map.of("id", namespaceId.getId())));
 
-              var currentCatalogId = current.getCatalogId();
+              ResourceId desiredCatalogId =
+                  request.hasCatalogId() && !request.getCatalogId().getId().isBlank()
+                      ? request.getCatalogId()
+                      : current.getCatalogId();
+              ensureKind(desiredCatalogId, ResourceKind.RK_CATALOG, "catalog_id", correlationId);
 
-              boolean pathProvided = !request.getNewPathList().isEmpty();
-              String newLeaf =
-                  pathProvided
-                      ? request.getNewPath(request.getNewPathCount() - 1)
-                      : (request.getNewDisplayName().isBlank()
-                          ? current.getDisplayName()
-                          : request.getNewDisplayName());
+              catalogRepo
+                  .getById(desiredCatalogId)
+                  .orElseThrow(
+                      () ->
+                          GrpcErrors.notFound(
+                              correlationId, "catalog", Map.of("id", desiredCatalogId.getId())));
 
-              var currentParents = current.getParentsList();
-              List<String> newParents =
-                  pathProvided
-                      ? List.copyOf(
-                          request.getNewPathList().subList(0, request.getNewPathCount() - 1))
-                      : currentParents;
+              String desiredDisplay;
+              List<String> desiredParents;
 
-              var targetCatalogId =
-                  (request.hasNewCatalogId() && !request.getNewCatalogId().getId().isBlank())
-                      ? request.getNewCatalogId()
-                      : currentCatalogId;
+              var reqDisplay = request.getDisplayName();
+              var reqPath = request.getPathList();
 
-              if (catalogRepo.getById(targetCatalogId).isEmpty()) {
-                throw GrpcErrors.notFound(
-                    correlationId, "catalog", Map.of("id", targetCatalogId.getId()));
+              if (!reqDisplay.isBlank()) {
+                desiredDisplay = mustNonEmpty(reqDisplay, "display_name", correlationId);
+                desiredParents = !reqPath.isEmpty() ? reqPath : current.getParentsList();
+              } else if (!reqPath.isEmpty()) {
+                if (reqPath.size() == 1) {
+                  desiredDisplay = mustNonEmpty(reqPath.get(0), "path[0]", correlationId);
+                  desiredParents = List.of();
+                } else {
+                  desiredDisplay =
+                      mustNonEmpty(reqPath.get(reqPath.size() - 1), "path[last]", correlationId);
+                  desiredParents = reqPath.subList(0, reqPath.size() - 1);
+                }
+              } else {
+                desiredDisplay = current.getDisplayName();
+                desiredParents = current.getParentsList();
               }
 
-              boolean sameCatalog = targetCatalogId.getId().equals(currentCatalogId.getId());
-              boolean sameLeaf = newLeaf.equals(current.getDisplayName());
-              boolean sameParents = Objects.equals(currentParents, newParents);
-              if (sameCatalog && sameLeaf && sameParents) {
-                return RenameNamespaceResponse.newBuilder()
+              var desired =
+                  current.toBuilder()
+                      .setDisplayName(desiredDisplay)
+                      .clearParents()
+                      .addAllParents(desiredParents)
+                      .setCatalogId(desiredCatalogId)
+                      .build();
+
+              if (desired.equals(current)) {
+                var metaNoop = namespaceRepo.metaForSafe(namespaceId);
+                MutationOps.BaseServiceChecks.enforcePreconditions(
+                    correlationId, metaNoop, request.getPrecondition());
+                return UpdateNamespaceResponse.newBuilder()
                     .setNamespace(current)
-                    .setMeta(namespaceRepo.metaForSafe(namespaceId))
+                    .setMeta(metaNoop)
                     .build();
               }
 
-              var updated =
-                  current.toBuilder()
-                      .setCatalogId(targetCatalogId)
-                      .setDisplayName(newLeaf)
-                      .clearParents()
-                      .addAllParents(newParents)
-                      .build();
+              MutationOps.updateWithPreconditions(
+                  () -> namespaceRepo.metaFor(namespaceId),
+                  request.getPrecondition(),
+                  expected -> namespaceRepo.update(desired, expected),
+                  () -> namespaceRepo.metaForSafe(namespaceId),
+                  correlationId,
+                  "namespace",
+                  Map.of("display_name", desiredDisplay, "catalog_id", desiredCatalogId.getId()));
 
-              var meta = namespaceRepo.metaFor(namespaceId);
-              enforcePreconditions(correlationId, meta, request.getPrecondition());
-              long expectedVersion = meta.getPointerVersion();
-
-              final boolean ok;
-              try {
-                ok = namespaceRepo.update(updated, expectedVersion);
-              } catch (BaseRepository.NameConflictException nce) {
-                var parts = new ArrayList<>(newParents);
-                parts.add(newLeaf);
-                var pretty = String.join("/", parts);
-                throw GrpcErrors.conflict(
-                    correlationId,
-                    "namespace.already_exists",
-                    Map.of("catalog", targetCatalogId.getId(), "path", pretty));
-              }
-
-              if (!ok) {
-                var nowMeta = namespaceRepo.metaForSafe(namespaceId);
-                throw GrpcErrors.preconditionFailed(
-                    correlationId,
-                    "version_mismatch",
-                    Map.of(
-                        "expected", Long.toString(expectedVersion),
-                        "actual", Long.toString(nowMeta.getPointerVersion())));
-              }
-
-              return RenameNamespaceResponse.newBuilder()
-                  .setNamespace(namespaceRepo.getById(namespaceId).orElse(updated))
-                  .setMeta(namespaceRepo.metaForSafe(namespaceId))
+              var outMeta = namespaceRepo.metaForSafe(namespaceId);
+              var latest = namespaceRepo.getById(namespaceId).orElse(desired);
+              return UpdateNamespaceResponse.newBuilder()
+                  .setNamespace(latest)
+                  .setMeta(outMeta)
                   .build();
             }),
         correlationId());
@@ -322,60 +305,37 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
             () -> {
               var principalContext = principal.get();
               var correlationId = principalContext.getCorrelationId();
-
               authz.require(principalContext, "namespace.write");
 
-              final var namespaceId = request.getNamespaceId();
+              var namespaceId = request.getNamespaceId();
               ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId);
-
-              MutationMeta meta;
-              try {
-                meta = namespaceRepo.metaFor(namespaceId);
-              } catch (BaseRepository.NotFoundException e) {
-                namespaceRepo.delete(namespaceId);
-                return DeleteNamespaceResponse.newBuilder()
-                    .setMeta(namespaceRepo.metaForSafe(namespaceId))
-                    .build();
-              }
 
               var namespace = namespaceRepo.getById(namespaceId).orElse(null);
               var catalogId =
                   (namespace != null && namespace.hasCatalogId()) ? namespace.getCatalogId() : null;
-
               if (catalogId == null) {
                 var safe = namespaceRepo.metaForSafe(namespaceId);
                 namespaceRepo.delete(namespaceId);
                 return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
               }
 
-              if (request.getRequireEmpty()
-                  && tableRepo.count(
-                          catalogId.getTenantId(), catalogId.getId(), namespaceId.getId())
-                      > 0) {
+              if (tableRepo.count(catalogId.getTenantId(), catalogId.getId(), namespaceId.getId())
+                  > 0) {
                 var pretty =
                     prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
                 throw GrpcErrors.conflict(
                     correlationId, "namespace.not_empty", Map.of("display_name", pretty));
               }
 
-              enforcePreconditions(correlationId, meta, request.getPrecondition());
-              long expectedVersion = meta.getPointerVersion();
-
-              try {
-                boolean ok = namespaceRepo.deleteWithPrecondition(namespaceId, expectedVersion);
-                if (!ok) {
-                  var nowMeta = namespaceRepo.metaForSafe(namespaceId);
-                  throw GrpcErrors.preconditionFailed(
+              var meta =
+                  MutationOps.deleteWithPreconditions(
+                      () -> namespaceRepo.metaFor(namespaceId),
+                      request.getPrecondition(),
+                      expected -> namespaceRepo.deleteWithPrecondition(namespaceId, expected),
+                      () -> namespaceRepo.metaForSafe(namespaceId),
                       correlationId,
-                      "version_mismatch",
-                      Map.of(
-                          "expected", Long.toString(expectedVersion),
-                          "actual", Long.toString(nowMeta.getPointerVersion())));
-                }
-              } catch (BaseRepository.NotFoundException nfe) {
-                throw GrpcErrors.notFound(
-                    correlationId, "namespace", Map.of("id", namespaceId.getId()));
-              }
+                      "namespace",
+                      Map.of("id", namespaceId.getId()));
 
               return DeleteNamespaceResponse.newBuilder().setMeta(meta).build();
             }),

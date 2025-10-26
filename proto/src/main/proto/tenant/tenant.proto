@@ -75,8 +75,8 @@ message DeleteTenantResponse {
 
 service Tenancy {
   rpc ListTenants (ListTenantsRequest) returns (ListTenantsResponse);
-  rpc CreateTenant (CreateTenantRequest) returns (CreateTenantResponse);
   rpc GetTenant (GetTenantRequest) returns (GetTenantResponse);
+  rpc CreateTenant (CreateTenantRequest) returns (CreateTenantResponse);
   rpc UpdateTenant (UpdateTenantRequest) returns (UpdateTenantResponse);
   rpc DeleteTenant (DeleteTenantRequest) returns (DeleteTenantResponse);
 }

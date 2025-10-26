@@ -218,8 +218,8 @@ class DirectoryIT {
         NameRef.newBuilder().setCatalog(cat.getDisplayName()).addPath("p").addPath("a").build();
 
     namespace
-        .renameNamespace(
-            RenameNamespaceRequest.newBuilder().setNamespaceId(id).setNewDisplayName("b").build())
+        .updateNamespace(
+            UpdateNamespaceRequest.newBuilder().setNamespaceId(id).setDisplayName("b").build())
         .getNamespace();
 
     assertThrows(

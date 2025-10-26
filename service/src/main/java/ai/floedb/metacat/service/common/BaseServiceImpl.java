@@ -19,6 +19,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeoutException;
@@ -159,5 +160,29 @@ public abstract class BaseServiceImpl {
 
   protected Timestamp nowTs() {
     return Timestamps.fromMillis(clock.millis());
+  }
+
+  public static final class Enforcers {
+    public static void enforce(MutationMeta meta, Precondition p, String corr) {
+      if (p == null) return;
+
+      final boolean checkVer = p.getExpectedVersion() > 0L;
+      final boolean checkTag = p.getExpectedEtag() != null && !p.getExpectedEtag().isBlank();
+
+      if (checkVer && meta.getPointerVersion() != p.getExpectedVersion()) {
+        throw GrpcErrors.preconditionFailed(
+            corr,
+            "version_mismatch",
+            Map.of(
+                "expected", Long.toString(p.getExpectedVersion()),
+                "actual", Long.toString(meta.getPointerVersion())));
+      }
+      if (checkTag && !Objects.equals(p.getExpectedEtag(), meta.getEtag())) {
+        throw GrpcErrors.preconditionFailed(
+            corr,
+            "etag_mismatch",
+            Map.of("expected", p.getExpectedEtag(), "actual", meta.getEtag()));
+      }
+    }
   }
 }

@@ -180,20 +180,17 @@ public final class TestSupport {
       TableServiceGrpc.TableServiceBlockingStub mutation,
       ResourceId tableId,
       String newSchemaJson) {
+    TableSpec spec = TableSpec.newBuilder().setSchemaJson(newSchemaJson).build();
     return mutation
-        .updateTableSchema(
-            UpdateTableSchemaRequest.newBuilder()
-                .setTableId(tableId)
-                .setSchemaJson(newSchemaJson)
-                .build())
+        .updateTable(UpdateTableRequest.newBuilder().setTableId(tableId).setSpec(spec).build())
         .getTable();
   }
 
   public static Table renameTable(
       TableServiceGrpc.TableServiceBlockingStub mutation, ResourceId tableId, String newName) {
+    TableSpec spec = TableSpec.newBuilder().setDisplayName(newName).build();
     return mutation
-        .renameTable(
-            RenameTableRequest.newBuilder().setTableId(tableId).setNewDisplayName(newName).build())
+        .updateTable(UpdateTableRequest.newBuilder().setTableId(tableId).setSpec(spec).build())
         .getTable();
   }
 

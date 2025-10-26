@@ -1,6 +1,5 @@
 package ai.floedb.metacat.service.connector.impl;
 
-import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.connector.rpc.Connector;
@@ -28,8 +27,8 @@ import ai.floedb.metacat.connector.spi.ConnectorConfig;
 import ai.floedb.metacat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.metacat.connector.spi.ConnectorFactory;
 import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
-import ai.floedb.metacat.service.catalog.util.MutationOps;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.ConnectorRepository;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
@@ -46,11 +45,67 @@ import java.util.UUID;
 
 @GrpcService
 public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
-  @Inject ConnectorRepository connectors;
+  @Inject ConnectorRepository connectorRepo;
   @Inject PrincipalProvider principalProvider;
   @Inject Authorizer authz;
   @Inject IdempotencyStore idempotencyStore;
   @Inject ReconcileJobStore jobs;
+
+  @Override
+  public Uni<ListConnectorsResponse> listConnectors(ListConnectorsRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principalProvider.get();
+              authz.require(principalContext, "connector.manage");
+
+              var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
+              var next = new StringBuilder();
+
+              var connectors =
+                  connectorRepo.list(
+                      principalContext.getTenantId(),
+                      Math.max(1, pageIn.limit),
+                      pageIn.token,
+                      next);
+
+              var page =
+                  MutationOps.pageOut(
+                      next.toString(), connectorRepo.count(principalContext.getTenantId()));
+
+              return ListConnectorsResponse.newBuilder()
+                  .addAllConnectors(connectors)
+                  .setPage(page)
+                  .build();
+            }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<GetConnectorResponse> getConnector(GetConnectorRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principalProvider.get();
+              var correlationId = principalContext.getCorrelationId();
+
+              authz.require(principalContext, "connector.manage");
+
+              var connectorId = request.getConnectorId();
+              ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", correlationId);
+
+              var connector =
+                  connectorRepo
+                      .getById(connectorId)
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId, "connector", Map.of("id", connectorId.getId())));
+
+              return GetConnectorResponse.newBuilder().setConnector(connector).build();
+            }),
+        correlationId());
+  }
 
   @Override
   public Uni<CreateConnectorResponse> createConnector(CreateConnectorRequest request) {
@@ -111,13 +166,15 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                 .setState(ConnectorState.CS_ACTIVE)
                                 .build();
                         try {
-                          connectors.create(c);
+                          connectorRepo.create(c);
                         } catch (BaseRepository.NameConflictException nce) {
                           if (!idempotencyKey.isBlank()) {
                             var existing =
-                                connectors
+                                connectorRepo
                                     .getById(connectorId)
-                                    .or(() -> connectors.getByName(tenantId, c.getDisplayName()));
+                                    .or(
+                                        () ->
+                                            connectorRepo.getByName(tenantId, c.getDisplayName()));
                             if (existing.isPresent()) {
                               return new IdempotencyGuard.CreateResult<>(
                                   existing.get(), existing.get().getResourceId());
@@ -131,7 +188,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                         return new IdempotencyGuard.CreateResult<>(c, connectorId);
                       },
-                      (conn) -> connectors.metaFor(conn.getResourceId()),
+                      (conn) -> connectorRepo.metaFor(conn.getResourceId()),
                       idempotencyStore,
                       tsNow,
                       IDEMPOTENCY_TTL_SECONDS,
@@ -147,86 +204,29 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   }
 
   @Override
-  public Uni<GetConnectorResponse> getConnector(GetConnectorRequest request) {
-    return mapFailures(
-        run(
-            () -> {
-              var principalContext = principalProvider.get();
-              var correlationId = principalContext.getCorrelationId();
-
-              authz.require(principalContext, "connector.manage");
-
-              var connectorId = request.getConnectorId();
-              ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", correlationId);
-
-              var connector =
-                  connectors
-                      .getById(connectorId)
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId, "connector", Map.of("id", connectorId.getId())));
-
-              return GetConnectorResponse.newBuilder().setConnector(connector).build();
-            }),
-        correlationId());
-  }
-
-  @Override
-  public Uni<ListConnectorsResponse> listConnectors(ListConnectorsRequest request) {
-    return mapFailures(
-        run(
-            () -> {
-              var principalContext = principalProvider.get();
-
-              authz.require(principalContext, "connector.manage");
-
-              var tenant = principalContext.getTenantId();
-
-              var page = request.getPage();
-              int limit = page.getPageSize() > 0 ? page.getPageSize() : 100;
-              String token = page.getPageToken();
-
-              var next = new StringBuilder();
-              var list = connectors.list(tenant, limit, token, next);
-              int total = connectors.count(tenant);
-
-              return ListConnectorsResponse.newBuilder()
-                  .addAllConnectors(list)
-                  .setPage(
-                      PageResponse.newBuilder()
-                          .setNextPageToken(next.toString())
-                          .setTotalSize(total)
-                          .build())
-                  .build();
-            }),
-        correlationId());
-  }
-
-  @Override
   public Uni<UpdateConnectorResponse> updateConnector(UpdateConnectorRequest request) {
     return mapFailures(
         runWithRetry(
             () -> {
-              var principalContext = principalProvider.get();
-              var correlationId = principalContext.getCorrelationId();
+              var pc = principalProvider.get();
+              var corr = pc.getCorrelationId();
 
-              authz.require(principalContext, "connector.manage");
+              authz.require(pc, "connector.manage");
 
               var connectorId = request.getConnectorId();
-              ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", correlationId);
+              ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", corr);
 
               var current =
-                  connectors
+                  connectorRepo
                       .getById(connectorId)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
-                                  correlationId, "connector", Map.of("id", connectorId.getId())));
+                                  corr, "connector", Map.of("id", connectorId.getId())));
 
               var tsNow = nowTs();
-
               var spec = request.getSpec();
+
               var desired =
                   current.toBuilder()
                       .setDisplayName(
@@ -241,7 +241,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           spec.getTargetCatalogDisplayName().isBlank()
                               ? current.getTargetCatalogDisplayName()
                               : spec.getTargetCatalogDisplayName())
-                      .setTargetTenantId(principalContext.getTenantId())
+                      .setTargetTenantId(pc.getTenantId())
                       .setUri(spec.getUri().isBlank() ? current.getUri() : spec.getUri())
                       .clearOptions()
                       .putAllOptions(
@@ -254,38 +254,26 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       .build();
 
               if (desired.equals(current)) {
-                var metaNoop = connectors.metaForSafe(connectorId);
-                enforcePreconditions(correlationId, metaNoop, request.getPrecondition());
+                var metaNoop = connectorRepo.metaForSafe(connectorId);
+                MutationOps.BaseServiceChecks.enforcePreconditions(
+                    corr, metaNoop, request.getPrecondition());
                 return UpdateConnectorResponse.newBuilder()
                     .setConnector(current)
                     .setMeta(metaNoop)
                     .build();
               }
 
-              var currentMeta = connectors.metaFor(connectorId);
-              enforcePreconditions(correlationId, currentMeta, request.getPrecondition());
-              long expectedVersion = currentMeta.getPointerVersion();
+              MutationOps.updateWithPreconditions(
+                  () -> connectorRepo.metaFor(connectorId),
+                  request.getPrecondition(),
+                  expected -> connectorRepo.update(desired, expected),
+                  () -> connectorRepo.metaForSafe(connectorId),
+                  corr,
+                  "connector",
+                  Map.of("display_name", desired.getDisplayName()));
 
-              try {
-                boolean ok = connectors.update(desired, expectedVersion);
-                if (!ok) {
-                  var nowMeta = connectors.metaForSafe(connectorId);
-                  throw GrpcErrors.preconditionFailed(
-                      correlationId,
-                      "version_mismatch",
-                      Map.of(
-                          "expected", Long.toString(expectedVersion),
-                          "actual", Long.toString(nowMeta.getPointerVersion())));
-                }
-              } catch (BaseRepository.NameConflictException nce) {
-                throw GrpcErrors.conflict(
-                    correlationId,
-                    "connector.already_exists",
-                    Map.of("display_name", desired.getDisplayName()));
-              }
-
-              var outMeta = connectors.metaForSafe(connectorId);
-              var outConnector = connectors.getById(connectorId).orElse(desired);
+              var outMeta = connectorRepo.metaForSafe(connectorId);
+              var outConnector = connectorRepo.getById(connectorId).orElse(desired);
 
               return UpdateConnectorResponse.newBuilder()
                   .setConnector(outConnector)
@@ -300,51 +288,25 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     return mapFailures(
         runWithRetry(
             () -> {
-              var principalContext = principalProvider.get();
-              var correlationId = principalContext.getCorrelationId();
+              var pc = principalProvider.get();
+              var corr = pc.getCorrelationId();
 
-              authz.require(principalContext, "connector.manage");
+              authz.require(pc, "connector.manage");
 
               var connectorId = request.getConnectorId();
-              ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", correlationId);
+              ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", corr);
 
-              var currentOpt = connectors.getById(connectorId);
-              if (currentOpt.isEmpty()) {
-                connectors.delete(connectorId);
-                var safe = connectors.metaForSafe(connectorId);
-                return DeleteConnectorResponse.newBuilder().setMeta(safe).build();
-              }
+              var meta =
+                  MutationOps.deleteWithPreconditions(
+                      () -> connectorRepo.metaFor(connectorId),
+                      request.getPrecondition(),
+                      expected -> connectorRepo.deleteWithPrecondition(connectorId, expected),
+                      () -> connectorRepo.metaForSafe(connectorId),
+                      corr,
+                      "connector",
+                      Map.of("id", connectorId.getId()));
 
-              var meta = connectors.metaFor(connectorId);
-              long expectedVersion = meta.getPointerVersion();
-              enforcePreconditions(correlationId, meta, request.getPrecondition());
-
-              try {
-                boolean ok = connectors.deleteWithPrecondition(connectorId, expectedVersion);
-                if (!ok) {
-                  var nowMeta = connectors.metaForSafe(connectorId);
-                  throw GrpcErrors.preconditionFailed(
-                      correlationId,
-                      "version_mismatch",
-                      Map.of(
-                          "expected", Long.toString(expectedVersion),
-                          "actual", Long.toString(nowMeta.getPointerVersion())));
-                }
-              } catch (BaseRepository.PreconditionFailedException pfe) {
-                var nowMeta = connectors.metaForSafe(connectorId);
-                throw GrpcErrors.preconditionFailed(
-                    correlationId,
-                    "version_mismatch",
-                    Map.of(
-                        "expected", Long.toString(expectedVersion),
-                        "actual", Long.toString(nowMeta.getPointerVersion())));
-              } catch (BaseRepository.NotFoundException nfe) {
-                throw GrpcErrors.notFound(
-                    correlationId, "connector", Map.of("id", connectorId.getId()));
-              }
-
-              var outMeta = connectors.metaForSafe(connectorId);
-              return DeleteConnectorResponse.newBuilder().setMeta(outMeta).build();
+              return DeleteConnectorResponse.newBuilder().setMeta(meta).build();
             }),
         correlationId());
   }
@@ -423,7 +385,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
               var connectorId = request.getConnectorId();
               ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", correlationId);
-              connectors
+              connectorRepo
                   .getById(connectorId)
                   .orElseThrow(
                       () ->

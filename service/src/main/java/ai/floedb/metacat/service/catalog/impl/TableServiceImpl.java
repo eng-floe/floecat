@@ -1,12 +1,22 @@
 package ai.floedb.metacat.service.catalog.impl;
 
-import ai.floedb.metacat.catalog.rpc.*;
-import ai.floedb.metacat.common.rpc.MutationMeta;
-import ai.floedb.metacat.common.rpc.PageResponse;
+import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
+import ai.floedb.metacat.catalog.rpc.CreateTableResponse;
+import ai.floedb.metacat.catalog.rpc.DeleteTableRequest;
+import ai.floedb.metacat.catalog.rpc.DeleteTableResponse;
+import ai.floedb.metacat.catalog.rpc.GetTableRequest;
+import ai.floedb.metacat.catalog.rpc.GetTableResponse;
+import ai.floedb.metacat.catalog.rpc.ListTablesRequest;
+import ai.floedb.metacat.catalog.rpc.ListTablesResponse;
+import ai.floedb.metacat.catalog.rpc.Table;
+import ai.floedb.metacat.catalog.rpc.TableFormat;
+import ai.floedb.metacat.catalog.rpc.TableService;
+import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
+import ai.floedb.metacat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
-import ai.floedb.metacat.service.catalog.util.MutationOps;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
@@ -26,7 +36,7 @@ import java.util.UUID;
 public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
   @Inject CatalogRepository catalogRepo;
-  @Inject NamespaceRepository nsRepo;
+  @Inject NamespaceRepository namespaceRepo;
   @Inject TableRepository tableRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
@@ -40,45 +50,58 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
               var principalContext = principal.get();
               authz.require(principalContext, "table.read");
 
+              var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
+              var next = new StringBuilder();
+
               var namespaceId = request.getNamespaceId();
               ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId());
 
               var namespace =
-                  nsRepo
+                  namespaceRepo
                       .getById(namespaceId)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
                                   correlationId(), "namespace", Map.of("id", namespaceId.getId())));
 
-              final int limit =
-                  (request.hasPage() && request.getPage().getPageSize() > 0)
-                      ? request.getPage().getPageSize()
-                      : 50;
-              final String token = request.hasPage() ? request.getPage().getPageToken() : "";
-              final StringBuilder next = new StringBuilder();
-
               var catalogId = namespace.getCatalogId();
-              var items =
+              var tables =
                   tableRepo.list(
                       principalContext.getTenantId(),
                       catalogId.getId(),
                       namespaceId.getId(),
-                      Math.max(1, limit),
-                      token,
+                      Math.max(1, pageIn.limit),
+                      pageIn.token,
                       next);
 
-              int total =
-                  tableRepo.count(
-                      principalContext.getTenantId(), catalogId.getId(), namespaceId.getId());
-
               var page =
-                  PageResponse.newBuilder()
-                      .setNextPageToken(next.toString())
-                      .setTotalSize(total)
-                      .build();
+                  MutationOps.pageOut(
+                      next.toString(), catalogRepo.count(principalContext.getTenantId()));
 
-              return ListTablesResponse.newBuilder().addAllTables(items).setPage(page).build();
+              return ListTablesResponse.newBuilder().addAllTables(tables).setPage(page).build();
+            }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<GetTableResponse> getTable(GetTableRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var principalContext = principal.get();
+              authz.require(principalContext, "table.read");
+              ensureKind(request.getTableId(), ResourceKind.RK_TABLE, "table_id", correlationId());
+
+              var table =
+                  tableRepo
+                      .getById(request.getTableId())
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(),
+                                  "table",
+                                  Map.of("id", request.getTableId().getId())));
+              return GetTableResponse.newBuilder().setTable(table).build();
             }),
         correlationId());
   }
@@ -101,7 +124,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               "catalog",
                               Map.of("id", request.getSpec().getCatalogId().getId())));
 
-              nsRepo
+              namespaceRepo
                   .getById(request.getSpec().getNamespaceId())
                   .orElseThrow(
                       () ->
@@ -205,36 +228,13 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   }
 
   @Override
-  public Uni<GetTableDescriptorResponse> getTableDescriptor(GetTableDescriptorRequest request) {
-    return mapFailures(
-        run(
-            () -> {
-              var principalContext = principal.get();
-              authz.require(principalContext, "table.read");
-              ensureKind(request.getTableId(), ResourceKind.RK_TABLE, "table_id", correlationId());
-
-              var table =
-                  tableRepo
-                      .getById(request.getTableId())
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId(),
-                                  "table",
-                                  Map.of("id", request.getTableId().getId())));
-              return GetTableDescriptorResponse.newBuilder().setTable(table).build();
-            }),
-        correlationId());
-  }
-
-  @Override
-  public Uni<UpdateTableSchemaResponse> updateTableSchema(UpdateTableSchemaRequest request) {
+  public Uni<UpdateTableResponse> updateTable(UpdateTableRequest request) {
     return mapFailures(
         runWithRetry(
             () -> {
-              var principalContext = principal.get();
-              var correlationId = principalContext.getCorrelationId();
-              authz.require(principalContext, "table.write");
+              var pincipalContext = principal.get();
+              var correlationId = pincipalContext.getCorrelationId();
+              authz.require(pincipalContext, "table.write");
 
               var tableId = request.getTableId();
               ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
@@ -247,188 +247,129 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               GrpcErrors.notFound(
                                   correlationId, "table", Map.of("id", tableId.getId())));
 
-              var updated = current.toBuilder().setSchemaJson(request.getSchemaJson()).build();
+              var spec = request.getSpec();
+              var updatedTableBuilder = current.toBuilder();
 
-              if (updated.equals(current)) {
-                var metaNoop = tableRepo.metaForSafe(tableId);
-                enforcePreconditions(correlationId, metaNoop, request.getPrecondition());
-                return UpdateTableSchemaResponse.newBuilder()
-                    .setTable(current)
-                    .setMeta(metaNoop)
-                    .build();
+              if (spec.getDisplayName() != null && !spec.getDisplayName().isBlank()) {
+                updatedTableBuilder.setDisplayName(
+                    mustNonEmpty(spec.getDisplayName(), "spec.display_name", correlationId));
+              }
+              if (spec.getDescription() != null && !spec.getDescription().isBlank()) {
+                updatedTableBuilder.setDescription(spec.getDescription());
+              }
+              if (spec.getRootUri() != null && !spec.getRootUri().isBlank()) {
+                updatedTableBuilder.setRootUri(
+                    mustNonEmpty(spec.getRootUri(), "spec.root_uri", correlationId));
+              }
+              if (spec.getSchemaJson() != null && !spec.getSchemaJson().isBlank()) {
+                updatedTableBuilder.setSchemaJson(
+                    mustNonEmpty(spec.getSchemaJson(), "spec.schema_json", correlationId));
               }
 
-              var meta = tableRepo.metaFor(tableId);
-              long expectedVersion = meta.getPointerVersion();
-              enforcePreconditions(correlationId, meta, request.getPrecondition());
+              if (spec.getFormat() != TableFormat.TF_UNSPECIFIED) {
+                updatedTableBuilder.setFormat(spec.getFormat());
+              }
 
-              try {
-                var ok = tableRepo.update(updated, expectedVersion);
-                if (!ok) {
-                  var nowMeta = tableRepo.metaForSafe(tableId);
-                  throw GrpcErrors.preconditionFailed(
+              if (spec.getPartitionKeysCount() > 0) {
+                updatedTableBuilder
+                    .clearPartitionKeys()
+                    .addAllPartitionKeys(spec.getPartitionKeysList());
+              }
+              if (!spec.getPropertiesMap().isEmpty()) {
+                updatedTableBuilder.clearProperties().putAllProperties(spec.getPropertiesMap());
+              }
+
+              boolean catalogChanged = false;
+              boolean namespaceChanged = false;
+
+              if (spec.hasCatalogId()) {
+                var catId = spec.getCatalogId();
+                ensureKind(catId, ResourceKind.RK_CATALOG, "spec.catalog_id", correlationId);
+                catalogRepo
+                    .getById(catId)
+                    .orElseThrow(
+                        () ->
+                            GrpcErrors.notFound(
+                                correlationId, "catalog", Map.of("id", catId.getId())));
+                updatedTableBuilder.setCatalogId(catId);
+                catalogChanged = true;
+              }
+
+              if (spec.hasNamespaceId()) {
+                var namespaceId = spec.getNamespaceId();
+                ensureKind(
+                    namespaceId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", correlationId);
+                var namespace =
+                    namespaceRepo
+                        .getById(namespaceId)
+                        .orElseThrow(
+                            () ->
+                                GrpcErrors.notFound(
+                                    correlationId, "namespace", Map.of("id", namespaceId.getId())));
+                var effectiveCatalogId =
+                    catalogChanged ? updatedTableBuilder.getCatalogId() : current.getCatalogId();
+                if (!namespace.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
+                  throw GrpcErrors.invalidArgument(
                       correlationId,
-                      "version_mismatch",
+                      "namespace.catalog_mismatch",
                       Map.of(
-                          "expected", Long.toString(expectedVersion),
-                          "actual", Long.toString(nowMeta.getPointerVersion())));
+                          "namespace_id", namespaceId.getId(),
+                          "namespace.catalog_id", namespace.getCatalogId().getId(),
+                          "catalog_id", effectiveCatalogId.getId()));
                 }
-              } catch (BaseRepository.PreconditionFailedException pfe) {
-                var nowMeta = tableRepo.metaForSafe(tableId);
-                throw GrpcErrors.preconditionFailed(
-                    correlationId,
-                    "version_mismatch",
-                    Map.of(
-                        "expected", Long.toString(expectedVersion),
-                        "actual", Long.toString(nowMeta.getPointerVersion())));
+                updatedTableBuilder.setNamespaceId(namespaceId);
+                namespaceChanged = true;
               }
+
+              if (catalogChanged && !namespaceChanged) {
+                var effectiveCatalogId = updatedTableBuilder.getCatalogId();
+                var namespace =
+                    namespaceRepo
+                        .getById(updatedTableBuilder.getNamespaceId())
+                        .orElseThrow(
+                            () ->
+                                GrpcErrors.notFound(
+                                    correlationId,
+                                    "namespace",
+                                    Map.of("id", updatedTableBuilder.getNamespaceId().getId())));
+                if (!namespace.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
+                  throw GrpcErrors.invalidArgument(
+                      correlationId,
+                      "namespace.catalog_mismatch",
+                      Map.of(
+                          "namespace_id", updatedTableBuilder.getNamespaceId().getId(),
+                          "namespace.catalog_id", namespace.getCatalogId().getId(),
+                          "catalog_id", effectiveCatalogId.getId()));
+                }
+              }
+
+              var desired = updatedTableBuilder.build();
+
+              if (desired.equals(current)) {
+                var metaNoop = tableRepo.metaForSafe(tableId);
+                MutationOps.BaseServiceChecks.enforcePreconditions(
+                    correlationId, metaNoop, request.getPrecondition());
+                return UpdateTableResponse.newBuilder().setTable(current).setMeta(metaNoop).build();
+              }
+
+              var conflictInfo =
+                  Map.of(
+                      "display_name", desired.getDisplayName(),
+                      "catalog_id", desired.getCatalogId().getId(),
+                      "namespace_id", desired.getNamespaceId().getId());
+
+              MutationOps.updateWithPreconditions(
+                  () -> tableRepo.metaFor(tableId),
+                  request.getPrecondition(),
+                  (expectedVersion) -> tableRepo.update(desired, expectedVersion),
+                  () -> tableRepo.metaForSafe(tableId),
+                  correlationId,
+                  "table",
+                  conflictInfo);
 
               var outMeta = tableRepo.metaForSafe(tableId);
-              return UpdateTableSchemaResponse.newBuilder()
-                  .setTable(updated)
-                  .setMeta(outMeta)
-                  .build();
-            }),
-        correlationId());
-  }
-
-  @Override
-  public Uni<RenameTableResponse> renameTable(RenameTableRequest request) {
-    return mapFailures(
-        runWithRetry(
-            () -> {
-              var principalContext = principal.get();
-              var correlationId = principalContext.getCorrelationId();
-              authz.require(principalContext, "table.write");
-
-              var tableId = request.getTableId();
-              ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
-
-              var current =
-                  tableRepo
-                      .getById(tableId)
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId, "table", Map.of("id", tableId.getId())));
-
-              var newDisplayName =
-                  mustNonEmpty(request.getNewDisplayName(), "display_name", correlationId);
-
-              if (newDisplayName.equals(current.getDisplayName())) {
-                var metaNoop = tableRepo.metaForSafe(tableId);
-                enforcePreconditions(correlationId, metaNoop, request.getPrecondition());
-                return RenameTableResponse.newBuilder().setTable(current).setMeta(metaNoop).build();
-              }
-
-              var updated = current.toBuilder().setDisplayName(newDisplayName).build();
-
-              var meta = tableRepo.metaFor(tableId);
-              long expectedVersion = meta.getPointerVersion();
-              enforcePreconditions(correlationId, meta, request.getPrecondition());
-
-              try {
-                boolean ok = tableRepo.update(updated, expectedVersion);
-                if (!ok) {
-                  var nowMeta = tableRepo.metaForSafe(tableId);
-                  throw GrpcErrors.preconditionFailed(
-                      correlationId,
-                      "version_mismatch",
-                      Map.of(
-                          "expected", Long.toString(expectedVersion),
-                          "actual", Long.toString(nowMeta.getPointerVersion())));
-                }
-              } catch (BaseRepository.NameConflictException nce) {
-                throw GrpcErrors.conflict(
-                    correlationId, "table.already_exists", Map.of("display_name", newDisplayName));
-              }
-
-              var outMeta = tableRepo.metaForSafe(tableId);
-              var latest = tableRepo.getById(tableId).orElse(updated);
-              return RenameTableResponse.newBuilder().setTable(latest).setMeta(outMeta).build();
-            }),
-        correlationId());
-  }
-
-  @Override
-  public Uni<MoveTableResponse> moveTable(MoveTableRequest request) {
-    return mapFailures(
-        runWithRetry(
-            () -> {
-              final var pc = principal.get();
-              final var corr = pc.getCorrelationId();
-              authz.require(pc, "table.write");
-
-              final var tableId = request.getTableId();
-              ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
-
-              final var current =
-                  tableRepo
-                      .getById(tableId)
-                      .orElseThrow(
-                          () -> GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
-
-              if (!request.hasNewNamespaceId() || request.getNewNamespaceId().getId().isBlank()) {
-                throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "new_namespace_id"));
-              }
-
-              final var newNamespaceId = request.getNewNamespaceId();
-              ensureKind(newNamespaceId, ResourceKind.RK_NAMESPACE, "new_namespace_id", corr);
-
-              final var newNamespace =
-                  nsRepo
-                      .getById(newNamespaceId)
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  corr, "namespace", Map.of("id", newNamespaceId.getId())));
-              final var newCatalogId = newNamespace.getCatalogId();
-
-              final var targetDisplayName =
-                  (request.getNewDisplayName() != null && !request.getNewDisplayName().isBlank())
-                      ? request.getNewDisplayName()
-                      : current.getDisplayName();
-
-              final boolean sameNamespace =
-                  current.getNamespaceId().getId().equals(newNamespaceId.getId());
-              final boolean sameName = current.getDisplayName().equals(targetDisplayName);
-
-              if (sameNamespace && sameName) {
-                final var metaNoop = tableRepo.metaForSafe(tableId);
-                enforcePreconditions(corr, metaNoop, request.getPrecondition());
-                return MoveTableResponse.newBuilder().setTable(current).setMeta(metaNoop).build();
-              }
-
-              final var updated =
-                  current.toBuilder()
-                      .setDisplayName(targetDisplayName)
-                      .setCatalogId(newCatalogId)
-                      .setNamespaceId(newNamespaceId)
-                      .build();
-
-              final var meta = tableRepo.metaFor(tableId);
-              final long expectedVersion = meta.getPointerVersion();
-              enforcePreconditions(corr, meta, request.getPrecondition());
-
-              try {
-                boolean ok = tableRepo.update(updated, expectedVersion);
-                if (!ok) {
-                  final var nowMeta = tableRepo.metaForSafe(tableId);
-                  throw GrpcErrors.preconditionFailed(
-                      corr,
-                      "version_mismatch",
-                      Map.of(
-                          "expected", Long.toString(expectedVersion),
-                          "actual", Long.toString(nowMeta.getPointerVersion())));
-                }
-              } catch (BaseRepository.NameConflictException nce) {
-                throw GrpcErrors.conflict(
-                    corr, "table.already_exists", Map.of("display_name", targetDisplayName));
-              }
-
-              final var outMeta = tableRepo.metaForSafe(tableId);
-              final var latest = tableRepo.getById(tableId).orElse(updated);
-              return MoveTableResponse.newBuilder().setTable(latest).setMeta(outMeta).build();
+              var latest = tableRepo.getById(tableId).orElse(desired);
+              return UpdateTableResponse.newBuilder().setTable(latest).setMeta(outMeta).build();
             }),
         correlationId());
   }
@@ -445,35 +386,25 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
               var tableId = request.getTableId();
               ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
 
-              MutationMeta meta;
               try {
-                meta = tableRepo.metaFor(tableId);
+                var meta =
+                    MutationOps.deleteWithPreconditions(
+                        () -> tableRepo.metaFor(tableId),
+                        request.getPrecondition(),
+                        expected -> tableRepo.deleteWithPrecondition(tableId, expected),
+                        () -> tableRepo.metaForSafe(tableId),
+                        correlationId,
+                        "table",
+                        Map.of("id", tableId.getId()));
+
+                return DeleteTableResponse.newBuilder().setMeta(meta).build();
+
               } catch (BaseRepository.NotFoundException pointerMissing) {
                 tableRepo.delete(tableId);
                 return DeleteTableResponse.newBuilder()
                     .setMeta(tableRepo.metaForSafe(tableId))
                     .build();
               }
-
-              long expectedVersion = meta.getPointerVersion();
-              enforcePreconditions(correlationId, meta, request.getPrecondition());
-
-              try {
-                boolean ok = tableRepo.deleteWithPrecondition(tableId, expectedVersion);
-                if (!ok) {
-                  var nowMeta = tableRepo.metaForSafe(tableId);
-                  throw GrpcErrors.preconditionFailed(
-                      correlationId,
-                      "version_mismatch",
-                      Map.of(
-                          "expected", Long.toString(expectedVersion),
-                          "actual", Long.toString(nowMeta.getPointerVersion())));
-                }
-              } catch (BaseRepository.NotFoundException blobMissing) {
-                throw GrpcErrors.notFound(correlationId, "table", Map.of("id", tableId.getId()));
-              }
-
-              return DeleteTableResponse.newBuilder().setMeta(meta).build();
             }),
         correlationId());
   }

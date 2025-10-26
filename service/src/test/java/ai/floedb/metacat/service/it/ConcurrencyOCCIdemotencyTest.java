@@ -170,10 +170,11 @@ class ConcurrencyOCCIdempotencyIT {
                     if (seedDeleted.get()) break;
                     try {
                       var targetNs = rnd.nextBoolean() ? ns1.getResourceId() : ns2.getResourceId();
-                      table.moveTable(
-                          MoveTableRequest.newBuilder()
+                      TableSpec spec = TableSpec.newBuilder().setNamespaceId(targetNs).build();
+                      table.updateTable(
+                          UpdateTableRequest.newBuilder()
                               .setTableId(seedTid)
-                              .setNewNamespaceId(targetNs)
+                              .setSpec(spec)
                               .build());
                     } catch (Throwable t) {
                       recordOutcome(op, t);

@@ -1,12 +1,21 @@
 package ai.floedb.metacat.service.catalog.impl;
 
-import ai.floedb.metacat.catalog.rpc.*;
-import ai.floedb.metacat.common.rpc.MutationMeta;
-import ai.floedb.metacat.common.rpc.PageResponse;
+import ai.floedb.metacat.catalog.rpc.Catalog;
+import ai.floedb.metacat.catalog.rpc.CatalogService;
+import ai.floedb.metacat.catalog.rpc.CreateCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.CreateCatalogResponse;
+import ai.floedb.metacat.catalog.rpc.DeleteCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.DeleteCatalogResponse;
+import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.GetCatalogResponse;
+import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
+import ai.floedb.metacat.catalog.rpc.ListCatalogsResponse;
+import ai.floedb.metacat.catalog.rpc.UpdateCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.UpdateCatalogResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
-import ai.floedb.metacat.service.catalog.util.MutationOps;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.impl.*;
 import ai.floedb.metacat.service.repo.util.BaseRepository;
@@ -19,7 +28,6 @@ import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.UUID;
 
 @GrpcService
@@ -37,26 +45,21 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
         run(
             () -> {
               var principalContext = principal.get();
-
               authz.require(principalContext, "catalog.read");
 
-              final int limit =
-                  (request.hasPage() && request.getPage().getPageSize() > 0)
-                      ? request.getPage().getPageSize()
-                      : 50;
-              final String token = request.hasPage() ? request.getPage().getPageToken() : "";
-              final StringBuilder next = new StringBuilder();
+              var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
+              var next = new StringBuilder();
 
               var catalogs =
-                  catalogRepo.list(principalContext.getTenantId(), Math.max(1, limit), token, next);
-
-              int total = catalogRepo.count(principalContext.getTenantId());
+                  catalogRepo.list(
+                      principalContext.getTenantId(),
+                      Math.max(1, pageIn.limit),
+                      pageIn.token,
+                      next);
 
               var page =
-                  PageResponse.newBuilder()
-                      .setNextPageToken(next.toString())
-                      .setTotalSize(total)
-                      .build();
+                  MutationOps.pageOut(
+                      next.toString(), catalogRepo.count(principalContext.getTenantId()));
 
               return ListCatalogsResponse.newBuilder()
                   .addAllCatalogs(catalogs)
@@ -93,16 +96,16 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
     return mapFailures(
         runWithRetry(
             () -> {
-              final var principalContext = principal.get();
-              final var correlationId = principalContext.getCorrelationId();
-              final var tenantId = principalContext.getTenantId();
+              var principalContext = principal.get();
+              var correlationId = principalContext.getCorrelationId();
+              var tenantId = principalContext.getTenantId();
 
               authz.require(principalContext, "catalog.write");
 
-              final var idempotencyKey =
+              var idempotencyKey =
                   request.hasIdempotency() ? request.getIdempotency().getKey() : "";
 
-              final byte[] fingerprint =
+              byte[] fingerprint =
                   request.getSpec().toBuilder().clearDescription().build().toByteArray();
 
               var tsNow = nowTs();
@@ -178,7 +181,6 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
             () -> {
               var principalContext = principal.get();
               var correlationId = principalContext.getCorrelationId();
-
               authz.require(principalContext, "catalog.write");
 
               var catalogId = request.getCatalogId();
@@ -194,50 +196,36 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
 
               var desiredName =
                   mustNonEmpty(request.getSpec().getDisplayName(), "display_name", correlationId);
-              var desiredDescription = request.getSpec().getDescription();
+              var desiredDesc = request.getSpec().getDescription();
 
-              if (desiredName.equals(current.getDisplayName())
-                  && Objects.equals(desiredDescription, current.getDescription())) {
+              var updated =
+                  current.toBuilder()
+                      .setDisplayName(desiredName)
+                      .setDescription(desiredDesc)
+                      .build();
+
+              if (updated.equals(current)) {
                 var metaNoop = catalogRepo.metaForSafe(catalogId);
-                enforcePreconditions(correlationId, metaNoop, request.getPrecondition());
+                MutationOps.BaseServiceChecks.enforcePreconditions(
+                    correlationId, metaNoop, request.getPrecondition());
                 return UpdateCatalogResponse.newBuilder()
                     .setCatalog(current)
                     .setMeta(metaNoop)
                     .build();
               }
 
-              var updated =
-                  current.toBuilder()
-                      .setDisplayName(desiredName)
-                      .setDescription(desiredDescription)
-                      .build();
+              MutationOps.updateWithPreconditions(
+                  () -> catalogRepo.metaFor(catalogId),
+                  request.getPrecondition(),
+                  expected -> catalogRepo.update(updated, expected),
+                  () -> catalogRepo.metaForSafe(catalogId),
+                  correlationId,
+                  "catalog",
+                  Map.of("display_name", desiredName));
 
-              var meta = catalogRepo.metaFor(catalogId);
-              enforcePreconditions(correlationId, meta, request.getPrecondition());
-              long expectedVersion = meta.getPointerVersion();
-
-              final boolean ok;
-              try {
-                ok = catalogRepo.update(updated, expectedVersion);
-              } catch (BaseRepository.NameConflictException nce) {
-                throw GrpcErrors.conflict(
-                    correlationId, "catalog.already_exists", Map.of("display_name", desiredName));
-              }
-
-              if (!ok) {
-                var nowMeta = catalogRepo.metaForSafe(catalogId);
-                throw GrpcErrors.preconditionFailed(
-                    correlationId,
-                    "version_mismatch",
-                    Map.of(
-                        "expected", Long.toString(expectedVersion),
-                        "actual", Long.toString(nowMeta.getPointerVersion())));
-              }
-
-              return UpdateCatalogResponse.newBuilder()
-                  .setCatalog(catalogRepo.getById(catalogId).orElse(updated))
-                  .setMeta(catalogRepo.metaForSafe(catalogId))
-                  .build();
+              var outMeta = catalogRepo.metaForSafe(catalogId);
+              var latest = catalogRepo.getById(catalogId).orElse(updated);
+              return UpdateCatalogResponse.newBuilder().setCatalog(latest).setMeta(outMeta).build();
             }),
         correlationId());
   }
@@ -249,52 +237,29 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
             () -> {
               var principalContext = principal.get();
               var correlationId = principalContext.getCorrelationId();
-
               authz.require(principalContext, "catalog.write");
+              var id = request.getCatalogId();
+              ensureKind(id, ResourceKind.RK_CATALOG, "catalog_id", correlationId);
 
-              var catalogId = request.getCatalogId();
-              ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", correlationId);
-
-              if (request.getRequireEmpty()
-                  && namespaceRepo.count(catalogId.getTenantId(), catalogId.getId(), List.of())
-                      > 0) {
-                var current = catalogRepo.getById(catalogId).orElse(null);
+              if (namespaceRepo.count(id.getTenantId(), id.getId(), List.of()) > 0) {
+                var currentCatalog = catalogRepo.getById(id).orElse(null);
                 var displayName =
-                    (current != null && !current.getDisplayName().isBlank())
-                        ? current.getDisplayName()
-                        : catalogId.getId();
+                    (currentCatalog != null && !currentCatalog.getDisplayName().isBlank())
+                        ? currentCatalog.getDisplayName()
+                        : id.getId();
                 throw GrpcErrors.conflict(
                     correlationId, "catalog.not_empty", Map.of("display_name", displayName));
               }
 
-              MutationMeta meta;
-              try {
-                meta = catalogRepo.metaFor(catalogId);
-              } catch (BaseRepository.NotFoundException e) {
-                catalogRepo.delete(catalogId);
-                return DeleteCatalogResponse.newBuilder()
-                    .setMeta(catalogRepo.metaForSafe(catalogId))
-                    .build();
-              }
-
-              enforcePreconditions(correlationId, meta, request.getPrecondition());
-              long expectedVersion = meta.getPointerVersion();
-
-              try {
-                boolean ok = catalogRepo.deleteWithPrecondition(catalogId, expectedVersion);
-                if (!ok) {
-                  var nowMeta = catalogRepo.metaForSafe(catalogId);
-                  throw GrpcErrors.preconditionFailed(
+              var meta =
+                  MutationOps.deleteWithPreconditions(
+                      () -> catalogRepo.metaFor(id),
+                      request.getPrecondition(),
+                      expected -> catalogRepo.deleteWithPrecondition(id, expected),
+                      () -> catalogRepo.metaForSafe(id),
                       correlationId,
-                      "version_mismatch",
-                      Map.of(
-                          "expected", Long.toString(expectedVersion),
-                          "actual", Long.toString(nowMeta.getPointerVersion())));
-                }
-              } catch (BaseRepository.NotFoundException nfe) {
-                throw GrpcErrors.notFound(
-                    correlationId, "catalog", Map.of("id", catalogId.getId()));
-              }
+                      "catalog",
+                      Map.of("id", id.getId()));
 
               return DeleteCatalogResponse.newBuilder().setMeta(meta).build();
             }),

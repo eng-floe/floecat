@@ -143,12 +143,6 @@ class BackendStorageIT {
     assertTrue(ptr.get(idxOldKey).isEmpty(), "old by-name pointer must be removed");
 
     TestSupport.deleteTable(table, nsId, tblId);
-    TestSupport.deleteTable(table, nsId, tblId);
-    assertTrue(ptr.get(keyTblCanon).isEmpty());
-    assertTrue(ptr.get(keyTblByName).isEmpty());
-    assertTrue(blobs.head(tblBlobUri).isEmpty());
-    // Call again
-    TestSupport.deleteTable(table, nsId, tblId);
     assertTrue(ptr.get(keyTblCanon).isEmpty());
     assertTrue(ptr.get(keyTblByName).isEmpty());
     assertTrue(blobs.head(tblBlobUri).isEmpty());
@@ -386,12 +380,15 @@ class BackendStorageIT {
             "d");
     var tid2 = tbl2.getResourceId();
     String canon2 = Keys.tablePointerById(cat.getResourceId().getTenantId(), tid2.getId());
-    String blob2 = Keys.tableBlobUri(cat.getResourceId().getTenantId(), tid2.getId());
 
     // Simulate canonical ptr missing
     assertTrue(ptr.delete(canon2));
-    TestSupport.deleteTable(table, ns.getResourceId(), tid2);
-    assertTrue(blobs.head(blob2).isEmpty());
+    bad =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> TestSupport.deleteTable(table, ns.getResourceId(), tid2));
+    TestSupport.assertGrpcAndMc(
+        bad, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Table not found");
   }
 
   @Test

@@ -81,10 +81,10 @@ class NamespaceMutationIT {
 
     var m1 =
         namespace
-            .renameNamespace(
-                RenameNamespaceRequest.newBuilder()
+            .updateNamespace(
+                UpdateNamespaceRequest.newBuilder()
                     .setNamespaceId(nsId)
-                    .setNewDisplayName(leaf + "_ren")
+                    .setDisplayName(leaf + "_ren")
                     .setPrecondition(
                         Precondition.newBuilder()
                             .setExpectedVersion(
@@ -117,10 +117,10 @@ class NamespaceMutationIT {
     assertEquals(nsId.getId(), resolvedRen.getResourceId().getId());
 
     var m2Resp =
-        namespace.renameNamespace(
-            RenameNamespaceRequest.newBuilder()
+        namespace.updateNamespace(
+            UpdateNamespaceRequest.newBuilder()
                 .setNamespaceId(nsId)
-                .addAllNewPath(List.of(leaf + "_root"))
+                .addAllPath(List.of(leaf + "_root"))
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(m1.getPointerVersion())
@@ -142,10 +142,10 @@ class NamespaceMutationIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                namespace.renameNamespace(
-                    RenameNamespaceRequest.newBuilder()
+                namespace.updateNamespace(
+                    UpdateNamespaceRequest.newBuilder()
                         .setNamespaceId(nsId)
-                        .setNewDisplayName(leaf + "_root2")
+                        .setDisplayName(leaf + "_root2")
                         .setPrecondition(
                             Precondition.newBuilder()
                                 .setExpectedVersion(123456L)
@@ -165,10 +165,10 @@ class NamespaceMutationIT {
 
     // Bump the version
     var m3Resp =
-        namespace.renameNamespace(
-            RenameNamespaceRequest.newBuilder()
+        namespace.updateNamespace(
+            UpdateNamespaceRequest.newBuilder()
                 .setNamespaceId(nsId)
-                .setNewDisplayName(leaf + "_root3")
+                .setDisplayName(leaf + "_root3")
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(before.getPointerVersion())

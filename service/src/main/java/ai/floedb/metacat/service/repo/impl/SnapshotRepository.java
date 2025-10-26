@@ -37,8 +37,8 @@ public class SnapshotRepository {
     repo.create(snapshot);
   }
 
-  public boolean update(Snapshot snapshot, long expectedCanonicalVersion) {
-    return repo.update(snapshot, expectedCanonicalVersion);
+  public boolean update(Snapshot snapshot, long expectedPointerVersion) {
+    return repo.update(snapshot, expectedPointerVersion);
   }
 
   public boolean delete(ResourceId tableId, long snapshotId) {
@@ -46,10 +46,10 @@ public class SnapshotRepository {
   }
 
   public boolean deleteWithPrecondition(
-      ResourceId tableId, long snapshotId, long expectedCanonicalVersion) {
+      ResourceId tableId, long snapshotId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
         new SnapshotKey(tableId.getTenantId(), tableId.getId(), snapshotId),
-        expectedCanonicalVersion);
+        expectedPointerVersion);
   }
 
   public Optional<Snapshot> getById(ResourceId tableId, long snapshotId) {

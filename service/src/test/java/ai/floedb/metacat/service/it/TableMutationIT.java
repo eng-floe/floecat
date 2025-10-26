@@ -87,11 +87,12 @@ class TableMutationIT {
     assertEquals(tblId.getId(), tblResolved.getResourceId().getId());
 
     var beforeRename = TestSupport.metaForTable(ptr, blob, tblId);
+    TableSpec spec = TableSpec.newBuilder().setDisplayName("orders_v2").build();
     var r1 =
-        table.renameTable(
-            RenameTableRequest.newBuilder()
+        table.updateTable(
+            UpdateTableRequest.newBuilder()
                 .setTableId(tblId)
-                .setNewDisplayName("orders_v2")
+                .setSpec(spec)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(beforeRename.getPointerVersion())
@@ -128,14 +129,15 @@ class TableMutationIT {
                         .build()));
     TestSupport.assertGrpcAndMc(nfOld, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
 
+    TableSpec staleSpec = TableSpec.newBuilder().setDisplayName("orders_v3").build();
     var staleRename =
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                table.renameTable(
-                    RenameTableRequest.newBuilder()
+                table.updateTable(
+                    UpdateTableRequest.newBuilder()
                         .setTableId(tblId)
-                        .setNewDisplayName("orders_v3")
+                        .setSpec(staleSpec)
                         .setPrecondition(
                             Precondition.newBuilder()
                                 .setExpectedVersion(beforeRename.getPointerVersion()) // stale
@@ -149,11 +151,13 @@ class TableMutationIT {
     var newSchema =
         "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}"
             + ",{\"name\":\"ts\",\"type\":\"timestamp\"}]}";
+
+    TableSpec schemaSpec = TableSpec.newBuilder().setSchemaJson(newSchema).build();
     var s1 =
-        table.updateTableSchema(
-            UpdateTableSchemaRequest.newBuilder()
+        table.updateTable(
+            UpdateTableRequest.newBuilder()
                 .setTableId(tblId)
-                .setSchemaJson(newSchema)
+                .setSpec(schemaSpec)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(beforeSchema.getPointerVersion())
@@ -163,19 +167,21 @@ class TableMutationIT {
     var sm1 = s1.getMeta();
     assertTrue(sm1.getPointerVersion() > beforeSchema.getPointerVersion());
 
-    var readTbl =
-        table.getTableDescriptor(GetTableDescriptorRequest.newBuilder().setTableId(tblId).build());
+    var readTbl = table.getTable(GetTableRequest.newBuilder().setTableId(tblId).build());
     assertEquals(newSchema, readTbl.getTable().getSchemaJson());
 
+    TableSpec staleSchemaSpec =
+        TableSpec.newBuilder()
+            .setSchemaJson("{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}")
+            .build();
     var staleSchema =
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                table.updateTableSchema(
-                    UpdateTableSchemaRequest.newBuilder()
+                table.updateTable(
+                    UpdateTableRequest.newBuilder()
                         .setTableId(tblId)
-                        .setSchemaJson(
-                            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}") // anything
+                        .setSpec(staleSchemaSpec) // anything
                         .setPrecondition(
                             Precondition.newBuilder()
                                 .setExpectedVersion(beforeSchema.getPointerVersion()) // stale
@@ -185,12 +191,13 @@ class TableMutationIT {
     TestSupport.assertGrpcAndMc(
         staleSchema, Status.Code.FAILED_PRECONDITION, ErrorCode.MC_PRECONDITION_FAILED, "mismatch");
 
+    TableSpec sameNameSpec = TableSpec.newBuilder().setDisplayName("orders_v2").build();
     var before = TestSupport.metaForTable(ptr, blob, tblId);
     var noop =
-        table.renameTable(
-            RenameTableRequest.newBuilder()
+        table.updateTable(
+            UpdateTableRequest.newBuilder()
                 .setTableId(tblId)
-                .setNewDisplayName("orders_v2") // same name
+                .setSpec(sameNameSpec)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(before.getPointerVersion())
@@ -270,11 +277,12 @@ class TableMutationIT {
     assertEquals(tblId.getId(), tblResolved.getResourceId().getId());
 
     var beforeRename = TestSupport.metaForTable(ptr, blob, tblId);
+    TableSpec newNamespaceSpec = TableSpec.newBuilder().setNamespaceId(nsId2).build();
     var r1 =
-        table.moveTable(
-            MoveTableRequest.newBuilder()
+        table.updateTable(
+            UpdateTableRequest.newBuilder()
                 .setTableId(tblId)
-                .setNewNamespaceId(nsId2)
+                .setSpec(newNamespaceSpec)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(beforeRename.getPointerVersion())
@@ -312,12 +320,13 @@ class TableMutationIT {
     TestSupport.assertGrpcAndMc(nfOld, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
 
     beforeRename = TestSupport.metaForTable(ptr, blob, tblId);
+    TableSpec newTableNameSpec =
+        TableSpec.newBuilder().setDisplayName("orders_v2").setNamespaceId(nsId2).build();
     var r2 =
-        table.moveTable(
-            MoveTableRequest.newBuilder()
+        table.updateTable(
+            UpdateTableRequest.newBuilder()
                 .setTableId(tblId)
-                .setNewDisplayName("orders_v2")
-                .setNewNamespaceId(nsId2)
+                .setSpec(newTableNameSpec)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(beforeRename.getPointerVersion())

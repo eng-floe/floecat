@@ -55,14 +55,14 @@ message CreateNamespaceResponse {
   ai.floedb.metacat.common.MutationMeta meta = 2;
 }
 
-message RenameNamespaceRequest {
+message UpdateNamespaceRequest {
   ai.floedb.metacat.common.ResourceId namespace_id = 1;
-  string new_display_name = 2;
-  repeated string new_path = 3;
-  ai.floedb.metacat.common.ResourceId new_catalog_id = 4;
+  string display_name = 2;
+  repeated string path = 3;
+  ai.floedb.metacat.common.ResourceId catalog_id = 4;
   ai.floedb.metacat.common.Precondition precondition = 5;
 }
-message RenameNamespaceResponse {
+message UpdateNamespaceResponse {
   Namespace namespace = 1;
   ai.floedb.metacat.common.MutationMeta meta = 2;
 }
@@ -82,6 +82,6 @@ service NamespaceService {
   rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
   rpc GetNamespace(GetNamespaceRequest) returns (GetNamespaceResponse);
   rpc CreateNamespace(CreateNamespaceRequest) returns (CreateNamespaceResponse);
-  rpc RenameNamespace(RenameNamespaceRequest) returns (RenameNamespaceResponse);
+  rpc UpdateNamespace(UpdateNamespaceRequest) returns (UpdateNamespaceResponse);
   rpc DeleteNamespace(DeleteNamespaceRequest) returns (DeleteNamespaceResponse);
 }

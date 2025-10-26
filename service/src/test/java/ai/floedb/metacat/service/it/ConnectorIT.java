@@ -271,7 +271,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void deleteConnectorIdempotent() {
+  void deleteConnectorIdempotent() throws Exception {
     var c =
         TestSupport.createConnector(
             connectors,
@@ -285,9 +285,15 @@ public class ConnectorIT {
     connectors.deleteConnector(
         DeleteConnectorRequest.newBuilder().setConnectorId(c.getResourceId()).build());
 
-    // deleting again must be OK (no throw), returns safe meta
-    connectors.deleteConnector(
-        DeleteConnectorRequest.newBuilder().setConnectorId(c.getResourceId()).build());
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.deleteConnector(
+                    DeleteConnectorRequest.newBuilder().setConnectorId(c.getResourceId()).build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Connector not found");
   }
 
   @Test
