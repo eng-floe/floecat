@@ -3,10 +3,8 @@ package ai.floedb.metacat.service.repo.impl;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.Catalog;
-import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
-import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.storage.impl.InMemoryBlobStore;
 import ai.floedb.metacat.service.storage.impl.InMemoryPointerStore;
 import ai.floedb.metacat.service.util.TestSupport;
@@ -38,6 +36,12 @@ class CatalogRepositoryTest {
     catalogRepo.create(cat);
     var fetched = catalogRepo.getById(rid).orElseThrow();
     assertEquals("sales", fetched.getDisplayName());
+    fetched = catalogRepo.getByName(tenant, "sales").orElseThrow();
+    assertEquals(rid, fetched.getResourceId());
+
+    catalogRepo.delete(rid);
+    fetched = catalogRepo.getByName(tenant, "sales").orElse(null);
+    assertNull(fetched);
   }
 
   @Test
@@ -45,65 +49,68 @@ class CatalogRepositoryTest {
     var ptr = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
     var catalogRepo = new CatalogRepository(ptr, blobs);
-    var namespaceRepo = new NamespaceRepository(ptr, blobs);
 
     String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
-    var catRid =
+
+    var cat1Rid =
         ResourceId.newBuilder()
             .setTenantId(tenant)
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_CATALOG)
             .build();
-    var cat =
+    var cat1 =
         Catalog.newBuilder()
-            .setResourceId(catRid)
+            .setResourceId(cat1Rid)
             .setDisplayName("sales")
             .setDescription("Sales")
             .build();
-    catalogRepo.create(cat);
+    catalogRepo.create(cat1);
 
-    var nsRid =
+    var cat2Rid =
         ResourceId.newBuilder()
             .setTenantId(tenant)
             .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_NAMESPACE)
+            .setKind(ResourceKind.RK_CATALOG)
             .build();
-
-    var ns =
-        Namespace.newBuilder()
-            .setResourceId(nsRid)
-            .setDisplayName("eu")
-            .setDescription("EU namespace")
-            .setCatalogId(catRid)
+    var cat2 =
+        Catalog.newBuilder()
+            .setResourceId(cat2Rid)
+            .setDisplayName("orders")
+            .setDescription("orders")
             .build();
-    namespaceRepo.create(ns);
+    catalogRepo.create(cat2);
 
-    nsRid =
+    var cat3Rid =
         ResourceId.newBuilder()
             .setTenantId(tenant)
             .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_NAMESPACE)
+            .setKind(ResourceKind.RK_CATALOG)
             .build();
-    ns =
-        Namespace.newBuilder()
-            .setResourceId(nsRid)
-            .setDisplayName("us")
-            .setDescription("US namespace")
-            .setCatalogId(catRid)
+    var cat3 =
+        Catalog.newBuilder()
+            .setResourceId(cat3Rid)
+            .setDisplayName("lineitem")
+            .setDescription("lineitem")
             .build();
-    namespaceRepo.create(ns);
+    catalogRepo.create(cat3);
 
-    var next = new StringBuilder();
-    List<Catalog> catalogs = catalogRepo.list(tenant, 10, "", next);
-    assertEquals(1, catalogs.size());
+    List<Catalog> catalogs = catalogRepo.list(tenant, Integer.MAX_VALUE, null, null);
+    assertEquals(3, catalogs.size());
 
-    var catsPrefix = Keys.catalogPointerById(tenant, "");
-    var catKeys = ptr.listPointersByPrefix(catsPrefix, 100, "", new StringBuilder());
-    assertEquals(1, catKeys.size());
-    assertTrue(catKeys.get(0).key().startsWith(catsPrefix));
-
-    var nsNext = new StringBuilder();
-    var nss = namespaceRepo.list(tenant, catRid.getId(), List.of(), 10, "", nsNext);
-    assertEquals(2, nss.size());
+    String token = "";
+    StringBuilder next = new StringBuilder();
+    List<Catalog> batch = catalogRepo.list(tenant, 1, token, next);
+    assertEquals("lineitem", batch.get(0).getDisplayName());
+    token = next.toString();
+    next.setLength(0);
+    batch = catalogRepo.list(tenant, 1, token, next);
+    assertEquals("orders", batch.get(0).getDisplayName());
+    token = next.toString();
+    next.setLength(0);
+    batch = catalogRepo.list(tenant, 1, token, next);
+    assertEquals("sales", batch.get(0).getDisplayName());
+    token = next.toString();
+    next.setLength(0);
+    assertTrue(token.isEmpty());
   }
 }

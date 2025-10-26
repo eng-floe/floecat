@@ -55,7 +55,7 @@ public final class TestSupport {
     return tenantId;
   }
 
-  private static Tenant createTenant(
+  public static Tenant createTenant(
       TenancyGrpc.TenancyBlockingStub tenants, String displayName, String description, long now) {
     var resp =
         tenants.createTenant(

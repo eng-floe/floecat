@@ -15,7 +15,7 @@ import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.metacat.catalog.rpc.SnapshotSpec;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.TableSpec;
-import ai.floedb.metacat.catalog.rpc.UpdateTableSchemaRequest;
+import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -162,7 +162,7 @@ public class ReconcilerService {
               .directory()
               .resolveTable(ResolveTableRequest.newBuilder().setRef(nameRef).build())
               .getResourceId();
-      maybeBumpTableSchema(tableId, upstreamTable);
+      maybeUpdateTable(tableId, upstreamTable);
       return tableId;
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
@@ -196,17 +196,17 @@ public class ReconcilerService {
     return clients.table().createTable(request).getTable().getResourceId();
   }
 
-  private void maybeBumpTableSchema(
-      ResourceId tableId, MetacatConnector.UpstreamTable upstreamTable) {
-    var request =
-        UpdateTableSchemaRequest.newBuilder()
-            .setTableId(tableId)
+  private void maybeUpdateTable(ResourceId tableId, MetacatConnector.UpstreamTable upstreamTable) {
+    TableSpec updated =
+        TableSpec.newBuilder()
             .setSchemaJson(upstreamTable.schemaJson())
             .addAllPartitionKeys(upstreamTable.partitionKeys())
             .putAllProperties(upstreamTable.properties())
             .build();
+    UpdateTableRequest request =
+        UpdateTableRequest.newBuilder().setTableId(tableId).setSpec(updated).build();
     try {
-      clients.table().updateTableSchema(request);
+      clients.table().updateTable(request);
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() != Status.Code.FAILED_PRECONDITION) {
         throw e;
