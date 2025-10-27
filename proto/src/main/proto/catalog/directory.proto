@@ -68,6 +68,37 @@ message LookupTableResponse {
   ai.floedb.metacat.common.NameRef name = 1;
 }
 
+message ResolveViewRequest {
+  ai.floedb.metacat.common.NameRef ref = 1;
+}
+message ResolveViewResponse {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+}
+
+message ResolveFQViewsRequest {
+  oneof selector {
+    NameList list = 1;
+    ai.floedb.metacat.common.NameRef prefix = 2;
+  }
+  ai.floedb.metacat.common.PageRequest page = 10;
+}
+
+message ResolveFQViewsResponse {
+  message Entry {
+    ai.floedb.metacat.common.ResourceId resource_id = 1;
+    ai.floedb.metacat.common.NameRef name = 2;
+  }
+  repeated Entry views = 1;
+  ai.floedb.metacat.common.PageResponse page = 2;
+}
+
+message LookupViewRequest {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+}
+message LookupViewResponse {
+  ai.floedb.metacat.common.NameRef name = 1;
+}
+
 // ----- Services -----
 
 service Directory {
@@ -80,4 +111,8 @@ service Directory {
   rpc ResolveTable(ResolveTableRequest) returns (ResolveTableResponse);
   rpc ResolveFQTables(ResolveFQTablesRequest) returns (ResolveFQTablesResponse);
   rpc LookupTable(LookupTableRequest) returns (LookupTableResponse);
+
+  rpc ResolveView(ResolveViewRequest) returns (ResolveViewResponse);
+  rpc ResolveFQViews(ResolveFQViewsRequest) returns (ResolveFQViewsResponse);
+  rpc LookupView(LookupViewRequest) returns (LookupViewResponse);
 }

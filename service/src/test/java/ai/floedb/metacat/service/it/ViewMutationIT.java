@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.ErrorCode;
+import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceKind;
@@ -32,6 +33,9 @@ class ViewMutationIT {
   @GrpcClient("view-service")
   ViewServiceGrpc.ViewServiceBlockingStub view;
 
+  @GrpcClient("directory")
+  DirectoryGrpc.DirectoryBlockingStub directory;
+
   String viewPrefix = this.getClass().getSimpleName() + "_";
 
   @Test
@@ -42,18 +46,47 @@ class ViewMutationIT {
             namespace, cat.getResourceId(), "views_ns", List.of("db_view"), "namespace for views");
     var nsId = ns.getResourceId();
     assertEquals(ResourceKind.RK_NAMESPACE, nsId.getKind());
+    var nsPath = List.of("db_view", "views_ns");
 
     var created =
-      TestSupport.createView(
-          view,
-          cat.getResourceId(),
-          nsId,
-          "recent_orders",
-          "SELECT order_id, customer_id FROM sales.core.orders WHERE order_date >= current_date - INTERVAL '7' DAY",
-          "recent orders view");
+        TestSupport.createView(
+            view,
+            cat.getResourceId(),
+            nsId,
+            "recent_orders",
+            "SELECT order_id, customer_id FROM sales.core.orders "
+                + "WHERE order_date >= current_date - INTERVAL '7' DAY",
+            "recent orders view");
 
     var viewId = created.getResourceId();
     assertEquals(ResourceKind.RK_VIEW, viewId.getKind());
+
+    var resolved =
+        directory.resolveView(
+            ResolveViewRequest.newBuilder()
+                .setRef(
+                    NameRef.newBuilder()
+                        .setCatalog(cat.getDisplayName())
+                        .addAllPath(nsPath)
+                        .setName("recent_orders"))
+                .build());
+    assertEquals(viewId.getId(), resolved.getResourceId().getId());
+
+    var lookup =
+        directory.lookupView(
+            LookupViewRequest.newBuilder().setResourceId(viewId).build());
+    assertEquals("recent_orders", lookup.getName().getName());
+
+    var weekly =
+        TestSupport.createView(
+            view,
+            cat.getResourceId(),
+            nsId,
+            "weekly_summary",
+            "SELECT customer_id, count(*) AS weekly_orders "
+                + "FROM sales.core.orders GROUP BY customer_id",
+            "weekly summary");
+    var weeklyId = weekly.getResourceId();
 
     var listed =
         view.listViews(
@@ -61,8 +94,37 @@ class ViewMutationIT {
                 .setNamespaceId(nsId)
                 .setPage(PageRequest.newBuilder().setPageSize(10).build())
                 .build());
-    assertEquals(1, listed.getViewsCount());
-    assertEquals("recent_orders", listed.getViews(0).getDisplayName());
+    assertEquals(2, listed.getViewsCount());
+
+    var prefixResolved =
+        directory.resolveFQViews(
+            ResolveFQViewsRequest.newBuilder()
+                .setPrefix(
+                    NameRef.newBuilder()
+                        .setCatalog(cat.getDisplayName())
+                        .addAllPath(nsPath))
+                .setPage(PageRequest.newBuilder().setPageSize(10).build())
+                .build());
+    assertEquals(2, prefixResolved.getViewsCount());
+
+    var listResolved =
+        directory.resolveFQViews(
+            ResolveFQViewsRequest.newBuilder()
+                .setList(
+                    NameList.newBuilder()
+                        .addNames(
+                            NameRef.newBuilder()
+                                .setCatalog(cat.getDisplayName())
+                                .addAllPath(nsPath)
+                                .setName("recent_orders"))
+                        .addNames(
+                            NameRef.newBuilder()
+                                .setCatalog(cat.getDisplayName())
+                                .addAllPath(nsPath)
+                                .setName("weekly_summary")))
+                .setPage(PageRequest.newBuilder().setPageSize(10).build())
+                .build());
+    assertEquals(2, listResolved.getViewsCount());
 
     var beforeRename = TestSupport.metaForView(ptr, blob, viewId);
     var renameResp =
@@ -79,6 +141,37 @@ class ViewMutationIT {
     assertEquals("recent_orders_v2", renameResp.getView().getDisplayName());
     assertTrue(renameResp.getMeta().getPointerVersion() > beforeRename.getPointerVersion());
 
+    var resolveRenamed =
+        directory.resolveView(
+            ResolveViewRequest.newBuilder()
+                .setRef(
+                    NameRef.newBuilder()
+                        .setCatalog(cat.getDisplayName())
+                        .addAllPath(nsPath)
+                        .setName("recent_orders_v2"))
+                .build());
+    assertEquals(viewId.getId(), resolveRenamed.getResourceId().getId());
+
+    var lookupRenamed =
+        directory.lookupView(
+            LookupViewRequest.newBuilder().setResourceId(viewId).build());
+    assertEquals("recent_orders_v2", lookupRenamed.getName().getName());
+
+    var nfOldName =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                directory.resolveView(
+                    ResolveViewRequest.newBuilder()
+                        .setRef(
+                            NameRef.newBuilder()
+                                .setCatalog(cat.getDisplayName())
+                                .addAllPath(nsPath)
+                                .setName("recent_orders"))
+                        .build()));
+    TestSupport.assertGrpcAndMc(
+        nfOldName, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
+
     var staleRename =
         assertThrows(
             StatusRuntimeException.class,
@@ -94,10 +187,7 @@ class ViewMutationIT {
                                 .build())
                         .build()));
     TestSupport.assertGrpcAndMc(
-        staleRename,
-        Status.Code.FAILED_PRECONDITION,
-        ErrorCode.MC_PRECONDITION_FAILED,
-        "mismatch");
+        staleRename, Status.Code.FAILED_PRECONDITION, ErrorCode.MC_PRECONDITION_FAILED, "mismatch");
 
     var beforeSql = TestSupport.metaForView(ptr, blob, viewId);
     var sqlUpdate =
@@ -107,7 +197,8 @@ class ViewMutationIT {
                 .setSpec(
                     ViewSpec.newBuilder()
                         .setSql(
-                            "SELECT order_id, customer_id, total_price FROM sales.core.orders WHERE order_date >= current_date - INTERVAL '14' DAY")
+                            "SELECT order_id, customer_id, total_price FROM sales.core.orders "
+                                + "WHERE order_date >= current_date - INTERVAL '14' DAY")
                         .build())
                 .setPrecondition(
                     Precondition.newBuilder()
@@ -135,10 +226,7 @@ class ViewMutationIT {
                                 .build())
                         .build()));
     TestSupport.assertGrpcAndMc(
-        staleSql,
-        Status.Code.FAILED_PRECONDITION,
-        ErrorCode.MC_PRECONDITION_FAILED,
-        "mismatch");
+        staleSql, Status.Code.FAILED_PRECONDITION, ErrorCode.MC_PRECONDITION_FAILED, "mismatch");
 
     var beforeNoop = TestSupport.metaForView(ptr, blob, viewId);
     var noop =
@@ -149,7 +237,8 @@ class ViewMutationIT {
                     ViewSpec.newBuilder()
                         .setDisplayName("recent_orders_v2")
                         .setSql(
-                            "SELECT order_id, customer_id, total_price FROM sales.core.orders WHERE order_date >= current_date - INTERVAL '14' DAY")
+                            "SELECT order_id, customer_id, total_price FROM sales.core.orders "
+                                + "WHERE order_date >= current_date - INTERVAL '14' DAY")
                         .build())
                 .setPrecondition(
                     Precondition.newBuilder()
@@ -178,6 +267,23 @@ class ViewMutationIT {
     TestSupport.assertGrpcAndMc(
         notFound, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
 
+    var dirNotFound =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                directory.resolveView(
+                    ResolveViewRequest.newBuilder()
+                        .setRef(
+                            NameRef.newBuilder()
+                                .setCatalog(cat.getDisplayName())
+                                .addAllPath(nsPath)
+                                .setName("recent_orders_v2"))
+                        .build()));
+    TestSupport.assertGrpcAndMc(
+        dirNotFound, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
+
+    view.deleteView(DeleteViewRequest.newBuilder().setViewId(weeklyId).build());
+
     var emptyList =
         view.listViews(
             ListViewsRequest.newBuilder()
@@ -187,4 +293,3 @@ class ViewMutationIT {
     assertEquals(0, emptyList.getViewsCount());
   }
 }
-
