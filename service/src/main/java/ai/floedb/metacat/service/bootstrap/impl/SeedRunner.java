@@ -5,6 +5,7 @@ import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
+import ai.floedb.metacat.catalog.rpc.View;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
@@ -12,6 +13,7 @@ import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.repo.impl.TenantRepository;
+import ai.floedb.metacat.service.repo.impl.ViewRepository;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
 import ai.floedb.metacat.tenancy.rpc.Tenant;
@@ -22,6 +24,7 @@ import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import java.time.Clock;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @ApplicationScoped
@@ -31,6 +34,7 @@ public class SeedRunner {
   @Inject NamespaceRepository namespaces;
   @Inject TableRepository tables;
   @Inject SnapshotRepository snapshots;
+  @Inject ViewRepository views;
   @Inject BlobStore blobs;
   @Inject PointerStore ptr;
 
@@ -47,10 +51,31 @@ public class SeedRunner {
     seedTable(tenantId.getId(), salesId, salesCoreNsId.getId(), "lineitem", 0L, now);
     seedSnapshot(tenantId.getId(), ordersId, 101L, now - 60_000L, now - 100_000L);
     seedSnapshot(tenantId.getId(), ordersId, 102L, now, now - 80_000L);
+    seedView(
+        tenantId.getId(),
+        salesId,
+        salesCoreNsId.getId(),
+        "recent_orders",
+        "SELECT o.order_key, o.customer_key, o.order_status FROM sales.core.orders o WHERE o.order_date >= date_sub(current_date, interval '30' day)",
+        Map.of("seeded", "true"),
+        now);
 
     var salesStg25NsId = seedNamespace(tenantId.getId(), salesId, List.of("staging"), "2025", now);
     seedTable(tenantId.getId(), salesId, salesStg25NsId.getId(), "orders_2025", 0L, now);
     seedTable(tenantId.getId(), salesId, salesStg25NsId.getId(), "staging_events", 0L, now);
+    seedView(
+        tenantId.getId(),
+        salesId,
+        salesStg25NsId.getId(),
+        "orders_with_events",
+        """
+        SELECT o.order_id, o.customer_id, e.event_type, e.event_ts
+        FROM sales.staging.2025.orders_2025 o
+        JOIN sales.staging.2025.staging_events e
+          ON o.order_id = e.order_id
+        """,
+        Map.of("materialized", "false", "seeded", "true"),
+        now);
 
     var financeId = seedCatalog(tenantId.getId(), "finance", "Finance catalog", now);
     var financeCoreNsId = seedNamespace(tenantId.getId(), financeId, null, "core", now);
@@ -178,6 +203,44 @@ public class SeedRunner {
             .build();
 
     snapshots.create(snap);
+  }
+
+  private ResourceId seedView(
+      String tenant,
+      ResourceId catalogId,
+      String namespaceId,
+      String name,
+      String sql,
+      Map<String, String> properties,
+      long now) {
+    String viewId = uuidFor(tenant + "/view:" + name);
+    var viewRid =
+        ResourceId.newBuilder()
+            .setTenantId(tenant)
+            .setId(viewId)
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    var nsRid =
+        ResourceId.newBuilder()
+            .setTenantId(tenant)
+            .setId(namespaceId)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+
+    var view =
+        View.newBuilder()
+            .setResourceId(viewRid)
+            .setDisplayName(name)
+            .setDescription(name + " view")
+            .setCatalogId(catalogId)
+            .setNamespaceId(nsRid)
+            .setSql(sql)
+            .setCreatedAt(Timestamps.fromMillis(now))
+            .putAllProperties(properties == null ? Map.of() : properties)
+            .build();
+
+    views.create(view);
+    return viewRid;
   }
 
   private static String uuidFor(String seed) {

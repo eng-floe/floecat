@@ -203,6 +203,8 @@ public class InboundContextInterceptor implements ServerInterceptor {
         .addPermissions("namespace.write")
         .addPermissions("table.read")
         .addPermissions("table.write")
+        .addPermissions("view.read")
+        .addPermissions("view.write")
         .addPermissions("connector.manage")
         .build();
   }

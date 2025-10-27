@@ -189,6 +189,38 @@ public final class Keys {
     return snapshotColumnStatsDirectoryPointer(tenantId, tableId, snapshotId);
   }
 
+  // ===== View =====
+
+  public static String viewPointerById(String tenantId, String viewId) {
+    return "/tenants/" + encode(tenantId) + "/views/by-id/" + encode(viewId);
+  }
+
+  public static String viewPointerByName(
+          String tenantId, String catalogId, String namespaceId, String viewName) {
+    return "/tenants/"
+            + encode(tenantId)
+            + "/catalogs/"
+            + encode(catalogId)
+            + "/namespaces/"
+            + encode(namespaceId)
+            + "/views/by-name/"
+            + encode(viewName);
+  }
+
+  public static String viewPointerByNamePrefix(String tenantId, String catalogId, String namespaceId) {
+    return "/tenants/"
+            + encode(tenantId)
+            + "/catalogs/"
+            + encode(catalogId)
+            + "/namespaces/"
+            + encode(namespaceId)
+            + "/views/by-name/";
+  }
+
+  public static String viewBlobUri(String tenantId, String viewId) {
+    return "/tenants/" + encode(tenantId) + "/views/" + encode(viewId) + "/view.pb";
+  }
+
   // ===== Connector =====
 
   public static String connectorPointerById(String tenantId, String connectorId) {

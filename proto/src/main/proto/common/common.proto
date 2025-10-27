@@ -19,6 +19,7 @@ enum ResourceKind {
   RK_OVERLAY = 5;
   RK_STATS = 6;
   RK_CONNECTOR = 7;
+  RK_VIEW = 8;
 }
 
 message ResourceId {

@@ -140,6 +140,48 @@ public final class TestSupport {
     return resp.getSnapshot();
   }
 
+  public static View createView(
+      ViewServiceGrpc.ViewServiceBlockingStub mutation,
+      ResourceId catalogId,
+      ResourceId namespaceId,
+      String displayName,
+      String sql,
+      String desc) {
+    var resp =
+        mutation.createView(
+            CreateViewRequest.newBuilder()
+                .setSpec(
+                    ViewSpec.newBuilder()
+                        .setCatalogId(catalogId)
+                        .setNamespaceId(namespaceId)
+                        .setDisplayName(displayName)
+                        .setDescription(desc)
+                        .setSql(sql))
+                .build());
+    return resp.getView();
+  }
+
+  public static View renameView(
+      ViewServiceGrpc.ViewServiceBlockingStub mutation, ResourceId viewId, String newName) {
+    var spec = ViewSpec.newBuilder().setDisplayName(newName).build();
+    return mutation
+        .updateView(UpdateViewRequest.newBuilder().setViewId(viewId).setSpec(spec).build())
+        .getView();
+  }
+
+  public static View updateViewSql(
+      ViewServiceGrpc.ViewServiceBlockingStub mutation, ResourceId viewId, String newSql) {
+    var spec = ViewSpec.newBuilder().setSql(newSql).build();
+    return mutation
+        .updateView(UpdateViewRequest.newBuilder().setViewId(viewId).setSpec(spec).build())
+        .getView();
+  }
+
+  public static void deleteView(
+      ViewServiceGrpc.ViewServiceBlockingStub mutation, ResourceId viewId) {
+    mutation.deleteView(DeleteViewRequest.newBuilder().setViewId(viewId).build());
+  }
+
   public static Connector createConnector(
       ConnectorsGrpc.ConnectorsBlockingStub connectors, ConnectorSpec spec) {
     return connectors
@@ -353,6 +395,28 @@ public final class TestSupport {
         .setPointerKey(tblPtrKey)
         .setBlobUri(tblBlob)
         .setPointerVersion(tblPtr.getVersion())
+        .setEtag(hdr.getEtag())
+        .setUpdatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
+        .build();
+  }
+
+  public static MutationMeta metaForView(PointerStore ptr, BlobStore blobs, ResourceId viewId) {
+    var tenant = viewId.getTenantId();
+    var viewPtrKey = Keys.viewPointerById(tenant, viewId.getId());
+    var viewBlob = Keys.viewBlobUri(tenant, viewId.getId());
+
+    var viewPtr =
+        ptr.get(viewPtrKey)
+            .orElseThrow(() -> new AssertionError("view pointer missing: " + viewPtrKey));
+    var hdr =
+        blobs
+            .head(viewBlob)
+            .orElseThrow(() -> new AssertionError("view blob header missing: " + viewBlob));
+
+    return MutationMeta.newBuilder()
+        .setPointerKey(viewPtrKey)
+        .setBlobUri(viewBlob)
+        .setPointerVersion(viewPtr.getVersion())
         .setEtag(hdr.getEtag())
         .setUpdatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
         .build();

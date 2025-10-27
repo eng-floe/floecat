@@ -1,0 +1,84 @@
+syntax = "proto3";
+package ai.floedb.metacat.catalog;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.catalog.rpc";
+
+import "common/common.proto";
+import "google/protobuf/timestamp.proto";
+
+// ----- VIEW -----
+
+message View {
+  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  ai.floedb.metacat.common.ResourceId catalog_id = 2;
+  ai.floedb.metacat.common.ResourceId namespace_id = 3;
+  string display_name = 4;
+  string description = 5;
+  string sql = 6;
+  google.protobuf.Timestamp created_at = 7;
+  map<string,string> properties = 8;
+}
+
+message ListViewsRequest {
+  ai.floedb.metacat.common.ResourceId namespace_id = 1;
+  ai.floedb.metacat.common.PageRequest page = 2;
+}
+message ListViewsResponse {
+  repeated View views = 1;
+  ai.floedb.metacat.common.PageResponse page = 2;
+}
+
+message GetViewRequest {
+  ai.floedb.metacat.common.ResourceId view_id = 1;
+}
+message GetViewResponse {
+  View view = 1;
+}
+
+message ViewSpec {
+  ai.floedb.metacat.common.ResourceId catalog_id = 1;
+  ai.floedb.metacat.common.ResourceId namespace_id = 2;
+  string display_name = 3;
+  string description = 4;
+  string schema_json = 6;
+  string sql = 7;
+  map<string,string> properties = 8;
+}
+
+message CreateViewRequest {
+  ViewSpec spec = 1;
+  ai.floedb.metacat.common.IdempotencyKey idempotency = 2;
+}
+message CreateViewResponse {
+  View view = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
+}
+
+message UpdateViewRequest {
+  ai.floedb.metacat.common.ResourceId view_id = 1;
+  ViewSpec spec = 2;
+  ai.floedb.metacat.common.Precondition precondition = 3;
+}
+message UpdateViewResponse {
+  View view = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
+}
+
+message DeleteViewRequest {
+  ai.floedb.metacat.common.ResourceId view_id = 1;
+  ai.floedb.metacat.common.Precondition precondition = 4;
+}
+message DeleteViewResponse {
+  ai.floedb.metacat.common.MutationMeta meta = 1;
+}
+
+// ----- Services -----
+
+service ViewService {
+  rpc ListViews(ListViewsRequest) returns (ListViewsResponse);
+  rpc GetView(GetViewRequest) returns (GetViewResponse);
+  rpc CreateView(CreateViewRequest) returns (CreateViewResponse);
+  rpc UpdateView(UpdateViewRequest) returns (UpdateViewResponse);
+  rpc DeleteView(DeleteViewRequest) returns (DeleteViewResponse);
+}
