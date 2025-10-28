@@ -12,9 +12,11 @@ import ai.floedb.metacat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateViewResponse;
 import ai.floedb.metacat.catalog.rpc.View;
 import ai.floedb.metacat.catalog.rpc.ViewService;
+import ai.floedb.metacat.catalog.rpc.ViewSpec;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.Canonicalizer;
 import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
@@ -29,7 +31,6 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.Map;
-import java.util.UUID;
 
 @GrpcService
 public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
@@ -77,9 +78,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   MutationOps.pageOut(
                       next.toString(),
                       viewRepo.count(
-                          principalContext.getTenantId(),
-                          catalogId.getId(),
-                          namespaceId.getId()));
+                          principalContext.getTenantId(), catalogId.getId(), namespaceId.getId()));
 
               return ListViewsResponse.newBuilder().addAllViews(views).setPage(page).build();
             }),
@@ -120,8 +119,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
               authz.require(principalContext, "view.write");
 
               if (!request.hasSpec()) {
-                throw GrpcErrors.invalidArgument(
-                    correlationId, "view.missing_spec", Map.of());
+                throw GrpcErrors.invalidArgument(correlationId, "view.missing_spec", Map.of());
               }
               var spec = request.getSpec();
 
@@ -144,7 +142,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                               correlationId, "catalog", Map.of("id", catalogId.getId())));
 
               var namespaceId = spec.getNamespaceId();
-              ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", correlationId);
+              ensureKind(
+                  namespaceId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", correlationId);
               var namespace =
                   namespaceRepo
                       .getById(namespaceId)
@@ -163,9 +162,11 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
               }
 
               var tsNow = nowTs();
+              var fingerprint = canonicalFingerprint(request.getSpec());
               var idempotencyKey =
-                  request.hasIdempotency() ? request.getIdempotency().getKey() : "";
-              byte[] fingerprint = spec.toBuilder().clearDescription().build().toByteArray();
+                  request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
+                      ? request.getIdempotency().getKey()
+                      : hashFingerprint(fingerprint);
 
               var tenantId = principalContext.getTenantId();
               var viewProto =
@@ -175,10 +176,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                       idempotencyKey,
                       () -> fingerprint,
                       () -> {
-                        String viewUuid =
-                            !idempotencyKey.isBlank()
-                                ? deterministicUuid(tenantId, "view", idempotencyKey)
-                                : UUID.randomUUID().toString();
+                        String viewUuid = deterministicUuid(tenantId, "table", idempotencyKey);
 
                         var viewResourceId =
                             ResourceId.newBuilder()
@@ -276,8 +274,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                 updatedBuilder.setDescription(spec.getDescription());
               }
               if (!spec.getSql().isBlank()) {
-                updatedBuilder.setSql(
-                    mustNonEmpty(spec.getSql(), "spec.sql", correlationId));
+                updatedBuilder.setSql(mustNonEmpty(spec.getSql(), "spec.sql", correlationId));
               }
               if (!spec.getPropertiesMap().isEmpty()) {
                 updatedBuilder.clearProperties().putAllProperties(spec.getPropertiesMap());
@@ -301,7 +298,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
               if (spec.hasNamespaceId()) {
                 var namespaceId = spec.getNamespaceId();
-                ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", correlationId);
+                ensureKind(
+                    namespaceId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", correlationId);
                 var namespace =
                     namespaceRepo
                         .getById(namespaceId)
@@ -352,7 +350,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                 var meta = viewRepo.metaForSafe(viewId);
                 MutationOps.BaseServiceChecks.enforcePreconditions(
                     correlationId, meta, request.getPrecondition());
-              return UpdateViewResponse.newBuilder().setView(current).setMeta(meta).build();
+                return UpdateViewResponse.newBuilder().setView(current).setMeta(meta).build();
               }
 
               var conflictInfo =
@@ -409,5 +407,17 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
               }
             }),
         correlationId());
+  }
+
+  private static byte[] canonicalFingerprint(ViewSpec s) {
+    return new Canonicalizer()
+        .scalar("cat", s.getCatalogId().getId())
+        .scalar("ns", s.getNamespaceId().getId())
+        .scalar("name", s.getDisplayName())
+        .scalar("description", s.getDescription())
+        .scalar("sql", s.getSql())
+        .scalar("schema", s.getSchemaJson())
+        .map("prop", s.getPropertiesMap())
+        .bytes();
   }
 }

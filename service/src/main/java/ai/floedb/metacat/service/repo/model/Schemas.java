@@ -8,6 +8,7 @@ import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableStats;
+import ai.floedb.metacat.catalog.rpc.View;
 import ai.floedb.metacat.connector.rpc.Connector;
 import ai.floedb.metacat.tenancy.rpc.Tenant;
 import com.google.protobuf.util.Timestamps;
@@ -111,20 +112,20 @@ public final class Schemas {
                   v.getSnapshotId(),
                   v.getColumnId()));
 
-    public static final ResourceSchema<View, ViewKey> VIEW =
-            ResourceSchema.of(
-                    "view",
-                    key -> Keys.viewPointerById(key.tenantId(), key.viewId()),
-                    key -> Keys.viewBlobUri(key.tenantId(), key.viewId()),
-                    v ->
-                            of(
-                                    "byName",
-                                    Keys.viewPointerByName(
-                                            v.getResourceId().getTenantId(),
-                                            v.getCatalogId().getId(),
-                                            v.getNamespaceId().getId(),
-                                            v.getDisplayName())),
-                    v -> new ViewKey(v.getResourceId().getTenantId(), v.getResourceId().getId()));
+  public static final ResourceSchema<View, ViewKey> VIEW =
+      ResourceSchema.of(
+          "view",
+          key -> Keys.viewPointerById(key.tenantId(), key.viewId()),
+          key -> Keys.viewBlobUri(key.tenantId(), key.viewId()),
+          v ->
+              of(
+                  "byName",
+                  Keys.viewPointerByName(
+                      v.getResourceId().getTenantId(),
+                      v.getCatalogId().getId(),
+                      v.getNamespaceId().getId(),
+                      v.getDisplayName())),
+          v -> new ViewKey(v.getResourceId().getTenantId(), v.getResourceId().getId()));
 
   public static final ResourceSchema<Connector, ConnectorKey> CONNECTOR =
       ResourceSchema.of(
