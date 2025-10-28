@@ -4,18 +4,24 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.*;
+import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.repo.model.Keys;
+import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
+import ai.floedb.metacat.storage.BlobStore;
+import ai.floedb.metacat.storage.PointerStore;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
+import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
@@ -33,9 +39,8 @@ class ConcurrencyOCCIdempotencyIT {
   @GrpcClient("table-service")
   TableServiceGrpc.TableServiceBlockingStub table;
 
-  @jakarta.inject.Inject ai.floedb.metacat.storage.PointerStore ptr;
-
-  @jakarta.inject.Inject ai.floedb.metacat.storage.BlobStore blobs;
+  @Inject PointerStore ptr;
+  @Inject BlobStore blobs;
 
   final int WORKERS = 48;
   final int OPS_PER_WORKER = 200;
@@ -60,6 +65,15 @@ class ConcurrencyOCCIdempotencyIT {
     RENAME,
     MOVE,
     DELETE_SEED
+  }
+
+  @Inject TestDataResetter resetter;
+  @Inject SeedRunner seeder;
+
+  @BeforeEach
+  void resetStores() {
+    resetter.wipeAll();
+    seeder.seedData();
   }
 
   @Test

@@ -3,6 +3,7 @@ package ai.floedb.metacat.service.tenancy.impl;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.Canonicalizer;
 import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
@@ -10,14 +11,26 @@ import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.TenantRepository;
 import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
+import ai.floedb.metacat.service.repo.util.BaseResourceRepository.AbortRetryableException;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import ai.floedb.metacat.tenancy.rpc.*;
+import ai.floedb.metacat.tenancy.rpc.CreateTenantRequest;
+import ai.floedb.metacat.tenancy.rpc.CreateTenantResponse;
+import ai.floedb.metacat.tenancy.rpc.DeleteTenantRequest;
+import ai.floedb.metacat.tenancy.rpc.DeleteTenantResponse;
+import ai.floedb.metacat.tenancy.rpc.GetTenantRequest;
+import ai.floedb.metacat.tenancy.rpc.GetTenantResponse;
+import ai.floedb.metacat.tenancy.rpc.ListTenantsRequest;
+import ai.floedb.metacat.tenancy.rpc.ListTenantsResponse;
+import ai.floedb.metacat.tenancy.rpc.Tenancy;
+import ai.floedb.metacat.tenancy.rpc.Tenant;
+import ai.floedb.metacat.tenancy.rpc.TenantSpec;
+import ai.floedb.metacat.tenancy.rpc.UpdateTenantRequest;
+import ai.floedb.metacat.tenancy.rpc.UpdateTenantResponse;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.Map;
-import java.util.UUID;
 
 @GrpcService
 public class TenancyImpl extends BaseServiceImpl implements Tenancy {
@@ -84,10 +97,12 @@ public class TenancyImpl extends BaseServiceImpl implements Tenancy {
               authz.require(principalContext, "tenant.write");
 
               final var tsNow = nowTs();
-              final var idempotencyKey =
-                  request.hasIdempotency() ? request.getIdempotency().getKey() : "";
 
-              final byte[] fingerprint = request.getSpec().toBuilder().build().toByteArray();
+              var fingerprint = canonicalFingerprint(request.getSpec());
+              var idempotencyKey =
+                  request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
+                      ? request.getIdempotency().getKey()
+                      : hashFingerprint(fingerprint);
 
               var result =
                   MutationOps.createProto(
@@ -97,9 +112,7 @@ public class TenancyImpl extends BaseServiceImpl implements Tenancy {
                       () -> fingerprint,
                       () -> {
                         final String tenantUuid =
-                            !idempotencyKey.isBlank()
-                                ? deterministicUuid(tenantId, "tenant", idempotencyKey)
-                                : UUID.randomUUID().toString();
+                            deterministicUuid(tenantId, "tenant", idempotencyKey);
 
                         var resourceId =
                             ResourceId.newBuilder()
@@ -123,17 +136,15 @@ public class TenancyImpl extends BaseServiceImpl implements Tenancy {
                         try {
                           tenantRepo.create(tenant);
                         } catch (BaseResourceRepository.NameConflictException nce) {
-                          if (!idempotencyKey.isBlank()) {
-                            var existing = tenantRepo.getByName(tenant.getDisplayName());
-                            if (existing.isPresent()) {
-                              return new IdempotencyGuard.CreateResult<>(
-                                  existing.get(), existing.get().getResourceId());
-                            }
+                          var existing = tenantRepo.getByName(tenant.getDisplayName());
+                          if (existing.isPresent()) {
+                            throw GrpcErrors.conflict(
+                                correlationId,
+                                "tenant.already_exists",
+                                Map.of("display_name", tenant.getDisplayName()));
                           }
-                          throw GrpcErrors.conflict(
-                              correlationId,
-                              "tenant.already_exists",
-                              Map.of("display_name", tenant.getDisplayName()));
+
+                          throw new AbortRetryableException("name conflict visibility window");
                         }
 
                         return new IdempotencyGuard.CreateResult<>(tenant, resourceId);
@@ -242,5 +253,12 @@ public class TenancyImpl extends BaseServiceImpl implements Tenancy {
               return DeleteTenantResponse.newBuilder().setMeta(meta).build();
             }),
         correlationId());
+  }
+
+  private static byte[] canonicalFingerprint(TenantSpec s) {
+    return new Canonicalizer()
+        .scalar("name", s.getDisplayName())
+        .scalar("description", s.getDescription())
+        .bytes();
   }
 }

@@ -7,6 +7,7 @@ import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Singleton;
 import java.time.Clock;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -117,11 +118,14 @@ public class InMemoryBlobStore implements BlobStore {
     return Optional.empty();
   }
 
+  @Override
+  public void deletePrefix(String prefix) {}
+
   private static String sha256B64(byte[] data) {
     try {
       var md = java.security.MessageDigest.getInstance("SHA-256");
       byte[] digest = md.digest(data);
-      return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(digest);
+      return Base64.getEncoder().encodeToString(digest);
     } catch (java.security.NoSuchAlgorithmException e) {
       throw new IllegalStateException(e);
     }

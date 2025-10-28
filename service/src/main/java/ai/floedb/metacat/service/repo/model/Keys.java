@@ -245,7 +245,7 @@ public final class Keys {
     return "/tenants/" + encode(tenantId) + "/idempotency/" + encode(operation) + "/" + encode(key);
   }
 
-  public static String idempotencyBlobUri(String key) {
-    return encode(key) + "/idempotency.pb";
+  public static String idempotencyBlobUri(String tenantId, String key) {
+    return "/tenants/" + encode(tenantId) + "/idempotency/" + encode(key) + "/idempotency.pb";
   }
 }

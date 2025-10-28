@@ -4,11 +4,15 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.ErrorCode;
+import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
+import jakarta.inject.Inject;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
@@ -18,6 +22,15 @@ class ResourceAccessIT {
 
   @GrpcClient("directory")
   DirectoryGrpc.DirectoryBlockingStub directory;
+
+  @Inject TestDataResetter resetter;
+  @Inject SeedRunner seeder;
+
+  @BeforeEach
+  void resetStores() {
+    resetter.wipeAll();
+    seeder.seedData();
+  }
 
   @Test
   void listCatalogs() {

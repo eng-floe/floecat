@@ -5,6 +5,7 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.model.Keys;
+import ai.floedb.metacat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.metacat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.Duration;
 import com.google.protobuf.Timestamp;
@@ -60,8 +61,13 @@ public final class IdempotencyGuard {
                 .setNanos((int) ((ttlMillis % 1000) * 1_000_000))
                 .build());
 
-    if (!store.createPending(key, opName, requestHash, now, expiresAt)) {
-      var again = store.get(key).orElseThrow();
+    boolean iCreated = store.createPending(tenantId, key, opName, requestHash, now, expiresAt);
+    if (!iCreated) {
+      var againOpt = store.get(key);
+      if (againOpt.isEmpty()) {
+        throw new StorageAbortRetryableException("idempotency record not yet visible: key=" + key);
+      }
+      var again = againOpt.get();
       if (!again.getRequestHash().equals(requestHash)) {
         throw GrpcErrors.conflict(
             corrId.get(), "idempotency_mismatch", Map.of("op", opName, "key", idempotencyKey));
@@ -69,8 +75,7 @@ public final class IdempotencyGuard {
       if (again.getStatus() == IdempotencyRecord.Status.SUCCEEDED) {
         return parser.apply(again.getPayload().toByteArray());
       }
-      throw GrpcErrors.preconditionFailed(
-          corrId.get(), "idempotency_pending", Map.of("op", opName, "key", idempotencyKey));
+      throw new StorageAbortRetryableException("idempotency record pending: key=" + key);
     }
 
     try {
@@ -78,10 +83,12 @@ public final class IdempotencyGuard {
       var meta = metaExtractor.apply(created.resource());
       var payload = serializer.apply(created.resource());
       store.finalizeSuccess(
-          key, opName, requestHash, created.resourceId(), meta, payload, now, expiresAt);
+          tenantId, key, opName, requestHash, created.resourceId(), meta, payload, now, expiresAt);
       return created.resource();
     } catch (Throwable t) {
-      store.delete(key);
+      if (iCreated) {
+        store.delete(key);
+      }
       throw t;
     }
   }
@@ -90,7 +97,7 @@ public final class IdempotencyGuard {
     try {
       var md = java.security.MessageDigest.getInstance("SHA-256");
       byte[] digest = md.digest(data);
-      return Base64.getUrlEncoder().withoutPadding().encodeToString(digest);
+      return Base64.getEncoder().encodeToString(digest);
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException(e);
     }

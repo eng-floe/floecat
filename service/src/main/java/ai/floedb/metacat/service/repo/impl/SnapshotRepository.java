@@ -60,7 +60,9 @@ public class SnapshotRepository {
     String prefix = Keys.snapshotPointerByTimePrefix(tableId.getTenantId(), tableId.getId());
     StringBuilder next = new StringBuilder();
     List<Snapshot> page = repo.listByPrefix(prefix, 1, "", next);
-    if (page.isEmpty()) return Optional.empty();
+    if (page.isEmpty()) {
+      return Optional.empty();
+    }
     return Optional.of(page.get(0));
   }
 

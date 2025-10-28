@@ -7,6 +7,8 @@ import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import ai.floedb.metacat.tenancy.rpc.CreateTenantRequest;
 import ai.floedb.metacat.tenancy.rpc.DeleteTenantRequest;
@@ -19,6 +21,8 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
+import jakarta.inject.Inject;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
@@ -32,6 +36,15 @@ class TenantMutationIT {
 
   String tenantPrefix = this.getClass().getSimpleName() + "_";
 
+  @Inject TestDataResetter resetter;
+  @Inject SeedRunner seeder;
+
+  @BeforeEach
+  void resetStores() {
+    resetter.wipeAll();
+    seeder.seedData();
+  }
+
   @Test
   void tenantExists() throws Exception {
     var spec =
@@ -42,10 +55,16 @@ class TenantMutationIT {
     assertNotNull(r1.getTenant());
     assertEquals(tenantPrefix + "t1", r1.getTenant().getDisplayName());
 
+    var newSpec =
+        TenantSpec.newBuilder()
+            .setDisplayName(tenantPrefix + "t1")
+            .setDescription("description")
+            .build();
+
     var conflict =
         assertThrows(
             StatusRuntimeException.class,
-            () -> tenancy.createTenant(CreateTenantRequest.newBuilder().setSpec(spec).build()));
+            () -> tenancy.createTenant(CreateTenantRequest.newBuilder().setSpec(newSpec).build()));
 
     TestSupport.assertGrpcAndMc(
         conflict,

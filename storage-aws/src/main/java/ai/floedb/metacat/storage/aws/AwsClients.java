@@ -4,14 +4,14 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
 import java.net.URI;
+import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
-import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.S3Configuration;
 
 @ApplicationScoped
 public class AwsClients {
@@ -26,36 +26,37 @@ public class AwsClients {
   String secretKey;
 
   @ConfigProperty(name = "aws.dynamodb.endpoint-override")
-  URI dynamoEndpoint;
+  Optional<URI> dynamoEndpoint;
 
   @ConfigProperty(name = "aws.s3.endpoint-override")
-  URI s3Endpoint;
+  Optional<URI> s3Endpoint;
+
+  @ConfigProperty(name = "aws.s3.force-path-style", defaultValue = "false")
+  boolean forcePathStyle;
 
   @Produces
   @Singleton
   DynamoDbClient dynamoDbClient() {
-    var b =
+    var builder =
         DynamoDbClient.builder()
             .region(region)
             .httpClient(UrlConnectionHttpClient.create())
-            .credentialsProvider(
-                StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
             .overrideConfiguration(ClientOverrideConfiguration.builder().build());
-    if (dynamoEndpoint != null) b = b.endpointOverride(dynamoEndpoint);
-    return b.build();
+    dynamoEndpoint.ifPresent(builder::endpointOverride);
+    return builder.build();
   }
 
   @Produces
   @Singleton
   S3Client s3Client() {
-    var b =
+    var s3Cfg = S3Configuration.builder().pathStyleAccessEnabled(forcePathStyle).build();
+    var builder =
         S3Client.builder()
             .region(region)
+            .serviceConfiguration(s3Cfg)
             .httpClient(UrlConnectionHttpClient.create())
-            .credentialsProvider(
-                StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
             .overrideConfiguration(ClientOverrideConfiguration.builder().build());
-    if (s3Endpoint != null) b = b.endpointOverride(s3Endpoint);
-    return b.build();
+    s3Endpoint.ifPresent(builder::endpointOverride);
+    return builder.build();
   }
 }

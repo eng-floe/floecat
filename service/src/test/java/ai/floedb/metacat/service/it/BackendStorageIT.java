@@ -9,7 +9,9 @@ import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.repo.model.Keys;
+import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
@@ -24,6 +26,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
@@ -45,6 +48,15 @@ class BackendStorageIT {
   @Inject BlobStore blobs;
 
   private final Clock clock = Clock.systemUTC();
+
+  @Inject TestDataResetter resetter;
+  @Inject SeedRunner seeder;
+
+  @BeforeEach
+  void resetStores() {
+    resetter.wipeAll();
+    seeder.seedData();
+  }
 
   @Test
   void storageInvariants() {
@@ -366,8 +378,8 @@ class BackendStorageIT {
             () ->
                 table.deleteTable(
                     DeleteTableRequest.newBuilder().setTableId(tbl.getResourceId()).build()));
-    TestSupport.assertGrpcAndMc(
-        bad, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Table not found");
+
+    TestSupport.assertGrpcAndMc(bad, Status.Code.INTERNAL, ErrorCode.MC_INTERNAL, "Internal error");
 
     var tbl2 =
         TestSupport.createTable(

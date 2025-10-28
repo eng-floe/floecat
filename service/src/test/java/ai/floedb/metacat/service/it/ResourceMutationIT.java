@@ -8,14 +8,18 @@ import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
+import jakarta.inject.Inject;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
@@ -34,6 +38,15 @@ class ResourceMutationIT {
 
   private final Clock clock = Clock.systemUTC();
 
+  @Inject TestDataResetter resetter;
+  @Inject SeedRunner seeder;
+
+  @BeforeEach
+  void resetStores() {
+    resetter.wipeAll();
+    seeder.seedData();
+  }
+
   @Test
   void resourcesExist() throws Exception {
     var cat = TestSupport.createCatalog(catalog, "cat1", "cat1");
@@ -45,7 +58,8 @@ class ResourceMutationIT {
 
     StatusRuntimeException catExists =
         assertThrows(
-            StatusRuntimeException.class, () -> TestSupport.createCatalog(catalog, "cat1", "cat1"));
+            StatusRuntimeException.class,
+            () -> TestSupport.createCatalog(catalog, "cat1", "cat1 catalog"));
     TestSupport.assertGrpcAndMc(
         catExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Catalog \"cat1\" already exists");
 
@@ -54,7 +68,7 @@ class ResourceMutationIT {
             StatusRuntimeException.class,
             () ->
                 TestSupport.createNamespace(
-                    namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 ns"));
+                    namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 namespace"));
     TestSupport.assertGrpcAndMc(
         nsExists,
         Status.Code.ABORTED,
@@ -72,7 +86,7 @@ class ResourceMutationIT {
                     "events",
                     "s3://events",
                     "{}",
-                    "none"));
+                    "A description"));
     TestSupport.assertGrpcAndMc(
         tblExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Table \"events\" already exists");
   }

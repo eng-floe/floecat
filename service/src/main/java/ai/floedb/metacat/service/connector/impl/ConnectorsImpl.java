@@ -4,6 +4,7 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.connector.rpc.Connector;
 import ai.floedb.metacat.connector.rpc.ConnectorKind;
+import ai.floedb.metacat.connector.rpc.ConnectorSpec;
 import ai.floedb.metacat.connector.rpc.ConnectorState;
 import ai.floedb.metacat.connector.rpc.Connectors;
 import ai.floedb.metacat.connector.rpc.CreateConnectorRequest;
@@ -28,12 +29,14 @@ import ai.floedb.metacat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.metacat.connector.spi.ConnectorFactory;
 import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.Canonicalizer;
 import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.ConnectorRepository;
 import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
+import ai.floedb.metacat.service.repo.util.BaseResourceRepository.AbortRetryableException;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.util.Timestamps;
@@ -41,7 +44,6 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.Map;
-import java.util.UUID;
 
 @GrpcService
 public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
@@ -113,17 +115,18 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         runWithRetry(
             () -> {
               var principalContext = principalProvider.get();
+              var tenantId = principalContext.getTenantId();
               var correlationId = principalContext.getCorrelationId();
 
               authz.require(principalContext, "connector.manage");
 
-              var tenantId = principalContext.getTenantId();
-              var idempotencyKey =
-                  request.hasIdempotency() ? request.getIdempotency().getKey() : "";
               var tsNow = nowTs();
 
-              var spec = request.getSpec();
-              byte[] fingerprint = spec.toBuilder().clearPolicy().build().toByteArray();
+              var fingerprint = canonicalFingerprint(request.getSpec());
+              var idempotencyKey =
+                  request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
+                      ? request.getIdempotency().getKey()
+                      : hashFingerprint(fingerprint);
 
               var connectorProto =
                   MutationOps.createProto(
@@ -132,10 +135,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       idempotencyKey,
                       () -> fingerprint,
                       () -> {
-                        String connUuid =
-                            !idempotencyKey.isBlank()
-                                ? deterministicUuid(tenantId, "connector", idempotencyKey)
-                                : UUID.randomUUID().toString();
+                        String connUuid = deterministicUuid(tenantId, "connector", idempotencyKey);
 
                         var connectorId =
                             ResourceId.newBuilder()
@@ -149,18 +149,21 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                 .setResourceId(connectorId)
                                 .setDisplayName(
                                     mustNonEmpty(
-                                        spec.getDisplayName(), "display_name", correlationId))
-                                .setKind(spec.getKind())
+                                        request.getSpec().getDisplayName(),
+                                        "display_name",
+                                        correlationId))
+                                .setKind(request.getSpec().getKind())
                                 .setTargetCatalogDisplayName(
                                     mustNonEmpty(
-                                        spec.getTargetCatalogDisplayName(),
+                                        request.getSpec().getTargetCatalogDisplayName(),
                                         "target_catalog_display_name",
                                         correlationId))
                                 .setTargetTenantId(tenantId)
-                                .setUri(mustNonEmpty(spec.getUri(), "uri", correlationId))
-                                .putAllOptions(spec.getOptionsMap())
-                                .setAuth(spec.getAuth())
-                                .setPolicy(spec.getPolicy())
+                                .setUri(
+                                    mustNonEmpty(request.getSpec().getUri(), "uri", correlationId))
+                                .putAllOptions(request.getSpec().getOptionsMap())
+                                .setAuth(request.getSpec().getAuth())
+                                .setPolicy(request.getSpec().getPolicy())
                                 .setCreatedAt(tsNow)
                                 .setUpdatedAt(tsNow)
                                 .setState(ConnectorState.CS_ACTIVE)
@@ -168,22 +171,18 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                         try {
                           connectorRepo.create(c);
                         } catch (BaseResourceRepository.NameConflictException nce) {
-                          if (!idempotencyKey.isBlank()) {
-                            var existing =
-                                connectorRepo
-                                    .getById(connectorId)
-                                    .or(
-                                        () ->
-                                            connectorRepo.getByName(tenantId, c.getDisplayName()));
-                            if (existing.isPresent()) {
-                              return new IdempotencyGuard.CreateResult<>(
-                                  existing.get(), existing.get().getResourceId());
-                            }
+                          var existing =
+                              connectorRepo
+                                  .getById(connectorId)
+                                  .or(() -> connectorRepo.getByName(tenantId, c.getDisplayName()));
+                          if (existing.isPresent()) {
+                            throw GrpcErrors.conflict(
+                                correlationId,
+                                "connector.already_exists",
+                                Map.of("display_name", c.getDisplayName()));
                           }
-                          throw GrpcErrors.conflict(
-                              correlationId,
-                              "connector.already_exists",
-                              Map.of("display_name", c.getDisplayName()));
+
+                          throw new AbortRetryableException("name conflict visibility window");
                         }
 
                         return new IdempotencyGuard.CreateResult<>(c, connectorId);
@@ -449,5 +448,14 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       case "JS_CANCELLED" -> JobState.JS_CANCELLED;
       default -> JobState.JS_UNSPECIFIED;
     };
+  }
+
+  private static byte[] canonicalFingerprint(ConnectorSpec s) {
+    return new Canonicalizer()
+        .scalar("name", s.getDisplayName())
+        .scalar("policy", s.getPolicy())
+        .map("opt", s.getOptionsMap())
+        .scalar("targetCat", s.getTargetCatalogDisplayName())
+        .bytes();
   }
 }

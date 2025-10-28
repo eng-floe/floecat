@@ -9,6 +9,8 @@ import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
@@ -19,6 +21,7 @@ import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
@@ -40,6 +43,15 @@ class NamespaceMutationIT {
 
   String namespacePrefix = this.getClass().getSimpleName() + "_";
 
+  @Inject TestDataResetter resetter;
+  @Inject SeedRunner seeder;
+
+  @BeforeEach
+  void resetStores() {
+    resetter.wipeAll();
+    seeder.seedData();
+  }
+
   @Test
   void namespaceExists() throws Exception {
     var cat = TestSupport.createCatalog(catalog, namespacePrefix + "cat1", "cat1");
@@ -52,7 +64,7 @@ class NamespaceMutationIT {
             StatusRuntimeException.class,
             () ->
                 TestSupport.createNamespace(
-                    namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 ns"));
+                    namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 namespace"));
     TestSupport.assertGrpcAndMc(
         nsExists,
         Status.Code.ABORTED,

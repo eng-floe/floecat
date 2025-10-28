@@ -1,6 +1,10 @@
 package ai.floedb.metacat.reconciler.impl;
 
-import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.catalog.rpc.CatalogServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
+import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
 import io.quarkus.grpc.GrpcClient;
 import jakarta.enterprise.context.ApplicationScoped;

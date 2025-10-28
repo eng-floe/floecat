@@ -5,8 +5,10 @@ import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.model.Keys;
+import ai.floedb.metacat.service.repo.util.BaseResourceRepository.CorruptionException;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
+import ai.floedb.metacat.storage.errors.StorageNotFoundException;
 import ai.floedb.metacat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
@@ -28,23 +30,25 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
       return Optional.empty();
     }
 
-    var hdr = blobs.head(p.get().getBlobUri());
-    if (hdr.isEmpty()) {
-      return Optional.empty();
-    }
-
     try {
       var bytes = blobs.get(p.get().getBlobUri());
       return Optional.of(IdempotencyRecord.parseFrom(bytes));
+    } catch (StorageNotFoundException nf) {
+      return Optional.empty();
     } catch (Exception e) {
-      throw new IllegalStateException(
+      throw new CorruptionException(
           "failed to parse idempotency record: " + p.get().getBlobUri(), e);
     }
   }
 
   @Override
   public boolean createPending(
-      String key, String opName, String requestHash, Timestamp createdAt, Timestamp expiresAt) {
+      String tenantId,
+      String key,
+      String opName,
+      String requestHash,
+      Timestamp createdAt,
+      Timestamp expiresAt) {
     var rec =
         IdempotencyRecord.newBuilder()
             .setOpName(opName)
@@ -54,7 +58,7 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
             .setExpiresAt(expiresAt)
             .build();
 
-    String uri = Keys.idempotencyBlobUri(key);
+    String uri = Keys.idempotencyBlobUri(tenantId, key);
 
     blobs.put(uri, rec.toByteArray(), "application/x-protobuf");
 
@@ -71,6 +75,7 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
 
   @Override
   public void finalizeSuccess(
+      String tenantId,
       String key,
       String opName,
       String requestHash,
@@ -91,7 +96,7 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
             .setExpiresAt(expiresAt)
             .build();
 
-    String uri = Keys.idempotencyBlobUri(key);
+    String uri = Keys.idempotencyBlobUri(tenantId, key);
     blobs.put(uri, rec.toByteArray(), "application/x-protobuf");
 
     for (int i = 0; i < CAS_MAX; i++) {

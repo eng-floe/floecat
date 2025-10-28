@@ -11,11 +11,13 @@ import ai.floedb.metacat.catalog.rpc.ListTablesResponse;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.TableService;
+import ai.floedb.metacat.catalog.rpc.TableSpec;
 import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.Canonicalizer;
 import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
@@ -30,7 +32,6 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.Map;
-import java.util.UUID;
 
 @GrpcService
 public class TableServiceImpl extends BaseServiceImpl implements TableService {
@@ -112,6 +113,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         runWithRetry(
             () -> {
               var principalContext = principal.get();
+              var tenantId = principalContext.getTenantId();
               var correlationId = principalContext.getCorrelationId();
               authz.require(principalContext, "table.write");
 
@@ -135,12 +137,12 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
               var tsNow = nowTs();
 
+              var fingerprint = canonicalFingerprint(request.getSpec());
               var idempotencyKey =
-                  request.hasIdempotency() ? request.getIdempotency().getKey() : "";
-              byte[] fingerprint =
-                  request.getSpec().toBuilder().clearDescription().build().toByteArray();
+                  request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
+                      ? request.getIdempotency().getKey()
+                      : hashFingerprint(fingerprint);
 
-              var tenantId = principalContext.getTenantId();
               var tableProto =
                   MutationOps.createProto(
                       tenantId,
@@ -148,10 +150,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                       idempotencyKey,
                       () -> fingerprint,
                       () -> {
-                        String tableUuid =
-                            !idempotencyKey.isBlank()
-                                ? deterministicUuid(tenantId, "table", idempotencyKey)
-                                : UUID.randomUUID().toString();
+                        String tableUuid = deterministicUuid(tenantId, "table", idempotencyKey);
 
                         var tableResourceId =
                             ResourceId.newBuilder()
@@ -186,28 +185,22 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                         try {
                           tableRepo.create(table);
                         } catch (BaseResourceRepository.NameConflictException e) {
-                          if (!idempotencyKey.isBlank()) {
-                            return tableRepo
-                                .getByName(
-                                    tenantId,
-                                    request.getSpec().getCatalogId().getId(),
-                                    request.getSpec().getNamespaceId().getId(),
-                                    table.getDisplayName())
-                                .map(
-                                    existing ->
-                                        new IdempotencyGuard.CreateResult<>(
-                                            existing, existing.getResourceId()))
-                                .orElseThrow(
-                                    () ->
-                                        GrpcErrors.conflict(
-                                            correlationId,
-                                            "table.already_exists",
-                                            Map.of("display_name", table.getDisplayName())));
+                          var existing =
+                              tableRepo.getByName(
+                                  tenantId,
+                                  request.getSpec().getCatalogId().getId(),
+                                  request.getSpec().getNamespaceId().getId(),
+                                  table.getDisplayName());
+
+                          if (existing.isPresent()) {
+                            throw GrpcErrors.conflict(
+                                correlationId,
+                                "table.already_exists",
+                                Map.of("display_name", table.getDisplayName()));
                           }
-                          throw GrpcErrors.conflict(
-                              correlationId,
-                              "table.already_exists",
-                              Map.of("display_name", table.getDisplayName()));
+
+                          throw new BaseResourceRepository.AbortRetryableException(
+                              "name conflict visibility window");
                         }
 
                         return new IdempotencyGuard.CreateResult<>(table, tableResourceId);
@@ -407,5 +400,19 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
               }
             }),
         correlationId());
+  }
+
+  private static byte[] canonicalFingerprint(TableSpec s) {
+    return new Canonicalizer()
+        .scalar("cat", s.getCatalogId().getId())
+        .scalar("ns", s.getNamespaceId().getId())
+        .scalar("name", s.getDisplayName())
+        .scalar("description", s.getDescription())
+        .scalar("format", s.getFormat().getNumber())
+        .scalar("root", s.getRootUri())
+        .scalar("schema", s.getSchemaJson())
+        .list("pk", s.getPartitionKeysList())
+        .map("prop", s.getPropertiesMap())
+        .bytes();
   }
 }

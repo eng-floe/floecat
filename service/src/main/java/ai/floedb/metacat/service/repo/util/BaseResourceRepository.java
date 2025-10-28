@@ -6,6 +6,9 @@ import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.service.repo.ResourceRepository;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
+import ai.floedb.metacat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.metacat.storage.errors.StorageNotFoundException;
+import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import java.security.MessageDigest;
@@ -89,18 +92,18 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   @Override
   public Optional<T> get(String key) {
     var pointerStoreOpt = pointerStore.get(key);
-
-    if (pointerStoreOpt.isEmpty()) {
-      return Optional.empty();
-    }
-
+    if (pointerStoreOpt.isEmpty()) return Optional.empty();
     var pointer = pointerStoreOpt.get();
-    if (blobStore.head(pointer.getBlobUri()).isEmpty()) {
-      throw new NotFoundException("blob missing: " + pointer.getBlobUri());
-    }
 
     try {
-      return Optional.of(parser.parse(blobStore.get(pointer.getBlobUri())));
+      byte[] bytes = blobStore.get(pointer.getBlobUri());
+      return Optional.of(parser.parse(bytes));
+    } catch (StorageNotFoundException snf) {
+      throw new CorruptionException("dangling pointer, missing blob: " + pointer.getBlobUri(), snf);
+    } catch (InvalidProtocolBufferException ipbe) {
+      throw new CorruptionException("parse failed: " + pointer.getBlobUri(), ipbe);
+    } catch (StorageAbortRetryableException sar) {
+      throw new AbortRetryableException("blob read retryable: " + pointer.getBlobUri());
     } catch (Exception e) {
       throw new CorruptionException("parse failed: " + pointer.getBlobUri(), e);
     }
@@ -259,7 +262,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   protected static String sha256B64(byte[] data) {
     try {
       var messageDigest = MessageDigest.getInstance("SHA-256");
-      return Base64.getUrlEncoder().withoutPadding().encodeToString(messageDigest.digest(data));
+      return Base64.getEncoder().encodeToString(messageDigest.digest(data));
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException(e);
     }

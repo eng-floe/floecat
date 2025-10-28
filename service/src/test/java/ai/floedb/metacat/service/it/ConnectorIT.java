@@ -12,7 +12,9 @@ import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.connector.rpc.*;
 import ai.floedb.metacat.reconciler.impl.ReconcilerScheduler;
 import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.repo.impl.*;
+import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -37,6 +39,14 @@ public class ConnectorIT {
   @Inject NamespaceRepository namespaces;
   @Inject TableRepository tables;
   @Inject SnapshotRepository snaps;
+  @Inject TestDataResetter resetter;
+  @Inject SeedRunner seeder;
+
+  @BeforeEach
+  void resetStores() {
+    resetter.wipeAll();
+    seeder.seedData();
+  }
 
   @Test
   void connectorEndToEnd() throws Exception {

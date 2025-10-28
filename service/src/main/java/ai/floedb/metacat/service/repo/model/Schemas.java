@@ -2,7 +2,12 @@ package ai.floedb.metacat.service.repo.model;
 
 import static java.util.Map.of;
 
-import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.catalog.rpc.Catalog;
+import ai.floedb.metacat.catalog.rpc.ColumnStats;
+import ai.floedb.metacat.catalog.rpc.Namespace;
+import ai.floedb.metacat.catalog.rpc.Snapshot;
+import ai.floedb.metacat.catalog.rpc.Table;
+import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.connector.rpc.Connector;
 import ai.floedb.metacat.tenancy.rpc.Tenant;
 import com.google.protobuf.util.Timestamps;

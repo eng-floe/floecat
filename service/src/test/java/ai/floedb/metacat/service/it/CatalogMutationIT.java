@@ -8,11 +8,15 @@ import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
+import jakarta.inject.Inject;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
@@ -25,17 +29,34 @@ class CatalogMutationIT {
 
   String catalogPrefix = this.getClass().getSimpleName() + "_";
 
+  @Inject TestDataResetter resetter;
+  @Inject SeedRunner seeder;
+
+  @BeforeEach
+  void resetStores() {
+    resetter.wipeAll();
+    seeder.seedData();
+  }
+
   @Test
-  void CatalogExists() throws Exception {
+  void CatalogIdempotentCreateReturnsSameResult() throws Exception {
+    var first = TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1");
+    var second = TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1");
+
+    assertEquals(first.getResourceId(), second.getResourceId());
+  }
+
+  @Test
+  void CatalogExistsConflictWhenDifferentSpec() throws Exception {
     TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1");
 
-    StatusRuntimeException catExists =
+    var ex =
         assertThrows(
             StatusRuntimeException.class,
-            () -> TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1"));
+            () -> TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1 catalog"));
 
     TestSupport.assertGrpcAndMc(
-        catExists,
+        ex,
         Status.Code.ABORTED,
         ErrorCode.MC_CONFLICT,
         "Catalog \"" + catalogPrefix + "cat1\" already exists");
