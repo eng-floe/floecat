@@ -15,6 +15,8 @@ public interface BlobStore {
 
   boolean delete(String uri);
 
+  void deletePrefix(String prefix);
+
   default Map<String, byte[]> getBatch(List<String> uris) {
     Map<String, byte[]> out = new HashMap<>(uris.size());
     for (String u : uris) out.put(u, get(u));

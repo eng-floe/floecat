@@ -19,9 +19,10 @@ enum ConnectorKind {
 message Connector {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
-  ConnectorKind kind = 3;
-  string target_catalog_display_name = 4;
-  string target_tenant_id = 5;
+  string description = 3;
+  ConnectorKind kind = 4;
+  string target_catalog_display_name = 5;
+  string target_tenant_id = 6;
   string uri = 10;
   map<string,string> options = 11;
   AuthConfig auth = 12;

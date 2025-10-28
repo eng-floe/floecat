@@ -10,11 +10,13 @@ import ai.floedb.metacat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.metacat.catalog.rpc.ListNamespacesResponse;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.NamespaceService;
+import ai.floedb.metacat.catalog.rpc.NamespaceSpec;
 import ai.floedb.metacat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateNamespaceResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.Canonicalizer;
 import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
@@ -31,7 +33,6 @@ import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 @GrpcService
 public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceService {
@@ -105,6 +106,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         runWithRetry(
             () -> {
               var principalContext = principal.get();
+              var tenantId = principalContext.getTenantId();
               var correlationId = principalContext.getCorrelationId();
 
               authz.require(principalContext, "namespace.write");
@@ -120,11 +122,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
               var tsNow = nowTs();
 
-              var tenantId = principalContext.getTenantId();
+              var fingerprint = canonicalFingerprint(request.getSpec());
               var idempotencyKey =
-                  request.hasIdempotency() ? request.getIdempotency().getKey() : "";
-              byte[] fingerprint =
-                  request.getSpec().toBuilder().clearDescription().build().toByteArray();
+                  request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
+                      ? request.getIdempotency().getKey()
+                      : hashFingerprint(fingerprint);
 
               var namespaceProto =
                   MutationOps.createProto(
@@ -134,9 +136,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       () -> fingerprint,
                       () -> {
                         String namespaceUuid =
-                            !idempotencyKey.isBlank()
-                                ? deterministicUuid(tenantId, "namespace", idempotencyKey)
-                                : UUID.randomUUID().toString();
+                            deterministicUuid(tenantId, "namespace", idempotencyKey);
 
                         var namespaceId =
                             ResourceId.newBuilder()
@@ -162,30 +162,28 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                         try {
                           namespaceRepo.create(built);
                         } catch (BaseResourceRepository.NameConflictException e) {
-                          if (!idempotencyKey.isBlank()) {
-                            var fullPath = new ArrayList<>(request.getSpec().getPathList());
-                            fullPath.add(request.getSpec().getDisplayName());
-                            var existing =
-                                namespaceRepo.getByPath(
-                                    tenantId, request.getSpec().getCatalogId().getId(), fullPath);
-                            if (existing.isPresent()) {
-                              return new IdempotencyGuard.CreateResult<>(
-                                  existing.get(), existing.get().getResourceId());
-                            }
+                          var fullPath = new ArrayList<>(request.getSpec().getPathList());
+                          fullPath.add(request.getSpec().getDisplayName());
+                          var existing =
+                              namespaceRepo.getByPath(
+                                  tenantId, request.getSpec().getCatalogId().getId(), fullPath);
+                          if (existing.isPresent()) {
+                            var pretty =
+                                prettyNamespacePath(
+                                    request.getSpec().getPathList(),
+                                    request.getSpec().getDisplayName());
+                            throw GrpcErrors.conflict(
+                                correlationId,
+                                "namespace.already_exists",
+                                Map.of(
+                                    "catalog",
+                                    request.getSpec().getCatalogId().getId(),
+                                    "path",
+                                    pretty));
                           }
-                          var pretty =
-                              prettyNamespacePath(
-                                  request.getSpec().getPathList(),
-                                  request.getSpec().getDisplayName());
 
-                          throw GrpcErrors.conflict(
-                              correlationId,
-                              "namespace.already_exists",
-                              Map.of(
-                                  "catalog",
-                                  request.getSpec().getCatalogId().getId(),
-                                  "path",
-                                  pretty));
+                          throw new BaseResourceRepository.AbortRetryableException(
+                              "name conflict visibility window");
                         }
 
                         return new IdempotencyGuard.CreateResult<>(built, namespaceId);
@@ -340,5 +338,17 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
               return DeleteNamespaceResponse.newBuilder().setMeta(meta).build();
             }),
         correlationId());
+  }
+
+  private static byte[] canonicalFingerprint(NamespaceSpec s) {
+    return new Canonicalizer()
+        .scalar("cat", s.getCatalogId().getId())
+        .scalar("name", s.getDisplayName())
+        .scalar("description", s.getDescription())
+        .scalar("policy", s.getPolicyRef())
+        .list("parents", s.getPathList())
+        .map("annotations", s.getAnnotationsMap())
+        .scalar("policy", s.getPolicyRef())
+        .bytes();
   }
 }

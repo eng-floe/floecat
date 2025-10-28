@@ -1,6 +1,17 @@
 package ai.floedb.metacat.service.statistic.impl;
 
-import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.catalog.rpc.ColumnStats;
+import ai.floedb.metacat.catalog.rpc.GetTableStatsRequest;
+import ai.floedb.metacat.catalog.rpc.GetTableStatsResponse;
+import ai.floedb.metacat.catalog.rpc.ListColumnStatsRequest;
+import ai.floedb.metacat.catalog.rpc.ListColumnStatsResponse;
+import ai.floedb.metacat.catalog.rpc.PutColumnStatsBatchRequest;
+import ai.floedb.metacat.catalog.rpc.PutColumnStatsBatchResponse;
+import ai.floedb.metacat.catalog.rpc.PutTableStatsRequest;
+import ai.floedb.metacat.catalog.rpc.PutTableStatsResponse;
+import ai.floedb.metacat.catalog.rpc.Snapshot;
+import ai.floedb.metacat.catalog.rpc.TableStatisticsService;
+import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.common.rpc.SpecialSnapshot;
@@ -12,6 +23,7 @@ import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
 import ai.floedb.metacat.service.repo.impl.StatsRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
+import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcService;
@@ -157,6 +169,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
         runWithRetry(
             () -> {
               var principalContext = principal.get();
+              var tenantId = principalContext.getTenantId();
 
               authz.require(principalContext, "table.write");
 
@@ -180,26 +193,23 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                               "snapshot",
                               Map.of("id", Long.toString(request.getSnapshotId()))));
 
-              var idemKey = request.hasIdempotency() ? request.getIdempotency().getKey() : "";
-
-              var normalized =
-                  request.getStats().toBuilder()
-                      .setTableId(request.getTableId())
-                      .setSnapshotId(request.getSnapshotId())
-                      .build();
-              byte[] fingerprint = normalized.toByteArray();
+              var fingerprint = request.getStats().toByteArray();
+              var idempotencyKey =
+                  request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
+                      ? request.getIdempotency().getKey()
+                      : hashFingerprint(fingerprint);
 
               var tableStatsProto =
                   MutationOps.createProto(
                       principalContext.getTenantId(),
                       "PutTableStats",
-                      idemKey,
+                      idempotencyKey,
                       () -> fingerprint,
                       () -> {
                         stats.putTableStats(
-                            request.getTableId(), request.getSnapshotId(), normalized);
+                            request.getTableId(), request.getSnapshotId(), request.getStats());
                         return new IdempotencyGuard.CreateResult<>(
-                            normalized, request.getTableId());
+                            request.getStats(), request.getTableId());
                       },
                       (ignored) ->
                           stats.metaForTableStats(
@@ -211,7 +221,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                       TableStats::parseFrom);
 
               return PutTableStatsResponse.newBuilder()
-                  .setStats(normalized)
+                  .setStats(request.getStats())
                   .setMeta(tableStatsProto.meta)
                   .build();
             }),
@@ -224,6 +234,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
         runWithRetry(
             () -> {
               var principalContext = principal.get();
+              var tenantId = principalContext.getTenantId();
 
               authz.require(principalContext, "table.write");
 
@@ -247,8 +258,12 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                               "snapshot",
                               Map.of("id", Long.toString(request.getSnapshotId()))));
 
-              var tenant = principalContext.getTenantId();
-              var baseKey = request.hasIdempotency() ? request.getIdempotency().getKey() : "";
+              var tableId = request.getTableId().getId();
+              long snapshotId = request.getSnapshotId();
+              var baseKey =
+                  request.hasIdempotency()
+                      ? request.getIdempotency().getKey()
+                      : Keys.snapshotColumnStatsDirectoryPointer(tenantId, tableId, snapshotId);
 
               int upserted = 0;
               for (var raw : request.getColumnsList()) {
@@ -258,12 +273,11 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                         .setSnapshotId(request.getSnapshotId())
                         .build();
 
+                String idempotencyKey = baseKey + "/col/" + columnStats.getColumnId();
                 byte[] fingerprint = columnStats.toByteArray();
-                String idempotencyKey =
-                    baseKey.isBlank() ? "" : (baseKey + "/col/" + columnStats.getColumnId());
 
                 MutationOps.createProto(
-                    tenant,
+                    tenantId,
                     "PutColumnStats",
                     idempotencyKey,
                     () -> fingerprint,

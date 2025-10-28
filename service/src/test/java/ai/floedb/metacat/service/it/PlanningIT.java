@@ -10,10 +10,14 @@ import ai.floedb.metacat.planning.rpc.EndPlanRequest;
 import ai.floedb.metacat.planning.rpc.PlanInput;
 import ai.floedb.metacat.planning.rpc.PlanningGrpc;
 import ai.floedb.metacat.planning.rpc.RenewPlanRequest;
+import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
+import jakarta.inject.Inject;
 import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
@@ -37,6 +41,15 @@ class PlanningIT {
   DirectoryGrpc.DirectoryBlockingStub directory;
 
   String catalogPrefix = this.getClass().getSimpleName() + "_";
+
+  @Inject TestDataResetter resetter;
+  @Inject SeedRunner seeder;
+
+  @BeforeEach
+  void resetStores() {
+    resetter.wipeAll();
+    seeder.seedData();
+  }
 
   @Test
   void planBeginRenewEnd() {

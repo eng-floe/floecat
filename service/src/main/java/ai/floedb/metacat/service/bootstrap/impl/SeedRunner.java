@@ -23,6 +23,7 @@ import jakarta.inject.Inject;
 import java.time.Clock;
 import java.util.List;
 import java.util.UUID;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @ApplicationScoped
 public class SeedRunner {
@@ -34,7 +35,16 @@ public class SeedRunner {
   @Inject BlobStore blobs;
   @Inject PointerStore ptr;
 
+  @ConfigProperty(name = "metacat.seed.enabled", defaultValue = "true")
+  boolean enabled;
+
   void onStart(@Observes StartupEvent ev) {
+    if (enabled) {
+      seedData();
+    }
+  }
+
+  public void seedData() {
     final Clock clock = Clock.systemUTC();
     final long now = clock.millis();
 

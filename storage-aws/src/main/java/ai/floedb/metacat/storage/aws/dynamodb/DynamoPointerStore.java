@@ -2,12 +2,14 @@ package ai.floedb.metacat.storage.aws.dynamodb;
 
 import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.storage.PointerStore;
+import ai.floedb.metacat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.metacat.storage.errors.StorageCorruptionException;
+import ai.floedb.metacat.storage.errors.StorageException;
+import ai.floedb.metacat.storage.errors.StoragePreconditionFailedException;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Singleton;
 import java.nio.charset.StandardCharsets;
-import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
@@ -15,6 +17,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
@@ -28,40 +32,51 @@ public final class DynamoPointerStore implements PointerStore {
   private static final String ATTR_EXPIRES_AT = "expires_at";
   private static final String GLOBAL_PK = "_TENANT_DIR";
 
-  private final DynamoDbClient ddb;
+  private final DynamoDbClient dynamoDb;
   private final String table;
-  private final Clock clock;
 
-  public DynamoPointerStore(DynamoDbClient ddb, String table, Clock clock) {
-    this.ddb = Objects.requireNonNull(ddb);
+  public DynamoPointerStore(
+      DynamoDbClient ddb, @ConfigProperty(name = "metacat.kv.table") String table) {
+    this.dynamoDb = Objects.requireNonNull(ddb);
     this.table = Objects.requireNonNull(table);
-    this.clock = Objects.requireNonNullElse(clock, Clock.systemUTC());
   }
 
   @Override
   public Optional<Pointer> get(String key) {
-    var mk = mapKey(key);
-    var out = ddb.getItem(r -> r.tableName(table).key(kv(mk.pk(), mk.sk())));
-    if (!out.hasItem() || out.item().isEmpty()) return Optional.empty();
-    return Optional.of(fromItemToPointer(key, out.item()));
+    var mappedKey = mapKey(key);
+    try {
+      var out =
+          dynamoDb.getItem(
+              r -> r.tableName(table).consistentRead(true).key(kv(mappedKey.pk(), mappedKey.sk())));
+
+      if (!out.hasItem() || out.item().isEmpty()) {
+        return Optional.empty();
+      }
+
+      return Optional.of(fromItemToPointer(key, out.item()));
+    } catch (DynamoDbException e) {
+      throw mapAndWrap("GetItem", key, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("GetItem", key, e.getMessage()));
+    }
   }
 
-  @Override
   public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
-    var mk = mapKey(key);
+    var mappedKey = mapKey(key);
 
     if (expectedVersion == 0L) {
       var item = new HashMap<String, AttributeValue>();
-      item.put(ATTR_PK, AttributeValue.fromS(mk.pk()));
-      item.put(ATTR_SK, AttributeValue.fromS(mk.sk()));
+      item.put(ATTR_PK, AttributeValue.fromS(mappedKey.pk()));
+      item.put(ATTR_SK, AttributeValue.fromS(mappedKey.sk()));
       item.put(ATTR_BLOB_URI, AttributeValue.fromS(next.getBlobUri()));
       item.put(ATTR_VERSION, AttributeValue.fromN(Long.toString(next.getVersion())));
+
       if (next.hasExpiresAt()) {
         long ttl = Timestamps.toMillis(next.getExpiresAt()) / 1000L;
         item.put(ATTR_EXPIRES_AT, AttributeValue.fromN(Long.toString(ttl)));
       }
       try {
-        ddb.putItem(
+        dynamoDb.putItem(
             r ->
                 r.tableName(table)
                     .item(item)
@@ -70,6 +85,10 @@ public final class DynamoPointerStore implements PointerStore {
         return true;
       } catch (ConditionalCheckFailedException ccfe) {
         return false;
+      } catch (DynamoDbException e) {
+        throw mapAndWrap("PutItem", key, e);
+      } catch (SdkClientException e) {
+        throw new StorageAbortRetryableException(msg("PutItem", key, e.getMessage()));
       }
     } else {
       final var exprNames = new HashMap<String, String>();
@@ -93,10 +112,11 @@ public final class DynamoPointerStore implements PointerStore {
               : "SET #b = :b, #v = :next";
 
       try {
-        ddb.updateItem(
-            r ->
-                r.tableName(table)
-                    .key(kv(mk.pk(), mk.sk()))
+        dynamoDb.updateItem(
+            responseBuilder ->
+                responseBuilder
+                    .tableName(table)
+                    .key(kv(mappedKey.pk(), mappedKey.sk()))
                     .updateExpression(updateExpr)
                     .conditionExpression("#v = :expected")
                     .expressionAttributeNames(exprNames)
@@ -104,100 +124,166 @@ public final class DynamoPointerStore implements PointerStore {
         return true;
       } catch (ConditionalCheckFailedException ccfe) {
         return false;
+      } catch (DynamoDbException e) {
+        throw mapAndWrap("UpdateItem", key, e);
+      } catch (SdkClientException e) {
+        throw new StorageAbortRetryableException(msg("UpdateItem", key, e.getMessage()));
       }
     }
   }
 
   @Override
   public boolean delete(String key) {
-    var mk = mapKey(key);
-    var out = ddb.deleteItem(r -> r.tableName(table).key(kv(mk.pk(), mk.sk())));
-    return out.sdkHttpResponse().isSuccessful();
+    var mappedKey = mapKey(key);
+    try {
+      var out =
+          dynamoDb.deleteItem(r -> r.tableName(table).key(kv(mappedKey.pk(), mappedKey.sk())));
+
+      return out.sdkHttpResponse().isSuccessful();
+    } catch (DynamoDbException e) {
+      throw mapAndWrap("DeleteItem", key, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("DeleteItem", key, e.getMessage()));
+    }
   }
 
   @Override
   public boolean compareAndDelete(String key, long expectedVersion) {
-    var mk = mapKey(key);
+    var mappedKey = mapKey(key);
     try {
-      ddb.deleteItem(
-          r ->
-              r.tableName(table)
-                  .key(kv(mk.pk(), mk.sk()))
+      dynamoDb.deleteItem(
+          responseBuilder ->
+              responseBuilder
+                  .tableName(table)
+                  .key(kv(mappedKey.pk(), mappedKey.sk()))
                   .conditionExpression(ATTR_VERSION + " = :v")
                   .expressionAttributeValues(
                       Map.of(":v", AttributeValue.fromN(Long.toString(expectedVersion)))));
+
       return true;
     } catch (ConditionalCheckFailedException ccfe) {
       return false;
+    } catch (DynamoDbException e) {
+      throw mapAndWrap("DeleteItem", key, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("DeleteItem", key, e.getMessage()));
     }
   }
 
   @Override
   public List<Row> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
-    var mp = mapPrefix(prefix);
-    Map<String, String> names = Map.of("#pk", ATTR_PK, "#sk", ATTR_SK);
-    Map<String, AttributeValue> values = new HashMap<>();
-    values.put(":pk", AttributeValue.fromS(mp.pk()));
-    values.put(":skp", AttributeValue.fromS(mp.skPrefix()));
+    var mappedPrefix = mapPrefix(prefix);
+    QueryRequest.Builder queryBuilder =
+        QueryRequest.builder().tableName(table).consistentRead(true).limit(Math.max(1, limit));
 
-    var builder =
-        QueryRequest.builder()
-            .tableName(table)
-            .keyConditionExpression("#pk = :pk AND begins_with(#sk, :skp)")
-            .expressionAttributeNames(names)
-            .expressionAttributeValues(values)
-            .limit(Math.max(1, limit));
+    if (mappedPrefix.skPrefix().isEmpty()) {
+      queryBuilder
+          .keyConditionExpression("#pk = :pk")
+          .expressionAttributeNames(Map.of("#pk", ATTR_PK))
+          .expressionAttributeValues(Map.of(":pk", AttributeValue.fromS(mappedPrefix.pk())));
+    } else {
+      queryBuilder
+          .keyConditionExpression("#pk = :pk AND begins_with(#sk, :skp)")
+          .expressionAttributeNames(Map.of("#pk", ATTR_PK, "#sk", ATTR_SK))
+          .expressionAttributeValues(
+              Map.of(
+                  ":pk", AttributeValue.fromS(mappedPrefix.pk()),
+                  ":skp", AttributeValue.fromS(mappedPrefix.skPrefix())));
+    }
 
     if (pageToken != null && !pageToken.isBlank()) {
-      var eks = decodeToken(pageToken);
-      builder.exclusiveStartKey(eks);
+      queryBuilder.exclusiveStartKey(decodeToken(pageToken));
     }
 
-    var q = ddb.query(builder.build());
-    if (q.lastEvaluatedKey() != null && !q.lastEvaluatedKey().isEmpty()) {
-      nextTokenOut.append(encodeToken(q.lastEvaluatedKey()));
+    try {
+      var query = dynamoDb.query(queryBuilder.build());
+      if (query.lastEvaluatedKey() != null && !query.lastEvaluatedKey().isEmpty()) {
+        nextTokenOut.append(encodeToken(query.lastEvaluatedKey()));
+      }
+      var rows = new ArrayList<Row>(query.count());
+      for (var item : query.items()) {
+        String pk = attrS(item, ATTR_PK);
+        String sk = attrS(item, ATTR_SK);
+        String pointerKey = fullKey(pk, sk);
+        String blobUri = attrS(item, ATTR_BLOB_URI);
+        long version = Long.parseLong(attrN(item, ATTR_VERSION));
+        rows.add(new Row(pointerKey, blobUri, version));
+      }
+      return rows;
+    } catch (DynamoDbException e) {
+      throw mapAndWrap("Query", prefix, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("Query", prefix, e.getMessage()));
     }
-
-    var rows = new ArrayList<Row>(q.count());
-    for (var item : q.items()) {
-      String pk = attrS(item, ATTR_PK);
-      String sk = attrS(item, ATTR_SK);
-      String pointerKey = fullKey(pk, sk);
-      String blobUri = attrS(item, ATTR_BLOB_URI);
-      long version = Long.parseLong(attrN(item, ATTR_VERSION));
-      rows.add(new Row(pointerKey, blobUri, version));
-    }
-    return rows;
   }
 
   @Override
   public int countByPrefix(String prefix) {
-    var mp = mapPrefix(prefix);
-    final Map<String, String> names = Map.of("#pk", ATTR_PK, "#sk", ATTR_SK);
-    final Map<String, AttributeValue> values = new HashMap<>();
-    values.put(":pk", AttributeValue.fromS(mp.pk()));
-    values.put(":skp", AttributeValue.fromS(mp.skPrefix()));
-
+    var mappedPrefix = mapPrefix(prefix);
     int total = 0;
-    Map<String, AttributeValue> eks = null;
+    Map<String, AttributeValue> evaluatedKeys = null;
 
-    do {
-      final Map<String, AttributeValue> startKey = eks;
-      var q =
-          ddb.query(
-              r ->
-                  r.tableName(table)
-                      .keyConditionExpression("#pk = :pk AND begins_with(#sk, :skp)")
-                      .expressionAttributeNames(names)
-                      .expressionAttributeValues(values)
-                      .select(Select.COUNT)
-                      .exclusiveStartKey(startKey));
-      total += q.count();
-      eks = q.lastEvaluatedKey();
-    } while (eks != null && !eks.isEmpty());
+    try {
+      do {
+        QueryRequest.Builder queryBuilder =
+            QueryRequest.builder()
+                .tableName(table)
+                .select(Select.COUNT)
+                .consistentRead(true)
+                .exclusiveStartKey(evaluatedKeys);
 
-    return total;
+        if (mappedPrefix.skPrefix().isEmpty()) {
+          queryBuilder
+              .keyConditionExpression("#pk = :pk")
+              .expressionAttributeNames(Map.of("#pk", ATTR_PK))
+              .expressionAttributeValues(Map.of(":pk", AttributeValue.fromS(mappedPrefix.pk())));
+        } else {
+          queryBuilder
+              .keyConditionExpression("#pk = :pk AND begins_with(#sk, :skp)")
+              .expressionAttributeNames(Map.of("#pk", ATTR_PK, "#sk", ATTR_SK))
+              .expressionAttributeValues(
+                  Map.of(
+                      ":pk", AttributeValue.fromS(mappedPrefix.pk()),
+                      ":skp", AttributeValue.fromS(mappedPrefix.skPrefix())));
+        }
+
+        var query = dynamoDb.query(queryBuilder.build());
+        total += query.count();
+        evaluatedKeys = query.lastEvaluatedKey();
+      } while (evaluatedKeys != null && !evaluatedKeys.isEmpty());
+
+      return total;
+    } catch (DynamoDbException e) {
+      throw mapAndWrap("Query(COUNT)", prefix, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("Query(COUNT)", prefix, e.getMessage()));
+    }
+  }
+
+  private static String msg(String op, String key, String detail) {
+    return "dynamodb " + op + " failed for key=" + key + (detail == null ? "" : " : " + detail);
+  }
+
+  private StorageException mapAndWrap(String op, String key, DynamoDbException de) {
+    int statusCode = de.statusCode();
+    String detail =
+        de.awsErrorDetails() != null ? de.awsErrorDetails().errorMessage() : de.getMessage();
+
+    if (de instanceof ResourceNotFoundException) {
+      return new StorageCorruptionException(msg(op, key, "resource not found: " + detail), de);
+    }
+    if (de instanceof ProvisionedThroughputExceededException
+        || "ThrottlingException"
+            .equals(de.awsErrorDetails() != null ? de.awsErrorDetails().errorCode() : null)
+        || statusCode >= 500) {
+      return new StorageAbortRetryableException(msg(op, key, detail));
+    }
+    if (de instanceof ConditionalCheckFailedException) {
+      return new StoragePreconditionFailedException(msg(op, key, "conditional check failed"));
+    }
+
+    return new StorageException(msg(op, key, detail), de);
   }
 
   private static Map<String, AttributeValue> kv(String pk, String sk) {
@@ -205,7 +291,7 @@ public final class DynamoPointerStore implements PointerStore {
   }
 
   private Pointer fromItemToPointer(String originalKey, Map<String, AttributeValue> item) {
-    var b =
+    var pointerBuilder =
         Pointer.newBuilder()
             .setKey(originalKey)
             .setBlobUri(attrS(item, ATTR_BLOB_URI))
@@ -213,10 +299,10 @@ public final class DynamoPointerStore implements PointerStore {
     if (item.containsKey(ATTR_EXPIRES_AT)) {
       long epochSec = Long.parseLong(attrN(item, ATTR_EXPIRES_AT));
       if (epochSec > 0) {
-        b.setExpiresAt(Timestamps.fromMillis(epochSec * 1000L));
+        pointerBuilder.setExpiresAt(Timestamps.fromMillis(epochSec * 1000L));
       }
     }
-    return b.build();
+    return pointerBuilder.build();
   }
 
   private static String attrS(Map<String, AttributeValue> m, String k) {
@@ -234,7 +320,10 @@ public final class DynamoPointerStore implements PointerStore {
   }
 
   private static String fullKey(String pk, String sk) {
-    if (GLOBAL_PK.equals(pk)) return "/" + sk;
+    if (GLOBAL_PK.equals(pk)) {
+      return "/" + sk;
+    }
+
     return "/tenants/" + pk + "/" + sk;
   }
 
@@ -274,14 +363,22 @@ public final class DynamoPointerStore implements PointerStore {
 
   private static MappedPrefix mapPrefix(String prefix) {
     String p = prefix.startsWith("/") ? prefix.substring(1) : prefix;
-    if (p.startsWith("tenants/by-id/") || p.startsWith("tenants/by-name/")) {
+    if (!p.endsWith("/")) p = p + "/";
+
+    if (p.equals("tenants/")
+        || p.equals("idempotency/")
+        || p.startsWith("tenants/by-id/")
+        || p.startsWith("tenants/by-name/")) {
       return new MappedPrefix(GLOBAL_PK, p);
     }
+
     if (!p.startsWith("tenants/"))
       throw new IllegalArgumentException("unexpected prefix: " + prefix);
+
     int firstSlash = p.indexOf('/');
     int secondSlash = p.indexOf('/', firstSlash + 1);
     if (secondSlash < 0) throw new IllegalArgumentException("bad prefix: " + prefix);
+
     String tenantId = p.substring(firstSlash + 1, secondSlash);
     String remainderPrefix = p.substring(secondSlash + 1);
     return new MappedPrefix(tenantId, remainderPrefix);

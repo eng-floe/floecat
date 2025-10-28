@@ -2,7 +2,9 @@ package ai.floedb.metacat.connector.dummy;
 
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
-import java.util.*;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 public final class DummyConnector implements MetacatConnector {
   private final String id;
@@ -43,10 +45,10 @@ public final class DummyConnector implements MetacatConnector {
   public UpstreamTable describe(String namespaceFq, String tableName) {
     String schemaJson =
         """
-      {"type":"struct","fields":[
-        {"id":1,"name":"id","type":"long","required":true},
-        {"id":2,"name":"ts","type":"timestamp","required":false}
-      ]}
+        {"type":"struct","fields":[
+          {"id":1,"name":"id","type":"long","required":true},
+          {"id":2,"name":"ts","type":"timestamp","required":false}
+        ]}
         """
             .trim();
 

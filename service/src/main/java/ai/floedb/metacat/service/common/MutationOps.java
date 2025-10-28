@@ -141,7 +141,6 @@ public final class MutationOps {
       Map<String, String> conflictKVs) {
 
     final MutationMeta meta = requireMeta(metaSupplier, correlationId, entity);
-
     BaseServiceChecks.enforcePreconditions(correlationId, meta, precondition);
 
     final long expected = meta.getPointerVersion();

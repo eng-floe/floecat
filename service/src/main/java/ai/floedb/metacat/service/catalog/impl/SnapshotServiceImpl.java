@@ -1,6 +1,15 @@
 package ai.floedb.metacat.service.catalog.impl;
 
-import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.catalog.rpc.CreateSnapshotRequest;
+import ai.floedb.metacat.catalog.rpc.CreateSnapshotResponse;
+import ai.floedb.metacat.catalog.rpc.DeleteSnapshotRequest;
+import ai.floedb.metacat.catalog.rpc.DeleteSnapshotResponse;
+import ai.floedb.metacat.catalog.rpc.GetCurrentSnapshotRequest;
+import ai.floedb.metacat.catalog.rpc.GetCurrentSnapshotResponse;
+import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
+import ai.floedb.metacat.catalog.rpc.ListSnapshotsResponse;
+import ai.floedb.metacat.catalog.rpc.Snapshot;
+import ai.floedb.metacat.catalog.rpc.SnapshotService;
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceKind;
@@ -9,7 +18,8 @@ import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.IdempotencyRepository;
-import ai.floedb.metacat.service.repo.impl.*;
+import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
+import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
@@ -112,6 +122,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
         runWithRetry(
             () -> {
               var principalContext = principal.get();
+              var tenantId = principalContext.getTenantId();
               var correlationId = principalContext.getCorrelationId();
 
               authz.require(principalContext, "table.write");
@@ -128,11 +139,11 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
               var tsNow = nowTs();
 
-              var tenantId = principalContext.getTenantId();
+              var fingerprint = request.getSpec().toBuilder().build().toByteArray();
               var idempotencyKey =
-                  request.hasIdempotency() ? request.getIdempotency().getKey() : "";
-
-              byte[] fingerprint = request.getSpec().toBuilder().build().toByteArray();
+                  request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
+                      ? request.getIdempotency().getKey()
+                      : hashFingerprint(fingerprint);
 
               var snapshotProto =
                   MutationOps.createProto(
@@ -152,18 +163,17 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                         try {
                           snapshotRepo.create(snap);
                         } catch (BaseResourceRepository.NameConflictException e) {
-                          if (!idempotencyKey.isBlank()) {
-                            var existing =
-                                snapshotRepo.getById(tableId, request.getSpec().getSnapshotId());
-                            if (existing.isPresent()) {
-                              return new IdempotencyGuard.CreateResult<>(
-                                  existing.get(), existing.get().getTableId());
-                            }
+                          var existing =
+                              snapshotRepo.getById(tableId, request.getSpec().getSnapshotId());
+                          if (existing.isPresent()) {
+                            throw GrpcErrors.conflict(
+                                correlationId,
+                                "snapshot.already_exists",
+                                Map.of("id", Long.toString(request.getSpec().getSnapshotId())));
                           }
-                          throw GrpcErrors.conflict(
-                              correlationId,
-                              "snapshot.already_exists",
-                              Map.of("id", Long.toString(request.getSpec().getSnapshotId())));
+
+                          throw new BaseResourceRepository.AbortRetryableException(
+                              "name conflict visibility window");
                         }
 
                         return new IdempotencyGuard.CreateResult<>(snap, snap.getTableId());

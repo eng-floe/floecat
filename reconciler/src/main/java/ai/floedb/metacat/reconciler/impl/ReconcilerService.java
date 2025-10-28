@@ -16,7 +16,6 @@ import ai.floedb.metacat.catalog.rpc.SnapshotSpec;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.TableSpec;
 import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
-import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.spi.ConnectorConfig;
@@ -28,8 +27,6 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 
 @ApplicationScoped
 public class ReconcilerService {
@@ -41,7 +38,7 @@ public class ReconcilerService {
     long errors = 0;
 
     try (MetacatConnector connector = ConnectorFactory.create(cfg)) {
-      var catalogId = ensureCatalog(cfg.targetCatalogDisplayName());
+      var catalogId = ensureCatalog(cfg.targetCatalogDisplayName(), connector);
 
       for (String namespace : connector.listNamespaces()) {
         var namespaceId = ensureNamespace(catalogId, namespace);
@@ -90,7 +87,7 @@ public class ReconcilerService {
     }
   }
 
-  private ResourceId ensureCatalog(String displayName) {
+  private ResourceId ensureCatalog(String displayName, MetacatConnector connector) {
     try {
       var response =
           clients
@@ -107,8 +104,11 @@ public class ReconcilerService {
     }
     var request =
         CreateCatalogRequest.newBuilder()
-            .setSpec(CatalogSpec.newBuilder().setDisplayName(displayName).build())
-            .setIdempotency(idem("CreateCatalog|" + displayName))
+            .setSpec(
+                CatalogSpec.newBuilder()
+                    .setDisplayName(displayName)
+                    .setConnectorRef(connector.id())
+                    .build())
             .build();
     return clients.catalog().createCatalog(request).getCatalog().getResourceId();
   }
@@ -137,11 +137,7 @@ public class ReconcilerService {
             .setDisplayName(parts.leaf)
             .addAllPath(parts.parents)
             .build();
-    var request =
-        CreateNamespaceRequest.newBuilder()
-            .setSpec(spec)
-            .setIdempotency(idem("CreateNamespace|" + key(catalogId) + "|" + namespaceFq))
-            .build();
+    var request = CreateNamespaceRequest.newBuilder().setSpec(spec).build();
     return clients.namespace().createNamespace(request).getNamespace().getResourceId();
   }
 
@@ -181,18 +177,7 @@ public class ReconcilerService {
             .putAllProperties(upstreamTable.properties())
             .build();
 
-    var request =
-        CreateTableRequest.newBuilder()
-            .setSpec(spec)
-            .setIdempotency(
-                idem(
-                    "CreateTable|"
-                        + key(catalogId)
-                        + "|"
-                        + key(namespaceId)
-                        + "|"
-                        + upstreamTable.tableName()))
-            .build();
+    var request = CreateTableRequest.newBuilder().setSpec(spec).build();
     return clients.table().createTable(request).getTable().getResourceId();
   }
 
@@ -222,11 +207,7 @@ public class ReconcilerService {
             .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamTsMs))
             .setIngestedAt(Timestamps.fromMillis(System.currentTimeMillis()))
             .build();
-    var request =
-        CreateSnapshotRequest.newBuilder()
-            .setSpec(spec)
-            .setIdempotency(idem("CreateSnapshot|" + key(tableId) + "|" + snapshotId))
-            .build();
+    var request = CreateSnapshotRequest.newBuilder().setSpec(spec).build();
     try {
       clients.snapshot().createSnapshot(request);
     } catch (StatusRuntimeException e) {
@@ -237,18 +218,6 @@ public class ReconcilerService {
         throw e;
       }
     }
-  }
-
-  private static IdempotencyKey idem(String rawKey) {
-    var key =
-        Base64.getUrlEncoder()
-            .withoutPadding()
-            .encodeToString(rawKey.getBytes(StandardCharsets.UTF_8));
-    return IdempotencyKey.newBuilder().setKey(key).build();
-  }
-
-  private static String key(ResourceId resourceId) {
-    return resourceId.getTenantId() + ":" + resourceId.getId();
   }
 
   private String lookupCatalogName(ResourceId catalogId) {

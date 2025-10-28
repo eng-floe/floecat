@@ -6,8 +6,10 @@ import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.planning.PlanContextStore;
 import ai.floedb.metacat.service.planning.impl.PlanContext;
+import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import io.grpc.*;
 import io.grpc.stub.MetadataUtils;
@@ -17,6 +19,7 @@ import jakarta.inject.Inject;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
@@ -40,6 +43,15 @@ class PropagationIT {
         .setSubject("it-user")
         .addPermissions("catalog.read")
         .build();
+  }
+
+  @Inject TestDataResetter resetter;
+  @Inject SeedRunner seeder;
+
+  @BeforeEach
+  void resetStores() {
+    resetter.wipeAll();
+    seeder.seedData();
   }
 
   @Test

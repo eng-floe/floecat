@@ -49,7 +49,10 @@ public abstract class BaseServiceImpl {
 
   protected <T> Uni<T> runWithRetry(Supplier<T> body) {
     return run(body)
-        .onFailure(BaseResourceRepository.AbortRetryableException.class)
+        .onFailure(
+            t ->
+                t instanceof BaseResourceRepository.AbortRetryableException
+                    || t instanceof StorageAbortRetryableException)
         .retry()
         .withBackOff(BACKOFF_MIN, BACKOFF_MAX)
         .withJitter(JITTER)
@@ -61,51 +64,41 @@ public abstract class BaseServiceImpl {
   }
 
   private StatusRuntimeException toStatus(Throwable t, String corrId) {
-    if (t instanceof StatusRuntimeException sre) return sre;
-
-    if (t instanceof BaseResourceRepository.NameConflictException) {
-      return GrpcErrors.conflict(corrId, null, Map.of());
-    }
-    if (t instanceof BaseResourceRepository.PreconditionFailedException) {
-      return GrpcErrors.preconditionFailed(corrId, null, Map.of());
-    }
-    if (t instanceof BaseResourceRepository.NotFoundException) {
-      return GrpcErrors.notFound(corrId, null, Map.of());
-    }
-    if (t instanceof BaseResourceRepository.AbortRetryableException) {
-      return GrpcErrors.aborted(corrId, null, Map.of());
-    }
-    if (t instanceof BaseResourceRepository.CorruptionException) {
-      return GrpcErrors.internal(corrId, null, Map.of());
+    if (t instanceof StatusRuntimeException sre) {
+      return sre;
     }
 
-    if (t instanceof StorageConflictException) {
-      return GrpcErrors.conflict(corrId, null, Map.of());
+    if (t instanceof BaseResourceRepository.NameConflictException
+        || t instanceof StorageConflictException) {
+      return GrpcErrors.conflict(corrId, null, null, t);
     }
-    if (t instanceof StoragePreconditionFailedException) {
-      return GrpcErrors.preconditionFailed(corrId, null, Map.of());
+    if (t instanceof BaseResourceRepository.PreconditionFailedException
+        || t instanceof StoragePreconditionFailedException) {
+      return GrpcErrors.preconditionFailed(corrId, null, null, t);
     }
-    if (t instanceof StorageNotFoundException) {
-      return GrpcErrors.notFound(corrId, null, Map.of());
+    if (t instanceof BaseResourceRepository.NotFoundException
+        || t instanceof StorageNotFoundException) {
+      return GrpcErrors.notFound(corrId, null, null, t);
     }
-    if (t instanceof StorageAbortRetryableException) {
-      return GrpcErrors.aborted(corrId, null, Map.of());
+    if (t instanceof BaseResourceRepository.AbortRetryableException
+        || t instanceof StorageAbortRetryableException) {
+      return GrpcErrors.aborted(corrId, null, null, t);
     }
-    if (t instanceof StorageCorruptionException) {
-      return GrpcErrors.internal(corrId, null, Map.of());
+    if (t instanceof BaseResourceRepository.CorruptionException
+        || t instanceof StorageCorruptionException) {
+      return GrpcErrors.internal(corrId, null, null, t);
     }
-
     if (t instanceof IllegalArgumentException) {
-      return GrpcErrors.invalidArgument(corrId, null, Map.of());
+      return GrpcErrors.invalidArgument(corrId, null, null, t);
     }
     if (t instanceof TimeoutException) {
-      return GrpcErrors.timeout(corrId, null, Map.of());
+      return GrpcErrors.timeout(corrId, null, null, t);
     }
     if (t instanceof CancellationException) {
-      return GrpcErrors.cancelled(corrId, null, Map.of());
+      return GrpcErrors.cancelled(corrId, null, null, t);
     }
 
-    return GrpcErrors.internal(corrId, null, Map.of("cause", t.getClass().getName()));
+    return GrpcErrors.internal(corrId, null, null, t);
   }
 
   protected void ensureKind(
@@ -169,7 +162,7 @@ public abstract class BaseServiceImpl {
   }
 
   protected String deterministicUuid(String tenant, String kind, String key) {
-    var name = (tenant + ":" + kind + ":" + key).getBytes(StandardCharsets.UTF_8);
+    var name = (kind + ":" + key).getBytes(StandardCharsets.UTF_8);
     return UUID.nameUUIDFromBytes(name).toString();
   }
 
@@ -185,7 +178,9 @@ public abstract class BaseServiceImpl {
 
   public static final class Enforcers {
     public static void enforce(MutationMeta meta, Precondition p, String corr) {
-      if (p == null) return;
+      if (p == null) {
+        return;
+      }
 
       final boolean checkVer = p.getExpectedVersion() > 0L;
       final boolean checkTag = p.getExpectedEtag() != null && !p.getExpectedEtag().isBlank();
@@ -204,6 +199,15 @@ public abstract class BaseServiceImpl {
             "etag_mismatch",
             Map.of("expected", p.getExpectedEtag(), "actual", meta.getEtag()));
       }
+    }
+  }
+
+  protected static String hashFingerprint(byte[] data) {
+    try {
+      var md = java.security.MessageDigest.getInstance("SHA-256");
+      return java.util.Base64.getEncoder().encodeToString(md.digest(data));
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 not supported", e);
     }
   }
 }

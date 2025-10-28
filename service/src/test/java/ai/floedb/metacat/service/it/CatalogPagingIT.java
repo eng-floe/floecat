@@ -9,7 +9,9 @@ import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
+import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.ClientInterceptor;
@@ -36,7 +38,16 @@ class CatalogPagingIT {
 
   private final Clock clock = Clock.systemUTC();
 
-  @BeforeAll
+  @Inject TestDataResetter resetter;
+  @Inject SeedRunner seeder;
+
+  @BeforeEach
+  void resetStores() {
+    resetter.wipeAll();
+    seeder.seedData();
+    seedAndClient();
+  }
+
   void seedAndClient() {
     var tenantId = TestSupport.createTenantId(TENANT);
 

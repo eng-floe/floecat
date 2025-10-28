@@ -2,6 +2,7 @@ package ai.floedb.metacat.service.catalog.impl;
 
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.CatalogService;
+import ai.floedb.metacat.catalog.rpc.CatalogSpec;
 import ai.floedb.metacat.catalog.rpc.CreateCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.CreateCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.DeleteCatalogRequest;
@@ -15,11 +16,13 @@ import ai.floedb.metacat.catalog.rpc.UpdateCatalogResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
+import ai.floedb.metacat.service.common.Canonicalizer;
 import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.IdempotencyRepository;
-import ai.floedb.metacat.service.repo.impl.*;
+import ai.floedb.metacat.service.repo.impl.CatalogRepository;
+import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
@@ -28,7 +31,6 @@ import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 @GrpcService
 public class CatalogServiceImpl extends BaseServiceImpl implements CatalogService {
@@ -102,11 +104,11 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
 
               authz.require(principalContext, "catalog.write");
 
+              var fingerprint = canonicalFingerprint(request.getSpec());
               var idempotencyKey =
-                  request.hasIdempotency() ? request.getIdempotency().getKey() : "";
-
-              byte[] fingerprint =
-                  request.getSpec().toBuilder().clearDescription().build().toByteArray();
+                  request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
+                      ? request.getIdempotency().getKey()
+                      : hashFingerprint(fingerprint);
 
               var tsNow = nowTs();
 
@@ -117,10 +119,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                       idempotencyKey,
                       () -> fingerprint,
                       () -> {
-                        String catalogUuid =
-                            !idempotencyKey.isBlank()
-                                ? deterministicUuid(tenantId, "catalog", idempotencyKey)
-                                : UUID.randomUUID().toString();
+                        String catalogUuid = deterministicUuid(tenantId, "catalog", idempotencyKey);
 
                         var catalogId =
                             ResourceId.newBuilder()
@@ -144,17 +143,16 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                         try {
                           catalogRepo.create(built);
                         } catch (BaseResourceRepository.NameConflictException e) {
-                          if (!idempotencyKey.isBlank()) {
-                            var existing = catalogRepo.getByName(tenantId, built.getDisplayName());
-                            if (existing.isPresent()) {
-                              return new IdempotencyGuard.CreateResult<>(
-                                  existing.get(), existing.get().getResourceId());
-                            }
+                          var existing = catalogRepo.getByName(tenantId, built.getDisplayName());
+                          if (existing.isPresent()) {
+                            throw GrpcErrors.conflict(
+                                correlationId,
+                                "catalog.already_exists",
+                                Map.of("display_name", built.getDisplayName()));
                           }
-                          throw GrpcErrors.conflict(
-                              correlationId,
-                              "catalog.already_exists",
-                              Map.of("display_name", built.getDisplayName()));
+
+                          throw new BaseResourceRepository.AbortRetryableException(
+                              "name conflict visibility window");
                         }
 
                         return new IdempotencyGuard.CreateResult<>(built, catalogId);
@@ -264,5 +262,15 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
               return DeleteCatalogResponse.newBuilder().setMeta(meta).build();
             }),
         correlationId());
+  }
+
+  private static byte[] canonicalFingerprint(CatalogSpec s) {
+    return new Canonicalizer()
+        .scalar("name", s.getDisplayName())
+        .scalar("description", s.getDescription())
+        .scalar("policy", s.getPolicyRef())
+        .scalar("connectorRef", s.getConnectorRef())
+        .map("opt", s.getOptionsMap())
+        .bytes();
   }
 }

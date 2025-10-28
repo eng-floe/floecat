@@ -4,14 +4,17 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.planning.impl.PlanContext;
 import ai.floedb.metacat.service.planning.impl.PlanContextStoreImpl;
+import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import jakarta.inject.Inject;
 import java.time.Clock;
 import java.util.Map;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
@@ -41,6 +44,15 @@ class PlanContextStoreIT {
 
   private static PlanContext newPlan(String planId, long ttlMs) {
     return PlanContext.newActive(planId, pc(planId), null, null, ttlMs, 1);
+  }
+
+  @Inject TestDataResetter resetter;
+  @Inject SeedRunner seeder;
+
+  @BeforeEach
+  void resetStores() {
+    resetter.wipeAll();
+    seeder.seedData();
   }
 
   @Test

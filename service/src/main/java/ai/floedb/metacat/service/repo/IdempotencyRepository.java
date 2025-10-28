@@ -10,9 +10,15 @@ public interface IdempotencyRepository {
   Optional<IdempotencyRecord> get(String key);
 
   boolean createPending(
-      String key, String opName, String requestHash, Timestamp createdAt, Timestamp expiresAt);
+      String tenantId,
+      String key,
+      String opName,
+      String requestHash,
+      Timestamp createdAt,
+      Timestamp expiresAt);
 
   void finalizeSuccess(
+      String tenantId,
       String key,
       String opName,
       String requestHash,
