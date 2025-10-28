@@ -202,28 +202,22 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                         try {
                           viewRepo.create(view);
                         } catch (BaseResourceRepository.NameConflictException e) {
-                          if (!idempotencyKey.isBlank()) {
-                            return viewRepo
-                                .getByName(
-                                    tenantId,
-                                    spec.getCatalogId().getId(),
-                                    spec.getNamespaceId().getId(),
-                                    view.getDisplayName())
-                                .map(
-                                    existing ->
-                                        new IdempotencyGuard.CreateResult<>(
-                                            existing, existing.getResourceId()))
-                                .orElseThrow(
-                                    () ->
-                                        GrpcErrors.conflict(
-                                            correlationId,
-                                            "view.already_exists",
-                                            Map.of("display_name", view.getDisplayName())));
+                          var existing =
+                              viewRepo.getByName(
+                                  tenantId,
+                                  request.getSpec().getCatalogId().getId(),
+                                  request.getSpec().getNamespaceId().getId(),
+                                  view.getDisplayName());
+
+                          if (existing.isPresent()) {
+                            throw GrpcErrors.conflict(
+                                correlationId,
+                                "view.already_exists",
+                                Map.of("display_name", view.getDisplayName()));
                           }
-                          throw GrpcErrors.conflict(
-                              correlationId,
-                              "view.already_exists",
-                              Map.of("display_name", view.getDisplayName()));
+
+                          throw new BaseResourceRepository.AbortRetryableException(
+                              "name conflict visibility window");
                         }
 
                         return new IdempotencyGuard.CreateResult<>(view, viewResourceId);
