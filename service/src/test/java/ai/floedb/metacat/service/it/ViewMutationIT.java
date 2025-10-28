@@ -8,6 +8,8 @@ import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
@@ -17,6 +19,7 @@ import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
@@ -37,6 +40,15 @@ class ViewMutationIT {
   DirectoryGrpc.DirectoryBlockingStub directory;
 
   String viewPrefix = this.getClass().getSimpleName() + "_";
+
+  @Inject TestDataResetter resetter;
+  @Inject SeedRunner seeder;
+
+  @BeforeEach
+  void resetStores() {
+    resetter.wipeAll();
+    seeder.seedData();
+  }
 
   @Test
   void viewRenameUpdateAndDelete() throws Exception {
@@ -72,9 +84,7 @@ class ViewMutationIT {
                 .build());
     assertEquals(viewId.getId(), resolved.getResourceId().getId());
 
-    var lookup =
-        directory.lookupView(
-            LookupViewRequest.newBuilder().setResourceId(viewId).build());
+    var lookup = directory.lookupView(LookupViewRequest.newBuilder().setResourceId(viewId).build());
     assertEquals("recent_orders", lookup.getName().getName());
 
     var weekly =
@@ -99,10 +109,7 @@ class ViewMutationIT {
     var prefixResolved =
         directory.resolveFQViews(
             ResolveFQViewsRequest.newBuilder()
-                .setPrefix(
-                    NameRef.newBuilder()
-                        .setCatalog(cat.getDisplayName())
-                        .addAllPath(nsPath))
+                .setPrefix(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath))
                 .setPage(PageRequest.newBuilder().setPageSize(10).build())
                 .build());
     assertEquals(2, prefixResolved.getViewsCount());
@@ -153,8 +160,7 @@ class ViewMutationIT {
     assertEquals(viewId.getId(), resolveRenamed.getResourceId().getId());
 
     var lookupRenamed =
-        directory.lookupView(
-            LookupViewRequest.newBuilder().setResourceId(viewId).build());
+        directory.lookupView(LookupViewRequest.newBuilder().setResourceId(viewId).build());
     assertEquals("recent_orders_v2", lookupRenamed.getName().getName());
 
     var nfOldName =
@@ -207,7 +213,8 @@ class ViewMutationIT {
                         .build())
                 .build());
     assertEquals(
-        "SELECT order_id, customer_id, total_price FROM sales.core.orders WHERE order_date >= current_date - INTERVAL '14' DAY",
+        "SELECT order_id, customer_id, total_price FROM sales.core.orders WHERE order_date >="
+            + " current_date - INTERVAL '14' DAY",
         sqlUpdate.getView().getSql());
     assertTrue(sqlUpdate.getMeta().getPointerVersion() > beforeSql.getPointerVersion());
 
