@@ -1,9 +1,10 @@
 package ai.floedb.metacat.connector.spi;
 
+import ai.floedb.metacat.catalog.rpc.ColumnStats;
+import ai.floedb.metacat.catalog.rpc.TableStats;
 import java.io.Closeable;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 public interface MetacatConnector extends Closeable {
   String id();
@@ -14,22 +15,24 @@ public interface MetacatConnector extends Closeable {
 
   List<String> listTables(String namespaceFq);
 
-  record UpstreamTable(
+  TableDescriptor describe(String namespaceFq, String tableName);
+
+  List<SnapshotBundle> enumerateSnapshotsWithStats(String namespaceFq, String tableName);
+
+  @Override
+  void close();
+
+  record TableDescriptor(
       String namespaceFq,
       String tableName,
       String location,
       String schemaJson,
-      Optional<Long> currentSnapshotId,
-      Optional<Long> currentSnapshotTsMillis,
-      Map<String, String> properties,
-      List<String> partitionKeys) {}
+      List<String> partitionKeys,
+      Map<String, String> properties) {}
 
-  UpstreamTable describe(String namespaceFq, String tableName);
-
-  default boolean supportsTableStats() {
-    return false;
-  }
-
-  @Override
-  void close();
+  record SnapshotBundle(
+      long snapshotId,
+      long upstreamCreatedAtMs,
+      TableStats tableStats,
+      List<ColumnStats> columnStats) {}
 }

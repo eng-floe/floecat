@@ -11,7 +11,7 @@ public final class ConnectorFactory {
   public static MetacatConnector create(ConnectorConfig config) {
     String kindId =
         switch (config.kind()) {
-          case ICEBERG_REST -> "iceberg-rest";
+          case ICEBERG -> "iceberg";
           case DELTA -> "delta";
           case GLUE -> "glue";
           case UNITY -> "unity";

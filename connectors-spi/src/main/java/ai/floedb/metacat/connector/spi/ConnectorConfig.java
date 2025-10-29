@@ -24,7 +24,7 @@ public record ConnectorConfig(
   }
 
   public enum Kind {
-    ICEBERG_REST,
+    ICEBERG,
     DELTA,
     GLUE,
     UNITY

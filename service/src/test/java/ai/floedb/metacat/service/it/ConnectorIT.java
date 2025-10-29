@@ -23,6 +23,7 @@ import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.time.Duration;
 import java.util.List;
+import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.*;
 
 @QuarkusTest
@@ -64,29 +65,7 @@ public class ConnectorIT {
                 .build());
 
     var rid = conn.getResourceId();
-    assertEquals(ResourceKind.RK_CONNECTOR, rid.getKind());
-
-    var trig =
-        connectors.triggerReconcile(
-            TriggerReconcileRequest.newBuilder().setConnectorId(rid).setFullRescan(true).build());
-
-    String jobId = trig.getJobId();
-    assertFalse(jobId.isBlank());
-
-    scheduler.signalScheduler();
-
-    var deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
-    ReconcileJobStore.ReconcileJob job;
-    for (; ; ) {
-      job = jobs.get(jobId).orElse(null);
-      if (job != null && ("JS_SUCCEEDED".equals(job.state) || "JS_FAILED".equals(job.state))) {
-        break;
-      }
-      if (System.nanoTime() > deadline) {
-        break;
-      }
-      Thread.sleep(25);
-    }
+    var job = runReconcile(rid);
     assertNotNull(job);
     assertEquals("JS_SUCCEEDED", job.state);
 
@@ -135,6 +114,87 @@ public class ConnectorIT {
             .get(0)
             .getResourceId();
     assertTrue(snaps.getById(anyTable, 42L).isPresent());
+
+    // Should be able to run it again without issues
+    rid = conn.getResourceId();
+    job = runReconcile(rid);
+    assertNotNull(job);
+    assertEquals("JS_SUCCEEDED", job.state);
+  }
+
+  @Test
+  void GlueIcebergRESTconnectorEndToEnd() throws Exception {
+    boolean enabled =
+        ConfigProvider.getConfig()
+            .getOptionalValue("test.glue.enabled", Boolean.class)
+            .orElse(false);
+    Assumptions.assumeTrue(enabled, "Disabled by test.glue.enabled=false");
+
+    var tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("Glue Iceberg")
+                .setKind(ConnectorKind.CK_ICEBERG)
+                .setTargetCatalogDisplayName("glue-iceberg-rest")
+                .setTargetTenantId(tenantId.getId())
+                .setUri("https://glue.us-east-1.amazonaws.com/iceberg/")
+                .setAuth(AuthConfig.newBuilder().setScheme("aws-sigv4").build())
+                .build());
+
+    var rid = conn.getResourceId();
+    var job = runReconcile(rid);
+    assertNotNull(job);
+    assertEquals("JS_SUCCEEDED", job.state);
+
+    var catId =
+        catalogs.getByName(tenantId.getId(), "glue-iceberg-rest").orElseThrow().getResourceId();
+
+    assertEquals(2, namespaces.count(tenantId.getId(), catId.getId(), List.of()));
+
+    var tpcdsNsId =
+        namespaces
+            .getByPath(tenantId.getId(), catId.getId(), List.of("tpcds_iceberg"))
+            .orElseThrow();
+
+    assertEquals(
+        24,
+        tables
+            .list(
+                tenantId.getId(),
+                catId.getId(),
+                tpcdsNsId.getResourceId().getId(),
+                50,
+                "",
+                new StringBuilder())
+            .size());
+  }
+
+  ReconcileJobStore.ReconcileJob runReconcile(ResourceId rid) throws Exception {
+    assertEquals(ResourceKind.RK_CONNECTOR, rid.getKind());
+
+    var trig =
+        connectors.triggerReconcile(
+            TriggerReconcileRequest.newBuilder().setConnectorId(rid).setFullRescan(true).build());
+
+    String jobId = trig.getJobId();
+    assertFalse(jobId.isBlank());
+
+    var deadline = System.nanoTime() + Duration.ofSeconds(300).toNanos();
+    ReconcileJobStore.ReconcileJob job;
+    for (; ; ) {
+      job = jobs.get(jobId).orElse(null);
+      if (job != null && ("JS_SUCCEEDED".equals(job.state) || "JS_FAILED".equals(job.state))) {
+        break;
+      }
+      if (System.nanoTime() > deadline) {
+        break;
+      }
+      Thread.sleep(25);
+    }
+
+    return job;
   }
 
   @Test
@@ -309,7 +369,7 @@ public class ConnectorIT {
   @Test
   void triggerReconcileNotFound() throws Exception {
     var rid =
-        ai.floedb.metacat.common.rpc.ResourceId.newBuilder()
+        ResourceId.newBuilder()
             .setTenantId(TestSupport.DEFAULT_SEED_TENANT)
             .setId("missing")
             .setKind(ResourceKind.RK_CONNECTOR)

@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package ai.floedb.metacat.types;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.types.rpc";
+option java_outer_classname = "LogicalTypeProto";
+
+message LogicalType {
+  enum Kind {
+    TK_UNSPECIFIED = 0;
+    TK_BOOLEAN = 1;
+    TK_INT32 = 2;
+    TK_INT64 = 3;
+    TK_FLOAT32 = 4;
+    TK_FLOAT64 = 5;
+    TK_DATE = 6;
+    TK_TIME = 7;
+    TK_TIMESTAMP = 8;
+    TK_STRING = 9;
+    TK_BINARY = 10;
+    TK_UUID = 11;
+    TK_DECIMAL = 12;
+  }
+  Kind kind = 1;
+  int32 precision = 2;
+  int32 scale = 3;
+  map<string,string> params = 99;
+}
+
+message ScalarValue {
+  oneof v {
+    bool b = 1;
+    int64 i64 = 2;
+    double f64 = 3;
+    string s = 4;
+    bytes bin = 5;
+    string dec = 6;
+    int32 date = 7;
+    int64 time  = 8;
+    int64 ts = 9;
+  }
+}

@@ -21,6 +21,7 @@
 
   <modules>
     <module>proto</module>
+    <module>types</module>
     <module>storage-spi</module>
     <module>storage-memory</module>
     <module>storage-aws</module>

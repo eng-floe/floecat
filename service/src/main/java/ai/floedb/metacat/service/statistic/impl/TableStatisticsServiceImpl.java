@@ -23,7 +23,6 @@ import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
 import ai.floedb.metacat.service.repo.impl.StatsRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
-import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcService;
@@ -258,13 +257,6 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                               "snapshot",
                               Map.of("id", Long.toString(request.getSnapshotId()))));
 
-              var tableId = request.getTableId().getId();
-              long snapshotId = request.getSnapshotId();
-              var baseKey =
-                  request.hasIdempotency()
-                      ? request.getIdempotency().getKey()
-                      : Keys.snapshotColumnStatsDirectoryPointer(tenantId, tableId, snapshotId);
-
               int upserted = 0;
               for (var raw : request.getColumnsList()) {
                 var columnStats =
@@ -273,8 +265,11 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                         .setSnapshotId(request.getSnapshotId())
                         .build();
 
-                String idempotencyKey = baseKey + "/col/" + columnStats.getColumnId();
-                byte[] fingerprint = columnStats.toByteArray();
+                var fingerprint = raw.toByteArray();
+                var idempotencyKey =
+                    request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
+                        ? request.getIdempotency().getKey()
+                        : hashFingerprint(fingerprint);
 
                 MutationOps.createProto(
                     tenantId,

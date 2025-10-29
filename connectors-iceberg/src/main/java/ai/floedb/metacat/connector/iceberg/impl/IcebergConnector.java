@@ -1,30 +1,44 @@
 package ai.floedb.metacat.connector.iceberg.impl;
 
+import ai.floedb.metacat.catalog.rpc.TableFormat;
+import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.connector.common.GenericStatsEngine;
+import ai.floedb.metacat.connector.common.StatsEngine;
+import ai.floedb.metacat.connector.common.ndv.NdvProviders;
+import ai.floedb.metacat.connector.common.ndv.ParquetNdvProvider;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
+import ai.floedb.metacat.types.LogicalType;
+import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
+import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.rest.RESTCatalog;
+import org.apache.iceberg.types.Types;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.glue.GlueClient;
 
 public final class IcebergConnector implements MetacatConnector {
   private final String connectorId;
   private final RESTCatalog catalog;
+  private final GlueIcebergFilter glueFilter;
 
-  private IcebergConnector(String connectorId, RESTCatalog catalog) {
+  private IcebergConnector(String connectorId, RESTCatalog catalog, GlueIcebergFilter filter) {
     this.connectorId = connectorId;
     this.catalog = catalog;
+    this.glueFilter = filter;
   }
 
   public static MetacatConnector create(
@@ -33,28 +47,46 @@ public final class IcebergConnector implements MetacatConnector {
       String authScheme,
       Map<String, String> authProps,
       Map<String, String> headerHints) {
+
     Objects.requireNonNull(uri, "uri");
-    Map<String, String> props = new HashMap<>(options == null ? Map.of() : options);
+
+    Map<String, String> props = new HashMap<>();
     props.put("type", "rest");
     props.put("uri", uri);
 
-    String scheme = authScheme == null ? "none" : authScheme.trim().toLowerCase(Locale.ROOT);
+    if (options != null) {
+      for (var e : options.entrySet()) {
+        String k = e.getKey();
+        if (k.startsWith("rest.") || k.startsWith("s3.") || k.equals("io-impl")) {
+          props.put(k, e.getValue());
+        }
+      }
+    }
+    String scheme = (authScheme == null ? "none" : authScheme.trim().toLowerCase(Locale.ROOT));
     switch (scheme) {
       case "aws-sigv4" -> {
         String signingName = authProps.getOrDefault("signing-name", "glue");
         String signingRegion =
-            authProps.getOrDefault("signing-region", props.getOrDefault("region", "us-east-1"));
+            authProps.getOrDefault(
+                "signing-region",
+                props.getOrDefault(
+                    "rest.signing-region", props.getOrDefault("s3.region", "us-east-1")));
         props.put("rest.auth.type", "sigv4");
         props.put("rest.signing-name", signingName);
         props.put("rest.signing-region", signingRegion);
+
+        props.putIfAbsent("io-impl", "org.apache.iceberg.aws.s3.S3FileIO");
         props.putIfAbsent("s3.region", signingRegion);
       }
+
       case "oauth2" -> {
         String token =
             Objects.requireNonNull(authProps.get("token"), "authProps.token required for oauth2");
         props.put("token", token);
       }
+
       case "none" -> {}
+
       default -> throw new IllegalArgumentException("Unsupported auth scheme: " + authScheme);
     }
 
@@ -64,9 +96,15 @@ public final class IcebergConnector implements MetacatConnector {
 
     props.putIfAbsent("rest.client.user-agent", "metacat-connector-iceberg");
 
+    var glue =
+        GlueClient.builder()
+            .region(Region.of(props.getOrDefault("s3.region", "us-east-1")))
+            .build();
+
     RESTCatalog cat = new RESTCatalog();
     cat.initialize("metacat-iceberg", Collections.unmodifiableMap(props));
-    return new IcebergConnector("iceberg-rest", cat);
+
+    return new IcebergConnector("iceberg-rest", cat, new GlueIcebergFilter(glue));
   }
 
   @Override
@@ -83,46 +121,72 @@ public final class IcebergConnector implements MetacatConnector {
   public List<String> listNamespaces() {
     return catalog.listNamespaces().stream()
         .map(Namespace::toString)
+        .filter(glueFilter::databaseHasIceberg)
         .sorted()
-        .collect(Collectors.toList());
+        .toList();
   }
 
   @Override
   public List<String> listTables(String namespaceFq) {
-    Namespace ns = Namespace.of(namespaceFq.split("\\."));
-    return catalog.listTables(ns).stream()
-        .sorted(Comparator.comparing(TableIdentifier::name))
-        .map(TableIdentifier::name)
-        .collect(Collectors.toList());
+    return glueFilter.icebergTables(namespaceFq);
   }
 
   @Override
-  public UpstreamTable describe(String namespaceFq, String tableName) {
+  public TableDescriptor describe(String namespaceFq, String tableName) {
     Namespace namespace = Namespace.of(namespaceFq.split("\\."));
     TableIdentifier tableId = TableIdentifier.of(namespace, tableName);
+    System.out.println("Loading table " + namespaceFq + "." + tableName);
     Table table = catalog.loadTable(tableId);
     Schema schema = table.schema();
     String schemaJson = SchemaParser.toJson(schema);
     List<String> partitionKeys = table.spec().fields().stream().map(f -> f.name()).toList();
 
-    var snap = table.currentSnapshot();
-    Optional<Long> snapshotId = Optional.ofNullable(snap).map(s -> s.snapshotId());
-    Optional<Long> snapshotTs = Optional.ofNullable(snap).map(s -> s.timestampMillis());
-
-    return new UpstreamTable(
-        namespaceFq,
-        tableName,
-        table.location(),
-        schemaJson,
-        snapshotId,
-        snapshotTs,
-        table.properties(),
-        partitionKeys);
+    return new TableDescriptor(
+        namespaceFq, tableName, table.location(), schemaJson, partitionKeys, table.properties());
   }
 
   @Override
-  public boolean supportsTableStats() {
-    return false;
+  public List<SnapshotBundle> enumerateSnapshotsWithStats(String namespaceFq, String tableName) {
+    Namespace ns = Namespace.of(namespaceFq.split("\\."));
+    TableIdentifier tid = TableIdentifier.of(ns, tableName);
+    Table table = catalog.loadTable(tid);
+
+    Set<Integer> allIds =
+        table.schema().columns().stream()
+            .map(Types.NestedField::fieldId)
+            .collect(Collectors.toCollection(LinkedHashSet::new));
+
+    List<SnapshotBundle> out = new ArrayList<>();
+    for (Snapshot s : table.snapshots()) {
+      long sid = s.snapshotId();
+      long createdMs = s.timestampMillis();
+
+      EngineOut e = runEngine(table, sid, allIds);
+
+      var tableId = ResourceId.getDefaultInstance();
+
+      var tStats =
+          ProtoStatsBuilder.toTableStats(
+              tableId, sid, createdMs, TableFormat.TF_ICEBERG, e.result());
+
+      var cStats =
+          ProtoStatsBuilder.toColumnStats(
+              tableId,
+              sid,
+              TableFormat.TF_ICEBERG,
+              e.result().columns(),
+              id -> {
+                var f = table.schema().findField((Integer) id);
+                return f == null ? "" : f.name();
+              },
+              id -> {
+                var f = table.schema().findField((Integer) id);
+                return f == null ? null : IcebergTypeMapper.toLogical(f.type());
+              });
+
+      out.add(new SnapshotBundle(sid, createdMs, tStats, cStats));
+    }
+    return out;
   }
 
   @Override
@@ -130,7 +194,42 @@ public final class IcebergConnector implements MetacatConnector {
     try {
       catalog.close();
     } catch (Exception ignore) {
-      // ignore
     }
+  }
+
+  private record EngineOut(StatsEngine.Result<Integer> result) {}
+
+  private EngineOut runEngine(Table table, long snapshotId, Set<Integer> colIds) {
+    var colNames = buildColumnNameMap(table.schema(), colIds);
+    var logicalTypes = buildLogicalTypeMap(table.schema(), colIds);
+
+    var ndvProvider = PuffinNdvProvider.maybeCreate(table, snapshotId, colNames::get);
+    if (ndvProvider == null) {
+      var parquetNdv = new ParquetNdvProvider(path -> table.io().newInputFile(path));
+      ndvProvider = NdvProviders.filterBySuffix(Set.of(".parquet", ".parq"), parquetNdv);
+    }
+
+    try (var planner = new IcebergPlanner(table, snapshotId, colIds, ndvProvider)) {
+      var engine = new GenericStatsEngine<>(planner, ndvProvider, colNames, logicalTypes);
+      var r = engine.compute();
+      return new EngineOut(r);
+    } catch (Exception e) {
+      throw new RuntimeException("Stats compute failed for snapshot " + snapshotId, e);
+    }
+  }
+
+  private static Map<Integer, String> buildColumnNameMap(Schema schema, Set<Integer> includeIds) {
+    return schema.columns().stream()
+        .filter(f -> includeIds == null || includeIds.contains(f.fieldId()))
+        .collect(Collectors.toUnmodifiableMap(Types.NestedField::fieldId, Types.NestedField::name));
+  }
+
+  private static Map<Integer, LogicalType> buildLogicalTypeMap(
+      Schema schema, Set<Integer> includeIds) {
+    return schema.columns().stream()
+        .filter(f -> includeIds == null || includeIds.contains(f.fieldId()))
+        .map(f -> Map.entry(f.fieldId(), IcebergTypeMapper.toLogical(f.type())))
+        .filter(e -> e.getValue() != null)
+        .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
   }
 }

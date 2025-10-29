@@ -92,7 +92,10 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   @Override
   public Optional<T> get(String key) {
     var pointerStoreOpt = pointerStore.get(key);
-    if (pointerStoreOpt.isEmpty()) return Optional.empty();
+    if (pointerStoreOpt.isEmpty()) {
+      return Optional.empty();
+    }
+
     var pointer = pointerStoreOpt.get();
 
     try {

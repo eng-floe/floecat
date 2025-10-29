@@ -324,7 +324,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
               var kind =
                   switch (spec.getKind()) {
-                    case CK_ICEBERG_REST -> Kind.ICEBERG_REST;
+                    case CK_ICEBERG -> Kind.ICEBERG;
                     case CK_DELTA -> Kind.DELTA;
                     case CK_GLUE -> Kind.GLUE;
                     case CK_UNITY -> Kind.UNITY;
@@ -359,8 +359,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                             + (namespaces.isEmpty()
                                 ? "no namespaces"
                                 : "namespaces=" + namespaces.size()))
-                    .putCapabilities(
-                        "supportsStats", Boolean.toString(connector.supportsTableStats()))
                     .build();
               } catch (Exception e) {
                 return ValidateConnectorResponse.newBuilder()
