@@ -4,7 +4,6 @@ import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 public final class DummyConnector implements MetacatConnector {
   private final String id;
@@ -42,7 +41,7 @@ public final class DummyConnector implements MetacatConnector {
   }
 
   @Override
-  public UpstreamTable describe(String namespaceFq, String tableName) {
+  public TableDescriptor describe(String namespaceFq, String tableName) {
     String schemaJson =
         """
         {"type":"struct","fields":[
@@ -54,19 +53,36 @@ public final class DummyConnector implements MetacatConnector {
 
     String location = "s3://dummy/" + namespaceFq.replace('.', '/') + "/" + tableName;
 
-    Optional<Long> sid = Optional.of(42L);
-    Optional<Long> ts = Optional.of(1_700_000_000_000L);
-
     Map<String, String> props = Map.of("upstream", "dummy", "owner", "tests");
 
     List<String> pks = List.of("ts");
 
-    return new UpstreamTable(namespaceFq, tableName, location, schemaJson, sid, ts, props, pks);
+    return new TableDescriptor(namespaceFq, tableName, location, schemaJson, pks, props);
   }
 
   @Override
-  public boolean supportsTableStats() {
-    return false;
+  public List<SnapshotBundle> enumerateSnapshotsWithStats(String namespace, String table) {
+    long snapshotId = 42L;
+    long createdAt = 1_700_000_000_000L;
+
+    var tStats =
+        ai.floedb.metacat.catalog.rpc.TableStats.newBuilder()
+            .setSnapshotId(snapshotId)
+            .setRowCount(100)
+            .setDataFileCount(3)
+            .setTotalSizeBytes(2048)
+            .build();
+
+    var cStat =
+        ai.floedb.metacat.catalog.rpc.ColumnStats.newBuilder()
+            .setSnapshotId(snapshotId)
+            .setColumnId("c1")
+            .setColumnName("dummy_col")
+            .setLogicalType("INT64")
+            .setNullCount(0)
+            .build();
+
+    return List.of(new SnapshotBundle(snapshotId, createdAt, tStats, java.util.List.of(cStat)));
   }
 
   @Override

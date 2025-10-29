@@ -9,6 +9,8 @@ import ai.floedb.metacat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.NamespaceSpec;
+import ai.floedb.metacat.catalog.rpc.PutColumnStatsBatchRequest;
+import ai.floedb.metacat.catalog.rpc.PutTableStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
@@ -27,6 +29,8 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.HashSet;
+import java.util.List;
 
 @ApplicationScoped
 public class ReconcilerService {
@@ -39,7 +43,6 @@ public class ReconcilerService {
 
     try (MetacatConnector connector = ConnectorFactory.create(cfg)) {
       var catalogId = ensureCatalog(cfg.targetCatalogDisplayName(), connector);
-
       for (String namespace : connector.listNamespaces()) {
         var namespaceId = ensureNamespace(catalogId, namespace);
         for (String tbl : connector.listTables(namespace)) {
@@ -47,19 +50,19 @@ public class ReconcilerService {
             scanned++;
             var upstreamTable = connector.describe(namespace, tbl);
             var tableId = ensureTable(catalogId, namespaceId, upstreamTable, connector.format());
-            if (upstreamTable.currentSnapshotId().isPresent()) {
-              ensureSnapshot(
-                  tableId,
-                  upstreamTable.currentSnapshotId().get(),
-                  upstreamTable.currentSnapshotTsMillis().orElse(System.currentTimeMillis()));
-            }
+            ingestAllSnapshotsAndStats(
+                tableId, connector.enumerateSnapshotsWithStats(namespace, tbl));
             changed++;
           } catch (Exception te) {
+            te.printStackTrace();
             errors++;
           }
         }
       }
-      return new Result(scanned, changed, errors, null);
+      return errors == 0
+          ? new Result(scanned, changed, 0, null)
+          : new Result(
+              scanned, changed, errors, new RuntimeException("Partial failure: " + errors));
     } catch (Exception e) {
       return new Result(scanned, changed, errors, e);
     }
@@ -144,7 +147,7 @@ public class ReconcilerService {
   private ResourceId ensureTable(
       ResourceId catalogId,
       ResourceId namespaceId,
-      MetacatConnector.UpstreamTable upstreamTable,
+      MetacatConnector.TableDescriptor upstreamTable,
       ConnectorFormat format) {
     try {
       var nameRef =
@@ -181,7 +184,8 @@ public class ReconcilerService {
     return clients.table().createTable(request).getTable().getResourceId();
   }
 
-  private void maybeUpdateTable(ResourceId tableId, MetacatConnector.UpstreamTable upstreamTable) {
+  private void maybeUpdateTable(
+      ResourceId tableId, MetacatConnector.TableDescriptor upstreamTable) {
     TableSpec updated =
         TableSpec.newBuilder()
             .setSchemaJson(upstreamTable.schemaJson())
@@ -211,12 +215,12 @@ public class ReconcilerService {
     try {
       clients.snapshot().createSnapshot(request);
     } catch (StatusRuntimeException e) {
-      var c = e.getStatus().getCode();
-      if (c != Status.Code.ALREADY_EXISTS
-          && c != Status.Code.ABORTED
-          && c != Status.Code.FAILED_PRECONDITION) {
-        throw e;
+      var statusCode = e.getStatus().getCode();
+      if (statusCode == Status.Code.ALREADY_EXISTS) {
+        return;
       }
+
+      throw e;
     }
   }
 
@@ -242,6 +246,67 @@ public class ReconcilerService {
       return TableFormat.valueOf(target);
     } catch (IllegalArgumentException ignored) {
       return TableFormat.TF_UNKNOWN;
+    }
+  }
+
+  private void ingestAllSnapshotsAndStats(
+      ResourceId tableId, List<MetacatConnector.SnapshotBundle> bundles) {
+
+    var seen = new HashSet<Long>();
+
+    for (var snapshotBundle : bundles) {
+      if (snapshotBundle == null) {
+        continue;
+      }
+
+      long snapshotId = snapshotBundle.snapshotId();
+      if (snapshotId <= 0 || !seen.add(snapshotId)) {
+        continue;
+      }
+
+      long createdAtMs =
+          (snapshotBundle.upstreamCreatedAtMs() > 0)
+              ? snapshotBundle.upstreamCreatedAtMs()
+              : System.currentTimeMillis();
+
+      ensureSnapshot(tableId, snapshotId, createdAtMs);
+
+      var tsIn = snapshotBundle.tableStats();
+      if (tsIn != null) {
+
+        var tStats = tsIn.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
+
+        System.out.println("TABLE STATS=" + tStats);
+
+        clients
+            .statistics()
+            .putTableStats(
+                PutTableStatsRequest.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshotId(snapshotId)
+                    .setStats(tStats)
+                    .build());
+      }
+      var cols = snapshotBundle.columnStats();
+      if (cols != null && !cols.isEmpty()) {
+        var cStats =
+            cols.stream()
+                .map(c -> c.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
+                .toList();
+
+        for (var col : cStats) {
+          System.out.println(col);
+        }
+
+        clients
+            .statistics()
+            .putColumnStatsBatch(
+                PutColumnStatsBatchRequest.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshotId(snapshotId)
+                    .addAllColumns(cStats)
+                    .build());
+      }
     }
   }
 }

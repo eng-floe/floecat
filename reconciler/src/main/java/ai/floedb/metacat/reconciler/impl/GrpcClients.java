@@ -5,6 +5,7 @@ import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
 import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
 import io.quarkus.grpc.GrpcClient;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -25,6 +26,9 @@ public class GrpcClients {
 
   @GrpcClient("snapshot-service")
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
+
+  @GrpcClient("table-statistics-service")
+  TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics;
 
   @GrpcClient("connectors")
   ConnectorsGrpc.ConnectorsBlockingStub connector;
@@ -47,6 +51,10 @@ public class GrpcClients {
 
   public SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot() {
     return snapshot;
+  }
+
+  public TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics() {
+    return statistics;
   }
 
   public ConnectorsGrpc.ConnectorsBlockingStub connector() {

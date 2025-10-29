@@ -20,12 +20,8 @@ public class ReconcilerScheduler {
 
   private final AtomicBoolean running = new AtomicBoolean(false);
 
-  public void signalScheduler() {
-    pollOnce();
-  }
-
   @Scheduled(
-      every = "{reconciler.pollEvery:10s}",
+      every = "{reconciler.pollEvery:1s}",
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
   void pollOnce() {
     if (!running.compareAndSet(false, true)) {
@@ -80,7 +76,7 @@ public class ReconcilerScheduler {
   private static ConnectorConfig toConfig(Connector connector) {
     Kind kind =
         switch (connector.getKind()) {
-          case CK_ICEBERG_REST -> Kind.ICEBERG_REST;
+          case CK_ICEBERG -> Kind.ICEBERG;
           case CK_DELTA -> Kind.DELTA;
           case CK_GLUE -> Kind.GLUE;
           case CK_UNITY -> Kind.UNITY;

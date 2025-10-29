@@ -57,7 +57,8 @@ message ColumnStats {
   string logical_type = 5;
   UpstreamStamp upstream = 6;
   int64 null_count = 10;
-  Ndv ndv = 11;
+  int64 nan_count = 11;
+  Ndv ndv = 12;
   string min = 20;
   string max = 21;
   bytes histogram = 30;

@@ -10,7 +10,7 @@ import "google/protobuf/duration.proto";
 
 enum ConnectorKind {
   CK_UNSPECIFIED = 0;
-  CK_ICEBERG_REST = 1;
+  CK_ICEBERG = 1;
   CK_DELTA = 2;
   CK_GLUE = 3;
   CK_UNITY = 4;
