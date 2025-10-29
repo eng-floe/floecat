@@ -95,7 +95,7 @@ class TableRepositoryTest {
     var nsKeyPfx = Keys.tablePointerByNamePrefix(tenant, catRid.getId(), nsRid.getId());
     var rowsUnderPfx = ptr.listPointersByPrefix(nsKeyPfx, 100, "", new StringBuilder());
     assertTrue(
-        rowsUnderPfx.stream().anyMatch(r -> r.key().equals(nsKeyRow)),
+        rowsUnderPfx.stream().anyMatch(r -> r.getKey().equals(nsKeyRow)),
         "prefix scan doesn't see the row key you just wrote");
 
     String uri = pointerRow.get().getBlobUri();

@@ -5,8 +5,6 @@ import java.util.List;
 import java.util.Optional;
 
 public interface PointerStore {
-  record Row(String key, String blobUri, long version) {}
-
   Optional<Pointer> get(String key);
 
   boolean compareAndSet(String key, long expectedVersion, Pointer next);
@@ -15,7 +13,7 @@ public interface PointerStore {
 
   boolean compareAndDelete(String key, long expectedVersion);
 
-  List<Row> listPointersByPrefix(
+  List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
 
   int countByPrefix(String prefix);

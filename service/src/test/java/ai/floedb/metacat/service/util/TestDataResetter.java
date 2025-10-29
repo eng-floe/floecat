@@ -1,5 +1,6 @@
 package ai.floedb.metacat.service.util;
 
+import ai.floedb.metacat.common.rpc.Pointer;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -40,7 +41,7 @@ public class TestDataResetter {
       StringBuilder next = new StringBuilder();
       var rows = ptr.listPointersByPrefix(GLOBAL_TENANTS_BY_ID_PREFIX, 200, token, next);
       for (var r : rows) {
-        String k = r.key();
+        String k = r.getKey();
         int idx = k.lastIndexOf('/');
         if (idx > 0 && idx + 1 < k.length()) ids.add(k.substring(idx + 1));
       }
@@ -74,10 +75,10 @@ public class TestDataResetter {
       StringBuilder next = new StringBuilder();
       var rows = ptr.listPointersByPrefix(prefix, 200, token, next);
 
-      List<PointerStore.Row> batch = new ArrayList<>(25);
+      List<Pointer> batch = new ArrayList<>(25);
       for (var r : rows) {
         try {
-          blobs.delete(r.blobUri());
+          blobs.delete(r.getBlobUri());
         } catch (Throwable ignore) {
         }
         batch.add(r);
@@ -93,11 +94,11 @@ public class TestDataResetter {
     return deleted;
   }
 
-  private int batchDelete(List<PointerStore.Row> batch) {
+  private int batchDelete(List<Pointer> batch) {
     int n = 0;
     for (var r : batch) {
       try {
-        if (ptr.delete(r.key())) n++;
+        if (ptr.delete(r.getKey())) n++;
       } catch (Throwable ignore) {
       }
     }
@@ -130,7 +131,7 @@ public class TestDataResetter {
       StringBuilder next = new StringBuilder();
       var rows = ptr.listPointersByPrefix(prefix, 200, token, next);
       for (var r : rows) {
-        System.err.println("key=" + r.key() + " blob=" + r.blobUri() + " v=" + r.version());
+        System.err.println("key=" + r.getKey() + " blob=" + r.getBlobUri() + " v=" + r.getVersion());
       }
       token = next.toString();
     } while (!token.isBlank());

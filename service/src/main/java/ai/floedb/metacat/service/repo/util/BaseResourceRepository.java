@@ -234,13 +234,13 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     var rows = pointerStore.listPointersByPrefix(prefix, Math.max(1, limit), token, nextOut);
     var uris = new ArrayList<String>(rows.size());
     for (var row : rows) {
-      uris.add(row.blobUri());
+      uris.add(row.getBlobUri());
     }
 
     var blobsMap = blobStore.getBatch(uris);
     var blobs = new ArrayList<T>(rows.size());
     for (var row : rows) {
-      byte[] bytes = blobsMap.get(row.blobUri());
+      byte[] bytes = blobsMap.get(row.getBlobUri());
       if (bytes == null) {
         continue;
       }
@@ -248,7 +248,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
       try {
         blobs.add(parser.parse(bytes));
       } catch (Exception e) {
-        throw new CorruptionException("parse failed: " + row.blobUri(), e);
+        throw new CorruptionException("parse failed: " + row.getBlobUri(), e);
       }
     }
     return blobs;
@@ -338,7 +338,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
       for (var r : rows) {
         rowNumber++;
-        var blobHeaderOpt = blobStore.head(r.blobUri());
+        var blobHeaderOpt = blobStore.head(r.getBlobUri());
         String etag = blobHeaderOpt.map(BlobHeader::getEtag).orElse("-");
         String created =
             blobHeaderOpt.map(header -> Timestamps.toString(header.getCreatedAt())).orElse("-");
@@ -350,7 +350,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
         stringBuilder.append(
             String.format(
                 "%-5d %-8d %-36s %-24s %-24s  %s -> %s%n",
-                rowNumber, r.version(), etag, created, modified, r.key(), r.blobUri()));
+                rowNumber, r.getVersion(), etag, created, modified, r.getKey(), r.getBlobUri()));
       }
 
       token = next.toString();

@@ -44,7 +44,7 @@ public class InMemoryPointerStore implements PointerStore {
   }
 
   @Override
-  public List<Row> listPointersByPrefix(
+  public List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
     final String pfx = prefix == null ? "" : prefix;
     final int lim = Math.max(1, limit);
@@ -71,12 +71,12 @@ public class InMemoryPointerStore implements PointerStore {
     }
 
     int end = Math.min(keys.size(), start + lim);
-    List<Row> page = new ArrayList<>(end - start);
+    List<Pointer> page = new ArrayList<>(end - start);
     for (int i = start; i < end; i++) {
       String key = keys.get(i);
       Pointer p = map.get(key);
       if (p != null) {
-        page.add(new Row(key, p.getBlobUri(), p.getVersion()));
+        page.add(p);
       }
     }
 

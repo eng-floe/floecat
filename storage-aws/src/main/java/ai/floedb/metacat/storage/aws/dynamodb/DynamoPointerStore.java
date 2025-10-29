@@ -171,7 +171,7 @@ public final class DynamoPointerStore implements PointerStore {
   }
 
   @Override
-  public List<Row> listPointersByPrefix(
+  public List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
     var mappedPrefix = mapPrefix(prefix);
     QueryRequest.Builder queryBuilder =
@@ -201,14 +201,14 @@ public final class DynamoPointerStore implements PointerStore {
       if (query.lastEvaluatedKey() != null && !query.lastEvaluatedKey().isEmpty()) {
         nextTokenOut.append(encodeToken(query.lastEvaluatedKey()));
       }
-      var rows = new ArrayList<Row>(query.count());
+      var rows = new ArrayList<Pointer>(query.count());
       for (var item : query.items()) {
         String pk = attrS(item, ATTR_PK);
         String sk = attrS(item, ATTR_SK);
         String pointerKey = fullKey(pk, sk);
         String blobUri = attrS(item, ATTR_BLOB_URI);
         long version = Long.parseLong(attrN(item, ATTR_VERSION));
-        rows.add(new Row(pointerKey, blobUri, version));
+        rows.add(Pointer.newBuilder().setKey(pointerKey).setBlobUri(blobUri).setVersion(version).build());
       }
       return rows;
     } catch (DynamoDbException e) {
