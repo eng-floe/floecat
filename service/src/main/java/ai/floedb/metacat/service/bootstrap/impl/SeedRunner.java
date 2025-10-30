@@ -52,7 +52,7 @@ public class SeedRunner {
     final Clock clock = Clock.systemUTC();
     final long now = clock.millis();
 
-    var tenantId = seedTenant("t-0001", "First tentant", now);
+    var tenantId = seedTenant("t-0001", "First tenant", now);
 
     var salesId = seedCatalog(tenantId.getId(), "sales", "Sales catalog", now);
 
@@ -66,7 +66,8 @@ public class SeedRunner {
         salesId,
         salesCoreNsId.getId(),
         "recent_orders",
-        "SELECT o.order_key, o.customer_key, o.order_status FROM sales.core.orders o WHERE o.order_date >= date_sub(current_date, interval '30' day)",
+        "SELECT o.order_key, o.customer_key, o.order_status FROM sales.core.orders o WHERE"
+            + " o.order_date >= date_sub(current_date, interval '30' day)",
         Map.of("seeded", "true"),
         now);
 
@@ -178,8 +179,7 @@ public class SeedRunner {
             .setKind(ResourceKind.RK_NAMESPACE)
             .build();
 
-    String rootUri =
-        "s3://seed-data/" + tenant + "/" + catalogId + "/" + namespaceId + "/" + name + "/";
+    String rootUri = "s3://seed-data/";
 
     var td =
         Table.newBuilder()

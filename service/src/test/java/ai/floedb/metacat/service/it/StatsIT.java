@@ -13,7 +13,6 @@ import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
-import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -107,7 +106,7 @@ class StatsIT {
             .setRowCount(1_000)
             .setDataFileCount(5)
             .setTotalSizeBytes(123_456)
-            .setNdv(Ndv.newBuilder().setKind(NdvKind.NK_EXACT).setExact(950).build())
+            .setNdv(Ndv.newBuilder().setExact(950).build())
             .build();
 
     var putTableRespOld =
@@ -127,7 +126,7 @@ class StatsIT {
             .setColumnName("id")
             .setLogicalType("int")
             .setNullCount(0)
-            .setNdv(Ndv.newBuilder().setKind(NdvKind.NK_EXACT).setExact(1_000).build())
+            .setNdv(Ndv.newBuilder().setExact(1_000).build())
             .setMin("1")
             .setMax("1000")
             .setUpstream(tableStatsOld.getUpstream())
@@ -141,10 +140,7 @@ class StatsIT {
             .setColumnName("ts")
             .setLogicalType("timestamp")
             .setNullCount(10)
-            .setNdv(
-                Ndv.newBuilder()
-                    .setKind(NdvKind.NK_HLL)
-                    .setHllSketch(ByteString.copyFrom(new byte[] {1, 2, 3, 4})))
+            .setNdv(Ndv.newBuilder().build())
             .setMin("2024-01-01T00:00:00Z")
             .setMax("2024-12-31T23:59:59Z")
             .setUpstream(tableStatsOld.getUpstream())
@@ -206,14 +202,9 @@ class StatsIT {
             .addColumns(
                 colIdStats.toBuilder()
                     .setSnapshotId(snapNew)
-                    .setNdv(Ndv.newBuilder().setKind(NdvKind.NK_EXACT).setExact(2_500)))
+                    .setNdv(Ndv.newBuilder().setExact(2_500)))
             .addColumns(
-                colTsStats.toBuilder()
-                    .setSnapshotId(snapNew)
-                    .setNdv(
-                        Ndv.newBuilder()
-                            .setKind(NdvKind.NK_HLL)
-                            .setHllSketch(ByteString.copyFrom(new byte[] {5, 6}))))
+                colTsStats.toBuilder().setSnapshotId(snapNew).setNdv(Ndv.newBuilder().build()))
             .build());
 
     var currentTableStats =

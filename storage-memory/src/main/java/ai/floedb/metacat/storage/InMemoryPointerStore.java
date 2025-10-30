@@ -109,6 +109,11 @@ public class InMemoryPointerStore implements PointerStore {
   }
 
   @Override
+  public int deleteByPrefix(String prefix) {
+    return 0;
+  }
+
+  @Override
   public boolean compareAndDelete(String key, long expectedVersion) {
     final boolean[] deleted = {false};
     map.compute(

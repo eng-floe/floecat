@@ -17,21 +17,34 @@ message UpstreamStamp {
   map<string,string> extras = 99;
 }
 
-enum NdvKind {
-  NK_UNSPECIFIED = 0;
-  NK_EXACT = 1;
-  NK_HLL = 2;
-}
-
 message Ndv {
-  NdvKind kind = 1;
-
-  oneof value {
-    int64 exact = 10;
-    bytes hll_sketch = 11;
+  oneof mode {
+    int64 exact = 1;
+    NdvApprox approx = 2;
   }
 
-  map<string,string> params = 20;
+  repeated NdvSketch sketches = 20;
+}
+
+message NdvApprox {
+  double estimate = 1;
+  double relative_standard_error = 2;
+  double confidence_lower = 3;
+  double confidence_upper = 4;
+  double confidence_level = 5;
+  uint64 rows_seen = 10;
+  uint64 rows_total = 11;
+  string method = 20;
+  map<string,string> params = 21;
+}
+
+message NdvSketch {
+  string type = 1;
+  bytes data = 2;
+  string encoding = 3;
+  string compression = 4;
+  uint32 version = 5;
+  map<string,string> params = 6;
 }
 
 // ---------- Table-level stats ----------

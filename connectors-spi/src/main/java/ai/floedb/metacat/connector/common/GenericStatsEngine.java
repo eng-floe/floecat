@@ -1,7 +1,6 @@
 package ai.floedb.metacat.connector.common;
 
-import ai.floedb.metacat.connector.common.ndv.DataSketchesHll;
-import ai.floedb.metacat.connector.common.ndv.Hll;
+import ai.floedb.metacat.connector.common.ndv.ColumnNdv;
 import ai.floedb.metacat.connector.common.ndv.NdvProvider;
 import ai.floedb.metacat.types.LogicalComparators;
 import ai.floedb.metacat.types.LogicalType;
@@ -16,22 +15,21 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
 
   private final Planner<K> planner;
   private final NdvProvider ndvProvider;
+  private final NdvProvider bootstrapNdv;
   private final Map<K, String> columnNames;
   private final Map<K, LogicalType> logicalTypes;
 
   public GenericStatsEngine(
       Planner<K> planner,
       NdvProvider ndvProvider,
+      NdvProvider bootstrapNdv,
       Map<K, String> columnNames,
       Map<K, LogicalType> logicalTypes) {
-    this.planner = Objects.requireNonNull(planner, "planner");
+    this.planner = Objects.requireNonNull(planner);
     this.ndvProvider = ndvProvider;
+    this.bootstrapNdv = bootstrapNdv;
     this.columnNames = columnNames == null ? Map.of() : Map.copyOf(columnNames);
     this.logicalTypes = logicalTypes == null ? Map.of() : Map.copyOf(logicalTypes);
-  }
-
-  public GenericStatsEngine(Planner<K> planner) {
-    this(planner, null, Map.of(), Map.of());
   }
 
   @Override
@@ -46,71 +44,71 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
 
   @Override
   public Result<K> compute() {
-    final Acc<K> accumulator = new Acc<>();
-
+    final Acc<K> acc = new Acc<>();
     for (K column : planner.columns()) {
-      final var logicalType = logicalTypeFor(column).orElse(null);
-      final var name = columnNameFor(column).orElse(null);
-      accumulator.columns.put(column, new ColAcc(logicalType, name));
+      acc.columns.put(
+          column,
+          new ColAcc(logicalTypeFor(column).orElse(null), columnNameFor(column).orElse(null)));
     }
 
-    long fileCount = 0;
-    long totalRows = 0;
-    long totalBytes = 0;
+    long files = 0, rows = 0, bytes = 0;
 
-    final Map<K, Hll> ndvByKey = new LinkedHashMap<>();
-    final Map<String, Hll> ndvByName = new LinkedHashMap<>();
-    if (ndvProvider != null) {
-      for (var column : accumulator.columns.entrySet()) {
-        final K key = column.getKey();
-        final ColAcc columnAgg = column.getValue();
-        if (columnAgg.name == null || columnAgg.name.isBlank()) {
+    final Map<K, ColumnNdv> ndvByKey = new LinkedHashMap<>();
+    final Map<String, ColumnNdv> ndvByName = new LinkedHashMap<>();
+    if (ndvProvider != null || bootstrapNdv != null) {
+      for (var columnAggMap : acc.columns.entrySet()) {
+        var columnAgg = columnAggMap.getValue();
+        var name = columnAgg.name;
+        if (name == null || name.isBlank()) {
           continue;
         }
 
-        final Hll sink = hllFactoryCreate();
-        ndvByKey.put(key, sink);
-        ndvByName.put(columnAgg.name, sink);
+        ColumnNdv shared = new ColumnNdv();
+        columnAgg.ndv = shared;
+        ndvByKey.put(columnAggMap.getKey(), shared);
+        ndvByName.put(name, shared);
+      }
+    }
+
+    if (bootstrapNdv != null && !ndvByName.isEmpty()) {
+      try {
+        bootstrapNdv.contributeNdv("<bootstrap>", ndvByName);
+      } catch (Exception ignore) {
+        // ignore
       }
     }
 
     for (PlannedFile<K> file : planner) {
-      fileCount++;
-      totalRows += file.rowCount();
-      totalBytes += file.sizeBytes();
+      files++;
+      rows += file.rowCount();
+      bytes += file.sizeBytes();
 
-      mergeCounts(accumulator.columns, file.valueCounts(), ColAcc::addValueCount);
-      mergeCounts(accumulator.columns, file.nullCounts(), ColAcc::addNullCount);
-      mergeCounts(accumulator.columns, file.nanCounts(), ColAcc::addNanCount);
-
-      mergeBounds(accumulator.columns, file.lowerBounds(), true);
-      mergeBounds(accumulator.columns, file.upperBounds(), false);
+      mergeCounts(acc.columns, file.valueCounts(), ColAcc::addValueCount);
+      mergeCounts(acc.columns, file.nullCounts(), ColAcc::addNullCount);
+      mergeCounts(acc.columns, file.nanCounts(), ColAcc::addNanCount);
+      mergeBounds(acc.columns, file.lowerBounds(), true);
+      mergeBounds(acc.columns, file.upperBounds(), false);
 
       if (ndvProvider != null && !ndvByName.isEmpty()) {
+        Map<String, ColumnNdv> sinksNeedingNdv = ndvByName;
         try {
-          ndvProvider.contributeNdv(file.path(), ndvByName);
-        } catch (Exception ndve) {
-          // ignore
+          ndvProvider.contributeNdv(file.path(), sinksNeedingNdv);
+        } catch (Exception ignore) {
+          // ignore and continue
         }
       }
     }
 
-    if (ndvProvider != null) {
-      for (var e : accumulator.columns.entrySet()) {
-        final K key = e.getKey();
-        final ColAcc ca = e.getValue();
-        final Hll sink = ndvByKey.get(key);
-        if (sink != null) {
-          ca.ndvHll = toBytesSafe(sink);
-        }
+    final Map<K, ColumnAgg> out = new LinkedHashMap<>(acc.columns.size());
+    for (var columnNameNdv : acc.columns.entrySet()) {
+      var columnAcc = columnNameNdv.getValue();
+      if (columnAcc.ndv != null) {
+        columnAcc.ndv.finalizeTheta();
       }
+      out.put(columnNameNdv.getKey(), columnAcc.freeze());
     }
 
-    final Map<K, ColumnAgg> outCols = new LinkedHashMap<>(accumulator.columns.size());
-    for (var column : accumulator.columns.entrySet())
-      outCols.put(column.getKey(), column.getValue().freeze());
-
-    return new ResultImpl<>(totalRows, totalBytes, fileCount, Collections.unmodifiableMap(outCols));
+    return new ResultImpl<>(rows, bytes, files, Collections.unmodifiableMap(out));
   }
 
   private static final class Acc<K> {
@@ -121,73 +119,70 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     final LogicalType type;
     final String name;
 
-    Long ndvExact;
-    byte[] ndvHll;
-    Map<String, String> ndvParams;
-
     Long valueCount;
     Long nullCount;
     Long nanCount;
-
     Object min;
     Object max;
+    Long ndvExact;
+    ColumnNdv ndv;
 
     ColAcc(LogicalType type, String name) {
       this.type = type;
       this.name = name;
     }
 
-    void addValueCount(long v) {
-      valueCount = sum(valueCount, v);
+    void addValueCount(long value) {
+      valueCount = sum(valueCount, value);
     }
 
-    void addNullCount(long v) {
-      nullCount = sum(nullCount, v);
+    void addNullCount(long value) {
+      nullCount = sum(nullCount, value);
     }
 
-    void addNanCount(long v) {
-      nanCount = sum(nanCount, v);
+    void addNanCount(long value) {
+      nanCount = sum(nanCount, value);
     }
 
-    void minWith(Object v) {
-      if (v == null) {
+    void minWith(Object value) {
+      if (value == null) {
         return;
       }
 
       if (min == null) {
-        min = v;
+        min = value;
         return;
       }
 
       if (type == null) {
-        if (v instanceof Comparable<?> c && min.getClass().isInstance(v)) {
+        if (value instanceof Comparable<?> c && min.getClass().isInstance(value)) {
           @SuppressWarnings("unchecked")
           int cmp = ((Comparable<Object>) c).compareTo(min);
-          if (cmp < 0) min = v;
+          if (cmp < 0) min = value;
         }
-      } else if (LogicalComparators.compare(type, v, min) < 0) {
-        min = v;
+      } else if (LogicalComparators.compare(type, value, min) < 0) {
+        min = value;
       }
     }
 
-    void maxWith(Object v) {
-      if (v == null) {
+    void maxWith(Object value) {
+      if (value == null) {
         return;
       }
 
       if (max == null) {
-        max = v;
+        max = value;
         return;
       }
 
       if (type == null) {
-        if (v instanceof Comparable<?> c && max.getClass().isInstance(v)) {
+        if (value instanceof Comparable<?> c && max.getClass().isInstance(value)) {
           @SuppressWarnings("unchecked")
           int cmp = ((Comparable<Object>) c).compareTo(max);
-          if (cmp > 0) max = v;
+          if (cmp > 0) max = value;
         }
-      } else if (LogicalComparators.compare(type, v, max) > 0) {
-        max = v;
+      } else if (LogicalComparators.compare(type, value, max) > 0) {
+        max = value;
       }
     }
 
@@ -197,8 +192,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
 
     ColumnAgg freeze() {
       final Long fExact = ndvExact;
-      final byte[] fHll = ndvHll;
-      final Map<String, String> fParams = ndvParams == null ? null : Map.copyOf(ndvParams);
+      final ColumnNdv fNdv = ndv;
       final Long fVal = valueCount;
       final Long fNull = nullCount;
       final Long fNan = nanCount;
@@ -212,8 +206,8 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
         }
 
         @Override
-        public byte[] ndvHll() {
-          return fHll;
+        public ColumnNdv ndv() {
+          return fNdv;
         }
 
         @Override
@@ -286,9 +280,9 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
 
     for (var file : files.entrySet()) {
       final ColAcc columnAgg = columnAggs.get(file.getKey());
-      final Long v = file.getValue();
-      if (columnAgg != null && v != null) {
-        apply.accept(columnAgg, v);
+      final Long value = file.getValue();
+      if (columnAgg != null && value != null) {
+        apply.accept(columnAgg, value);
       }
     }
   }
@@ -301,25 +295,15 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
 
     for (var file : files.entrySet()) {
       final ColAcc columnAgg = columnAggs.get(file.getKey());
-      if (columnAgg == null) continue;
+      if (columnAgg == null) {
+        continue;
+      }
+
       if (isLower) {
         columnAgg.minWith(file.getValue());
       } else {
         columnAgg.maxWith(file.getValue());
       }
-    }
-  }
-
-  private static Hll hllFactoryCreate() {
-    // return new HllImpl(14);
-    return new DataSketchesHll();
-  }
-
-  private static byte[] toBytesSafe(Hll h) {
-    try {
-      return h == null ? null : h.toBytes();
-    } catch (Throwable ignore) {
-      return null;
     }
   }
 }

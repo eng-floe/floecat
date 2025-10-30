@@ -16,5 +16,7 @@ public interface PointerStore {
   List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
 
+  public int deleteByPrefix(String prefix);
+
   int countByPrefix(String prefix);
 }

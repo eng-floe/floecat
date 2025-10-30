@@ -148,6 +148,76 @@ public final class DynamoPointerStore implements PointerStore {
   }
 
   @Override
+  public int deleteByPrefix(String prefix) {
+    var mapped = mapPrefix(prefix);
+    int deleted = 0;
+    Map<String, AttributeValue> lek = null;
+
+    do {
+      QueryRequest.Builder qb =
+          QueryRequest.builder()
+              .tableName(table)
+              .projectionExpression("#pk,#sk")
+              .expressionAttributeNames(Map.of("#pk", ATTR_PK, "#sk", ATTR_SK))
+              .consistentRead(true)
+              .limit(1000)
+              .exclusiveStartKey(lek);
+
+      if (mapped.skPrefix().isEmpty()) {
+        qb.keyConditionExpression("#pk = :pk")
+            .expressionAttributeValues(Map.of(":pk", AttributeValue.fromS(mapped.pk())));
+      } else {
+        qb.keyConditionExpression("#pk = :pk AND begins_with(#sk, :skp)")
+            .expressionAttributeValues(
+                Map.of(
+                    ":pk", AttributeValue.fromS(mapped.pk()),
+                    ":skp", AttributeValue.fromS(mapped.skPrefix())));
+      }
+
+      var page = dynamoDb.query(qb.build());
+
+      List<WriteRequest> batch = new ArrayList<>(25);
+      for (var item : page.items()) {
+        var del =
+            DeleteRequest.builder().key(kv(attrS(item, ATTR_PK), attrS(item, ATTR_SK))).build();
+        batch.add(WriteRequest.builder().deleteRequest(del).build());
+
+        if (batch.size() == 25) {
+          deleted += execBatch(batch);
+          batch.clear();
+        }
+      }
+      if (!batch.isEmpty()) {
+        deleted += execBatch(batch);
+      }
+
+      lek = page.lastEvaluatedKey();
+    } while (lek != null && !lek.isEmpty());
+
+    return deleted;
+  }
+
+  private int execBatch(List<WriteRequest> batch) {
+    int total = 0;
+    Map<String, List<WriteRequest>> req = Map.of(table, List.copyOf(batch));
+    BatchWriteItemResponse resp = dynamoDb.batchWriteItem(b -> b.requestItems(req));
+
+    int processed = batch.size();
+    while (resp.hasUnprocessedItems() && !resp.unprocessedItems().isEmpty()) {
+      var unp = resp.unprocessedItems().getOrDefault(table, List.of());
+      processed -= unp.size();
+      if (unp.isEmpty()) {
+        break;
+      }
+
+      resp = dynamoDb.batchWriteItem(b -> b.requestItems(Map.of(table, unp)));
+      processed += (unp.size() - resp.unprocessedItems().getOrDefault(table, List.of()).size());
+    }
+    total += processed;
+    return total;
+  }
+
+  @Override
   public boolean compareAndDelete(String key, long expectedVersion) {
     var mappedKey = mapKey(key);
     try {
@@ -208,7 +278,12 @@ public final class DynamoPointerStore implements PointerStore {
         String pointerKey = fullKey(pk, sk);
         String blobUri = attrS(item, ATTR_BLOB_URI);
         long version = Long.parseLong(attrN(item, ATTR_VERSION));
-        rows.add(Pointer.newBuilder().setKey(pointerKey).setBlobUri(blobUri).setVersion(version).build());
+        rows.add(
+            Pointer.newBuilder()
+                .setKey(pointerKey)
+                .setBlobUri(blobUri)
+                .setVersion(version)
+                .build());
       }
       return rows;
     } catch (DynamoDbException e) {

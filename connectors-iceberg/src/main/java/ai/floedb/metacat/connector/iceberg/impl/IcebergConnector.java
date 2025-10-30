@@ -4,11 +4,15 @@ import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.common.GenericStatsEngine;
 import ai.floedb.metacat.connector.common.StatsEngine;
-import ai.floedb.metacat.connector.common.ndv.NdvProviders;
+import ai.floedb.metacat.connector.common.ndv.ColumnNdv;
+import ai.floedb.metacat.connector.common.ndv.FilteringNdvProvider;
+import ai.floedb.metacat.connector.common.ndv.NdvProvider;
 import ai.floedb.metacat.connector.common.ndv.ParquetNdvProvider;
+import ai.floedb.metacat.connector.common.ndv.StaticOnceNdvProvider;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
 import ai.floedb.metacat.types.LogicalType;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -135,7 +139,6 @@ public final class IcebergConnector implements MetacatConnector {
   public TableDescriptor describe(String namespaceFq, String tableName) {
     Namespace namespace = Namespace.of(namespaceFq.split("\\."));
     TableIdentifier tableId = TableIdentifier.of(namespace, tableName);
-    System.out.println("Loading table " + namespaceFq + "." + tableName);
     Table table = catalog.loadTable(tableId);
     Schema schema = table.schema();
     String schemaJson = SchemaParser.toJson(schema);
@@ -146,7 +149,8 @@ public final class IcebergConnector implements MetacatConnector {
   }
 
   @Override
-  public List<SnapshotBundle> enumerateSnapshotsWithStats(String namespaceFq, String tableName) {
+  public List<SnapshotBundle> enumerateSnapshotsWithStats(
+      String namespaceFq, String tableName, ResourceId destinationTableId) {
     Namespace ns = Namespace.of(namespaceFq.split("\\."));
     TableIdentifier tid = TableIdentifier.of(ns, tableName);
     Table table = catalog.loadTable(tid);
@@ -157,24 +161,26 @@ public final class IcebergConnector implements MetacatConnector {
             .collect(Collectors.toCollection(LinkedHashSet::new));
 
     List<SnapshotBundle> out = new ArrayList<>();
-    for (Snapshot s : table.snapshots()) {
-      long sid = s.snapshotId();
-      long createdMs = s.timestampMillis();
+    for (Snapshot snapshot : table.snapshots()) {
+      long snapshotId = snapshot.snapshotId();
+      long parentId = snapshot.parentId() != null ? snapshot.parentId().longValue() : 0;
+      long createdMs = snapshot.timestampMillis();
 
-      EngineOut e = runEngine(table, sid, allIds);
-
-      var tableId = ResourceId.getDefaultInstance();
+      EngineOut engineOutput = runEngine(table, snapshotId, allIds);
 
       var tStats =
           ProtoStatsBuilder.toTableStats(
-              tableId, sid, createdMs, TableFormat.TF_ICEBERG, e.result());
-
+              destinationTableId,
+              snapshotId,
+              createdMs,
+              TableFormat.TF_ICEBERG,
+              engineOutput.result());
       var cStats =
           ProtoStatsBuilder.toColumnStats(
-              tableId,
-              sid,
+              destinationTableId,
+              snapshotId,
               TableFormat.TF_ICEBERG,
-              e.result().columns(),
+              engineOutput.result().columns(),
               id -> {
                 var f = table.schema().findField((Integer) id);
                 return f == null ? "" : f.name();
@@ -182,9 +188,11 @@ public final class IcebergConnector implements MetacatConnector {
               id -> {
                 var f = table.schema().findField((Integer) id);
                 return f == null ? null : IcebergTypeMapper.toLogical(f.type());
-              });
+              },
+              createdMs,
+              engineOutput.result().totalRowCount());
 
-      out.add(new SnapshotBundle(sid, createdMs, tStats, cStats));
+      out.add(new SnapshotBundle(snapshotId, parentId, createdMs, tStats, cStats));
     }
     return out;
   }
@@ -203,16 +211,45 @@ public final class IcebergConnector implements MetacatConnector {
     var colNames = buildColumnNameMap(table.schema(), colIds);
     var logicalTypes = buildLogicalTypeMap(table.schema(), colIds);
 
-    var ndvProvider = PuffinNdvProvider.maybeCreate(table, snapshotId, colNames::get);
-    if (ndvProvider == null) {
-      var parquetNdv = new ParquetNdvProvider(path -> table.io().newInputFile(path));
-      ndvProvider = NdvProviders.filterBySuffix(Set.of(".parquet", ".parq"), parquetNdv);
+    Map<String, ColumnNdv> puffinMap = null;
+    try {
+      puffinMap = PuffinNdvProvider.readPuffinNdvWithSketches(table, snapshotId, colNames::get);
+    } catch (IOException ioe) {
+      // ignore
     }
 
-    try (var planner = new IcebergPlanner(table, snapshotId, colIds, ndvProvider)) {
-      var engine = new GenericStatsEngine<>(planner, ndvProvider, colNames, logicalTypes);
-      var r = engine.compute();
-      return new EngineOut(r);
+    NdvProvider bootstrap =
+        (puffinMap == null || puffinMap.isEmpty()) ? null : new StaticOnceNdvProvider(puffinMap);
+
+    int missing = 0;
+    final int totalCols = colNames.size();
+
+    if (bootstrap != null) {
+      final Map<String, ColumnNdv> puffinMapFinal = puffinMap;
+      for (String columnName : colNames.values()) {
+        ColumnNdv columnNdv = puffinMapFinal.get(columnName);
+        boolean hasData =
+            columnNdv != null
+                && (columnNdv.approx != null
+                    || (columnNdv.sketches != null && !columnNdv.sketches.isEmpty()));
+        if (!hasData) {
+          missing++;
+        }
+      }
+    } else {
+      missing = totalCols;
+    }
+
+    NdvProvider perFileNdv = null;
+    if (missing > 0) {
+      var parquetNdv = new ParquetNdvProvider(path -> table.io().newInputFile(path));
+      perFileNdv = FilteringNdvProvider.bySuffix(Set.of(".parquet", ".parq"), parquetNdv);
+    }
+
+    try (var planner = new IcebergPlanner(table, snapshotId, colIds, perFileNdv)) {
+      var engine = new GenericStatsEngine<>(planner, perFileNdv, bootstrap, colNames, logicalTypes);
+      var result = engine.compute();
+      return new EngineOut(result);
     } catch (Exception e) {
       throw new RuntimeException("Stats compute failed for snapshot " + snapshotId, e);
     }
@@ -231,5 +268,78 @@ public final class IcebergConnector implements MetacatConnector {
         .map(f -> Map.entry(f.fieldId(), IcebergTypeMapper.toLogical(f.type())))
         .filter(e -> e.getValue() != null)
         .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
+  }
+
+  final class NdvOnlyResult<K> implements StatsEngine.Result<K> {
+    private final long rows;
+    private final long bytes;
+    private final long files;
+    private final Map<K, StatsEngine.ColumnAgg> cols;
+
+    NdvOnlyResult(long rows, long bytes, long files, Map<K, StatsEngine.ColumnAgg> cols) {
+      this.rows = rows;
+      this.bytes = bytes;
+      this.files = files;
+      this.cols = cols;
+    }
+
+    @Override
+    public long totalRowCount() {
+      return rows;
+    }
+
+    @Override
+    public long totalSizeBytes() {
+      return bytes;
+    }
+
+    @Override
+    public long fileCount() {
+      return files;
+    }
+
+    @Override
+    public Map<K, StatsEngine.ColumnAgg> columns() {
+      return cols;
+    }
+
+    static <K> StatsEngine.ColumnAgg ndvOnly(ColumnNdv ndv) {
+      return new StatsEngine.ColumnAgg() {
+        @Override
+        public Long ndvExact() {
+          return null;
+        }
+
+        @Override
+        public ColumnNdv ndv() {
+          return ndv;
+        }
+
+        @Override
+        public Long valueCount() {
+          return null;
+        }
+
+        @Override
+        public Long nullCount() {
+          return null;
+        }
+
+        @Override
+        public Long nanCount() {
+          return null;
+        }
+
+        @Override
+        public Object min() {
+          return null;
+        }
+
+        @Override
+        public Object max() {
+          return null;
+        }
+      };
+    }
   }
 }

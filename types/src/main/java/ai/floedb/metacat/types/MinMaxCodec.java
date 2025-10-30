@@ -1,6 +1,5 @@
 package ai.floedb.metacat.types;
 
-/** Encode/decode min/max values to the proto string fields using ValueEncoders. */
 public final class MinMaxCodec {
   private MinMaxCodec() {}
 

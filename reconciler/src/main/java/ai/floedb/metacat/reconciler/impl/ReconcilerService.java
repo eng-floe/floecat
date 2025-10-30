@@ -3,6 +3,7 @@ package ai.floedb.metacat.reconciler.impl;
 import static ai.floedb.metacat.reconciler.util.NameParts.split;
 
 import ai.floedb.metacat.catalog.rpc.CatalogSpec;
+import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.CreateCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.CreateSnapshotRequest;
@@ -51,7 +52,7 @@ public class ReconcilerService {
             var upstreamTable = connector.describe(namespace, tbl);
             var tableId = ensureTable(catalogId, namespaceId, upstreamTable, connector.format());
             ingestAllSnapshotsAndStats(
-                tableId, connector.enumerateSnapshotsWithStats(namespace, tbl));
+                tableId, connector.enumerateSnapshotsWithStats(namespace, tbl, tableId));
             changed++;
           } catch (Exception te) {
             te.printStackTrace();
@@ -203,11 +204,13 @@ public class ReconcilerService {
     }
   }
 
-  private void ensureSnapshot(ResourceId tableId, long snapshotId, long upstreamTsMs) {
+  private void ensureSnapshot(
+      ResourceId tableId, long snapshotId, long parentId, long upstreamTsMs) {
     var spec =
         SnapshotSpec.newBuilder()
             .setTableId(tableId)
             .setSnapshotId(snapshotId)
+            .setParentSnapshotId(parentId)
             .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamTsMs))
             .setIngestedAt(Timestamps.fromMillis(System.currentTimeMillis()))
             .build();
@@ -264,19 +267,19 @@ public class ReconcilerService {
         continue;
       }
 
+      long parentId = snapshotBundle.parentId();
+
       long createdAtMs =
           (snapshotBundle.upstreamCreatedAtMs() > 0)
               ? snapshotBundle.upstreamCreatedAtMs()
               : System.currentTimeMillis();
 
-      ensureSnapshot(tableId, snapshotId, createdAtMs);
+      ensureSnapshot(tableId, snapshotId, parentId, createdAtMs);
 
       var tsIn = snapshotBundle.tableStats();
       if (tsIn != null) {
 
         var tStats = tsIn.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
-
-        System.out.println("TABLE STATS=" + tStats);
 
         clients
             .statistics()
@@ -287,6 +290,7 @@ public class ReconcilerService {
                     .setStats(tStats)
                     .build());
       }
+
       var cols = snapshotBundle.columnStats();
       if (cols != null && !cols.isEmpty()) {
         var cStats =
@@ -294,18 +298,19 @@ public class ReconcilerService {
                 .map(c -> c.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
                 .toList();
 
-        for (var col : cStats) {
-          System.out.println(col);
-        }
+        int batchSize = 5;
+        for (int i = 0; i < cStats.size(); i += batchSize) {
+          List<ColumnStats> chunk = cStats.subList(i, Math.min(i + batchSize, cStats.size()));
 
-        clients
-            .statistics()
-            .putColumnStatsBatch(
-                PutColumnStatsBatchRequest.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(snapshotId)
-                    .addAllColumns(cStats)
-                    .build());
+          PutColumnStatsBatchRequest req =
+              PutColumnStatsBatchRequest.newBuilder()
+                  .setTableId(tableId)
+                  .setSnapshotId(snapshotId)
+                  .addAllColumns(chunk)
+                  .build();
+
+          clients.statistics().putColumnStatsBatch(req);
+        }
       }
     }
   }

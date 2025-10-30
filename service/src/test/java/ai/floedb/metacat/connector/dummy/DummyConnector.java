@@ -1,5 +1,6 @@
 package ai.floedb.metacat.connector.dummy;
 
+import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
 import java.util.List;
@@ -61,7 +62,8 @@ public final class DummyConnector implements MetacatConnector {
   }
 
   @Override
-  public List<SnapshotBundle> enumerateSnapshotsWithStats(String namespace, String table) {
+  public List<SnapshotBundle> enumerateSnapshotsWithStats(
+      String namespace, String table, ResourceId destinationTableId) {
     long snapshotId = 42L;
     long createdAt = 1_700_000_000_000L;
 
@@ -82,7 +84,7 @@ public final class DummyConnector implements MetacatConnector {
             .setNullCount(0)
             .build();
 
-    return List.of(new SnapshotBundle(snapshotId, createdAt, tStats, java.util.List.of(cStat)));
+    return List.of(new SnapshotBundle(snapshotId, 0L, createdAt, tStats, java.util.List.of(cStat)));
   }
 
   @Override

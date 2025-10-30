@@ -21,12 +21,12 @@ MAKEFLAGS  += --no-builtin-rules
 MVN ?= mvn
 
 # ---------- Modules ----------
-JAVA_MODULES   := proto service reconciler connectors-spi connectors-iceberg
+JAVA_MODULES   := proto service reconciler connectors-spi connectors-iceberg storage-spi storage-aws client-cli storage-memory
 JAVA_SERVICES  := service               # runnable module(s)
 
 # ---------- Quarkus dev settings ----------
 QUARKUS_PROFILE  ?= dev
-QUARKUS_DEV_ARGS ?=
+QUARKUS_DEV_ARGS ?= -Djava.base/java.lang=ALL-UNNAMED
 
 # ---------- Dev dirs ----------
 PID_DIR := .devpids
@@ -38,17 +38,18 @@ $(shell mkdir -p $(PID_DIR) $(LOG_DIR) $(BIN_DIR) >/dev/null)
 # ---------- Aggregates ----------
 .PHONY: all build
 all: build
-build: proto build-service
+
+build: proto build-all
 
 .PHONY: proto
 proto:
 	@echo "==> [PROTO] package generated stubs"
 	$(MVN) -q -f proto/pom.xml -DskipTests package
 
-.PHONY: build-service
-build-service:
-	@echo "==> [SERVICE] package"
-	$(MVN) -q -DskipTests -pl service -am package
+.PHONY: build-all
+build-all:
+	@echo "==> [BUILD] all modules"
+	$(MVN) -q -DskipTests package
 
 # ---------- Tests ----------
 .PHONY: test unit-test integration-test verify
