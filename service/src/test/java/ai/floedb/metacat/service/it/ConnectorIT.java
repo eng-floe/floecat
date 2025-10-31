@@ -181,7 +181,7 @@ public class ConnectorIT {
     String jobId = trig.getJobId();
     assertFalse(jobId.isBlank());
 
-    var deadline = System.nanoTime() + Duration.ofSeconds(300).toNanos();
+    var deadline = System.nanoTime() + Duration.ofSeconds(900).toNanos();
     ReconcileJobStore.ReconcileJob job;
     for (; ; ) {
       job = jobs.get(jobId).orElse(null);

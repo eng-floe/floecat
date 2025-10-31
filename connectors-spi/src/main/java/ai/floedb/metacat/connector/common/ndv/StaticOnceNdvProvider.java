@@ -1,6 +1,7 @@
 package ai.floedb.metacat.connector.common.ndv;
 
 import java.util.ArrayList;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -39,7 +40,7 @@ public final class StaticOnceNdvProvider implements NdvProvider {
             continue;
           }
 
-          String t = sk.type == null ? "" : sk.type.toLowerCase();
+          String t = sk.type == null ? "" : sk.type.toLowerCase(Locale.ROOT);
 
           if (t.contains("datasketches") && t.contains("theta")) {
             sink.mergeTheta(sk.data);

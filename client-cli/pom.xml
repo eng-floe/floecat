@@ -8,6 +8,7 @@
   </parent>
 
   <artifactId>metacat-client-cli</artifactId>
+  <packaging>jar</packaging>
 
   <dependencyManagement>
     <dependencies>

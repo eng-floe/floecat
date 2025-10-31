@@ -77,7 +77,9 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
               var page =
                   MutationOps.pageOut(
-                      next.toString(), catalogRepo.count(principalContext.getTenantId()));
+                      next.toString(),
+                      tableRepo.count(
+                          principalContext.getTenantId(), catalogId.getId(), namespaceId.getId()));
 
               return ListTablesResponse.newBuilder().addAllTables(tables).setPage(page).build();
             }),

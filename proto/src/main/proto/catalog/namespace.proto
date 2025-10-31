@@ -23,7 +23,11 @@ message ListNamespacesRequest {
     ai.floedb.metacat.common.ResourceId catalog_id = 1;
     ai.floedb.metacat.common.ResourceId namespace_id = 2;
   }
-  ai.floedb.metacat.common.PageRequest page = 3;
+  repeated string path = 4;
+  bool children_only = 5;
+  bool recursive = 6;
+  string name_prefix = 7; 
+  ai.floedb.metacat.common.PageRequest page = 8;
 }
 message ListNamespacesResponse {
   repeated Namespace namespaces = 1;

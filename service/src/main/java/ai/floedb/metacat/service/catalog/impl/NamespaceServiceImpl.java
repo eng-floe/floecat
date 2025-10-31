@@ -31,8 +31,12 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @GrpcService
 public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceService {
@@ -44,36 +48,244 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
 
+  private enum Mode {
+    CHILDREN_ONLY,
+    RECURSIVE
+  }
+
   @Override
   public Uni<ListNamespacesResponse> listNamespaces(ListNamespacesRequest request) {
     return mapFailures(
         run(
             () -> {
-              var principalContext = principal.get();
-              authz.require(principalContext, "namespace.read");
+              var princ = principal.get();
+              authz.require(princ, "namespace.read");
+              final String tenantId = princ.getTenantId();
+
+              final ResourceId catalogId;
+              final List<String> parentPath;
+              if (request.hasNamespaceId()) {
+                var parent =
+                    namespaceRepo
+                        .getById(request.getNamespaceId())
+                        .orElseThrow(
+                            () ->
+                                GrpcErrors.notFound(
+                                    correlationId(),
+                                    "namespace",
+                                    Map.of("id", request.getNamespaceId().getId())));
+                catalogId = parent.getCatalogId();
+                parentPath = append(parent.getParentsList(), parent.getDisplayName());
+              } else if (request.hasCatalogId()) {
+                catalogRepo
+                    .getById(request.getCatalogId())
+                    .orElseThrow(
+                        () ->
+                            GrpcErrors.notFound(
+                                correlationId(),
+                                "catalog",
+                                Map.of("id", request.getCatalogId().getId())));
+                catalogId = request.getCatalogId();
+                parentPath = new ArrayList<>(request.getPathList());
+              } else {
+                throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", "parent"));
+              }
+
+              boolean childrenOnly = request.getChildrenOnly();
+              boolean recursive = request.getRecursive();
+              if (childrenOnly && recursive) {
+                throw GrpcErrors.invalidArgument(
+                    correlationId(), null, Map.of("children_only", "true", "recursive", "true"));
+              }
+              final Mode mode = (childrenOnly || !recursive) ? Mode.CHILDREN_ONLY : Mode.RECURSIVE;
+              final String namePrefix = request.getNamePrefix().trim();
 
               var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
-              var next = new StringBuilder();
+              final int want = pageIn.limit;
+              final int batch = Math.max(1, want * 4);
+              String cursor = pageIn.token;
 
-              var namespaces =
-                  namespaceRepo.list(
-                      principalContext.getTenantId(),
-                      request.getCatalogId().getId(),
-                      List.of(),
-                      Math.max(1, pageIn.limit),
-                      pageIn.token,
-                      next);
+              final ArrayList<Namespace> out = new ArrayList<>(want);
+              final HashSet<String> seenVirtual = new HashSet<>();
+              final HashSet<String> realImmediateNames = new HashSet<>();
 
-              var page =
-                  MutationOps.pageOut(
-                      next.toString(), catalogRepo.count(principalContext.getTenantId()));
+              while (out.size() < want) {
+                var next = new StringBuilder();
+                var scanned =
+                    namespaceRepo.list(
+                        tenantId, catalogId.getId(), parentPath, batch, cursor, next);
 
+                if (mode == Mode.RECURSIVE) {
+                  collectRecursive(scanned, parentPath, namePrefix, out, want);
+                } else {
+                  collectImmediateAndRecord(
+                      scanned, parentPath, namePrefix, out, want, realImmediateNames);
+                  if (out.size() < want) {
+                    collectVirtualSegmentsSkippingReal(
+                        scanned,
+                        catalogId,
+                        parentPath,
+                        namePrefix,
+                        realImmediateNames,
+                        seenVirtual,
+                        out,
+                        want);
+                  }
+                }
+
+                cursor = next.toString();
+                if (cursor.isBlank()) {
+                  break;
+                }
+              }
+
+              final int total =
+                  countNamespaces(tenantId, catalogId.getId(), parentPath, namePrefix, mode);
+
+              var page = MutationOps.pageOut(cursor, total);
               return ListNamespacesResponse.newBuilder()
-                  .addAllNamespaces(namespaces)
+                  .addAllNamespaces(out)
                   .setPage(page)
                   .build();
             }),
         correlationId());
+  }
+
+  private static void collectImmediateAndRecord(
+      List<Namespace> batch,
+      List<String> parentPath,
+      String namePrefix,
+      List<Namespace> out,
+      int cap,
+      Set<String> realImmediateNames) {
+
+    for (var ns : batch) {
+      if (!isImmediateChildOf(ns, parentPath)) {
+        continue;
+      }
+      var name = ns.getDisplayName();
+      if (!namePrefix.isBlank() && !name.startsWith(namePrefix)) {
+        continue;
+      }
+      realImmediateNames.add(name);
+      out.add(ns);
+
+      if (out.size() >= cap) {
+        break;
+      }
+    }
+  }
+
+  private void collectVirtualSegmentsSkippingReal(
+      List<Namespace> batch,
+      ResourceId catalogId,
+      List<String> parentPath,
+      String namePrefix,
+      Set<String> realImmediateNames,
+      Set<String> seenVirtual,
+      List<Namespace> out,
+      int cap) {
+
+    for (var ns : batch) {
+      var seg = nextSegmentAfterParent(ns, parentPath);
+      if (seg == null) {
+        continue;
+      }
+      if (realImmediateNames.contains(seg)) {
+        continue;
+      }
+      if (!namePrefix.isBlank() && !seg.startsWith(namePrefix)) {
+        continue;
+      }
+      if (seenVirtual.add(seg)) {
+        out.add(synthesizeVirtual(catalogId, parentPath, seg));
+
+        if (out.size() >= cap) {
+          break;
+        }
+      }
+    }
+  }
+
+  private static void collectRecursive(
+      List<Namespace> batch,
+      List<String> parentPath,
+      String namePrefix,
+      List<Namespace> out,
+      int cap) {
+    for (var ns : batch) {
+      if (!isDescendantOf(ns, parentPath)) {
+        continue;
+      }
+      if (!namePrefix.isBlank() && !ns.getDisplayName().startsWith(namePrefix)) {
+        continue;
+      }
+      out.add(ns);
+
+      if (out.size() >= cap) {
+        break;
+      }
+    }
+  }
+
+  private int countNamespaces(
+      String tenantId, String catalogId, List<String> parentPath, String namePrefix, Mode mode) {
+
+    String cursor = "";
+
+    if (mode == Mode.RECURSIVE) {
+      int count = 0;
+      while (true) {
+        var next = new StringBuilder();
+        var page = namespaceRepo.list(tenantId, catalogId, parentPath, 1000, cursor, next);
+        for (var ns : page) {
+          if (isDescendantOf(ns, parentPath)
+              && (namePrefix.isBlank() || ns.getDisplayName().startsWith(namePrefix))) {
+            count++;
+          }
+        }
+        cursor = next.toString();
+
+        if (cursor.isBlank()) {
+          break;
+        }
+      }
+      return count;
+    }
+
+    int countReal = 0;
+    final Set<String> realImmediateNames = new HashSet<>();
+    final Set<String> segsVirtual = new HashSet<>();
+
+    while (true) {
+      var next = new StringBuilder();
+      var page = namespaceRepo.list(tenantId, catalogId, parentPath, 1000, cursor, next);
+
+      for (var ns : page) {
+        if (isImmediateChildOf(ns, parentPath)) {
+          var name = ns.getDisplayName();
+          if (namePrefix.isBlank() || name.startsWith(namePrefix)) {
+            countReal++;
+            realImmediateNames.add(name);
+          }
+        } else {
+          var seg = nextSegmentAfterParent(ns, parentPath);
+          if (seg != null && (namePrefix.isBlank() || seg.startsWith(namePrefix))) {
+            if (!realImmediateNames.contains(seg)) {
+              segsVirtual.add(seg);
+            }
+          }
+        }
+      }
+
+      cursor = next.toString();
+
+      if (cursor.isBlank()) {
+        break;
+      }
+    }
+
+    return countReal + segsVirtual.size();
   }
 
   @Override
@@ -81,21 +293,17 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     return mapFailures(
         run(
             () -> {
-              var principalContext = principal.get();
-
-              authz.require(principalContext, "namespace.read");
-
-              var namespaceId = request.getNamespaceId();
-
-              var namespace =
+              var princ = principal.get();
+              authz.require(princ, "namespace.read");
+              var nsId = request.getNamespaceId();
+              var ns =
                   namespaceRepo
-                      .getById(namespaceId)
+                      .getById(nsId)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
-                                  correlationId(), "namespace", Map.of("id", namespaceId.getId())));
-
-              return GetNamespaceResponse.newBuilder().setNamespace(namespace).build();
+                                  correlationId(), "namespace", Map.of("id", nsId.getId())));
+              return GetNamespaceResponse.newBuilder().setNamespace(ns).build();
             }),
         correlationId());
   }
@@ -105,11 +313,10 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     return mapFailures(
         runWithRetry(
             () -> {
-              var principalContext = principal.get();
-              var tenantId = principalContext.getTenantId();
-              var correlationId = principalContext.getCorrelationId();
-
-              authz.require(principalContext, "namespace.write");
+              var princ = principal.get();
+              var tenantId = princ.getTenantId();
+              var correlationId = princ.getCorrelationId();
+              authz.require(princ, "namespace.write");
 
               catalogRepo
                   .getById(request.getSpec().getCatalogId())
@@ -137,7 +344,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       () -> {
                         String namespaceUuid =
                             deterministicUuid(tenantId, "namespace", idempotencyKey);
-
                         var namespaceId =
                             ResourceId.newBuilder()
                                 .setTenantId(tenantId)
@@ -145,15 +351,29 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                 .setKind(ResourceKind.RK_NAMESPACE)
                                 .build();
 
+                        String display =
+                            mustNonEmpty(
+                                request.getSpec().getDisplayName(), "display_name", correlationId);
+                        List<String> parents = new ArrayList<>(request.getSpec().getPathList());
+
+                        if (parents.isEmpty()) {
+                          var segs =
+                              Arrays.stream(display.split("[./]"))
+                                  .map(String::trim)
+                                  .filter(s -> !s.isEmpty())
+                                  .collect(Collectors.toList());
+                          if (segs.size() > 1) {
+                            parents = new ArrayList<>(segs.subList(0, segs.size() - 1));
+                            display = segs.get(segs.size() - 1);
+                          }
+                        }
+
                         var built =
                             Namespace.newBuilder()
                                 .setResourceId(namespaceId)
-                                .setDisplayName(
-                                    mustNonEmpty(
-                                        request.getSpec().getDisplayName(),
-                                        "display_name",
-                                        correlationId))
-                                .addAllParents(request.getSpec().getPathList())
+                                .setDisplayName(display)
+                                .clearParents()
+                                .addAllParents(parents)
                                 .setDescription(request.getSpec().getDescription())
                                 .setCatalogId(request.getSpec().getCatalogId())
                                 .setCreatedAt(tsNow)
@@ -181,7 +401,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                     "path",
                                     pretty));
                           }
-
                           throw new BaseResourceRepository.AbortRetryableException(
                               "name conflict visibility window");
                         }
@@ -208,9 +427,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     return mapFailures(
         runWithRetry(
             () -> {
-              var principalContext = principal.get();
-              var correlationId = principalContext.getCorrelationId();
-              authz.require(principalContext, "namespace.write");
+              var princ = principal.get();
+              var correlationId = princ.getCorrelationId();
+              authz.require(princ, "namespace.write");
 
               var namespaceId = request.getNamespaceId();
               ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId);
@@ -239,20 +458,22 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
               String desiredDisplay;
               List<String> desiredParents;
 
-              var reqDisplay = request.getDisplayName();
-              var reqPath = request.getPathList();
-
-              if (!reqDisplay.isBlank()) {
-                desiredDisplay = mustNonEmpty(reqDisplay, "display_name", correlationId);
-                desiredParents = !reqPath.isEmpty() ? reqPath : current.getParentsList();
-              } else if (!reqPath.isEmpty()) {
-                if (reqPath.size() == 1) {
-                  desiredDisplay = mustNonEmpty(reqPath.get(0), "path[0]", correlationId);
+              if (!request.getDisplayName().isBlank()) {
+                desiredDisplay =
+                    mustNonEmpty(request.getDisplayName(), "display_name", correlationId);
+                desiredParents =
+                    !request.getPathList().isEmpty()
+                        ? request.getPathList()
+                        : current.getParentsList();
+              } else if (!request.getPathList().isEmpty()) {
+                var path = request.getPathList();
+                if (path.size() == 1) {
+                  desiredDisplay = mustNonEmpty(path.get(0), "path[0]", correlationId);
                   desiredParents = List.of();
                 } else {
                   desiredDisplay =
-                      mustNonEmpty(reqPath.get(reqPath.size() - 1), "path[last]", correlationId);
-                  desiredParents = reqPath.subList(0, reqPath.size() - 1);
+                      mustNonEmpty(path.get(path.size() - 1), "path[last]", correlationId);
+                  desiredParents = path.subList(0, path.size() - 1);
                 }
               } else {
                 desiredDisplay = current.getDisplayName();
@@ -301,9 +522,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     return mapFailures(
         runWithRetry(
             () -> {
-              var principalContext = principal.get();
-              var correlationId = principalContext.getCorrelationId();
-              authz.require(principalContext, "namespace.write");
+              var princ = principal.get();
+              var correlationId = princ.getCorrelationId();
+              authz.require(princ, "namespace.write");
 
               var namespaceId = request.getNamespaceId();
               ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId);
@@ -311,6 +532,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
               var namespace = namespaceRepo.getById(namespaceId).orElse(null);
               var catalogId =
                   (namespace != null && namespace.hasCatalogId()) ? namespace.getCatalogId() : null;
+
               if (catalogId == null) {
                 var safe = namespaceRepo.metaForSafe(namespaceId);
                 namespaceRepo.delete(namespaceId);
@@ -319,6 +541,14 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
               if (tableRepo.count(catalogId.getTenantId(), catalogId.getId(), namespaceId.getId())
                   > 0) {
+                var pretty =
+                    prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
+                throw GrpcErrors.conflict(
+                    correlationId, "namespace.not_empty", Map.of("display_name", pretty));
+              }
+
+              var parentPath = append(namespace.getParentsList(), namespace.getDisplayName());
+              if (hasImmediateChildren(catalogId.getTenantId(), catalogId.getId(), parentPath)) {
                 var pretty =
                     prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
                 throw GrpcErrors.conflict(
@@ -340,12 +570,69 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         correlationId());
   }
 
+  private boolean hasImmediateChildren(String tenantId, String catalogId, List<String> parentPath) {
+    String cursor = "";
+    while (true) {
+      var next = new StringBuilder();
+      var page = namespaceRepo.list(tenantId, catalogId, parentPath, 200, cursor, next);
+      for (var ns : page) {
+        if (isImmediateChildOf(ns, parentPath)) return true;
+      }
+      cursor = next.toString();
+      if (cursor.isBlank()) break;
+    }
+    return false;
+  }
+
+  private static boolean isDescendantOf(Namespace ns, List<String> parentPath) {
+    var p = ns.getParentsList();
+    if (p.size() < parentPath.size()) return false;
+    for (int i = 0; i < parentPath.size(); i++) {
+      if (!p.get(i).equals(parentPath.get(i))) return false;
+    }
+    return true;
+  }
+
+  private static boolean isImmediateChildOf(Namespace ns, List<String> parentPath) {
+    var p = ns.getParentsList();
+    if (p.size() != parentPath.size()) return false;
+    for (int i = 0; i < parentPath.size(); i++) {
+      if (!p.get(i).equals(parentPath.get(i))) return false;
+    }
+    return true;
+  }
+
+  private static String nextSegmentAfterParent(Namespace ns, List<String> parentPath) {
+    var p = ns.getParentsList();
+    if (p.size() < parentPath.size()) return null;
+    for (int i = 0; i < parentPath.size(); i++) {
+      if (!p.get(i).equals(parentPath.get(i))) return null;
+    }
+    if (p.size() == parentPath.size()) return null;
+    return p.get(parentPath.size());
+  }
+
+  private Namespace synthesizeVirtual(ResourceId catalogId, List<String> parentPath, String child) {
+    return Namespace.newBuilder()
+        .setDisplayName(child)
+        .clearParents()
+        .addAllParents(parentPath)
+        .setCatalogId(catalogId)
+        .build();
+  }
+
+  private static ArrayList<String> append(List<String> parents, String last) {
+    var pp = new ArrayList<String>(parents.size() + 1);
+    pp.addAll(parents);
+    pp.add(last);
+    return pp;
+  }
+
   private static byte[] canonicalFingerprint(NamespaceSpec s) {
     return new Canonicalizer()
         .scalar("cat", s.getCatalogId().getId())
         .scalar("name", s.getDisplayName())
         .scalar("description", s.getDescription())
-        .scalar("policy", s.getPolicyRef())
         .list("parents", s.getPathList())
         .map("annotations", s.getAnnotationsMap())
         .scalar("policy", s.getPolicyRef())

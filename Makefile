@@ -1,7 +1,7 @@
 # -------- Metacat Makefile (Quarkus + gRPC) --------
 # Quick refs:
-#   make / make build           # build proto + service (skip tests)
-#   make test                   # run all tests
+#   make / make build           # build all (skip tests)
+#   make test                   # run service tests
 #   make proto                  # generate + package proto jar
 #   make run                    # run Quarkus in dev (foreground)
 #   make start                  # start Quarkus in dev (background, writes PID)
@@ -20,13 +20,9 @@ MAKEFLAGS  += --no-builtin-rules
 
 MVN ?= mvn
 
-# ---------- Modules ----------
-JAVA_MODULES   := proto service reconciler connectors-spi connectors-iceberg storage-spi storage-aws client-cli storage-memory
-JAVA_SERVICES  := service               # runnable module(s)
-
 # ---------- Quarkus dev settings ----------
 QUARKUS_PROFILE  ?= dev
-QUARKUS_DEV_ARGS ?= -Djava.base/java.lang=ALL-UNNAMED
+QUARKUS_DEV_ARGS ?=
 
 # ---------- Dev dirs ----------
 PID_DIR := .devpids
@@ -143,6 +139,17 @@ status:
 	else \
 	  echo "==> [STATUS] not running"; \
 	fi
+
+# ---------- Cli ----------
+.PHONY: cli
+cli:
+	@echo "==> [BUILD] client CLI"
+	$(MVN) -q -pl client-cli -am -DskipTests package
+
+.PHONY: cli-run
+cli-run: cli
+	@echo "==> [RUN] client CLI"
+	java -jar client-cli/target/quarkus-app/quarkus-run.jar $(ARGS)
 
 # ---------- Docker (Quarkus container-image) ----------
 # Requires proper container-image config in service/pom.xml or application.properties
