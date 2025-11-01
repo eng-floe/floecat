@@ -6,16 +6,22 @@ import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.CatalogSpec;
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
+import ai.floedb.metacat.catalog.rpc.CreateCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.GetTableRequest;
 import ai.floedb.metacat.catalog.rpc.GetTableStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.metacat.catalog.rpc.ListColumnStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
+import ai.floedb.metacat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.NamespaceSpec;
@@ -35,6 +41,9 @@ import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableSpec;
 import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableStats;
+import ai.floedb.metacat.catalog.rpc.UpdateCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.UpdateNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageRequest;
@@ -48,11 +57,14 @@ import ai.floedb.metacat.connector.rpc.Connector;
 import ai.floedb.metacat.connector.rpc.ConnectorKind;
 import ai.floedb.metacat.connector.rpc.ConnectorSpec;
 import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
+import ai.floedb.metacat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.metacat.connector.rpc.DeleteConnectorRequest;
+import ai.floedb.metacat.connector.rpc.GetConnectorRequest;
 import ai.floedb.metacat.connector.rpc.GetReconcileJobRequest;
 import ai.floedb.metacat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.metacat.connector.rpc.ReconcilePolicy;
 import ai.floedb.metacat.connector.rpc.TriggerReconcileRequest;
+import ai.floedb.metacat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.metacat.connector.rpc.ValidateConnectorRequest;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.picocli.runtime.annotations.TopCommand;
@@ -144,6 +156,7 @@ public class Shell implements Runnable {
               "describe",
               "snapshots",
               "stats",
+              "tenant",
               "help",
               "quit",
               "exit");
@@ -203,48 +216,48 @@ public class Shell implements Runnable {
   private void printHelp() {
     out.println(
         """
-        Commands:
-        tenant <id>
-        catalogs
-        catalog create <display_name> [--desc <text>] [--connector <id>] [--policy <id>] [--opt k=v ...]
-        catalog get <display_name|id>
-        catalog update <display_name|id> [--display <name>] [--desc <text>] [--connector <id>] [--policy <id>] [--opt k=v ...] [--etag <etag>]
-        catalog delete <display_name|id> [--require-empty] [--etag <etag>]
-        namespaces <catalog | catalog.ns[.ns...]> | --id UUID> [--prefix P] [--recursive]
-        namespace create <catalogName|catalogId> <display_name|a.b.c> [--desc <text>] [--path ns1.ns2...] [--ann k=v ...] [--policy <id>]
-        namespace get <id|catalog.ns[.ns...][.name]>
-        namespace update <id|fq> [--display <name>] [--path ns1.ns2...] [--catalog <catalogName|id>] [--etag <etag>]
-        namespace delete <id|fq> [--require-empty] [--etag <etag>]
-        tables <catalog.ns[.ns...][.prefix]>
-        table create <catalogName|id> <namespaceFQ|id> <name> [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v ...]
-        table get <id|catalog.ns[.ns...].table>
-        table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v ...] [--etag <etag>]
-        table delete <id|fq> [--purge-stats] [--purge-snaps] [--etag <etag>]
-        resolve table <fq> | resolve view <fq> | resolve catalog <name> | resolve namespace <fq>
-        describe table <fq>
-        snapshots <tableFQ>
-        stats table <tableFQ> [--snapshot <id>|--current]
-        stats columns <tableFQ> [--snapshot <id>|--current] [--limit N]
-        connectors
-        connector list [--kind <KIND>]
-        connector get <display_name|id>
-        connector create <display_name> <kind> <uri> [--target-catalog <display>] [--target-tenant <tenant>]
-            [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
-            [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
-            [--policy-not-before-epoch <sec>] [--opt k=v ...]
-        connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>] [--target-catalog <display>] [--target-tenant <tenant>]
-            [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
-            [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-max-par <n>]
-            [--policy-not-before-epoch <sec>] [--opt k=v ...] [--etag <etag>]
-        connector delete <display_name|id>  [--etag <etag>]
-        connector validate <kind> <uri> [--target-catalog <display>] [--target-tenant <tenant>]
-            [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
-            [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
-            [--policy-not-before-epoch <sec>] [--opt k=v ...]
-        connector trigger <display_name|id> [--full]
-        connector job <jobId>
-        help
-        quit
+         Commands:
+         tenant <id>
+         catalogs
+         catalog create <display_name> [--desc <text>] [--connector <id>] [--policy <id>] [--opt k=v ...]
+         catalog get <display_name|id>
+         catalog update <display_name|id> [--display <name>] [--desc <text>] [--connector <id>] [--policy <id>] [--opt k=v ...] [--etag <etag>]
+         catalog delete <display_name|id> [--require-empty] [--etag <etag>]
+         namespaces (<catalog | catalog.ns[.ns...]> | <UUID>) [--prefix P] [--recursive]
+         namespace create <catalog.ns[.ns...]> [--desc <text>] [--ann k=v ...] [--policy <id>]
+         namespace get <id | catalog.ns[.ns...]>
+         namespace update <id|fq> [--display <name>] [--path ns1.ns2...] [--catalog <catalogName|id>] [--etag <etag>]
+         namespace delete <id|fq> [--require-empty] [--etag <etag>]
+         tables <catalog.ns[.ns...][.prefix]>
+         table create <catalog.ns[.ns...].name> [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v ...]
+         table get <id|catalog.ns[.ns...].table>
+         table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v ...] [--etag <etag>]
+         table delete <id|fq> [--purge-stats] [--purge-snaps] [--etag <etag>]
+         resolve table <fq> | resolve view <fq> | resolve catalog <name> | resolve namespace <fq>
+         describe table <fq>
+         snapshots <tableFQ>
+         stats table <tableFQ> [--snapshot <id>|--current]
+         stats columns <tableFQ> [--snapshot <id>|--current] [--limit N]
+         connectors
+         connector list [--kind <KIND>]
+         connector get <display_name|id>
+         connector create <display_name> <kind> <uri> [--target-catalog <display>] [--target-tenant <tenant>]
+             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
+             [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
+             [--policy-not-before-epoch <sec>] [--opt k=v ...]
+         connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>] [--target-catalog <display>] [--target-tenant <tenant>]
+             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
+             [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-max-par <n>]
+             [--policy-not-before-epoch <sec>] [--opt k=v ...] [--etag <etag>]
+         connector delete <display_name|id>  [--etag <etag>]
+         connector validate <kind> <uri> [--target-catalog <display>] [--target-tenant <tenant>]
+             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
+             [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
+             [--policy-not-before-epoch <sec>] [--opt k=v ...]
+         connector trigger <display_name|id> [--full]
+         connector job <jobId>
+         help
+         quit
         """);
   }
 
@@ -337,10 +350,7 @@ public class Shell implements Runnable {
                 .build();
         var resp =
             catalogs.createCatalog(
-                ai.floedb.metacat.catalog.rpc.CreateCatalogRequest.newBuilder()
-                    .setSpec(spec)
-                    .setIdempotency(newIdem())
-                    .build());
+                CreateCatalogRequest.newBuilder().setSpec(spec).setIdempotency(newIdem()).build());
         printCatalogs(List.of(resp.getCatalog()));
       }
       case "get" -> {
@@ -350,9 +360,7 @@ public class Shell implements Runnable {
         }
         var resp =
             catalogs.getCatalog(
-                ai.floedb.metacat.catalog.rpc.GetCatalogRequest.newBuilder()
-                    .setCatalogId(resolveCatalogId(args.get(1)))
-                    .build());
+                GetCatalogRequest.newBuilder().setCatalogId(resolveCatalogId(args.get(1))).build());
         printCatalogs(List.of(resp.getCatalog()));
       }
       case "update" -> {
@@ -377,7 +385,7 @@ public class Shell implements Runnable {
                 .setPolicyRef(nvl(policyRef, ""))
                 .build();
         var req =
-            ai.floedb.metacat.catalog.rpc.UpdateCatalogRequest.newBuilder()
+            UpdateCatalogRequest.newBuilder()
                 .setCatalogId(resolveCatalogId(id))
                 .setSpec(spec)
                 .setPrecondition(preconditionFromEtag(args))
@@ -462,31 +470,26 @@ public class Shell implements Runnable {
     String sub = args.get(0);
     switch (sub) {
       case "create" -> {
-        if (args.size() < 3) {
+        if (args.size() < 2) {
           out.println(
-              "usage: namespace create <display_name|catalog_id> <display_name> [--desc <text>]"
-                  + " [--path ns1/ns2/..] [--ann k=v ...] [--policy <id>]");
+              "usage: namespace create <catalog.ns[.ns...]> [--desc <text>] [--ann k=v ...]"
+                  + " [--policy <id>]");
           return;
         }
-        ResourceId catalogId = resolveCatalogId(args.get(1));
-        String displayOrPath = args.get(2);
+        String fq = args.get(1);
+        ParsedFq p = parseFqFlexible(fq, false);
+        if (p.nsParts.isEmpty()) {
+          throw new IllegalArgumentException("Namespace path is empty in: " + fq);
+        }
+
+        ResourceId catalogId = resolveCatalogId(p.catalog);
+        String display = p.nsParts.get(p.nsParts.size() - 1);
+        List<String> parents = p.nsParts.subList(0, p.nsParts.size() - 1);
+
         String desc = parseStringFlag(args, "--desc", "");
-        String path = parseStringFlag(args, "--path", "");
         Map<String, String> annotations = parseKeyValueList(args, "--ann");
         String policy = parseStringFlag(args, "--policy", "");
-        String display;
-        List<String> parents;
-        if (path != null && !path.isBlank()) {
-          display = displayOrPath;
-          parents = pathToList(path);
-        } else if (displayOrPath.contains("/") || displayOrPath.contains(".")) {
-          List<String> parts = pathToList(displayOrPath);
-          display = parts.get(parts.size() - 1);
-          parents = parts.subList(0, parts.size() - 1);
-        } else {
-          display = displayOrPath;
-          parents = List.of();
-        }
+
         var spec =
             NamespaceSpec.newBuilder()
                 .setCatalogId(catalogId)
@@ -496,9 +499,10 @@ public class Shell implements Runnable {
                 .putAllAnnotations(annotations)
                 .setPolicyRef(policy)
                 .build();
+
         var resp =
             namespaces.createNamespace(
-                ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest.newBuilder()
+                CreateNamespaceRequest.newBuilder()
                     .setSpec(spec)
                     .setIdempotency(newIdem())
                     .build());
@@ -514,38 +518,59 @@ public class Shell implements Runnable {
                 ? namespaceRid(args.get(1))
                 : resolveNamespaceId(args.get(1));
         var resp =
-            namespaces.getNamespace(
-                ai.floedb.metacat.catalog.rpc.GetNamespaceRequest.newBuilder()
-                    .setNamespaceId(nsId)
-                    .build());
+            namespaces.getNamespace(GetNamespaceRequest.newBuilder().setNamespaceId(nsId).build());
         printNamespaces(List.of(resp.getNamespace()));
       }
       case "update" -> {
         if (args.size() < 2) {
           out.println(
-              "usage: namespace update <id|fq> [--display <name>] [--path ns1/ns2/..] [--catalog"
-                  + " <catalogId>] [--etag <etag>]");
+              "namespace update <id|catalog.ns[.ns...]>\n"
+                  + "    [--display <name>] [--path ns1.ns2... | ns1/ns2/...]\n"
+                  + "    [--catalog <catalogName|catalogId>] [--etag <etag>]");
           return;
         }
-        ResourceId nsId =
-            looksLikeUuid(args.get(1))
-                ? namespaceRid(args.get(1))
-                : resolveNamespaceId(args.get(1));
-        String display = parseStringFlag(args, "--display", "");
-        String path = parseStringFlag(args, "--path", "");
-        String catalogId = parseStringFlag(args, "--catalog", "");
-        var req =
-            ai.floedb.metacat.catalog.rpc.UpdateNamespaceRequest.newBuilder()
+
+        ResourceId catalogId;
+        ResourceId nsId;
+
+        if (looksLikeUuid(args.get(1))) {
+          nsId = namespaceRid(args.get(1));
+          var nsLookup =
+              directory.lookupNamespace(
+                  LookupNamespaceRequest.newBuilder().setResourceId(nsId).build());
+          catalogId = resolveCatalogId(nsLookup.getRef().getCatalog());
+        } else {
+          NameRef ref = nameRefForNamespace(args.get(1));
+          nsId = resolveNamespaceId(args.get(1));
+          catalogId = resolveCatalogId(ref.getCatalog());
+        }
+
+        String catalogStr = parseStringFlag(args, "--catalog", "");
+        if (!catalogStr.isBlank()) {
+          catalogId =
+              looksLikeUuid(catalogStr) ? catalogRid(catalogStr) : resolveCatalogId(catalogStr);
+        }
+
+        String display = parseStringFlag(args, "--display", null);
+        String path = parseStringFlag(args, "--path", null);
+
+        UpdateNamespaceRequest.Builder b =
+            UpdateNamespaceRequest.newBuilder()
                 .setNamespaceId(nsId)
-                .setDisplayName(display)
-                .addAllPath(pathToList(path))
-                .setCatalogId(
-                    catalogId.isBlank()
-                        ? ResourceId.getDefaultInstance()
-                        : resourceId(catalogId, ResourceKind.RK_CATALOG))
-                .setPrecondition(preconditionFromEtag(args))
-                .build();
-        var resp = namespaces.updateNamespace(req);
+                .setPrecondition(preconditionFromEtag(args));
+
+        if (display != null) {
+          b.setDisplayName(display);
+        }
+        if (path != null) {
+          b.clearPath().addAllPath(pathToList(path));
+        }
+
+        if (!catalogStr.isBlank()) {
+          b.setCatalogId(catalogId);
+        }
+
+        var resp = namespaces.updateNamespace(b.build());
         printNamespaces(List.of(resp.getNamespace()));
       }
       case "delete" -> {
@@ -594,22 +619,29 @@ public class Shell implements Runnable {
     String sub = args.get(0);
     switch (sub) {
       case "create" -> {
-        if (args.size() < 4) {
+        if (args.size() < 2) {
           out.println(
-              "usage: table create <catalogId> <namespaceId> <name> [--desc <text>] [--root <uri>]"
-                  + " [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v"
-                  + " ...]");
+              "usage: table create <catalog.ns[.ns...].name> "
+                  + "[--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] "
+                  + "[--format ICEBERG|DELTA] [--prop k=v ...]");
           return;
         }
-        ResourceId catalogId = resourceId(args.get(1), ResourceKind.RK_CATALOG);
-        ResourceId namespaceId = resourceId(args.get(2), ResourceKind.RK_NAMESPACE);
-        String name = args.get(3);
+
+        var ref = nameRefForTable(args.get(1));
+        ResourceId catalogId = resolveCatalogId(ref.getCatalog());
+        String nsFq =
+            ref.getCatalog()
+                + (ref.getPathList().isEmpty() ? "" : "." + String.join(".", ref.getPathList()));
+        ResourceId namespaceId = resolveNamespaceId(nsFq);
+        String name = ref.getName();
+
         String desc = parseStringFlag(args, "--desc", "");
         String root = parseStringFlag(args, "--root", "");
         String schema = parseStringFlag(args, "--schema", "");
         List<String> parts = csvToList(parseStringFlag(args, "--parts", ""));
         String formatStr = parseStringFlag(args, "--format", "");
         Map<String, String> props = parseKeyValueList(args, "--prop");
+
         var spec =
             TableSpec.newBuilder()
                 .setCatalogId(catalogId)
@@ -622,12 +654,10 @@ public class Shell implements Runnable {
                 .setFormat(parseFormat(formatStr))
                 .putAllProperties(props)
                 .build();
+
         var resp =
             tables.createTable(
-                ai.floedb.metacat.catalog.rpc.CreateTableRequest.newBuilder()
-                    .setSpec(spec)
-                    .setIdempotency(newIdem())
-                    .build());
+                CreateTableRequest.newBuilder().setSpec(spec).setIdempotency(newIdem()).build());
         printTable(resp.getTable());
       }
       case "get" -> {
@@ -650,12 +680,13 @@ public class Shell implements Runnable {
       case "update" -> {
         if (args.size() < 2) {
           out.println(
-              "usage: table update <id|catalog.ns[.ns...].table> \" [--catalog <catalogId>]"
-                  + " [--namespace <namespaceId>] [--name <name>] [--desc <text>] [--root <uri>]"
-                  + " [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v"
-                  + " ...] [--etag <etag>]");
+              "usage: table update <id|catalog.ns[.ns...].table> [--catalog"
+                  + " <catalogId|catalogName>] [--namespace <namespaceId|catalog.ns[.ns...]>]"
+                  + " [--name <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts"
+                  + " k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v ...] [--etag <etag>]");
           return;
         }
+
         ResourceId tableId =
             looksLikeUuid(args.get(1))
                 ? tableRid(args.get(1))
@@ -665,39 +696,53 @@ public class Shell implements Runnable {
                             .setRef(nameRefForTable(args.get(1)))
                             .build())
                     .getResourceId();
-        String catalogStr = parseStringFlag(args, "--catalog", "");
-        String nsStr = parseStringFlag(args, "--namespace", "");
-        String name = parseStringFlag(args, "--name", "");
-        String desc = parseStringFlag(args, "--desc", "");
-        String root = parseStringFlag(args, "--root", "");
-        String schema = parseStringFlag(args, "--schema", "");
+
+        String catalogStr = parseStringFlag(args, "--catalog", null);
+        String nsStr = parseStringFlag(args, "--namespace", null);
+        String name = parseStringFlag(args, "--name", null);
+        String desc = parseStringFlag(args, "--desc", null);
+        String root = parseStringFlag(args, "--root", null);
+        String schema = parseStringFlag(args, "--schema", null);
         List<String> parts = csvToList(parseStringFlag(args, "--parts", ""));
         String formatStr = parseStringFlag(args, "--format", "");
         Map<String, String> props = parseKeyValueList(args, "--prop");
-        var spec =
-            TableSpec.newBuilder()
-                .setCatalogId(
-                    catalogStr.isBlank()
-                        ? ResourceId.getDefaultInstance()
-                        : resourceId(catalogStr, ResourceKind.RK_CATALOG))
-                .setNamespaceId(
-                    nsStr.isBlank()
-                        ? ResourceId.getDefaultInstance()
-                        : resourceId(nsStr, ResourceKind.RK_NAMESPACE))
-                .setDisplayName(name)
-                .setDescription(desc)
-                .setRootUri(root)
-                .setSchemaJson(schema)
-                .addAllPartitionKeys(parts)
-                .setFormat(parseFormat(formatStr))
-                .putAllProperties(props)
-                .build();
+
+        boolean changingCatalog = catalogStr != null && !catalogStr.isBlank();
+        boolean changingNs = nsStr != null && !nsStr.isBlank();
+        if (changingCatalog ^ changingNs) {
+          out.println(
+              "Error: moving a table across catalogs requires both --catalog and"
+                  + " --namespace.");
+          return;
+        }
+
+        TableSpec.Builder sb = TableSpec.newBuilder();
+
+        if (catalogStr != null && !catalogStr.isBlank()) {
+          ResourceId cid =
+              looksLikeUuid(catalogStr) ? catalogRid(catalogStr) : resolveCatalogId(catalogStr);
+          sb.setCatalogId(cid);
+        }
+        if (nsStr != null && !nsStr.isBlank()) {
+          ResourceId nid = looksLikeUuid(nsStr) ? namespaceRid(nsStr) : resolveNamespaceId(nsStr);
+          sb.setNamespaceId(nid);
+        }
+
+        if (name != null) sb.setDisplayName(name);
+        if (desc != null) sb.setDescription(desc);
+        if (root != null) sb.setRootUri(root);
+        if (schema != null) sb.setSchemaJson(schema);
+        if (!parts.isEmpty()) sb.addAllPartitionKeys(parts);
+        if (formatStr != null && !formatStr.isBlank()) sb.setFormat(parseFormat(formatStr));
+        if (!props.isEmpty()) sb.putAllProperties(props);
+
         var req =
-            ai.floedb.metacat.catalog.rpc.UpdateTableRequest.newBuilder()
+            UpdateTableRequest.newBuilder()
                 .setTableId(tableId)
-                .setSpec(spec)
+                .setSpec(sb.build())
                 .setPrecondition(preconditionFromEtag(args))
                 .build();
+
         var resp = tables.updateTable(req);
         printTable(resp.getTable());
       }
@@ -764,7 +809,7 @@ public class Shell implements Runnable {
         }
         var resp =
             connectors.getConnector(
-                ai.floedb.metacat.connector.rpc.GetConnectorRequest.newBuilder()
+                GetConnectorRequest.newBuilder()
                     .setConnectorId(resolveConnectorId(args.get(1)))
                     .build());
         printConnectors(List.of(resp.getConnector()));
@@ -819,7 +864,7 @@ public class Shell implements Runnable {
                 .build();
         var resp =
             connectors.createConnector(
-                ai.floedb.metacat.connector.rpc.CreateConnectorRequest.newBuilder()
+                CreateConnectorRequest.newBuilder()
                     .setSpec(spec)
                     .setIdempotency(newIdem())
                     .build());
@@ -879,7 +924,7 @@ public class Shell implements Runnable {
                 .build();
         var resp =
             connectors.updateConnector(
-                ai.floedb.metacat.connector.rpc.UpdateConnectorRequest.newBuilder()
+                UpdateConnectorRequest.newBuilder()
                     .setConnectorId(cid)
                     .setSpec(spec)
                     .setPrecondition(preconditionFromEtag(args))
@@ -1125,7 +1170,7 @@ public class Shell implements Runnable {
         "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
   }
 
-  private ResourceId resourceId(String id, ai.floedb.metacat.common.rpc.ResourceKind kind) {
+  private ResourceId resourceId(String id, ResourceKind kind) {
     if (currentTenantId == null || currentTenantId.isBlank()) {
       throw new IllegalStateException("No tenant set. Use: tenant <tenantId>");
     }
@@ -1133,19 +1178,19 @@ public class Shell implements Runnable {
   }
 
   private ResourceId catalogRid(String id) {
-    return resourceId(id, ai.floedb.metacat.common.rpc.ResourceKind.RK_CATALOG);
+    return resourceId(id, ResourceKind.RK_CATALOG);
   }
 
   private ResourceId namespaceRid(String id) {
-    return resourceId(id, ai.floedb.metacat.common.rpc.ResourceKind.RK_NAMESPACE);
+    return resourceId(id, ResourceKind.RK_NAMESPACE);
   }
 
   private ResourceId tableRid(String id) {
-    return resourceId(id, ai.floedb.metacat.common.rpc.ResourceKind.RK_TABLE);
+    return resourceId(id, ResourceKind.RK_TABLE);
   }
 
   private ResourceId connectorRid(String id) {
-    return resourceId(id, ai.floedb.metacat.common.rpc.ResourceKind.RK_CONNECTOR);
+    return resourceId(id, ResourceKind.RK_CONNECTOR);
   }
 
   private ResourceId resolveConnectorId(String token) {
@@ -1204,7 +1249,7 @@ public class Shell implements Runnable {
   }
 
   private NameRef nameFromFq(String fq) {
-    ParsedFq p = parseFqFlexible(fq, /* expectObject= */ true);
+    ParsedFq p = parseFqFlexible(fq, true);
     if (p.object.isEmpty()) {
       throw new IllegalArgumentException("Missing table name in FQ: " + fq);
     }
