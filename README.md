@@ -158,6 +158,14 @@ tenant 31a47986-efaf-35f5-b810-09ba18ca81d2
 |--------|---------|
 | proto/ | Protobuf and gRPC interface definitions (ai.floedb.metacat.*) |
 | service/ | Quarkus service layer, repositories, and tests |
+| connectors-spi | Generic interfaces that connectors that pull statistics from upstream repositories must implement |
+| connectors-iceberg | A connector to an upstream AWS Glue repository of Iceberg tables |
+| client-cli | The interactive shell |
+| reconciler | The service that schedules and runs connectors |
+| types | Generic type handling for Iceberg and Delta parquet tables |
+| storage-spi | Generic interfaces that pointer and blob stores that persist metacat data must implement |
+| storage-memory | In-memory pointer and blob stores |
+| storage-aws | DynamoDB pointer store and S3 blob store implementations |
 
 ## Key Concepts
 
