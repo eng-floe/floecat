@@ -1,14 +1,14 @@
-package ai.floedb.metacat.service.statistic.impl;
+package ai.floedb.metacat.service.statistics.impl;
 
-import ai.floedb.metacat.statistic.rpc.AnalyzeRequest;
-import ai.floedb.metacat.statistic.rpc.AnalyzeResponse;
-import ai.floedb.metacat.statistic.rpc.CancelJobRequest;
-import ai.floedb.metacat.statistic.rpc.CancelJobResponse;
-import ai.floedb.metacat.statistic.rpc.GetJobRequest;
-import ai.floedb.metacat.statistic.rpc.GetJobResponse;
-import ai.floedb.metacat.statistic.rpc.ListJobsRequest;
-import ai.floedb.metacat.statistic.rpc.ListJobsResponse;
-import ai.floedb.metacat.statistic.rpc.StatsCapture;
+import ai.floedb.metacat.statistics.rpc.AnalyzeRequest;
+import ai.floedb.metacat.statistics.rpc.AnalyzeResponse;
+import ai.floedb.metacat.statistics.rpc.CancelJobRequest;
+import ai.floedb.metacat.statistics.rpc.CancelJobResponse;
+import ai.floedb.metacat.statistics.rpc.GetJobRequest;
+import ai.floedb.metacat.statistics.rpc.GetJobResponse;
+import ai.floedb.metacat.statistics.rpc.ListJobsRequest;
+import ai.floedb.metacat.statistics.rpc.ListJobsResponse;
+import ai.floedb.metacat.statistics.rpc.StatsCapture;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 

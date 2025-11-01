@@ -10,7 +10,7 @@ import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.catalog.rpc.View;
 import ai.floedb.metacat.connector.rpc.Connector;
-import ai.floedb.metacat.tenancy.rpc.Tenant;
+import ai.floedb.metacat.tenant.rpc.Tenant;
 import com.google.protobuf.util.Timestamps;
 import java.util.ArrayList;
 import java.util.List;

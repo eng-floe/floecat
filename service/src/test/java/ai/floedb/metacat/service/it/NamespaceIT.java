@@ -13,11 +13,11 @@ import org.junit.jupiter.api.*;
 
 @QuarkusTest
 class NamespaceIT {
-  @GrpcClient("namespace-service")
+  @GrpcClient("metacat")
   NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
 
-  @GrpcClient("directory")
-  DirectoryGrpc.DirectoryBlockingStub directory;
+  @GrpcClient("metacat")
+  DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;

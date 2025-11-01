@@ -1,7 +1,7 @@
 package ai.floedb.metacat.service.directory;
 
 import ai.floedb.metacat.catalog.rpc.Catalog;
-import ai.floedb.metacat.catalog.rpc.Directory;
+import ai.floedb.metacat.catalog.rpc.DirectoryService;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.LookupNamespaceRequest;
@@ -45,7 +45,7 @@ import java.util.Map;
 import java.util.Optional;
 
 @GrpcService
-public class DirectoryImpl extends BaseServiceImpl implements Directory {
+public class DirectoryServiceImpl extends BaseServiceImpl implements DirectoryService {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject CatalogRepository catalogs;
@@ -312,7 +312,7 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
-                                  correlationId(), "catalog", Map.of("id", nameRef.getCatalog())));  
+                                  correlationId(), "catalog", Map.of("id", nameRef.getCatalog())));
 
               Namespace namespace =
                   namespaces
@@ -449,7 +449,8 @@ public class DirectoryImpl extends BaseServiceImpl implements Directory {
 
                     Namespace namespace =
                         namespaces
-                            .getByPath(tenantId, catalog.getResourceId().getId(), nameRef.getPathList())
+                            .getByPath(
+                                tenantId, catalog.getResourceId().getId(), nameRef.getPathList())
                             .orElseThrow(
                                 () ->
                                     GrpcErrors.notFound(

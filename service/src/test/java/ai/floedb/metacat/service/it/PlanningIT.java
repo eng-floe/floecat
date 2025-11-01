@@ -22,23 +22,23 @@ import org.junit.jupiter.api.Test;
 
 @QuarkusTest
 class PlanningIT {
-  @GrpcClient("planning")
+  @GrpcClient("metacat")
   PlanningGrpc.PlanningBlockingStub planning;
 
-  @GrpcClient("catalog-service")
+  @GrpcClient("metacat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
-  @GrpcClient("namespace-service")
+  @GrpcClient("metacat")
   NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
 
-  @GrpcClient("table-service")
+  @GrpcClient("metacat")
   TableServiceGrpc.TableServiceBlockingStub table;
 
-  @GrpcClient("snapshot-service")
+  @GrpcClient("metacat")
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
 
-  @GrpcClient("directory")
-  DirectoryGrpc.DirectoryBlockingStub directory;
+  @GrpcClient("metacat")
+  DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   String catalogPrefix = this.getClass().getSimpleName() + "_";
 

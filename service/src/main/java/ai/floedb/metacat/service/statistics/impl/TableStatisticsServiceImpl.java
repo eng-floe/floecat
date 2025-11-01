@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.statistic.impl;
+package ai.floedb.metacat.service.statistics.impl;
 
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.GetTableStatsRequest;

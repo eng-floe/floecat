@@ -1,8 +1,8 @@
 syntax = "proto3";
-package ai.floedb.metacat.statistic;
+package ai.floedb.metacat.statistics;
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.statistic.rpc";
+option java_package = "ai.floedb.metacat.statistics.rpc";
 
 import "common/common.proto";
 

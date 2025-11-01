@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
 
 @QuarkusTest
 class PropagationIT {
-  @GrpcClient("catalog-service")
+  @GrpcClient("metacat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
   @Inject PlanContextStore planStore;

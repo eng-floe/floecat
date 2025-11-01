@@ -29,7 +29,7 @@ import org.junit.jupiter.api.*;
 class CatalogPagingIT {
   @Inject CatalogRepository repo;
 
-  @GrpcClient("catalog-service")
+  @GrpcClient("metacat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
   private static final String TENANT = TestSupport.DEFAULT_SEED_TENANT;

@@ -1,6 +1,6 @@
 package ai.floedb.metacat.service.planning.impl;
 
-import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
+import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.GetCurrentSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
@@ -45,10 +45,10 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
 
-  @GrpcClient("directory")
-  DirectoryGrpc.DirectoryBlockingStub directory;
+  @GrpcClient("metacat")
+  DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
-  @GrpcClient("snapshot-service")
+  @GrpcClient("metacat")
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
 
   @Inject PlanContextStore plans;

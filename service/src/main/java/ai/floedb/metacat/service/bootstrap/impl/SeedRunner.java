@@ -16,7 +16,6 @@ import ai.floedb.metacat.service.repo.impl.TenantRepository;
 import ai.floedb.metacat.service.repo.impl.ViewRepository;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
-import ai.floedb.metacat.tenancy.rpc.Tenant;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -100,7 +99,7 @@ public class SeedRunner {
     var rid =
         ResourceId.newBuilder().setTenantId(id).setId(id).setKind(ResourceKind.RK_TENANT).build();
     var tenant =
-        Tenant.newBuilder()
+        ai.floedb.metacat.tenant.rpc.Tenant.newBuilder()
             .setResourceId(rid)
             .setDisplayName(displayName)
             .setDescription(description)

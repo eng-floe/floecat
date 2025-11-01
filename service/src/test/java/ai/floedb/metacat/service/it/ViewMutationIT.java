@@ -27,17 +27,17 @@ class ViewMutationIT {
   @Inject PointerStore ptr;
   @Inject BlobStore blob;
 
-  @GrpcClient("catalog-service")
+  @GrpcClient("metacat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
-  @GrpcClient("namespace-service")
+  @GrpcClient("metacat")
   NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
 
-  @GrpcClient("view-service")
+  @GrpcClient("metacat")
   ViewServiceGrpc.ViewServiceBlockingStub view;
 
-  @GrpcClient("directory")
-  DirectoryGrpc.DirectoryBlockingStub directory;
+  @GrpcClient("metacat")
+  DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   String viewPrefix = this.getClass().getSimpleName() + "_";
 

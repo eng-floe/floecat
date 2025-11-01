@@ -21,11 +21,11 @@ import org.junit.jupiter.api.Test;
 
 @QuarkusTest
 class CatalogMutationIT {
-  @GrpcClient("catalog-service")
+  @GrpcClient("metacat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
-  @GrpcClient("directory")
-  DirectoryGrpc.DirectoryBlockingStub directory;
+  @GrpcClient("metacat")
+  DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   String catalogPrefix = this.getClass().getSimpleName() + "_";
 

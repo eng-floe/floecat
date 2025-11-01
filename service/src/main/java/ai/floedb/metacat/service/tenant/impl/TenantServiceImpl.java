@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.tenancy.impl;
+package ai.floedb.metacat.service.tenant.impl;
 
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
@@ -14,26 +14,26 @@ import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.repo.util.BaseResourceRepository.AbortRetryableException;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import ai.floedb.metacat.tenancy.rpc.CreateTenantRequest;
-import ai.floedb.metacat.tenancy.rpc.CreateTenantResponse;
-import ai.floedb.metacat.tenancy.rpc.DeleteTenantRequest;
-import ai.floedb.metacat.tenancy.rpc.DeleteTenantResponse;
-import ai.floedb.metacat.tenancy.rpc.GetTenantRequest;
-import ai.floedb.metacat.tenancy.rpc.GetTenantResponse;
-import ai.floedb.metacat.tenancy.rpc.ListTenantsRequest;
-import ai.floedb.metacat.tenancy.rpc.ListTenantsResponse;
-import ai.floedb.metacat.tenancy.rpc.Tenancy;
-import ai.floedb.metacat.tenancy.rpc.Tenant;
-import ai.floedb.metacat.tenancy.rpc.TenantSpec;
-import ai.floedb.metacat.tenancy.rpc.UpdateTenantRequest;
-import ai.floedb.metacat.tenancy.rpc.UpdateTenantResponse;
+import ai.floedb.metacat.tenant.rpc.CreateTenantRequest;
+import ai.floedb.metacat.tenant.rpc.CreateTenantResponse;
+import ai.floedb.metacat.tenant.rpc.DeleteTenantRequest;
+import ai.floedb.metacat.tenant.rpc.DeleteTenantResponse;
+import ai.floedb.metacat.tenant.rpc.GetTenantRequest;
+import ai.floedb.metacat.tenant.rpc.GetTenantResponse;
+import ai.floedb.metacat.tenant.rpc.ListTenantsRequest;
+import ai.floedb.metacat.tenant.rpc.ListTenantsResponse;
+import ai.floedb.metacat.tenant.rpc.Tenant;
+import ai.floedb.metacat.tenant.rpc.TenantService;
+import ai.floedb.metacat.tenant.rpc.TenantSpec;
+import ai.floedb.metacat.tenant.rpc.UpdateTenantRequest;
+import ai.floedb.metacat.tenant.rpc.UpdateTenantResponse;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.Map;
 
 @GrpcService
-public class TenancyImpl extends BaseServiceImpl implements Tenancy {
+public class TenantServiceImpl extends BaseServiceImpl implements TenantService {
   @Inject TenantRepository tenantRepo;
   @Inject CatalogRepository catalogRepo;
   @Inject PrincipalProvider principal;

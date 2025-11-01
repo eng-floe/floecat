@@ -9,7 +9,7 @@ import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.DeleteCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteTableRequest;
-import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
+import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.GetTableRequest;
 import ai.floedb.metacat.catalog.rpc.GetTableStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
@@ -103,7 +103,7 @@ public class Shell implements Runnable {
 
   @Inject
   @GrpcClient("metacat")
-  DirectoryGrpc.DirectoryBlockingStub directory;
+  DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   @Inject
   @GrpcClient("metacat")

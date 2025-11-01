@@ -29,22 +29,22 @@ class StatsIT {
   @Inject PointerStore ptr;
   @Inject BlobStore blob;
 
-  @GrpcClient("directory")
-  DirectoryGrpc.DirectoryBlockingStub directory;
+  @GrpcClient("metacat")
+  DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
-  @GrpcClient("catalog-service")
+  @GrpcClient("metacat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
-  @GrpcClient("namespace-service")
+  @GrpcClient("metacat")
   NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
 
-  @GrpcClient("table-service")
+  @GrpcClient("metacat")
   TableServiceGrpc.TableServiceBlockingStub table;
 
-  @GrpcClient("snapshot-service")
+  @GrpcClient("metacat")
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
 
-  @GrpcClient("table-statistics-service")
+  @GrpcClient("metacat")
   TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistic;
 
   String tablePrefix = this.getClass().getSimpleName() + "_";

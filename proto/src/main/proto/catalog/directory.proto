@@ -101,7 +101,7 @@ message LookupViewResponse {
 
 // ----- Services -----
 
-service Directory {
+service DirectoryService {
   rpc ResolveCatalog(ResolveCatalogRequest) returns (ResolveCatalogResponse);
   rpc LookupCatalog(LookupCatalogRequest) returns (LookupCatalogResponse);
 

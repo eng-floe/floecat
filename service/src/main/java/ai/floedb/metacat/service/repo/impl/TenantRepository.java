@@ -8,7 +8,7 @@ import ai.floedb.metacat.service.repo.model.TenantKey;
 import ai.floedb.metacat.service.repo.util.GenericResourceRepository;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
-import ai.floedb.metacat.tenancy.rpc.Tenant;
+import ai.floedb.metacat.tenant.rpc.Tenant;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;

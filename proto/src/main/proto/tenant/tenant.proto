@@ -1,10 +1,10 @@
 syntax = "proto3";
 
-package ai.floedb.metacat.tenancy;
+package ai.floedb.metacat.tenant;
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.tenancy.rpc";
-option java_outer_classname = "TenancyProto";
+option java_package = "ai.floedb.metacat.tenant.rpc";
+option java_outer_classname = "TenantProto";
 
 import "common/common.proto";
 
@@ -73,7 +73,7 @@ message DeleteTenantResponse {
 
 // ====== Service ======
 
-service Tenancy {
+service TenantService {
   rpc ListTenants (ListTenantsRequest) returns (ListTenantsResponse);
   rpc GetTenant (GetTenantRequest) returns (GetTenantResponse);
   rpc CreateTenant (CreateTenantRequest) returns (CreateTenantResponse);

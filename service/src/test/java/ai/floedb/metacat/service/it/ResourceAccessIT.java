@@ -17,11 +17,11 @@ import org.junit.jupiter.api.Test;
 
 @QuarkusTest
 class ResourceAccessIT {
-  @GrpcClient("catalog-service")
+  @GrpcClient("metacat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
-  @GrpcClient("directory")
-  DirectoryGrpc.DirectoryBlockingStub directory;
+  @GrpcClient("metacat")
+  DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;

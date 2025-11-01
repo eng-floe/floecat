@@ -1,7 +1,7 @@
 package ai.floedb.metacat.reconciler.impl;
 
 import ai.floedb.metacat.catalog.rpc.CatalogServiceGrpc;
-import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
+import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
@@ -12,28 +12,28 @@ import jakarta.enterprise.context.ApplicationScoped;
 
 @ApplicationScoped
 public class GrpcClients {
-  @GrpcClient("directory")
-  DirectoryGrpc.DirectoryBlockingStub directory;
+  @GrpcClient("metacat")
+  DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
-  @GrpcClient("catalog-service")
+  @GrpcClient("metacat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
-  @GrpcClient("namespace-service")
+  @GrpcClient("metacat")
   NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
 
-  @GrpcClient("table-service")
+  @GrpcClient("metacat")
   TableServiceGrpc.TableServiceBlockingStub table;
 
-  @GrpcClient("snapshot-service")
+  @GrpcClient("metacat")
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
 
-  @GrpcClient("table-statistics-service")
+  @GrpcClient("metacat")
   TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics;
 
-  @GrpcClient("connectors")
+  @GrpcClient("metacat")
   ConnectorsGrpc.ConnectorsBlockingStub connector;
 
-  public DirectoryGrpc.DirectoryBlockingStub directory() {
+  public DirectoryServiceGrpc.DirectoryServiceBlockingStub directory() {
     return directory;
   }
 

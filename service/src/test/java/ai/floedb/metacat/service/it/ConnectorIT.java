@@ -2,7 +2,7 @@ package ai.floedb.metacat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import ai.floedb.metacat.catalog.rpc.DirectoryGrpc;
+import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.PageRequest;
@@ -28,11 +28,11 @@ import org.junit.jupiter.api.*;
 
 @QuarkusTest
 public class ConnectorIT {
-  @GrpcClient("connectors")
+  @GrpcClient("metacat")
   ConnectorsGrpc.ConnectorsBlockingStub connectors;
 
-  @GrpcClient("directory")
-  DirectoryGrpc.DirectoryBlockingStub directory;
+  @GrpcClient("metacat")
+  DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerScheduler scheduler;

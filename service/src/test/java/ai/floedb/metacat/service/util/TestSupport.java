@@ -13,10 +13,10 @@ import ai.floedb.metacat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
-import ai.floedb.metacat.tenancy.rpc.CreateTenantRequest;
-import ai.floedb.metacat.tenancy.rpc.TenancyGrpc;
-import ai.floedb.metacat.tenancy.rpc.Tenant;
-import ai.floedb.metacat.tenancy.rpc.TenantSpec;
+import ai.floedb.metacat.tenant.rpc.CreateTenantRequest;
+import ai.floedb.metacat.tenant.rpc.Tenant;
+import ai.floedb.metacat.tenant.rpc.TenantServiceGrpc;
+import ai.floedb.metacat.tenant.rpc.TenantSpec;
 import com.google.protobuf.Any;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
@@ -56,7 +56,10 @@ public final class TestSupport {
   }
 
   public static Tenant createTenant(
-      TenancyGrpc.TenancyBlockingStub tenants, String displayName, String description, long now) {
+      TenantServiceGrpc.TenantServiceBlockingStub tenants,
+      String displayName,
+      String description,
+      long now) {
     var resp =
         tenants.createTenant(
             CreateTenantRequest.newBuilder()
@@ -190,7 +193,7 @@ public final class TestSupport {
   }
 
   public static ResourceId resolveCatalogId(
-      DirectoryGrpc.DirectoryBlockingStub directory, String catalogName) {
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory, String catalogName) {
     var r =
         directory.resolveCatalog(
             ResolveCatalogRequest.newBuilder()
@@ -200,7 +203,9 @@ public final class TestSupport {
   }
 
   public static ResourceId resolveNamespaceId(
-      DirectoryGrpc.DirectoryBlockingStub directory, String catalog, List<String> path) {
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      String catalog,
+      List<String> path) {
     var r =
         directory.resolveNamespace(
             ResolveNamespaceRequest.newBuilder().setRef(fq(catalog, path, null)).build());
@@ -208,7 +213,7 @@ public final class TestSupport {
   }
 
   public static ResourceId resolveTableId(
-      DirectoryGrpc.DirectoryBlockingStub directory,
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
       String catalog,
       List<String> path,
       String name) {

@@ -10,13 +10,13 @@ import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
-import ai.floedb.metacat.tenancy.rpc.CreateTenantRequest;
-import ai.floedb.metacat.tenancy.rpc.DeleteTenantRequest;
-import ai.floedb.metacat.tenancy.rpc.GetTenantRequest;
-import ai.floedb.metacat.tenancy.rpc.ListTenantsRequest;
-import ai.floedb.metacat.tenancy.rpc.TenancyGrpc;
-import ai.floedb.metacat.tenancy.rpc.TenantSpec;
-import ai.floedb.metacat.tenancy.rpc.UpdateTenantRequest;
+import ai.floedb.metacat.tenant.rpc.CreateTenantRequest;
+import ai.floedb.metacat.tenant.rpc.DeleteTenantRequest;
+import ai.floedb.metacat.tenant.rpc.GetTenantRequest;
+import ai.floedb.metacat.tenant.rpc.ListTenantsRequest;
+import ai.floedb.metacat.tenant.rpc.TenantServiceGrpc;
+import ai.floedb.metacat.tenant.rpc.TenantSpec;
+import ai.floedb.metacat.tenant.rpc.UpdateTenantRequest;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -28,10 +28,10 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 class TenantMutationIT {
 
-  @GrpcClient("tenancy")
-  TenancyGrpc.TenancyBlockingStub tenancy;
+  @GrpcClient("metacat")
+  TenantServiceGrpc.TenantServiceBlockingStub tenancy;
 
-  @GrpcClient("catalog")
+  @GrpcClient("metacat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
   String tenantPrefix = this.getClass().getSimpleName() + "_";
