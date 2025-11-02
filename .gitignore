@@ -3,3 +3,5 @@ target
 .devbin
 .devlogs
 .devpids
+service/log/
+log/

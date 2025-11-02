@@ -17,6 +17,7 @@
     <maven.compiler.target>25</maven.compiler.target>
     <skipUTs>false</skipUTs>
     <skipITs>false</skipITs>
+    <jvm.args>--add-opens java.base/java.lang=ALL-UNNAMED</jvm.args>
   </properties>
 
   <modules>

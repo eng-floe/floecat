@@ -17,6 +17,7 @@ import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.common.rpc.SpecialSnapshot;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.IdempotencyGuard;
+import ai.floedb.metacat.service.common.LogHelper;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.IdempotencyRepository;
@@ -29,6 +30,7 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.Map;
+import org.jboss.logging.Logger;
 
 @GrpcService
 public class TableStatisticsServiceImpl extends BaseServiceImpl implements TableStatisticsService {
@@ -40,264 +42,299 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
 
+  private static final Logger LOG = Logger.getLogger(TableStatisticsService.class);
+
   @Override
   public Uni<GetTableStatsResponse> getTableStats(GetTableStatsRequest request) {
+    var L = LogHelper.start(LOG, "GetTableStats");
+
     return mapFailures(
-        run(
-            () -> {
-              var principalContext = principal.get();
+            run(
+                () -> {
+                  var principalContext = principal.get();
 
-              authz.require(principalContext, "catalog.read");
+                  authz.require(principalContext, "catalog.read");
 
-              final var tableId = request.getTableId();
-              final var ref = request.getSnapshot();
-              if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
-                throw GrpcErrors.invalidArgument(correlationId(), "snapshot.missing", Map.of());
-              }
-
-              final long snapId;
-              switch (ref.getWhichCase()) {
-                case SNAPSHOT_ID -> snapId = ref.getSnapshotId();
-                case SPECIAL -> {
-                  if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
-                    throw GrpcErrors.invalidArgument(
-                        correlationId(), "snapshot.special.missing", Map.of());
-                  }
-                  snapId =
-                      snapshots
-                          .getCurrentSnapshot(tableId)
-                          .map(Snapshot::getSnapshotId)
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(), "snapshot", Map.of("id", tableId.getId())));
-                }
-                case AS_OF -> {
-                  var asOf = ref.getAsOf();
-                  snapId =
-                      snapshots
-                          .getAsOf(tableId, asOf)
-                          .map(Snapshot::getSnapshotId)
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(), "snapshot", Map.of("id", tableId.getId())));
-                }
-                default ->
+                  final var tableId = request.getTableId();
+                  final var ref = request.getSnapshot();
+                  if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
                     throw GrpcErrors.invalidArgument(correlationId(), "snapshot.missing", Map.of());
-              }
+                  }
 
-              return stats
-                  .getTableStats(tableId, snapId)
-                  .map(s -> GetTableStatsResponse.newBuilder().setStats(s).build())
-                  .orElseThrow(
-                      () ->
-                          GrpcErrors.notFound(
-                              correlationId(),
-                              "table_stats",
-                              Map.of(
-                                  "table_id",
-                                  tableId.getId(),
-                                  "snapshot_id",
-                                  Long.toString(snapId))));
-            }),
-        correlationId());
+                  final long snapId;
+                  switch (ref.getWhichCase()) {
+                    case SNAPSHOT_ID -> snapId = ref.getSnapshotId();
+                    case SPECIAL -> {
+                      if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
+                        throw GrpcErrors.invalidArgument(
+                            correlationId(), "snapshot.special.missing", Map.of());
+                      }
+                      snapId =
+                          snapshots
+                              .getCurrentSnapshot(tableId)
+                              .map(Snapshot::getSnapshotId)
+                              .orElseThrow(
+                                  () ->
+                                      GrpcErrors.notFound(
+                                          correlationId(),
+                                          "snapshot",
+                                          Map.of("id", tableId.getId())));
+                    }
+                    case AS_OF -> {
+                      var asOf = ref.getAsOf();
+                      snapId =
+                          snapshots
+                              .getAsOf(tableId, asOf)
+                              .map(Snapshot::getSnapshotId)
+                              .orElseThrow(
+                                  () ->
+                                      GrpcErrors.notFound(
+                                          correlationId(),
+                                          "snapshot",
+                                          Map.of("id", tableId.getId())));
+                    }
+                    default ->
+                        throw GrpcErrors.invalidArgument(
+                            correlationId(), "snapshot.missing", Map.of());
+                  }
+
+                  return stats
+                      .getTableStats(tableId, snapId)
+                      .map(s -> GetTableStatsResponse.newBuilder().setStats(s).build())
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(),
+                                  "table_stats",
+                                  Map.of(
+                                      "table_id",
+                                      tableId.getId(),
+                                      "snapshot_id",
+                                      Long.toString(snapId))));
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 
   @Override
   public Uni<ListColumnStatsResponse> listColumnStats(ListColumnStatsRequest request) {
+    var L = LogHelper.start(LOG, "ListColumnStats");
+
     return mapFailures(
-        run(
-            () -> {
-              var principalContext = principal.get();
+            run(
+                () -> {
+                  var principalContext = principal.get();
 
-              authz.require(principalContext, "catalog.read");
+                  authz.require(principalContext, "catalog.read");
 
-              final int limit =
-                  (request.hasPage() && request.getPage().getPageSize() > 0)
-                      ? request.getPage().getPageSize()
-                      : 200;
-              final String token = request.hasPage() ? request.getPage().getPageToken() : "";
-              final StringBuilder next = new StringBuilder();
+                  final int limit =
+                      (request.hasPage() && request.getPage().getPageSize() > 0)
+                          ? request.getPage().getPageSize()
+                          : 200;
+                  final String token = request.hasPage() ? request.getPage().getPageToken() : "";
+                  final StringBuilder next = new StringBuilder();
 
-              final var tableId = request.getTableId();
-              final var ref = request.getSnapshot();
-              if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
-                throw GrpcErrors.invalidArgument(correlationId(), "snapshot.missing", Map.of());
-              }
-
-              final long snapId;
-              switch (ref.getWhichCase()) {
-                case SNAPSHOT_ID -> snapId = ref.getSnapshotId();
-                case SPECIAL -> {
-                  if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
-                    throw GrpcErrors.invalidArgument(
-                        correlationId(), "snapshot.special.missing", Map.of());
-                  }
-                  snapId =
-                      snapshots
-                          .getCurrentSnapshot(tableId)
-                          .map(Snapshot::getSnapshotId)
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(), "snapshot", Map.of("id", tableId.getId())));
-                }
-                default ->
+                  final var tableId = request.getTableId();
+                  final var ref = request.getSnapshot();
+                  if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
                     throw GrpcErrors.invalidArgument(correlationId(), "snapshot.missing", Map.of());
-              }
+                  }
 
-              var items = stats.list(tableId, snapId, Math.max(1, limit), token, next);
-              int total = stats.count(tableId, snapId);
+                  final long snapId;
+                  switch (ref.getWhichCase()) {
+                    case SNAPSHOT_ID -> snapId = ref.getSnapshotId();
+                    case SPECIAL -> {
+                      if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
+                        throw GrpcErrors.invalidArgument(
+                            correlationId(), "snapshot.special.missing", Map.of());
+                      }
+                      snapId =
+                          snapshots
+                              .getCurrentSnapshot(tableId)
+                              .map(Snapshot::getSnapshotId)
+                              .orElseThrow(
+                                  () ->
+                                      GrpcErrors.notFound(
+                                          correlationId(),
+                                          "snapshot",
+                                          Map.of("id", tableId.getId())));
+                    }
+                    default ->
+                        throw GrpcErrors.invalidArgument(
+                            correlationId(), "snapshot.missing", Map.of());
+                  }
 
-              return ListColumnStatsResponse.newBuilder()
-                  .addAllColumns(items)
-                  .setPage(
-                      PageResponse.newBuilder()
-                          .setNextPageToken(next.toString())
-                          .setTotalSize(total)
-                          .build())
-                  .build();
-            }),
-        correlationId());
+                  var items = stats.list(tableId, snapId, Math.max(1, limit), token, next);
+                  int total = stats.count(tableId, snapId);
+
+                  return ListColumnStatsResponse.newBuilder()
+                      .addAllColumns(items)
+                      .setPage(
+                          PageResponse.newBuilder()
+                              .setNextPageToken(next.toString())
+                              .setTotalSize(total)
+                              .build())
+                      .build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 
   @Override
   public Uni<PutTableStatsResponse> putTableStats(PutTableStatsRequest request) {
+    var L = LogHelper.start(LOG, "PutTableStats");
+
     return mapFailures(
-        runWithRetry(
-            () -> {
-              var principalContext = principal.get();
-              var tenantId = principalContext.getTenantId();
+            runWithRetry(
+                () -> {
+                  var principalContext = principal.get();
+                  var tenantId = principalContext.getTenantId();
 
-              authz.require(principalContext, "table.write");
+                  authz.require(principalContext, "table.write");
 
-              var tsNow = nowTs();
+                  var tsNow = nowTs();
 
-              tables
-                  .getById(request.getTableId())
-                  .orElseThrow(
-                      () ->
-                          GrpcErrors.notFound(
-                              correlationId(),
-                              "table",
-                              Map.of("id", request.getTableId().getId())));
+                  tables
+                      .getById(request.getTableId())
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(),
+                                  "table",
+                                  Map.of("id", request.getTableId().getId())));
 
-              snapshots
-                  .getById(request.getTableId(), request.getSnapshotId())
-                  .orElseThrow(
-                      () ->
-                          GrpcErrors.notFound(
-                              correlationId(),
-                              "snapshot",
-                              Map.of("id", Long.toString(request.getSnapshotId()))));
+                  snapshots
+                      .getById(request.getTableId(), request.getSnapshotId())
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(),
+                                  "snapshot",
+                                  Map.of("id", Long.toString(request.getSnapshotId()))));
 
-              var fingerprint = request.getStats().toByteArray();
-              var idempotencyKey =
-                  request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
-                      ? request.getIdempotency().getKey()
-                      : hashFingerprint(fingerprint);
+                  var fingerprint = request.getStats().toByteArray();
+                  var idempotencyKey =
+                      request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
+                          ? request.getIdempotency().getKey()
+                          : hashFingerprint(fingerprint);
 
-              var tableStatsProto =
-                  MutationOps.createProto(
-                      principalContext.getTenantId(),
-                      "PutTableStats",
-                      idempotencyKey,
-                      () -> fingerprint,
-                      () -> {
-                        stats.putTableStats(
-                            request.getTableId(), request.getSnapshotId(), request.getStats());
-                        return new IdempotencyGuard.CreateResult<>(
-                            request.getStats(), request.getTableId());
-                      },
-                      (ignored) ->
-                          stats.metaForTableStats(
-                              request.getTableId(), request.getSnapshotId(), tsNow),
-                      idempotencyStore,
-                      tsNow,
-                      idempotencyTtlSeconds(),
-                      this::correlationId,
-                      TableStats::parseFrom);
+                  var tableStatsProto =
+                      MutationOps.createProto(
+                          principalContext.getTenantId(),
+                          "PutTableStats",
+                          idempotencyKey,
+                          () -> fingerprint,
+                          () -> {
+                            stats.putTableStats(
+                                request.getTableId(), request.getSnapshotId(), request.getStats());
+                            return new IdempotencyGuard.CreateResult<>(
+                                request.getStats(), request.getTableId());
+                          },
+                          (ignored) ->
+                              stats.metaForTableStats(
+                                  request.getTableId(), request.getSnapshotId(), tsNow),
+                          idempotencyStore,
+                          tsNow,
+                          idempotencyTtlSeconds(),
+                          this::correlationId,
+                          TableStats::parseFrom);
 
-              return PutTableStatsResponse.newBuilder()
-                  .setStats(request.getStats())
-                  .setMeta(tableStatsProto.meta)
-                  .build();
-            }),
-        correlationId());
+                  return PutTableStatsResponse.newBuilder()
+                      .setStats(request.getStats())
+                      .setMeta(tableStatsProto.meta)
+                      .build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 
   @Override
   public Uni<PutColumnStatsBatchResponse> putColumnStatsBatch(PutColumnStatsBatchRequest request) {
+    var L = LogHelper.start(LOG, "PutColumnStatsBatch");
+
     return mapFailures(
-        runWithRetry(
-            () -> {
-              var principalContext = principal.get();
-              var tenantId = principalContext.getTenantId();
+            runWithRetry(
+                () -> {
+                  var principalContext = principal.get();
+                  var tenantId = principalContext.getTenantId();
 
-              authz.require(principalContext, "table.write");
+                  authz.require(principalContext, "table.write");
 
-              var tsNow = nowTs();
+                  var tsNow = nowTs();
 
-              tables
-                  .getById(request.getTableId())
-                  .orElseThrow(
-                      () ->
-                          GrpcErrors.notFound(
-                              correlationId(),
-                              "table",
-                              Map.of("id", request.getTableId().getId())));
+                  tables
+                      .getById(request.getTableId())
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(),
+                                  "table",
+                                  Map.of("id", request.getTableId().getId())));
 
-              snapshots
-                  .getById(request.getTableId(), request.getSnapshotId())
-                  .orElseThrow(
-                      () ->
-                          GrpcErrors.notFound(
-                              correlationId(),
-                              "snapshot",
-                              Map.of("id", Long.toString(request.getSnapshotId()))));
+                  snapshots
+                      .getById(request.getTableId(), request.getSnapshotId())
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(),
+                                  "snapshot",
+                                  Map.of("id", Long.toString(request.getSnapshotId()))));
 
-              int upserted = 0;
-              for (var raw : request.getColumnsList()) {
-                var columnStats =
-                    raw.toBuilder()
-                        .setTableId(request.getTableId())
-                        .setSnapshotId(request.getSnapshotId())
-                        .build();
+                  int upserted = 0;
+                  for (var raw : request.getColumnsList()) {
+                    var columnStats =
+                        raw.toBuilder()
+                            .setTableId(request.getTableId())
+                            .setSnapshotId(request.getSnapshotId())
+                            .build();
 
-                var fingerprint = raw.toByteArray();
-                var idempotencyKey =
-                    request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
-                        ? request.getIdempotency().getKey()
-                        : hashFingerprint(fingerprint);
+                    var fingerprint = raw.toByteArray();
+                    var idempotencyKey =
+                        request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
+                            ? request.getIdempotency().getKey()
+                            : hashFingerprint(fingerprint);
 
-                MutationOps.createProto(
-                    tenantId,
-                    "PutColumnStats",
-                    idempotencyKey,
-                    () -> fingerprint,
-                    () -> {
-                      stats.putColumnStats(
-                          request.getTableId(), request.getSnapshotId(), columnStats);
-                      return new IdempotencyGuard.CreateResult<>(columnStats, request.getTableId());
-                    },
-                    (colStats) ->
-                        stats.metaForColumnStats(
-                            request.getTableId(),
-                            request.getSnapshotId(),
-                            colStats.getColumnId(),
-                            tsNow),
-                    idempotencyStore,
-                    tsNow,
-                    idempotencyTtlSeconds(),
-                    this::correlationId,
-                    ColumnStats::parseFrom);
+                    MutationOps.createProto(
+                        tenantId,
+                        "PutColumnStats",
+                        idempotencyKey,
+                        () -> fingerprint,
+                        () -> {
+                          stats.putColumnStats(
+                              request.getTableId(), request.getSnapshotId(), columnStats);
+                          return new IdempotencyGuard.CreateResult<>(
+                              columnStats, request.getTableId());
+                        },
+                        (colStats) ->
+                            stats.metaForColumnStats(
+                                request.getTableId(),
+                                request.getSnapshotId(),
+                                colStats.getColumnId(),
+                                tsNow),
+                        idempotencyStore,
+                        tsNow,
+                        idempotencyTtlSeconds(),
+                        this::correlationId,
+                        ColumnStats::parseFrom);
 
-                upserted++;
-              }
+                    upserted++;
+                  }
 
-              return PutColumnStatsBatchResponse.newBuilder().setUpserted(upserted).build();
-            }),
-        correlationId());
+                  return PutColumnStatsBatchResponse.newBuilder().setUpserted(upserted).build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 }

@@ -15,7 +15,6 @@ import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.Status;
-import io.opentelemetry.api.baggage.Baggage;
 import io.opentelemetry.api.trace.Span;
 import io.quarkus.grpc.GlobalInterceptor;
 import jakarta.annotation.Priority;
@@ -70,16 +69,10 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
     MDC.put("plan_id", planId);
     MDC.put("correlation_id", correlationId);
+    MDC.put("tenant_id", principalContext.getTenantId());
+    MDC.put("subject", principalContext.getSubject());
 
-    var baggage =
-        Baggage.current().toBuilder()
-            .put("plan_id", planId)
-            .put("correlation_id", correlationId)
-            .build();
-
-    var otelCtx = baggage.storeInContext(io.opentelemetry.context.Context.current());
-
-    var span = Span.fromContext(otelCtx);
+    var span = Span.current();
     if (span.getSpanContext().isValid()) {
       span.setAttribute("plan_id", planId);
       span.setAttribute("correlation_id", correlationId);
@@ -102,6 +95,8 @@ public class InboundContextInterceptor implements ServerInterceptor {
             } finally {
               MDC.remove("plan_id");
               MDC.remove("correlation_id");
+              MDC.remove("tenant_id");
+              MDC.remove("subject");
             }
             super.close(status, metadata);
           }
