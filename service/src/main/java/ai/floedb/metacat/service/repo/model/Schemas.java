@@ -10,6 +10,8 @@ import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.catalog.rpc.View;
 import ai.floedb.metacat.connector.rpc.Connector;
+import ai.floedb.metacat.service.repo.util.ColumnStatsNormalizer;
+import ai.floedb.metacat.service.repo.util.TableStatsNormalizer;
 import ai.floedb.metacat.tenant.rpc.Tenant;
 import com.google.protobuf.util.Timestamps;
 import java.util.ArrayList;
@@ -86,31 +88,42 @@ public final class Schemas {
                   v.getTableId().getTenantId(), v.getTableId().getId(), v.getSnapshotId()));
 
   public static final ResourceSchema<TableStats, TableStatsKey> TABLE_STATS =
-      ResourceSchema.of(
-          "table-stats",
-          key -> Keys.snapshotTableStatsPointer(key.tenantId(), key.tableId(), key.snapshotId()),
-          key -> Keys.snapshotTableStatsBlobUri(key.tenantId(), key.tableId(), key.snapshotId()),
-          v -> Map.of(),
-          v ->
-              new TableStatsKey(
-                  v.getTableId().getTenantId(), v.getTableId().getId(), v.getSnapshotId()));
+      ResourceSchema.<TableStats, TableStatsKey>of(
+              "table-stats",
+              (TableStatsKey key) ->
+                  Keys.snapshotTableStatsPointer(key.tenantId(), key.tableId(), key.snapshotId()),
+              (TableStatsKey key) ->
+                  Keys.snapshotTableStatsBlobUri(key.tenantId(), key.tableId(), key.sha256()),
+              (TableStats v) -> java.util.Map.of(),
+              (TableStats v) -> {
+                var norm = TableStatsNormalizer.normalize(v);
+                var sha = TableStatsNormalizer.sha256Hex(norm.toByteArray());
+                return new TableStatsKey(
+                    v.getTableId().getTenantId(), v.getTableId().getId(), v.getSnapshotId(), sha);
+              })
+          .withCasBlobs();
 
   public static final ResourceSchema<ColumnStats, ColumnStatsKey> COLUMN_STATS =
-      ResourceSchema.of(
-          "column-stats",
-          key ->
-              Keys.snapshotColumnStatsPointer(
-                  key.tenantId(), key.tableId(), key.snapshotId(), key.columnId()),
-          key ->
-              Keys.snapshotColumnStatsBlobUri(
-                  key.tenantId(), key.tableId(), key.snapshotId(), key.columnId()),
-          v -> Map.of(),
-          v ->
-              new ColumnStatsKey(
-                  v.getTableId().getTenantId(),
-                  v.getTableId().getId(),
-                  v.getSnapshotId(),
-                  v.getColumnId()));
+      ResourceSchema.<ColumnStats, ColumnStatsKey>of(
+              "column-stats",
+              (ColumnStatsKey key) ->
+                  Keys.snapshotColumnStatsPointer(
+                      key.tenantId(), key.tableId(), key.snapshotId(), key.columnId()),
+              (ColumnStatsKey key) ->
+                  Keys.snapshotColumnStatsBlobUri(
+                      key.tenantId(), key.tableId(), key.columnId(), key.sha256()),
+              (ColumnStats v) -> java.util.Map.of(),
+              (ColumnStats v) -> {
+                var norm = ColumnStatsNormalizer.normalize(v);
+                var sha = ColumnStatsNormalizer.sha256Hex(norm.toByteArray());
+                return new ColumnStatsKey(
+                    v.getTableId().getTenantId(),
+                    v.getTableId().getId(),
+                    v.getSnapshotId(),
+                    v.getColumnId(),
+                    sha);
+              })
+          .withCasBlobs();
 
   public static final ResourceSchema<View, ViewKey> VIEW =
       ResourceSchema.of(

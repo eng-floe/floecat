@@ -110,7 +110,24 @@ public class InMemoryPointerStore implements PointerStore {
 
   @Override
   public int deleteByPrefix(String prefix) {
-    return 0;
+    final String pfx = (prefix == null) ? "" : prefix;
+    if (pfx.isEmpty() || "/".equals(pfx)) {
+      int n = map.size();
+      map.clear();
+      return n;
+    }
+
+    final int[] cnt = {0};
+    map.keySet()
+        .removeIf(
+            k -> {
+              if (k.startsWith(pfx)) {
+                cnt[0]++;
+                return true;
+              }
+              return false;
+            });
+    return cnt[0];
   }
 
   @Override

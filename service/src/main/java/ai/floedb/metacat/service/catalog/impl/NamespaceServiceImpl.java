@@ -410,7 +410,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       (namespace) -> namespaceRepo.metaForSafe(namespace.getResourceId()),
                       idempotencyStore,
                       tsNow,
-                      IDEMPOTENCY_TTL_SECONDS,
+                      idempotencyTtlSeconds(),
                       this::correlationId,
                       Namespace::parseFrom);
 

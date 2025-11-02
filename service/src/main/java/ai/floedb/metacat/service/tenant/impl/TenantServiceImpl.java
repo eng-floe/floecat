@@ -152,7 +152,7 @@ public class TenantServiceImpl extends BaseServiceImpl implements TenantService 
                       (t) -> tenantRepo.metaFor(t.getResourceId()),
                       idempotencyStore,
                       tsNow,
-                      IDEMPOTENCY_TTL_SECONDS,
+                      idempotencyTtlSeconds(),
                       this::correlationId,
                       Tenant::parseFrom);
 

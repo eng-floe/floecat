@@ -190,7 +190,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       (conn) -> connectorRepo.metaFor(conn.getResourceId()),
                       idempotencyStore,
                       tsNow,
-                      IDEMPOTENCY_TTL_SECONDS,
+                      idempotencyTtlSeconds(),
                       this::correlationId,
                       Connector::parseFrom);
 

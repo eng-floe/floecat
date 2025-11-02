@@ -50,12 +50,12 @@ public class StatsRepository {
 
   public Optional<TableStats> getTableStats(ResourceId tableId, long snapshotId) {
     return tableStatsRepo.getByKey(
-        new TableStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId));
+        new TableStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, ""));
   }
 
   public boolean deleteTableStats(ResourceId tableId, long snapshotId) {
     return tableStatsRepo.delete(
-        new TableStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId));
+        new TableStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, ""));
   }
 
   public void putColumnStats(ResourceId tableId, long snapshotId, ColumnStats value) {
@@ -65,7 +65,7 @@ public class StatsRepository {
   public Optional<ColumnStats> getColumnStats(
       ResourceId tableId, long snapshotId, String columnId) {
     return columnStatsRepo.getByKey(
-        new ColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, columnId));
+        new ColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, columnId, ""));
   }
 
   public int putColumnStatsBatch(ResourceId tableId, long snapshotId, List<ColumnStats> batch) {
@@ -76,7 +76,8 @@ public class StatsRepository {
               cs.getTableId().getTenantId(),
               cs.getTableId().getId(),
               cs.getSnapshotId(),
-              cs.getColumnId());
+              cs.getColumnId(),
+              "");
       if (columnStatsRepo.getByKey(key).isEmpty()) {
         created++;
       }
@@ -114,7 +115,8 @@ public class StatsRepository {
                 cs.getTableId().getTenantId(),
                 cs.getTableId().getId(),
                 cs.getSnapshotId(),
-                cs.getColumnId());
+                cs.getColumnId(),
+                "");
         columnStatsRepo.delete(key);
       }
       token = next.toString();
@@ -126,32 +128,33 @@ public class StatsRepository {
 
   public MutationMeta metaForTableStats(ResourceId tableId, long snapshotId) {
     return tableStatsRepo.metaFor(
-        new TableStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId));
+        new TableStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, ""));
   }
 
   public MutationMeta metaForTableStats(ResourceId tableId, long snapshotId, Timestamp nowTs) {
     return tableStatsRepo.metaFor(
-        new TableStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId), nowTs);
+        new TableStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, ""), nowTs);
   }
 
   public MutationMeta metaForTableStatsSafe(ResourceId tableId, long snapshotId) {
     return tableStatsRepo.metaForSafe(
-        new TableStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId));
+        new TableStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, ""));
   }
 
   public MutationMeta metaForColumnStats(ResourceId tableId, long snapshotId, String columnId) {
     return columnStatsRepo.metaFor(
-        new ColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, columnId));
+        new ColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, columnId, ""));
   }
 
   public MutationMeta metaForColumnStats(
       ResourceId tableId, long snapshotId, String columnId, Timestamp nowTs) {
     return columnStatsRepo.metaFor(
-        new ColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, columnId), nowTs);
+        new ColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, columnId, ""),
+        nowTs);
   }
 
   public MutationMeta metaForColumnStatsSafe(ResourceId tableId, long snapshotId, String columnId) {
     return columnStatsRepo.metaForSafe(
-        new ColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, columnId));
+        new ColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, columnId, ""));
   }
 }

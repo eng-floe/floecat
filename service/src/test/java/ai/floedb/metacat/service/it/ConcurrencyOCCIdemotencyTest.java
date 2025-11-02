@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.*;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.metacat.service.gc.IdempotencyGc;
 import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
@@ -39,6 +40,7 @@ class ConcurrencyOCCIdempotencyIT {
   @GrpcClient("metacat")
   TableServiceGrpc.TableServiceBlockingStub table;
 
+  @Inject IdempotencyGc idemGc;
   @Inject PointerStore ptr;
   @Inject BlobStore blobs;
 
@@ -254,6 +256,26 @@ class ConcurrencyOCCIdempotencyIT {
       long vSeed = ptr.get(canonSeed).orElseThrow().getVersion();
       assertTrue(vSeed >= v0, "seed pointer version must be >= initial");
     }
+
+    Thread.sleep(1500);
+
+    final String tenantId = cat.getResourceId().getTenantId();
+
+    String idemBlobPrefix = Keys.idempotencyPrefixTenant(tenantId);
+    String idemPtrPrefix = Keys.idempotencyPrefixTenant(tenantId);
+
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    do {
+      if (listAllBlobKeysUnder(idemBlobPrefix).isEmpty()
+          && listAllPointersUnder(idemPtrPrefix).isEmpty()) break;
+      Thread.sleep(200);
+    } while (System.nanoTime() < deadline);
+
+    var remainingBlobs = listAllBlobKeysUnder(idemBlobPrefix);
+    var remainingPtrs = listAllPointersUnder(idemPtrPrefix);
+
+    assertTrue(remainingBlobs.isEmpty(), "idempotency blobs should be GC'd");
+    assertTrue(remainingPtrs.isEmpty(), "idempotency pointers should be GC'd");
   }
 
   private static IdempotencyKey idem(String s) {
@@ -297,5 +319,29 @@ class ConcurrencyOCCIdempotencyIT {
       }
     }
     unexpected.add(t);
+  }
+
+  private List<String> listAllBlobKeysUnder(String prefix) {
+    var out = new ArrayList<String>();
+    String tok = "";
+    do {
+      var page = blobs.list(prefix, 500, tok);
+      out.addAll(page.keys());
+      tok = page.nextToken() == null ? "" : page.nextToken();
+    } while (!tok.isBlank());
+    return out;
+  }
+
+  private List<Pointer> listAllPointersUnder(String prefix) {
+    var out = new ArrayList<ai.floedb.metacat.common.rpc.Pointer>();
+    String tok = "";
+    StringBuilder next = new StringBuilder();
+    do {
+      var page = ptr.listPointersByPrefix(prefix, 500, tok, next);
+      out.addAll(page);
+      tok = next.toString();
+      next.setLength(0);
+    } while (!tok.isBlank());
+    return out;
   }
 }

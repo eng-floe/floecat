@@ -225,7 +225,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                       (view) -> viewRepo.metaForSafe(view.getResourceId()),
                       idempotencyStore,
                       tsNow,
-                      IDEMPOTENCY_TTL_SECONDS,
+                      idempotencyTtlSeconds(),
                       this::correlationId,
                       View::parseFrom);
 

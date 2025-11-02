@@ -29,6 +29,7 @@ import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 public abstract class BaseServiceImpl {
   @Inject PrincipalProvider principal;
@@ -40,7 +41,12 @@ public abstract class BaseServiceImpl {
   protected static final double JITTER = 0.5;
   protected static final int RETRIES = 8;
 
-  protected static final long IDEMPOTENCY_TTL_SECONDS = 86_400L;
+  @ConfigProperty(name = "metacat.idempotency.ttl-seconds", defaultValue = "900")
+  protected long idempotencyTtlSeconds;
+
+  protected long idempotencyTtlSeconds() {
+    return idempotencyTtlSeconds;
+  }
 
   protected <T> Uni<T> run(Supplier<T> body) {
     Uni<T> u = Uni.createFrom().item(body);

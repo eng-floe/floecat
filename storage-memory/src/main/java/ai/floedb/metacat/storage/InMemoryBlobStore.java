@@ -39,6 +39,7 @@ public class InMemoryBlobStore implements BlobStore {
 
   @Override
   public void put(String uri, byte[] bytes, String contentType) {
+    uri = normalize(uri);
     Objects.requireNonNull(uri, "uri");
     Objects.requireNonNull(bytes, "bytes");
     final String ct =
@@ -71,6 +72,7 @@ public class InMemoryBlobStore implements BlobStore {
 
   @Override
   public byte[] get(String uri) {
+    uri = normalize(uri);
     Blob b = map.get(uri);
     if (b == null) {
       return null;
@@ -80,11 +82,13 @@ public class InMemoryBlobStore implements BlobStore {
 
   @Override
   public Optional<BlobHeader> head(String uri) {
+    uri = normalize(uri);
     return Optional.ofNullable(map.get(uri)).map(bl -> bl.hdr);
   }
 
   @Override
   public boolean delete(String uri) {
+    uri = normalize(uri);
     return map.remove(uri) != null;
   }
 
@@ -96,7 +100,8 @@ public class InMemoryBlobStore implements BlobStore {
 
     Map<String, byte[]> out = new HashMap<>(uris.size());
     for (String u : uris) {
-      Blob b = map.get(u);
+      String k = normalize(u);
+      Blob b = map.get(k);
       if (b != null) {
         out.put(u, Arrays.copyOf(b.data, b.data.length));
       }
@@ -119,7 +124,60 @@ public class InMemoryBlobStore implements BlobStore {
   }
 
   @Override
-  public void deletePrefix(String prefix) {}
+  public void deletePrefix(String prefix) {
+    final String p = normalize(prefix);
+    var it = map.keySet().iterator();
+    while (it.hasNext()) {
+      String k = it.next();
+      if (k.startsWith(p)) {
+        it.remove();
+      }
+    }
+  }
+
+  private static final class PageImpl implements BlobStore.Page {
+    private final List<String> keys;
+    private final String next;
+
+    PageImpl(List<String> keys, String next) {
+      this.keys = keys;
+      this.next = next;
+    }
+
+    @Override
+    public List<String> keys() {
+      return keys;
+    }
+
+    @Override
+    public String nextToken() {
+      return next;
+    }
+  }
+
+  @Override
+  public BlobStore.Page list(String prefix, int limit, String pageToken) {
+    final String p = normalize(prefix);
+    final int lim = Math.max(1, limit);
+
+    var keys = map.keySet().stream().filter(k -> k.startsWith(p)).sorted().toList();
+
+    int startIdx = 0;
+    if (pageToken != null && !pageToken.isBlank()) {
+      int idx = Collections.binarySearch(keys, pageToken);
+      startIdx = (idx >= 0) ? (idx + 1) : Math.max(0, -idx - 1);
+    }
+
+    if (startIdx >= keys.size()) {
+      return new PageImpl(List.of(), "");
+    }
+
+    int endIdx = Math.min(keys.size(), startIdx + lim);
+    var slice = keys.subList(startIdx, endIdx);
+
+    String next = (endIdx < keys.size()) ? slice.get(slice.size() - 1) : "";
+    return new PageImpl(List.copyOf(slice), next);
+  }
 
   private static String sha256B64(byte[] data) {
     try {
@@ -129,5 +187,9 @@ public class InMemoryBlobStore implements BlobStore {
     } catch (java.security.NoSuchAlgorithmException e) {
       throw new IllegalStateException(e);
     }
+  }
+
+  private static String normalize(String key) {
+    return key == null ? "" : (key.startsWith("/") ? key.substring(1) : key);
   }
 }

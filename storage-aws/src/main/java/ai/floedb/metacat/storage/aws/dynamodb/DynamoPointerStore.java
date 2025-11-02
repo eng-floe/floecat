@@ -243,49 +243,59 @@ public final class DynamoPointerStore implements PointerStore {
   @Override
   public List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
-    var mappedPrefix = mapPrefix(prefix);
-    QueryRequest.Builder queryBuilder =
-        QueryRequest.builder().tableName(table).consistentRead(true).limit(Math.max(1, limit));
 
+    var mappedPrefix = mapPrefix(prefix);
+
+    final Map<String, String> names = new HashMap<>();
+    names.put("#pk", ATTR_PK);
+    names.put("#sk", ATTR_SK);
+    names.put("#b", ATTR_BLOB_URI);
+    names.put("#v", ATTR_VERSION);
+    names.put("#e", ATTR_EXPIRES_AT);
+
+    QueryRequest.Builder qb =
+        QueryRequest.builder()
+            .tableName(table)
+            .consistentRead(true)
+            .limit(Math.max(1, limit))
+            .projectionExpression("#pk,#sk,#b,#v,#e")
+            .expressionAttributeNames(names);
+
+    final Map<String, AttributeValue> values = new HashMap<>();
     if (mappedPrefix.skPrefix().isEmpty()) {
-      queryBuilder
-          .keyConditionExpression("#pk = :pk")
-          .expressionAttributeNames(Map.of("#pk", ATTR_PK))
-          .expressionAttributeValues(Map.of(":pk", AttributeValue.fromS(mappedPrefix.pk())));
+      qb.keyConditionExpression("#pk = :pk");
+      values.put(":pk", AttributeValue.fromS(mappedPrefix.pk()));
     } else {
-      queryBuilder
-          .keyConditionExpression("#pk = :pk AND begins_with(#sk, :skp)")
-          .expressionAttributeNames(Map.of("#pk", ATTR_PK, "#sk", ATTR_SK))
-          .expressionAttributeValues(
-              Map.of(
-                  ":pk", AttributeValue.fromS(mappedPrefix.pk()),
-                  ":skp", AttributeValue.fromS(mappedPrefix.skPrefix())));
+      qb.keyConditionExpression("#pk = :pk AND begins_with(#sk, :skp)");
+      values.put(":pk", AttributeValue.fromS(mappedPrefix.pk()));
+      values.put(":skp", AttributeValue.fromS(mappedPrefix.skPrefix()));
     }
+    qb.expressionAttributeValues(values);
 
     if (pageToken != null && !pageToken.isBlank()) {
-      queryBuilder.exclusiveStartKey(decodeToken(pageToken));
+      qb.exclusiveStartKey(decodeToken(pageToken));
     }
 
     try {
-      var query = dynamoDb.query(queryBuilder.build());
-      if (query.lastEvaluatedKey() != null && !query.lastEvaluatedKey().isEmpty()) {
-        nextTokenOut.append(encodeToken(query.lastEvaluatedKey()));
+      var query = dynamoDb.query(qb.build());
+
+      if (nextTokenOut != null) {
+        nextTokenOut.setLength(0);
+        var lek = query.lastEvaluatedKey();
+        if (lek != null && !lek.isEmpty()) {
+          nextTokenOut.append(encodeToken(lek));
+        }
       }
+
       var rows = new ArrayList<Pointer>(query.count());
       for (var item : query.items()) {
         String pk = attrS(item, ATTR_PK);
         String sk = attrS(item, ATTR_SK);
         String pointerKey = fullKey(pk, sk);
-        String blobUri = attrS(item, ATTR_BLOB_URI);
-        long version = Long.parseLong(attrN(item, ATTR_VERSION));
-        rows.add(
-            Pointer.newBuilder()
-                .setKey(pointerKey)
-                .setBlobUri(blobUri)
-                .setVersion(version)
-                .build());
+        rows.add(fromItemToPointer(pointerKey, item));
       }
       return rows;
+
     } catch (DynamoDbException e) {
       throw mapAndWrap("Query", prefix, e);
     } catch (SdkClientException e) {
@@ -415,7 +425,10 @@ public final class DynamoPointerStore implements PointerStore {
     var bytes = Base64.getUrlDecoder().decode(token);
     var s = new String(bytes, StandardCharsets.UTF_8);
     int idx = s.indexOf('\n');
-    if (idx <= 0) throw new IllegalArgumentException("bad page token");
+    if (idx <= 0) {
+      throw new IllegalArgumentException("bad page token");
+    }
+
     String pk = s.substring(0, idx);
     String sk = s.substring(idx + 1);
     return kv(pk, sk);
@@ -426,11 +439,18 @@ public final class DynamoPointerStore implements PointerStore {
     if (k.startsWith("tenants/by-id/") || k.startsWith("tenants/by-name/")) {
       return new MappedKey(GLOBAL_PK, k);
     }
-    if (!k.startsWith("tenants/"))
+
+    if (!k.startsWith("tenants/")) {
       throw new IllegalArgumentException("unexpected key: " + pointerKey);
+    }
+
     int firstSlash = k.indexOf('/');
     int secondSlash = k.indexOf('/', firstSlash + 1);
-    if (secondSlash < 0) throw new IllegalArgumentException("bad key: " + pointerKey);
+
+    if (secondSlash < 0) {
+      throw new IllegalArgumentException("bad key: " + pointerKey);
+    }
+
     String tenantId = k.substring(firstSlash + 1, secondSlash);
     String remainder = k.substring(secondSlash + 1);
     return new MappedKey(tenantId, remainder);
@@ -447,12 +467,15 @@ public final class DynamoPointerStore implements PointerStore {
       return new MappedPrefix(GLOBAL_PK, p);
     }
 
-    if (!p.startsWith("tenants/"))
+    if (!p.startsWith("tenants/")) {
       throw new IllegalArgumentException("unexpected prefix: " + prefix);
+    }
 
     int firstSlash = p.indexOf('/');
     int secondSlash = p.indexOf('/', firstSlash + 1);
-    if (secondSlash < 0) throw new IllegalArgumentException("bad prefix: " + prefix);
+    if (secondSlash < 0) {
+      throw new IllegalArgumentException("bad prefix: " + prefix);
+    }
 
     String tenantId = p.substring(firstSlash + 1, secondSlash);
     String remainderPrefix = p.substring(secondSlash + 1);

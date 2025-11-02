@@ -210,7 +210,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                       (table) -> tableRepo.metaForSafe(table.getResourceId()),
                       idempotencyStore,
                       tsNow,
-                      IDEMPOTENCY_TTL_SECONDS,
+                      idempotencyTtlSeconds(),
                       this::correlationId,
                       Table::parseFrom);
 

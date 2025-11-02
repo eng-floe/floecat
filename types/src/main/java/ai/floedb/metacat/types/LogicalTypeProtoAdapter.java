@@ -1,6 +1,7 @@
 package ai.floedb.metacat.types;
 
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
+import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.UpstreamStamp;
 import com.google.protobuf.Timestamp;
 import java.util.Locale;
@@ -63,7 +64,7 @@ public final class LogicalTypeProtoAdapter {
   }
 
   public static UpstreamStamp upstreamStamp(
-      ai.floedb.metacat.catalog.rpc.TableFormat system,
+      TableFormat system,
       String tableNativeId,
       String commitRef,
       Timestamp fetchedAt,

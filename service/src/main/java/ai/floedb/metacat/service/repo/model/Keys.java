@@ -151,7 +151,8 @@ public final class Keys {
 
   private static String snapshotStatsRootPointer(String tenantId, String tableId, long snapshotId) {
     return String.format(
-        "/tenants/%s/tables/%s/snapshots/%d/stats/", encode(tenantId), encode(tableId), snapshotId);
+        "/tenants/%s/tables/%s/snapshots/%019d/stats/",
+        encode(tenantId), encode(tableId), snapshotId);
   }
 
   public static String snapshotTableStatsPointer(String tenantId, String tableId, long snapshotId) {
@@ -165,20 +166,38 @@ public final class Keys {
 
   public static String snapshotColumnStatsPointer(
       String tenantId, String tableId, long snapshotId, String columnId) {
+
+    if (columnId == null || columnId.isBlank()) {
+      throw new IllegalArgumentException("columnId must be set for column stats");
+    }
+
+    if (columnId.matches("^(0|[1-9]\\d*)$")) {
+      columnId = String.format("%019d", Long.parseLong(columnId));
+    }
+
     return snapshotColumnStatsDirectoryPointer(tenantId, tableId, snapshotId) + encode(columnId);
   }
 
-  public static String snapshotTableStatsBlobUri(String tenantId, String tableId, long snapshotId) {
+  public static String snapshotTableStatsBlobUri(String tenantId, String tableId, String sha256) {
     return String.format(
-        "/tenants/%s/tables/%s/snapshots/%d/stats/table.pb",
-        encode(tenantId), encode(tableId), snapshotId);
+        "/tenants/%s/tables/%s/table-stats/%s.pb",
+        encode(tenantId), encode(tableId), encode(sha256));
   }
 
   public static String snapshotColumnStatsBlobUri(
-      String tenantId, String tableId, long snapshotId, String columnId) {
+      String tenantId, String tableId, String columnId, String sha256) {
+
+    if (columnId == null || columnId.isBlank()) {
+      throw new IllegalArgumentException("columnId must be set for column stats");
+    }
+
+    if (columnId.matches("^(0|[1-9]\\d*)$")) {
+      columnId = String.format("%019d", Long.parseLong(columnId));
+    }
+
     return String.format(
-        "/tenants/%s/tables/%s/snapshots/%d/stats/columns/%s/column.pb",
-        encode(tenantId), encode(tableId), snapshotId, encode(columnId));
+        "/tenants/%s/tables/%s/column-stats/%s/%s.pb",
+        encode(tenantId), encode(tableId), encode(columnId), encode(sha256));
   }
 
   public static String snapshotStatsPrefix(String tenantId, String tableId, long snapshotId) {
@@ -196,25 +215,26 @@ public final class Keys {
   }
 
   public static String viewPointerByName(
-          String tenantId, String catalogId, String namespaceId, String viewName) {
+      String tenantId, String catalogId, String namespaceId, String viewName) {
     return "/tenants/"
-            + encode(tenantId)
-            + "/catalogs/"
-            + encode(catalogId)
-            + "/namespaces/"
-            + encode(namespaceId)
-            + "/views/by-name/"
-            + encode(viewName);
+        + encode(tenantId)
+        + "/catalogs/"
+        + encode(catalogId)
+        + "/namespaces/"
+        + encode(namespaceId)
+        + "/views/by-name/"
+        + encode(viewName);
   }
 
-  public static String viewPointerByNamePrefix(String tenantId, String catalogId, String namespaceId) {
+  public static String viewPointerByNamePrefix(
+      String tenantId, String catalogId, String namespaceId) {
     return "/tenants/"
-            + encode(tenantId)
-            + "/catalogs/"
-            + encode(catalogId)
-            + "/namespaces/"
-            + encode(namespaceId)
-            + "/views/by-name/";
+        + encode(tenantId)
+        + "/catalogs/"
+        + encode(catalogId)
+        + "/namespaces/"
+        + encode(namespaceId)
+        + "/views/by-name/";
   }
 
   public static String viewBlobUri(String tenantId, String viewId) {
@@ -247,5 +267,9 @@ public final class Keys {
 
   public static String idempotencyBlobUri(String tenantId, String key) {
     return "/tenants/" + encode(tenantId) + "/idempotency/" + encode(key) + "/idempotency.pb";
+  }
+
+  public static String idempotencyPrefixTenant(String tenantId) {
+    return "/tenants/" + encode(tenantId) + "/idempotency/";
   }
 }

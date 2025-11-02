@@ -23,10 +23,10 @@ public class TestDataResetter {
     tenantIds.parallelStream().forEach(tid -> ptr.deleteByPrefix("/tenants/" + tid + "/"));
     ptr.deleteByPrefix("/idempotency/");
 
-    ptr.deleteByPrefix("/tenants/");
     blobs.deletePrefix("/tenants/");
-    ptr.deleteByPrefix("/idempotency/");
+    ptr.deleteByPrefix("/tenants/");
     blobs.deletePrefix("/idempotency/");
+    ptr.deleteByPrefix("/idempotency/");
   }
 
   private List<String> listTenantIds() {

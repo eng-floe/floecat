@@ -13,6 +13,7 @@ import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.security.MessageDigest;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -81,7 +82,9 @@ public class S3BlobStore implements BlobStore {
               ResponseTransformer.toBytes())
           .asByteArray();
     } catch (S3Exception e) {
-      if (e.statusCode() == 404) throw new StorageNotFoundException(msg("GET", k, "not found"));
+      if (e.statusCode() == 404) {
+        throw new StorageNotFoundException(msg("GET", k, "not found"));
+      }
       throw mapAndWrap("GET", k, e);
     } catch (SdkClientException e) {
       throw new StorageAbortRetryableException(msg("GET", k, e.getMessage()));
@@ -95,12 +98,66 @@ public class S3BlobStore implements BlobStore {
       String checksum = computeSha256Base64(bytes);
       PutObjectRequest.Builder b =
           PutObjectRequest.builder().bucket(bucket).key(k).metadata(Map.of(META_SHA256, checksum));
-      if (contentType != null && !contentType.isBlank()) b = b.contentType(contentType);
+      if (contentType != null && !contentType.isBlank()) {
+        b = b.contentType(contentType);
+      }
+
       s3.putObject(b.build(), RequestBody.fromBytes(bytes));
     } catch (S3Exception e) {
       throw mapAndWrap("PUT", k, e);
     } catch (SdkClientException e) {
       throw new StorageAbortRetryableException(msg("PUT", k, e.getMessage()));
+    }
+  }
+
+  private static final class PageImpl implements BlobStore.Page {
+    private final List<String> keys;
+    private final String next;
+
+    PageImpl(List<String> keys, String next) {
+      this.keys = keys;
+      this.next = next;
+    }
+
+    @Override
+    public List<String> keys() {
+      return keys;
+    }
+
+    @Override
+    public String nextToken() {
+      return next;
+    }
+  }
+
+  @Override
+  public BlobStore.Page list(String prefix, int limit, String pageToken) {
+    final String p = normalize(prefix);
+    final int lim = Math.max(1, limit);
+
+    try {
+      ListObjectsV2Request.Builder b =
+          ListObjectsV2Request.builder().bucket(bucket).prefix(p).maxKeys(lim);
+
+      if (pageToken != null && !pageToken.isBlank()) {
+        b = b.continuationToken(pageToken);
+      }
+
+      ListObjectsV2Response resp = s3.listObjectsV2(b.build());
+
+      var keys = resp.contents().stream().map(o -> o.key()).toList();
+
+      String next = resp.isTruncated() ? resp.nextContinuationToken() : "";
+
+      return new PageImpl(keys, next);
+
+    } catch (S3Exception e) {
+      if (e.statusCode() == 404) {
+        return new PageImpl(List.of(), "");
+      }
+      throw mapAndWrap("LIST", p, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("LIST", p, e.getMessage()));
     }
   }
 
@@ -122,40 +179,46 @@ public class S3BlobStore implements BlobStore {
 
   @Override
   public void deletePrefix(String prefix) {
-    String p = normalize(prefix);
+    final String p = normalize(prefix);
     String ct = null;
-    boolean hasMoreObjects;
 
-    do {
-      ListObjectsV2Request.Builder builder =
-          ListObjectsV2Request.builder().bucket(bucket).prefix(p);
-      if (ct != null) {
-        builder.continuationToken(ct);
+    try {
+      do {
+        var req =
+            ListObjectsV2Request.builder()
+                .bucket(bucket)
+                .prefix(p)
+                .maxKeys(1000)
+                .continuationToken(ct)
+                .build();
+
+        var resp = s3.listObjectsV2(req);
+
+        if (!resp.contents().isEmpty()) {
+          var objs = resp.contents();
+          for (int i = 0; i < objs.size(); i += 1000) {
+            var slice = objs.subList(i, Math.min(i + 1000, objs.size()));
+            var dels =
+                slice.stream().map(o -> ObjectIdentifier.builder().key(o.key()).build()).toList();
+            s3.deleteObjects(b -> b.bucket(bucket).delete(d -> d.objects(dels)));
+          }
+        }
+
+        ct = resp.isTruncated() ? resp.nextContinuationToken() : null;
+
+      } while (ct != null);
+
+      if (p.endsWith("/")) {
+        try {
+          s3.deleteObject(b -> b.bucket(bucket).key(p));
+        } catch (Throwable ignore) {
+        }
       }
-      ListObjectsV2Response resp = s3.listObjectsV2(builder.build());
 
-      if (!resp.contents().isEmpty()) {
-        var dels =
-            resp.contents().stream()
-                .map(o -> ObjectIdentifier.builder().key(o.key()).build())
-                .toList();
-        s3.deleteObjects(b -> b.bucket(bucket).delete(d -> d.objects(dels)));
-      }
-
-      hasMoreObjects = resp.isTruncated();
-      if (hasMoreObjects) {
-        ct = resp.nextContinuationToken();
-      } else {
-        ct = null;
-      }
-
-    } while (ct != null);
-
-    if (p.endsWith("/")) {
-      try {
-        s3.deleteObject(b -> b.bucket(bucket).key(p));
-      } catch (Throwable ignore) {
-      }
+    } catch (S3Exception e) {
+      throw mapAndWrap("DELETE_PREFIX", p, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("DELETE_PREFIX", p, e.getMessage()));
     }
   }
 

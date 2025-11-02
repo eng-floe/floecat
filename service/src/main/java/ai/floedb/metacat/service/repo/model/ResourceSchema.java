@@ -16,12 +16,15 @@ public final class ResourceSchema<T, K extends ResourceKey> {
 
   public final String resourceName;
 
+  public final boolean casBlobs;
+
   private ResourceSchema(
       String resourceName,
       Function<K, String> canonicalPointerForKey,
       Function<K, String> blobUriForKey,
       Function<T, Map<String, String>> secondaryPointersFromValue,
-      Function<T, K> keyFromValue) {
+      Function<T, K> keyFromValue,
+      boolean casBlobs) {
     this.resourceName = Objects.requireNonNull(resourceName, "resourceName");
     this.canonicalPointerForKey =
         Objects.requireNonNull(canonicalPointerForKey, "canonicalPointerForKey");
@@ -29,6 +32,7 @@ public final class ResourceSchema<T, K extends ResourceKey> {
     this.secondaryPointersFromValue =
         Objects.requireNonNull(secondaryPointersFromValue, "secondaryPointersFromValue");
     this.keyFromValue = Objects.requireNonNull(keyFromValue, "keyFromValue");
+    this.casBlobs = casBlobs;
   }
 
   public static <T, K extends ResourceKey> ResourceSchema<T, K> of(
@@ -42,6 +46,17 @@ public final class ResourceSchema<T, K extends ResourceKey> {
         canonicalPointerForKey,
         blobUriForKey,
         secondaryPointersFromValue,
-        keyFromValue);
+        keyFromValue,
+        false);
+  }
+
+  public ResourceSchema<T, K> withCasBlobs() {
+    return new ResourceSchema<>(
+        resourceName,
+        canonicalPointerForKey,
+        blobUriForKey,
+        secondaryPointersFromValue,
+        keyFromValue,
+        true);
   }
 }

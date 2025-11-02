@@ -215,7 +215,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                               request.getTableId(), request.getSnapshotId(), tsNow),
                       idempotencyStore,
                       tsNow,
-                      IDEMPOTENCY_TTL_SECONDS,
+                      idempotencyTtlSeconds(),
                       this::correlationId,
                       TableStats::parseFrom);
 
@@ -289,7 +289,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                             tsNow),
                     idempotencyStore,
                     tsNow,
-                    IDEMPOTENCY_TTL_SECONDS,
+                    idempotencyTtlSeconds(),
                     this::correlationId,
                     ColumnStats::parseFrom);
 

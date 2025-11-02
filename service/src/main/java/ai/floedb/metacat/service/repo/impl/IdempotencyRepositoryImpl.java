@@ -64,7 +64,13 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
 
     for (int i = 0; i < CAS_MAX; i++) {
       long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
-      var next = Pointer.newBuilder().setKey(key).setBlobUri(uri).setVersion(expected + 1).build();
+      var next =
+          Pointer.newBuilder()
+              .setKey(key)
+              .setBlobUri(uri)
+              .setExpiresAt(expiresAt)
+              .setVersion(expected + 1)
+              .build();
       if (ptr.compareAndSet(key, expected, next)) {
         return true;
       }
@@ -101,7 +107,13 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
 
     for (int i = 0; i < CAS_MAX; i++) {
       long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
-      var next = Pointer.newBuilder().setKey(key).setBlobUri(uri).setVersion(expected + 1).build();
+      var next =
+          Pointer.newBuilder()
+              .setKey(key)
+              .setExpiresAt(expiresAt)
+              .setBlobUri(uri)
+              .setVersion(expected + 1)
+              .build();
       if (ptr.compareAndSet(key, expected, next)) {
         break;
       }

@@ -118,7 +118,10 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     for (String p : currentSecondary) {
       pointerStore.get(p).ifPresent(ptr -> compareAndDeleteOrFalse(p, ptr.getVersion()));
     }
-    deleteQuietly(() -> blobStore.delete(blobUri));
+
+    if (!schema.casBlobs) {
+      deleteQuietly(() -> blobStore.delete(blobUri));
+    }
     return true;
   }
 
@@ -140,7 +143,10 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     for (String p : currentSecondary) {
       pointerStore.get(p).ifPresent(ptr -> compareAndDeleteOrFalse(p, ptr.getVersion()));
     }
-    deleteQuietly(() -> blobStore.delete(blobUri));
+
+    if (!schema.casBlobs) {
+      deleteQuietly(() -> blobStore.delete(blobUri));
+    }
     return true;
   }
 
@@ -165,8 +171,12 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   public MutationMeta metaForSafe(K key, Timestamp nowTs) {
-    String canonicalPointer = schema.canonicalPointerForKey.apply(key);
+    String canonical = schema.canonicalPointerForKey.apply(key);
+    var ptrOpt = pointerStore.get(canonical);
     String blobUri = schema.blobUriForKey.apply(key);
-    return safeMetaOrDefault(canonicalPointer, blobUri, nowTs);
+    if (schema.casBlobs && ptrOpt.isPresent() && ptrOpt.get().getBlobUri() != null) {
+      blobUri = ptrOpt.get().getBlobUri();
+    }
+    return safeMetaOrDefault(canonical, blobUri, nowTs);
   }
 }

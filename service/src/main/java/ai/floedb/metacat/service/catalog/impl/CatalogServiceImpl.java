@@ -160,7 +160,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                       (catalog) -> catalogRepo.metaForSafe(catalog.getResourceId()),
                       idempotencyStore,
                       tsNow,
-                      IDEMPOTENCY_TTL_SECONDS,
+                      idempotencyTtlSeconds(),
                       this::correlationId,
                       Catalog::parseFrom);
 

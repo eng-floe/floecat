@@ -11,7 +11,7 @@ public interface BlobStore {
 
   void put(String uri, byte[] bytes, String contentType);
 
-  public Optional<BlobHeader> head(String uri);
+  Optional<BlobHeader> head(String uri);
 
   boolean delete(String uri);
 
@@ -22,4 +22,12 @@ public interface BlobStore {
     for (String u : uris) out.put(u, get(u));
     return out;
   }
+
+  interface Page {
+    List<String> keys();
+
+    String nextToken();
+  }
+
+  Page list(String prefix, int limit, String pageToken);
 }

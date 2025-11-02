@@ -182,7 +182,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                           snapshotRepo.metaForSafe(snapshot.getTableId(), snapshot.getSnapshotId()),
                       idempotencyStore,
                       tsNow,
-                      IDEMPOTENCY_TTL_SECONDS,
+                      idempotencyTtlSeconds(),
                       this::correlationId,
                       Snapshot::parseFrom);
 
