@@ -13,6 +13,7 @@ import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.security.MessageDigest;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -36,6 +37,7 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 public class S3BlobStore implements BlobStore {
 
   private static final String META_SHA256 = "metacat-sha256";
+  private static final String META_CREATED_AT = "metacat-created-at";
 
   private final S3Client s3;
   private final String bucket;
@@ -54,19 +56,35 @@ public class S3BlobStore implements BlobStore {
   public Optional<BlobHeader> head(String key) {
     final String k = normalize(key);
     try {
-      HeadObjectResponse response =
+      HeadObjectResponse r =
           s3.headObject(HeadObjectRequest.builder().bucket(bucket).key(k).build());
 
-      String metaSha = response.metadata() != null ? response.metadata().get(META_SHA256) : null;
-      if (metaSha == null || metaSha.isBlank()) {
-        return Optional.empty();
-      }
+      String metaSha = (r.metadata() != null) ? r.metadata().get(META_SHA256) : null;
 
-      return Optional.of(BlobHeader.newBuilder().setEtag(metaSha).build());
+      long createdAtMs =
+          Optional.ofNullable(r.metadata() != null ? r.metadata().get(META_CREATED_AT) : null)
+              .map(Long::parseLong)
+              .orElseGet(
+                  () ->
+                      r.lastModified() != null
+                          ? r.lastModified().toEpochMilli()
+                          : System.currentTimeMillis());
+      long lastModifiedMs =
+          (r.lastModified() != null) ? r.lastModified().toEpochMilli() : createdAtMs;
+
+      long storedBytes = r.contentLength();
+
+      BlobHeader.Builder hb =
+          BlobHeader.newBuilder()
+              .setSchemaVersion("v1")
+              .setEtag(metaSha == null ? "" : metaSha)
+              .setCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
+              .setLastModifiedAt(com.google.protobuf.util.Timestamps.fromMillis(lastModifiedMs))
+              .setContentLength((int) Math.min(Integer.MAX_VALUE, storedBytes));
+
+      return Optional.of(hb.build());
     } catch (S3Exception e) {
-      if (e.statusCode() == 404) {
-        return Optional.empty();
-      }
+      if (e.statusCode() == 404) return Optional.empty();
       throw mapAndWrap("HEAD", k, e);
     } catch (SdkClientException e) {
       throw new StorageAbortRetryableException(msg("HEAD", k, e.getMessage()));
@@ -95,14 +113,36 @@ public class S3BlobStore implements BlobStore {
   public void put(String key, byte[] bytes, String contentType) {
     final String k = normalize(key);
     try {
-      String checksum = computeSha256Base64(bytes);
-      PutObjectRequest.Builder b =
-          PutObjectRequest.builder().bucket(bucket).key(k).metadata(Map.of(META_SHA256, checksum));
-      if (contentType != null && !contentType.isBlank()) {
-        b = b.contentType(contentType);
+      Long createdAtMs = null;
+      try {
+        HeadObjectResponse prev =
+            s3.headObject(HeadObjectRequest.builder().bucket(bucket).key(k).build());
+        createdAtMs =
+            Optional.ofNullable(prev.metadata().get(META_CREATED_AT))
+                .map(Long::parseLong)
+                .orElse(null);
+      } catch (S3Exception e) {
+        if (e.statusCode() != 404) {
+          throw e;
+        }
       }
 
-      s3.putObject(b.build(), RequestBody.fromBytes(bytes));
+      if (createdAtMs == null) {
+        createdAtMs = System.currentTimeMillis();
+      }
+
+      String checksum = computeSha256Base64(bytes);
+      String ct =
+          (contentType == null || contentType.isBlank()) ? "application/octet-stream" : contentType;
+
+      Map<String, String> meta = new HashMap<>();
+      meta.put(META_SHA256, checksum);
+      meta.put(META_CREATED_AT, Long.toString(createdAtMs));
+
+      PutObjectRequest req =
+          PutObjectRequest.builder().bucket(bucket).key(k).contentType(ct).metadata(meta).build();
+
+      s3.putObject(req, RequestBody.fromBytes(bytes));
     } catch (S3Exception e) {
       throw mapAndWrap("PUT", k, e);
     } catch (SdkClientException e) {

@@ -16,6 +16,10 @@ public final class Keys {
 
   // ===== Tenant =====
 
+  public static String tenantRootPointer(String tenantId) {
+    return "/tenants/" + encode(tenantId);
+  }
+
   public static String tenantPointerById(String tenantId) {
     return "/tenants/by-id/" + encode(tenantId);
   }

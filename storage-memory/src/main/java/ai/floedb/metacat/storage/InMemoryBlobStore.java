@@ -2,6 +2,7 @@ package ai.floedb.metacat.storage;
 
 import ai.floedb.metacat.common.rpc.BlobHeader;
 import ai.floedb.metacat.common.rpc.Tag;
+import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Singleton;
@@ -19,10 +20,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Singleton
 @IfBuildProperty(name = "metacat.blob", stringValue = "memory")
 public class InMemoryBlobStore implements BlobStore {
-  private static final String TAG_CONTENT_TYPE = "contentType";
-  private static final String TAG_CONTENT_LENGTH = "contentLength";
-  private static final String TAG_LAST_MODIFIED = "lastModified";
-
+  final String TAG_CONTENT_TYPE = "contentType";
   private final Clock clock = Clock.systemUTC();
 
   private static final class Blob {
@@ -53,7 +51,7 @@ public class InMemoryBlobStore implements BlobStore {
         uri,
         (k, prev) -> {
           final BlobHeader prevHdr = prev == null ? null : prev.hdr;
-          final com.google.protobuf.Timestamp createdAt =
+          final Timestamp createdAt =
               prevHdr == null ? Timestamps.fromMillis(now) : prevHdr.getCreatedAt();
 
           BlobHeader.Builder hb =
@@ -61,10 +59,10 @@ public class InMemoryBlobStore implements BlobStore {
                   .setSchemaVersion("v1")
                   .setEtag(etag)
                   .setCreatedAt(createdAt)
+                  .setContentLength(copy.length)
                   .setLastModifiedAt(Timestamps.fromMillis(now));
 
           addTag(hb, TAG_CONTENT_TYPE, ct);
-          addTag(hb, TAG_CONTENT_LENGTH, Integer.toString(copy.length));
 
           return new Blob(copy, hb.build());
         });
