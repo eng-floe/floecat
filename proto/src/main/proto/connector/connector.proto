@@ -20,23 +20,43 @@ message NamespacePath {
   repeated string segments = 1;
 }
 
+message SourceSelector {
+  NamespacePath namespace = 1;
+  string table = 2;
+  repeated string columns = 3;
+}
+
+message DestinationTarget {
+  oneof catalog_ref {
+    ai.floedb.metacat.common.ResourceId catalog_id = 1;
+    string catalog_display_name = 2;
+  }
+
+  oneof namespace_ref {
+    ai.floedb.metacat.common.ResourceId namespace_id = 10;
+    NamespacePath namespace = 11;
+  }
+
+  oneof table_ref {
+    ai.floedb.metacat.common.ResourceId table_id = 20;
+    string table_display_name = 21;
+  }
+}
+
 message Connector {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
-  string description = 3;
+  optional string description = 3;
   ConnectorKind kind = 4;
-  string destination_tenant_id = 5;
-  string destination_catalog_display_name = 6;
-  repeated NamespacePath destination_namespace_paths = 7;
-  string destination_table_display_name = 8;
-  repeated string destination_table_columns = 9;
-  string uri = 10;
-  map<string,string> options = 11;
-  AuthConfig auth = 12;
-  ReconcilePolicy policy = 20;
-  google.protobuf.Timestamp created_at = 30;
-  google.protobuf.Timestamp updated_at = 31;
-  ConnectorState state = 32;
+  SourceSelector source = 10;
+  DestinationTarget destination = 11;
+  string uri = 20; 
+  map<string,string> options = 21;
+  AuthConfig auth = 22;
+  ReconcilePolicy policy = 30;
+  google.protobuf.Timestamp created_at = 40;
+  google.protobuf.Timestamp updated_at = 41;
+  ConnectorState state = 42;
 }
 
 enum ConnectorState {
@@ -62,16 +82,14 @@ message ReconcilePolicy {
 
 message ConnectorSpec {
   string display_name = 1;
-  ConnectorKind kind = 2;
-  string destination_tenant_id = 3;
-  string destination_catalog_display_name = 4;
-  repeated NamespacePath destination_namespace_paths = 5;
-  string destination_table_display_name = 6;
-  repeated string destination_table_columns = 7;
-  string uri = 10;
-  map<string,string> options = 11;
-  AuthConfig auth = 12;
-  ReconcilePolicy policy = 20;
+  optional string description = 2;
+  ConnectorKind kind = 3;
+  SourceSelector source = 10;
+  DestinationTarget destination = 11;
+  string uri = 20;
+  map<string,string> options = 21;
+  AuthConfig auth = 22;
+  ReconcilePolicy policy = 30;
 }
 
 message CreateConnectorRequest {

@@ -185,6 +185,7 @@ cli: cli-clean parent-cli proto-cli
 	@echo "==> [CLI] build client-cli against isolated repo"
 	mvn -q -f client-cli/pom.xml \
 	  -Dmaven.repo.local=$(M2_CLI_DIR) \
+		-Dquarkus.package.jar.type=fast-jar \
 	  -DskipTests \
 	  clean package
 

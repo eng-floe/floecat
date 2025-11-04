@@ -13,6 +13,7 @@ import ai.floedb.metacat.storage.errors.StorageConflictException;
 import ai.floedb.metacat.storage.errors.StorageCorruptionException;
 import ai.floedb.metacat.storage.errors.StorageNotFoundException;
 import ai.floedb.metacat.storage.errors.StoragePreconditionFailedException;
+import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
@@ -121,7 +122,7 @@ public abstract class BaseServiceImpl {
 
   protected String mustNonEmpty(String inputString, String name, String corrId) {
     if (inputString == null || inputString.isBlank()) {
-      throw GrpcErrors.invalidArgument(corrId, "kind", Map.of("field", name));
+      throw GrpcErrors.invalidArgument(corrId, "field", Map.of("field", name));
     }
     return inputString;
   }
@@ -303,5 +304,20 @@ public abstract class BaseServiceImpl {
       throw e;
     }
     return t;
+  }
+
+  protected static boolean maskTargets(FieldMask mask, String path) {
+    return mask != null && mask.getPathsList().contains(path);
+  }
+
+  protected static boolean maskTargetsUnder(FieldMask mask, String container) {
+    if (mask == null) return false;
+    String prefix = container + ".";
+    for (var p : mask.getPathsList()) {
+      if (p.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
   }
 }

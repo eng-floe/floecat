@@ -6,6 +6,7 @@ option java_package = "ai.floedb.metacat.catalog.rpc";
 
 import "common/common.proto";
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/field_mask.proto";
 
 // ----- Table -----
 
@@ -17,7 +18,7 @@ enum TableFormat {
 }
 
 message UpstreamRef {
-  ai.floedb.metacat.common.ResourceId connector_id = 1;
+  optional ai.floedb.metacat.common.ResourceId connector_id = 1;
   string uri = 2;
   repeated string namespace_path = 3;
   string table_display_name = 4;
@@ -29,7 +30,7 @@ message UpstreamRef {
 message Table {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
-  string description = 3;
+  optional string description = 3;
   ai.floedb.metacat.common.ResourceId catalog_id = 4;
   ai.floedb.metacat.common.ResourceId namespace_id = 5;
   google.protobuf.Timestamp created_at = 6;
@@ -58,9 +59,9 @@ message GetTableResponse {
 message TableSpec {
   ai.floedb.metacat.common.ResourceId catalog_id = 1;
   ai.floedb.metacat.common.ResourceId namespace_id = 2;
-  string display_name = 3;
-  string description = 4;
-  string schema_json = 5;
+  optional string display_name = 3;
+  optional string description = 4;
+  optional string schema_json = 5;
   UpstreamRef upstream = 6;
   map<string,string> properties = 20;
 }
@@ -78,6 +79,7 @@ message UpdateTableRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
   TableSpec spec = 2;
   ai.floedb.metacat.common.Precondition precondition = 3;
+  google.protobuf.FieldMask update_mask = 4;
 }
 message UpdateTableResponse {
   Table table = 1;

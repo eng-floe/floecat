@@ -29,6 +29,7 @@ import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
+import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -271,94 +272,14 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                   GrpcErrors.notFound(
                                       corr, "table", Map.of("id", tableId.getId())));
 
+                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
+                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                  }
+
                   var spec = request.getSpec();
-                  var b = current.toBuilder();
+                  var mask = request.getUpdateMask();
 
-                  if (!spec.getDisplayName().isBlank()) {
-                    b.setDisplayName(
-                        mustNonEmpty(spec.getDisplayName(), "spec.display_name", corr));
-                  }
-                  if (!spec.getDescription().isBlank()) {
-                    b.setDescription(spec.getDescription());
-                  }
-                  if (!spec.getSchemaJson().isBlank()) {
-                    b.setSchemaJson(mustNonEmpty(spec.getSchemaJson(), "spec.schema_json", corr));
-                  }
-
-                  if (!spec.getPropertiesMap().isEmpty()) {
-                    b.clearProperties().putAllProperties(spec.getPropertiesMap());
-                  }
-
-                  if (spec.hasUpstream()) {
-                    var up = spec.getUpstream();
-                    validateUpstreamRef(up, corr);
-                    b.setUpstream(up);
-                  }
-
-                  boolean catalogChanged = false;
-                  boolean namespaceChanged = false;
-
-                  if (spec.hasCatalogId()) {
-                    var catId = spec.getCatalogId();
-                    ensureKind(catId, ResourceKind.RK_CATALOG, "spec.catalog_id", corr);
-                    catalogRepo
-                        .getById(catId)
-                        .orElseThrow(
-                            () ->
-                                GrpcErrors.notFound(corr, "catalog", Map.of("id", catId.getId())));
-                    b.setCatalogId(catId);
-                    catalogChanged = true;
-                  }
-
-                  if (spec.hasNamespaceId()) {
-                    var nsId = spec.getNamespaceId();
-                    ensureKind(nsId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", corr);
-                    var ns =
-                        namespaceRepo
-                            .getById(nsId)
-                            .orElseThrow(
-                                () ->
-                                    GrpcErrors.notFound(
-                                        corr, "namespace", Map.of("id", nsId.getId())));
-
-                    var effectiveCatalogId =
-                        catalogChanged ? b.getCatalogId() : current.getCatalogId();
-                    if (!ns.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
-                      throw GrpcErrors.invalidArgument(
-                          corr,
-                          "namespace.catalog_mismatch",
-                          Map.of(
-                              "namespace_id", nsId.getId(),
-                              "namespace.catalog_id", ns.getCatalogId().getId(),
-                              "catalog_id", effectiveCatalogId.getId()));
-                    }
-                    b.setNamespaceId(nsId);
-                    namespaceChanged = true;
-                  }
-
-                  if (catalogChanged && !namespaceChanged) {
-                    var effectiveCatalogId = b.getCatalogId();
-                    var ns =
-                        namespaceRepo
-                            .getById(b.getNamespaceId())
-                            .orElseThrow(
-                                () ->
-                                    GrpcErrors.notFound(
-                                        corr,
-                                        "namespace",
-                                        Map.of("id", b.getNamespaceId().getId())));
-                    if (!ns.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
-                      throw GrpcErrors.invalidArgument(
-                          corr,
-                          "namespace.catalog_mismatch",
-                          Map.of(
-                              "namespace_id", b.getNamespaceId().getId(),
-                              "namespace.catalog_id", ns.getCatalogId().getId(),
-                              "catalog_id", effectiveCatalogId.getId()));
-                    }
-                  }
-
-                  var desired = b.build();
+                  var desired = applyTableSpecPatch(current, spec, mask, corr);
 
                   if (desired.equals(current)) {
                     var metaNoop = tableRepo.metaForSafe(tableId);
@@ -387,6 +308,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
                   var outMeta = tableRepo.metaForSafe(tableId);
                   var latest = tableRepo.getById(tableId).orElse(desired);
+
                   return UpdateTableResponse.newBuilder().setTable(latest).setMeta(outMeta).build();
                 }),
             correlationId())
@@ -435,6 +357,167 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private Table applyTableSpecPatch(Table current, TableSpec spec, FieldMask mask, String corr) {
+    var b = current.toBuilder();
+
+    if (maskTargets(mask, "display_name")) {
+      if (!spec.hasDisplayName()) {
+        throw GrpcErrors.invalidArgument(corr, "display_name.cannot_clear", Map.of());
+      }
+      b.setDisplayName(mustNonEmpty(spec.getDisplayName(), "spec.display_name", corr));
+    }
+
+    if (maskTargets(mask, "description")) {
+      if (spec.hasDescription()) {
+        b.setDescription(spec.getDescription());
+      } else {
+        b.clearDescription();
+      }
+    }
+
+    if (maskTargets(mask, "schema_json")) {
+      if (!spec.hasSchemaJson()) {
+        throw GrpcErrors.invalidArgument(corr, "schema_json.cannot_clear", Map.of());
+      }
+      b.setSchemaJson(mustNonEmpty(spec.getSchemaJson(), "spec.schema_json", corr));
+    }
+
+    if (maskTargets(mask, "properties")) {
+      b.clearProperties().putAllProperties(spec.getPropertiesMap());
+    }
+
+    boolean catalogChanged = false;
+    boolean namespaceChanged = false;
+
+    if (maskTargets(mask, "catalog_id")) {
+      if (!spec.hasCatalogId()) {
+        throw GrpcErrors.invalidArgument(corr, "catalog_id.cannot_clear", Map.of());
+      }
+      var catId = spec.getCatalogId();
+      ensureKind(catId, ResourceKind.RK_CATALOG, "spec.catalog_id", corr);
+      catalogRepo
+          .getById(catId)
+          .orElseThrow(() -> GrpcErrors.notFound(corr, "catalog", Map.of("id", catId.getId())));
+      b.setCatalogId(catId);
+      catalogChanged = true;
+    }
+
+    if (maskTargets(mask, "namespace_id")) {
+      if (!spec.hasNamespaceId()) {
+        throw GrpcErrors.invalidArgument(corr, "namespace_id.cannot_clear", Map.of());
+      }
+      var nsId = spec.getNamespaceId();
+      ensureKind(nsId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", corr);
+      var ns =
+          namespaceRepo
+              .getById(nsId)
+              .orElseThrow(
+                  () -> GrpcErrors.notFound(corr, "namespace", Map.of("id", nsId.getId())));
+
+      var effectiveCatalogId = catalogChanged ? b.getCatalogId() : current.getCatalogId();
+      if (!ns.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
+        throw GrpcErrors.invalidArgument(
+            corr,
+            "namespace.catalog_mismatch",
+            Map.of(
+                "namespace_id", nsId.getId(),
+                "namespace.catalog_id", ns.getCatalogId().getId(),
+                "catalog_id", effectiveCatalogId.getId()));
+      }
+      b.setNamespaceId(nsId);
+      namespaceChanged = true;
+    }
+
+    if (catalogChanged && !namespaceChanged) {
+      var effectiveCatalogId = b.getCatalogId();
+      var ns =
+          namespaceRepo
+              .getById(b.getNamespaceId())
+              .orElseThrow(
+                  () ->
+                      GrpcErrors.notFound(
+                          corr, "namespace", Map.of("id", b.getNamespaceId().getId())));
+      if (!ns.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
+        throw GrpcErrors.invalidArgument(
+            corr,
+            "namespace.catalog_mismatch",
+            Map.of(
+                "namespace_id", b.getNamespaceId().getId(),
+                "namespace.catalog_id", ns.getCatalogId().getId(),
+                "catalog_id", effectiveCatalogId.getId()));
+      }
+    }
+
+    var currentUp = current.getUpstream();
+    var inUp = spec.getUpstream();
+
+    UpstreamRef mergedUp;
+
+    if (maskTargets(mask, "upstream")) {
+      if (!spec.hasUpstream()) {
+        throw GrpcErrors.invalidArgument(corr, "upstream.missing_for_replacement", Map.of());
+      }
+      mergedUp = inUp;
+    } else if (maskTargetsUnder(mask, "upstream")) {
+      var ub = currentUp.toBuilder();
+
+      if (maskTargets(mask, "upstream.connector_id")) {
+        if (inUp.hasConnectorId()) {
+          ensureKind(
+              inUp.getConnectorId(), ResourceKind.RK_CONNECTOR, "spec.upstream.connector_id", corr);
+          ub.setConnectorId(inUp.getConnectorId());
+        } else {
+          ub.clearConnectorId();
+        }
+      }
+
+      if (maskTargets(mask, "upstream.uri")) {
+        ub.setUri(inUp.getUri());
+      }
+
+      if (maskTargets(mask, "upstream.namespace_path")) {
+        ub.clearNamespacePath().addAllNamespacePath(inUp.getNamespacePathList());
+      }
+
+      if (maskTargets(mask, "upstream.table_display_name")) {
+        ub.setTableDisplayName(inUp.getTableDisplayName());
+      }
+
+      if (maskTargets(mask, "upstream.format")) {
+        ub.setFormat(inUp.getFormat());
+      }
+
+      if (maskTargets(mask, "upstream.partition_keys")) {
+        ub.clearPartitionKeys().addAllPartitionKeys(inUp.getPartitionKeysList());
+      }
+
+      if (maskTargets(mask, "upstream.field_id_by_path")) {
+        ub.clearFieldIdByPath().putAllFieldIdByPath(inUp.getFieldIdByPathMap());
+      }
+
+      mergedUp = ub.build();
+    } else {
+      mergedUp = currentUp;
+    }
+
+    boolean touched = upstreamTouched(mask);
+    if (touched) {
+      validateUpstreamRef(mergedUp, corr);
+    }
+    b.setUpstream(mergedUp);
+
+    return b.build();
+  }
+
+  private static boolean upstreamTouched(FieldMask mask) {
+    if (mask == null) return false;
+    if (mask.getPathsList().contains("upstream")) return true;
+    for (var p : mask.getPathsList()) {
+      if (p.startsWith("upstream.")) return true;
+    }
+    return false;
   }
 
   private void validateUpstreamRef(UpstreamRef up, String corr) {

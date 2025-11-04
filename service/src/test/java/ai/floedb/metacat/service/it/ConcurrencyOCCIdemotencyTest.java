@@ -11,6 +11,7 @@ import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
+import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -192,11 +193,13 @@ class ConcurrencyOCCIdempotencyIT {
                     if (seedDeleted.get()) break;
                     try {
                       var targetNs = rnd.nextBoolean() ? ns1.getResourceId() : ns2.getResourceId();
+                      FieldMask mask = FieldMask.newBuilder().addPaths("namespace_id").build();
                       TableSpec spec = TableSpec.newBuilder().setNamespaceId(targetNs).build();
                       table.updateTable(
                           UpdateTableRequest.newBuilder()
                               .setTableId(seedTid)
                               .setSpec(spec)
+                              .setUpdateMask(mask)
                               .build());
                     } catch (Throwable t) {
                       recordOutcome(op, t);

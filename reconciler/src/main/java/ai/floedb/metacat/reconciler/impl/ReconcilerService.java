@@ -2,51 +2,44 @@ package ai.floedb.metacat.reconciler.impl;
 
 import static ai.floedb.metacat.reconciler.util.NameParts.split;
 
-import ai.floedb.metacat.catalog.rpc.CatalogSpec;
-import ai.floedb.metacat.catalog.rpc.ColumnStats;
-import ai.floedb.metacat.catalog.rpc.CreateCatalogRequest;
-import ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.CreateSnapshotRequest;
-import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
-import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
-import ai.floedb.metacat.catalog.rpc.NamespaceSpec;
-import ai.floedb.metacat.catalog.rpc.PutColumnStatsBatchRequest;
-import ai.floedb.metacat.catalog.rpc.PutTableStatsRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
-import ai.floedb.metacat.catalog.rpc.SnapshotSpec;
-import ai.floedb.metacat.catalog.rpc.TableFormat;
-import ai.floedb.metacat.catalog.rpc.TableSpec;
-import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
-import ai.floedb.metacat.catalog.rpc.UpstreamRef;
+import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.rpc.Connector;
+import ai.floedb.metacat.connector.rpc.ConnectorSpec;
 import ai.floedb.metacat.connector.rpc.ConnectorState;
+import ai.floedb.metacat.connector.rpc.DestinationTarget;
 import ai.floedb.metacat.connector.rpc.GetConnectorRequest;
+import ai.floedb.metacat.connector.rpc.SourceSelector;
+import ai.floedb.metacat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.metacat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.metacat.connector.spi.ConnectorFactory;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
+import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.UnaryOperator;
 
 @ApplicationScoped
 public class ReconcilerService {
   @Inject GrpcClients clients;
 
+  private static final int COLUMN_STATS_BATCH_SIZE = 5;
+
   public Result reconcile(ResourceId connectorId, boolean fullRescan) {
     long scanned = 0;
     long changed = 0;
     long errors = 0;
-    final java.util.ArrayList<String> errSummaries = new java.util.ArrayList<>();
+
+    final ArrayList<String> errSummaries = new ArrayList<>();
 
     final Connector stored;
     try {
@@ -65,60 +58,104 @@ public class ReconcilerService {
           0, 0, 1, new IllegalStateException("Connector not ACTIVE: " + connectorId.getId()));
     }
 
+    final SourceSelector source =
+        stored.hasSource() ? stored.getSource() : SourceSelector.getDefaultInstance();
+    final DestinationTarget dest =
+        stored.hasDestination() ? stored.getDestination() : DestinationTarget.getDefaultInstance();
+
     var cfg = ConnectorConfigMapper.fromProto(stored);
 
     try (MetacatConnector connector = ConnectorFactory.create(cfg)) {
-      var catalogId = ensureCatalog(stored.getDestinationCatalogDisplayName(), connector);
-
-      final List<List<String>> destNsPaths =
-          (cfg.destinationNamespacePaths() == null) ? List.of() : cfg.destinationNamespacePaths();
-      final String destTable = nullIfBlank(cfg.destinationTableDisplayName());
-      final Set<String> destColumns = normalizeSelectors(cfg.destinationTableColumns());
+      final ResourceId catalogId;
+      if (dest.hasCatalogId()) {
+        catalogId = dest.getCatalogId();
+      } else {
+        String destCatalogDisplay =
+            (dest.getCatalogDisplayName() == null || dest.getCatalogDisplayName().isBlank())
+                ? null
+                : dest.getCatalogDisplayName();
+        if (destCatalogDisplay == null) {
+          return new Result(
+              0,
+              0,
+              1,
+              new IllegalArgumentException("destination.catalog_display_name is required"));
+        }
+        catalogId = ensureCatalog(dest.getCatalogDisplayName(), connector);
+        maybeBackfillDestinationIds(stored, b -> b.setCatalogId(catalogId));
+      }
 
       final List<String> namespaces =
-          destNsPaths.isEmpty()
-              ? connector.listNamespaces()
-              : destNsPaths.stream().map(ReconcilerService::fq).toList();
+          (source.hasNamespace() && !source.getNamespace().getSegmentsList().isEmpty())
+              ? List.of(fq(source.getNamespace().getSegmentsList()))
+              : connector.listNamespaces();
 
-      for (String namespaceFq : namespaces) {
-        final ResourceId namespaceId;
+      for (String sourceNsFq : namespaces) {
+        final ResourceId destNamespaceId;
+        final String destNsFq;
         try {
-          namespaceId = ensureNamespace(catalogId, namespaceFq);
+          destNsFq =
+              (dest.hasNamespace() && !dest.getNamespace().getSegmentsList().isEmpty())
+                  ? fq(dest.getNamespace().getSegmentsList())
+                  : sourceNsFq;
+
+          destNamespaceId = ensureNamespace(catalogId, destNsFq);
+
+          if (!dest.hasNamespaceId()) {
+            maybeBackfillDestinationIds(stored, b -> b.setNamespaceId(destNamespaceId));
+          }
         } catch (Exception e) {
           errors++;
-          var msg = rootCauseMessage(e);
-          errSummaries.add(msg);
+          errSummaries.add(rootCauseMessage(e));
           continue;
         }
 
-        var tables = (destTable != null) ? List.of(destTable) : connector.listTables(namespaceFq);
-        for (String tbl : tables) {
+        final List<String> tables =
+            (source.getTable() != null && !source.getTable().isBlank())
+                ? List.of(source.getTable())
+                : connector.listTables(sourceNsFq);
+
+        final boolean singleTableMode = tables.size() == 1;
+
+        final Set<String> includeSelectors = normalizeSelectors(source.getColumnsList());
+
+        for (String srcTable : tables) {
           scanned++;
           try {
-            var upstream = connector.describe(namespaceFq, tbl);
-            var effective = overrideDisplay(upstream, namespaceFq, destTable);
+            var upstream = connector.describe(sourceNsFq, srcTable);
+
+            final String destTableDisplay =
+                (dest.getTableDisplayName() != null && !dest.getTableDisplayName().isBlank())
+                    ? dest.getTableDisplayName()
+                    : upstream.tableName();
+
+            var effective = overrideDisplay(upstream, destNsFq, destTableDisplay);
 
             var tableId =
                 ensureTable(
                     catalogId,
-                    namespaceId,
+                    destNamespaceId,
                     effective,
                     connector.format(),
                     stored.getResourceId(),
-                    cfg.uri());
+                    cfg.uri(),
+                    sourceNsFq,
+                    srcTable);
+
+            if (singleTableMode && !dest.hasTableId()) {
+              maybeBackfillDestinationIds(stored, b -> b.setTableId(tableId));
+            }
 
             var bundles =
                 connector.enumerateSnapshotsWithStats(
-                    namespaceFq, upstream.tableName(), tableId, destColumns);
+                    sourceNsFq, srcTable, tableId, includeSelectors);
 
-            ingestAllSnapshotsAndStatsFiltered(tableId, bundles, destColumns);
-
+            ingestAllSnapshotsAndStatsFiltered(tableId, bundles, includeSelectors);
             changed++;
 
           } catch (Exception e) {
             errors++;
-            var msg = rootCauseMessage(e);
-            errSummaries.add(msg);
+            errSummaries.add(rootCauseMessage(e));
           }
         }
       }
@@ -137,28 +174,6 @@ public class ReconcilerService {
 
     } catch (Exception e) {
       return new Result(scanned, changed, errors, e);
-    }
-  }
-
-  public static final class Result {
-    public final long scanned;
-    public final long changed;
-    public final long errors;
-    public final Exception error;
-
-    public Result(long scanned, long changed, long errors, Exception error) {
-      this.scanned = scanned;
-      this.changed = changed;
-      this.errors = errors;
-      this.error = error;
-    }
-
-    public boolean ok() {
-      return error == null;
-    }
-
-    public String message() {
-      return ok() ? "OK" : error.getMessage();
     }
   }
 
@@ -212,24 +227,28 @@ public class ReconcilerService {
             .setDisplayName(parts.leaf)
             .addAllPath(parts.parents)
             .build();
-    var request = CreateNamespaceRequest.newBuilder().setSpec(spec).build();
-    return clients.namespace().createNamespace(request).getNamespace().getResourceId();
+    return clients
+        .namespace()
+        .createNamespace(CreateNamespaceRequest.newBuilder().setSpec(spec).build())
+        .getNamespace()
+        .getResourceId();
   }
 
   private ResourceId ensureTable(
       ResourceId catalogId,
-      ResourceId namespaceId,
-      MetacatConnector.TableDescriptor upstreamTable,
+      ResourceId destNamespaceId,
+      MetacatConnector.TableDescriptor landingView,
       ConnectorFormat format,
       ResourceId connectorRid,
-      String connectorUri) {
-
+      String connectorUri,
+      String sourceNsFq,
+      String sourceTable) {
     try {
       var nameRef =
           NameRef.newBuilder()
               .setCatalog(lookupCatalogName(catalogId))
-              .addAllPath(split(upstreamTable.namespaceFq()).parents)
-              .setName(upstreamTable.tableName())
+              .addAllPath(List.of(landingView.namespaceFq().split("\\.")))
+              .setName(landingView.tableName())
               .build();
 
       var tableId =
@@ -238,31 +257,34 @@ public class ReconcilerService {
               .resolveTable(ResolveTableRequest.newBuilder().setRef(nameRef).build())
               .getResourceId();
 
-      maybeUpdateTable(tableId, upstreamTable, format, connectorRid, connectorUri);
+      maybeUpdateTable(
+          tableId, landingView, format, connectorRid, connectorUri, sourceNsFq, sourceTable);
       return tableId;
 
     } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) throw e;
+      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
+        throw e;
+      }
     }
 
     var upstream =
         UpstreamRef.newBuilder()
             .setConnectorId(connectorRid)
             .setUri(connectorUri)
-            .addAllNamespacePath(List.of(upstreamTable.namespaceFq().split("\\.")))
-            .setTableDisplayName(upstreamTable.tableName())
+            .addAllNamespacePath(List.of(sourceNsFq.split("\\.")))
+            .setTableDisplayName(sourceTable)
             .setFormat(toTableFormat(format))
-            .addAllPartitionKeys(upstreamTable.partitionKeys())
+            .addAllPartitionKeys(landingView.partitionKeys())
             .build();
 
     var spec =
         TableSpec.newBuilder()
             .setCatalogId(catalogId)
-            .setNamespaceId(namespaceId)
-            .setDisplayName(upstreamTable.tableName())
-            .setSchemaJson(upstreamTable.schemaJson())
+            .setNamespaceId(destNamespaceId)
+            .setDisplayName(landingView.tableName())
+            .setSchemaJson(landingView.schemaJson())
             .setUpstream(upstream)
-            .putAllProperties(upstreamTable.properties())
+            .putAllProperties(landingView.properties())
             .build();
 
     return clients
@@ -274,47 +296,47 @@ public class ReconcilerService {
 
   private void maybeUpdateTable(
       ResourceId tableId,
-      MetacatConnector.TableDescriptor upstreamTable,
+      MetacatConnector.TableDescriptor landingView,
       ConnectorFormat format,
       ResourceId connectorRid,
-      String connectorUri) {
+      String connectorUri,
+      String sourceNsFq,
+      String sourceTable) {
 
     var upstream =
         UpstreamRef.newBuilder()
             .setConnectorId(connectorRid)
             .setUri(connectorUri)
-            .addAllNamespacePath(List.of(upstreamTable.namespaceFq().split("\\.")))
-            .setTableDisplayName(upstreamTable.tableName())
+            .addAllNamespacePath(List.of(sourceNsFq.split("\\.")))
+            .setTableDisplayName(sourceTable)
             .setFormat(toTableFormat(format))
-            .addAllPartitionKeys(upstreamTable.partitionKeys())
+            .addAllPartitionKeys(landingView.partitionKeys())
             .build();
 
     var updated =
         TableSpec.newBuilder()
-            .setSchemaJson(upstreamTable.schemaJson())
+            .setSchemaJson(landingView.schemaJson())
             .setUpstream(upstream)
-            .putAllProperties(upstreamTable.properties())
+            .putAllProperties(landingView.properties())
             .build();
 
-    var req = UpdateTableRequest.newBuilder().setTableId(tableId).setSpec(updated).build();
-
+    FieldMask mask =
+        FieldMask.newBuilder()
+            .addPaths("schema_json")
+            .addPaths("upstream")
+            .addPaths("properties")
+            .build();
+    var req =
+        UpdateTableRequest.newBuilder()
+            .setTableId(tableId)
+            .setSpec(updated)
+            .setUpdateMask(mask)
+            .build();
     try {
       clients.table().updateTable(req);
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() != Status.Code.FAILED_PRECONDITION) throw e;
     }
-  }
-
-  private static Set<String> normalizeSelectors(List<String> in) {
-    if (in == null || in.isEmpty()) return Set.of();
-    var out = new java.util.LinkedHashSet<String>();
-    for (var s : in) {
-      if (s == null) continue;
-      var t = s.trim();
-      if (t.isEmpty()) continue;
-      out.add(t.startsWith("#") ? "#" + t.substring(1).trim() : t);
-    }
-    return out;
   }
 
   private void ensureSnapshot(
@@ -331,54 +353,9 @@ public class ReconcilerService {
     try {
       clients.snapshot().createSnapshot(request);
     } catch (StatusRuntimeException e) {
-      var statusCode = e.getStatus().getCode();
-      if (statusCode == Status.Code.ALREADY_EXISTS) {
-        return;
-      }
-
+      if (e.getStatus().getCode() == Status.Code.ALREADY_EXISTS) return;
       throw e;
     }
-  }
-
-  private String lookupCatalogName(ResourceId catalogId) {
-    return clients
-        .directory()
-        .lookupCatalog(LookupCatalogRequest.newBuilder().setResourceId(catalogId).build())
-        .getDisplayName();
-  }
-
-  private static TableFormat toTableFormat(ConnectorFormat format) {
-    if (format == null) {
-      return TableFormat.TF_UNSPECIFIED;
-    }
-
-    String name = format.name();
-    int i = name.indexOf('_');
-    String stem = (i >= 0 && i + 1 < name.length()) ? name.substring(i + 1) : name;
-
-    String target = "TF_" + stem;
-
-    try {
-      return TableFormat.valueOf(target);
-    } catch (IllegalArgumentException ignored) {
-      return TableFormat.TF_UNKNOWN;
-    }
-  }
-
-  private static String nullIfBlank(String s) {
-    return (s == null || s.isBlank()) ? null : s;
-  }
-
-  private MetacatConnector.TableDescriptor overrideDisplay(
-      MetacatConnector.TableDescriptor upstream, String destNamespace, String destTable) {
-    if (destNamespace == null && destTable == null) return upstream;
-    return new MetacatConnector.TableDescriptor(
-        destNamespace != null ? destNamespace : upstream.namespaceFq(),
-        destTable != null ? destTable : upstream.tableName(),
-        upstream.location(),
-        upstream.schemaJson(),
-        upstream.partitionKeys(),
-        upstream.properties());
   }
 
   private void ingestAllSnapshotsAndStatsFiltered(
@@ -389,8 +366,11 @@ public class ReconcilerService {
     var seen = new HashSet<Long>();
     for (var snapshotBundle : bundles) {
       if (snapshotBundle == null) continue;
+
       long snapshotId = snapshotBundle.snapshotId();
-      if (snapshotId <= 0 || !seen.add(snapshotId)) continue;
+      if (snapshotId <= 0 || !seen.add(snapshotId)) {
+        continue;
+      }
 
       long parentId = snapshotBundle.parentId();
       long createdAtMs =
@@ -421,10 +401,9 @@ public class ReconcilerService {
                 : cols.stream().filter(c -> matchesSelector(c, includeSelectors)).toList();
 
         if (!filtered.isEmpty()) {
-          int batchSize = 5;
-          for (int i = 0; i < filtered.size(); i += batchSize) {
+          for (int i = 0; i < filtered.size(); i += COLUMN_STATS_BATCH_SIZE) {
             var chunk =
-                filtered.subList(i, Math.min(i + batchSize, filtered.size())).stream()
+                filtered.subList(i, Math.min(i + COLUMN_STATS_BATCH_SIZE, filtered.size())).stream()
                     .map(c -> c.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
                     .toList();
 
@@ -442,13 +421,42 @@ public class ReconcilerService {
     }
   }
 
+  private String lookupCatalogName(ResourceId catalogId) {
+    return clients
+        .directory()
+        .lookupCatalog(LookupCatalogRequest.newBuilder().setResourceId(catalogId).build())
+        .getDisplayName();
+  }
+
+  private static TableFormat toTableFormat(ConnectorFormat format) {
+    if (format == null) return TableFormat.TF_UNSPECIFIED;
+    String name = format.name();
+    int i = name.indexOf('_');
+    String stem = (i >= 0 && i + 1 < name.length()) ? name.substring(i + 1) : name;
+    String target = "TF_" + stem;
+    try {
+      return TableFormat.valueOf(target);
+    } catch (IllegalArgumentException ignored) {
+      return TableFormat.TF_UNKNOWN;
+    }
+  }
+
+  private MetacatConnector.TableDescriptor overrideDisplay(
+      MetacatConnector.TableDescriptor upstream, String destNamespace, String destTable) {
+    if (destNamespace == null && destTable == null) return upstream;
+    return new MetacatConnector.TableDescriptor(
+        destNamespace != null ? destNamespace : upstream.namespaceFq(),
+        destTable != null ? destTable : upstream.tableName(),
+        upstream.location(),
+        upstream.schemaJson(),
+        upstream.partitionKeys(),
+        upstream.properties());
+  }
+
   private static boolean matchesSelector(ColumnStats c, Set<String> selectors) {
     if (selectors == null || selectors.isEmpty()) return true;
     if (selectors.contains(c.getColumnName())) return true;
-    if (!c.getColumnId().isBlank() && selectors.contains("#" + c.getColumnId())) {
-      return true;
-    }
-
+    if (!c.getColumnId().isBlank() && selectors.contains("#" + c.getColumnId())) return true;
     return false;
   }
 
@@ -461,5 +469,60 @@ public class ReconcilerService {
 
   private static String fq(List<String> segments) {
     return String.join(".", segments);
+  }
+
+  private static Set<String> normalizeSelectors(List<String> in) {
+    if (in == null || in.isEmpty()) return Set.of();
+    var out = new java.util.LinkedHashSet<String>();
+    for (var s : in) {
+      if (s == null) continue;
+      var t = s.trim();
+      if (t.isEmpty()) continue;
+      out.add(t.startsWith("#") ? "#" + t.substring(1).trim() : t);
+    }
+    return out;
+  }
+
+  private void maybeBackfillDestinationIds(
+      Connector stored, UnaryOperator<DestinationTarget.Builder> mutate) {
+    try {
+      var currentDest =
+          stored.hasDestination()
+              ? stored.getDestination()
+              : DestinationTarget.getDefaultInstance();
+
+      var updatedDest = mutate.apply(currentDest.toBuilder()).build();
+
+      var spec = ConnectorSpec.newBuilder().setDestination(updatedDest).build();
+
+      clients
+          .connector()
+          .updateConnector(
+              UpdateConnectorRequest.newBuilder()
+                  .setConnectorId(stored.getResourceId())
+                  .setSpec(spec)
+                  .build());
+    } catch (Exception ignore) {
+    }
+  }
+
+  public static final class Result {
+    public final long scanned, changed, errors;
+    public final Exception error;
+
+    public Result(long scanned, long changed, long errors, Exception error) {
+      this.scanned = scanned;
+      this.changed = changed;
+      this.errors = errors;
+      this.error = error;
+    }
+
+    public boolean ok() {
+      return error == null;
+    }
+
+    public String message() {
+      return ok() ? "OK" : error.getMessage();
+    }
   }
 }

@@ -57,9 +57,8 @@ public class ConnectorIT {
         Connector.newBuilder()
             .setDisplayName("dummy-conn")
             .setKind(ConnectorKind.CK_UNITY)
-            .setDestinationTenantId("t1")
-            .setDestinationCatalogDisplayName("cat-e2e")
             .setUri("dummy://ignored")
+            .setDestination(dest("cat-e2e"))
             .build();
 
     var cfg = ConnectorConfigMapper.fromProto(proto);
@@ -77,9 +76,9 @@ public class ConnectorIT {
             ConnectorSpec.newBuilder()
                 .setDisplayName("dummy-conn")
                 .setKind(ConnectorKind.CK_UNITY)
-                .setDestinationCatalogDisplayName("cat-e2e")
-                .setDestinationTenantId(tenantId.getId())
                 .setUri("dummy://ignored")
+                .setSource(source(List.of("db")))
+                .setDestination(dest("cat-e2e"))
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
                 .build());
 
@@ -87,6 +86,23 @@ public class ConnectorIT {
     var job = runReconcile(rid);
     assertNotNull(job);
     assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
+
+    conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("dummy-conn2")
+                .setKind(ConnectorKind.CK_UNITY)
+                .setUri("dummy://ignored")
+                .setSource(source(List.of("analytics", "sales")))
+                .setDestination(dest("cat-e2e"))
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .build());
+
+    rid = conn.getResourceId();
+    var job2 = runReconcile(rid);
+    assertNotNull(job2);
+    assertEquals("JS_SUCCEEDED", job2.state, () -> "job failed: " + job2.message);
 
     var catId = catalogs.getByName(tenantId.getId(), "cat-e2e").orElseThrow().getResourceId();
 
@@ -136,9 +152,9 @@ public class ConnectorIT {
 
     // Should be able to run it again without issues
     rid = conn.getResourceId();
-    var job2 = runReconcile(rid);
-    assertNotNull(job2);
-    assertEquals("JS_SUCCEEDED", job2.state, () -> "job failed: " + job2.message);
+    var job3 = runReconcile(rid);
+    assertNotNull(job3);
+    assertEquals("JS_SUCCEEDED", job3.state, () -> "job failed: " + job3.message);
   }
 
   @Test
@@ -156,9 +172,8 @@ public class ConnectorIT {
             ConnectorSpec.newBuilder()
                 .setDisplayName("Glue Iceberg")
                 .setKind(ConnectorKind.CK_ICEBERG)
-                .setDestinationCatalogDisplayName("glue-iceberg-rest")
-                .setDestinationTenantId(tenantId.getId())
                 .setUri("https://glue.us-east-1.amazonaws.com/iceberg/")
+                .setDestination(dest("glue-iceberg-rest"))
                 .setAuth(AuthConfig.newBuilder().setScheme("aws-sigv4").build())
                 .build());
 
@@ -222,8 +237,9 @@ public class ConnectorIT {
         ConnectorSpec.newBuilder()
             .setDisplayName("idem-1")
             .setKind(ConnectorKind.CK_UNITY)
-            .setDestinationCatalogDisplayName("cat-idem")
             .setUri("dummy://x")
+            .setSource(source(List.of("a", "b")))
+            .setDestination(dest("cat-idem"))
             .build();
 
     var idem = IdempotencyKey.newBuilder().setKey("fixed-key-1").build();
@@ -265,8 +281,9 @@ public class ConnectorIT {
           ConnectorSpec.newBuilder()
               .setDisplayName("p-" + i)
               .setKind(ConnectorKind.CK_UNITY)
-              .setDestinationCatalogDisplayName("cat-p")
               .setUri("dummy://x")
+              .setSource(source(List.of("a", "b")))
+              .setDestination(dest("cat-p"))
               .build());
     }
     String token = "";
@@ -288,23 +305,27 @@ public class ConnectorIT {
 
   @Test
   void updateConnectorRenameConflict() throws Exception {
+
     var a =
         TestSupport.createConnector(
             connectors,
             ConnectorSpec.newBuilder()
                 .setDisplayName("u-a")
                 .setKind(ConnectorKind.CK_UNITY)
-                .setDestinationCatalogDisplayName("cat-u")
                 .setUri("dummy://x")
+                .setSource(source(List.of("a", "b")))
+                .setDestination(dest("cat-u"))
                 .build());
+
     var b =
         TestSupport.createConnector(
             connectors,
             ConnectorSpec.newBuilder()
                 .setDisplayName("u-b")
                 .setKind(ConnectorKind.CK_UNITY)
-                .setDestinationCatalogDisplayName("cat-u")
                 .setUri("dummy://x")
+                .setSource(source(List.of("a", "b")))
+                .setDestination(dest("cat-u"))
                 .build());
 
     // rename u-a -> u-a1
@@ -339,8 +360,9 @@ public class ConnectorIT {
             ConnectorSpec.newBuilder()
                 .setDisplayName("pre-a")
                 .setKind(ConnectorKind.CK_UNITY)
-                .setDestinationCatalogDisplayName("cat-pre")
                 .setUri("dummy://x")
+                .setSource(source(List.of("a", "b")))
+                .setDestination(dest("cat-pre"))
                 .build());
 
     var ex =
@@ -367,8 +389,9 @@ public class ConnectorIT {
             ConnectorSpec.newBuilder()
                 .setDisplayName("del-1")
                 .setKind(ConnectorKind.CK_UNITY)
-                .setDestinationCatalogDisplayName("cat-del")
                 .setUri("dummy://x")
+                .setSource(source(List.of("a", "b")))
+                .setDestination(dest("cat-del"))
                 .build());
 
     connectors.deleteConnector(
@@ -425,8 +448,8 @@ public class ConnectorIT {
                     ConnectorSpec.newBuilder()
                         .setDisplayName("v-ok")
                         .setKind(ConnectorKind.CK_UNITY)
-                        .setDestinationCatalogDisplayName("cat-v")
-                        .setUri("dummy://x"))
+                        .setUri("dummy://x")
+                        .setDestination(dest("cat-v")))
                 .build());
     assertTrue(ok.getOk());
 
@@ -440,11 +463,21 @@ public class ConnectorIT {
                             ConnectorSpec.newBuilder()
                                 .setDisplayName("v-bad")
                                 .setKind(ConnectorKind.CK_UNSPECIFIED)
-                                .setDestinationCatalogDisplayName("cat-v")
-                                .setUri("dummy://x"))
+                                .setUri("dummy://x")
+                                .setDestination(dest("cat-v")))
                         .build()));
 
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  private static DestinationTarget dest(String catalogDisplayName) {
+    return DestinationTarget.newBuilder().setCatalogDisplayName(catalogDisplayName).build();
+  }
+
+  private static SourceSelector source(List<String> namespace) {
+    return SourceSelector.newBuilder()
+        .setNamespace(NamespacePath.newBuilder().addAllSegments(namespace).build())
+        .build();
   }
 }

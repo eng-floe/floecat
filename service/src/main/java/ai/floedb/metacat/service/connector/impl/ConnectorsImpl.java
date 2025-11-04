@@ -136,29 +136,27 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     return mapFailures(
             runWithRetry(
                 () -> {
-                  var principalContext = principalProvider.get();
-                  var tenantId = principalContext.getTenantId();
-                  var correlationId = principalContext.getCorrelationId();
+                  var pc = principalProvider.get();
+                  var tenantId = pc.getTenantId();
+                  var corr = pc.getCorrelationId();
 
-                  authz.require(principalContext, "connector.manage");
+                  authz.require(pc, "connector.manage");
 
                   var tsNow = nowTs();
-
-                  var fingerprint = canonicalFingerprint(request.getSpec());
-                  var idempotencyKey =
+                  var fp = canonicalFingerprint(request.getSpec());
+                  var idemKey =
                       request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
                           ? request.getIdempotency().getKey()
-                          : hashFingerprint(fingerprint);
+                          : hashFingerprint(fp);
 
                   var connectorProto =
                       MutationOps.createProto(
                           tenantId,
                           "CreateConnector",
-                          idempotencyKey,
-                          () -> fingerprint,
+                          idemKey,
+                          () -> fp,
                           () -> {
-                            String connUuid =
-                                deterministicUuid(tenantId, "connector", idempotencyKey);
+                            String connUuid = deterministicUuid(tenantId, "connector", idemKey);
 
                             var connectorId =
                                 ResourceId.newBuilder()
@@ -167,39 +165,56 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                     .setKind(ResourceKind.RK_CONNECTOR)
                                     .build();
 
-                            var c =
+                            var spec = request.getSpec();
+
+                            var display = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
+                            var uri = mustNonEmpty(spec.getUri(), "uri", corr);
+
+                            if (!spec.hasDestination()
+                                || (!spec.getDestination().hasCatalogId()
+                                    && spec.getDestination().getCatalogDisplayName().isBlank())) {
+                              throw GrpcErrors.invalidArgument(
+                                  corr,
+                                  "connector.missing_destination_catalog",
+                                  Map.of("field", "destination.catalog_id|catalog_display_name"));
+                            }
+
+                            if (!spec.hasSource()
+                                || !spec.getSource().hasNamespace()
+                                || spec.getSource().getNamespace().getSegmentsCount() == 0) {
+                              throw GrpcErrors.invalidArgument(
+                                  corr,
+                                  "connector.missing_source_namespace",
+                                  Map.of("field", "source.namespace"));
+                            }
+
+                            var builder =
                                 Connector.newBuilder()
                                     .setResourceId(connectorId)
-                                    .setDisplayName(
-                                        mustNonEmpty(
-                                            request.getSpec().getDisplayName(),
-                                            "display_name",
-                                            correlationId))
-                                    .setKind(request.getSpec().getKind())
-                                    .setDestinationTenantId(tenantId)
-                                    .setDestinationCatalogDisplayName(
-                                        mustNonEmpty(
-                                            request.getSpec().getDestinationCatalogDisplayName(),
-                                            "target_catalog_display_name",
-                                            correlationId))
-                                    .addAllDestinationNamespacePaths(
-                                        request.getSpec().getDestinationNamespacePathsList())
-                                    .setDestinationTableDisplayName(
-                                        request.getSpec().getDestinationTableDisplayName())
-                                    .addAllDestinationTableColumns(
-                                        request.getSpec().getDestinationTableColumnsList())
-                                    .setUri(
-                                        mustNonEmpty(
-                                            request.getSpec().getUri(), "uri", correlationId))
-                                    .putAllOptions(request.getSpec().getOptionsMap())
-                                    .setAuth(request.getSpec().getAuth())
-                                    .setPolicy(request.getSpec().getPolicy())
+                                    .setDisplayName(display)
+                                    .setKind(spec.getKind())
+                                    .setUri(uri)
+                                    .putAllOptions(spec.getOptionsMap())
+                                    .setAuth(spec.getAuth())
+                                    .setPolicy(spec.getPolicy())
                                     .setCreatedAt(tsNow)
                                     .setUpdatedAt(tsNow)
-                                    .setState(ConnectorState.CS_ACTIVE)
-                                    .build();
+                                    .setState(ConnectorState.CS_ACTIVE);
+
+                            if (spec.hasDescription()) {
+                              builder.setDescription(spec.getDescription());
+                            }
+                            if (spec.hasSource()) {
+                              builder.setSource(spec.getSource());
+                            }
+                            if (spec.hasDestination()) {
+                              builder.setDestination(spec.getDestination());
+                            }
+
+                            var connector = builder.build();
+
                             try {
-                              connectorRepo.create(c);
+                              connectorRepo.create(connector);
                             } catch (BaseResourceRepository.NameConflictException nce) {
                               var existing =
                                   connectorRepo
@@ -207,18 +222,17 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                       .or(
                                           () ->
                                               connectorRepo.getByName(
-                                                  tenantId, c.getDisplayName()));
+                                                  tenantId, connector.getDisplayName()));
                               if (existing.isPresent()) {
                                 throw GrpcErrors.conflict(
-                                    correlationId,
+                                    corr,
                                     "connector.already_exists",
-                                    Map.of("display_name", c.getDisplayName()));
+                                    Map.of("display_name", connector.getDisplayName()));
                               }
-
                               throw new AbortRetryableException("name conflict visibility window");
                             }
 
-                            return new IdempotencyGuard.CreateResult<>(c, connectorId);
+                            return new IdempotencyGuard.CreateResult<>(connector, connectorId);
                           },
                           (conn) -> connectorRepo.metaFor(conn.getResourceId()),
                           idempotencyStore,
@@ -276,11 +290,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                               spec.getKind() == ConnectorKind.CK_UNSPECIFIED
                                   ? current.getKind()
                                   : spec.getKind())
-                          .setDestinationTenantId(pc.getTenantId())
-                          .setDestinationCatalogDisplayName(
-                              spec.getDestinationCatalogDisplayName().isBlank()
-                                  ? current.getDestinationCatalogDisplayName()
-                                  : spec.getDestinationCatalogDisplayName())
                           .setUri(spec.getUri().isBlank() ? current.getUri() : spec.getUri())
                           .clearOptions()
                           .putAllOptions(
@@ -289,10 +298,22 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                   : spec.getOptionsMap())
                           .setAuth(spec.hasAuth() ? spec.getAuth() : current.getAuth())
                           .setPolicy(spec.hasPolicy() ? spec.getPolicy() : current.getPolicy())
-                          .setUpdatedAt(tsNow)
-                          .build();
+                          .setUpdatedAt(tsNow);
 
-                  if (desired.equals(current)) {
+                  if (spec.hasDescription()) {
+                    desired.setDescription(spec.getDescription());
+                  }
+
+                  if (spec.hasSource()) {
+                    desired.setSource(spec.getSource());
+                  }
+                  if (spec.hasDestination()) {
+                    desired.setDestination(spec.getDestination());
+                  }
+
+                  var out = desired.build();
+
+                  if (out.equals(current)) {
                     var metaNoop = connectorRepo.metaForSafe(connectorId);
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, metaNoop, request.getPrecondition());
@@ -305,14 +326,14 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   MutationOps.updateWithPreconditions(
                       () -> connectorRepo.metaFor(connectorId),
                       request.getPrecondition(),
-                      expected -> connectorRepo.update(desired, expected),
+                      expected -> connectorRepo.update(out, expected),
                       () -> connectorRepo.metaForSafe(connectorId),
                       corr,
                       "connector",
-                      Map.of("display_name", desired.getDisplayName()));
+                      Map.of("display_name", out.getDisplayName()));
 
                   var outMeta = connectorRepo.metaForSafe(connectorId);
-                  var outConnector = connectorRepo.getById(connectorId).orElse(desired);
+                  var outConnector = connectorRepo.getById(connectorId).orElse(out);
 
                   return UpdateConnectorResponse.newBuilder()
                       .setConnector(outConnector)
@@ -368,7 +389,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
             run(
                 () -> {
                   var p = principalProvider.get();
-                  var correlationId = p.getCorrelationId();
+                  var corr = p.getCorrelationId();
 
                   authz.require(p, "connector.manage");
 
@@ -381,8 +402,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                         case CK_GLUE -> Kind.GLUE;
                         case CK_UNITY -> Kind.UNITY;
                         default ->
-                            throw GrpcErrors.invalidArgument(
-                                correlationId, null, Map.of("field", "kind"));
+                            throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "kind"));
                       };
 
                   var auth =
@@ -395,25 +415,35 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   var cfg =
                       new ConnectorConfig(
                           kind,
-                          spec.getDisplayName(),
-                          spec.getDestinationTenantId(),
-                          spec.getDestinationCatalogDisplayName(),
-                          toPaths(spec.getDestinationNamespacePathsList()),
-                          spec.getDestinationTableDisplayName(),
-                          spec.getDestinationTableColumnsList(),
-                          spec.getUri(),
+                          spec.getDisplayName() != null ? spec.getDisplayName() : "",
+                          mustNonEmpty(spec.getUri(), "uri", corr),
                           spec.getOptionsMap(),
                           auth);
 
                   try (var connector = ConnectorFactory.create(cfg)) {
                     var namespaces = connector.listNamespaces();
+
+                    if (spec.hasSource()) {
+                      var src = spec.getSource();
+                      var ns =
+                          (src.hasNamespace()
+                              ? String.join(".", src.getNamespace().getSegmentsList())
+                              : null);
+                      var tbl = (src.getTable().isBlank() ? null : src.getTable());
+                      if (ns != null && tbl != null) {
+                        try {
+                          connector.describe(ns, tbl);
+                        } catch (Exception ignored) {
+                        }
+                      }
+                    }
+
                     return ValidateConnectorResponse.newBuilder()
                         .setOk(true)
                         .setSummary(
-                            "OK: "
-                                + (namespaces.isEmpty()
-                                    ? "no namespaces"
-                                    : "namespaces=" + namespaces.size()))
+                            namespaces.isEmpty()
+                                ? "OK: no namespaces"
+                                : "OK: namespaces=" + namespaces.size())
                         .build();
                   } catch (Exception e) {
                     return ValidateConnectorResponse.newBuilder()
@@ -539,11 +569,57 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   }
 
   private static byte[] canonicalFingerprint(ConnectorSpec s) {
-    return new Canonicalizer()
-        .scalar("name", s.getDisplayName())
-        .scalar("policy", s.getPolicy())
-        .map("opt", s.getOptionsMap())
-        .scalar("targetCat", s.getDestinationCatalogDisplayName())
-        .bytes();
+    Canonicalizer c =
+        new Canonicalizer()
+            .scalar("name", s.getDisplayName() != null ? s.getDisplayName() : "")
+            .scalar("kind", s.getKind())
+            .scalar("uri", s.getUri() != null ? s.getDisplayName() : "")
+            .map("opt", s.getOptionsMap())
+            .scalar("policy.enabled", s.getPolicy().getEnabled())
+            .scalar("policy.max_parallel", s.getPolicy().getMaxParallel())
+            .scalar("policy.interval.sec", s.getPolicy().getInterval().getSeconds())
+            .scalar("policy.not_before.sec", s.getPolicy().getNotBefore().getSeconds());
+
+    if (s.hasSource()) {
+      var src = s.getSource();
+      var cols =
+          src.getColumnsList().stream()
+              .filter(x -> x != null && !x.isBlank())
+              .map(String::trim)
+              .map(x -> x.startsWith("#") ? ("#" + x.substring(1).trim()) : x)
+              .distinct()
+              .sorted()
+              .toList();
+
+      c =
+          c.list("src.ns", src.getNamespace().getSegmentsList())
+              .scalar("src.tbl", src.getTable() != null ? src.getTable() : "")
+              .list("src.cols", cols);
+    }
+
+    if (s.hasDestination()) {
+      var dst = s.getDestination();
+
+      String catKey =
+          dst.hasCatalogId()
+              ? (dst.getCatalogId().getId() != null ? dst.getCatalogId().getId() : "")
+              : "";
+
+      var nsSegments = dst.getNamespace().getSegmentsList();
+      String nsIdKey = dst.hasNamespaceId() ? dst.getNamespaceId().getId() : null;
+
+      String tblKey =
+          dst.hasTableId()
+              ? dst.getTableId().getId()
+              : (dst.getTableDisplayName() != null ? dst.getTableDisplayName() : "");
+
+      c =
+          c.scalar("dst.cat", catKey != null ? catKey : "")
+              .scalar("dst.ns_id", nsIdKey != null ? nsIdKey : "")
+              .list("dst.ns_segments", nsSegments)
+              .scalar("dst.tbl", tblKey != null ? tblKey : "");
+    }
+
+    return c.bytes();
   }
 }

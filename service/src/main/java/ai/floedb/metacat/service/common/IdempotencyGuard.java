@@ -10,6 +10,7 @@ import ai.floedb.metacat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.Duration;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
 import java.util.Map;
@@ -163,8 +164,7 @@ public final class IdempotencyGuard {
 
         store.delete(key);
       } else {
-        throw new ai.floedb.metacat.storage.errors.StorageAbortRetryableException(
-            "idempotency record pending: key=" + key);
+        throw new StorageAbortRetryableException("idempotency record pending: key=" + key);
       }
     }
 
@@ -183,7 +183,7 @@ public final class IdempotencyGuard {
 
   private static String sha256B64(byte[] data) {
     try {
-      var md = java.security.MessageDigest.getInstance("SHA-256");
+      var md = MessageDigest.getInstance("SHA-256");
       byte[] digest = md.digest(data);
       return Base64.getEncoder().encodeToString(digest);
     } catch (NoSuchAlgorithmException e) {

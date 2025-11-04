@@ -13,6 +13,7 @@ import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
+import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -99,12 +100,14 @@ class TableMutationIT {
     assertEquals(tblId.getId(), tblResolved.getResourceId().getId());
 
     var beforeRename = TestSupport.metaForTable(ptr, blob, tblId);
+    FieldMask mask = FieldMask.newBuilder().addPaths("display_name").build();
     TableSpec spec = TableSpec.newBuilder().setDisplayName("orders_v2").build();
     var r1 =
         table.updateTable(
             UpdateTableRequest.newBuilder()
                 .setTableId(tblId)
                 .setSpec(spec)
+                .setUpdateMask(mask)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(beforeRename.getPointerVersion())
@@ -150,6 +153,7 @@ class TableMutationIT {
                     UpdateTableRequest.newBuilder()
                         .setTableId(tblId)
                         .setSpec(staleSpec)
+                        .setUpdateMask(mask)
                         .setPrecondition(
                             Precondition.newBuilder()
                                 .setExpectedVersion(beforeRename.getPointerVersion()) // stale
@@ -164,12 +168,14 @@ class TableMutationIT {
         "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}"
             + ",{\"name\":\"ts\",\"type\":\"timestamp\"}]}";
 
+    FieldMask mask_schema = FieldMask.newBuilder().addPaths("schema_json").build();
     TableSpec schemaSpec = TableSpec.newBuilder().setSchemaJson(newSchema).build();
     var s1 =
         table.updateTable(
             UpdateTableRequest.newBuilder()
                 .setTableId(tblId)
                 .setSpec(schemaSpec)
+                .setUpdateMask(mask_schema)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(beforeSchema.getPointerVersion())
@@ -194,6 +200,7 @@ class TableMutationIT {
                     UpdateTableRequest.newBuilder()
                         .setTableId(tblId)
                         .setSpec(staleSchemaSpec) // anything
+                        .setUpdateMask(mask_schema)
                         .setPrecondition(
                             Precondition.newBuilder()
                                 .setExpectedVersion(beforeSchema.getPointerVersion()) // stale
@@ -210,6 +217,7 @@ class TableMutationIT {
             UpdateTableRequest.newBuilder()
                 .setTableId(tblId)
                 .setSpec(sameNameSpec)
+                .setUpdateMask(mask)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(before.getPointerVersion())
@@ -289,12 +297,15 @@ class TableMutationIT {
     assertEquals(tblId.getId(), tblResolved.getResourceId().getId());
 
     var beforeRename = TestSupport.metaForTable(ptr, blob, tblId);
+
+    FieldMask mask = FieldMask.newBuilder().addPaths("namespace_id").build();
     TableSpec newNamespaceSpec = TableSpec.newBuilder().setNamespaceId(nsId2).build();
     var r1 =
         table.updateTable(
             UpdateTableRequest.newBuilder()
                 .setTableId(tblId)
                 .setSpec(newNamespaceSpec)
+                .setUpdateMask(mask)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(beforeRename.getPointerVersion())
@@ -332,6 +343,8 @@ class TableMutationIT {
     TestSupport.assertGrpcAndMc(nfOld, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
 
     beforeRename = TestSupport.metaForTable(ptr, blob, tblId);
+
+    mask = FieldMask.newBuilder().addPaths("display_name").build();
     TableSpec newTableNameSpec =
         TableSpec.newBuilder().setDisplayName("orders_v2").setNamespaceId(nsId2).build();
     var r2 =
@@ -339,6 +352,7 @@ class TableMutationIT {
             UpdateTableRequest.newBuilder()
                 .setTableId(tblId)
                 .setSpec(newTableNameSpec)
+                .setUpdateMask(mask)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(beforeRename.getPointerVersion())

@@ -18,6 +18,7 @@ import ai.floedb.metacat.tenant.rpc.Tenant;
 import ai.floedb.metacat.tenant.rpc.TenantServiceGrpc;
 import ai.floedb.metacat.tenant.rpc.TenantSpec;
 import com.google.protobuf.Any;
+import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -227,17 +228,35 @@ public final class TestSupport {
       TableServiceGrpc.TableServiceBlockingStub mutation,
       ResourceId tableId,
       String newSchemaJson) {
+
     TableSpec spec = TableSpec.newBuilder().setSchemaJson(newSchemaJson).build();
+
+    FieldMask mask = FieldMask.newBuilder().addPaths("schema_json").build();
+
     return mutation
-        .updateTable(UpdateTableRequest.newBuilder().setTableId(tableId).setSpec(spec).build())
+        .updateTable(
+            UpdateTableRequest.newBuilder()
+                .setTableId(tableId)
+                .setSpec(spec)
+                .setUpdateMask(mask)
+                .build())
         .getTable();
   }
 
   public static Table renameTable(
       TableServiceGrpc.TableServiceBlockingStub mutation, ResourceId tableId, String newName) {
+
     TableSpec spec = TableSpec.newBuilder().setDisplayName(newName).build();
+
+    FieldMask mask = FieldMask.newBuilder().addPaths("display_name").build();
+
     return mutation
-        .updateTable(UpdateTableRequest.newBuilder().setTableId(tableId).setSpec(spec).build())
+        .updateTable(
+            UpdateTableRequest.newBuilder()
+                .setTableId(tableId)
+                .setSpec(spec)
+                .setUpdateMask(mask)
+                .build())
         .getTable();
   }
 
