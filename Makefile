@@ -66,15 +66,16 @@ verify:
 clean: clean-java clean-dev
 clean-java:
 	$(MVN) -q -T 1C clean || true
+
 clean-dev:
-	@echo "==> [CLEAN-DEV] removing pid/logs"
+	@echo "==> [CLEAN-DEV] removing pid/logs and isolated repos"
 	rm -rf $(PID_DIR) $(LOG_DIR) $(BIN_DIR)
 	mkdir -p $(PID_DIR) $(LOG_DIR) $(BIN_DIR)
 
 # ---------- Dev (foreground) ----------
 # Runs Quarkus dev in the foreground (CTRL-C to stop).
 .PHONY: run
-run:
+run: build
 	@echo "==> [DEV] quarkus:dev (profile=$(QUARKUS_PROFILE))"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
@@ -140,17 +141,57 @@ status:
 	  echo "==> [STATUS] not running"; \
 	fi
 
-# ---------- Cli ----------
+# ---------- CLI  ----------
+M2_CLI_DIR := $(BIN_DIR)/.m2-cli
+
+VERSION := $(shell mvn -q -DforceStdout help:evaluate -Dexpression=project.version -Drecursive=false 2>/dev/null | grep -v '^\[' | tail -n1)
+ifeq ($(strip $(VERSION)),)
+  VERSION := 0.1.0-SNAPSHOT
+endif
+
+PROTO_JAR := proto/target/metacat-proto-$(VERSION).jar
+
+.PHONY: cli-clean
+cli-clean:
+	@echo "==> [CLI] clean isolated repo and output"
+	rm -rf $(M2_CLI_DIR) client-cli/target
+	mkdir -p $(M2_CLI_DIR)
+
+.PHONY: parent-cli
+parent-cli:
+	@echo "==> [CLI] install parent POM into isolated repo"
+	mvn -q -Dmaven.repo.local=$(M2_CLI_DIR) \
+	  org.apache.maven.plugins:maven-install-plugin:3.1.1:install-file \
+	  -DgroupId=ai.floedb.metacat \
+	  -DartifactId=metacat \
+	  -Dversion=$(VERSION) \
+	  -Dpackaging=pom \
+	  -Dfile=pom.xml
+
+.PHONY: proto-cli
+proto-cli:
+	@echo "==> [PROTO-CLI] install existing proto jar into isolated repo (no rebuild)"
+	@test -f "$(PROTO_JAR)" || { echo "Missing $(PROTO_JAR). Build proto first."; exit 1; }
+	mvn -q -Dmaven.repo.local=$(M2_CLI_DIR) \
+	  org.apache.maven.plugins:maven-install-plugin:3.1.1:install-file \
+	  -Dfile=$(PROTO_JAR) \
+	  -DgroupId=ai.floedb.metacat \
+	  -DartifactId=metacat-proto \
+	  -Dversion=$(VERSION) \
+	  -Dpackaging=jar
+
 .PHONY: cli
-cli:
-	@echo "==> [BUILD] client CLI"
-	$(MVN) -q -pl client-cli -am -DskipTests package
+cli: cli-clean parent-cli proto-cli
+	@echo "==> [CLI] build client-cli against isolated repo"
+	mvn -q -f client-cli/pom.xml \
+	  -Dmaven.repo.local=$(M2_CLI_DIR) \
+	  -DskipTests \
+	  clean package
 
 .PHONY: cli-run
 cli-run: cli
 	@echo "==> [RUN] client CLI"
 	java -jar client-cli/target/quarkus-app/quarkus-run.jar $(ARGS)
-
 # ---------- Docker (Quarkus container-image) ----------
 # Requires proper container-image config in service/pom.xml or application.properties
 .PHONY: docker

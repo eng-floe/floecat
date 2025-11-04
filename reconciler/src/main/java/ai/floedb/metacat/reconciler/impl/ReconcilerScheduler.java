@@ -2,10 +2,6 @@ package ai.floedb.metacat.reconciler.impl;
 
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
-import ai.floedb.metacat.connector.rpc.Connector;
-import ai.floedb.metacat.connector.rpc.GetConnectorRequest;
-import ai.floedb.metacat.connector.spi.ConnectorConfig;
-import ai.floedb.metacat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -36,22 +32,14 @@ public class ReconcilerScheduler {
       jobs.markRunning(lease.jobId, System.currentTimeMillis());
 
       try {
-        var resourceId =
+        var connectorId =
             ResourceId.newBuilder()
                 .setTenantId(lease.tenantId)
                 .setId(lease.connectorId)
                 .setKind(ResourceKind.RK_CONNECTOR)
                 .build();
 
-        Connector connector =
-            clients
-                .connector()
-                .getConnector(GetConnectorRequest.newBuilder().setConnectorId(resourceId).build())
-                .getConnector();
-
-        ConnectorConfig cfg = toConfig(connector);
-
-        var result = reconcilerService.reconcile(cfg, lease.fullRescan);
+        var result = reconcilerService.reconcile(connectorId, lease.fullRescan);
 
         long finished = System.currentTimeMillis();
         if (result.ok()) {
@@ -66,35 +54,11 @@ public class ReconcilerScheduler {
               result.errors);
         }
       } catch (Exception e) {
-        jobs.markFailed(lease.jobId, System.currentTimeMillis(), e.getMessage(), 0, 0, 1);
+        var msg = e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage());
+        jobs.markFailed(lease.jobId, System.currentTimeMillis(), msg, 0, 0, 1);
       }
     } finally {
       running.set(false);
     }
-  }
-
-  private static ConnectorConfig toConfig(Connector connector) {
-    Kind kind =
-        switch (connector.getKind()) {
-          case CK_ICEBERG -> Kind.ICEBERG;
-          case CK_DELTA -> Kind.DELTA;
-          case CK_GLUE -> Kind.GLUE;
-          case CK_UNITY -> Kind.UNITY;
-          default -> throw new IllegalArgumentException("Unsupported kind: " + connector.getKind());
-        };
-    var auth =
-        new ConnectorConfig.Auth(
-            connector.getAuth().getScheme(),
-            connector.getAuth().getPropsMap(),
-            connector.getAuth().getHeaderHintsMap(),
-            connector.getAuth().getSecretRef());
-    return new ConnectorConfig(
-        kind,
-        connector.getDisplayName(),
-        connector.getTargetCatalogDisplayName(),
-        connector.getTargetTenantId(),
-        connector.getUri(),
-        connector.getOptionsMap(),
-        auth);
   }
 }

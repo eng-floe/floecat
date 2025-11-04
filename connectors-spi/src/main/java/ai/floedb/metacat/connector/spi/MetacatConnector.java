@@ -6,6 +6,7 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import java.io.Closeable;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public interface MetacatConnector extends Closeable {
   String id();
@@ -19,7 +20,10 @@ public interface MetacatConnector extends Closeable {
   TableDescriptor describe(String namespaceFq, String tableName);
 
   List<SnapshotBundle> enumerateSnapshotsWithStats(
-      String namespaceFq, String tableName, ResourceId destinationTableId);
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      Set<String> includeColumns);
 
   @Override
   void close();

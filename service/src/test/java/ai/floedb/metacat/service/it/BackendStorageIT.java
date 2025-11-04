@@ -525,13 +525,15 @@ class BackendStorageIT {
         TestSupport.createNamespace(
             namespace, cat.getResourceId(), "ns", List.of("db", "sch"), "idem");
 
+    var upstream =
+        UpstreamRef.newBuilder().setFormat(TableFormat.TF_DELTA).setUri("s3://b/p").build();
+
     var spec =
         TableSpec.newBuilder()
             .setCatalogId(cat.getResourceId())
             .setNamespaceId(ns.getResourceId())
-            .setFormat(TableFormat.TF_DELTA)
+            .setUpstream(upstream)
             .setDisplayName("t0")
-            .setRootUri("s3://b/p")
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
             .setDescription("desc")
             .build();
@@ -579,14 +581,16 @@ class BackendStorageIT {
             namespace, cat.getResourceId(), "ns", List.of("db", "sch"), "idem");
     var idem = IdempotencyKey.newBuilder().setKey("k-XYZ").build();
 
+    var upstream =
+        UpstreamRef.newBuilder().setFormat(TableFormat.TF_DELTA).setUri("s3://b/p").build();
+
     var specA =
         TableSpec.newBuilder()
             .setCatalogId(cat.getResourceId())
             .setNamespaceId(ns.getResourceId())
             .setDisplayName("tA")
-            .setRootUri("s3://b/p")
+            .setUpstream(upstream)
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
-            .setFormat(TableFormat.TF_DELTA)
             .build();
 
     var specB =
@@ -594,9 +598,8 @@ class BackendStorageIT {
             .setCatalogId(cat.getResourceId())
             .setNamespaceId(ns.getResourceId())
             .setDisplayName("tB")
-            .setRootUri("s3://b/p")
+            .setUpstream(upstream)
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
-            .setFormat(TableFormat.TF_DELTA)
             .build();
 
     var reqA = CreateTableRequest.newBuilder().setSpec(specA).setIdempotency(idem).build();
@@ -617,13 +620,15 @@ class BackendStorageIT {
         TestSupport.createNamespace(
             namespace, cat.getResourceId(), "ns", List.of("db", "sch"), "idem");
 
+    var upstream =
+        UpstreamRef.newBuilder().setFormat(TableFormat.TF_DELTA).setUri("s3://b/p").build();
+
     var spec =
         TableSpec.newBuilder()
             .setCatalogId(cat.getResourceId())
             .setNamespaceId(ns.getResourceId())
             .setDisplayName("tcc")
-            .setFormat(TableFormat.TF_DELTA)
-            .setRootUri("s3://b/p")
+            .setUpstream(upstream)
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
             .build();
 

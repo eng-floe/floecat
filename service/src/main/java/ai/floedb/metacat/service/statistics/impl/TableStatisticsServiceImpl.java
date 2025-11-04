@@ -243,7 +243,11 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                           tsNow,
                           idempotencyTtlSeconds(),
                           this::correlationId,
-                          TableStats::parseFrom);
+                          TableStats::parseFrom,
+                          rec ->
+                              stats
+                                  .getTableStats(request.getTableId(), request.getSnapshotId())
+                                  .isPresent());
 
                   return PutTableStatsResponse.newBuilder()
                       .setStats(request.getStats())
@@ -324,7 +328,14 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                         tsNow,
                         idempotencyTtlSeconds(),
                         this::correlationId,
-                        ColumnStats::parseFrom);
+                        ColumnStats::parseFrom,
+                        rec ->
+                            stats
+                                .getColumnStats(
+                                    request.getTableId(),
+                                    request.getSnapshotId(),
+                                    raw.getColumnId())
+                                .isPresent());
 
                     upserted++;
                   }

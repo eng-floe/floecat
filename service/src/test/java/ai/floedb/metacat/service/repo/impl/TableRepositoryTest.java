@@ -7,6 +7,7 @@ import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
+import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.model.Keys;
@@ -74,15 +75,19 @@ class TableRepositoryTest {
             .setKind(ResourceKind.RK_TABLE)
             .build();
 
+    var upstream =
+        UpstreamRef.newBuilder()
+            .setFormat(TableFormat.TF_ICEBERG)
+            .setUri("s3://upstream/tables/orders/")
+            .build();
     var td =
         Table.newBuilder()
             .setResourceId(tableRid)
             .setDisplayName("orders")
             .setDescription("Orders table")
-            .setFormat(TableFormat.TF_ICEBERG)
+            .setUpstream(upstream)
             .setCatalogId(catRid)
             .setNamespaceId(nsRid)
-            .setRootUri("s3://upstream/tables/orders")
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
             .setCreatedAt(Timestamps.fromMillis(clock.millis()))
             .build();
@@ -151,15 +156,17 @@ class TableRepositoryTest {
             .setCatalogId(catId)
             .build());
 
+    var upstream =
+        UpstreamRef.newBuilder().setFormat(TableFormat.TF_DELTA).setUri("s3://b/p").build();
+
     var seed =
         Table.newBuilder()
             .setResourceId(tblId)
             .setDisplayName("seed")
             .setDescription("seed")
-            .setFormat(TableFormat.TF_DELTA)
+            .setUpstream(upstream)
             .setCatalogId(catId)
             .setNamespaceId(ns1Id)
-            .setRootUri("s3://b/p")
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
             .setCreatedAt(Timestamps.fromMillis(clock.millis()))
             .build();

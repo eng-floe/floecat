@@ -93,6 +93,94 @@ public final class IdempotencyGuard {
     }
   }
 
+  public static <T> T runOnce(
+      String tenantId,
+      String opName,
+      String idempotencyKey,
+      byte[] requestBytes,
+      Supplier<CreateResult<T>> creator,
+      Function<T, MutationMeta> metaExtractor,
+      Function<T, byte[]> serializer,
+      Function<byte[], T> parser,
+      IdempotencyRepository store,
+      long ttlSeconds,
+      Timestamp now,
+      Supplier<String> corrId,
+      Function<IdempotencyRecord, Boolean> canReplay) {
+
+    if (idempotencyKey == null || idempotencyKey.isBlank()) {
+      var result = creator.get();
+      return result.resource();
+    }
+
+    String key = Keys.idempotencyKey(tenantId, opName, idempotencyKey);
+    String requestHash = sha256B64(requestBytes);
+
+    var existing = store.get(key);
+    if (existing.isPresent()) {
+      var rec = existing.get();
+      if (!rec.getRequestHash().equals(requestHash)) {
+        throw GrpcErrors.conflict(
+            corrId.get(), "idempotency_mismatch", Map.of("op", opName, "key", idempotencyKey));
+      }
+      if (rec.getStatus() == IdempotencyRecord.Status.SUCCEEDED) {
+        boolean replayOk = (canReplay == null) || Boolean.TRUE.equals(canReplay.apply(rec));
+        if (replayOk) {
+          return parser.apply(rec.getPayload().toByteArray());
+        }
+
+        store.delete(key);
+      } else {
+        // ignore
+      }
+    }
+
+    long ttlMillis = Math.max(1, ttlSeconds) * 1000L;
+    Timestamp expiresAt =
+        Timestamps.add(
+            now,
+            Duration.newBuilder()
+                .setSeconds(ttlMillis / 1000)
+                .setNanos((int) ((ttlMillis % 1000) * 1_000_000))
+                .build());
+
+    boolean iCreated = store.createPending(tenantId, key, opName, requestHash, now, expiresAt);
+    if (!iCreated) {
+      var againOpt = store.get(key);
+      if (againOpt.isEmpty()) {
+        throw new StorageAbortRetryableException("idempotency record not yet visible: key=" + key);
+      }
+      var again = againOpt.get();
+      if (!again.getRequestHash().equals(requestHash)) {
+        throw GrpcErrors.conflict(
+            corrId.get(), "idempotency_mismatch", Map.of("op", opName, "key", idempotencyKey));
+      }
+      if (again.getStatus() == IdempotencyRecord.Status.SUCCEEDED) {
+        boolean replayOk = (canReplay == null) || Boolean.TRUE.equals(canReplay.apply(again));
+        if (replayOk) {
+          return parser.apply(again.getPayload().toByteArray());
+        }
+
+        store.delete(key);
+      } else {
+        throw new ai.floedb.metacat.storage.errors.StorageAbortRetryableException(
+            "idempotency record pending: key=" + key);
+      }
+    }
+
+    try {
+      var created = creator.get();
+      var meta = metaExtractor.apply(created.resource());
+      var payload = serializer.apply(created.resource());
+      store.finalizeSuccess(
+          tenantId, key, opName, requestHash, created.resourceId(), meta, payload, now, expiresAt);
+      return created.resource();
+    } catch (Throwable t) {
+      store.delete(key);
+      throw t;
+    }
+  }
+
   private static String sha256B64(byte[] data) {
     try {
       var md = java.security.MessageDigest.getInstance("SHA-256");

@@ -18,6 +18,7 @@ import ai.floedb.metacat.connector.rpc.GetReconcileJobResponse;
 import ai.floedb.metacat.connector.rpc.JobState;
 import ai.floedb.metacat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.metacat.connector.rpc.ListConnectorsResponse;
+import ai.floedb.metacat.connector.rpc.NamespacePath;
 import ai.floedb.metacat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.metacat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.metacat.connector.rpc.UpdateConnectorRequest;
@@ -44,6 +45,7 @@ import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.List;
 import java.util.Map;
 import org.jboss.logging.Logger;
 
@@ -174,12 +176,18 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                             "display_name",
                                             correlationId))
                                     .setKind(request.getSpec().getKind())
-                                    .setTargetCatalogDisplayName(
+                                    .setDestinationTenantId(tenantId)
+                                    .setDestinationCatalogDisplayName(
                                         mustNonEmpty(
-                                            request.getSpec().getTargetCatalogDisplayName(),
+                                            request.getSpec().getDestinationCatalogDisplayName(),
                                             "target_catalog_display_name",
                                             correlationId))
-                                    .setTargetTenantId(tenantId)
+                                    .addAllDestinationNamespacePaths(
+                                        request.getSpec().getDestinationNamespacePathsList())
+                                    .setDestinationTableDisplayName(
+                                        request.getSpec().getDestinationTableDisplayName())
+                                    .addAllDestinationTableColumns(
+                                        request.getSpec().getDestinationTableColumnsList())
                                     .setUri(
                                         mustNonEmpty(
                                             request.getSpec().getUri(), "uri", correlationId))
@@ -217,7 +225,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           tsNow,
                           idempotencyTtlSeconds(),
                           this::correlationId,
-                          Connector::parseFrom);
+                          Connector::parseFrom,
+                          rec -> connectorRepo.getById(rec.getResourceId()).isPresent());
 
                   return CreateConnectorResponse.newBuilder()
                       .setConnector(connectorProto.body)
@@ -267,11 +276,11 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                               spec.getKind() == ConnectorKind.CK_UNSPECIFIED
                                   ? current.getKind()
                                   : spec.getKind())
-                          .setTargetCatalogDisplayName(
-                              spec.getTargetCatalogDisplayName().isBlank()
-                                  ? current.getTargetCatalogDisplayName()
-                                  : spec.getTargetCatalogDisplayName())
-                          .setTargetTenantId(pc.getTenantId())
+                          .setDestinationTenantId(pc.getTenantId())
+                          .setDestinationCatalogDisplayName(
+                              spec.getDestinationCatalogDisplayName().isBlank()
+                                  ? current.getDestinationCatalogDisplayName()
+                                  : spec.getDestinationCatalogDisplayName())
                           .setUri(spec.getUri().isBlank() ? current.getUri() : spec.getUri())
                           .clearOptions()
                           .putAllOptions(
@@ -387,8 +396,11 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       new ConnectorConfig(
                           kind,
                           spec.getDisplayName(),
-                          spec.getTargetCatalogDisplayName(),
-                          spec.getTargetTenantId(),
+                          spec.getDestinationTenantId(),
+                          spec.getDestinationCatalogDisplayName(),
+                          toPaths(spec.getDestinationNamespacePathsList()),
+                          spec.getDestinationTableDisplayName(),
+                          spec.getDestinationTableColumnsList(),
                           spec.getUri(),
                           spec.getOptionsMap(),
                           auth);
@@ -507,12 +519,31 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     };
   }
 
+  static List<List<String>> toPaths(List<NamespacePath> in) {
+    if (in == null || in.isEmpty()) {
+      return List.of();
+    }
+
+    return in.stream()
+        .map(
+            np -> {
+              var segs = np.getSegmentsList();
+              var cleaned =
+                  segs.stream()
+                      .map(s -> s == null ? "" : s.trim())
+                      .filter(s -> !s.isEmpty())
+                      .toList();
+              return List.copyOf(cleaned);
+            })
+        .toList();
+  }
+
   private static byte[] canonicalFingerprint(ConnectorSpec s) {
     return new Canonicalizer()
         .scalar("name", s.getDisplayName())
         .scalar("policy", s.getPolicy())
         .map("opt", s.getOptionsMap())
-        .scalar("targetCat", s.getTargetCatalogDisplayName())
+        .scalar("targetCat", s.getDestinationCatalogDisplayName())
         .bytes();
   }
 }

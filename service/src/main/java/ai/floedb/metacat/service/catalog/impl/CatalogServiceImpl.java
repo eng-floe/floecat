@@ -182,7 +182,8 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                           tsNow,
                           idempotencyTtlSeconds(),
                           this::correlationId,
-                          Catalog::parseFrom);
+                          Catalog::parseFrom,
+                          rec -> catalogRepo.getById(rec.getResourceId()).isPresent());
 
                   return CreateCatalogResponse.newBuilder()
                       .setCatalog(catalogProto.body)

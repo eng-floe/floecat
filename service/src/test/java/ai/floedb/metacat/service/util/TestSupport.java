@@ -119,8 +119,8 @@ public final class TestSupport {
                         .setNamespaceId(namespaceId)
                         .setDisplayName(displayName)
                         .setDescription(desc)
-                        .setFormat(TableFormat.TF_ICEBERG)
-                        .setRootUri(rootUri)
+                        .setUpstream(
+                            UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).build())
                         .setSchemaJson(schemaJson))
                 .build());
     return resp.getTable();

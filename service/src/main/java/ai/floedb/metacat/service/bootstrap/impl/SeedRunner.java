@@ -5,6 +5,7 @@ import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
+import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.catalog.rpc.View;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
@@ -180,16 +181,23 @@ public class SeedRunner {
 
     String rootUri = "s3://seed-data/";
 
+    var upstream =
+        UpstreamRef.newBuilder()
+            .setUri(rootUri)
+            .addAllNamespacePath(List.of(("a.b.c").split("\\.")))
+            .setTableDisplayName("upstream_table")
+            .setFormat(TableFormat.TF_ICEBERG)
+            .build();
+
     var td =
         Table.newBuilder()
             .setResourceId(tableRid)
             .setDisplayName(name)
             .setDescription(name + " table")
-            .setFormat(TableFormat.TF_ICEBERG)
             .setCatalogId(catalogId)
             .setNamespaceId(nsRid)
-            .setRootUri(rootUri)
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
+            .setUpstream(upstream)
             .setCreatedAt(Timestamps.fromMillis(now))
             .build();
 

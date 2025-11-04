@@ -10,6 +10,8 @@ import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.connector.rpc.*;
+import ai.floedb.metacat.connector.spi.ConnectorConfigMapper;
+import ai.floedb.metacat.connector.spi.ConnectorFactory;
 import ai.floedb.metacat.reconciler.impl.ReconcilerScheduler;
 import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
@@ -50,6 +52,23 @@ public class ConnectorIT {
   }
 
   @Test
+  void mapperToFactoryDummyWorks() {
+    var proto =
+        Connector.newBuilder()
+            .setDisplayName("dummy-conn")
+            .setKind(ConnectorKind.CK_UNITY)
+            .setDestinationTenantId("t1")
+            .setDestinationCatalogDisplayName("cat-e2e")
+            .setUri("dummy://ignored")
+            .build();
+
+    var cfg = ConnectorConfigMapper.fromProto(proto);
+    try (var conn = ConnectorFactory.create(cfg)) {
+      assertEquals("dummy", conn.id());
+    }
+  }
+
+  @Test
   void connectorEndToEnd() throws Exception {
     var tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     var conn =
@@ -58,8 +77,8 @@ public class ConnectorIT {
             ConnectorSpec.newBuilder()
                 .setDisplayName("dummy-conn")
                 .setKind(ConnectorKind.CK_UNITY)
-                .setTargetCatalogDisplayName("cat-e2e")
-                .setTargetTenantId(tenantId.getId())
+                .setDestinationCatalogDisplayName("cat-e2e")
+                .setDestinationTenantId(tenantId.getId())
                 .setUri("dummy://ignored")
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
                 .build());
@@ -67,7 +86,7 @@ public class ConnectorIT {
     var rid = conn.getResourceId();
     var job = runReconcile(rid);
     assertNotNull(job);
-    assertEquals("JS_SUCCEEDED", job.state);
+    assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
 
     var catId = catalogs.getByName(tenantId.getId(), "cat-e2e").orElseThrow().getResourceId();
 
@@ -117,9 +136,9 @@ public class ConnectorIT {
 
     // Should be able to run it again without issues
     rid = conn.getResourceId();
-    job = runReconcile(rid);
-    assertNotNull(job);
-    assertEquals("JS_SUCCEEDED", job.state);
+    var job2 = runReconcile(rid);
+    assertNotNull(job2);
+    assertEquals("JS_SUCCEEDED", job2.state, () -> "job failed: " + job2.message);
   }
 
   @Test
@@ -137,8 +156,8 @@ public class ConnectorIT {
             ConnectorSpec.newBuilder()
                 .setDisplayName("Glue Iceberg")
                 .setKind(ConnectorKind.CK_ICEBERG)
-                .setTargetCatalogDisplayName("glue-iceberg-rest")
-                .setTargetTenantId(tenantId.getId())
+                .setDestinationCatalogDisplayName("glue-iceberg-rest")
+                .setDestinationTenantId(tenantId.getId())
                 .setUri("https://glue.us-east-1.amazonaws.com/iceberg/")
                 .setAuth(AuthConfig.newBuilder().setScheme("aws-sigv4").build())
                 .build());
@@ -203,7 +222,7 @@ public class ConnectorIT {
         ConnectorSpec.newBuilder()
             .setDisplayName("idem-1")
             .setKind(ConnectorKind.CK_UNITY)
-            .setTargetCatalogDisplayName("cat-idem")
+            .setDestinationCatalogDisplayName("cat-idem")
             .setUri("dummy://x")
             .build();
 
@@ -246,7 +265,7 @@ public class ConnectorIT {
           ConnectorSpec.newBuilder()
               .setDisplayName("p-" + i)
               .setKind(ConnectorKind.CK_UNITY)
-              .setTargetCatalogDisplayName("cat-p")
+              .setDestinationCatalogDisplayName("cat-p")
               .setUri("dummy://x")
               .build());
     }
@@ -275,7 +294,7 @@ public class ConnectorIT {
             ConnectorSpec.newBuilder()
                 .setDisplayName("u-a")
                 .setKind(ConnectorKind.CK_UNITY)
-                .setTargetCatalogDisplayName("cat-u")
+                .setDestinationCatalogDisplayName("cat-u")
                 .setUri("dummy://x")
                 .build());
     var b =
@@ -284,7 +303,7 @@ public class ConnectorIT {
             ConnectorSpec.newBuilder()
                 .setDisplayName("u-b")
                 .setKind(ConnectorKind.CK_UNITY)
-                .setTargetCatalogDisplayName("cat-u")
+                .setDestinationCatalogDisplayName("cat-u")
                 .setUri("dummy://x")
                 .build());
 
@@ -320,7 +339,7 @@ public class ConnectorIT {
             ConnectorSpec.newBuilder()
                 .setDisplayName("pre-a")
                 .setKind(ConnectorKind.CK_UNITY)
-                .setTargetCatalogDisplayName("cat-pre")
+                .setDestinationCatalogDisplayName("cat-pre")
                 .setUri("dummy://x")
                 .build());
 
@@ -348,7 +367,7 @@ public class ConnectorIT {
             ConnectorSpec.newBuilder()
                 .setDisplayName("del-1")
                 .setKind(ConnectorKind.CK_UNITY)
-                .setTargetCatalogDisplayName("cat-del")
+                .setDestinationCatalogDisplayName("cat-del")
                 .setUri("dummy://x")
                 .build());
 
@@ -406,7 +425,7 @@ public class ConnectorIT {
                     ConnectorSpec.newBuilder()
                         .setDisplayName("v-ok")
                         .setKind(ConnectorKind.CK_UNITY)
-                        .setTargetCatalogDisplayName("cat-v")
+                        .setDestinationCatalogDisplayName("cat-v")
                         .setUri("dummy://x"))
                 .build());
     assertTrue(ok.getOk());
@@ -421,7 +440,7 @@ public class ConnectorIT {
                             ConnectorSpec.newBuilder()
                                 .setDisplayName("v-bad")
                                 .setKind(ConnectorKind.CK_UNSPECIFIED)
-                                .setTargetCatalogDisplayName("cat-v")
+                                .setDestinationCatalogDisplayName("cat-v")
                                 .setUri("dummy://x"))
                         .build()));
 

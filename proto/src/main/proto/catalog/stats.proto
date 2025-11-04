@@ -105,9 +105,11 @@ message PutColumnStatsBatchResponse {
 message GetTableStatsRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
   ai.floedb.metacat.common.SnapshotRef snapshot = 2;
+  ai.floedb.metacat.common.PageRequest page = 3;
 }
 message GetTableStatsResponse {
   TableStats stats = 1;
+  ai.floedb.metacat.common.PageResponse page = 2;
 }
 
 message ListColumnStatsRequest {

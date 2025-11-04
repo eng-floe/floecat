@@ -9,11 +9,11 @@ import ai.floedb.metacat.catalog.rpc.GetTableResponse;
 import ai.floedb.metacat.catalog.rpc.ListTablesRequest;
 import ai.floedb.metacat.catalog.rpc.ListTablesResponse;
 import ai.floedb.metacat.catalog.rpc.Table;
-import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.TableService;
 import ai.floedb.metacat.catalog.rpc.TableSpec;
 import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateTableResponse;
+import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
@@ -194,20 +194,16 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                             "display_name",
                                             correlationId))
                                     .setDescription(request.getSpec().getDescription())
-                                    .setFormat(request.getSpec().getFormat())
                                     .setCatalogId(request.getSpec().getCatalogId())
                                     .setNamespaceId(request.getSpec().getNamespaceId())
-                                    .setRootUri(
-                                        mustNonEmpty(
-                                            request.getSpec().getRootUri(),
-                                            "root_uri",
-                                            correlationId))
+                                    .setCreatedAt(tsNow)
                                     .setSchemaJson(
                                         mustNonEmpty(
                                             request.getSpec().getSchemaJson(),
                                             "schema_json",
                                             correlationId))
-                                    .setCreatedAt(tsNow)
+                                    .setUpstream(request.getSpec().getUpstream())
+                                    .putAllProperties(request.getSpec().getPropertiesMap())
                                     .build();
 
                             try {
@@ -238,7 +234,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           tsNow,
                           idempotencyTtlSeconds(),
                           this::correlationId,
-                          Table::parseFrom);
+                          Table::parseFrom,
+                          rec -> tableRepo.getById(rec.getResourceId()).isPresent());
 
                   return CreateTableResponse.newBuilder()
                       .setTable(tableProto.body)
@@ -259,12 +256,12 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     return mapFailures(
             runWithRetry(
                 () -> {
-                  var pincipalContext = principal.get();
-                  var correlationId = pincipalContext.getCorrelationId();
-                  authz.require(pincipalContext, "table.write");
+                  var pctx = principal.get();
+                  var corr = pctx.getCorrelationId();
+                  authz.require(pctx, "table.write");
 
                   var tableId = request.getTableId();
-                  ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
+                  ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
 
                   var current =
                       tableRepo
@@ -272,38 +269,30 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
-                                      correlationId, "table", Map.of("id", tableId.getId())));
+                                      corr, "table", Map.of("id", tableId.getId())));
 
                   var spec = request.getSpec();
-                  var updatedTableBuilder = current.toBuilder();
+                  var b = current.toBuilder();
 
-                  if (spec.getDisplayName() != null && !spec.getDisplayName().isBlank()) {
-                    updatedTableBuilder.setDisplayName(
-                        mustNonEmpty(spec.getDisplayName(), "spec.display_name", correlationId));
+                  if (!spec.getDisplayName().isBlank()) {
+                    b.setDisplayName(
+                        mustNonEmpty(spec.getDisplayName(), "spec.display_name", corr));
                   }
-                  if (spec.getDescription() != null && !spec.getDescription().isBlank()) {
-                    updatedTableBuilder.setDescription(spec.getDescription());
+                  if (!spec.getDescription().isBlank()) {
+                    b.setDescription(spec.getDescription());
                   }
-                  if (spec.getRootUri() != null && !spec.getRootUri().isBlank()) {
-                    updatedTableBuilder.setRootUri(
-                        mustNonEmpty(spec.getRootUri(), "spec.root_uri", correlationId));
-                  }
-                  if (spec.getSchemaJson() != null && !spec.getSchemaJson().isBlank()) {
-                    updatedTableBuilder.setSchemaJson(
-                        mustNonEmpty(spec.getSchemaJson(), "spec.schema_json", correlationId));
+                  if (!spec.getSchemaJson().isBlank()) {
+                    b.setSchemaJson(mustNonEmpty(spec.getSchemaJson(), "spec.schema_json", corr));
                   }
 
-                  if (spec.getFormat() != TableFormat.TF_UNSPECIFIED) {
-                    updatedTableBuilder.setFormat(spec.getFormat());
-                  }
-
-                  if (spec.getPartitionKeysCount() > 0) {
-                    updatedTableBuilder
-                        .clearPartitionKeys()
-                        .addAllPartitionKeys(spec.getPartitionKeysList());
-                  }
                   if (!spec.getPropertiesMap().isEmpty()) {
-                    updatedTableBuilder.clearProperties().putAllProperties(spec.getPropertiesMap());
+                    b.clearProperties().putAllProperties(spec.getPropertiesMap());
+                  }
+
+                  if (spec.hasUpstream()) {
+                    var up = spec.getUpstream();
+                    validateUpstreamRef(up, corr);
+                    b.setUpstream(up);
                   }
 
                   boolean catalogChanged = false;
@@ -311,76 +300,70 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
                   if (spec.hasCatalogId()) {
                     var catId = spec.getCatalogId();
-                    ensureKind(catId, ResourceKind.RK_CATALOG, "spec.catalog_id", correlationId);
+                    ensureKind(catId, ResourceKind.RK_CATALOG, "spec.catalog_id", corr);
                     catalogRepo
                         .getById(catId)
                         .orElseThrow(
                             () ->
-                                GrpcErrors.notFound(
-                                    correlationId, "catalog", Map.of("id", catId.getId())));
-                    updatedTableBuilder.setCatalogId(catId);
+                                GrpcErrors.notFound(corr, "catalog", Map.of("id", catId.getId())));
+                    b.setCatalogId(catId);
                     catalogChanged = true;
                   }
 
                   if (spec.hasNamespaceId()) {
-                    var namespaceId = spec.getNamespaceId();
-                    ensureKind(
-                        namespaceId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", correlationId);
-                    var namespace =
+                    var nsId = spec.getNamespaceId();
+                    ensureKind(nsId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", corr);
+                    var ns =
                         namespaceRepo
-                            .getById(namespaceId)
+                            .getById(nsId)
                             .orElseThrow(
                                 () ->
                                     GrpcErrors.notFound(
-                                        correlationId,
-                                        "namespace",
-                                        Map.of("id", namespaceId.getId())));
+                                        corr, "namespace", Map.of("id", nsId.getId())));
+
                     var effectiveCatalogId =
-                        catalogChanged
-                            ? updatedTableBuilder.getCatalogId()
-                            : current.getCatalogId();
-                    if (!namespace.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
+                        catalogChanged ? b.getCatalogId() : current.getCatalogId();
+                    if (!ns.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
                       throw GrpcErrors.invalidArgument(
-                          correlationId,
+                          corr,
                           "namespace.catalog_mismatch",
                           Map.of(
-                              "namespace_id", namespaceId.getId(),
-                              "namespace.catalog_id", namespace.getCatalogId().getId(),
+                              "namespace_id", nsId.getId(),
+                              "namespace.catalog_id", ns.getCatalogId().getId(),
                               "catalog_id", effectiveCatalogId.getId()));
                     }
-                    updatedTableBuilder.setNamespaceId(namespaceId);
+                    b.setNamespaceId(nsId);
                     namespaceChanged = true;
                   }
 
                   if (catalogChanged && !namespaceChanged) {
-                    var effectiveCatalogId = updatedTableBuilder.getCatalogId();
-                    var namespace =
+                    var effectiveCatalogId = b.getCatalogId();
+                    var ns =
                         namespaceRepo
-                            .getById(updatedTableBuilder.getNamespaceId())
+                            .getById(b.getNamespaceId())
                             .orElseThrow(
                                 () ->
                                     GrpcErrors.notFound(
-                                        correlationId,
+                                        corr,
                                         "namespace",
-                                        Map.of(
-                                            "id", updatedTableBuilder.getNamespaceId().getId())));
-                    if (!namespace.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
+                                        Map.of("id", b.getNamespaceId().getId())));
+                    if (!ns.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
                       throw GrpcErrors.invalidArgument(
-                          correlationId,
+                          corr,
                           "namespace.catalog_mismatch",
                           Map.of(
-                              "namespace_id", updatedTableBuilder.getNamespaceId().getId(),
-                              "namespace.catalog_id", namespace.getCatalogId().getId(),
+                              "namespace_id", b.getNamespaceId().getId(),
+                              "namespace.catalog_id", ns.getCatalogId().getId(),
                               "catalog_id", effectiveCatalogId.getId()));
                     }
                   }
 
-                  var desired = updatedTableBuilder.build();
+                  var desired = b.build();
 
                   if (desired.equals(current)) {
                     var metaNoop = tableRepo.metaForSafe(tableId);
                     MutationOps.BaseServiceChecks.enforcePreconditions(
-                        correlationId, metaNoop, request.getPrecondition());
+                        corr, metaNoop, request.getPrecondition());
                     return UpdateTableResponse.newBuilder()
                         .setTable(current)
                         .setMeta(metaNoop)
@@ -396,9 +379,9 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   MutationOps.updateWithPreconditions(
                       () -> tableRepo.metaFor(tableId),
                       request.getPrecondition(),
-                      (expectedVersion) -> tableRepo.update(desired, expectedVersion),
+                      expectedVersion -> tableRepo.update(desired, expectedVersion),
                       () -> tableRepo.metaForSafe(tableId),
-                      correlationId,
+                      corr,
                       "table",
                       conflictInfo);
 
@@ -454,17 +437,59 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         .invoke(L::ok);
   }
 
+  private void validateUpstreamRef(UpstreamRef up, String corr) {
+    if (!up.hasConnectorId() || up.getConnectorId().getId().isBlank()) {
+      throw GrpcErrors.invalidArgument(corr, "upstream.connector_id.required", Map.of());
+    }
+
+    if (up.getNamespacePathCount() == 0) {
+      throw GrpcErrors.invalidArgument(corr, "upstream.namespace_path.required", Map.of());
+    }
+    for (var seg : up.getNamespacePathList()) {
+      if (seg == null || seg.isBlank()) {
+        throw GrpcErrors.invalidArgument(corr, "upstream.namespace_path.segment.blank", Map.of());
+      }
+    }
+
+    if (up.getTableDisplayName().isBlank()) {
+      throw GrpcErrors.invalidArgument(corr, "upstream.table_display_name.required", Map.of());
+    }
+
+    for (var e : up.getFieldIdByPathMap().entrySet()) {
+      var path = e.getKey();
+      var id = e.getValue();
+      if (path == null || path.isBlank()) {
+        throw GrpcErrors.invalidArgument(corr, "upstream.field_id_by_path.key.blank", Map.of());
+      }
+
+      if (id < 0) {
+        throw GrpcErrors.invalidArgument(
+            corr, "upstream.field_id_by_path.id.negative", Map.of("path", path));
+      }
+    }
+  }
+
   private static byte[] canonicalFingerprint(TableSpec s) {
-    return new Canonicalizer()
-        .scalar("cat", s.getCatalogId().getId())
-        .scalar("ns", s.getNamespaceId().getId())
-        .scalar("name", s.getDisplayName())
-        .scalar("description", s.getDescription())
-        .scalar("format", s.getFormat().getNumber())
-        .scalar("root", s.getRootUri())
-        .scalar("schema", s.getSchemaJson())
-        .list("pk", s.getPartitionKeysList())
-        .map("prop", s.getPropertiesMap())
-        .bytes();
+    var up = s.getUpstream();
+    var c =
+        new Canonicalizer()
+            .scalar("cat", s.getCatalogId().getId())
+            .scalar("ns", s.getNamespaceId().getId())
+            .scalar("name", s.getDisplayName())
+            .scalar("description", s.getDescription())
+            .scalar("schema", s.getSchemaJson())
+            .map("prop", s.getPropertiesMap())
+            .group(
+                "up",
+                g ->
+                    g.scalar("connector", up.getConnectorId().getId())
+                        .scalar("uri", up.getUri())
+                        .list("nsPath", up.getNamespacePathList())
+                        .scalar("tbl", up.getTableDisplayName())
+                        .scalar("fmt", up.getFormat().getNumber())
+                        .list("pk", up.getPartitionKeysList())
+                        .map("fieldIdByPath", up.getFieldIdByPathMap()));
+
+    return c.bytes();
   }
 }

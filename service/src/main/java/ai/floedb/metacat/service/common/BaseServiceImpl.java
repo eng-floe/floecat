@@ -4,6 +4,7 @@ import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.connector.rpc.NamespacePath;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
@@ -18,10 +19,14 @@ import io.grpc.StatusRuntimeException;
 import io.smallrye.mutiny.Uni;
 import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.inject.Inject;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -215,5 +220,88 @@ public abstract class BaseServiceImpl {
     } catch (java.security.NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 not supported", e);
     }
+  }
+
+  protected static String trimToNull(String s) {
+    if (s == null) {
+      return null;
+    }
+
+    String t = s.trim();
+    return t.isEmpty() ? null : t;
+  }
+
+  protected static String trimOrEmpty(String s) {
+    return (s == null) ? "" : s.trim();
+  }
+
+  protected static Map<String, String> cleanKeysOnly(Map<String, String> in) {
+    if (in == null || in.isEmpty()) {
+      return java.util.Map.of();
+    }
+
+    var out = new LinkedHashMap<String, String>();
+    for (var e : in.entrySet()) {
+      String k = e.getKey() == null ? "" : e.getKey().trim();
+      if (k.isEmpty()) {
+        throw new IllegalArgumentException("options contain a blank key");
+      }
+      out.put(k, e.getValue());
+    }
+    return Collections.unmodifiableMap(out);
+  }
+
+  protected static List<List<String>> toPathsClean(List<NamespacePath> in) {
+    if (in == null || in.isEmpty()) return java.util.List.of();
+    return in.stream()
+        .map(
+            np ->
+                np.getSegmentsList().stream()
+                    .map(seg -> seg == null ? "" : seg.trim())
+                    .filter(seg -> !seg.isEmpty())
+                    .toList())
+        .filter(path -> !path.isEmpty())
+        .toList();
+  }
+
+  protected static List<String> normalizeSelectors(List<String> cols) {
+    if (cols == null || cols.isEmpty()) return List.of();
+    var seen = new LinkedHashSet<String>();
+    for (String c : cols) {
+      if (c == null) {
+        continue;
+      }
+
+      String t = c.trim();
+      if (!t.isEmpty()) {
+        seen.add(t);
+      }
+    }
+    for (String sel : seen) {
+      if (sel.startsWith("#")) {
+        String digits = sel.substring(1);
+        if (digits.isEmpty() || !digits.chars().allMatch(Character::isDigit)) {
+          throw new IllegalArgumentException("Invalid column id selector: " + sel);
+        }
+      }
+    }
+    return java.util.List.copyOf(seen);
+  }
+
+  protected static String cleanUri(String uri) {
+    if (uri == null) {
+      throw GrpcErrors.invalidArgument("?", null, Map.of("field", "uri"));
+    }
+
+    String t = uri.trim();
+    try {
+      var u = URI.create(t);
+      if (u.getScheme() == null || u.getScheme().isBlank()) {
+        throw new IllegalArgumentException("uri must include a scheme");
+      }
+    } catch (IllegalArgumentException e) {
+      throw e;
+    }
+    return t;
   }
 }

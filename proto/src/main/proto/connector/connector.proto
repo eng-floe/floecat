@@ -16,13 +16,20 @@ enum ConnectorKind {
   CK_UNITY = 4;
 }
 
+message NamespacePath {
+  repeated string segments = 1;
+}
+
 message Connector {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
   string description = 3;
   ConnectorKind kind = 4;
-  string target_catalog_display_name = 5;
-  string target_tenant_id = 6;
+  string destination_tenant_id = 5;
+  string destination_catalog_display_name = 6;
+  repeated NamespacePath destination_namespace_paths = 7;
+  string destination_table_display_name = 8;
+  repeated string destination_table_columns = 9;
   string uri = 10;
   map<string,string> options = 11;
   AuthConfig auth = 12;
@@ -56,8 +63,11 @@ message ReconcilePolicy {
 message ConnectorSpec {
   string display_name = 1;
   ConnectorKind kind = 2;
-  string target_catalog_display_name = 3;
-  string target_tenant_id = 4;
+  string destination_tenant_id = 3;
+  string destination_catalog_display_name = 4;
+  repeated NamespacePath destination_namespace_paths = 5;
+  string destination_table_display_name = 6;
+  repeated string destination_table_columns = 7;
   string uri = 10;
   map<string,string> options = 11;
   AuthConfig auth = 12;
@@ -119,6 +129,9 @@ message ValidateConnectorResponse {
 message TriggerReconcileRequest {
   ai.floedb.metacat.common.ResourceId connector_id = 1;
   bool full_rescan = 2;
+  repeated NamespacePath destination_namespace_paths = 3;
+  string destination_table_display_name = 4;
+  repeated string destination_table_columns = 5;
 }
 message TriggerReconcileResponse {
   string job_id = 1;

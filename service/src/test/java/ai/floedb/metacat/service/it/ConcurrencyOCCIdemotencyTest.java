@@ -130,13 +130,19 @@ class ConcurrencyOCCIdempotencyIT {
                   case CREATE_IDEMPOTENT -> {
                     String idemStem = sharedIdemKeys.get(rnd.nextInt(sharedIdemKeys.size()));
                     String display = "idem_" + idemStem;
+
+                    var upstream =
+                        UpstreamRef.newBuilder()
+                            .setFormat(TableFormat.TF_DELTA)
+                            .setUri("s3://b/p")
+                            .build();
+
                     var spec =
                         TableSpec.newBuilder()
                             .setCatalogId(cat.getResourceId())
                             .setNamespaceId(ns1.getResourceId())
                             .setDisplayName(display)
-                            .setFormat(TableFormat.TF_DELTA)
-                            .setRootUri("s3://bucket/p")
+                            .setUpstream(upstream)
                             .setSchemaJson(
                                 "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
                             .build();

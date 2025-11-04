@@ -30,6 +30,7 @@ import ai.floedb.metacat.catalog.rpc.NdvApprox;
 import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveFQTablesRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveFQTablesResponse;
+import ai.floedb.metacat.catalog.rpc.ResolveFQTablesResponse.Entry;
 import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveViewRequest;
@@ -44,6 +45,7 @@ import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.catalog.rpc.UpdateCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
+import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageRequest;
@@ -66,6 +68,8 @@ import ai.floedb.metacat.connector.rpc.ReconcilePolicy;
 import ai.floedb.metacat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.metacat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.metacat.connector.rpc.ValidateConnectorRequest;
+import com.google.protobuf.Duration;
+import com.google.protobuf.Timestamp;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.picocli.runtime.annotations.TopCommand;
 import jakarta.inject.Inject;
@@ -128,6 +132,8 @@ public class Shell implements Runnable {
   @Inject
   @GrpcClient("metacat")
   ConnectorsGrpc.ConnectorsBlockingStub connectors;
+
+  private static final int DEFAULT_PAGE_SIZE = 1000;
 
   private volatile String currentTenantId =
       System.getenv().getOrDefault("METACAT_TENANT", "").trim();
@@ -204,8 +210,20 @@ public class Shell implements Runnable {
         try {
           dispatch(line);
         } catch (Exception e) {
+          Throwable root = e;
+          while (root.getCause() != null) {
+            root = root.getCause();
+          }
+
           out.println(
-              "! " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+              "! "
+                  + e.getClass().getSimpleName()
+                  + ": "
+                  + (e.getMessage() == null ? "-" : e.getMessage()));
+          if (root != e && root.getMessage() != null) {
+            out.println(
+                "! caused by: " + root.getClass().getSimpleName() + ": " + root.getMessage());
+          }
         }
       }
     } catch (Exception e) {
@@ -223,34 +241,39 @@ public class Shell implements Runnable {
          catalog get <display_name|id>
          catalog update <display_name|id> [--display <name>] [--desc <text>] [--connector <id>] [--policy <id>] [--opt k=v ...] [--etag <etag>]
          catalog delete <display_name|id> [--require-empty] [--etag <etag>]
-         namespaces (<catalog | catalog.ns[.ns...]> | <UUID>) [--prefix P] [--recursive]
+         namespaces (<catalog | catalog.ns[.ns...]> | <UUID>) [--id <UUID>] [--prefix P] [--recursive]
          namespace create <catalog.ns[.ns...]> [--desc <text>] [--ann k=v ...] [--policy <id>]
          namespace get <id | catalog.ns[.ns...]>
-         namespace update <id|fq> [--display <name>] [--path ns1.ns2...] [--catalog <catalogName|id>] [--etag <etag>]
+         namespace update <id|fq> [--display <name>] [--path ns1.ns2... | ns1/ns2/...] [--catalog <catalogName|id>] [--etag <etag>]
          namespace delete <id|fq> [--require-empty] [--etag <etag>]
          tables <catalog.ns[.ns...][.prefix]>
          table create <catalog.ns[.ns...].name> [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v ...]
+             [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
          table get <id|catalog.ns[.ns...].table>
          table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v ...] [--etag <etag>]
+             [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
          table delete <id|fq> [--purge-stats] [--purge-snaps] [--etag <etag>]
          resolve table <fq> | resolve view <fq> | resolve catalog <name> | resolve namespace <fq>
          describe table <fq>
          snapshots <tableFQ>
-         stats table <tableFQ> [--snapshot <id>|--current]
-         stats columns <tableFQ> [--snapshot <id>|--current] [--limit N]
+         stats table <tableFQ> [--snapshot <id>|--current] (defaults to --current)
+         stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
          connectors
-         connector list [--kind <KIND>]
+         connector list [--kind <KIND>] [--page-size <N>]
          connector get <display_name|id>
-         connector create <display_name> <kind> <uri> [--target-catalog <display>] [--target-tenant <tenant>]
+         connector create <display_name> <kind> <uri>
+             [--dest-tenant <tenant>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
              [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
-             [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
-             [--policy-not-before-epoch <sec>] [--opt k=v ...]
-         connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>] [--target-catalog <display>] [--target-tenant <tenant>]
+             [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>] [--policy-not-before-epoch <sec>]
+             [--opt k=v ...]
+         connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
+             [--dest-tenant <tenant>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
              [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
              [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--opt k=v ...] [--etag <etag>]
          connector delete <display_name|id>  [--etag <etag>]
-         connector validate <kind> <uri> [--target-catalog <display>] [--target-tenant <tenant>]
+         connector validate <kind> <uri>
+             [--dest-tenant <tenant>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
              [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--opt k=v ...]
@@ -313,12 +336,28 @@ public class Shell implements Runnable {
   }
 
   private void cmdCatalogs() {
-    var response =
-        catalogs.listCatalogs(
-            ListCatalogsRequest.newBuilder()
-                .setPage(PageRequest.newBuilder().setPageSize(500).build())
-                .build());
-    printCatalogs(response.getCatalogsList());
+    ListCatalogsRequest.Builder rb =
+        ListCatalogsRequest.newBuilder()
+            .setPage(PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).build());
+
+    List<Catalog> all = new ArrayList<>();
+    String pageToken = "";
+    do {
+      var pageReq =
+          rb.setPage(
+                  PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).setPageToken(pageToken))
+              .build();
+      var resp = catalogs.listCatalogs(pageReq);
+
+      all.addAll(resp.getCatalogsList());
+
+      pageToken = resp.hasPage() ? resp.getPage().getNextPageToken() : "";
+      if (pageToken == null) {
+        pageToken = "";
+      }
+    } while (!pageToken.isBlank());
+
+    printCatalogs(all);
   }
 
   private void cmdCatalogCrud(List<String> args) {
@@ -376,20 +415,35 @@ public class Shell implements Runnable {
         String connectorRef = parseStringFlag(args, "--connector", null);
         String policyRef = parseStringFlag(args, "--policy", null);
         Map<String, String> options = parseKeyValueList(args, "--opt");
-        var spec =
-            CatalogSpec.newBuilder()
-                .setDisplayName(nvl(display, ""))
-                .setDescription(nvl(desc, ""))
-                .setConnectorRef(nvl(connectorRef, ""))
-                .putAllOptions(options)
-                .setPolicyRef(nvl(policyRef, ""))
-                .build();
+        var sb = CatalogSpec.newBuilder();
+
+        if (display != null) {
+          sb.setDisplayName(display);
+        }
+
+        if (desc != null) {
+          sb.setDescription(desc);
+        }
+
+        if (connectorRef != null) {
+          sb.setConnectorRef(connectorRef);
+        }
+
+        if (policyRef != null) {
+          sb.setPolicyRef(policyRef);
+        }
+
+        if (!options.isEmpty()) {
+          sb.putAllOptions(options);
+        }
+
         var req =
             UpdateCatalogRequest.newBuilder()
                 .setCatalogId(resolveCatalogId(id))
-                .setSpec(spec)
+                .setSpec(sb.build())
                 .setPrecondition(preconditionFromEtag(args))
                 .build();
+
         var resp = catalogs.updateCatalog(req);
         printCatalogs(List.of(resp.getCatalog()));
       }
@@ -415,7 +469,7 @@ public class Shell implements Runnable {
   private void cmdNamespaces(List<String> args) {
     if (args.isEmpty()) {
       out.println(
-          "usage: namespaces <catalog | catalog.ns[.ns...] | --id UUID> [--prefix P]"
+          "usage: namespaces (<catalog | catalog.ns[.ns...]> | <UUID>) [--id <UUID>] [--prefix P]"
               + " [--recursive]");
       return;
     }
@@ -430,7 +484,7 @@ public class Shell implements Runnable {
             .setChildrenOnly(childrenOnly)
             .setRecursive(recursive)
             .setNamePrefix(nvl(namePrefix, ""))
-            .setPage(PageRequest.newBuilder().setPageSize(1000).build());
+            .setPage(PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).build());
 
     String explicitId = parseStringFlag(args, "--id", "");
     if (!explicitId.isBlank()) {
@@ -448,7 +502,9 @@ public class Shell implements Runnable {
     String pageToken = "";
     do {
       var pageReq =
-          rb.setPage(PageRequest.newBuilder().setPageSize(1000).setPageToken(pageToken)).build();
+          rb.setPage(
+                  PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).setPageToken(pageToken))
+              .build();
       var resp = namespaces.listNamespaces(pageReq);
 
       all.addAll(resp.getNamespacesList());
@@ -602,13 +658,30 @@ public class Shell implements Runnable {
       return;
     }
     var prefix = nameRefForTablePrefix(args.get(0));
-    var resolved =
-        directory.resolveFQTables(
-            ResolveFQTablesRequest.newBuilder()
-                .setPrefix(prefix)
-                .setPage(PageRequest.newBuilder().setPageSize(1000).build())
-                .build());
-    printResolvedTables(resolved.getTablesList());
+
+    ResolveFQTablesRequest.Builder rb =
+        ResolveFQTablesRequest.newBuilder()
+            .setPrefix(prefix)
+            .setPage(PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).build());
+
+    List<Entry> all = new ArrayList<>();
+    String pageToken = "";
+    do {
+      var pageReq =
+          rb.setPage(
+                  PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).setPageToken(pageToken))
+              .build();
+      var resp = directory.resolveFQTables(pageReq);
+
+      all.addAll(resp.getTablesList());
+
+      pageToken = resp.hasPage() ? resp.getPage().getNextPageToken() : "";
+      if (pageToken == null) {
+        pageToken = "";
+      }
+    } while (!pageToken.isBlank());
+
+    printResolvedTables(all);
   }
 
   private void cmdTableCrud(List<String> args) {
@@ -622,6 +695,7 @@ public class Shell implements Runnable {
         if (args.size() < 2) {
           out.println(
               "usage: table create <catalog.ns[.ns...].name> "
+                  + " [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]"
                   + "[--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] "
                   + "[--format ICEBERG|DELTA] [--prop k=v ...]");
           return;
@@ -642,16 +716,36 @@ public class Shell implements Runnable {
         String formatStr = parseStringFlag(args, "--format", "");
         Map<String, String> props = parseKeyValueList(args, "--prop");
 
+        String upConnector = parseStringFlag(args, "--up-connector", "");
+        String upNs = parseStringFlag(args, "--up-ns", "");
+        String upTable = parseStringFlag(args, "--up-table", "");
+
+        var ub =
+            UpstreamRef.newBuilder()
+                .setFormat(parseFormat(formatStr))
+                .setUri(root)
+                .addAllPartitionKeys(parts);
+
+        if (!upConnector.isBlank()) {
+          ub.setConnectorId(resolveConnectorId(upConnector));
+        }
+        if (!upNs.isBlank()) {
+          ub.clearNamespacePath().addAllNamespacePath(pathToList(upNs));
+        }
+        if (!upTable.isBlank()) {
+          ub.setTableDisplayName(upTable);
+        }
+
+        var upstream = ub.build();
+
         var spec =
             TableSpec.newBuilder()
                 .setCatalogId(catalogId)
                 .setNamespaceId(namespaceId)
                 .setDisplayName(name)
                 .setDescription(desc)
-                .setRootUri(root)
+                .setUpstream(upstream)
                 .setSchemaJson(schema)
-                .addAllPartitionKeys(parts)
-                .setFormat(parseFormat(formatStr))
                 .putAllProperties(props)
                 .build();
 
@@ -682,6 +776,7 @@ public class Shell implements Runnable {
           out.println(
               "usage: table update <id|catalog.ns[.ns...].table> [--catalog"
                   + " <catalogId|catalogName>] [--namespace <namespaceId|catalog.ns[.ns...]>]"
+                  + " [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]"
                   + " [--name <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts"
                   + " k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v ...] [--etag <etag>]");
           return;
@@ -728,13 +823,62 @@ public class Shell implements Runnable {
           sb.setNamespaceId(nid);
         }
 
-        if (name != null) sb.setDisplayName(name);
-        if (desc != null) sb.setDescription(desc);
-        if (root != null) sb.setRootUri(root);
-        if (schema != null) sb.setSchemaJson(schema);
-        if (!parts.isEmpty()) sb.addAllPartitionKeys(parts);
-        if (formatStr != null && !formatStr.isBlank()) sb.setFormat(parseFormat(formatStr));
-        if (!props.isEmpty()) sb.putAllProperties(props);
+        String upConnector = parseStringFlag(args, "--up-connector", null);
+        String upNs = parseStringFlag(args, "--up-ns", null);
+        String upTable = parseStringFlag(args, "--up-table", null);
+
+        var ub = UpstreamRef.newBuilder();
+        boolean setUpstream = false;
+
+        if (name != null) {
+          sb.setDisplayName(name);
+        }
+
+        if (desc != null) {
+          sb.setDescription(desc);
+        }
+
+        if (root != null) {
+          ub.setUri(root);
+          setUpstream = true;
+        }
+
+        if (!parts.isEmpty()) {
+          ub.addAllPartitionKeys(parts);
+          setUpstream = true;
+        }
+
+        if (formatStr != null && !formatStr.isBlank()) {
+          ub.setFormat(parseFormat(formatStr));
+          setUpstream = true;
+        }
+
+        if (upConnector != null && !upConnector.isBlank()) {
+          ub.setConnectorId(resolveConnectorId(upConnector));
+          setUpstream = true;
+        }
+
+        if (upNs != null && !upNs.isBlank()) {
+          ub.clearNamespacePath().addAllNamespacePath(pathToList(upNs));
+          setUpstream = true;
+        }
+
+        if (upTable != null && !upTable.isBlank()) {
+          ub.setTableDisplayName(upTable);
+          setUpstream = true;
+        }
+
+        if (schema != null) {
+          sb.setSchemaJson(schema);
+        }
+
+        if (!props.isEmpty()) {
+          sb.putAllProperties(props);
+        }
+
+        if (setUpstream) {
+          sb.setUpstream(ub.build());
+        }
 
         var req =
             UpdateTableRequest.newBuilder()
@@ -777,12 +921,28 @@ public class Shell implements Runnable {
   }
 
   private void cmdConnectorsList() {
-    var resp =
-        connectors.listConnectors(
-            ListConnectorsRequest.newBuilder()
-                .setPage(PageRequest.newBuilder().setPageSize(500).build())
-                .build());
-    printConnectors(resp.getConnectorsList());
+    var all = listAllConnectors("", DEFAULT_PAGE_SIZE);
+    printConnectors(all);
+  }
+
+  private List<Connector> listAllConnectors(String kind, int pageSize) {
+    List<Connector> out = new ArrayList<>();
+    String pageToken = "";
+    do {
+      var req =
+          ListConnectorsRequest.newBuilder()
+              .setKind(nvl(kind, ""))
+              .setPage(
+                  PageRequest.newBuilder().setPageSize(pageSize).setPageToken(pageToken).build())
+              .build();
+
+      var resp = connectors.listConnectors(req);
+      out.addAll(resp.getConnectorsList());
+
+      pageToken = resp.hasPage() ? resp.getPage().getNextPageToken() : "";
+      if (pageToken == null) pageToken = "";
+    } while (!pageToken.isBlank());
+    return out;
   }
 
   private void cmdConnectorCrud(List<String> args) {
@@ -794,13 +954,9 @@ public class Shell implements Runnable {
     switch (sub) {
       case "list" -> {
         String kind = parseStringFlag(args, "--kind", "");
-        var req =
-            ListConnectorsRequest.newBuilder()
-                .setPage(PageRequest.newBuilder().setPageSize(500).build())
-                .setKind(kind)
-                .build();
-        var resp = connectors.listConnectors(req);
-        printConnectors(resp.getConnectorsList());
+        int pageSize = parseIntFlag(args, "--page-size", DEFAULT_PAGE_SIZE);
+        var all = listAllConnectors(kind, pageSize);
+        printConnectors(all);
       }
       case "get" -> {
         if (args.size() < 2) {
@@ -817,17 +973,19 @@ public class Shell implements Runnable {
       case "create" -> {
         if (args.size() < 4) {
           out.println(
-              "usage: connector create <display_name> <kind> <uri> [--target-catalog <display>]"
-                  + " [--target-tenant <tenant>] [--auth-scheme <scheme>] [--auth k=v ...] [--head"
-                  + " k=v ...] [--secret <ref>] [--policy-enabled] [--policy-interval-sec <n>]"
-                  + " [--policy-max-par <n>] [--policy-not-before-epoch <sec>] [--opt k=v ...]");
+              "usage: connector create <display_name> <kind> <uri> [--dest-tenant <tenant>]"
+                  + " [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>]"
+                  + " [--dest-cols c1,#id2,...] [--auth-scheme <scheme>]"
+                  + " [--auth k=v ...] [--head k=v ...] [--secret <ref>] [--policy-enabled]"
+                  + " [--policy-interval-sec <n>] [--policy-max-par <n>] [--policy-not-before-epoch"
+                  + " <sec>] [--opt k=v ...]");
           return;
         }
         String display = args.get(1);
         ConnectorKind kind = parseConnectorKind(args.get(2));
         String uri = args.get(3);
-        String targetCatalog = parseStringFlag(args, "--target-catalog", "");
-        String targetTenant = parseStringFlag(args, "--target-tenant", "");
+        String targetCatalog = parseStringFlag(args, "--dest-catalog", "");
+        String targetTenant = parseStringFlag(args, "--dest-tenant", "");
         String authScheme = parseStringFlag(args, "--auth-scheme", "");
         Map<String, String> authProps = parseKeyValueList(args, "--auth");
         Map<String, String> headerHints = parseKeyValueList(args, "--head");
@@ -851,21 +1009,35 @@ public class Shell implements Runnable {
                 .setNotBefore(notBeforeSec == 0 ? nullTs() : tsSeconds(notBeforeSec))
                 .setInterval(intervalSec == 0 ? nullDur() : durSeconds(intervalSec))
                 .build();
+
+        List<String> destNsFlags = repeatableFlag(args, "--dest-ns");
+        String destTable = parseStringFlag(args, "--dest-table", "");
+        List<String> destCols = csvAllowHashes(parseStringFlag(args, "--dest-cols", ""));
+
         var spec =
             ConnectorSpec.newBuilder()
                 .setDisplayName(display)
                 .setKind(kind)
-                .setTargetCatalogDisplayName(targetCatalog)
-                .setTargetTenantId(targetTenant)
+                .setDestinationTenantId(targetTenant)
+                .setDestinationCatalogDisplayName(targetCatalog)
                 .setUri(uri)
                 .putAllOptions(options)
                 .setAuth(auth)
-                .setPolicy(policy)
-                .build();
+                .setPolicy(policy);
+
+        for (var ns : destNsFlags) {
+          spec.addDestinationNamespacePaths(toNsPath(ns));
+        }
+        if (!destTable.isBlank()) {
+          spec.setDestinationTableDisplayName(destTable);
+        }
+        if (!destCols.isEmpty()) {
+          spec.addAllDestinationTableColumns(destCols);
+        }
         var resp =
             connectors.createConnector(
                 CreateConnectorRequest.newBuilder()
-                    .setSpec(spec)
+                    .setSpec(spec.build())
                     .setIdempotency(newIdem())
                     .build());
         printConnectors(List.of(resp.getConnector()));
@@ -874,7 +1046,8 @@ public class Shell implements Runnable {
         if (args.size() < 2) {
           out.println(
               "usage: connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri"
-                  + " <uri>] [--target-catalog <display>] [--target-tenant <tenant>] [--auth-scheme"
+                  + " <uri>] [--dest-tenant <tenant>] [--dest-catalog <display>] [--dest-ns"
+                  + " <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...] [--auth-scheme"
                   + " <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]"
                   + " [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-max-par"
                   + " <n>] [--policy-not-before-epoch <sec>] [--opt k=v ...] [--etag <etag>]");
@@ -884,8 +1057,8 @@ public class Shell implements Runnable {
         String display = parseStringFlag(args, "--display", "");
         String kindStr = parseStringFlag(args, "--kind", "");
         String uri = parseStringFlag(args, "--uri", "");
-        String targetCatalog = parseStringFlag(args, "--target-catalog", "");
-        String targetTenant = parseStringFlag(args, "--target-tenant", "");
+        String targetCatalog = parseStringFlag(args, "--dest-catalog", "");
+        String targetTenant = parseStringFlag(args, "--dest-tenant", "");
         String authScheme = parseStringFlag(args, "--auth-scheme", "");
         Map<String, String> authProps = parseKeyValueList(args, "--auth");
         Map<String, String> headerHints = parseKeyValueList(args, "--head");
@@ -895,38 +1068,84 @@ public class Shell implements Runnable {
         int maxPar = parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = parseLongFlag(args, "--policy-not-before-epoch", 0L);
         Map<String, String> options = parseKeyValueList(args, "--opt");
-        var auth =
-            AuthConfig.newBuilder()
-                .setScheme(authScheme)
-                .putAllProps(authProps)
-                .putAllHeaderHints(headerHints)
-                .setSecretRef(secretRef)
-                .build();
-        var policy =
-            ReconcilePolicy.newBuilder()
-                .setEnabled(
-                    policyEnabledStr.isBlank() ? false : Boolean.parseBoolean(policyEnabledStr))
-                .setMaxParallel(maxPar)
-                .setNotBefore(notBeforeSec == 0 ? nullTs() : tsSeconds(notBeforeSec))
-                .setInterval(intervalSec == 0 ? nullDur() : durSeconds(intervalSec))
-                .build();
-        var spec =
-            ConnectorSpec.newBuilder()
-                .setDisplayName(display)
-                .setKind(
-                    kindStr.isBlank() ? ConnectorKind.CK_UNSPECIFIED : parseConnectorKind(kindStr))
-                .setTargetCatalogDisplayName(targetCatalog)
-                .setTargetTenantId(targetTenant)
-                .setUri(uri)
-                .putAllOptions(options)
-                .setAuth(auth)
-                .setPolicy(policy)
-                .build();
+        List<String> destNsFlags = repeatableFlag(args, "--dest-ns");
+        String destTable = parseStringFlag(args, "--dest-table", "");
+        List<String> destCols = csvAllowHashes(parseStringFlag(args, "--dest-cols", ""));
+
+        var sb = ConnectorSpec.newBuilder();
+        if (!display.isBlank()) {
+          sb.setDisplayName(display);
+        }
+        if (!kindStr.isBlank()) {
+          sb.setKind(parseConnectorKind(kindStr));
+        }
+        if (!uri.isBlank()) {
+          sb.setUri(uri);
+        }
+        if (!targetCatalog.isBlank()) {
+          sb.setDestinationCatalogDisplayName(targetCatalog);
+        }
+        if (!targetTenant.isBlank()) {
+          sb.setDestinationTenantId(targetTenant);
+        }
+        if (!options.isEmpty()) {
+          sb.putAllOptions(options);
+        }
+
+        var authSet =
+            !authScheme.isBlank()
+                || !authProps.isEmpty()
+                || !headerHints.isEmpty()
+                || !secretRef.isBlank();
+        if (authSet) {
+          var auth = AuthConfig.newBuilder();
+          if (!authScheme.isBlank()) {
+            auth.setScheme(authScheme);
+          }
+          if (!secretRef.isBlank()) {
+            auth.setSecretRef(secretRef);
+          }
+          if (!authProps.isEmpty()) {
+            auth.putAllProps(authProps);
+          }
+          if (!headerHints.isEmpty()) {
+            auth.putAllHeaderHints(headerHints);
+          }
+          sb.setAuth(auth);
+        }
+
+        var policySet =
+            !policyEnabledStr.isBlank() || intervalSec != 0L || maxPar != 0 || notBeforeSec != 0L;
+        if (policySet) {
+          var pb = ReconcilePolicy.newBuilder();
+          if (!policyEnabledStr.isBlank()) pb.setEnabled(Boolean.parseBoolean(policyEnabledStr));
+          if (maxPar != 0) {
+            pb.setMaxParallel(maxPar);
+          }
+          if (notBeforeSec != 0L) {
+            pb.setNotBefore(tsSeconds(notBeforeSec));
+          }
+          if (intervalSec != 0L) {
+            pb.setInterval(durSeconds(intervalSec));
+          }
+          sb.setPolicy(pb);
+        }
+
+        for (var ns : destNsFlags) {
+          sb.addDestinationNamespacePaths(toNsPath(ns));
+        }
+        if (!destTable.isBlank()) {
+          sb.setDestinationTableDisplayName(destTable);
+        }
+        if (!destCols.isEmpty()) {
+          sb.addAllDestinationTableColumns(destCols);
+        }
+
         var resp =
             connectors.updateConnector(
                 UpdateConnectorRequest.newBuilder()
                     .setConnectorId(cid)
-                    .setSpec(spec)
+                    .setSpec(sb.build())
                     .setPrecondition(preconditionFromEtag(args))
                     .build());
         printConnectors(List.of(resp.getConnector()));
@@ -947,16 +1166,17 @@ public class Shell implements Runnable {
       case "validate" -> {
         if (args.size() < 3) {
           out.println(
-              "usage: connector validate <kind> <uri> [--target-catalog <display>] [--target-tenant"
-                  + " <tenant>] [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]"
+              "usage: connector validate <kind> <uri> [--auth-scheme <scheme>] [--auth k=v ...]"
+                  + " [--head k=v ...] [--dest-tenant <tenant>] [--dest-catalog <display>]"
+                  + " [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]"
                   + " [--secret <ref>] [--policy-enabled] [--policy-interval-sec <n>]"
                   + " [--policy-max-par <n>] [--policy-not-before-epoch <sec>] [--opt k=v ...]");
           return;
         }
         ConnectorKind kind = parseConnectorKind(args.get(1));
         String uri = args.get(2);
-        String targetCatalog = parseStringFlag(args, "--target-catalog", "");
-        String targetTenant = parseStringFlag(args, "--target-tenant", "");
+        String targetCatalog = parseStringFlag(args, "--dest-catalog", "");
+        String targetTenant = parseStringFlag(args, "--dest-tenant", "");
         String authScheme = parseStringFlag(args, "--auth-scheme", "");
         Map<String, String> authProps = parseKeyValueList(args, "--auth");
         Map<String, String> headerHints = parseKeyValueList(args, "--head");
@@ -980,20 +1200,35 @@ public class Shell implements Runnable {
                 .setNotBefore(notBeforeSec == 0 ? nullTs() : tsSeconds(notBeforeSec))
                 .setInterval(intervalSec == 0 ? nullDur() : durSeconds(intervalSec))
                 .build();
+
+        List<String> destNsFlags = repeatableFlag(args, "--dest-ns");
+        String destTable = parseStringFlag(args, "--dest-table", "");
+        List<String> destCols = csvAllowHashes(parseStringFlag(args, "--dest-cols", ""));
+
         var spec =
             ConnectorSpec.newBuilder()
                 .setDisplayName("")
                 .setKind(kind)
-                .setTargetCatalogDisplayName(targetCatalog)
-                .setTargetTenantId(targetTenant)
+                .setDestinationTenantId(targetTenant)
+                .setDestinationCatalogDisplayName(targetCatalog)
                 .setUri(uri)
                 .putAllOptions(options)
                 .setAuth(auth)
-                .setPolicy(policy)
-                .build();
+                .setPolicy(policy);
+
+        for (var ns : destNsFlags) {
+          spec.addDestinationNamespacePaths(toNsPath(ns));
+        }
+        if (!destTable.isBlank()) {
+          spec.setDestinationTableDisplayName(destTable);
+        }
+        if (!destCols.isEmpty()) {
+          spec.addAllDestinationTableColumns(destCols);
+        }
+
         var resp =
             connectors.validateConnector(
-                ValidateConnectorRequest.newBuilder().setSpec(spec).build());
+                ValidateConnectorRequest.newBuilder().setSpec(spec.build()).build());
         out.printf(
             "ok=%s summary=%s capabilities=%s%n",
             resp.getOk(),
@@ -1110,7 +1345,7 @@ public class Shell implements Runnable {
         snapshots.listSnapshots(
             ListSnapshotsRequest.newBuilder()
                 .setTableId(r.getResourceId())
-                .setPage(PageRequest.newBuilder().setPageSize(1000).build())
+                .setPage(PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).build())
                 .build());
     printSnapshots(resp.getSnapshotsList());
   }
@@ -1130,7 +1365,8 @@ public class Shell implements Runnable {
 
   private void statsTable(List<String> args) {
     if (args.isEmpty()) {
-      out.println("usage: stats table <tableFQ> [--snapshot <id>|--current]");
+      out.println(
+          "usage: stats table <tableFQ> [--snapshot <id>|--current] (defaults to --current)");
       return;
     }
     String fq = args.get(0);
@@ -1146,19 +1382,45 @@ public class Shell implements Runnable {
 
   private void statsColumns(List<String> args) {
     if (args.isEmpty()) {
-      out.println("usage: stats columns <tableFQ> [--snapshot <id>|--current] [--limit N]");
+      out.println(
+          "usage: stats columns <tableFQ> [--snapshot <id>|--current] (defaults to --current)"
+              + " [--limit N]");
       return;
     }
+
     String fq = args.get(0);
     int limit = parseIntFlag(args, "--limit", 2000);
+    int pageSize = Math.min(limit, DEFAULT_PAGE_SIZE);
+
     var r = directory.resolveTable(ResolveTableRequest.newBuilder().setRef(nameFromFq(fq)).build());
-    var req =
+
+    ListColumnStatsRequest.Builder rb =
         ListColumnStatsRequest.newBuilder()
             .setTableId(r.getResourceId())
             .setSnapshot(parseSnapshotSelector(args))
-            .setPage(PageRequest.newBuilder().setPageSize(limit).build())
-            .build();
-    printColumnStats(statistics.listColumnStats(req).getColumnsList());
+            .setPage(PageRequest.newBuilder().setPageSize(limit).build());
+
+    List<ColumnStats> all = new ArrayList<>();
+    String pageToken = "";
+    do {
+      var pageReq =
+          rb.setPage(PageRequest.newBuilder().setPageSize(pageSize).setPageToken(pageToken))
+              .build();
+      var resp = statistics.listColumnStats(pageReq);
+
+      all.addAll(resp.getColumnsList());
+      if (all.size() >= limit) {
+        all = all.subList(0, limit);
+        break;
+      }
+
+      pageToken = resp.hasPage() ? resp.getPage().getNextPageToken() : "";
+      if (pageToken == null) {
+        pageToken = "";
+      }
+    } while (!pageToken.isBlank());
+
+    printColumnStats(all);
   }
 
   private boolean looksLikeUuid(String s) {
@@ -1194,28 +1456,24 @@ public class Shell implements Runnable {
   }
 
   private ResourceId resolveConnectorId(String token) {
-    if (looksLikeUuid(token)) {
-      return connectorRid(token);
+    if (looksLikeUuid(token)) return connectorRid(token);
+
+    var all = listAllConnectors("", DEFAULT_PAGE_SIZE);
+
+    var exact = all.stream().filter(c -> token.equals(c.getDisplayName())).toList();
+    if (exact.size() == 1) {
+      return exact.get(0).getResourceId();
     }
 
-    var req =
-        ListConnectorsRequest.newBuilder()
-            .setPage(PageRequest.newBuilder().setPageSize(1000).build())
-            .build();
-    var resp = connectors.listConnectors(req);
-    var exact =
-        resp.getConnectorsList().stream().filter(c -> token.equals(c.getDisplayName())).toList();
-    if (exact.size() == 1) return exact.get(0).getResourceId();
-
-    var ci =
-        resp.getConnectorsList().stream()
-            .filter(c -> token.equalsIgnoreCase(c.getDisplayName()))
-            .toList();
-    if (ci.size() == 1) return ci.get(0).getResourceId();
+    var ci = all.stream().filter(c -> token.equalsIgnoreCase(c.getDisplayName())).toList();
+    if (ci.size() == 1) {
+      return ci.get(0).getResourceId();
+    }
 
     if (exact.isEmpty() && ci.isEmpty()) {
       throw new IllegalArgumentException("Connector not found: " + token);
     }
+
     String alts =
         (exact.isEmpty() ? ci : exact)
             .stream()
@@ -1369,24 +1627,27 @@ public class Shell implements Runnable {
   }
 
   private void printResolvedTables(List<ResolveFQTablesResponse.Entry> entries) {
-    out.printf("%-40s  %s%n", "TABLE_ID", "NAME(parts)");
+    out.printf("%-40s  %s%n", "TABLE_ID", "NAME");
     for (var e : entries) {
       String catalog = e.getName().getCatalog();
       String namespace = String.join(".", e.getName().getPathList());
       String table = e.getName().getName();
-      out.printf("%-40s  %s%n", rid(e.getResourceId()), catalog + "." + namespace + "." + table);
+      String fq =
+          namespace.isEmpty() ? (catalog + "." + table) : (catalog + "." + namespace + "." + table);
+      out.printf("%-40s  %s%n", rid(e.getResourceId()), fq);
     }
   }
 
   private void printTable(Table t) {
+    UpstreamRef upstream = t.getUpstream();
     out.println("Table:");
     out.printf("  id:           %s%n", rid(t.getResourceId()));
     out.printf("  name:         %s%n", t.getDisplayName());
-    out.printf("  format:       %s%n", t.getFormat().name());
-    out.printf("  root_uri:     %s%n", t.getRootUri());
+    out.printf("  format:       %s%n", upstream.getFormat().name());
+    out.printf("  root_uri:     %s%n", upstream.getUri());
     out.printf("  created_at:   %s%n", ts(t.getCreatedAt()));
-    if (!t.getPartitionKeysList().isEmpty()) {
-      out.printf("  partitions:   %s%n", String.join(", ", t.getPartitionKeysList()));
+    if (!upstream.getPartitionKeysList().isEmpty()) {
+      out.printf("  partitions:   %s%n", String.join(", ", upstream.getPartitionKeysList()));
     }
     if (!t.getPropertiesMap().isEmpty()) {
       out.println("  properties:");
@@ -1441,42 +1702,86 @@ public class Shell implements Runnable {
   }
 
   private void printConnectors(List<Connector> list) {
+    final int W_ID = 36;
+    final int W_KIND = 12;
+    final int W_DISPLAY = 28;
+    final int W_TS = 24;
+    final int W_TARGET = 22;
+    final int W_STATE = 12;
+    final int W_URI = 80;
+
     out.printf(
-        "%-40s %-8s %-20s %-24s %-24s %s%n",
-        "CONNECTOR_ID", "KIND", "DISPLAY", "CREATED_AT", "UPDATED_AT", "URI");
+        "%-" + W_ID + "s  %-" + W_KIND + "s  %-" + W_DISPLAY + "s  %-" + W_TS + "s  %-" + W_TS
+            + "s  %-" + W_TARGET + "s  %-" + W_STATE + "s  %s%n",
+        "CONNECTOR_ID",
+        "KIND",
+        "DISPLAY",
+        "CREATED_AT",
+        "UPDATED_AT",
+        "TARGET_CATALOG",
+        "STATE",
+        "URI");
+
     for (var c : list) {
+      String kind = c.getKind().name().replaceFirst("^CK_", "");
+      String display = c.getDisplayName();
+      String created = ts(c.getCreatedAt());
+      String updated = ts(c.getUpdatedAt());
+      String target = c.getDestinationCatalogDisplayName();
+      String state = c.getState().name();
+      String uri = c.getUri();
+
       out.printf(
-          "%-40s %-8s %-20s %-24s %-24s %s%n",
+          "%-" + W_ID + "s  %-" + W_KIND + "s  %-" + W_DISPLAY + "s  %-" + W_TS + "s  %-" + W_TS
+              + "s  %-" + W_TARGET + "s  %-" + W_STATE + "s  %s%n",
           rid(c.getResourceId()),
-          c.getKind().name(),
-          c.getDisplayName(),
-          ts(c.getCreatedAt()),
-          ts(c.getUpdatedAt()),
-          c.getUri());
+          trunc(kind, W_KIND),
+          trunc(display, W_DISPLAY),
+          trunc(created, W_TS),
+          trunc(updated, W_TS),
+          trunc(target, W_TARGET),
+          trunc(state, W_STATE),
+          (W_URI > 0 ? trunc(uri, W_URI) : uri));
+
+      if (c.getDestinationNamespacePathsCount() > 0
+          || !c.getDestinationTableDisplayName().isBlank()
+          || !c.getDestinationTableColumnsList().isEmpty()) {
+        var ns =
+            c.getDestinationNamespacePathsList().stream()
+                .map(np -> String.join(".", np.getSegmentsList()))
+                .collect(Collectors.joining(" ; "));
+        var tbl = c.getDestinationTableDisplayName();
+        var cols = String.join(",", c.getDestinationTableColumnsList());
+        out.println(
+            "  targets: "
+                + (ns.isEmpty() ? "" : ("ns=[" + ns + "] "))
+                + (tbl.isBlank() ? "" : ("table=" + tbl + " "))
+                + (cols.isEmpty() ? "" : ("cols=[" + cols + "]")));
+      }
     }
   }
 
-  private String ts(com.google.protobuf.Timestamp t) {
+  private String ts(Timestamp t) {
     if (t == null || (t.getSeconds() == 0 && t.getNanos() == 0)) {
       return "-";
     }
     return Instant.ofEpochSecond(t.getSeconds(), t.getNanos()).toString();
   }
 
-  private com.google.protobuf.Timestamp tsSeconds(long epochSeconds) {
-    return com.google.protobuf.Timestamp.newBuilder().setSeconds(epochSeconds).build();
+  private Timestamp tsSeconds(long epochSeconds) {
+    return Timestamp.newBuilder().setSeconds(epochSeconds).build();
   }
 
-  private com.google.protobuf.Timestamp nullTs() {
-    return com.google.protobuf.Timestamp.getDefaultInstance();
+  private Timestamp nullTs() {
+    return Timestamp.getDefaultInstance();
   }
 
-  private com.google.protobuf.Duration nullDur() {
-    return com.google.protobuf.Duration.getDefaultInstance();
+  private Duration nullDur() {
+    return Duration.getDefaultInstance();
   }
 
-  private com.google.protobuf.Duration durSeconds(long seconds) {
-    return com.google.protobuf.Duration.newBuilder().setSeconds(seconds).build();
+  private Duration durSeconds(long seconds) {
+    return Duration.newBuilder().setSeconds(seconds).build();
   }
 
   private String trunc(String s, int n) {
@@ -1658,5 +1963,26 @@ public class Shell implements Runnable {
     if (currentTenantId == null || currentTenantId.isBlank()) {
       throw new IllegalStateException("No tenant set. Use: tenant <tenantId>");
     }
+  }
+
+  private List<String> repeatableFlag(List<String> args, String flag) {
+    var out = new ArrayList<String>();
+    for (int i = 0; i < args.size(); i++) {
+      if (flag.equals(args.get(i)) && i + 1 < args.size()) {
+        out.add(args.get(i + 1));
+      }
+    }
+    return out;
+  }
+
+  private List<String> csvAllowHashes(String s) {
+    if (s == null || s.isBlank()) return List.of();
+    return Arrays.stream(s.split(",")).map(String::trim).filter(x -> !x.isEmpty()).toList();
+  }
+
+  private ai.floedb.metacat.connector.rpc.NamespacePath toNsPath(String path) {
+    var segs =
+        Arrays.stream(path.split("[./]")).map(String::trim).filter(x -> !x.isEmpty()).toList();
+    return ai.floedb.metacat.connector.rpc.NamespacePath.newBuilder().addAllSegments(segs).build();
   }
 }

@@ -1,14 +1,18 @@
 package ai.floedb.metacat.connector.spi;
 
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
 public record ConnectorConfig(
     Kind kind,
     String displayName,
-    String targetCatalogDisplayName,
-    String targetTenantId,
+    String destinationTenantId,
+    String destinationCatalogDisplayName,
+    List<List<String>> destinationNamespacePaths,
+    String destinationTableDisplayName,
+    List<String> destinationTableColumns,
     String uri,
     Map<String, String> options,
     Auth auth) {
@@ -16,11 +20,25 @@ public record ConnectorConfig(
   public ConnectorConfig {
     Objects.requireNonNull(kind);
     Objects.requireNonNull(displayName);
-    Objects.requireNonNull(targetCatalogDisplayName);
+    Objects.requireNonNull(destinationCatalogDisplayName);
     Objects.requireNonNull(uri);
+
     options = options == null ? Map.of() : Collections.unmodifiableMap(options);
     auth = auth == null ? new Auth("none", Map.of(), Map.of(), "") : auth;
-    targetTenantId = Objects.requireNonNullElse(targetTenantId, "");
+    destinationTenantId = Objects.requireNonNullElse(destinationTenantId, "");
+    destinationNamespacePaths =
+        destinationNamespacePaths == null
+            ? List.of()
+            : deepImmutableCopy(destinationNamespacePaths);
+    destinationTableDisplayName = Objects.requireNonNullElse(destinationTableDisplayName, "");
+    destinationTableColumns =
+        destinationTableColumns == null ? List.of() : List.copyOf(destinationTableColumns);
+  }
+
+  private static List<List<String>> deepImmutableCopy(List<List<String>> src) {
+    return src.stream()
+        .map(inner -> inner == null ? List.<String>of() : List.copyOf(inner))
+        .toList();
   }
 
   public enum Kind {

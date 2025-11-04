@@ -1,10 +1,13 @@
 package ai.floedb.metacat.connector.dummy;
 
+import ai.floedb.metacat.catalog.rpc.ColumnStats;
+import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public final class DummyConnector implements MetacatConnector {
   private final String id;
@@ -63,28 +66,39 @@ public final class DummyConnector implements MetacatConnector {
 
   @Override
   public List<SnapshotBundle> enumerateSnapshotsWithStats(
-      String namespace, String table, ResourceId destinationTableId) {
+      String namespace, String table, ResourceId destinationTableId, Set<String> includeColumns) {
+
     long snapshotId = 42L;
     long createdAt = 1_700_000_000_000L;
 
     var tStats =
-        ai.floedb.metacat.catalog.rpc.TableStats.newBuilder()
+        TableStats.newBuilder()
             .setSnapshotId(snapshotId)
             .setRowCount(100)
             .setDataFileCount(3)
             .setTotalSizeBytes(2048)
             .build();
 
-    var cStat =
-        ai.floedb.metacat.catalog.rpc.ColumnStats.newBuilder()
+    var cStatId =
+        ColumnStats.newBuilder()
             .setSnapshotId(snapshotId)
-            .setColumnId("c1")
-            .setColumnName("dummy_col")
+            .setColumnId("1")
+            .setColumnName("id")
             .setLogicalType("INT64")
             .setNullCount(0)
             .build();
 
-    return List.of(new SnapshotBundle(snapshotId, 0L, createdAt, tStats, java.util.List.of(cStat)));
+    var cStatTs =
+        ColumnStats.newBuilder()
+            .setSnapshotId(snapshotId)
+            .setColumnId("2")
+            .setColumnName("ts")
+            .setLogicalType("TIMESTAMP")
+            .setNullCount(0)
+            .build();
+
+    return List.of(
+        new SnapshotBundle(snapshotId, 0L, createdAt, tStats, java.util.List.of(cStatId, cStatTs)));
   }
 
   @Override

@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -30,6 +31,7 @@ import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.rest.RESTCatalog;
+import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.glue.GlueClient;
@@ -150,15 +152,20 @@ public final class IcebergConnector implements MetacatConnector {
 
   @Override
   public List<SnapshotBundle> enumerateSnapshotsWithStats(
-      String namespaceFq, String tableName, ResourceId destinationTableId) {
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      Set<String> includeColumns) {
     Namespace ns = Namespace.of(namespaceFq.split("\\."));
     TableIdentifier tid = TableIdentifier.of(ns, tableName);
     Table table = catalog.loadTable(tid);
 
-    Set<Integer> allIds =
-        table.schema().columns().stream()
-            .map(Types.NestedField::fieldId)
-            .collect(Collectors.toCollection(LinkedHashSet::new));
+    final Set<Integer> includeIds =
+        (includeColumns == null || includeColumns.isEmpty())
+            ? table.schema().columns().stream()
+                .map(Types.NestedField::fieldId)
+                .collect(Collectors.toCollection(LinkedHashSet::new))
+            : resolveFieldIdsNested(table.schema(), includeColumns);
 
     List<SnapshotBundle> out = new ArrayList<>();
     for (Snapshot snapshot : table.snapshots()) {
@@ -166,7 +173,7 @@ public final class IcebergConnector implements MetacatConnector {
       long parentId = snapshot.parentId() != null ? snapshot.parentId().longValue() : 0;
       long createdMs = snapshot.timestampMillis();
 
-      EngineOut engineOutput = runEngine(table, snapshotId, allIds);
+      EngineOut engineOutput = runEngine(table, snapshotId, includeIds);
 
       var tStats =
           ProtoStatsBuilder.toTableStats(
@@ -268,6 +275,55 @@ public final class IcebergConnector implements MetacatConnector {
         .map(f -> Map.entry(f.fieldId(), IcebergTypeMapper.toLogical(f.type())))
         .filter(e -> e.getValue() != null)
         .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
+  }
+
+  private static Set<Integer> resolveFieldIdsNested(Schema schema, Set<String> selectors) {
+    Map<String, Integer> byPath = new LinkedHashMap<>();
+    for (Types.NestedField top : schema.columns()) {
+      collectNested(top, "", byPath);
+    }
+
+    Set<Integer> out = new LinkedHashSet<>();
+    for (String sel : selectors) {
+      if (sel == null || sel.isBlank()) {
+        continue;
+      }
+
+      String s = sel.trim();
+      if (s.startsWith("#")) {
+        out.add(Integer.parseInt(s.substring(1)));
+      } else {
+        Integer id = byPath.get(s);
+        if (id == null) {
+          throw new IllegalArgumentException("Unknown column selector: " + s);
+        }
+        out.add(id);
+      }
+    }
+    return out;
+  }
+
+  private static void collectNested(Types.NestedField f, String prefix, Map<String, Integer> out) {
+    final String name = prefix.isEmpty() ? f.name() : prefix + "." + f.name();
+    final Type t = f.type();
+
+    out.put(name, f.fieldId());
+
+    if (t.isStructType()) {
+      for (Types.NestedField child : t.asStructType().fields()) {
+        collectNested(child, name, out);
+      }
+    } else if (t.isListType()) {
+      Types.ListType lt = t.asListType();
+      Types.NestedField elem = lt.fields().get(0);
+      collectNested(elem, name, out);
+    } else if (t.isMapType()) {
+      Types.MapType mt = t.asMapType();
+      Types.NestedField key = mt.fields().get(0);
+      Types.NestedField val = mt.fields().get(1);
+      collectNested(key, name, out);
+      collectNested(val, name, out);
+    }
   }
 
   final class NdvOnlyResult<K> implements StatsEngine.Result<K> {

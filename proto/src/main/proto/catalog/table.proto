@@ -16,18 +16,26 @@ enum TableFormat {
   TF_UNKNOWN = 10;
 }
 
+message UpstreamRef {
+  ai.floedb.metacat.common.ResourceId connector_id = 1;
+  string uri = 2;
+  repeated string namespace_path = 3;
+  string table_display_name = 4;
+  TableFormat format = 5;
+  repeated string partition_keys = 6;
+  map<string,int32> field_id_by_path = 10;
+}
+
 message Table {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
   string description = 3;
   ai.floedb.metacat.common.ResourceId catalog_id = 4;
   ai.floedb.metacat.common.ResourceId namespace_id = 5;
-  string root_uri = 6;
-  google.protobuf.Timestamp created_at = 7;
-  string schema_json = 8;
-  repeated string partition_keys = 9;
-  TableFormat format = 10;
-  map<string,string> properties = 11;
+  google.protobuf.Timestamp created_at = 6;
+  string schema_json = 7;
+  UpstreamRef upstream = 8;
+  map<string,string> properties = 20;
 }
 
 message ListTablesRequest {
@@ -52,11 +60,9 @@ message TableSpec {
   ai.floedb.metacat.common.ResourceId namespace_id = 2;
   string display_name = 3;
   string description = 4;
-  string root_uri = 5;
-  string schema_json = 6;
-  repeated string partition_keys = 7;
-  TableFormat format = 8;
-  map<string,string> properties = 9;
+  string schema_json = 5;
+  UpstreamRef upstream = 6;
+  map<string,string> properties = 20;
 }
 
 message CreateTableRequest {

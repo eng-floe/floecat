@@ -254,7 +254,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           tsNow,
                           idempotencyTtlSeconds(),
                           this::correlationId,
-                          View::parseFrom);
+                          View::parseFrom,
+                          rec -> viewRepo.getById(rec.getResourceId()).isPresent());
 
                   return CreateViewResponse.newBuilder()
                       .setView(viewProto.body)

@@ -175,7 +175,8 @@ public class TenantServiceImpl extends BaseServiceImpl implements TenantService 
                           tsNow,
                           idempotencyTtlSeconds(),
                           this::correlationId,
-                          Tenant::parseFrom);
+                          Tenant::parseFrom,
+                          rec -> tenantRepo.getById(rec.getResourceId()).isPresent());
 
                   return CreateTenantResponse.newBuilder()
                       .setTenant(result.body)

@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
+import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
@@ -59,15 +60,19 @@ class SnapshotRepositoryTest {
             .setKind(ResourceKind.RK_TABLE)
             .build();
 
+    var upstream =
+        UpstreamRef.newBuilder()
+            .setFormat(TableFormat.TF_DELTA)
+            .setUri("s3://upstream/tables/orders/")
+            .build();
     var td =
         Table.newBuilder()
             .setResourceId(tableRid)
             .setDisplayName("orders")
             .setDescription("Orders table")
-            .setFormat(TableFormat.TF_DELTA)
+            .setUpstream(upstream)
             .setCatalogId(catalogRid)
             .setNamespaceId(nsRid)
-            .setRootUri("s3://upstream/tables/orders/")
             .setSchemaJson("{}")
             .setCreatedAt(Timestamps.fromMillis(clock.millis()))
             .build();

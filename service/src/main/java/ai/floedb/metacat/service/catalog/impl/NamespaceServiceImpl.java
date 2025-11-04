@@ -436,7 +436,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           tsNow,
                           idempotencyTtlSeconds(),
                           this::correlationId,
-                          Namespace::parseFrom);
+                          Namespace::parseFrom,
+                          rec -> namespaceRepo.getById(rec.getResourceId()).isPresent());
 
                   return CreateNamespaceResponse.newBuilder()
                       .setNamespace(namespaceProto.body)
