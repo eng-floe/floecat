@@ -163,8 +163,8 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
                                     .setExpiresAt(ts(planContext.getExpiresAtMs()))
                                     .setSnapshots(SnapshotSet.parseFrom(snapshotBytes))
                                     .setExpansion(ExpansionMap.parseFrom(expansionBytes))
-                                    .addAllDataFiles(planBundle.dataFiles())
-                                    .addAllDeleteFiles(planBundle.deleteFiles())
+                                    .addAllDataFiles(planBundle!=null ? planBundle.dataFiles() : List.of())
+                                    .addAllDeleteFiles(planBundle!=null ? planBundle.deleteFiles() : List.of())
                             ).build();
                   } catch (InvalidProtocolBufferException e) {
                     throw GrpcErrors.internal(
