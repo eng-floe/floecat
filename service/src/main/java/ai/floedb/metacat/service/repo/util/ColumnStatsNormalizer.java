@@ -91,11 +91,4 @@ public final class ColumnStatsNormalizer {
       throw new IllegalStateException("SHA-256 not available", e);
     }
   }
-
-  private static int nnCmp(String a, String b) {
-    if (a == b) return 0;
-    if (a == null) return -1;
-    if (b == null) return 1;
-    return a.compareTo(b);
-  }
 }

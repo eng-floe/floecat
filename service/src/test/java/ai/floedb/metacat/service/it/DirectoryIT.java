@@ -8,6 +8,7 @@ import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
+import com.google.protobuf.FieldMask;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
@@ -229,9 +230,15 @@ class DirectoryIT {
     var oldRef =
         NameRef.newBuilder().setCatalog(cat.getDisplayName()).addPath("p").addPath("a").build();
 
+    FieldMask mask_name = FieldMask.newBuilder().addPaths("display_name").build();
+    var nsSpec = NamespaceSpec.newBuilder().setDisplayName("b").build();
     namespace
         .updateNamespace(
-            UpdateNamespaceRequest.newBuilder().setNamespaceId(id).setDisplayName("b").build())
+            UpdateNamespaceRequest.newBuilder()
+                .setNamespaceId(id)
+                .setSpec(nsSpec)
+                .setUpdateMask(mask_name)
+                .build())
         .getNamespace();
 
     assertThrows(

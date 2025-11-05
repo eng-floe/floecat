@@ -6,6 +6,7 @@ option java_package = "ai.floedb.metacat.catalog.rpc";
 
 import "common/common.proto";
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/field_mask.proto";
 
 // ----- Namespace -----
 
@@ -13,9 +14,11 @@ message Namespace {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
   repeated string parents = 3;
-  string description = 4;
+  optional string description = 4;
   ai.floedb.metacat.common.ResourceId catalog_id = 5;
-  google.protobuf.Timestamp created_at = 6;
+  optional string policy_ref = 6;
+  google.protobuf.Timestamp created_at = 20;
+  map<string,string> properties = 99;
 }
 
 message ListNamespacesRequest {
@@ -43,10 +46,10 @@ message GetNamespaceResponse {
 
 message NamespaceSpec {
   ai.floedb.metacat.common.ResourceId catalog_id = 1;
-  string display_name = 2;
-  string description = 3;
+  optional string display_name = 2;
+  optional string description = 3;
   repeated string path = 4;
-  string policy_ref = 5;
+  optional string policy_ref = 5;
   map<string,string> properties = 99;
 }
 
@@ -61,10 +64,9 @@ message CreateNamespaceResponse {
 
 message UpdateNamespaceRequest {
   ai.floedb.metacat.common.ResourceId namespace_id = 1;
-  string display_name = 2;
-  repeated string path = 3;
-  ai.floedb.metacat.common.ResourceId catalog_id = 4;
-  ai.floedb.metacat.common.Precondition precondition = 5;
+  NamespaceSpec spec = 2;
+  ai.floedb.metacat.common.Precondition precondition = 3;
+  google.protobuf.FieldMask update_mask = 4;
 }
 message UpdateNamespaceResponse {
   Namespace namespace = 1;

@@ -14,6 +14,7 @@ import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
+import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -84,12 +85,15 @@ class NamespaceMutationIT {
                 .build());
     assertEquals(nsId.getId(), resolved.getResourceId().getId());
 
+    FieldMask mask_name = FieldMask.newBuilder().addPaths("display_name").build();
+    var nsSpec = NamespaceSpec.newBuilder().setDisplayName(leaf + "_ren").build();
     var m1 =
         namespace
             .updateNamespace(
                 UpdateNamespaceRequest.newBuilder()
                     .setNamespaceId(nsId)
-                    .setDisplayName(leaf + "_ren")
+                    .setSpec(nsSpec)
+                    .setUpdateMask(mask_name)
                     .setPrecondition(
                         Precondition.newBuilder()
                             .setExpectedVersion(
@@ -121,11 +125,14 @@ class NamespaceMutationIT {
                 .build());
     assertEquals(nsId.getId(), resolvedRen.getResourceId().getId());
 
+    FieldMask mask_path = FieldMask.newBuilder().addPaths("path").build();
+    var m2Spec = NamespaceSpec.newBuilder().addAllPath(List.of(leaf + "_root")).build();
     var m2Resp =
         namespace.updateNamespace(
             UpdateNamespaceRequest.newBuilder()
                 .setNamespaceId(nsId)
-                .addAllPath(List.of(leaf + "_root"))
+                .setSpec(m2Spec)
+                .setUpdateMask(mask_path)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(m1.getPointerVersion())
@@ -143,6 +150,7 @@ class NamespaceMutationIT {
                 .build());
     assertEquals(nsId.getId(), resolvedRoot.getResourceId().getId());
 
+    var badSpec = NamespaceSpec.newBuilder().setDisplayName(leaf + "_root2").build();
     var bad =
         assertThrows(
             StatusRuntimeException.class,
@@ -150,7 +158,8 @@ class NamespaceMutationIT {
                 namespace.updateNamespace(
                     UpdateNamespaceRequest.newBuilder()
                         .setNamespaceId(nsId)
-                        .setDisplayName(leaf + "_root2")
+                        .setSpec(badSpec)
+                        .setUpdateMask(mask_name)
                         .setPrecondition(
                             Precondition.newBuilder()
                                 .setExpectedVersion(123456L)
@@ -169,11 +178,13 @@ class NamespaceMutationIT {
             List.of(leaf + "_root"));
 
     // Bump the version
+    var m3Spec = NamespaceSpec.newBuilder().setDisplayName(leaf + "_root3").build();
     var m3Resp =
         namespace.updateNamespace(
             UpdateNamespaceRequest.newBuilder()
                 .setNamespaceId(nsId)
-                .setDisplayName(leaf + "_root3")
+                .setSpec(m3Spec)
+                .setUpdateMask(mask_name)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(before.getPointerVersion())
@@ -260,6 +271,7 @@ class NamespaceMutationIT {
     var cat = TestSupport.createCatalog(catalog, namespacePrefix + "cat3", "cat3");
 
     var key = IdempotencyKey.newBuilder().setKey(namespacePrefix + "k-ns-1").build();
+
     var spec =
         NamespaceSpec.newBuilder()
             .setCatalogId(cat.getResourceId())

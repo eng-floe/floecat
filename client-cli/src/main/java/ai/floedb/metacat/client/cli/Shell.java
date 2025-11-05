@@ -272,7 +272,11 @@ public class Shell implements Runnable {
          namespaces (<catalog | catalog.ns[.ns...]> | <UUID>) [--id <UUID>] [--prefix P] [--recursive]
          namespace create <catalog.ns[.ns...]> [--desc <text>] [--props k=v ...] [--policy <id>]
          namespace get <id | catalog.ns[.ns...]>
-         namespace update <id|fq> [--display <name>] [--path ns1.ns2... | ns1/ns2/...] [--catalog <catalogName|id>] [--etag <etag>]
+         namespace update <id|catalog.ns[.ns...]>
+             [--display <name>] [--desc <text>]
+             [--policy <ref>] [--props k=v ...]
+             [--path a.b[.c]] [--catalog <id|name>]
+             [--etag <etag>]
          namespace delete <id|fq> [--require-empty] [--etag <etag>]
          tables <catalog.ns[.ns...][.prefix]>
          table create <catalog.ns[.ns...].name> [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...]
@@ -623,53 +627,86 @@ public class Shell implements Runnable {
       case "update" -> {
         if (args.size() < 2) {
           out.println(
-              "namespace update <id|catalog.ns[.ns...]>\n"
-                  + "    [--display <name>] [--path ns1.ns2... | ns1/ns2/...]\n"
-                  + "    [--catalog <catalogName|catalogId>] [--etag <etag>]");
+              "usage: namespace update <id|catalog.ns[.ns...]> "
+                  + "[--display <name>] [--desc <text>] "
+                  + "[--policy <ref>] [--props k=v ...] "
+                  + "[--path a.b[.c]] [--catalog <id|name>] "
+                  + "[--etag <etag>]");
           return;
         }
 
-        ResourceId catalogId;
-        ResourceId nsId;
-
-        if (looksLikeUuid(args.get(1))) {
-          nsId = namespaceRid(args.get(1));
-          var nsLookup =
-              directory.lookupNamespace(
-                  LookupNamespaceRequest.newBuilder().setResourceId(nsId).build());
-          catalogId = resolveCatalogId(nsLookup.getRef().getCatalog());
-        } else {
-          NameRef ref = nameRefForNamespace(args.get(1));
-          nsId = resolveNamespaceId(args.get(1));
-          catalogId = resolveCatalogId(ref.getCatalog());
-        }
-
-        String catalogStr = parseStringFlag(args, "--catalog", "");
-        if (!catalogStr.isBlank()) {
-          catalogId =
-              looksLikeUuid(catalogStr) ? catalogRid(catalogStr) : resolveCatalogId(catalogStr);
-        }
+        ResourceId namespaceId =
+            looksLikeUuid(args.get(1))
+                ? namespaceRid(args.get(1))
+                : directory
+                    .resolveNamespace(
+                        ResolveNamespaceRequest.newBuilder()
+                            .setRef(nameRefForNamespace(args.get(1)))
+                            .build())
+                    .getResourceId();
 
         String display = parseStringFlag(args, "--display", null);
-        String path = parseStringFlag(args, "--path", null);
+        String desc = parseStringFlag(args, "--desc", null);
+        String policyRef = parseStringFlag(args, "--policy", null);
+        String pathStr = parseStringFlag(args, "--path", null);
+        String catalogStr = parseStringFlag(args, "--catalog", null);
+        Map<String, String> properties = parseKeyValueList(args, "--props");
 
-        UpdateNamespaceRequest.Builder b =
-            UpdateNamespaceRequest.newBuilder()
-                .setNamespaceId(nsId)
-                .setPrecondition(preconditionFromEtag(args));
+        if (display != null && pathStr != null) {
+          out.println("Error: cannot combine --path with --display in the same update.");
+          return;
+        }
+
+        NamespaceSpec.Builder sb = NamespaceSpec.newBuilder();
+        LinkedHashSet<String> mask = new LinkedHashSet<>();
 
         if (display != null) {
-          b.setDisplayName(display);
-        }
-        if (path != null) {
-          b.clearPath().addAllPath(pathToList(path));
+          sb.setDisplayName(display);
+          mask.add("display_name");
         }
 
-        if (!catalogStr.isBlank()) {
-          b.setCatalogId(catalogId);
+        if (desc != null) {
+          sb.setDescription(desc);
+          mask.add("description");
         }
 
-        var resp = namespaces.updateNamespace(b.build());
+        if (policyRef != null) {
+          sb.setPolicyRef(policyRef);
+          mask.add("policy_ref");
+        }
+
+        if (pathStr != null) {
+          var pathList = pathStr.isBlank() ? List.<String>of() : pathToList(pathStr);
+          sb.clearPath().addAllPath(pathList);
+          mask.add("path");
+        }
+
+        if (catalogStr != null) {
+          ResourceId cid =
+              looksLikeUuid(catalogStr) ? catalogRid(catalogStr) : resolveCatalogId(catalogStr);
+          sb.setCatalogId(cid);
+          mask.add("catalog_id");
+        }
+
+        if (!properties.isEmpty()) {
+          sb.putAllProperties(properties);
+          mask.add("properties");
+        }
+
+        if (mask.isEmpty()) {
+          out.println("Nothing to update. Provide one or more flags to change.");
+          return;
+        }
+
+        var req =
+            UpdateNamespaceRequest.newBuilder()
+                .setNamespaceId(namespaceId)
+                .setSpec(sb.build())
+                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build())
+                .setPrecondition(preconditionFromEtag(args))
+                .build();
+
+        var resp = namespaces.updateNamespace(req);
         printNamespaces(List.of(resp.getNamespace()));
       }
       case "delete" -> {
@@ -2003,20 +2040,13 @@ public class Shell implements Runnable {
           content);
       if (!file.getColumnsList().isEmpty()) {
         out.println("    columns:");
-        file
-            .getColumnsList()
+        file.getColumnsList()
             .forEach(
                 col -> {
-                  String ndv =
-                      col.hasNdv()
-                          ? ndvToString(col.getNdv())
-                          : "-";
+                  String ndv = col.hasNdv() ? ndvToString(col.getNdv()) : "-";
                   out.printf(
                       "      %s (%s) nulls=%d ndv=%s%n",
-                      col.getColumnName(),
-                      col.getLogicalType(),
-                      col.getNullCount(),
-                      ndv);
+                      col.getColumnName(), col.getLogicalType(), col.getNullCount(), ndv);
                 });
       }
     }
@@ -2267,7 +2297,9 @@ public class Shell implements Runnable {
   }
 
   private void printNamespaces(List<Namespace> rows) {
-    out.printf("%-36s  %-5s  %-24s  %s%n", "NAMESPACE_ID", "TYPE", "CREATED_AT", "PATH");
+    out.printf(
+        "%-36s  %-5s  %-24s  %-24s  %s%n",
+        "NAMESPACE_ID", "TYPE", "CREATED_AT", "PATH", "DESCRIPTION");
 
     for (var ns : rows) {
       String type = ns.hasResourceId() ? "real" : "virt";
@@ -2279,7 +2311,8 @@ public class Shell implements Runnable {
                   : (ns.getParentsList().isEmpty() ? "" : ".") + ns.getDisplayName());
 
       String id = ns.hasResourceId() ? ns.getResourceId().getId() : "<virtual>";
-      out.printf("%-36s  %-5s  %-24s  %s%n", id, type, created, path);
+      String desc = ns.hasDescription() ? ns.getDescription() : "";
+      out.printf("%-36s  %-5s  %-24s  %-24s  %s%n", id, type, created, path, desc);
     }
   }
 

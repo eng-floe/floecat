@@ -27,6 +27,7 @@ import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
+import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -48,6 +49,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
+
+  private static final Set<String> NAMESPACE_MUTABLE_PATHS =
+      Set.of("display_name", "description", "path", "policy_ref", "properties", "catalog_id");
 
   private static final Logger LOG = Logger.getLogger(NamespaceService.class);
 
@@ -432,93 +436,55 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
             runWithRetry(
                 () -> {
                   var princ = principal.get();
-                  var correlationId = princ.getCorrelationId();
+                  var corr = princ.getCorrelationId();
                   authz.require(princ, "namespace.write");
 
-                  var namespaceId = request.getNamespaceId();
-                  ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId);
+                  var nsId = request.getNamespaceId();
+                  ensureKind(nsId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
 
                   var current =
                       namespaceRepo
-                          .getById(namespaceId)
+                          .getById(nsId)
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
-                                      correlationId,
-                                      "namespace",
-                                      Map.of("id", namespaceId.getId())));
+                                      corr, "namespace", Map.of("id", nsId.getId())));
 
-                  ResourceId desiredCatalogId =
-                      request.hasCatalogId() && !request.getCatalogId().getId().isBlank()
-                          ? request.getCatalogId()
-                          : current.getCatalogId();
-                  ensureKind(
-                      desiredCatalogId, ResourceKind.RK_CATALOG, "catalog_id", correlationId);
-
-                  catalogRepo
-                      .getById(desiredCatalogId)
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId,
-                                  "catalog",
-                                  Map.of("id", desiredCatalogId.getId())));
-
-                  String desiredDisplay;
-                  List<String> desiredParents;
-
-                  if (!request.getDisplayName().isBlank()) {
-                    desiredDisplay =
-                        mustNonEmpty(request.getDisplayName(), "display_name", correlationId);
-                    desiredParents =
-                        !request.getPathList().isEmpty()
-                            ? request.getPathList()
-                            : current.getParentsList();
-                  } else if (!request.getPathList().isEmpty()) {
-                    var path = request.getPathList();
-                    if (path.size() == 1) {
-                      desiredDisplay = mustNonEmpty(path.get(0), "path[0]", correlationId);
-                      desiredParents = List.of();
-                    } else {
-                      desiredDisplay =
-                          mustNonEmpty(path.get(path.size() - 1), "path[last]", correlationId);
-                      desiredParents = path.subList(0, path.size() - 1);
-                    }
-                  } else {
-                    desiredDisplay = current.getDisplayName();
-                    desiredParents = current.getParentsList();
+                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
+                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
                   }
 
                   var desired =
-                      current.toBuilder()
-                          .setDisplayName(desiredDisplay)
-                          .clearParents()
-                          .addAllParents(desiredParents)
-                          .setCatalogId(desiredCatalogId)
-                          .build();
+                      applyNamespaceSpecPatch(
+                          current, request.getSpec(), request.getUpdateMask(), corr);
 
                   if (desired.equals(current)) {
-                    var metaNoop = namespaceRepo.metaForSafe(namespaceId);
+                    var metaNoop = namespaceRepo.metaForSafe(nsId);
                     MutationOps.BaseServiceChecks.enforcePreconditions(
-                        correlationId, metaNoop, request.getPrecondition());
+                        corr, metaNoop, request.getPrecondition());
                     return UpdateNamespaceResponse.newBuilder()
                         .setNamespace(current)
                         .setMeta(metaNoop)
                         .build();
                   }
 
+                  var conflictInfo =
+                      Map.of(
+                          "display_name", desired.getDisplayName(),
+                          "catalog_id", desired.getCatalogId().getId());
+
                   MutationOps.updateWithPreconditions(
-                      () -> namespaceRepo.metaFor(namespaceId),
+                      () -> namespaceRepo.metaFor(nsId),
                       request.getPrecondition(),
                       expected -> namespaceRepo.update(desired, expected),
-                      () -> namespaceRepo.metaForSafe(namespaceId),
-                      correlationId,
+                      () -> namespaceRepo.metaForSafe(nsId),
+                      corr,
                       "namespace",
-                      Map.of(
-                          "display_name", desiredDisplay, "catalog_id", desiredCatalogId.getId()));
+                      conflictInfo);
 
-                  var outMeta = namespaceRepo.metaForSafe(namespaceId);
-                  var latest = namespaceRepo.getById(namespaceId).orElse(desired);
+                  var outMeta = namespaceRepo.metaForSafe(nsId);
+                  var latest = namespaceRepo.getById(nsId).orElse(desired);
+
                   return UpdateNamespaceResponse.newBuilder()
                       .setNamespace(latest)
                       .setMeta(outMeta)
@@ -650,6 +616,97 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     pp.addAll(parents);
     pp.add(last);
     return pp;
+  }
+
+  private Namespace applyNamespaceSpecPatch(
+      Namespace current, NamespaceSpec spec, FieldMask mask, String corr) {
+
+    var paths = normalizedMaskPaths(mask);
+    if (paths.isEmpty()) {
+      throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+    }
+
+    for (var p : paths) {
+      if (!NAMESPACE_MUTABLE_PATHS.contains(p)) {
+        throw GrpcErrors.invalidArgument(corr, "update_mask.path.invalid", Map.of("path", p));
+      }
+    }
+
+    if (paths.contains("path") && paths.contains("display_name")) {
+      throw GrpcErrors.invalidArgument(
+          corr,
+          "update_mask.path.invalid",
+          Map.of("path", "Cannot combine 'path' with 'display_name'"));
+    }
+
+    var b = current.toBuilder();
+
+    if (maskTargets(mask, "catalog_id")) {
+      if (!spec.hasCatalogId()) {
+        throw GrpcErrors.invalidArgument(corr, "catalog_id.cannot_clear", Map.of());
+      }
+      var cat = spec.getCatalogId();
+      ensureKind(cat, ResourceKind.RK_CATALOG, "spec.catalog_id", corr);
+      catalogRepo
+          .getById(cat)
+          .orElseThrow(() -> GrpcErrors.notFound(corr, "catalog", Map.of("id", cat.getId())));
+      b.setCatalogId(cat);
+    }
+
+    if (maskTargets(mask, "display_name")) {
+      if (!spec.hasDisplayName()) {
+        throw GrpcErrors.invalidArgument(corr, "display_name.cannot_clear", Map.of());
+      }
+      var name = normalizeName(spec.getDisplayName());
+      if (name.isBlank()) {
+        throw GrpcErrors.invalidArgument(corr, "display_name.cannot_clear", Map.of());
+      }
+      b.setDisplayName(name);
+    }
+
+    if (maskTargets(mask, "description")) {
+      if (spec.hasDescription()) {
+        b.setDescription(spec.getDescription());
+      } else {
+        b.clearDescription();
+      }
+    }
+
+    if (maskTargets(mask, "policy_ref")) {
+      if (spec.hasPolicyRef()) {
+        b.setPolicyRef(spec.getPolicyRef());
+      } else {
+        b.clearPolicyRef();
+      }
+    }
+
+    if (maskTargets(mask, "properties")) {
+      b.clearProperties().putAllProperties(spec.getPropertiesMap());
+    }
+
+    if (maskTargets(mask, "path")) {
+      var path = spec.getPathList();
+      if (path.isEmpty()) {
+        b.clearParents();
+      } else {
+        for (var seg : path) {
+          var s = normalizeName(seg);
+          if (s.isBlank()) {
+            throw GrpcErrors.invalidArgument(corr, "path.segment.blank", Map.of());
+          }
+          if (s.indexOf('/') >= 0) {
+            throw GrpcErrors.invalidArgument(
+                corr, "path.segment.contains_slash", Map.of("segment", seg));
+          }
+        }
+        var leaf = normalizeName(path.get(path.size() - 1));
+        var parents = path.subList(0, path.size() - 1);
+        b.setDisplayName(leaf);
+        b.clearParents().addAllParents(parents);
+      }
+    }
+
+    return b.build();
   }
 
   private static byte[] canonicalFingerprint(NamespaceSpec s) {
