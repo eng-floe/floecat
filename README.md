@@ -109,34 +109,48 @@ catalog create <display_name> [--desc <text>] [--connector <id>] [--policy <id>]
 catalog get <display_name|id>
 catalog update <display_name|id> [--display <name>] [--desc <text>] [--connector <id>] [--policy <id>] [--opt k=v ...] [--etag <etag>]
 catalog delete <display_name|id> [--require-empty] [--etag <etag>]
-namespaces <catalog | catalog.ns[.ns...]> | --id UUID> [--prefix P] [--recursive]
-namespace create <catalogName|catalogId> <display_name|a.b.c> [--desc <text>] [--path ns1.ns2...] [--ann k=v ...] [--policy <id>]
-namespace get <id|catalog.ns[.ns...][.name]>
-namespace update <id|fq> [--display <name>] [--path ns1.ns2...] [--catalog <catalogName|id>] [--etag <etag>]
+namespaces (<catalog | catalog.ns[.ns...]> | <UUID>) [--id <UUID>] [--prefix P] [--recursive]
+namespace create <catalog.ns[.ns...]> [--desc <text>] [--ann k=v ...] [--policy <id>]
+namespace get <id | catalog.ns[.ns...]>
+namespace update <id|fq> [--display <name>] [--path ns1.ns2... | ns1/ns2/...] [--catalog <catalogName|id>] [--etag <etag>]
 namespace delete <id|fq> [--require-empty] [--etag <etag>]
 tables <catalog.ns[.ns...][.prefix]>
-table create <catalogName|id> <namespaceFQ|id> <name> [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v ...]
+table create <catalog.ns[.ns...].name> [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v ...]
+    [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
 table get <id|catalog.ns[.ns...].table>
-table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v ...] [--etag <etag>]
+table update <id|fq> [--catalog <catalogId|catalogName>] [--namespace <namespaceId|catalog.ns[.ns...]>]
+    [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>] [--name <name>]
+    [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...]
+    [--format ICEBERG|DELTA] [--prop k=v ...] [--etag <etag>]
 table delete <id|fq> [--purge-stats] [--purge-snaps] [--etag <etag>]
 resolve table <fq> | resolve view <fq> | resolve catalog <name> | resolve namespace <fq>
 describe table <fq>
 snapshots <tableFQ>
-stats table <tableFQ> [--snapshot <id>|--current]
-stats columns <tableFQ> [--snapshot <id>|--current] [--limit N]
+stats table <tableFQ> [--snapshot <id>|--current] (defaults to --current)
+stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
+plan begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid>
+    [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
+plan renew <plan_id> [--ttl <seconds>]
+plan end <plan_id> [--commit|--abort]
+plan get <plan_id>
 connectors
-connector list [--kind <KIND>]
+connector list [--kind <KIND>] [--page-size <N>]
 connector get <display_name|id>
-connector create <display_name> <kind> <uri> [--target-catalog <display>] [--target-tenant <tenant>]
-    [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
+connector create <display_name> <source_type (ICEBERG|DELTA|GLUE|UNITY)> <uri> <source_namespace (a[.b[.c]...])> <destination_catalog (name)>
+    [--source-table <name>] [--source-cols c1,#id2,...]
+    [--dest-ns <a.b[.c]>] [--dest-table <name>]
+    [--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...]
+    [--head k=v ...] [--secret <ref>]
     [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--opt k=v ...]
-connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>] [--target-catalog <display>] [--target-tenant <tenant>]
+connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
+    [--dest-tenant <tenant>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
     [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
     [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--opt k=v ...] [--etag <etag>]
 connector delete <display_name|id>  [--etag <etag>]
-connector validate <kind> <uri> [--target-catalog <display>] [--target-tenant <tenant>]
+connector validate <kind> <uri>
+    [--dest-tenant <tenant>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
     [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
     [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--opt k=v ...]
