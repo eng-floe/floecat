@@ -81,6 +81,7 @@ import ai.floedb.metacat.planning.rpc.ExpansionMap;
 import ai.floedb.metacat.planning.rpc.GetPlanRequest;
 import ai.floedb.metacat.planning.rpc.GetPlanResponse;
 import ai.floedb.metacat.planning.rpc.PlanDescriptor;
+import ai.floedb.metacat.planning.rpc.PlanFile;
 import ai.floedb.metacat.planning.rpc.PlanInput;
 import ai.floedb.metacat.planning.rpc.PlanningGrpc;
 import ai.floedb.metacat.planning.rpc.RenewPlanRequest;
@@ -1888,6 +1889,8 @@ public class Shell implements Runnable {
     printPlanSnapshots(plan.getSnapshots());
     printPlanExpansion(plan.getExpansion());
     printPlanObligations(plan.getObligationsList());
+    printPlanFiles("data_files", plan.getDataFilesList());
+    printPlanFiles("delete_files", plan.getDeleteFilesList());
   }
 
   private void printPlanSnapshots(SnapshotSet snapshots) {
@@ -1970,6 +1973,42 @@ public class Shell implements Runnable {
                 mask ->
                     out.println(
                         "      " + mask.getColumn() + " => " + trunc(mask.getExpression(), 100)));
+      }
+    }
+  }
+
+  private void printPlanFiles(String label, List<PlanFile> files) {
+    if (files == null || files.isEmpty()) {
+      out.println(label + ": <none>");
+      return;
+    }
+    out.println(label + ":");
+    for (PlanFile file : files) {
+      String content = file.getFileContent().name().toLowerCase(Locale.ROOT);
+      out.printf(
+          "  - path=%s format=%s size=%dB records=%d content=%s%n",
+          file.getFilePath(),
+          file.getFileFormat(),
+          file.getFileSizeInBytes(),
+          file.getRecordCount(),
+          content);
+      if (!file.getColumnsList().isEmpty()) {
+        out.println("    columns:");
+        file
+            .getColumnsList()
+            .forEach(
+                col -> {
+                  String ndv =
+                      col.hasNdv()
+                          ? ndvToString(col.getNdv())
+                          : "-";
+                  out.printf(
+                      "      %s (%s) nulls=%d ndv=%s%n",
+                      col.getColumnName(),
+                      col.getLogicalType(),
+                      col.getNullCount(),
+                      ndv);
+                });
       }
     }
   }

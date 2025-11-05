@@ -1,9 +1,26 @@
 package ai.floedb.metacat.service.planning.impl;
 
+import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.PrincipalContext;
+import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.connector.rpc.Connector;
+import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
+import ai.floedb.metacat.connector.rpc.GetConnectorRequest;
+import ai.floedb.metacat.connector.spi.ConnectorConfigMapper;
+import ai.floedb.metacat.connector.spi.ConnectorFactory;
+import ai.floedb.metacat.connector.spi.MetacatConnector;
+import ai.floedb.metacat.planning.rpc.PlanStatus;
+import ai.floedb.metacat.planning.rpc.SnapshotPin;
+import ai.floedb.metacat.planning.rpc.SnapshotSet;
+import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import com.google.protobuf.InvalidProtocolBufferException;
+import io.grpc.StatusRuntimeException;
+
 import java.time.Clock;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class PlanContext {
 
@@ -24,6 +41,8 @@ public final class PlanContext {
   private final long version;
 
   private static final Clock clock = Clock.systemUTC();
+
+  private AtomicReference<PlanStatus> planStatus = new AtomicReference<>(PlanStatus.SUBMITTED);
 
   private PlanContext(Builder builder) {
     this.planId = requireNonEmpty(builder.planId, "planId");
@@ -87,6 +106,54 @@ public final class PlanContext {
     return this.toBuilder().expiresAtMs(next).version(newVersion).build();
   }
 
+  public MetacatConnector.PlanBundle runPlanning(TableServiceGrpc.TableServiceBlockingStub tables, ConnectorsGrpc.ConnectorsBlockingStub connectors) {
+    // TODO: Make this async and more robust
+    try {
+      if (snapshotSet != null) {
+        SnapshotSet snapshots;
+        try {
+          snapshots = SnapshotSet.parseFrom(snapshotSet);
+        } catch (InvalidProtocolBufferException e) {
+          throw GrpcErrors.internal(
+                  principal.getCorrelationId(), "plan.snapshot.parse_failed", Map.of("plan_id", planId));
+        }
+
+        for (SnapshotPin s : snapshots.getPinsList()) {
+          GetTableResponse tableResponse = tables.getTable(GetTableRequest.newBuilder().setTableId(s.getTableId()).build());
+          Table table = tableResponse.getTable();
+          if (table.hasUpstream()) {
+            ResourceId id = table.getUpstream().getConnectorId();
+
+            final Connector stored;
+            try {
+              stored = connectors
+                      .getConnector(GetConnectorRequest.newBuilder().setConnectorId(id).build())
+                      .getConnector();
+            } catch (StatusRuntimeException e) {
+              throw new IllegalArgumentException("Connector not found: " + id.getId(), e);
+            }
+
+            var cfg = ConnectorConfigMapper.fromProto(stored);
+
+            try (MetacatConnector connector = ConnectorFactory.create(cfg)) {
+              String sourceNsFq = !table.getUpstream().getNamespacePathList().isEmpty() ?
+                      String.join(".", table.getUpstream().getNamespacePathList()) : "";
+              String sourceTable = table.getUpstream().getTableDisplayName();
+              planStatus.set(PlanStatus.COMPLETED);
+
+              return connector.plan(sourceNsFq, sourceTable, s.getSnapshotId(), s.getAsOf().getSeconds());
+            }
+          }
+        }
+      }
+    } finally {
+      if (!planStatus.get().equals(PlanStatus.COMPLETED)) {
+        planStatus.set(PlanStatus.FAILED);
+      }
+    }
+    return null;
+  }
+
   public PlanContext end(boolean commit, long graceExpiresAtMs, long newVersion) {
     var newState = commit ? State.ENDED_COMMIT : State.ENDED_ABORT;
     long nextExp = Math.max(this.expiresAtMs, graceExpiresAtMs);
@@ -140,6 +207,10 @@ public final class PlanContext {
 
   public long getVersion() {
     return version;
+  }
+
+  public PlanStatus getPlanStatus() {
+    return planStatus.get();
   }
 
   public static final class Builder {

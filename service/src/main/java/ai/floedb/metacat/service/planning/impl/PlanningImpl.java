@@ -1,14 +1,11 @@
 package ai.floedb.metacat.service.planning.impl;
 
-import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
-import ai.floedb.metacat.catalog.rpc.GetCurrentSnapshotRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
-import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
+import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.metacat.planning.rpc.*;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.LogHelper;
@@ -40,6 +37,12 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
 
   @GrpcClient("metacat")
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
+
+  @GrpcClient("metacat")
+  TableServiceGrpc.TableServiceBlockingStub tables;
+
+  @GrpcClient("metacat")
+  ConnectorsGrpc.ConnectorsBlockingStub connectors;
 
   @Inject PlanContextStore plans;
 
@@ -148,16 +151,20 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
                           planId, principalContext, expansionBytes, snapshotBytes, ttlMs, 1L);
                   plans.put(planContext);
 
+                  var planBundle = planContext.runPlanning(tables, connectors);
+
                   try {
                     return BeginPlanResponse.newBuilder()
                             .setPlan(PlanDescriptor.newBuilder()
                                     .setPlanId(planId)
                                     .setTenantId(principalContext.getTenantId())
-                                    .setPlanStatus(PlanStatus.COMPLETED) // fake this now
+                                    .setPlanStatus(planContext.getPlanStatus())
                                     .setCreatedAt(ts(planContext.getCreatedAtMs()))
                                     .setExpiresAt(ts(planContext.getExpiresAtMs()))
                                     .setSnapshots(SnapshotSet.parseFrom(snapshotBytes))
                                     .setExpansion(ExpansionMap.parseFrom(expansionBytes))
+                                    .addAllDataFiles(planBundle.dataFiles())
+                                    .addAllDeleteFiles(planBundle.deleteFiles())
                             ).build();
                   } catch (InvalidProtocolBufferException e) {
                     throw GrpcErrors.internal(
@@ -258,7 +265,7 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
                       PlanDescriptor.newBuilder()
                           .setPlanId(planContext.getPlanId())
                           .setTenantId(principalContext.getTenantId())
-                          .setPlanStatus(PlanStatus.COMPLETED) // fake this for now
+                          .setPlanStatus(planContext.getPlanStatus())
                           .setCreatedAt(ts(planContext.getCreatedAtMs()))
                           .setExpiresAt(ts(planContext.getExpiresAtMs()));
 

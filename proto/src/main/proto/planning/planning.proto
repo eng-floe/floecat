@@ -8,6 +8,7 @@ option java_outer_classname = "PlanningProto";
 
 import "common/common.proto";
 import "google/protobuf/timestamp.proto";
+import "catalog/stats.proto";
 
 message PlanInput {
   oneof target {
@@ -58,6 +59,21 @@ message ExpansionMap {
   repeated ai.floedb.metacat.common.ResourceId read_via_view_tables = 2;
 }
 
+enum FileContent {
+  DATA = 0;
+  POSITION_DELETES = 1;
+  EQUALITY_DELETES = 2;
+}
+
+message PlanFile {
+  string file_path = 1;
+  string file_format = 2;
+  uint64 file_size_in_bytes = 3;
+  uint64 record_count = 4;
+  FileContent file_content = 5;
+  repeated ai.floedb.metacat.catalog.ColumnStats columns = 6;
+}
+
 message PlanDescriptor {
   string plan_id = 1;
   string tenant_id = 2;
@@ -67,6 +83,8 @@ message PlanDescriptor {
   SnapshotSet snapshots = 6;
   ExpansionMap expansion = 7;
   repeated TableObligations obligations = 8;
+  repeated PlanFile data_files = 9;
+  repeated PlanFile delete_files = 10;
 }
 
 message BeginPlanRequest {
