@@ -18,6 +18,11 @@ message PlanInput {
   ai.floedb.metacat.common.SnapshotRef snapshot = 10;
 }
 
+enum PlanStatus {
+  SUBMITTED = 0;
+  COMPLETED = 1;
+  FAILED = 2;
+}
 
 message SnapshotPin {
   ai.floedb.metacat.common.ResourceId table_id = 1;
@@ -56,11 +61,12 @@ message ExpansionMap {
 message PlanDescriptor {
   string plan_id = 1;
   string tenant_id = 2;
-  google.protobuf.Timestamp created_at = 3;
-  google.protobuf.Timestamp expires_at = 4;
-  SnapshotSet snapshots = 5;
-  ExpansionMap expansion = 6;
-  repeated TableObligations obligations = 7;
+  PlanStatus plan_status = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  SnapshotSet snapshots = 6;
+  ExpansionMap expansion = 7;
+  repeated TableObligations obligations = 8;
 }
 
 message BeginPlanRequest {
@@ -70,11 +76,7 @@ message BeginPlanRequest {
 }
 
 message BeginPlanResponse {
-  string plan_id = 1;
-  google.protobuf.Timestamp expires_at = 2;
-  SnapshotSet snapshots = 3;
-  ExpansionMap expansion = 4;
-  repeated TableObligations obligations = 5;
+  PlanDescriptor plan = 1;
 }
 
 message RenewPlanRequest {

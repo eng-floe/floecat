@@ -1868,11 +1868,11 @@ public class Shell implements Runnable {
   }
 
   private void printPlanBegin(BeginPlanResponse resp) {
-    out.println("plan id: " + resp.getPlanId());
-    out.println("expires: " + ts(resp.getExpiresAt()));
-    printPlanSnapshots(resp.getSnapshots());
-    printPlanExpansion(resp.getExpansion());
-    printPlanObligations(resp.getObligationsList());
+    if (!resp.hasPlan()) {
+      out.println("plan begin: no plan returned");
+      return;
+    }
+    printPlanDescriptor(resp.getPlan());
   }
 
   private void printPlanDescriptor(PlanDescriptor plan) {
@@ -1880,6 +1880,7 @@ public class Shell implements Runnable {
     if (!plan.getTenantId().isBlank()) {
       out.println("tenant: " + plan.getTenantId());
     }
+    out.println("status: " + plan.getPlanStatus().name().toLowerCase(Locale.ROOT));
     out.println("created: " + ts(plan.getCreatedAt()));
     out.println("expires: " + ts(plan.getExpiresAt()));
     printPlanSnapshots(plan.getSnapshots());
