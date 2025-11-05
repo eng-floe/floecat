@@ -1,69 +1,107 @@
 # -------- Metacat Makefile (Quarkus + gRPC) --------
 # Quick refs:
-#   make / make build           # build all (skip tests)
-#   make test                   # run service tests
-#   make proto                  # generate + package proto jar
-#   make run                    # run Quarkus in dev (foreground)
-#   make start                  # start Quarkus in dev (background, writes PID)
-#   make stop                   # stop background dev
-#   make logs                   # tail background dev logs
-#   make docker                 # build container image via Quarkus
+#   make / make build            # build all (skip tests)
+#   make run                     # Quarkus dev
+#   make start|stop|logs|status  # background dev helpers
+#   make cli-run                 # build & run CLI
+#   make docker                  # build service container image
+#   make test|unit-test|integration-test|verify
 #
-# Overrides:
-#   make MVN=mvnw QUARKUS_PROFILE=dev QUARKUS_DEV_ARGS="-Dquarkus.http.port=8082" start
-#   make MVN=mvnw
+# Examples:
+#   make MVN=./mvnw run
+#   make CLI_ISOLATED=0 cli-run
 
 .SHELLFLAGS := -eo pipefail -c
 SHELL       := bash
 MAKEFLAGS  += --no-builtin-rules
 .ONESHELL:
+.DEFAULT_GOAL := build
 
 MVN ?= mvn
+MVN_FLAGS   := -q -T 1C --no-transfer-progress -DskipTests
+MVN_TESTALL := --no-transfer-progress
 
 # ---------- Quarkus dev settings ----------
 QUARKUS_PROFILE  ?= dev
 QUARKUS_DEV_ARGS ?=
+QUARKUS_DEV_GOAL := io.quarkus:quarkus-maven-plugin:${quarkus.platform.version}:dev
 
 # ---------- Dev dirs ----------
 PID_DIR := .devpids
 LOG_DIR := .devlogs
 BIN_DIR := .devbin
-
 $(shell mkdir -p $(PID_DIR) $(LOG_DIR) $(BIN_DIR) >/dev/null)
 
-# ---------- Aggregates ----------
-.PHONY: all build
-all: build
+# ---------- Reactor shorthands ----------
+REACTOR_SERVICE := -pl service -am
 
+# ---------- Version / Artifacts ----------
+VERSION := $(shell sed -n 's:.*<version>\(.*\)</version>.*:\1:p' pom.xml | head -n1)
+ifeq ($(strip $(VERSION)),)
+  VERSION := 0.1.0-SNAPSHOT
+endif
+PROTO_JAR := proto/target/metacat-proto-$(VERSION).jar
+
+# ---------- CLI isolation toggle ----------
+CLI_ISOLATED ?= 1
+M2_CLI_DIR   := $(BIN_DIR)/.m2-cli
+ifeq ($(CLI_ISOLATED),1)
+  CLI_M2 := -Dmaven.repo.local=$(M2_CLI_DIR)
+else
+  CLI_M2 :=
+endif
+
+PARENT_STAMP := $(M2_CLI_DIR)/.parent-$(VERSION).stamp
+PROTO_STAMP  := $(M2_CLI_DIR)/.proto-$(VERSION).stamp
+
+# ---------- CLI outputs & inputs ----------
+CLI_JAR := client-cli/target/quarkus-app/quarkus-run.jar
+CLI_SRC := $(shell find client-cli/src -type f \( -name '*.java' -o -name '*.xml' -o -name '*.properties' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) ) client-cli/pom.xml
+
+# ===================================================
+# Aggregates
+# ===================================================
+.PHONY: all build build-all
+all: build
 build: proto build-all
 
-.PHONY: proto
-proto:
-	@echo "==> [PROTO] package generated stubs"
-	$(MVN) -q -f proto/pom.xml -DskipTests package
-
-.PHONY: build-all
 build-all:
 	@echo "==> [BUILD] all modules"
-	$(MVN) -q -DskipTests package
+	$(MVN) $(MVN_FLAGS) package
 
-# ---------- Tests ----------
+# ===================================================
+# Proto
+# ===================================================
+.PHONY: proto
+proto: $(PROTO_JAR)
+
+$(PROTO_JAR): proto/pom.xml $(shell find proto -type f -name '*.proto' -o -name 'pom.xml')
+	@echo "==> [PROTO] package generated stubs ($(VERSION))"
+	$(MVN) -q -f proto/pom.xml -DskipTests package
+	@test -f "$@" || { echo "ERROR: expected $@ not found"; exit 1; }
+
+# ===================================================
+# Tests
+# ===================================================
 .PHONY: test unit-test integration-test verify
 test:
-	$(MVN) -pl service -am verify
+	$(MVN) $(MVN_TESTALL) -pl service -am verify
 
 unit-test:
-	$(MVN) -pl service -am -DskipITs=true test
+	$(MVN) $(MVN_TESTALL) -pl service -am -DskipITs=true test
 
 integration-test:
-	$(MVN) -pl service -am -DskipUTs=true -DfailIfNoTests=false verify
+	$(MVN) $(MVN_TESTALL) -pl service -am -DskipUTs=true -DfailIfNoTests=false verify
 
 verify:
-	$(MVN) -pl service -am verify
+	$(MVN) $(MVN_TESTALL) -pl service -am verify
 
-# ---------- Clean ----------
+# ===================================================
+# Clean
+# ===================================================
 .PHONY: clean clean-java clean-dev
 clean: clean-java clean-dev
+
 clean-java:
 	$(MVN) -q -T 1C clean || true
 
@@ -72,19 +110,21 @@ clean-dev:
 	rm -rf $(PID_DIR) $(LOG_DIR) $(BIN_DIR)
 	mkdir -p $(PID_DIR) $(LOG_DIR) $(BIN_DIR)
 
-# ---------- Dev (foreground) ----------
-# Runs Quarkus dev in the foreground (CTRL-C to stop).
+# ===================================================
+# Dev (foreground)
+# ===================================================
 .PHONY: run
-run: build
+run: $(PROTO_JAR)
 	@echo "==> [DEV] quarkus:dev (profile=$(QUARKUS_PROFILE))"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
 	  $(QUARKUS_DEV_ARGS) \
-		-pl service -am \
-	  io.quarkus:quarkus-maven-plugin:${quarkus.platform.version}:dev
+	  $(REACTOR_SERVICE) \
+	  $(QUARKUS_DEV_GOAL)
 
-# ---------- Dev (background) ----------
-# Start/stop/logs use PID and LOG files for the 'service' module.
+# ===================================================
+# Dev (background)
+# ===================================================
 SERVICE_NAME := service
 PID_FILE := $(PID_DIR)/$(SERVICE_NAME).pid
 LOG_FILE := $(LOG_DIR)/$(SERVICE_NAME).log
@@ -92,14 +132,14 @@ LOG_FILE := $(LOG_DIR)/$(SERVICE_NAME).log
 define _bg_and_pid
 ( \
   set -m; \
-  nohup bash -lc '$(MVN) -f ./pom.xml -Dquarkus.profile=$(QUARKUS_PROFILE) $(QUARKUS_DEV_ARGS) -pl service -am io.quarkus:quarkus-maven-plugin:${quarkus.platform.version}:dev' \
+  nohup bash -lc '$(MVN) -f ./pom.xml -Dquarkus.profile=$(QUARKUS_PROFILE) $(QUARKUS_DEV_ARGS) $(REACTOR_SERVICE) $(QUARKUS_DEV_GOAL)' \
     >> "$(LOG_FILE)" 2>&1 & \
   echo $$! > "$(PID_FILE)"; \
 )
 endef
 
 .PHONY: start
-start:
+start: $(PROTO_JAR)
 	@if [ -f "$(PID_FILE)" ] && ps -p $$(cat "$(PID_FILE)") >/dev/null 2>&1; then \
 	  echo "==> [DEV] already running (pid $$(cat $(PID_FILE)))"; \
 	else \
@@ -141,72 +181,81 @@ status:
 	  echo "==> [STATUS] not running"; \
 	fi
 
-# ---------- CLI  ----------
-M2_CLI_DIR := $(BIN_DIR)/.m2-cli
-
-VERSION := $(shell mvn -q -DforceStdout help:evaluate -Dexpression=project.version -Drecursive=false 2>/dev/null | grep -v '^\[' | tail -n1)
-ifeq ($(strip $(VERSION)),)
-  VERSION := 0.1.0-SNAPSHOT
-endif
-
-PROTO_JAR := proto/target/metacat-proto-$(VERSION).jar
-
+# ===================================================
+# CLI
+# ===================================================
 .PHONY: cli-clean
 cli-clean:
 	@echo "==> [CLI] clean isolated repo and output"
 	rm -rf $(M2_CLI_DIR) client-cli/target
 	mkdir -p $(M2_CLI_DIR)
 
-.PHONY: parent-cli
-parent-cli:
-	@echo "==> [CLI] install parent POM into isolated repo"
-	mvn -q -Dmaven.repo.local=$(M2_CLI_DIR) \
+$(M2_CLI_DIR):
+	@mkdir -p $@
+
+$(PARENT_STAMP): pom.xml | $(M2_CLI_DIR)
+	@echo "==> [CLI] install parent POM ($(VERSION)) into isolated repo"
+	$(MVN) -q -Dmaven.repo.local=$(M2_CLI_DIR) \
 	  org.apache.maven.plugins:maven-install-plugin:3.1.1:install-file \
 	  -DgroupId=ai.floedb.metacat \
 	  -DartifactId=metacat \
 	  -Dversion=$(VERSION) \
 	  -Dpackaging=pom \
 	  -Dfile=pom.xml
+	@touch $@
 
-.PHONY: proto-cli
-proto-cli:
-	@echo "==> [PROTO-CLI] install existing proto jar into isolated repo (no rebuild)"
-	@test -f "$(PROTO_JAR)" || { echo "Missing $(PROTO_JAR). Build proto first."; exit 1; }
-	mvn -q -Dmaven.repo.local=$(M2_CLI_DIR) \
+$(PROTO_STAMP): $(PROTO_JAR) | $(M2_CLI_DIR)
+	@echo "==> [PROTO-CLI] install proto jar ($(VERSION)) into isolated repo"
+	$(MVN) -q -Dmaven.repo.local=$(M2_CLI_DIR) \
 	  org.apache.maven.plugins:maven-install-plugin:3.1.1:install-file \
 	  -Dfile=$(PROTO_JAR) \
 	  -DgroupId=ai.floedb.metacat \
 	  -DartifactId=metacat-proto \
 	  -Dversion=$(VERSION) \
 	  -Dpackaging=jar
+	@touch $@
+
+ifeq ($(CLI_ISOLATED),1)
+CLI_PREQS := $(PARENT_STAMP) $(PROTO_STAMP)
+else
+CLI_PREQS :=
+endif
+
+$(CLI_JAR): $(CLI_PREQS) $(CLI_SRC)
+	@echo "==> [CLI] package (incremental)"
+	$(MVN) -q -f client-cli/pom.xml $(CLI_M2) \
+	  -Dquarkus.package.jar.type=fast-jar \
+	  -DskipTests -DskipITs=true \
+	  package
+	@test -f "$@" || { echo "ERROR: expected $@ not found"; exit 1; }
 
 .PHONY: cli
-cli: cli-clean parent-cli proto-cli
-	@echo "==> [CLI] build client-cli against isolated repo"
-	mvn -q -f client-cli/pom.xml \
-	  -Dmaven.repo.local=$(M2_CLI_DIR) \
-		-Dquarkus.package.jar.type=fast-jar \
-	  -DskipTests \
-	  clean package
+cli: $(CLI_JAR)
 
 .PHONY: cli-run
 cli-run: cli
 	@echo "==> [RUN] client CLI"
-	java -jar client-cli/target/quarkus-app/quarkus-run.jar $(ARGS)
-# ---------- Docker (Quarkus container-image) ----------
-# Requires proper container-image config in service/pom.xml or application.properties
+	java -jar $(CLI_JAR) $(ARGS)
+
+# ===================================================
+# Docker (Quarkus container-image)
+# ===================================================
 .PHONY: docker
 docker:
 	@echo "==> [DOCKER] quarkus container-image build"
 	$(MVN) -f service/pom.xml -DskipTests -Dquarkus.container-image.build=true package
 
-# ---------- Lint/format (optional hook points) ----------
+# ===================================================
+# Lint/format
+# ===================================================
 .PHONY: fmt
 fmt:
 	@echo "==> [FMT] (google-java-format)"
 	$(MVN) -q fmt:format
 
+# ===================================================
+# Help
+# ===================================================
 .PHONY: help
 help:
 	@awk 'BEGIN {FS":.*?#"} /^[a-zA-Z0-9._%-]+:.*?#/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
-

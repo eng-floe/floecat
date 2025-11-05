@@ -21,7 +21,9 @@ import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.metacat.catalog.rpc.ListColumnStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
+import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.LookupNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.LookupTableRequest;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.NamespaceSpec;
@@ -2248,6 +2250,9 @@ public class Shell implements Runnable {
     out.printf("  format:       %s%n", upstream.getFormat().name());
     out.printf("  root_uri:     %s%n", upstream.getUri());
     out.printf("  created_at:   %s%n", ts(t.getCreatedAt()));
+    out.printf(
+        "  connector_id: %s%n",
+        upstream.hasConnectorId() ? upstream.getConnectorId().getId() : "-");
     if (!upstream.getPartitionKeysList().isEmpty()) {
       out.printf("  partitions:   %s%n", String.join(", ", upstream.getPartitionKeysList()));
     }
@@ -2330,7 +2335,17 @@ public class Shell implements Runnable {
       String display = c.getDisplayName();
       String created = ts(c.getCreatedAt());
       String updated = ts(c.getUpdatedAt());
-      String destCat = c.hasDestination() ? c.getDestination().getCatalogDisplayName() : "-";
+
+      String destCat = "";
+      if (c.hasDestination()) {
+        var resp =
+            directory.lookupCatalog(
+                LookupCatalogRequest.newBuilder()
+                    .setResourceId(c.getDestination().getCatalogId())
+                    .build());
+        destCat = resp.getDisplayName();
+      }
+
       String state = c.getState().name();
       String uri = c.getUri();
 
@@ -2342,26 +2357,39 @@ public class Shell implements Runnable {
           trunc(display, W_DISPLAY),
           trunc(created, W_TS),
           trunc(updated, W_TS),
-          trunc(nvl(destCat, "-"), W_DESTCAT),
+          trunc(destCat, W_DESTCAT),
           trunc(state, W_STATE),
           (W_URI > 0 ? trunc(uri, W_URI) : uri));
 
       if (c.hasDestination()) {
-        var d = c.getDestination();
-        String dNs = d.hasNamespace() ? String.join(".", d.getNamespace().getSegmentsList()) : "";
-        String dTbl = d.getTableDisplayName();
-        boolean anyD =
-            (d.getCatalogDisplayName() != null && !d.getCatalogDisplayName().isBlank())
-                || !dNs.isEmpty()
-                || (dTbl != null && !dTbl.isBlank());
-        if (anyD) {
-          out.println(
-              "  destination:"
-                  + (d.getCatalogDisplayName().isBlank()
-                      ? ""
-                      : " catalog=" + d.getCatalogDisplayName())
-                  + (dNs.isEmpty() ? "" : " ns=" + dNs)
-                  + (dTbl == null || dTbl.isBlank() ? "" : " table=" + dTbl));
+        String destNs = "";
+        String destTbl = "";
+
+        if (c.getDestination().hasNamespaceId()) {
+          var nsId = c.getDestination().getNamespaceId();
+          var resp =
+              directory.lookupNamespace(
+                  LookupNamespaceRequest.newBuilder().setResourceId(nsId).build());
+          var ref = resp.getRef();
+          if (ref.getPathList().isEmpty()) {
+            destNs = ref.getName();
+          } else {
+            destNs = String.join(".", ref.getPathList()) + "." + ref.getName();
+          }
+        }
+
+        if (c.getDestination().hasTableId()) {
+          var tblId = c.getDestination().getTableId();
+          var resp =
+              directory.lookupTable(LookupTableRequest.newBuilder().setResourceId(tblId).build());
+          var ref = resp.getName();
+          destTbl = ref.getName();
+        }
+
+        if (!destTbl.isEmpty()) {
+          out.println("  destination: " + destCat + "." + destNs + "." + destTbl);
+        } else if (!destNs.isEmpty()) {
+          out.println("  destination: " + destCat + "." + destNs);
         }
       }
 
@@ -2374,8 +2402,8 @@ public class Shell implements Runnable {
         if (anyS) {
           out.println(
               "  source:"
-                  + (sNs.isEmpty() ? "" : " ns=" + sNs)
-                  + (sTbl == null || sTbl.isBlank() ? "" : " table=" + sTbl)
+                  + (sNs.isEmpty() ? "" : sNs)
+                  + (sTbl == null || sTbl.isBlank() ? "" : "." + sTbl)
                   + (sCols.isEmpty() ? "" : " cols=[" + sCols + "]"));
         }
       }

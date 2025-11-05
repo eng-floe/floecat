@@ -36,7 +36,10 @@ import ai.floedb.metacat.service.common.LogHelper;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.IdempotencyRepository;
+import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.ConnectorRepository;
+import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
+import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.repo.util.BaseResourceRepository.AbortRetryableException;
 import ai.floedb.metacat.service.security.impl.Authorizer;
@@ -52,6 +55,9 @@ import org.jboss.logging.Logger;
 @GrpcService
 public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   @Inject ConnectorRepository connectorRepo;
+  @Inject CatalogRepository catalogRepo;
+  @Inject NamespaceRepository namespaceRepo;
+  @Inject TableRepository tableRepo;
   @Inject PrincipalProvider principalProvider;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
@@ -208,7 +214,52 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                               builder.setSource(spec.getSource());
                             }
                             if (spec.hasDestination()) {
-                              builder.setDestination(spec.getDestination());
+                              var dest = spec.getDestination();
+                              var destB = dest.toBuilder();
+
+                              if (dest.hasCatalogDisplayName() && !dest.hasCatalogId()) {
+                                String dCat = dest.getCatalogDisplayName();
+                                catalogRepo
+                                    .getByName(tenantId, dCat)
+                                    .ifPresent(
+                                        cat -> {
+                                          destB.setCatalogId(cat.getResourceId());
+                                          destB.clearCatalogDisplayName();
+                                        });
+                              }
+
+                              ResourceId catalogId =
+                                  destB.hasCatalogId() ? destB.getCatalogId() : null;
+
+                              if (catalogId != null
+                                  && dest.hasNamespace()
+                                  && !dest.hasNamespaceId()) {
+                                NamespacePath dNs = dest.getNamespace();
+                                namespaceRepo
+                                    .getByPath(tenantId, catalogId.getId(), dNs.getSegmentsList())
+                                    .ifPresent(
+                                        ns -> {
+                                          destB.setNamespaceId(ns.getResourceId());
+                                          destB.clearNamespace();
+                                        });
+                              }
+
+                              ResourceId namespaceId =
+                                  destB.hasNamespaceId() ? destB.getNamespaceId() : null;
+
+                              if (catalogId != null
+                                  && namespaceId != null
+                                  && dest.hasTableDisplayName()
+                                  && !dest.hasTableId()) {
+                                String dTbl = dest.getTableDisplayName();
+                                tableRepo
+                                    .getByName(
+                                        tenantId, catalogId.getId(), namespaceId.getId(), dTbl)
+                                    .ifPresent(tbl -> destB.setTableId(tbl.getResourceId()));
+                                destB.clearTableDisplayName();
+                              }
+
+                              builder.setDestination(destB.build());
                             }
 
                             var connector = builder.build();

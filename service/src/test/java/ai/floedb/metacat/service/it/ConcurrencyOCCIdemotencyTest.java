@@ -250,7 +250,9 @@ class ConcurrencyOCCIdempotencyIT {
             resolved.getResourceId().getId(),
             "idempotent create must resolve to same id");
       } catch (StatusRuntimeException e) {
-        if (e.getStatus().getCode() != Status.Code.NOT_FOUND) throw e;
+        if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
+          throw e;
+        }
       }
     }
 
