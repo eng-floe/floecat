@@ -2241,19 +2241,56 @@ public class Shell implements Runnable {
   }
 
   private void printTable(Table t) {
-    UpstreamRef upstream = t.getUpstream();
     out.println("Table:");
-    out.printf("  id:           %s%n", rid(t.getResourceId()));
-    out.printf("  name:         %s%n", t.getDisplayName());
-    out.printf("  format:       %s%n", upstream.getFormat().name());
-    out.printf("  root_uri:     %s%n", upstream.getUri());
-    out.printf("  created_at:   %s%n", ts(t.getCreatedAt()));
-    if (!upstream.getPartitionKeysList().isEmpty()) {
-      out.printf("  partitions:   %s%n", String.join(", ", upstream.getPartitionKeysList()));
+    out.printf("  id:            %s%n", rid(t.getResourceId()));
+    out.printf("  name:          %s%n", t.getDisplayName());
+    if (t.hasDescription() && !t.getDescription().isBlank()) {
+      out.printf("  description:   %s%n", t.getDescription());
     }
+    out.printf("  catalog_id:    %s%n", rid(t.getCatalogId()));
+    out.printf("  namespace_id:  %s%n", rid(t.getNamespaceId()));
+    out.printf("  created_at:    %s%n", ts(t.getCreatedAt()));
+    if (!t.getSchemaJson().isBlank()) {
+      out.printf("  schema_json:   %s%n", trunc(t.getSchemaJson(), 160));
+    }
+
+    if (t.hasUpstream()) {
+      UpstreamRef upstream = t.getUpstream();
+      out.println("  upstream:");
+      out.printf("    format:      %s%n", upstream.getFormat().name());
+      if (upstream.hasConnectorId()) {
+        out.printf("    connector:   %s%n", rid(upstream.getConnectorId()));
+      }
+      if (!upstream.getUri().isBlank()) {
+        out.printf("    uri:         %s%n", upstream.getUri());
+      }
+      if (!upstream.getNamespacePathList().isEmpty()) {
+        out.printf(
+            "    namespace:   %s%n", String.join(".", upstream.getNamespacePathList()));
+      }
+      if (!upstream.getTableDisplayName().isBlank()) {
+        out.printf("    table:       %s%n", upstream.getTableDisplayName());
+      }
+      if (!upstream.getPartitionKeysList().isEmpty()) {
+        out.printf(
+            "    partitions:  %s%n", String.join(", ", upstream.getPartitionKeysList()));
+      }
+      if (!upstream.getFieldIdByPathMap().isEmpty()) {
+        out.println("    field_ids:");
+        upstream
+            .getFieldIdByPathMap()
+            .entrySet()
+            .stream()
+            .sorted(Map.Entry.comparingByKey())
+            .forEach(e -> out.printf("      %s -> %d%n", e.getKey(), e.getValue()));
+      }
+    }
+
     if (!t.getPropertiesMap().isEmpty()) {
       out.println("  properties:");
-      t.getPropertiesMap().forEach((k, v) -> out.printf("    %s = %s%n", k, v));
+      t.getPropertiesMap().entrySet().stream()
+          .sorted(Map.Entry.comparingByKey())
+          .forEach(e -> out.printf("    %s = %s%n", e.getKey(), e.getValue()));
     }
   }
 
