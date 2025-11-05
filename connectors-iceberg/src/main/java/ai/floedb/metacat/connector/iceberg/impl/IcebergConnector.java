@@ -11,25 +11,17 @@ import ai.floedb.metacat.connector.common.ndv.ParquetNdvProvider;
 import ai.floedb.metacat.connector.common.ndv.StaticOnceNdvProvider;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
+import ai.floedb.metacat.planning.rpc.FileContent;
+import ai.floedb.metacat.planning.rpc.PlanFile;
 import ai.floedb.metacat.types.LogicalType;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
-import org.apache.iceberg.Schema;
-import org.apache.iceberg.SchemaParser;
-import org.apache.iceberg.Snapshot;
-import org.apache.iceberg.Table;
+
+import org.apache.iceberg.*;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.rest.RESTCatalog;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
@@ -202,6 +194,56 @@ public final class IcebergConnector implements MetacatConnector {
       out.add(new SnapshotBundle(snapshotId, parentId, createdMs, tStats, cStats));
     }
     return out;
+  }
+
+  @Override
+  public PlanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime) {
+    Namespace ns = Namespace.of(namespaceFq.split("\\."));
+    TableIdentifier tid = TableIdentifier.of(ns, tableName);
+    Table table = catalog.loadTable(tid);
+
+    TableScan scan = table.newScan().includeColumnStats();
+    if (snapshotId > 0) {
+      scan.useSnapshot(snapshotId);
+    } /* else {
+      scan.asOfTime(asOfTime);
+    } */
+
+    Snapshot snap = table.snapshot(snapshotId);
+    int schemaId = (snap != null) ? snap.schemaId() : table.schema().schemaId();
+    Schema schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
+    var schemaColumns = schema.columns();
+
+    PlanBundle result = new PlanBundle(new ArrayList<>(), new ArrayList<>());
+    try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
+      for (FileScanTask task : tasks) {
+        {
+          DataFile df = task.file();
+          var pf = PlanFile.newBuilder()
+                  .setFilePath(df.location())
+                  .setFileFormat(df.format().name())
+                  .setFileSizeInBytes(df.fileSizeInBytes())
+                  .setRecordCount(df.recordCount())
+                  .setFileContent(FileContent.DATA);
+          result.dataFiles().add(pf.build());
+        }
+
+        for (var df : task.deletes()) {
+          var pf = PlanFile.newBuilder()
+                  .setFilePath(df.location())
+                  .setFileFormat(df.format().name())
+                  .setFileSizeInBytes(df.fileSizeInBytes())
+                  .setRecordCount(df.recordCount())
+                  .setFileContent(df.content()== org.apache.iceberg.FileContent.EQUALITY_DELETES ?
+                          FileContent.EQUALITY_DELETES : FileContent.POSITION_DELETES);
+          result.deleteFiles().add(pf.build());
+        }
+      }
+    } catch (Exception e) {
+      throw new RuntimeException("Iceberg planning failed (snapshot " + snapshotId + ")", e);
+    }
+
+    return result;
   }
 
   @Override
