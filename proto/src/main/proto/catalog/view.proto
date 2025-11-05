@@ -6,6 +6,7 @@ option java_package = "ai.floedb.metacat.catalog.rpc";
 
 import "common/common.proto";
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/field_mask.proto";
 
 // ----- VIEW -----
 
@@ -14,7 +15,7 @@ message View {
   ai.floedb.metacat.common.ResourceId catalog_id = 2;
   ai.floedb.metacat.common.ResourceId namespace_id = 3;
   string display_name = 4;
-  string description = 5;
+  optional string description = 5;
   string sql = 6;
   google.protobuf.Timestamp created_at = 7;
   map<string,string> properties = 99;
@@ -39,10 +40,9 @@ message GetViewResponse {
 message ViewSpec {
   ai.floedb.metacat.common.ResourceId catalog_id = 1;
   ai.floedb.metacat.common.ResourceId namespace_id = 2;
-  string display_name = 3;
-  string description = 4;
-  string schema_json = 6;
-  string sql = 7;
+  optional string display_name = 3;
+  optional string description = 4;
+  optional string sql = 5;
   map<string,string> properties = 99;
 }
 
@@ -59,6 +59,7 @@ message UpdateViewRequest {
   ai.floedb.metacat.common.ResourceId view_id = 1;
   ViewSpec spec = 2;
   ai.floedb.metacat.common.Precondition precondition = 3;
+  google.protobuf.FieldMask update_mask = 4;
 }
 message UpdateViewResponse {
   View view = 1;

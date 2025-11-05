@@ -13,6 +13,7 @@ import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
+import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -134,11 +135,13 @@ class ViewMutationIT {
     assertEquals(2, listResolved.getViewsCount());
 
     var beforeRename = TestSupport.metaForView(ptr, blob, viewId);
+    FieldMask mask = FieldMask.newBuilder().addPaths("display_name").build();
     var renameResp =
         view.updateView(
             UpdateViewRequest.newBuilder()
                 .setViewId(viewId)
                 .setSpec(ViewSpec.newBuilder().setDisplayName("recent_orders_v2").build())
+                .setUpdateMask(mask)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(beforeRename.getPointerVersion())
@@ -186,6 +189,7 @@ class ViewMutationIT {
                     UpdateViewRequest.newBuilder()
                         .setViewId(viewId)
                         .setSpec(ViewSpec.newBuilder().setDisplayName("recent_orders_v3").build())
+                        .setUpdateMask(mask)
                         .setPrecondition(
                             Precondition.newBuilder()
                                 .setExpectedVersion(beforeRename.getPointerVersion())
@@ -196,6 +200,7 @@ class ViewMutationIT {
         staleRename, Status.Code.FAILED_PRECONDITION, ErrorCode.MC_PRECONDITION_FAILED, "mismatch");
 
     var beforeSql = TestSupport.metaForView(ptr, blob, viewId);
+    FieldMask mask_sql = FieldMask.newBuilder().addPaths("sql").build();
     var sqlUpdate =
         view.updateView(
             UpdateViewRequest.newBuilder()
@@ -206,6 +211,7 @@ class ViewMutationIT {
                             "SELECT order_id, customer_id, total_price FROM sales.core.orders "
                                 + "WHERE order_date >= current_date - INTERVAL '14' DAY")
                         .build())
+                .setUpdateMask(mask_sql)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(beforeSql.getPointerVersion())
@@ -226,6 +232,7 @@ class ViewMutationIT {
                     UpdateViewRequest.newBuilder()
                         .setViewId(viewId)
                         .setSpec(ViewSpec.newBuilder().setSql("SELECT 1").build())
+                        .setUpdateMask(mask_sql)
                         .setPrecondition(
                             Precondition.newBuilder()
                                 .setExpectedVersion(beforeSql.getPointerVersion())
@@ -236,6 +243,7 @@ class ViewMutationIT {
         staleSql, Status.Code.FAILED_PRECONDITION, ErrorCode.MC_PRECONDITION_FAILED, "mismatch");
 
     var beforeNoop = TestSupport.metaForView(ptr, blob, viewId);
+    FieldMask mask_all = FieldMask.newBuilder().addAllPaths(List.of("sql", "display_name")).build();
     var noop =
         view.updateView(
             UpdateViewRequest.newBuilder()
@@ -247,6 +255,7 @@ class ViewMutationIT {
                             "SELECT order_id, customer_id, total_price FROM sales.core.orders "
                                 + "WHERE order_date >= current_date - INTERVAL '14' DAY")
                         .build())
+                .setUpdateMask(mask_all)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(beforeNoop.getPointerVersion())
