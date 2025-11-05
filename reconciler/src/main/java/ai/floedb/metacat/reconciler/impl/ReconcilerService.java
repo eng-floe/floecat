@@ -26,7 +26,6 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.function.UnaryOperator;
 
 @ApplicationScoped
 public class ReconcilerService {
@@ -53,6 +52,11 @@ public class ReconcilerService {
           0, 0, 1, new IllegalArgumentException("Connector not found: " + connectorId.getId(), e));
     }
 
+    DestinationTarget.Builder destB =
+        stored.hasDestination()
+            ? stored.getDestination().toBuilder()
+            : DestinationTarget.newBuilder();
+
     if (stored.getState() != ConnectorState.CS_ACTIVE) {
       return new Result(
           0, 0, 1, new IllegalStateException("Connector not ACTIVE: " + connectorId.getId()));
@@ -66,9 +70,9 @@ public class ReconcilerService {
     var cfg = ConnectorConfigMapper.fromProto(stored);
 
     try (MetacatConnector connector = ConnectorFactory.create(cfg)) {
-      final ResourceId catalogId;
+      final ResourceId destCatalogId;
       if (dest.hasCatalogId()) {
-        catalogId = dest.getCatalogId();
+        destCatalogId = dest.getCatalogId();
       } else {
         String destCatalogDisplay =
             (dest.getCatalogDisplayName() == null || dest.getCatalogDisplayName().isBlank())
@@ -81,82 +85,125 @@ public class ReconcilerService {
               1,
               new IllegalArgumentException("destination.catalog_display_name is required"));
         }
-        catalogId = ensureCatalog(dest.getCatalogDisplayName(), connector);
-        maybeBackfillDestinationIds(stored, b -> b.setCatalogId(catalogId));
+        destCatalogId = ensureCatalog(destCatalogDisplay, connector);
+        destB.setCatalogId(destCatalogId);
+        destB.clearCatalogDisplayName();
       }
 
-      final List<String> namespaces =
-          (source.hasNamespace() && !source.getNamespace().getSegmentsList().isEmpty())
-              ? List.of(fq(source.getNamespace().getSegmentsList()))
-              : connector.listNamespaces();
+      final String sourceNsFq;
+      if (source.hasNamespace() && !source.getNamespace().getSegmentsList().isEmpty()) {
+        sourceNsFq = fq(source.getNamespace().getSegmentsList());
+      } else {
+        return new Result(
+            0, 0, 1, new IllegalArgumentException("connector.source.namespace is required"));
+      }
 
-      for (String sourceNsFq : namespaces) {
-        final ResourceId destNamespaceId;
-        final String destNsFq;
+      final String destNsFq =
+          (dest.hasNamespace() && !dest.getNamespace().getSegmentsList().isEmpty())
+              ? fq(dest.getNamespace().getSegmentsList())
+              : sourceNsFq;
+
+      final ResourceId destNamespaceId = ensureNamespace(destCatalogId, destNsFq);
+
+      if (destB.hasNamespaceId()) {
+        if (!destB.getNamespaceId().getId().equals(destNamespaceId.getId())) {
+          return new Result(
+              0,
+              0,
+              1,
+              new IllegalStateException(
+                  "Connector destination.namespace_id disagrees with resolved namespace "
+                      + "(expected="
+                      + destNsFq
+                      + ", existingId="
+                      + destB.getNamespaceId().getId()
+                      + ")"));
+        }
+      } else {
+        destB.setNamespaceId(destNamespaceId);
+        destB.clearNamespace();
+      }
+
+      final List<String> tables =
+          (source.getTable() != null && !source.getTable().isBlank())
+              ? List.of(source.getTable())
+              : connector.listTables(sourceNsFq);
+
+      if (tables.isEmpty()) {
+        return new Result(
+            scanned,
+            changed,
+            1,
+            new IllegalStateException("No tables found in source namespace: " + sourceNsFq));
+      }
+
+      final boolean singleTableMode = tables.size() == 1;
+      final Set<String> includeSelectors = normalizeSelectors(source.getColumnsList());
+
+      final String tableDisplayHint =
+          (dest.getTableDisplayName() != null && !dest.getTableDisplayName().isBlank())
+              ? dest.getTableDisplayName()
+              : null;
+
+      for (String srcTable : tables) {
+        scanned++;
         try {
-          destNsFq =
-              (dest.hasNamespace() && !dest.getNamespace().getSegmentsList().isEmpty())
-                  ? fq(dest.getNamespace().getSegmentsList())
-                  : sourceNsFq;
+          var upstream = connector.describe(sourceNsFq, srcTable);
 
-          destNamespaceId = ensureNamespace(catalogId, destNsFq);
+          final String destTableDisplay =
+              (tableDisplayHint != null) ? tableDisplayHint : upstream.tableName();
 
-          if (!dest.hasNamespaceId()) {
-            maybeBackfillDestinationIds(stored, b -> b.setNamespaceId(destNamespaceId));
+          var effective = overrideDisplay(upstream, destNsFq, destTableDisplay);
+
+          var destTableId =
+              ensureTable(
+                  destCatalogId,
+                  destNamespaceId,
+                  effective,
+                  connector.format(),
+                  stored.getResourceId(),
+                  cfg.uri(),
+                  sourceNsFq,
+                  srcTable);
+
+          if (singleTableMode && !destB.hasTableId()) {
+            destB.setTableId(destTableId);
+            destB.clearTableDisplayName();
           }
+
+          var bundles =
+              connector.enumerateSnapshotsWithStats(
+                  sourceNsFq, srcTable, destTableId, includeSelectors);
+
+          ingestAllSnapshotsAndStatsFiltered(destTableId, bundles, includeSelectors);
+          changed++;
         } catch (Exception e) {
           errors++;
-          errSummaries.add(rootCauseMessage(e));
-          continue;
+          errSummaries.add(
+              "ns="
+                  + destNsFq
+                  + " table="
+                  + sourceNsFq
+                  + "."
+                  + srcTable
+                  + " : "
+                  + rootCauseMessage(e));
         }
+      }
 
-        final List<String> tables =
-            (source.getTable() != null && !source.getTable().isBlank())
-                ? List.of(source.getTable())
-                : connector.listTables(sourceNsFq);
-
-        final boolean singleTableMode = tables.size() == 1;
-
-        final Set<String> includeSelectors = normalizeSelectors(source.getColumnsList());
-
-        for (String srcTable : tables) {
-          scanned++;
-          try {
-            var upstream = connector.describe(sourceNsFq, srcTable);
-
-            final String destTableDisplay =
-                (dest.getTableDisplayName() != null && !dest.getTableDisplayName().isBlank())
-                    ? dest.getTableDisplayName()
-                    : upstream.tableName();
-
-            var effective = overrideDisplay(upstream, destNsFq, destTableDisplay);
-
-            var tableId =
-                ensureTable(
-                    catalogId,
-                    destNamespaceId,
-                    effective,
-                    connector.format(),
-                    stored.getResourceId(),
-                    cfg.uri(),
-                    sourceNsFq,
-                    srcTable);
-
-            if (singleTableMode && !dest.hasTableId()) {
-              maybeBackfillDestinationIds(stored, b -> b.setTableId(tableId));
-            }
-
-            var bundles =
-                connector.enumerateSnapshotsWithStats(
-                    sourceNsFq, srcTable, tableId, includeSelectors);
-
-            ingestAllSnapshotsAndStatsFiltered(tableId, bundles, includeSelectors);
-            changed++;
-
-          } catch (Exception e) {
-            errors++;
-            errSummaries.add(rootCauseMessage(e));
-          }
+      DestinationTarget updated = destB.build();
+      if (!updated.equals(stored.getDestination())) {
+        try {
+          clients
+              .connector()
+              .updateConnector(
+                  UpdateConnectorRequest.newBuilder()
+                      .setConnectorId(stored.getResourceId())
+                      .setSpec(ConnectorSpec.newBuilder().setDestination(updated).build())
+                      .build());
+        } catch (StatusRuntimeException e) {
+          errors++;
+          errSummaries.add("updateConnector(destination): " + rootCauseMessage(e));
         }
       }
 
@@ -335,7 +382,9 @@ public class ReconcilerService {
     try {
       clients.table().updateTable(req);
     } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.FAILED_PRECONDITION) throw e;
+      if (e.getStatus().getCode() != Status.Code.FAILED_PRECONDITION) {
+        throw e;
+      }
     }
   }
 
@@ -481,29 +530,6 @@ public class ReconcilerService {
       out.add(t.startsWith("#") ? "#" + t.substring(1).trim() : t);
     }
     return out;
-  }
-
-  private void maybeBackfillDestinationIds(
-      Connector stored, UnaryOperator<DestinationTarget.Builder> mutate) {
-    try {
-      var currentDest =
-          stored.hasDestination()
-              ? stored.getDestination()
-              : DestinationTarget.getDefaultInstance();
-
-      var updatedDest = mutate.apply(currentDest.toBuilder()).build();
-
-      var spec = ConnectorSpec.newBuilder().setDestination(updatedDest).build();
-
-      clients
-          .connector()
-          .updateConnector(
-              UpdateConnectorRequest.newBuilder()
-                  .setConnectorId(stored.getResourceId())
-                  .setSpec(spec)
-                  .build());
-    } catch (Exception ignore) {
-    }
   }
 
   public static final class Result {
