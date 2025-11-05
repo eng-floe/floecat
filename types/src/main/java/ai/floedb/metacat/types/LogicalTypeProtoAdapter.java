@@ -68,7 +68,7 @@ public final class LogicalTypeProtoAdapter {
       String tableNativeId,
       String commitRef,
       Timestamp fetchedAt,
-      Map<String, String> extras) {
+      Map<String, String> properties) {
 
     UpstreamStamp.Builder b = UpstreamStamp.newBuilder().setSystem(system);
     if (tableNativeId != null) {
@@ -83,8 +83,8 @@ public final class LogicalTypeProtoAdapter {
       b.setFetchedAt(fetchedAt);
     }
 
-    if (extras != null && !extras.isEmpty()) {
-      b.putAllExtras(extras);
+    if (properties != null && !properties.isEmpty()) {
+      b.putAllProperties(properties);
     }
 
     return b.build();

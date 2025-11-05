@@ -11,8 +11,6 @@ import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.TenantRepository;
-import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
-import ai.floedb.metacat.service.repo.util.BaseResourceRepository.AbortRetryableException;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import ai.floedb.metacat.tenant.rpc.CreateTenantRequest;
@@ -154,20 +152,7 @@ public class TenantServiceImpl extends BaseServiceImpl implements TenantService 
                                     .setCreatedAt(tsNow)
                                     .build();
 
-                            try {
-                              tenantRepo.create(tenant);
-                            } catch (BaseResourceRepository.NameConflictException nce) {
-                              var existing = tenantRepo.getByName(tenant.getDisplayName());
-                              if (existing.isPresent()) {
-                                throw GrpcErrors.conflict(
-                                    correlationId,
-                                    "tenant.already_exists",
-                                    Map.of("display_name", tenant.getDisplayName()));
-                              }
-
-                              throw new AbortRetryableException("name conflict visibility window");
-                            }
-
+                            tenantRepo.create(tenant);
                             return new IdempotencyGuard.CreateResult<>(tenant, resourceId);
                           },
                           (t) -> tenantRepo.metaFor(t.getResourceId()),
@@ -299,9 +284,6 @@ public class TenantServiceImpl extends BaseServiceImpl implements TenantService 
   }
 
   private static byte[] canonicalFingerprint(TenantSpec s) {
-    return new Canonicalizer()
-        .scalar("name", s.getDisplayName())
-        .scalar("description", s.getDescription())
-        .bytes();
+    return new Canonicalizer().scalar("name", normalizeName(s.getDisplayName())).bytes();
   }
 }

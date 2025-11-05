@@ -225,28 +225,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                     .setCreatedAt(tsNow)
                                     .putAllProperties(spec.getPropertiesMap())
                                     .build();
-
-                            try {
-                              viewRepo.create(view);
-                            } catch (BaseResourceRepository.NameConflictException e) {
-                              var existing =
-                                  viewRepo.getByName(
-                                      tenantId,
-                                      request.getSpec().getCatalogId().getId(),
-                                      request.getSpec().getNamespaceId().getId(),
-                                      view.getDisplayName());
-
-                              if (existing.isPresent()) {
-                                throw GrpcErrors.conflict(
-                                    correlationId,
-                                    "view.already_exists",
-                                    Map.of("display_name", view.getDisplayName()));
-                              }
-
-                              throw new BaseResourceRepository.AbortRetryableException(
-                                  "name conflict visibility window");
-                            }
-
+                            viewRepo.create(view);
                             return new IdempotencyGuard.CreateResult<>(view, viewResourceId);
                           },
                           (view) -> viewRepo.metaForSafe(view.getResourceId()),
@@ -452,13 +431,9 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
   private static byte[] canonicalFingerprint(ViewSpec s) {
     return new Canonicalizer()
-        .scalar("cat", s.getCatalogId().getId())
-        .scalar("ns", s.getNamespaceId().getId())
-        .scalar("name", s.getDisplayName())
-        .scalar("description", s.getDescription())
-        .scalar("sql", s.getSql())
-        .scalar("schema", s.getSchemaJson())
-        .map("prop", s.getPropertiesMap())
+        .scalar("cat", nullSafeId(s.getCatalogId()))
+        .scalar("ns", nullSafeId(s.getNamespaceId()))
+        .scalar("name", normalizeName(s.getDisplayName()))
         .bytes();
   }
 }

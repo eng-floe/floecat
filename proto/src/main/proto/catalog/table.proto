@@ -36,7 +36,7 @@ message Table {
   google.protobuf.Timestamp created_at = 6;
   string schema_json = 7;
   UpstreamRef upstream = 8;
-  map<string,string> properties = 20;
+  map<string,string> properties = 99;
 }
 
 message ListTablesRequest {
@@ -63,7 +63,7 @@ message TableSpec {
   optional string description = 4;
   optional string schema_json = 5;
   UpstreamRef upstream = 6;
-  map<string,string> properties = 20;
+  map<string,string> properties = 99;
 }
 
 message CreateTableRequest {

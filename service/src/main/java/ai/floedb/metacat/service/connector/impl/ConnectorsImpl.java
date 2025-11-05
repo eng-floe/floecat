@@ -40,8 +40,6 @@ import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.ConnectorRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
-import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
-import ai.floedb.metacat.service.repo.util.BaseResourceRepository.AbortRetryableException;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.util.Timestamps;
@@ -200,7 +198,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                     .setDisplayName(display)
                                     .setKind(spec.getKind())
                                     .setUri(uri)
-                                    .putAllOptions(spec.getOptionsMap())
+                                    .putAllProperties(spec.getPropertiesMap())
                                     .setAuth(spec.getAuth())
                                     .setPolicy(spec.getPolicy())
                                     .setCreatedAt(tsNow)
@@ -263,26 +261,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                             }
 
                             var connector = builder.build();
-
-                            try {
-                              connectorRepo.create(connector);
-                            } catch (BaseResourceRepository.NameConflictException nce) {
-                              var existing =
-                                  connectorRepo
-                                      .getById(connectorId)
-                                      .or(
-                                          () ->
-                                              connectorRepo.getByName(
-                                                  tenantId, connector.getDisplayName()));
-                              if (existing.isPresent()) {
-                                throw GrpcErrors.conflict(
-                                    corr,
-                                    "connector.already_exists",
-                                    Map.of("display_name", connector.getDisplayName()));
-                              }
-                              throw new AbortRetryableException("name conflict visibility window");
-                            }
-
+                            connectorRepo.create(connector);
                             return new IdempotencyGuard.CreateResult<>(connector, connectorId);
                           },
                           (conn) -> connectorRepo.metaFor(conn.getResourceId()),
@@ -342,11 +321,11 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                   ? current.getKind()
                                   : spec.getKind())
                           .setUri(spec.getUri().isBlank() ? current.getUri() : spec.getUri())
-                          .clearOptions()
-                          .putAllOptions(
-                              spec.getOptionsMap().isEmpty()
-                                  ? current.getOptionsMap()
-                                  : spec.getOptionsMap())
+                          .clearProperties()
+                          .putAllProperties(
+                              spec.getPropertiesMap().isEmpty()
+                                  ? current.getPropertiesMap()
+                                  : spec.getPropertiesMap())
                           .setAuth(spec.hasAuth() ? spec.getAuth() : current.getAuth())
                           .setPolicy(spec.hasPolicy() ? spec.getPolicy() : current.getPolicy())
                           .setUpdatedAt(tsNow);
@@ -459,7 +438,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   var auth =
                       new ConnectorConfig.Auth(
                           spec.getAuth().getScheme(),
-                          spec.getAuth().getPropsMap(),
+                          spec.getAuth().getPropertiesMap(),
                           spec.getAuth().getHeaderHintsMap(),
                           spec.getAuth().getSecretRef());
 
@@ -468,7 +447,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           kind,
                           spec.getDisplayName() != null ? spec.getDisplayName() : "",
                           mustNonEmpty(spec.getUri(), "uri", corr),
-                          spec.getOptionsMap(),
+                          spec.getPropertiesMap(),
                           auth);
 
                   try (var connector = ConnectorFactory.create(cfg)) {
@@ -620,57 +599,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   }
 
   private static byte[] canonicalFingerprint(ConnectorSpec s) {
-    Canonicalizer c =
-        new Canonicalizer()
-            .scalar("name", s.getDisplayName() != null ? s.getDisplayName() : "")
-            .scalar("kind", s.getKind())
-            .scalar("uri", s.getUri() != null ? s.getDisplayName() : "")
-            .map("opt", s.getOptionsMap())
-            .scalar("policy.enabled", s.getPolicy().getEnabled())
-            .scalar("policy.max_parallel", s.getPolicy().getMaxParallel())
-            .scalar("policy.interval.sec", s.getPolicy().getInterval().getSeconds())
-            .scalar("policy.not_before.sec", s.getPolicy().getNotBefore().getSeconds());
-
-    if (s.hasSource()) {
-      var src = s.getSource();
-      var cols =
-          src.getColumnsList().stream()
-              .filter(x -> x != null && !x.isBlank())
-              .map(String::trim)
-              .map(x -> x.startsWith("#") ? ("#" + x.substring(1).trim()) : x)
-              .distinct()
-              .sorted()
-              .toList();
-
-      c =
-          c.list("src.ns", src.getNamespace().getSegmentsList())
-              .scalar("src.tbl", src.getTable() != null ? src.getTable() : "")
-              .list("src.cols", cols);
-    }
-
-    if (s.hasDestination()) {
-      var dst = s.getDestination();
-
-      String catKey =
-          dst.hasCatalogId()
-              ? (dst.getCatalogId().getId() != null ? dst.getCatalogId().getId() : "")
-              : "";
-
-      var nsSegments = dst.getNamespace().getSegmentsList();
-      String nsIdKey = dst.hasNamespaceId() ? dst.getNamespaceId().getId() : null;
-
-      String tblKey =
-          dst.hasTableId()
-              ? dst.getTableId().getId()
-              : (dst.getTableDisplayName() != null ? dst.getTableDisplayName() : "");
-
-      c =
-          c.scalar("dst.cat", catKey != null ? catKey : "")
-              .scalar("dst.ns_id", nsIdKey != null ? nsIdKey : "")
-              .list("dst.ns_segments", nsSegments)
-              .scalar("dst.tbl", tblKey != null ? tblKey : "");
-    }
-
-    return c.bytes();
+    return new Canonicalizer().scalar("name", normalizeName(s.getDisplayName())).bytes();
   }
 }

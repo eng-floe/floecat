@@ -28,10 +28,10 @@ public final class ColumnStatsNormalizer {
 
       if (ndv.hasApprox()) {
         NdvApprox.Builder ab = ndv.getApprox().toBuilder();
-        if (!ab.getParamsMap().isEmpty()) {
-          var sorted = new TreeMap<>(ab.getParamsMap());
-          ab.clearParams();
-          ab.putAllParams(sorted);
+        if (!ab.getPropertiesMap().isEmpty()) {
+          var sorted = new TreeMap<>(ab.getPropertiesMap());
+          ab.clearProperties();
+          ab.putAllProperties(sorted);
         }
         ndv.setApprox(ab);
       }
@@ -40,10 +40,10 @@ public final class ColumnStatsNormalizer {
         List<NdvSketch> sketches = new ArrayList<>(ndv.getSketchesList().size());
         for (NdvSketch s : ndv.getSketchesList()) {
           NdvSketch.Builder sb = s.toBuilder();
-          if (!sb.getParamsMap().isEmpty()) {
-            var sorted = new TreeMap<>(sb.getParamsMap());
-            sb.clearParams();
-            sb.putAllParams(sorted);
+          if (!sb.getPropertiesMap().isEmpty()) {
+            var sorted = new TreeMap<>(sb.getPropertiesMap());
+            sb.clearProperties();
+            sb.putAllProperties(sorted);
           }
           sketches.add(sb.build());
         }
@@ -68,10 +68,10 @@ public final class ColumnStatsNormalizer {
       b.setNdv(ndv);
     }
 
-    if (!b.getExtrasMap().isEmpty()) {
-      var sorted = new TreeMap<>(b.getExtrasMap());
-      b.clearExtras();
-      b.putAllExtras(sorted);
+    if (!b.getPropertiesMap().isEmpty()) {
+      var sorted = new TreeMap<>(b.getPropertiesMap());
+      b.clearProperties();
+      b.putAllProperties(sorted);
     }
 
     return b.build();

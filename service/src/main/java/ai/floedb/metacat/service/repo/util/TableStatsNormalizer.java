@@ -17,10 +17,10 @@ public final class TableStatsNormalizer {
       b.setUpstream(up);
     }
 
-    if (!b.getExtrasMap().isEmpty()) {
-      var sorted = new TreeMap<>(b.getExtrasMap());
-      b.clearExtras();
-      b.putAllExtras(sorted);
+    if (!b.getPropertiesMap().isEmpty()) {
+      var sorted = new TreeMap<>(b.getPropertiesMap());
+      b.clearProperties();
+      b.putAllProperties(sorted);
     }
 
     return b.build();

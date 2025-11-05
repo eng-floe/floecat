@@ -25,7 +25,6 @@ import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
-import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcService;
@@ -402,33 +401,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                     .setCatalogId(request.getSpec().getCatalogId())
                                     .setCreatedAt(tsNow)
                                     .build();
-
-                            try {
-                              namespaceRepo.create(built);
-                            } catch (BaseResourceRepository.NameConflictException e) {
-                              var fullPath = new ArrayList<>(request.getSpec().getPathList());
-                              fullPath.add(request.getSpec().getDisplayName());
-                              var existing =
-                                  namespaceRepo.getByPath(
-                                      tenantId, request.getSpec().getCatalogId().getId(), fullPath);
-                              if (existing.isPresent()) {
-                                var pretty =
-                                    prettyNamespacePath(
-                                        request.getSpec().getPathList(),
-                                        request.getSpec().getDisplayName());
-                                throw GrpcErrors.conflict(
-                                    correlationId,
-                                    "namespace.already_exists",
-                                    Map.of(
-                                        "catalog",
-                                        request.getSpec().getCatalogId().getId(),
-                                        "path",
-                                        pretty));
-                              }
-                              throw new BaseResourceRepository.AbortRetryableException(
-                                  "name conflict visibility window");
-                            }
-
+                            namespaceRepo.create(built);
                             return new IdempotencyGuard.CreateResult<>(built, namespaceId);
                           },
                           (namespace) -> namespaceRepo.metaForSafe(namespace.getResourceId()),
@@ -681,12 +654,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
   private static byte[] canonicalFingerprint(NamespaceSpec s) {
     return new Canonicalizer()
-        .scalar("cat", s.getCatalogId().getId())
-        .scalar("name", s.getDisplayName())
-        .scalar("description", s.getDescription())
+        .scalar("cat", nullSafeId(s.getCatalogId()))
         .list("parents", s.getPathList())
-        .map("annotations", s.getAnnotationsMap())
-        .scalar("policy", s.getPolicyRef())
+        .scalar("name", normalizeName(s.getDisplayName()))
         .bytes();
   }
 }

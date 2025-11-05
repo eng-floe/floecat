@@ -101,6 +101,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -264,20 +265,20 @@ public class Shell implements Runnable {
          Commands:
          tenant <id>
          catalogs
-         catalog create <display_name> [--desc <text>] [--connector <id>] [--policy <id>] [--opt k=v ...]
+         catalog create <display_name> [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...]
          catalog get <display_name|id>
-         catalog update <display_name|id> [--display <name>] [--desc <text>] [--connector <id>] [--policy <id>] [--opt k=v ...] [--etag <etag>]
+         catalog update <display_name|id> [--display <name>] [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...] [--etag <etag>]
          catalog delete <display_name|id> [--require-empty] [--etag <etag>]
          namespaces (<catalog | catalog.ns[.ns...]> | <UUID>) [--id <UUID>] [--prefix P] [--recursive]
-         namespace create <catalog.ns[.ns...]> [--desc <text>] [--ann k=v ...] [--policy <id>]
+         namespace create <catalog.ns[.ns...]> [--desc <text>] [--props k=v ...] [--policy <id>]
          namespace get <id | catalog.ns[.ns...]>
          namespace update <id|fq> [--display <name>] [--path ns1.ns2... | ns1/ns2/...] [--catalog <catalogName|id>] [--etag <etag>]
          namespace delete <id|fq> [--require-empty] [--etag <etag>]
          tables <catalog.ns[.ns...][.prefix]>
-         table create <catalog.ns[.ns...].name> [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v ...]
+         table create <catalog.ns[.ns...].name> [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...]
              [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
          table get <id|catalog.ns[.ns...].table>
-         table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v ...] [--etag <etag>]
+         table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...] [--etag <etag>]
              [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
          table delete <id|fq> [--purge-stats] [--purge-snaps] [--etag <etag>]
          resolve table <fq> | resolve view <fq> | resolve catalog <name> | resolve namespace <fq>
@@ -298,18 +299,18 @@ public class Shell implements Runnable {
              [--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...]
              [--head k=v ...] [--secret <ref>]
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
-             [--policy-not-before-epoch <sec>] [--opt k=v ...]
+             [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
              [--dest-tenant <tenant>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
              [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
              [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-max-par <n>]
-             [--policy-not-before-epoch <sec>] [--opt k=v ...] [--etag <etag>]
+             [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]
          connector delete <display_name|id>  [--etag <etag>]
          connector validate <kind> <uri>
              [--dest-tenant <tenant>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
              [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
-             [--policy-not-before-epoch <sec>] [--opt k=v ...]
+             [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector trigger <display_name|id> [--full]
          connector job <jobId>
          help
@@ -405,20 +406,20 @@ public class Shell implements Runnable {
         if (args.size() < 2) {
           out.println(
               "usage: catalog create <display_name> [--desc <text>] [--connector <id>] [--policy"
-                  + " <id>] [--opt k=v ...]");
+                  + " <id>] [--props k=v ...]");
           return;
         }
         String display = args.get(1);
         String desc = parseStringFlag(args, "--desc", null);
         String connectorRef = parseStringFlag(args, "--connector", null);
         String policyRef = parseStringFlag(args, "--policy", null);
-        Map<String, String> options = parseKeyValueList(args, "--opt");
+        Map<String, String> properties = parseKeyValueList(args, "--props");
         var spec =
             CatalogSpec.newBuilder()
                 .setDisplayName(display)
                 .setDescription(nvl(desc, ""))
                 .setConnectorRef(nvl(connectorRef, ""))
-                .putAllOptions(options)
+                .putAllProperties(properties)
                 .setPolicyRef(nvl(policyRef, ""))
                 .build();
         var resp =
@@ -440,7 +441,7 @@ public class Shell implements Runnable {
         if (args.size() < 2) {
           out.println(
               "usage: catalog update <display_name|id> [--display <name>] [--desc <text>]"
-                  + " [--connector <id>] [--policy <id>] [--opt k=v ...] [--etag <etag>]");
+                  + " [--connector <id>] [--policy <id>] [--props k=v ...] [--etag <etag>]");
           return;
         }
         String id = args.get(1);
@@ -448,33 +449,41 @@ public class Shell implements Runnable {
         String desc = parseStringFlag(args, "--desc", null);
         String connectorRef = parseStringFlag(args, "--connector", null);
         String policyRef = parseStringFlag(args, "--policy", null);
-        Map<String, String> options = parseKeyValueList(args, "--opt");
+        Map<String, String> properties = parseKeyValueList(args, "--props");
+
         var sb = CatalogSpec.newBuilder();
+        LinkedHashSet<String> mask = new java.util.LinkedHashSet<>();
 
         if (display != null) {
           sb.setDisplayName(display);
+          mask.add("display_name");
         }
 
         if (desc != null) {
           sb.setDescription(desc);
+          mask.add("description");
         }
 
         if (connectorRef != null) {
           sb.setConnectorRef(connectorRef);
+          mask.add("connector_ref");
         }
 
         if (policyRef != null) {
           sb.setPolicyRef(policyRef);
+          mask.add("policy_ref");
         }
 
-        if (!options.isEmpty()) {
-          sb.putAllOptions(options);
+        if (!properties.isEmpty()) {
+          sb.putAllProperties(properties);
+          mask.add("properties");
         }
 
         var req =
             UpdateCatalogRequest.newBuilder()
                 .setCatalogId(resolveCatalogId(id))
                 .setSpec(sb.build())
+                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build())
                 .setPrecondition(preconditionFromEtag(args))
                 .build();
 
@@ -562,7 +571,7 @@ public class Shell implements Runnable {
       case "create" -> {
         if (args.size() < 2) {
           out.println(
-              "usage: namespace create <catalog.ns[.ns...]> [--desc <text>] [--ann k=v ...]"
+              "usage: namespace create <catalog.ns[.ns...]> [--desc <text>] [--props k=v ...]"
                   + " [--policy <id>]");
           return;
         }
@@ -577,7 +586,7 @@ public class Shell implements Runnable {
         List<String> parents = p.nsParts.subList(0, p.nsParts.size() - 1);
 
         String desc = parseStringFlag(args, "--desc", "");
-        Map<String, String> annotations = parseKeyValueList(args, "--ann");
+        Map<String, String> properties = parseKeyValueList(args, "--props");
         String policy = parseStringFlag(args, "--policy", "");
 
         var spec =
@@ -586,7 +595,7 @@ public class Shell implements Runnable {
                 .setDisplayName(display)
                 .setDescription(desc)
                 .addAllPath(parents)
-                .putAllAnnotations(annotations)
+                .putAllProperties(properties)
                 .setPolicyRef(policy)
                 .build();
 
@@ -731,7 +740,7 @@ public class Shell implements Runnable {
               "usage: table create <catalog.ns[.ns...].name> "
                   + " [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]"
                   + "[--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] "
-                  + "[--format ICEBERG|DELTA] [--prop k=v ...]");
+                  + "[--format ICEBERG|DELTA] [--props k=v ...]");
           return;
         }
 
@@ -748,7 +757,7 @@ public class Shell implements Runnable {
         String schema = parseStringFlag(args, "--schema", "");
         List<String> parts = csvToList(parseStringFlag(args, "--parts", ""));
         String formatStr = parseStringFlag(args, "--format", "");
-        Map<String, String> props = parseKeyValueList(args, "--prop");
+        Map<String, String> props = parseKeyValueList(args, "--props");
 
         String upConnector = parseStringFlag(args, "--up-connector", "");
         String upNs = parseStringFlag(args, "--up-ns", "");
@@ -812,7 +821,7 @@ public class Shell implements Runnable {
                   + " <catalogId|catalogName>] [--namespace <namespaceId|catalog.ns[.ns...]>]"
                   + " [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>] [--name"
                   + " <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...]"
-                  + " [--format ICEBERG|DELTA] [--prop k=v ...] [--etag <etag>]");
+                  + " [--format ICEBERG|DELTA] [--props k=v ...] [--etag <etag>]");
           return;
         }
 
@@ -834,7 +843,7 @@ public class Shell implements Runnable {
         String schema = parseStringFlag(args, "--schema", null);
         List<String> parts = csvToList(parseStringFlag(args, "--parts", ""));
         String formatStr = parseStringFlag(args, "--format", "");
-        Map<String, String> props = parseKeyValueList(args, "--prop");
+        Map<String, String> props = parseKeyValueList(args, "--props");
 
         String upConnector = parseStringFlag(args, "--up-connector", null);
         String upNs = parseStringFlag(args, "--up-ns", null);
@@ -1059,7 +1068,7 @@ public class Shell implements Runnable {
                   + "[--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...] "
                   + "[--head k=v ...] [--secret <ref>] "
                   + "[--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>] "
-                  + "[--policy-not-before-epoch <sec>] [--opt k=v ...]");
+                  + "[--policy-not-before-epoch <sec>] [--props k=v ...]");
           return;
         }
 
@@ -1084,12 +1093,12 @@ public class Shell implements Runnable {
         long intervalSec = parseLongFlag(args, "--policy-interval-sec", 0L);
         int maxPar = parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = parseLongFlag(args, "--policy-not-before-epoch", 0L);
-        Map<String, String> options = parseKeyValueList(args, "--opt");
+        Map<String, String> properties = parseKeyValueList(args, "--props");
 
         var auth =
             AuthConfig.newBuilder()
                 .setScheme(authScheme)
-                .putAllProps(authProps)
+                .putAllProperties(authProps)
                 .putAllHeaderHints(headerHints)
                 .setSecretRef(secretRef)
                 .build();
@@ -1138,7 +1147,7 @@ public class Shell implements Runnable {
                 .setDescription(description)
                 .setKind(kind)
                 .setUri(uri)
-                .putAllOptions(options)
+                .putAllProperties(properties)
                 .setAuth(auth)
                 .setPolicy(policy);
 
@@ -1167,8 +1176,8 @@ public class Shell implements Runnable {
                   + " c1,#id2,...] [--dest-catalog <name>] [--dest-ns <a.b[.c]>] [--dest-table"
                   + " <name>] [--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v"
                   + " ...] [--secret <ref>] [--policy-enabled true|false] [--policy-interval-sec"
-                  + " <n>] [--policy-max-par <n>] [--policy-not-before-epoch <sec>] [--opt k=v ...]"
-                  + " [--etag <etag>]");
+                  + " <n>] [--policy-max-par <n>] [--policy-not-before-epoch <sec>] [--props k=v"
+                  + " ...] [--etag <etag>]");
           return;
         }
 
@@ -1195,7 +1204,7 @@ public class Shell implements Runnable {
         long intervalSec = parseLongFlag(args, "--policy-interval-sec", 0L);
         int maxPar = parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = parseLongFlag(args, "--policy-not-before-epoch", 0L);
-        Map<String, String> options = parseKeyValueList(args, "--opt");
+        Map<String, String> properties = parseKeyValueList(args, "--props");
 
         var spec = ConnectorSpec.newBuilder();
 
@@ -1203,7 +1212,7 @@ public class Shell implements Runnable {
         if (!description.isBlank()) spec.setDescription(description);
         if (!kindStr.isBlank()) spec.setKind(parseConnectorKind(kindStr));
         if (!uri.isBlank()) spec.setUri(uri);
-        if (!options.isEmpty()) spec.putAllOptions(options);
+        if (!properties.isEmpty()) spec.putAllProperties(properties);
 
         boolean authSet =
             !authScheme.isBlank()
@@ -1214,7 +1223,7 @@ public class Shell implements Runnable {
           var ab = AuthConfig.newBuilder();
           if (!authScheme.isBlank()) ab.setScheme(authScheme);
           if (!secretRef.isBlank()) ab.setSecretRef(secretRef);
-          if (!authProps.isEmpty()) ab.putAllProps(authProps);
+          if (!authProps.isEmpty()) ab.putAllProperties(authProps);
           if (!headerHints.isEmpty()) ab.putAllHeaderHints(headerHints);
           spec.setAuth(ab);
         }
@@ -1279,7 +1288,7 @@ public class Shell implements Runnable {
                   + " [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols c1,#id2,...]"
                   + " [--dest-catalog <name>] [--dest-ns <a.b[.c]>] [--dest-table <name>]"
                   + " [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]"
-                  + " [--policy-not-before-epoch <sec>] [--opt k=v ...]");
+                  + " [--policy-not-before-epoch <sec>] [--props k=v ...]");
           return;
         }
 
@@ -1302,12 +1311,12 @@ public class Shell implements Runnable {
         long intervalSec = parseLongFlag(args, "--policy-interval-sec", 0L);
         int maxPar = parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = parseLongFlag(args, "--policy-not-before-epoch", 0L);
-        Map<String, String> options = parseKeyValueList(args, "--opt");
+        Map<String, String> properties = parseKeyValueList(args, "--props");
 
         var auth =
             AuthConfig.newBuilder()
                 .setScheme(authScheme)
-                .putAllProps(authProps)
+                .putAllProperties(authProps)
                 .putAllHeaderHints(headerHints)
                 .setSecretRef(secretRef)
                 .build();
@@ -1325,7 +1334,7 @@ public class Shell implements Runnable {
                 .setDisplayName("")
                 .setKind(kind)
                 .setUri(uri)
-                .putAllOptions(options)
+                .putAllProperties(properties)
                 .setAuth(auth)
                 .setPolicy(policy);
 
@@ -2245,10 +2254,15 @@ public class Shell implements Runnable {
   }
 
   private void printCatalogs(List<Catalog> cats) {
-    out.printf("%-40s  %-24s  %s%n", "CATALOG_ID", "CREATED_AT", "DISPLAY_NAME");
+    out.printf(
+        "%-40s  %-24s  %-24s  %s%n", "CATALOG_ID", "CREATED_AT", "DISPLAY_NAME", "DESCRIPTION");
     for (var c : cats) {
       out.printf(
-          "%-40s  %-24s  %s%n", rid(c.getResourceId()), ts(c.getCreatedAt()), c.getDisplayName());
+          "%-40s  %-24s  %-24s  %s%n",
+          rid(c.getResourceId()),
+          ts(c.getCreatedAt()),
+          c.getDisplayName(),
+          c.hasDescription() ? c.getDescription() : "");
     }
   }
 

@@ -14,7 +14,7 @@ message UpstreamStamp {
   string table_native_id = 2;
   string commit_ref = 3;
   google.protobuf.Timestamp fetched_at = 4;
-  map<string,string> extras = 99;
+  map<string,string> properties = 99;
 }
 
 message Ndv {
@@ -35,7 +35,7 @@ message NdvApprox {
   uint64 rows_seen = 10;
   uint64 rows_total = 11;
   string method = 20;
-  map<string,string> params = 21;
+  map<string,string> properties = 99;
 }
 
 message NdvSketch {
@@ -44,7 +44,7 @@ message NdvSketch {
   string encoding = 3;
   string compression = 4;
   uint32 version = 5;
-  map<string,string> params = 6;
+  map<string,string> properties = 99;
 }
 
 // ---------- Table-level stats ----------
@@ -57,7 +57,7 @@ message TableStats {
   int64 data_file_count = 11;
   int64 total_size_bytes = 12;
   Ndv ndv = 20;
-  map<string, string> extras = 99;
+  map<string, string> properties = 99;
 }
 
 // ---------- Column-level stats  ----------
@@ -76,7 +76,7 @@ message ColumnStats {
   string max = 21;
   bytes histogram = 30;
   bytes tdigest = 31;
-  map<string, string> extras = 99;
+  map<string, string> properties = 99;
 }
 
 // ---------- Requests/Responses ----------

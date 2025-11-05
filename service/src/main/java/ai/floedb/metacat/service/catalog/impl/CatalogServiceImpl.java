@@ -24,14 +24,15 @@ import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
-import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
+import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -42,6 +43,9 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
+
+  private static final Set<String> CATALOG_MUTABLE_PATHS =
+      Set.of("display_name", "description", "connector_ref", "options", "policy_ref");
 
   private static final Logger LOG = Logger.getLogger(CatalogService.class);
 
@@ -158,23 +162,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                                     .setDescription(request.getSpec().getDescription())
                                     .setCreatedAt(tsNow)
                                     .build();
-
-                            try {
-                              catalogRepo.create(built);
-                            } catch (BaseResourceRepository.NameConflictException e) {
-                              var existing =
-                                  catalogRepo.getByName(tenantId, built.getDisplayName());
-                              if (existing.isPresent()) {
-                                throw GrpcErrors.conflict(
-                                    correlationId,
-                                    "catalog.already_exists",
-                                    Map.of("display_name", built.getDisplayName()));
-                              }
-
-                              throw new BaseResourceRepository.AbortRetryableException(
-                                  "name conflict visibility window");
-                            }
-
+                            catalogRepo.create(built);
                             return new IdempotencyGuard.CreateResult<>(built, catalogId);
                           },
                           (catalog) -> catalogRepo.metaForSafe(catalog.getResourceId()),
@@ -204,12 +192,12 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
     return mapFailures(
             runWithRetry(
                 () -> {
-                  var principalContext = principal.get();
-                  var correlationId = principalContext.getCorrelationId();
-                  authz.require(principalContext, "catalog.write");
+                  var pctx = principal.get();
+                  var corr = pctx.getCorrelationId();
+                  authz.require(pctx, "catalog.write");
 
                   var catalogId = request.getCatalogId();
-                  ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", correlationId);
+                  ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", corr);
 
                   var current =
                       catalogRepo
@@ -217,23 +205,21 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
-                                      correlationId, "catalog", Map.of("id", catalogId.getId())));
+                                      corr, "catalog", Map.of("id", catalogId.getId())));
 
-                  var desiredName =
-                      mustNonEmpty(
-                          request.getSpec().getDisplayName(), "display_name", correlationId);
-                  var desiredDesc = request.getSpec().getDescription();
+                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
+                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                  }
 
-                  var updated =
-                      current.toBuilder()
-                          .setDisplayName(desiredName)
-                          .setDescription(desiredDesc)
-                          .build();
+                  var spec = request.getSpec();
+                  var mask = request.getUpdateMask();
 
-                  if (updated.equals(current)) {
+                  var desired = applyCatalogSpecPatch(current, spec, mask, corr);
+
+                  if (desired.equals(current)) {
                     var metaNoop = catalogRepo.metaForSafe(catalogId);
                     MutationOps.BaseServiceChecks.enforcePreconditions(
-                        correlationId, metaNoop, request.getPrecondition());
+                        corr, metaNoop, request.getPrecondition());
                     return UpdateCatalogResponse.newBuilder()
                         .setCatalog(current)
                         .setMeta(metaNoop)
@@ -243,14 +229,15 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   MutationOps.updateWithPreconditions(
                       () -> catalogRepo.metaFor(catalogId),
                       request.getPrecondition(),
-                      expected -> catalogRepo.update(updated, expected),
+                      expectedVersion -> catalogRepo.update(desired, expectedVersion),
                       () -> catalogRepo.metaForSafe(catalogId),
-                      correlationId,
+                      corr,
                       "catalog",
-                      Map.of("display_name", desiredName));
+                      Map.of("display_name", desired.getDisplayName()));
 
                   var outMeta = catalogRepo.metaForSafe(catalogId);
-                  var latest = catalogRepo.getById(catalogId).orElse(updated);
+                  var latest = catalogRepo.getById(catalogId).orElse(desired);
+
                   return UpdateCatalogResponse.newBuilder()
                       .setCatalog(latest)
                       .setMeta(outMeta)
@@ -305,13 +292,62 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
         .invoke(L::ok);
   }
 
+  private Catalog applyCatalogSpecPatch(
+      Catalog current, CatalogSpec spec, FieldMask mask, String corr) {
+
+    var paths = normalizedMaskPaths(mask);
+    if (paths.isEmpty()) {
+      throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+    }
+
+    for (var p : paths) {
+      if (!CATALOG_MUTABLE_PATHS.contains(p)) {
+        throw GrpcErrors.invalidArgument(corr, "update_mask.path.invalid", Map.of("path", p));
+      }
+    }
+
+    var b = current.toBuilder();
+
+    if (maskTargets(mask, "display_name")) {
+      var name = spec.getDisplayName();
+      if (name == null || name.isBlank()) {
+        throw GrpcErrors.invalidArgument(corr, "display_name.required", Map.of());
+      }
+      b.setDisplayName(name);
+    }
+
+    if (maskTargets(mask, "description")) {
+      if (spec.hasDescription()) {
+        b.setDescription(spec.getDescription());
+      } else {
+        b.clearDescription();
+      }
+    }
+
+    if (maskTargets(mask, "connector_ref")) {
+      if (spec.hasConnectorRef()) {
+        b.setConnectorRef(spec.getConnectorRef());
+      } else {
+        b.clearConnectorRef();
+      }
+    }
+
+    if (maskTargets(mask, "policy_ref")) {
+      if (spec.hasPolicyRef()) {
+        b.setPolicyRef(spec.getPolicyRef());
+      } else {
+        b.clearPolicyRef();
+      }
+    }
+
+    if (maskTargets(mask, "properties")) {
+      b.clearProperties().putAllProperties(spec.getPropertiesMap());
+    }
+
+    return b.build();
+  }
+
   private static byte[] canonicalFingerprint(CatalogSpec s) {
-    return new Canonicalizer()
-        .scalar("name", s.getDisplayName())
-        .scalar("description", s.getDescription())
-        .scalar("policy", s.getPolicyRef())
-        .scalar("connectorRef", s.getConnectorRef())
-        .map("opt", s.getOptionsMap())
-        .bytes();
+    return new Canonicalizer().scalar("name", normalizeName(s.getDisplayName())).bytes();
   }
 }

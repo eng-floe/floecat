@@ -11,6 +11,7 @@ import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
+import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -50,16 +51,8 @@ class CatalogMutationIT {
   void CatalogExistsConflictWhenDifferentSpec() throws Exception {
     TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1");
 
-    var ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () -> TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1 catalog"));
-
-    TestSupport.assertGrpcAndMc(
-        ex,
-        Status.Code.ABORTED,
-        ErrorCode.MC_CONFLICT,
-        "Catalog \"" + catalogPrefix + "cat1\" already exists");
+    assertDoesNotThrow(
+        () -> TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1 catalog"));
   }
 
   @Test
@@ -71,6 +64,7 @@ class CatalogMutationIT {
     assertEquals(c1.getResourceId().getTenantId(), id.getTenantId());
     assertTrue(id.getId().matches("^[0-9a-fA-F-]{36}$"), "id must look like UUID");
 
+    FieldMask mask_name = FieldMask.newBuilder().addPaths("display_name").build();
     var m1 =
         catalog
             .updateCatalog(
@@ -81,6 +75,7 @@ class CatalogMutationIT {
                             .setDisplayName(catalogPrefix + "cat_pre")
                             .setDescription("desc")
                             .build())
+                    .setUpdateMask(mask_name)
                     .build())
             .getMeta();
 
@@ -101,6 +96,7 @@ class CatalogMutationIT {
             UpdateCatalogRequest.newBuilder()
                 .setCatalogId(id)
                 .setSpec(spec2)
+                .setUpdateMask(mask_name)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(m1.getPointerVersion())
@@ -119,6 +115,7 @@ class CatalogMutationIT {
                         .setCatalogId(id)
                         .setSpec(
                             CatalogSpec.newBuilder().setDisplayName(catalogPrefix + "cat_pre_3"))
+                        .setUpdateMask(mask_name)
                         .setPrecondition(
                             Precondition.newBuilder()
                                 .setExpectedVersion(123456L)

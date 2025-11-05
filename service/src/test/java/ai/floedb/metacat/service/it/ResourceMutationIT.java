@@ -11,6 +11,7 @@ import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
+import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -50,45 +51,29 @@ class ResourceMutationIT {
   @Test
   void resourcesExist() throws Exception {
     var cat = TestSupport.createCatalog(catalog, "cat1", "cat1");
+    assertDoesNotThrow(() -> TestSupport.createCatalog(catalog, "cat1", "cat1 catalog"));
+
     var ns =
         TestSupport.createNamespace(
             namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
+    assertDoesNotThrow(
+        () ->
+            TestSupport.createNamespace(
+                namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 namespace"));
+
     TestSupport.createTable(
         table, cat.getResourceId(), ns.getResourceId(), "events", "s3://events", "{}", "none");
 
-    StatusRuntimeException catExists =
-        assertThrows(
-            StatusRuntimeException.class,
-            () -> TestSupport.createCatalog(catalog, "cat1", "cat1 catalog"));
-    TestSupport.assertGrpcAndMc(
-        catExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Catalog \"cat1\" already exists");
-
-    StatusRuntimeException nsExists =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                TestSupport.createNamespace(
-                    namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 namespace"));
-    TestSupport.assertGrpcAndMc(
-        nsExists,
-        Status.Code.ABORTED,
-        ErrorCode.MC_CONFLICT,
-        "Namespace \"staging/2025\" already exists");
-
-    StatusRuntimeException tblExists =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                TestSupport.createTable(
-                    table,
-                    cat.getResourceId(),
-                    ns.getResourceId(),
-                    "events",
-                    "s3://events",
-                    "{}",
-                    "A description"));
-    TestSupport.assertGrpcAndMc(
-        tblExists, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Table \"events\" already exists");
+    assertDoesNotThrow(
+        () ->
+            TestSupport.createTable(
+                table,
+                cat.getResourceId(),
+                ns.getResourceId(),
+                "events",
+                "s3://events",
+                "{}",
+                "A description"));
   }
 
   @Test
@@ -187,6 +172,8 @@ class ResourceMutationIT {
   void catalogCreateUpdateDeletePrecondition() throws Exception {
     var c1 = TestSupport.createCatalog(catalog, "cat_pre", "desc");
     var id = c1.getResourceId();
+    FieldMask mask_name_desc =
+        FieldMask.newBuilder().addAllPaths(List.of("display_name", "description")).build();
     var m1 =
         catalog
             .updateCatalog(
@@ -197,6 +184,7 @@ class ResourceMutationIT {
                             .setDisplayName("cat_pre")
                             .setDescription("desc")
                             .build())
+                    .setUpdateMask(mask_name_desc)
                     .build())
             .getMeta();
 
@@ -214,6 +202,7 @@ class ResourceMutationIT {
             UpdateCatalogRequest.newBuilder()
                 .setCatalogId(id)
                 .setSpec(spec2)
+                .setUpdateMask(mask_name_desc)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(m1.getPointerVersion())
@@ -223,6 +212,7 @@ class ResourceMutationIT {
     assertEquals("cat_pre_2", updOk.getCatalog().getDisplayName());
     assertTrue(updOk.getMeta().getPointerVersion() > m1.getPointerVersion());
 
+    FieldMask mask_name = FieldMask.newBuilder().addAllPaths(List.of("display_name")).build();
     var bad =
         assertThrows(
             StatusRuntimeException.class,
@@ -231,6 +221,7 @@ class ResourceMutationIT {
                     UpdateCatalogRequest.newBuilder()
                         .setCatalogId(id)
                         .setSpec(CatalogSpec.newBuilder().setDisplayName("cat_pre_3"))
+                        .setUpdateMask(mask_name)
                         .setPrecondition(
                             Precondition.newBuilder()
                                 .setExpectedVersion(123456L)

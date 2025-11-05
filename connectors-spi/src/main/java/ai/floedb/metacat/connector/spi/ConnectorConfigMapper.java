@@ -16,10 +16,10 @@ public final class ConnectorConfigMapper {
     var auth =
         new ConnectorConfig.Auth(
             c.getAuth().getScheme(),
-            c.getAuth().getPropsMap(),
+            c.getAuth().getPropertiesMap(),
             c.getAuth().getHeaderHintsMap(),
             c.getAuth().getSecretRef());
 
-    return new ConnectorConfig(kind, c.getDisplayName(), c.getUri(), c.getOptionsMap(), auth);
+    return new ConnectorConfig(kind, c.getDisplayName(), c.getUri(), c.getPropertiesMap(), auth);
   }
 }

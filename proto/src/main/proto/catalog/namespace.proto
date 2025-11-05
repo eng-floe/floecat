@@ -46,8 +46,8 @@ message NamespaceSpec {
   string display_name = 2;
   string description = 3;
   repeated string path = 4;
-  map<string,string> annotations = 5;
-  string policy_ref = 6;
+  string policy_ref = 5;
+  map<string,string> properties = 99;
 }
 
 message CreateNamespaceRequest {

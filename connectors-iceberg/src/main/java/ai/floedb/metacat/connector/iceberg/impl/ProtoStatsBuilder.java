@@ -129,7 +129,7 @@ final class ProtoStatsBuilder {
             approx.setMethod(ndvApprox.method);
           }
           if (ndvApprox.params != null && !ndvApprox.params.isEmpty()) {
-            approx.putAllParams(ndvApprox.params);
+            approx.putAllProperties(ndvApprox.params);
           }
           ndvBuilder.setApprox(approx);
           hasPayload = true;
@@ -155,7 +155,7 @@ final class ProtoStatsBuilder {
               sb.setVersion(s.version);
             }
             if (s.params != null && !s.params.isEmpty()) {
-              sb.putAllParams(s.params);
+              sb.putAllProperties(s.params);
             }
             ndvBuilder.addSketches(sb);
           }

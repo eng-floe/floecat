@@ -22,6 +22,7 @@ import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.inject.Inject;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -31,6 +32,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeoutException;
@@ -319,5 +321,37 @@ public abstract class BaseServiceImpl {
       }
     }
     return false;
+  }
+
+  protected static Set<String> normalizedMaskPaths(FieldMask mask) {
+    var out = new LinkedHashSet<String>();
+    if (mask == null) {
+      return out;
+    }
+
+    for (String p : mask.getPathsList()) {
+      if (p == null) {
+        continue;
+      }
+      var t = p.trim().toLowerCase();
+      if (!t.isEmpty()) {
+        out.add(t);
+      }
+    }
+    return out;
+  }
+
+  protected static String nullSafeId(ai.floedb.metacat.common.rpc.ResourceId rid) {
+    return (rid == null) ? "" : rid.getId();
+  }
+
+  protected static String normalizeName(String in) {
+    if (in == null) {
+      return "";
+    }
+
+    String t = Normalizer.normalize(in.trim(), Normalizer.Form.NFKC);
+    t = t.replaceAll("\\s+", " ");
+    return t;
   }
 }

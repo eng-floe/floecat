@@ -179,22 +179,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                     .setUpstreamCreatedAt(request.getSpec().getUpstreamCreatedAt())
                                     .setParentSnapshotId(request.getSpec().getParentSnapshotId())
                                     .build();
-                            try {
-                              snapshotRepo.create(snap);
-                            } catch (BaseResourceRepository.NameConflictException e) {
-                              var existing =
-                                  snapshotRepo.getById(tableId, request.getSpec().getSnapshotId());
-                              if (existing.isPresent()) {
-                                throw GrpcErrors.conflict(
-                                    correlationId,
-                                    "snapshot.already_exists",
-                                    Map.of("id", Long.toString(request.getSpec().getSnapshotId())));
-                              }
-
-                              throw new BaseResourceRepository.AbortRetryableException(
-                                  "name conflict visibility window");
-                            }
-
+                            snapshotRepo.create(snap);
                             return new IdempotencyGuard.CreateResult<>(snap, snap.getTableId());
                           },
                           (snapshot) ->

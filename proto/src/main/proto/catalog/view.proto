@@ -17,7 +17,7 @@ message View {
   string description = 5;
   string sql = 6;
   google.protobuf.Timestamp created_at = 7;
-  map<string,string> properties = 8;
+  map<string,string> properties = 99;
 }
 
 message ListViewsRequest {
@@ -43,7 +43,7 @@ message ViewSpec {
   string description = 4;
   string schema_json = 6;
   string sql = 7;
-  map<string,string> properties = 8;
+  map<string,string> properties = 99;
 }
 
 message CreateViewRequest {

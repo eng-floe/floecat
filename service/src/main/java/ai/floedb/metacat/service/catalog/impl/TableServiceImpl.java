@@ -34,6 +34,7 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.Map;
+import java.util.Set;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -45,6 +46,23 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
+
+  private static final Set<String> TABLE_MUTABLE_PATHS =
+      Set.of(
+          "display_name",
+          "description",
+          "schema_json",
+          "properties",
+          "catalog_id",
+          "namespace_id",
+          "upstream",
+          "upstream.connector_id",
+          "upstream.uri",
+          "upstream.namespace_path",
+          "upstream.table_display_name",
+          "upstream.format",
+          "upstream.partition_keys",
+          "upstream.field_id_by_path");
 
   private static final Logger LOG = Logger.getLogger(TableService.class);
 
@@ -206,28 +224,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                     .setUpstream(request.getSpec().getUpstream())
                                     .putAllProperties(request.getSpec().getPropertiesMap())
                                     .build();
-
-                            try {
-                              tableRepo.create(table);
-                            } catch (BaseResourceRepository.NameConflictException e) {
-                              var existing =
-                                  tableRepo.getByName(
-                                      tenantId,
-                                      request.getSpec().getCatalogId().getId(),
-                                      request.getSpec().getNamespaceId().getId(),
-                                      table.getDisplayName());
-
-                              if (existing.isPresent()) {
-                                throw GrpcErrors.conflict(
-                                    correlationId,
-                                    "table.already_exists",
-                                    Map.of("display_name", table.getDisplayName()));
-                              }
-
-                              throw new BaseResourceRepository.AbortRetryableException(
-                                  "name conflict visibility window");
-                            }
-
+                            tableRepo.create(table);
                             return new IdempotencyGuard.CreateResult<>(table, tableResourceId);
                           },
                           (table) -> tableRepo.metaForSafe(table.getResourceId()),
@@ -359,7 +356,30 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         .invoke(L::ok);
   }
 
+  private static void validateTableMaskOrThrow(FieldMask mask, String corr) {
+    var paths = normalizedMaskPaths(mask);
+    if (paths.isEmpty()) {
+      throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+    }
+    for (var p : paths) {
+      if (!TABLE_MUTABLE_PATHS.contains(p)) {
+        throw GrpcErrors.invalidArgument(corr, "update_mask.path.invalid", Map.of("path", p));
+      }
+    }
+    boolean hasUpstreamWhole = paths.contains("upstream");
+    boolean hasUpstreamParts =
+        paths.stream().anyMatch(p -> p.startsWith("upstream.") && !p.equals("upstream"));
+    if (hasUpstreamWhole && hasUpstreamParts) {
+      throw GrpcErrors.invalidArgument(
+          corr,
+          "update_mask.upstream.mix_forbidden",
+          Map.of("hint", "use either 'upstream' or 'upstream.*' but not both"));
+    }
+  }
+
   private Table applyTableSpecPatch(Table current, TableSpec spec, FieldMask mask, String corr) {
+    validateTableMaskOrThrow(mask, corr);
+
     var b = current.toBuilder();
 
     if (maskTargets(mask, "display_name")) {
@@ -553,26 +573,10 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   }
 
   private static byte[] canonicalFingerprint(TableSpec s) {
-    var up = s.getUpstream();
-    var c =
-        new Canonicalizer()
-            .scalar("cat", s.getCatalogId().getId())
-            .scalar("ns", s.getNamespaceId().getId())
-            .scalar("name", s.getDisplayName())
-            .scalar("description", s.getDescription())
-            .scalar("schema", s.getSchemaJson())
-            .map("prop", s.getPropertiesMap())
-            .group(
-                "up",
-                g ->
-                    g.scalar("connector", up.getConnectorId().getId())
-                        .scalar("uri", up.getUri())
-                        .list("nsPath", up.getNamespacePathList())
-                        .scalar("tbl", up.getTableDisplayName())
-                        .scalar("fmt", up.getFormat().getNumber())
-                        .list("pk", up.getPartitionKeysList())
-                        .map("fieldIdByPath", up.getFieldIdByPathMap()));
-
-    return c.bytes();
+    return new Canonicalizer()
+        .scalar("cat", nullSafeId(s.getCatalogId()))
+        .scalar("ns", nullSafeId(s.getNamespaceId()))
+        .scalar("name", normalizeName(s.getDisplayName()))
+        .bytes();
   }
 }

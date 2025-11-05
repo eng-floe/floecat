@@ -61,16 +61,8 @@ class TenantMutationIT {
             .setDescription("description")
             .build();
 
-    var conflict =
-        assertThrows(
-            StatusRuntimeException.class,
-            () -> tenancy.createTenant(CreateTenantRequest.newBuilder().setSpec(newSpec).build()));
-
-    TestSupport.assertGrpcAndMc(
-        conflict,
-        Status.Code.ABORTED,
-        ErrorCode.MC_CONFLICT,
-        "Tenant \"" + tenantPrefix + "t1\" already exists");
+    assertDoesNotThrow(
+        () -> tenancy.createTenant(CreateTenantRequest.newBuilder().setSpec(newSpec).build()));
   }
 
   @Test

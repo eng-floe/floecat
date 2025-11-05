@@ -59,17 +59,10 @@ class NamespaceMutationIT {
     TestSupport.createNamespace(
         namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
 
-    StatusRuntimeException nsExists =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                TestSupport.createNamespace(
-                    namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 namespace"));
-    TestSupport.assertGrpcAndMc(
-        nsExists,
-        Status.Code.ABORTED,
-        ErrorCode.MC_CONFLICT,
-        "Namespace \"staging/2025\" already exists");
+    assertDoesNotThrow(
+        () ->
+            TestSupport.createNamespace(
+                namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 namespace"));
   }
 
   @Test

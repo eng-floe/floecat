@@ -51,12 +51,12 @@ message Connector {
   SourceSelector source = 10;
   DestinationTarget destination = 11;
   string uri = 20; 
-  map<string,string> options = 21;
   AuthConfig auth = 22;
   ReconcilePolicy policy = 30;
   google.protobuf.Timestamp created_at = 40;
   google.protobuf.Timestamp updated_at = 41;
   ConnectorState state = 42;
+  map<string,string> properties = 99;
 }
 
 enum ConnectorState {
@@ -68,9 +68,9 @@ enum ConnectorState {
 
 message AuthConfig {
   string scheme = 1;
-  map<string,string> props = 2;
   map<string,string> header_hints = 3;
   string secret_ref = 10;
+  map<string,string> properties = 99;
 }
 
 message ReconcilePolicy {
@@ -87,9 +87,9 @@ message ConnectorSpec {
   SourceSelector source = 10;
   DestinationTarget destination = 11;
   string uri = 20;
-  map<string,string> options = 21;
-  AuthConfig auth = 22;
+  AuthConfig auth = 21;
   ReconcilePolicy policy = 30;
+  map<string,string> properties = 99;
 }
 
 message CreateConnectorRequest {
