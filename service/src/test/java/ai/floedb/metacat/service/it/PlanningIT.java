@@ -90,17 +90,25 @@ class PlanningIT {
             .build();
 
     var begin = planning.beginPlan(req);
-    assertFalse(begin.getPlanId().isBlank());
-    assertTrue(begin.getSnapshots().getPinsCount() >= 0);
+    assertTrue(begin.hasPlan());
+    var beginPlan = begin.getPlan();
+    assertFalse(beginPlan.getPlanId().isBlank());
+    assertTrue(beginPlan.getSnapshots().getPinsCount() >= 0);
 
     var renew =
         planning.renewPlan(
-            RenewPlanRequest.newBuilder().setPlanId(begin.getPlanId()).setTtlSeconds(2).build());
-    assertEquals(begin.getPlanId(), renew.getPlanId());
+            RenewPlanRequest.newBuilder()
+                .setPlanId(beginPlan.getPlanId())
+                .setTtlSeconds(2)
+                .build());
+    assertEquals(beginPlan.getPlanId(), renew.getPlanId());
 
     var end =
         planning.endPlan(
-            EndPlanRequest.newBuilder().setPlanId(begin.getPlanId()).setCommit(true).build());
-    assertEquals(begin.getPlanId(), end.getPlanId());
+            EndPlanRequest.newBuilder()
+                .setPlanId(beginPlan.getPlanId())
+                .setCommit(true)
+                .build());
+    assertEquals(beginPlan.getPlanId(), end.getPlanId());
   }
 }
