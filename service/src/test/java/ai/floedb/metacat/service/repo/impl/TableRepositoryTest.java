@@ -17,6 +17,8 @@ import ai.floedb.metacat.storage.InMemoryBlobStore;
 import ai.floedb.metacat.storage.InMemoryPointerStore;
 import com.google.protobuf.util.Timestamps;
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -31,50 +33,65 @@ import org.junit.jupiter.api.Timeout;
 
 class TableRepositoryTest {
   private final Clock clock = Clock.systemUTC();
+  private final InMemoryPointerStore ptr = new InMemoryPointerStore();
+  private final InMemoryBlobStore blobs = new InMemoryBlobStore();
+  private final SnapshotRepository snapshotRepo = new SnapshotRepository(ptr, blobs);
+  private final TableRepository tableRepo = new TableRepository(ptr, blobs);
+  private final NamespaceRepository nsRepo = new NamespaceRepository(ptr, blobs);
+  private final CatalogRepository catRepo = new CatalogRepository(ptr, blobs);
+  private final String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
 
-  @Test
-  void tableRepoCreateTable() {
-    var ptr = new InMemoryPointerStore();
-    var blobs = new InMemoryBlobStore();
-    final var snapshotRepo = new SnapshotRepository(ptr, blobs);
-    final var tableRepo = new TableRepository(ptr, blobs);
-    final var repo = new NamespaceRepository(ptr, blobs);
-    final var catRepo = new CatalogRepository(ptr, blobs);
+  private ResourceId createTable(String catalogName, String namespaceName, String tableName) {
+    ResourceId catalogId;
+    if (catRepo.getByName(tenant, catalogName).isPresent()) {
+      catalogId = catRepo.getByName(tenant, catalogName).get().getResourceId();
+    } else {
+      catalogId =
+          ResourceId.newBuilder()
+              .setTenantId(tenant)
+              .setId(UUID.randomUUID().toString())
+              .setKind(ResourceKind.RK_CATALOG)
+              .build();
+      Catalog cat =
+          Catalog.newBuilder()
+              .setResourceId(catalogId)
+              .setDisplayName(catalogName)
+              .setDescription("description")
+              .build();
+      catRepo.create(cat);
+    }
 
-    String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
-    var catRid =
-        ResourceId.newBuilder()
-            .setTenantId(tenant)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_CATALOG)
-            .build();
+    ResourceId namespaceId;
+    if (nsRepo.getByPath(tenant, catalogId.getId(), List.of(namespaceName)).isPresent()) {
+      namespaceId =
+          nsRepo.getByPath(tenant, catalogId.getId(), List.of(namespaceName)).get().getResourceId();
+    } else {
+      namespaceId =
+          ResourceId.newBuilder()
+              .setTenantId(tenant)
+              .setId(UUID.randomUUID().toString())
+              .setKind(ResourceKind.RK_NAMESPACE)
+              .build();
+      var ns =
+          Namespace.newBuilder()
+              .setResourceId(namespaceId)
+              .setDisplayName(namespaceName)
+              .setDescription("description")
+              .setCatalogId(catalogId)
+              .build();
+      nsRepo.create(ns);
+    }
 
-    Catalog cat = Catalog.newBuilder().setResourceId(catRid).setDisplayName("sales").build();
-    catRepo.create(cat);
+    return createTable(catalogId, namespaceId, tableName);
+  }
 
-    var nsRid =
-        ResourceId.newBuilder()
-            .setTenantId(tenant)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .build();
-
-    var ns =
-        Namespace.newBuilder()
-            .setResourceId(nsRid)
-            .setDisplayName("core")
-            .setDescription("Core namespace")
-            .setCatalogId(catRid)
-            .build();
-    repo.create(ns);
-
-    var tableRid =
+  private ResourceId createTable(ResourceId catalogId, ResourceId namespaceId, String tableName) {
+    var tableId =
         ResourceId.newBuilder()
             .setTenantId(tenant)
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_TABLE)
             .build();
-
     var upstream =
         UpstreamRef.newBuilder()
             .setFormat(TableFormat.TF_ICEBERG)
@@ -82,26 +99,50 @@ class TableRepositoryTest {
             .build();
     var td =
         Table.newBuilder()
-            .setResourceId(tableRid)
-            .setDisplayName("orders")
-            .setDescription("Orders table")
+            .setResourceId(tableId)
+            .setDisplayName(tableName)
+            .setDescription("description")
             .setUpstream(upstream)
-            .setCatalogId(catRid)
-            .setNamespaceId(nsRid)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
             .setCreatedAt(Timestamps.fromMillis(clock.millis()))
             .build();
     tableRepo.create(td);
 
-    String nsKeyRow = Keys.tablePointerByName(tenant, catRid.getId(), nsRid.getId(), "orders");
-    var pointerRow = ptr.get(nsKeyRow);
+    return tableId;
+  }
+
+  @Test
+  void tableRepoCreateTable() {
+    var tableId = createTable("sales", "us", "line_item");
+    var table = tableRepo.getById(tableId);
+    assertTrue(table.isPresent());
+    var foundTable = table.get();
+
+    var catalogId = foundTable.getCatalogId();
+    var namespaceId = foundTable.getNamespaceId();
+
+    var pointerRow =
+        ptr.get(
+            Keys.tablePointerByName(tenant, catalogId.getId(), namespaceId.getId(), "line_item"));
     assertTrue(pointerRow.isPresent(), "by-namespace ROW pointer missing");
 
-    var nsKeyPfx = Keys.tablePointerByNamePrefix(tenant, catRid.getId(), nsRid.getId());
-    var rowsUnderPfx = ptr.listPointersByPrefix(nsKeyPfx, 100, "", new StringBuilder());
+    var rowsUnderPfx =
+        ptr.listPointersByPrefix(
+            Keys.tablePointerByNamePrefix(tenant, catalogId.getId(), namespaceId.getId()),
+            Integer.MAX_VALUE,
+            null,
+            null);
     assertTrue(
-        rowsUnderPfx.stream().anyMatch(r -> r.getKey().equals(nsKeyRow)),
-        "prefix scan doesn't see the row key you just wrote");
+        rowsUnderPfx.stream()
+            .anyMatch(
+                r ->
+                    r.getKey()
+                        .equals(
+                            Keys.tablePointerByName(
+                                tenant, catalogId.getId(), namespaceId.getId(), "line_item"))),
+        "prefix scan doesn't see the row key last written");
 
     String uri = pointerRow.get().getBlobUri();
     assertNotNull(uri);
@@ -110,46 +151,76 @@ class TableRepositoryTest {
 
     var snap =
         Snapshot.newBuilder()
-            .setTableId(tableRid)
+            .setTableId(tableId)
             .setSnapshotId(42)
             .setIngestedAt(Timestamps.fromMillis(clock.millis()))
             .build();
     snapshotRepo.create(snap);
 
-    var fetched = tableRepo.getById(tableRid).orElseThrow();
-    assertEquals("orders", fetched.getDisplayName());
+    var fetched = tableRepo.getById(tableId).orElseThrow();
+    assertEquals("line_item", fetched.getDisplayName());
 
-    var list = tableRepo.list(tenant, catRid.getId(), nsRid.getId(), 50, "", new StringBuilder());
+    var list =
+        tableRepo.list(
+            tenant, catalogId.getId(), namespaceId.getId(), Integer.MAX_VALUE, null, null);
     assertEquals(1, list.size());
 
-    var cur = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
+    var cur = snapshotRepo.getCurrentSnapshot(tableId).orElseThrow();
     assertEquals(42, cur.getSnapshotId());
+  }
+
+  @Test
+  void tableRepoListCount() {
+    List<ResourceId> tableIds = new ArrayList<ResourceId>();
+    for (int i = 0; i < 100000; i++) {
+      String paddedIndex = String.format("%10d", i); // Ensures lexicographic ordering on listing
+      tableIds.add(createTable("sales", "eu", "line_item_" + paddedIndex));
+    }
+    var first = tableRepo.getById(tableIds.get(0));
+    assertTrue(first.isPresent());
+    Table foundFirst = first.get();
+    ResourceId catalogId = foundFirst.getCatalogId();
+    ResourceId namespaceId = foundFirst.getNamespaceId();
+
+    assertEquals(100000, tableRepo.count(tenant, catalogId.getId(), namespaceId.getId()));
+
+    int pages = 0;
+    String token = "";
+    List<Table> listedTables = new ArrayList<Table>();
+    do {
+      StringBuilder next = new StringBuilder();
+      listedTables.addAll(
+          tableRepo.list(tenant, catalogId.getId(), namespaceId.getId(), 10000, token, next));
+      pages++;
+
+      token = next.toString();
+    } while (!token.isEmpty());
+
+    assertEquals(10, pages);
+    assertEquals(100000, listedTables.size());
+
+    for (int i = 0; i < tableIds.size(); i++) {
+      assertEquals(tableIds.get(i), listedTables.get(i).getResourceId());
+    }
   }
 
   @Test
   @Timeout(30)
   void tableRepoConcurrentMutations() throws Exception {
-    var ptr = new InMemoryPointerStore();
-    var blobs = new InMemoryBlobStore();
-    var cats = new CatalogRepository(ptr, blobs);
-    var nss = new NamespaceRepository(ptr, blobs);
-    var tbls = new TableRepository(ptr, blobs);
-
-    String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
     var catId = rid(tenant, ResourceKind.RK_CATALOG);
     var ns1Id = rid(tenant, ResourceKind.RK_NAMESPACE);
     var ns2Id = rid(tenant, ResourceKind.RK_NAMESPACE);
     var tblId = rid(tenant, ResourceKind.RK_TABLE);
 
     var cat = Catalog.newBuilder().setResourceId(catId).setDisplayName("sales").build();
-    cats.create(cat);
-    nss.create(
+    catRepo.create(cat);
+    nsRepo.create(
         Namespace.newBuilder()
             .setResourceId(ns1Id)
             .setDisplayName("ns1")
             .setCatalogId(catId)
             .build());
-    nss.create(
+    nsRepo.create(
         Namespace.newBuilder()
             .setResourceId(ns2Id)
             .setDisplayName("ns2")
@@ -170,7 +241,7 @@ class TableRepositoryTest {
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
             .setCreatedAt(Timestamps.fromMillis(clock.millis()))
             .build();
-    tbls.create(seed);
+    tableRepo.create(seed);
 
     String canonKey = Keys.tablePointerById(tenant, tblId.getId());
     long v0 = ptr.get(canonKey).orElseThrow().getVersion();
@@ -192,10 +263,13 @@ class TableRepositoryTest {
               int pick = rnd.nextInt(100);
               try {
                 if (pick < 35) {
-                  if (seedDeleted.get()) continue;
+                  if (seedDeleted.get()) {
+                    continue;
+                  }
+
                   String col = "c" + rnd.nextInt(1000);
-                  var curMeta = tbls.metaFor(tblId);
-                  var cur = tbls.getById(tblId).orElseThrow();
+                  var curMeta = tableRepo.metaFor(tblId);
+                  var cur = tableRepo.getById(tblId).orElseThrow();
                   var updated =
                       cur.toBuilder()
                           .setSchemaJson(
@@ -204,31 +278,37 @@ class TableRepositoryTest {
                                   + col
                                   + "\",\"type\":\"double\"}]}")
                           .build();
-                  boolean ok = tbls.update(updated, curMeta.getPointerVersion());
+                  boolean ok = tableRepo.update(updated, curMeta.getPointerVersion());
                   if (!ok) {
                     throw new BaseResourceRepository.PreconditionFailedException(
                         "version mismatch");
                   }
 
                 } else if (pick < 60) {
-                  if (seedDeleted.get()) continue;
-                  var curMeta = tbls.metaFor(tblId);
-                  var cur = tbls.getById(tblId).orElseThrow();
+                  if (seedDeleted.get()) {
+                    continue;
+                  }
+
+                  var curMeta = tableRepo.metaFor(tblId);
+                  var cur = tableRepo.getById(tblId).orElseThrow();
                   String target = "seed_" + rnd.nextInt(5);
                   var renamed = cur.toBuilder().setDisplayName(target).build();
-                  boolean ok = tbls.update(renamed, curMeta.getPointerVersion());
+                  boolean ok = tableRepo.update(renamed, curMeta.getPointerVersion());
                   if (!ok) {
                     throw new BaseResourceRepository.PreconditionFailedException(
                         "version mismatch");
                   }
 
                 } else if (pick < 85) {
-                  if (seedDeleted.get()) continue;
-                  var curMeta = tbls.metaFor(tblId);
-                  var cur = tbls.getById(tblId).orElseThrow();
+                  if (seedDeleted.get()) {
+                    continue;
+                  }
+
+                  var curMeta = tableRepo.metaFor(tblId);
+                  var cur = tableRepo.getById(tblId).orElseThrow();
                   var toNs = rnd.nextBoolean() ? ns1Id : ns2Id;
                   var updated = cur.toBuilder().setNamespaceId(toNs).build();
-                  boolean ok = tbls.update(updated, curMeta.getPointerVersion());
+                  boolean ok = tableRepo.update(updated, curMeta.getPointerVersion());
                   if (!ok) {
                     throw new BaseResourceRepository.PreconditionFailedException(
                         "version mismatch");
@@ -236,8 +316,9 @@ class TableRepositoryTest {
 
                 } else {
                   if (seedDeleted.compareAndSet(false, true)) {
-                    var curMeta = tbls.metaFor(tblId);
-                    boolean ok = tbls.deleteWithPrecondition(tblId, curMeta.getPointerVersion());
+                    var curMeta = tableRepo.metaFor(tblId);
+                    boolean ok =
+                        tableRepo.deleteWithPrecondition(tblId, curMeta.getPointerVersion());
                     if (!ok) {
                       seedDeleted.set(false);
                       throw new BaseResourceRepository.PreconditionFailedException(
@@ -274,13 +355,13 @@ class TableRepositoryTest {
     var p = ptr.get(canonKey);
     if (seedDeleted.get()) {
       assertTrue(
-          p.isEmpty() || !tbls.getById(tblId).isPresent(),
+          p.isEmpty() || !tableRepo.getById(tblId).isPresent(),
           "deleted table should not be resolvable");
-      assertDoesNotThrow(() -> tbls.metaForSafe(tblId));
+      assertDoesNotThrow(() -> tableRepo.metaForSafe(tblId));
     } else {
       long vN = p.orElseThrow().getVersion();
       assertTrue(vN >= v0, "pointer version should be >= initial");
-      var cur = tbls.getById(tblId).orElseThrow();
+      var cur = tableRepo.getById(tblId).orElseThrow();
       assertNotNull(cur.getNamespaceId());
       assertNotNull(cur.getCatalogId());
     }
