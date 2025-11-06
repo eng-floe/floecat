@@ -184,46 +184,15 @@ status:
 # ===================================================
 # CLI
 # ===================================================
+
 .PHONY: cli-clean
 cli-clean:
-	@echo "==> [CLI] clean isolated repo and output"
-	rm -rf $(M2_CLI_DIR) client-cli/target
-	mkdir -p $(M2_CLI_DIR)
+	@echo "==> [CLI] clean output"
+	rm -rf client-cli/target
 
-$(M2_CLI_DIR):
-	@mkdir -p $@
-
-$(PARENT_STAMP): pom.xml | $(M2_CLI_DIR)
-	@echo "==> [CLI] install parent POM ($(VERSION)) into isolated repo"
-	$(MVN) -q -Dmaven.repo.local=$(M2_CLI_DIR) \
-	  org.apache.maven.plugins:maven-install-plugin:3.1.1:install-file \
-	  -DgroupId=ai.floedb.metacat \
-	  -DartifactId=metacat \
-	  -Dversion=$(VERSION) \
-	  -Dpackaging=pom \
-	  -Dfile=pom.xml
-	@touch $@
-
-$(PROTO_STAMP): $(PROTO_JAR) | $(M2_CLI_DIR)
-	@echo "==> [PROTO-CLI] install proto jar ($(VERSION)) into isolated repo"
-	$(MVN) -q -Dmaven.repo.local=$(M2_CLI_DIR) \
-	  org.apache.maven.plugins:maven-install-plugin:3.1.1:install-file \
-	  -Dfile=$(PROTO_JAR) \
-	  -DgroupId=ai.floedb.metacat \
-	  -DartifactId=metacat-proto \
-	  -Dversion=$(VERSION) \
-	  -Dpackaging=jar
-	@touch $@
-
-ifeq ($(CLI_ISOLATED),1)
-CLI_PREQS := $(PARENT_STAMP) $(PROTO_STAMP)
-else
-CLI_PREQS :=
-endif
-
-$(CLI_JAR): $(CLI_PREQS) $(CLI_SRC)
+$(CLI_JAR): $(CLI_SRC)
 	@echo "==> [CLI] package (incremental)"
-	$(MVN) -q -f client-cli/pom.xml $(CLI_M2) \
+	$(MVN) -q -f client-cli/pom.xml \
 	  -Dquarkus.package.jar.type=fast-jar \
 	  -DskipTests -DskipITs=true \
 	  package
