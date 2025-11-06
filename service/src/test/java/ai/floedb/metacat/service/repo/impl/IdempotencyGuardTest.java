@@ -64,7 +64,8 @@ public class IdempotencyGuardTest {
             repo,
             300,
             NOW,
-            () -> "corr");
+            () -> "corr",
+            rec -> true);
 
     assertThat(out).isEqualTo("R1");
   }
@@ -91,7 +92,8 @@ public class IdempotencyGuardTest {
             repo,
             300,
             NOW,
-            () -> "corr");
+            () -> "corr",
+            rec -> true);
     assertThat(r1).isEqualTo("R1");
 
     assertThat(repo.get(Keys.idempotencyKey(TENANT, OP, idemKey)))
@@ -112,7 +114,8 @@ public class IdempotencyGuardTest {
             repo,
             300,
             NOW,
-            () -> "corr");
+            () -> "corr",
+            rec -> true);
     assertThat(r2).isEqualTo("R1");
   }
 
@@ -161,7 +164,8 @@ public class IdempotencyGuardTest {
                     repo,
                     300,
                     NOW,
-                    () -> "corr"));
+                    () -> "corr",
+                    rec -> true));
 
     assertThat(ex.getStatus().getCode()).isEqualTo(Status.Code.ABORTED);
 
