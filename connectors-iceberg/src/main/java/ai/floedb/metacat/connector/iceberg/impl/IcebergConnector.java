@@ -17,7 +17,6 @@ import ai.floedb.metacat.types.LogicalType;
 import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
-
 import org.apache.iceberg.*;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -206,8 +205,8 @@ public final class IcebergConnector implements MetacatConnector {
     if (snapshotId > 0) {
       scan.useSnapshot(snapshotId);
     } /* else {
-      scan.asOfTime(asOfTime);
-    } */
+        scan.asOfTime(asOfTime);
+      } */
 
     Snapshot snap = table.snapshot(snapshotId);
     int schemaId = (snap != null) ? snap.schemaId() : table.schema().schemaId();
@@ -219,7 +218,8 @@ public final class IcebergConnector implements MetacatConnector {
       for (FileScanTask task : tasks) {
         {
           DataFile df = task.file();
-          var pf = PlanFile.newBuilder()
+          var pf =
+              PlanFile.newBuilder()
                   .setFilePath(df.location())
                   .setFileFormat(df.format().name())
                   .setFileSizeInBytes(df.fileSizeInBytes())
@@ -229,13 +229,16 @@ public final class IcebergConnector implements MetacatConnector {
         }
 
         for (var df : task.deletes()) {
-          var pf = PlanFile.newBuilder()
+          var pf =
+              PlanFile.newBuilder()
                   .setFilePath(df.location())
                   .setFileFormat(df.format().name())
                   .setFileSizeInBytes(df.fileSizeInBytes())
                   .setRecordCount(df.recordCount())
-                  .setFileContent(df.content()== org.apache.iceberg.FileContent.EQUALITY_DELETES ?
-                          FileContent.EQUALITY_DELETES : FileContent.POSITION_DELETES);
+                  .setFileContent(
+                      df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
+                          ? FileContent.EQUALITY_DELETES
+                          : FileContent.POSITION_DELETES);
           result.deleteFiles().add(pf.build());
         }
       }

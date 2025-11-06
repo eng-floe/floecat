@@ -105,10 +105,7 @@ class PlanningIT {
 
     var end =
         planning.endPlan(
-            EndPlanRequest.newBuilder()
-                .setPlanId(beginPlan.getPlanId())
-                .setCommit(true)
-                .build());
+            EndPlanRequest.newBuilder().setPlanId(beginPlan.getPlanId()).setCommit(true).build());
     assertEquals(beginPlan.getPlanId(), end.getPlanId());
   }
 }

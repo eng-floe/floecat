@@ -155,17 +155,20 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
 
                   try {
                     return BeginPlanResponse.newBuilder()
-                            .setPlan(PlanDescriptor.newBuilder()
-                                    .setPlanId(planId)
-                                    .setTenantId(principalContext.getTenantId())
-                                    .setPlanStatus(planContext.getPlanStatus())
-                                    .setCreatedAt(ts(planContext.getCreatedAtMs()))
-                                    .setExpiresAt(ts(planContext.getExpiresAtMs()))
-                                    .setSnapshots(SnapshotSet.parseFrom(snapshotBytes))
-                                    .setExpansion(ExpansionMap.parseFrom(expansionBytes))
-                                    .addAllDataFiles(planBundle!=null ? planBundle.dataFiles() : List.of())
-                                    .addAllDeleteFiles(planBundle!=null ? planBundle.deleteFiles() : List.of())
-                            ).build();
+                        .setPlan(
+                            PlanDescriptor.newBuilder()
+                                .setPlanId(planId)
+                                .setTenantId(principalContext.getTenantId())
+                                .setPlanStatus(planContext.getPlanStatus())
+                                .setCreatedAt(ts(planContext.getCreatedAtMs()))
+                                .setExpiresAt(ts(planContext.getExpiresAtMs()))
+                                .setSnapshots(SnapshotSet.parseFrom(snapshotBytes))
+                                .setExpansion(ExpansionMap.parseFrom(expansionBytes))
+                                .addAllDataFiles(
+                                    planBundle != null ? planBundle.dataFiles() : List.of())
+                                .addAllDeleteFiles(
+                                    planBundle != null ? planBundle.deleteFiles() : List.of()))
+                        .build();
                   } catch (InvalidProtocolBufferException e) {
                     throw GrpcErrors.internal(
                         correlationId, "plan.expansion.parse_failed", Map.of("plan_id", planId));

@@ -15,7 +15,6 @@ import ai.floedb.metacat.planning.rpc.SnapshotSet;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.StatusRuntimeException;
-
 import java.time.Clock;
 import java.util.Arrays;
 import java.util.Map;
@@ -106,7 +105,9 @@ public final class PlanContext {
     return this.toBuilder().expiresAtMs(next).version(newVersion).build();
   }
 
-  public MetacatConnector.PlanBundle runPlanning(TableServiceGrpc.TableServiceBlockingStub tables, ConnectorsGrpc.ConnectorsBlockingStub connectors) {
+  public MetacatConnector.PlanBundle runPlanning(
+      TableServiceGrpc.TableServiceBlockingStub tables,
+      ConnectorsGrpc.ConnectorsBlockingStub connectors) {
     // TODO: Make this async and more robust
     try {
       if (snapshotSet != null) {
@@ -115,18 +116,22 @@ public final class PlanContext {
           snapshots = SnapshotSet.parseFrom(snapshotSet);
         } catch (InvalidProtocolBufferException e) {
           throw GrpcErrors.internal(
-                  principal.getCorrelationId(), "plan.snapshot.parse_failed", Map.of("plan_id", planId));
+              principal.getCorrelationId(),
+              "plan.snapshot.parse_failed",
+              Map.of("plan_id", planId));
         }
 
         for (SnapshotPin s : snapshots.getPinsList()) {
-          GetTableResponse tableResponse = tables.getTable(GetTableRequest.newBuilder().setTableId(s.getTableId()).build());
+          GetTableResponse tableResponse =
+              tables.getTable(GetTableRequest.newBuilder().setTableId(s.getTableId()).build());
           Table table = tableResponse.getTable();
           if (table.hasUpstream()) {
             ResourceId id = table.getUpstream().getConnectorId();
 
             final Connector stored;
             try {
-              stored = connectors
+              stored =
+                  connectors
                       .getConnector(GetConnectorRequest.newBuilder().setConnectorId(id).build())
                       .getConnector();
             } catch (StatusRuntimeException e) {
@@ -136,12 +141,15 @@ public final class PlanContext {
             var cfg = ConnectorConfigMapper.fromProto(stored);
 
             try (MetacatConnector connector = ConnectorFactory.create(cfg)) {
-              String sourceNsFq = !table.getUpstream().getNamespacePathList().isEmpty() ?
-                      String.join(".", table.getUpstream().getNamespacePathList()) : "";
+              String sourceNsFq =
+                  !table.getUpstream().getNamespacePathList().isEmpty()
+                      ? String.join(".", table.getUpstream().getNamespacePathList())
+                      : "";
               String sourceTable = table.getUpstream().getTableDisplayName();
               planStatus.set(PlanStatus.COMPLETED);
 
-              return connector.plan(sourceNsFq, sourceTable, s.getSnapshotId(), s.getAsOf().getSeconds());
+              return connector.plan(
+                  sourceNsFq, sourceTable, s.getSnapshotId(), s.getAsOf().getSeconds());
             }
           }
         }

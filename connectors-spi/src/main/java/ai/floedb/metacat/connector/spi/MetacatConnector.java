@@ -4,7 +4,6 @@ import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.planning.rpc.PlanFile;
-
 import java.io.Closeable;
 import java.util.List;
 import java.util.Map;
@@ -47,8 +46,5 @@ public interface MetacatConnector extends Closeable {
       TableStats tableStats,
       List<ColumnStats> columnStats) {}
 
-  record PlanBundle(
-     List<PlanFile> dataFiles,
-     List<PlanFile> deleteFiles
-  ) {}
+  record PlanBundle(List<PlanFile> dataFiles, List<PlanFile> deleteFiles) {}
 }
