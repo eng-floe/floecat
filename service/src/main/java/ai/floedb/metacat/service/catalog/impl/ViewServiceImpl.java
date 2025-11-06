@@ -46,7 +46,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
 
-  private static final Set<String> TABLE_MUTABLE_PATHS =
+  private static final Set<String> VIEW_MUTABLE_PATHS =
       Set.of("display_name", "description", "sql", "properties", "catalog_id", "namespace_id");
 
   private static final Logger LOG = Logger.getLogger(ViewService.class);
