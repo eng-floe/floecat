@@ -18,6 +18,7 @@ import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.repo.impl.*;
 import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
+import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -329,11 +330,13 @@ public class ConnectorIT {
                 .build());
 
     // rename u-a -> u-a1
+    FieldMask mask = FieldMask.newBuilder().addPaths("display_name").build();
     var ok =
         connectors.updateConnector(
             UpdateConnectorRequest.newBuilder()
                 .setConnectorId(a.getResourceId())
                 .setSpec(ConnectorSpec.newBuilder().setDisplayName("u-a1"))
+                .setUpdateMask(mask)
                 .build());
     assertEquals("u-a1", ok.getConnector().getDisplayName());
 
@@ -346,6 +349,7 @@ public class ConnectorIT {
                     UpdateConnectorRequest.newBuilder()
                         .setConnectorId(b.getResourceId())
                         .setSpec(ConnectorSpec.newBuilder().setDisplayName("u-a1"))
+                        .setUpdateMask(mask)
                         .build()));
 
     TestSupport.assertGrpcAndMc(
@@ -365,6 +369,7 @@ public class ConnectorIT {
                 .setDestination(dest("cat-pre"))
                 .build());
 
+    FieldMask mask = FieldMask.newBuilder().addPaths("uri").build();
     var ex =
         assertThrows(
             StatusRuntimeException.class,
@@ -373,6 +378,7 @@ public class ConnectorIT {
                     UpdateConnectorRequest.newBuilder()
                         .setConnectorId(c.getResourceId())
                         .setSpec(ConnectorSpec.newBuilder().setUri("dummy://changed"))
+                        .setUpdateMask(mask)
                         .setPrecondition(
                             Precondition.newBuilder().setExpectedVersion(9999)) // wrong version
                         .build()));

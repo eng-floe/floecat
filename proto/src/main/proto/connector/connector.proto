@@ -7,6 +7,7 @@ import "common/common.proto";
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/duration.proto";
+import "google/protobuf/field_mask.proto";
 
 enum ConnectorKind {
   CK_UNSPECIFIED = 0;
@@ -22,7 +23,7 @@ message NamespacePath {
 
 message SourceSelector {
   NamespacePath namespace = 1;
-  string table = 2;
+  optional string table = 2;
   repeated string columns = 3;
 }
 
@@ -81,12 +82,12 @@ message ReconcilePolicy {
 }
 
 message ConnectorSpec {
-  string display_name = 1;
+  optional string display_name = 1;
   optional string description = 2;
   ConnectorKind kind = 3;
   SourceSelector source = 10;
   DestinationTarget destination = 11;
-  string uri = 20;
+  optional string uri = 20;
   AuthConfig auth = 21;
   ReconcilePolicy policy = 30;
   map<string,string> properties = 99;
@@ -121,6 +122,7 @@ message UpdateConnectorRequest {
   ai.floedb.metacat.common.ResourceId connector_id = 1;
   ConnectorSpec spec = 2;
   ai.floedb.metacat.common.Precondition precondition = 3;
+  google.protobuf.FieldMask update_mask = 4;
 }
 message UpdateConnectorResponse {
   Connector connector = 1;

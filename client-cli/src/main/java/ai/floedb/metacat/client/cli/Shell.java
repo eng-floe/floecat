@@ -1244,12 +1244,28 @@ public class Shell implements Runnable {
         Map<String, String> properties = parseKeyValueList(args, "--props");
 
         var spec = ConnectorSpec.newBuilder();
+        var mask = new LinkedHashSet<String>();
 
-        if (!display.isBlank()) spec.setDisplayName(display);
-        if (!description.isBlank()) spec.setDescription(description);
-        if (!kindStr.isBlank()) spec.setKind(parseConnectorKind(kindStr));
-        if (!uri.isBlank()) spec.setUri(uri);
-        if (!properties.isEmpty()) spec.putAllProperties(properties);
+        if (!display.isBlank()) {
+          spec.setDisplayName(display);
+          mask.add("display_name");
+        }
+        if (!description.isBlank()) {
+          spec.setDescription(description);
+          mask.add("description");
+        }
+        if (!kindStr.isBlank()) {
+          spec.setKind(parseConnectorKind(kindStr));
+          mask.add("kind");
+        }
+        if (!uri.isBlank()) {
+          spec.setUri(uri);
+          mask.add("uri");
+        }
+        if (!properties.isEmpty()) {
+          spec.putAllProperties(properties);
+          mask.add("properties");
+        }
 
         boolean authSet =
             !authScheme.isBlank()
@@ -1258,10 +1274,22 @@ public class Shell implements Runnable {
                 || !secretRef.isBlank();
         if (authSet) {
           var ab = AuthConfig.newBuilder();
-          if (!authScheme.isBlank()) ab.setScheme(authScheme);
-          if (!secretRef.isBlank()) ab.setSecretRef(secretRef);
-          if (!authProps.isEmpty()) ab.putAllProperties(authProps);
-          if (!headerHints.isEmpty()) ab.putAllHeaderHints(headerHints);
+          if (!authScheme.isBlank()) {
+            ab.setScheme(authScheme);
+            mask.add("auth.scheme");
+          }
+          if (!secretRef.isBlank()) {
+            ab.setSecretRef(secretRef);
+            mask.add("auth.secret_ref");
+          }
+          if (!authProps.isEmpty()) {
+            ab.putAllProperties(authProps);
+            mask.add("auth.properties");
+          }
+          if (!headerHints.isEmpty()) {
+            ab.putAllHeaderHints(headerHints);
+            mask.add("auth.header_hints");
+          }
           spec.setAuth(ab);
         }
 
@@ -1269,39 +1297,75 @@ public class Shell implements Runnable {
             !policyEnabledStr.isBlank() || intervalSec != 0L || maxPar != 0 || notBeforeSec != 0L;
         if (policySet) {
           var pb = ReconcilePolicy.newBuilder();
-          if (!policyEnabledStr.isBlank()) pb.setEnabled(Boolean.parseBoolean(policyEnabledStr));
-          if (maxPar != 0) pb.setMaxParallel(maxPar);
-          if (notBeforeSec != 0L) pb.setNotBefore(tsSeconds(notBeforeSec));
-          if (intervalSec != 0L) pb.setInterval(durSeconds(intervalSec));
+          if (!policyEnabledStr.isBlank()) {
+            pb.setEnabled(Boolean.parseBoolean(policyEnabledStr));
+            mask.add("policy.enabled");
+          }
+          if (intervalSec != 0L) {
+            pb.setInterval(durSeconds(intervalSec));
+            mask.add("policy.interval");
+          }
+          if (maxPar != 0) {
+            pb.setMaxParallel(maxPar);
+            mask.add("policy.max_parallel");
+          }
+          if (notBeforeSec != 0L) {
+            pb.setNotBefore(tsSeconds(notBeforeSec));
+            mask.add("policy.not_before");
+          }
           spec.setPolicy(pb);
         }
 
         boolean sourceSet = !sourceNs.isBlank() || !sourceTable.isBlank() || !sourceCols.isEmpty();
         if (sourceSet) {
           var src = SourceSelector.newBuilder();
-          if (!sourceNs.isBlank()) src.setNamespace(toNsPath(sourceNs));
-          if (!sourceTable.isBlank()) src.setTable(sourceTable);
-          if (!sourceCols.isEmpty()) src.addAllColumns(sourceCols);
+          if (!sourceNs.isBlank()) {
+            src.setNamespace(toNsPath(sourceNs));
+            mask.add("source.namespace");
+          }
+          if (!sourceTable.isBlank()) {
+            src.setTable(sourceTable);
+            mask.add("source.table");
+          }
+          if (!sourceCols.isEmpty()) {
+            src.addAllColumns(sourceCols);
+            mask.add("source.columns");
+          }
           spec.setSource(src);
         }
 
         boolean destSet = !destCatalog.isBlank() || !destNs.isBlank() || !destTable.isBlank();
         if (destSet) {
           var dst = DestinationTarget.newBuilder();
-          if (!destCatalog.isBlank()) dst.setCatalogDisplayName(destCatalog);
-          if (!destNs.isBlank()) dst.setNamespace(toNsPath(destNs));
-          if (!destTable.isBlank()) dst.setTableDisplayName(destTable);
+          if (!destCatalog.isBlank()) {
+            dst.setCatalogDisplayName(destCatalog);
+            mask.add("destination.catalog_display_name");
+          }
+          if (!destNs.isBlank()) {
+            dst.setNamespace(toNsPath(destNs));
+            mask.add("destination.namespace");
+          }
+          if (!destTable.isBlank()) {
+            dst.setTableDisplayName(destTable);
+            mask.add("destination.table_display_name");
+          }
           spec.setDestination(dst);
         }
 
-        var resp =
-            connectors.updateConnector(
-                UpdateConnectorRequest.newBuilder()
-                    .setConnectorId(connectorId)
-                    .setSpec(spec.build())
-                    .setPrecondition(preconditionFromEtag(args))
-                    .build());
+        if (mask.isEmpty()) {
+          out.println("Nothing to update. Provide one or more flags to change.");
+          return;
+        }
 
+        var req =
+            UpdateConnectorRequest.newBuilder()
+                .setConnectorId(connectorId)
+                .setSpec(spec.build())
+                .setPrecondition(preconditionFromEtag(args))
+                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build())
+                .build();
+
+        var resp = connectors.updateConnector(req);
         printConnectors(List.of(resp.getConnector()));
       }
       case "delete" -> {

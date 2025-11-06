@@ -57,6 +57,8 @@ public class ReconcilerService {
             ? stored.getDestination().toBuilder()
             : DestinationTarget.newBuilder();
 
+    FieldMask.Builder dmaskB = FieldMask.newBuilder();
+
     if (stored.getState() != ConnectorState.CS_ACTIVE) {
       return new Result(
           0, 0, 1, new IllegalStateException("Connector not ACTIVE: " + connectorId.getId()));
@@ -88,6 +90,7 @@ public class ReconcilerService {
         destCatalogId = ensureCatalog(destCatalogDisplay, connector);
         destB.setCatalogId(destCatalogId);
         destB.clearCatalogDisplayName();
+        dmaskB.addAllPaths(List.of("destination.catalog_id", "destination.catalog_display_name"));
       }
 
       final String sourceNsFq;
@@ -122,6 +125,7 @@ public class ReconcilerService {
       } else {
         destB.setNamespaceId(destNamespaceId);
         destB.clearNamespace();
+        dmaskB.addAllPaths(List.of("destination.namespace_id", "destination.namespace"));
       }
 
       final List<String> tables =
@@ -169,6 +173,7 @@ public class ReconcilerService {
           if (singleTableMode && !destB.hasTableId()) {
             destB.setTableId(destTableId);
             destB.clearTableDisplayName();
+            dmaskB.addAllPaths(List.of("destination.table_id", "destination.table_display_name"));
           }
 
           var bundles =
@@ -192,7 +197,8 @@ public class ReconcilerService {
       }
 
       DestinationTarget updated = destB.build();
-      if (!updated.equals(stored.getDestination())) {
+      FieldMask dMask = dmaskB.build();
+      if (!updated.equals(stored.getDestination()) && dMask.getPathsCount() > 0) {
         try {
           clients
               .connector()
@@ -200,6 +206,7 @@ public class ReconcilerService {
                   UpdateConnectorRequest.newBuilder()
                       .setConnectorId(stored.getResourceId())
                       .setSpec(ConnectorSpec.newBuilder().setDestination(updated).build())
+                      .setUpdateMask(dMask)
                       .build());
         } catch (StatusRuntimeException e) {
           errors++;
