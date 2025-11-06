@@ -2,6 +2,7 @@ package ai.floedb.metacat.service.connector.impl;
 
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.connector.rpc.AuthConfig;
 import ai.floedb.metacat.connector.rpc.Connector;
 import ai.floedb.metacat.connector.rpc.ConnectorKind;
 import ai.floedb.metacat.connector.rpc.ConnectorSpec;
@@ -11,6 +12,7 @@ import ai.floedb.metacat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.metacat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.metacat.connector.rpc.DeleteConnectorRequest;
 import ai.floedb.metacat.connector.rpc.DeleteConnectorResponse;
+import ai.floedb.metacat.connector.rpc.DestinationTarget;
 import ai.floedb.metacat.connector.rpc.GetConnectorRequest;
 import ai.floedb.metacat.connector.rpc.GetConnectorResponse;
 import ai.floedb.metacat.connector.rpc.GetReconcileJobRequest;
@@ -19,6 +21,8 @@ import ai.floedb.metacat.connector.rpc.JobState;
 import ai.floedb.metacat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.metacat.connector.rpc.ListConnectorsResponse;
 import ai.floedb.metacat.connector.rpc.NamespacePath;
+import ai.floedb.metacat.connector.rpc.ReconcilePolicy;
+import ai.floedb.metacat.connector.rpc.SourceSelector;
 import ai.floedb.metacat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.metacat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.metacat.connector.rpc.UpdateConnectorRequest;
@@ -42,12 +46,14 @@ import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
+import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -60,6 +66,35 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject ReconcileJobStore jobs;
+
+  static final Set CONNECTOR_MUTABLE_PATHS =
+      Set.of(
+          "display_name",
+          "description",
+          "kind",
+          "uri",
+          "properties",
+          "source",
+          "source.namespace",
+          "source.table",
+          "source.columns",
+          "destination",
+          "destination.catalog_id",
+          "destination.catalog_display_name",
+          "destination.namespace",
+          "destination.namespace_id",
+          "destination.table_display_name",
+          "destination.table_id",
+          "auth",
+          "auth.scheme",
+          "auth.secret_ref",
+          "auth.header_hints",
+          "auth.properties",
+          "policy",
+          "policy.interval",
+          "policy.enabled",
+          "policy.max_parallel",
+          "policy.not_before");
 
   private static final Logger LOG = Logger.getLogger(Connectors.class);
 
@@ -293,7 +328,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                 () -> {
                   var pc = principalProvider.get();
                   var corr = pc.getCorrelationId();
-
                   authz.require(pc, "connector.manage");
 
                   var connectorId = request.getConnectorId();
@@ -307,43 +341,18 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                   GrpcErrors.notFound(
                                       corr, "connector", Map.of("id", connectorId.getId())));
 
-                  var tsNow = nowTs();
-                  var spec = request.getSpec();
+                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
+                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                  }
 
                   var desired =
-                      current.toBuilder()
-                          .setDisplayName(
-                              spec.getDisplayName().isBlank()
-                                  ? current.getDisplayName()
-                                  : spec.getDisplayName())
-                          .setKind(
-                              spec.getKind() == ConnectorKind.CK_UNSPECIFIED
-                                  ? current.getKind()
-                                  : spec.getKind())
-                          .setUri(spec.getUri().isBlank() ? current.getUri() : spec.getUri())
-                          .clearProperties()
-                          .putAllProperties(
-                              spec.getPropertiesMap().isEmpty()
-                                  ? current.getPropertiesMap()
-                                  : spec.getPropertiesMap())
-                          .setAuth(spec.hasAuth() ? spec.getAuth() : current.getAuth())
-                          .setPolicy(spec.hasPolicy() ? spec.getPolicy() : current.getPolicy())
-                          .setUpdatedAt(tsNow);
+                      applyConnectorSpecPatch(
+                              current, request.getSpec(), request.getUpdateMask(), corr)
+                          .toBuilder()
+                          .setUpdatedAt(nowTs())
+                          .build();
 
-                  if (spec.hasDescription()) {
-                    desired.setDescription(spec.getDescription());
-                  }
-
-                  if (spec.hasSource()) {
-                    desired.setSource(spec.getSource());
-                  }
-                  if (spec.hasDestination()) {
-                    desired.setDestination(spec.getDestination());
-                  }
-
-                  var out = desired.build();
-
-                  if (out.equals(current)) {
+                  if (desired.equals(current)) {
                     var metaNoop = connectorRepo.metaForSafe(connectorId);
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, metaNoop, request.getPrecondition());
@@ -356,14 +365,14 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   MutationOps.updateWithPreconditions(
                       () -> connectorRepo.metaFor(connectorId),
                       request.getPrecondition(),
-                      expected -> connectorRepo.update(out, expected),
+                      expected -> connectorRepo.update(desired, expected),
                       () -> connectorRepo.metaForSafe(connectorId),
                       corr,
                       "connector",
-                      Map.of("display_name", out.getDisplayName()));
+                      Map.of("display_name", desired.getDisplayName()));
 
                   var outMeta = connectorRepo.metaForSafe(connectorId);
-                  var outConnector = connectorRepo.getById(connectorId).orElse(out);
+                  var outConnector = connectorRepo.getById(connectorId).orElse(desired);
 
                   return UpdateConnectorResponse.newBuilder()
                       .setConnector(outConnector)
@@ -596,6 +605,287 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
               return List.copyOf(cleaned);
             })
         .toList();
+  }
+
+  private Connector applyConnectorSpecPatch(
+      Connector current, ConnectorSpec spec, FieldMask mask, String corr) {
+
+    var paths = normalizedMaskPaths(mask);
+    if (paths.isEmpty()) {
+      throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+    }
+    for (var p : paths) {
+      if (!CONNECTOR_MUTABLE_PATHS.contains(p)) {
+        throw GrpcErrors.invalidArgument(corr, "update_mask.path.invalid", Map.of("path", p));
+      }
+    }
+
+    var b = current.toBuilder();
+
+    if (maskTargets(mask, "display_name")) {
+      if (!spec.hasDisplayName() || normalizeName(spec.getDisplayName()).isBlank()) {
+        throw GrpcErrors.invalidArgument(corr, "display_name.cannot_clear", Map.of());
+      }
+      b.setDisplayName(normalizeName(spec.getDisplayName()));
+    }
+
+    if (maskTargets(mask, "description")) {
+      if (spec.hasDescription()) {
+        b.setDescription(spec.getDescription());
+      } else {
+        b.clearDescription();
+      }
+    }
+
+    if (maskTargets(mask, "kind")) {
+      if (spec.getKind() == ConnectorKind.CK_UNSPECIFIED) {
+        throw GrpcErrors.invalidArgument(corr, "field", Map.of("field", "kind"));
+      }
+      b.setKind(spec.getKind());
+    }
+
+    if (maskTargets(mask, "uri")) {
+      if (!spec.hasUri() || spec.getUri().isBlank()) {
+        throw GrpcErrors.invalidArgument(corr, "field", Map.of("field", "uri"));
+      }
+      b.setUri(spec.getUri());
+    }
+
+    if (maskTargets(mask, "properties")) {
+      b.clearProperties().putAllProperties(spec.getPropertiesMap());
+    }
+
+    var curSrc = current.hasSource() ? current.getSource() : SourceSelector.getDefaultInstance();
+    var inSrc = spec.hasSource() ? spec.getSource() : SourceSelector.getDefaultInstance();
+
+    if (maskTargets(mask, "source")) {
+      if (!(inSrc.hasNamespace() && inSrc.getNamespace().getSegmentsCount() > 0)) {
+        throw GrpcErrors.invalidArgument(
+            corr, "connector.missing_source_namespace", Map.of("field", "source.namespace"));
+      }
+      b.setSource(inSrc);
+    } else if (maskTargetsUnder(mask, "source")) {
+      var sb = curSrc.toBuilder();
+
+      if (maskTargets(mask, "source.namespace")) {
+        if (!(inSrc.hasNamespace() && inSrc.getNamespace().getSegmentsCount() > 0)) {
+          throw GrpcErrors.invalidArgument(
+              corr, "connector.missing_source_namespace", Map.of("field", "source.namespace"));
+        }
+        sb.setNamespace(inSrc.getNamespace());
+      }
+
+      if (maskTargets(mask, "source.table")) {
+        if (inSrc.hasTable()) {
+          sb.setTable(inSrc.getTable());
+        } else {
+          sb.clearTable();
+        }
+      }
+
+      if (maskTargets(mask, "source.columns")) {
+        sb.clearColumns().addAllColumns(inSrc.getColumnsList());
+      }
+
+      b.setSource(sb.build());
+    }
+
+    var curDst =
+        current.hasDestination()
+            ? current.getDestination()
+            : DestinationTarget.getDefaultInstance();
+    var inDst =
+        spec.hasDestination() ? spec.getDestination() : DestinationTarget.getDefaultInstance();
+
+    if (maskTargets(mask, "destination")) {
+      boolean hasCatalogRef =
+          inDst.hasCatalogId()
+              || (inDst.hasCatalogDisplayName() && !inDst.getCatalogDisplayName().isBlank());
+      boolean hasNamespaceRef =
+          inDst.hasNamespaceId()
+              || (inDst.hasNamespace() && inDst.getNamespace().getSegmentsCount() > 0);
+
+      if (!hasCatalogRef) {
+        throw GrpcErrors.invalidArgument(
+            corr, "connector.missing_destination_catalog", Map.of("field", "destination.catalog"));
+      }
+      if (!hasNamespaceRef) {
+        throw GrpcErrors.invalidArgument(corr, "field", Map.of("field", "destination.namespace"));
+      }
+      if (inDst.hasCatalogId()) {
+        ensureKind(
+            inDst.getCatalogId(), ResourceKind.RK_CATALOG, "spec.destination.catalog_id", corr);
+      }
+      if (inDst.hasNamespaceId()) {
+        ensureKind(
+            inDst.getNamespaceId(),
+            ResourceKind.RK_NAMESPACE,
+            "spec.destination.namespace_id",
+            corr);
+      }
+      if (inDst.hasTableId()) {
+        ensureKind(inDst.getTableId(), ResourceKind.RK_TABLE, "spec.destination.table_id", corr);
+      }
+      b.setDestination(inDst);
+
+    } else if (maskTargetsUnder(mask, "destination")) {
+      var db = curDst.toBuilder();
+
+      boolean touchingCatalogRef =
+          maskTargets(mask, "destination.catalog_id")
+              || maskTargets(mask, "destination.catalog_display_name");
+      if (touchingCatalogRef) {
+        boolean incomingHasCatalog =
+            inDst.hasCatalogId()
+                || (inDst.hasCatalogDisplayName() && !inDst.getCatalogDisplayName().isBlank());
+        if (!incomingHasCatalog) {
+          throw GrpcErrors.invalidArgument(
+              corr,
+              "connector.missing_destination_catalog",
+              Map.of("field", "destination.catalog"));
+        }
+        if (inDst.hasCatalogId()) {
+          ensureKind(
+              inDst.getCatalogId(), ResourceKind.RK_CATALOG, "spec.destination.catalog_id", corr);
+          db.setCatalogId(inDst.getCatalogId());
+        } else {
+          db.setCatalogDisplayName(inDst.getCatalogDisplayName());
+        }
+      }
+
+      boolean touchingNamespaceRef =
+          maskTargets(mask, "destination.namespace_id")
+              || maskTargets(mask, "destination.namespace");
+      if (touchingNamespaceRef) {
+        boolean incomingHasNs =
+            inDst.hasNamespaceId()
+                || (inDst.hasNamespace() && inDst.getNamespace().getSegmentsCount() > 0);
+        if (!incomingHasNs) {
+          throw GrpcErrors.invalidArgument(corr, "field", Map.of("field", "destination.namespace"));
+        }
+        if (inDst.hasNamespaceId()) {
+          ensureKind(
+              inDst.getNamespaceId(),
+              ResourceKind.RK_NAMESPACE,
+              "spec.destination.namespace_id",
+              corr);
+          db.setNamespaceId(inDst.getNamespaceId());
+        } else {
+          db.setNamespace(inDst.getNamespace());
+        }
+      }
+
+      if (maskTargets(mask, "destination.table_id")) {
+        if (inDst.hasTableId()) {
+          ensureKind(inDst.getTableId(), ResourceKind.RK_TABLE, "spec.destination.table_id", corr);
+          db.setTableId(inDst.getTableId());
+        } else {
+          db.clearTableId();
+        }
+      }
+      if (maskTargets(mask, "destination.table_display_name")) {
+        if (inDst.hasTableDisplayName()) {
+          db.setTableDisplayName(inDst.getTableDisplayName());
+        } else {
+          db.clearTableDisplayName();
+        }
+      }
+
+      b.setDestination(db.build());
+    }
+
+    var curAuth = current.hasAuth() ? current.getAuth() : AuthConfig.getDefaultInstance();
+    var inAuth = spec.hasAuth() ? spec.getAuth() : AuthConfig.getDefaultInstance();
+
+    if (maskTargets(mask, "auth")) {
+      b.setAuth(inAuth);
+    } else if (maskTargetsUnder(mask, "auth")) {
+      var ab = curAuth.toBuilder();
+
+      if (maskTargets(mask, "auth.scheme")) {
+        if (inAuth.getScheme() != null && !inAuth.getScheme().isBlank()) {
+          ab.setScheme(inAuth.getScheme());
+        } else {
+          ab.clearScheme();
+        }
+      }
+      if (maskTargets(mask, "auth.secret_ref")) {
+        if (inAuth.getSecretRef() != null && !inAuth.getSecretRef().isBlank()) {
+          ab.setSecretRef(inAuth.getSecretRef());
+        } else {
+          ab.clearSecretRef();
+        }
+      }
+      if (maskTargets(mask, "auth.header_hints")) {
+        ab.clearHeaderHints().putAllHeaderHints(inAuth.getHeaderHintsMap());
+      }
+      if (maskTargets(mask, "auth.properties")) {
+        ab.clearProperties().putAllProperties(inAuth.getPropertiesMap());
+      }
+
+      b.setAuth(ab.build());
+    }
+
+    var curPol = current.hasPolicy() ? current.getPolicy() : ReconcilePolicy.getDefaultInstance();
+    var inPol = spec.hasPolicy() ? spec.getPolicy() : ReconcilePolicy.getDefaultInstance();
+
+    if (maskTargets(mask, "policy")) {
+      b.setPolicy(inPol);
+    } else if (maskTargetsUnder(mask, "policy")) {
+      var pb = curPol.toBuilder();
+      if (maskTargets(mask, "policy.interval")) {
+        if (inPol.hasInterval()) {
+          pb.setInterval(inPol.getInterval());
+        } else {
+          pb.clearInterval();
+        }
+      }
+      if (maskTargets(mask, "policy.enabled")) {
+        pb.setEnabled(inPol.getEnabled());
+      }
+      if (maskTargets(mask, "policy.max_parallel")) {
+        pb.setMaxParallel(inPol.getMaxParallel());
+      }
+      if (maskTargets(mask, "policy.not_before")) {
+        if (inPol.hasNotBefore()) {
+          pb.setNotBefore(inPol.getNotBefore());
+        } else {
+          pb.clearNotBefore();
+        }
+      }
+      b.setPolicy(pb.build());
+    }
+
+    var out = b.build();
+
+    boolean touchedDest = maskTargets(mask, "destination") || maskTargetsUnder(mask, "destination");
+    boolean touchedSrc = maskTargets(mask, "source") || maskTargetsUnder(mask, "source");
+
+    if (touchedDest) {
+      var d = out.getDestination();
+      boolean hasCatalogRef =
+          d.hasCatalogId() || (d.hasCatalogDisplayName() && !d.getCatalogDisplayName().isBlank());
+      if (!hasCatalogRef) {
+        throw GrpcErrors.invalidArgument(
+            corr, "connector.missing_destination_catalog", Map.of("field", "destination.catalog"));
+      }
+      boolean hasNamespaceRef =
+          d.hasNamespaceId() || (d.hasNamespace() && d.getNamespace().getSegmentsCount() > 0);
+      if (!hasNamespaceRef) {
+        throw GrpcErrors.invalidArgument(corr, "field", Map.of("field", "destination.namespace"));
+      }
+    }
+
+    if (touchedSrc && out.hasSource()) {
+      var s = out.getSource();
+      boolean hasNs = s.hasNamespace() && s.getNamespace().getSegmentsCount() > 0;
+      if (!hasNs) {
+        throw GrpcErrors.invalidArgument(
+            corr, "connector.missing_source_namespace", Map.of("field", "source.namespace"));
+      }
+    }
+
+    return out;
   }
 
   private static byte[] canonicalFingerprint(ConnectorSpec s) {
