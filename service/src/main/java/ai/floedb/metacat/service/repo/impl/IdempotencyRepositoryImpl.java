@@ -23,6 +23,14 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
 
   private static final int CAS_MAX = 10;
 
+  @Inject
+  public IdempotencyRepositoryImpl(PointerStore ptr, BlobStore blobs) {
+    this.ptr = ptr;
+    this.blobs = blobs;
+  }
+
+  public IdempotencyRepositoryImpl() {}
+
   @Override
   public Optional<IdempotencyRecord> get(String key) {
     var p = ptr.get(key);

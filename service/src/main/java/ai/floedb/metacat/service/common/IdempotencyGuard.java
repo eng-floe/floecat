@@ -176,7 +176,9 @@ public final class IdempotencyGuard {
           tenantId, key, opName, requestHash, created.resourceId(), meta, payload, now, expiresAt);
       return created.resource();
     } catch (Throwable t) {
-      store.delete(key);
+      if (iCreated) {
+        store.delete(key);
+      }
       throw t;
     }
   }
