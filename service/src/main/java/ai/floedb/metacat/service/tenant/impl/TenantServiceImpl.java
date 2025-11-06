@@ -26,10 +26,12 @@ import ai.floedb.metacat.tenant.rpc.TenantService;
 import ai.floedb.metacat.tenant.rpc.TenantSpec;
 import ai.floedb.metacat.tenant.rpc.UpdateTenantRequest;
 import ai.floedb.metacat.tenant.rpc.UpdateTenantResponse;
+import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.Map;
+import java.util.Set;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -39,6 +41,8 @@ public class TenantServiceImpl extends BaseServiceImpl implements TenantService 
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
+
+  private static final Set<String> TENANT_MUTABLE_PATHS = Set.of("display_name", "description");
 
   private static final Logger LOG = Logger.getLogger(TenantService.class);
 
@@ -197,15 +201,14 @@ public class TenantServiceImpl extends BaseServiceImpl implements TenantService 
                                   GrpcErrors.notFound(
                                       corr, "tenant", Map.of("id", tenantId.getId())));
 
-                  var desiredName =
-                      mustNonEmpty(request.getSpec().getDisplayName(), "display_name", corr);
-                  var desiredDesc = request.getSpec().getDescription();
+                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
+                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                  }
 
-                  var desired =
-                      current.toBuilder()
-                          .setDisplayName(desiredName)
-                          .setDescription(desiredDesc)
-                          .build();
+                  var spec = request.getSpec();
+                  var mask = request.getUpdateMask();
+
+                  var desired = applyTenantSpecPatch(current, spec, mask, corr);
 
                   if (desired.equals(current)) {
                     var metaNoop = tenantRepo.metaForSafe(tenantId);
@@ -224,7 +227,7 @@ public class TenantServiceImpl extends BaseServiceImpl implements TenantService 
                       () -> tenantRepo.metaForSafe(tenantId),
                       corr,
                       "tenant",
-                      Map.of("display_name", desiredName));
+                      Map.of("display_name", desired.getDisplayName()));
 
                   var outMeta = tenantRepo.metaForSafe(tenantId);
                   var latest = tenantRepo.getById(tenantId).orElse(desired);
@@ -281,6 +284,41 @@ public class TenantServiceImpl extends BaseServiceImpl implements TenantService 
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private Tenant applyTenantSpecPatch(
+      Tenant current, TenantSpec spec, FieldMask mask, String corr) {
+
+    var paths = normalizedMaskPaths(mask);
+    if (paths.isEmpty()) {
+      throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+    }
+
+    for (var p : paths) {
+      if (!TENANT_MUTABLE_PATHS.contains(p)) {
+        throw GrpcErrors.invalidArgument(corr, "update_mask.path.invalid", Map.of("path", p));
+      }
+    }
+
+    var b = current.toBuilder();
+
+    if (maskTargets(mask, "display_name")) {
+      var name = spec.getDisplayName();
+      if (name == null || name.isBlank()) {
+        throw GrpcErrors.invalidArgument(corr, "display_name.required", Map.of());
+      }
+      b.setDisplayName(name);
+    }
+
+    if (maskTargets(mask, "description")) {
+      if (spec.hasDescription()) {
+        b.setDescription(spec.getDescription());
+      } else {
+        b.clearDescription();
+      }
+    }
+
+    return b.build();
   }
 
   private static byte[] canonicalFingerprint(TenantSpec s) {

@@ -17,11 +17,13 @@ import ai.floedb.metacat.tenant.rpc.ListTenantsRequest;
 import ai.floedb.metacat.tenant.rpc.TenantServiceGrpc;
 import ai.floedb.metacat.tenant.rpc.TenantSpec;
 import ai.floedb.metacat.tenant.rpc.UpdateTenantRequest;
+import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -78,6 +80,8 @@ class TenantMutationIT {
     var id = created.getTenant().getResourceId();
     assertEquals(ResourceKind.RK_TENANT, id.getKind());
 
+    FieldMask mask =
+        FieldMask.newBuilder().addAllPaths(List.of("display_name", "description")).build();
     var upd1 =
         tenancy.updateTenant(
             UpdateTenantRequest.newBuilder()
@@ -87,6 +91,7 @@ class TenantMutationIT {
                         .setDisplayName(tenantPrefix + "t_pre")
                         .setDescription("desc1")
                         .build())
+                .setUpdateMask(mask)
                 .build());
 
     var m1 = upd1.getMeta();
@@ -105,6 +110,7 @@ class TenantMutationIT {
                         .setDisplayName(expectedName)
                         .setDescription("desc2")
                         .build())
+                .setUpdateMask(mask)
                 .setPrecondition(
                     Precondition.newBuilder()
                         .setExpectedVersion(m1.getPointerVersion())
@@ -140,6 +146,7 @@ class TenantMutationIT {
                             TenantSpec.newBuilder()
                                 .setDisplayName(tenantPrefix + "t_pre_3")
                                 .build())
+                        .setUpdateMask(mask)
                         .setPrecondition(
                             Precondition.newBuilder()
                                 .setExpectedVersion(424242L)

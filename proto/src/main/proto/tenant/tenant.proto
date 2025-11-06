@@ -9,17 +9,18 @@ option java_outer_classname = "TenantProto";
 import "common/common.proto";
 
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/field_mask.proto";
 
 message Tenant {
   ai.floedb.metacat.common.ResourceId resource_id = 1;
   string display_name = 2;
-  string description = 3;
+  optional string description = 3;
   google.protobuf.Timestamp created_at = 10;
 }
 
 message TenantSpec {
-  string display_name = 1;
-  string description = 2;
+  optional string display_name = 1;
+  optional string description = 2;
 }
 
 // ====== Requests / Responses ======
@@ -54,7 +55,9 @@ message GetTenantResponse {
 message UpdateTenantRequest {
   ai.floedb.metacat.common.ResourceId tenant_id = 1;
   TenantSpec spec = 2;
+  google.protobuf.FieldMask update_mask = 3;
   ai.floedb.metacat.common.Precondition precondition = 98;
+
 }
 
 message UpdateTenantResponse {
