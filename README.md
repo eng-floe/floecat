@@ -39,6 +39,7 @@ You can also run per-module tests:
 make unit-test
 make integration-test
 ```
+
 ## Examples
 
 The Metacat APIs can be accessed with a gRPC client, for example, `grpcurl`. To do so, start the server with `make run`,
@@ -63,6 +64,7 @@ grpcurl -plaintext \
   }' \
   localhost:9100 ai.floedb.metacat.catalog.NamespaceService/ListNamespaces
 ```
+
 ### ListTables
 
 ```bash
@@ -105,20 +107,24 @@ The supported shell commands and options are:
 Commands:
 tenant <id>
 catalogs
-catalog create <display_name> [--desc <text>] [--connector <id>] [--policy <id>] [--opt k=v ...]
+catalog create <display_name> [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...]
 catalog get <display_name|id>
-catalog update <display_name|id> [--display <name>] [--desc <text>] [--connector <id>] [--policy <id>] [--opt k=v ...] [--etag <etag>]
+catalog update <display_name|id> [--display <name>] [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...] [--etag <etag>]
 catalog delete <display_name|id> [--require-empty] [--etag <etag>]
 namespaces (<catalog | catalog.ns[.ns...]> | <UUID>) [--id <UUID>] [--prefix P] [--recursive]
-namespace create <catalog.ns[.ns...]> [--desc <text>] [--ann k=v ...] [--policy <id>]
+namespace create <catalog.ns[.ns...]> [--desc <text>] [--props k=v ...] [--policy <id>]
 namespace get <id | catalog.ns[.ns...]>
-namespace update <id|fq> [--display <name>] [--path ns1.ns2... | ns1/ns2/...] [--catalog <catalogName|id>] [--etag <etag>]
+namespace update <id|catalog.ns[.ns...]>
+    [--display <name>] [--desc <text>]
+    [--policy <ref>] [--props k=v ...]
+    [--path a.b[.c]] [--catalog <id|name>]
+    [--etag <etag>]
 namespace delete <id|fq> [--require-empty] [--etag <etag>]
 tables <catalog.ns[.ns...][.prefix]>
-table create <catalog.ns[.ns...].name> [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v ...]
+table create <catalog.ns[.ns...].name> [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...]
     [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
 table get <id|catalog.ns[.ns...].table>
-table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--prop k=v ...] [--etag <etag>]
+table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...] [--etag <etag>]
     [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
 table delete <id|fq> [--purge-stats] [--purge-snaps] [--etag <etag>]
 resolve table <fq> | resolve view <fq> | resolve catalog <name> | resolve namespace <fq>
@@ -136,20 +142,21 @@ connector get <display_name|id>
 connector create <display_name> <source_type (ICEBERG|DELTA|GLUE|UNITY)> <uri> <source_namespace (a[.b[.c]...])> <destination_catalog (name)>
     [--source-table <name>] [--source-cols c1,#id2,...]
     [--dest-ns <a.b[.c]>] [--dest-table <name>]
-    [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
+    [--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...]
+    [--head k=v ...] [--secret <ref>]
     [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
-    [--policy-not-before-epoch <sec>] [--opt k=v ...]
+    [--policy-not-before-epoch <sec>] [--props k=v ...]
 connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
     [--dest-tenant <tenant>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
     [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
     [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-max-par <n>]
-    [--policy-not-before-epoch <sec>] [--opt k=v ...] [--etag <etag>]
+    [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]
 connector delete <display_name|id>  [--etag <etag>]
 connector validate <kind> <uri>
     [--dest-tenant <tenant>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
     [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
     [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
-    [--policy-not-before-epoch <sec>] [--opt k=v ...]
+    [--policy-not-before-epoch <sec>] [--props k=v ...]
 connector trigger <display_name|id> [--full]
 connector job <jobId>
 help
@@ -207,7 +214,8 @@ Pointers to the blobs capture the hierarchical relationships between tenants, ca
 This arrangement allows fast name to id resolution and listing.
 
 Each level (Catalog, Namespace, Table, Snapshot) is represented by:
- - BlobStore → immutable protobuf payloads (catalog.pb, namespace.pb, table.pb, snapshot.pb,...)
- - PointerStore → lightweight key→blob mappings with versions for fast enumeration and CAS updates.
+
+- BlobStore → immutable protobuf payloads (catalog.pb, namespace.pb, table.pb, snapshot.pb,...)
+- PointerStore → lightweight key→blob mappings with versions for fast enumeration and CAS updates.
 
 There are two pointer/blob store implementations right now. The first is a simple in memory pointer and blob store for testing. The second uses AWS DynamoDB as the pointer store and AWS S3 as the blob store. The choice of pointer and blob store can be configured in the `application.properties` file.
