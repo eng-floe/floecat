@@ -6,19 +6,29 @@ import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.util.TestSupport;
+import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.InMemoryBlobStore;
 import ai.floedb.metacat.storage.InMemoryPointerStore;
+import ai.floedb.metacat.storage.PointerStore;
 import java.util.List;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class CatalogRepositoryTest {
+  private CatalogRepository catalogRepo;
+  private PointerStore ptr;
+  private BlobStore blobs;
+
+  @BeforeEach
+  void setUp() {
+    ptr = new InMemoryPointerStore();
+    blobs = new InMemoryBlobStore();
+    catalogRepo = new CatalogRepository(ptr, blobs);
+  }
+
   @Test
   void putAndGetRoundTrip() {
-    var ptr = new InMemoryPointerStore();
-    var blobs = new InMemoryBlobStore();
-    var catalogRepo = new CatalogRepository(ptr, blobs);
-
     String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
     var rid =
         ResourceId.newBuilder()

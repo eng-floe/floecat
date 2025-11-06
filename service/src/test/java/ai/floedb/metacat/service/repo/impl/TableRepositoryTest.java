@@ -13,8 +13,10 @@ import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.util.TestSupport;
+import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.InMemoryBlobStore;
 import ai.floedb.metacat.storage.InMemoryPointerStore;
+import ai.floedb.metacat.storage.PointerStore;
 import com.google.protobuf.util.Timestamps;
 import java.time.Clock;
 import java.util.ArrayList;
@@ -28,23 +30,36 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 class TableRepositoryTest {
   private final Clock clock = Clock.systemUTC();
-  private final InMemoryPointerStore ptr = new InMemoryPointerStore();
-  private final InMemoryBlobStore blobs = new InMemoryBlobStore();
-  private final SnapshotRepository snapshotRepo = new SnapshotRepository(ptr, blobs);
-  private final TableRepository tableRepo = new TableRepository(ptr, blobs);
-  private final NamespaceRepository nsRepo = new NamespaceRepository(ptr, blobs);
-  private final CatalogRepository catRepo = new CatalogRepository(ptr, blobs);
+
   private final String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
+
+  private CatalogRepository catalogRepo;
+  private NamespaceRepository namespaceRepo;
+  private TableRepository tableRepo;
+  private SnapshotRepository snapshotRepo;
+  private PointerStore ptr;
+  private BlobStore blobs;
+
+  @BeforeEach
+  void setUp() {
+    ptr = new InMemoryPointerStore();
+    blobs = new InMemoryBlobStore();
+    catalogRepo = new CatalogRepository(ptr, blobs);
+    namespaceRepo = new NamespaceRepository(ptr, blobs);
+    tableRepo = new TableRepository(ptr, blobs);
+    snapshotRepo = new SnapshotRepository(ptr, blobs);
+  }
 
   private ResourceId createTable(String catalogName, String namespaceName, String tableName) {
     ResourceId catalogId;
-    if (catRepo.getByName(tenant, catalogName).isPresent()) {
-      catalogId = catRepo.getByName(tenant, catalogName).get().getResourceId();
+    if (catalogRepo.getByName(tenant, catalogName).isPresent()) {
+      catalogId = catalogRepo.getByName(tenant, catalogName).get().getResourceId();
     } else {
       catalogId =
           ResourceId.newBuilder()
@@ -58,13 +73,16 @@ class TableRepositoryTest {
               .setDisplayName(catalogName)
               .setDescription("description")
               .build();
-      catRepo.create(cat);
+      catalogRepo.create(cat);
     }
 
     ResourceId namespaceId;
-    if (nsRepo.getByPath(tenant, catalogId.getId(), List.of(namespaceName)).isPresent()) {
+    if (namespaceRepo.getByPath(tenant, catalogId.getId(), List.of(namespaceName)).isPresent()) {
       namespaceId =
-          nsRepo.getByPath(tenant, catalogId.getId(), List.of(namespaceName)).get().getResourceId();
+          namespaceRepo
+              .getByPath(tenant, catalogId.getId(), List.of(namespaceName))
+              .get()
+              .getResourceId();
     } else {
       namespaceId =
           ResourceId.newBuilder()
@@ -79,7 +97,7 @@ class TableRepositoryTest {
               .setDescription("description")
               .setCatalogId(catalogId)
               .build();
-      nsRepo.create(ns);
+      namespaceRepo.create(ns);
     }
 
     return createTable(catalogId, namespaceId, tableName);
@@ -213,14 +231,14 @@ class TableRepositoryTest {
     var tblId = rid(tenant, ResourceKind.RK_TABLE);
 
     var cat = Catalog.newBuilder().setResourceId(catId).setDisplayName("sales").build();
-    catRepo.create(cat);
-    nsRepo.create(
+    catalogRepo.create(cat);
+    namespaceRepo.create(
         Namespace.newBuilder()
             .setResourceId(ns1Id)
             .setDisplayName("ns1")
             .setCatalogId(catId)
             .build());
-    nsRepo.create(
+    namespaceRepo.create(
         Namespace.newBuilder()
             .setResourceId(ns2Id)
             .setDisplayName("ns2")

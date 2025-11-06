@@ -10,8 +10,10 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.util.TestSupport;
+import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.InMemoryBlobStore;
 import ai.floedb.metacat.storage.InMemoryPointerStore;
+import ai.floedb.metacat.storage.PointerStore;
 import com.google.protobuf.util.Timestamps;
 import java.time.Clock;
 import java.util.UUID;
@@ -23,19 +25,28 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 class SnapshotRepositoryTest {
   private final Clock clock = Clock.systemUTC();
 
+  private TableRepository tableRepo;
+  private SnapshotRepository snapshotRepo;
+  private PointerStore ptr;
+  private BlobStore blobs;
+
+  @BeforeEach
+  void setUp() {
+    ptr = new InMemoryPointerStore();
+    blobs = new InMemoryBlobStore();
+    tableRepo = new TableRepository(ptr, blobs);
+    snapshotRepo = new SnapshotRepository(ptr, blobs);
+  }
+
   @Test
   void snapshotRepoCreateSnapshot() {
-    var ptr = new InMemoryPointerStore();
-    var blobs = new InMemoryBlobStore();
-    var snapshotRepo = new SnapshotRepository(ptr, blobs);
-    var tableRepo = new TableRepository(ptr, blobs);
-
     String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
     String catalogId = UUID.randomUUID().toString();
     String nsId = UUID.randomUUID().toString();
@@ -127,10 +138,6 @@ class SnapshotRepositoryTest {
   @Test
   @Timeout(20)
   void snapshotRepoCreateConcurrentSnapshots() throws Exception {
-    var ptr = new InMemoryPointerStore();
-    var blobs = new InMemoryBlobStore();
-    var snaps = new SnapshotRepository(ptr, blobs);
-
     String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
     var tblId =
         ResourceId.newBuilder()
@@ -163,7 +170,7 @@ class SnapshotRepositoryTest {
               try {
                 for (int j = 0; j < 5; j++) {
                   try {
-                    snaps.create(snap);
+                    snapshotRepo.create(snap);
                   } catch (BaseResourceRepository.AbortRetryableException e) {
                     Thread.sleep(5L * (1L << j));
                   }
@@ -195,16 +202,16 @@ class SnapshotRepositoryTest {
     assertTrue(unexpected.isEmpty(), "unexpected exceptions: " + unexpected.size());
     assertTrue(conflicts.sum() >= 0, "should have some conflicts");
 
-    var cur = snaps.getCurrentSnapshot(tblId).orElseThrow();
+    var cur = snapshotRepo.getCurrentSnapshot(tblId).orElseThrow();
     assertTrue(cur.getSnapshotId() >= 160, "current snapshot must be in expected range");
 
     var next = new StringBuilder();
-    var first = snaps.list(tblId, 5, "", next);
+    var first = snapshotRepo.list(tblId, 5, "", next);
     assertTrue(first.size() <= 5);
     var token = next.toString();
     if (!token.isEmpty()) {
       next.setLength(0);
-      var second = snaps.list(tblId, 5, token, next);
+      var second = snapshotRepo.list(tblId, 5, token, next);
       assertTrue(second.size() >= 0);
     }
   }

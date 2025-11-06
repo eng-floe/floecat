@@ -7,19 +7,31 @@ import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.util.TestSupport;
+import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.InMemoryBlobStore;
 import ai.floedb.metacat.storage.InMemoryPointerStore;
+import ai.floedb.metacat.storage.PointerStore;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class NamespaceRepositoryTest {
+
+  private CatalogRepository catalogRepo;
+  private NamespaceRepository namespaceRepo;
+  private PointerStore ptr;
+  private BlobStore blobs;
+
+  @BeforeEach
+  void setUp() {
+    ptr = new InMemoryPointerStore();
+    blobs = new InMemoryBlobStore();
+    catalogRepo = new CatalogRepository(ptr, blobs);
+    namespaceRepo = new NamespaceRepository(ptr, blobs);
+  }
+
   @Test
   void putAndGetRoundTrip() {
-    var ptr = new InMemoryPointerStore();
-    var blob = new InMemoryBlobStore();
-    var repo = new NamespaceRepository(ptr, blob);
-    var catRepo = new CatalogRepository(ptr, blob);
-
     String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
     var catRid =
         ResourceId.newBuilder()
@@ -29,7 +41,7 @@ class NamespaceRepositoryTest {
             .build();
 
     Catalog cat = Catalog.newBuilder().setResourceId(catRid).setDisplayName("sales").build();
-    catRepo.create(cat);
+    catalogRepo.create(cat);
 
     var nsRid =
         ResourceId.newBuilder()
@@ -45,9 +57,9 @@ class NamespaceRepositoryTest {
             .setDescription("Core namespace")
             .setCatalogId(catRid)
             .build();
-    repo.create(ns);
+    namespaceRepo.create(ns);
 
-    var fetched = repo.getById(nsRid).orElseThrow();
+    var fetched = namespaceRepo.getById(nsRid).orElseThrow();
     assertEquals("core", fetched.getDisplayName());
   }
 }
