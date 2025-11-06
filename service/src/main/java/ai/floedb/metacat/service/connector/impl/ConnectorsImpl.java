@@ -67,7 +67,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   @Inject IdempotencyRepository idempotencyStore;
   @Inject ReconcileJobStore jobs;
 
-  static final Set CONNECTOR_MUTABLE_PATHS =
+  private static final Set<String> CONNECTOR_MUTABLE_PATHS =
       Set.of(
           "display_name",
           "description",
