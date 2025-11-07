@@ -260,4 +260,3 @@ This repo enforces branch protections and CI, so please follow these steps:
 
 6. **Security**
    - Do not include secrets in code or tests.
-
