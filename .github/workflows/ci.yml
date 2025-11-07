@@ -3,6 +3,7 @@ name: ci
 on:
   pull_request:
     types: [opened, synchronize]
+  workflow_dispatch: {} 
 
 jobs:
   build-test:
