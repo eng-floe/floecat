@@ -5,6 +5,7 @@ on:
 
 jobs:
   build-test:
+    name: ci-build
     runs-on: ubuntu-latest
     permissions:
       contents: read
