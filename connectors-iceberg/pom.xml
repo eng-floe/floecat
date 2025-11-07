@@ -11,7 +11,7 @@
   <artifactId>metacat-connectors-iceberg</artifactId>
 
   <properties>
-    <iceberg.version>1.9.2</iceberg.version>
+    <iceberg.version>1.10.0</iceberg.version>
     <hadoop.version>3.4.2</hadoop.version>
     <aws.sdk.version>2.38.1</aws.sdk.version>
   </properties>
