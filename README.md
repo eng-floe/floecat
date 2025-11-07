@@ -219,3 +219,45 @@ Each level (Catalog, Namespace, Table, Snapshot) is represented by:
 - PointerStore → lightweight key→blob mappings with versions for fast enumeration and CAS updates.
 
 There are two pointer/blob store implementations right now. The first is a simple in memory pointer and blob store for testing. The second uses AWS DynamoDB as the pointer store and AWS S3 as the blob store. The choice of pointer and blob store can be configured in the `application.properties` file.
+
+## Contributing
+
+This repo enforces branch protections and CI, so please follow these steps:
+
+1. **Fork or branch**
+   - Internal contributors: create a feature branch from `main`.
+   - External contributors: fork the repo.
+
+2. **Develop**
+   - Make changes and keep commits focused.
+   - Add unit/integration tests.
+   - Format Java code locally:
+
+     ```bash
+     make fmt
+     ```
+
+   - Run the full test suite:
+
+     ```bash
+     make verify
+     ```
+
+3. **Open a Pull Request**
+   - Target branch: `main`
+   - CI will run:
+     - Build & tests (`make verify`)
+     - Formatting check (`make fmt`)
+   - PRs require at least one approval and all checks to pass.
+   - Merge method: **Squash merge**.
+
+4. **Commit messages**
+   - Prefer conventional commits (e.g., `feat: ...`, `fix: ...`, `chore: ...`, `docs: ...`, `test: ...`).
+
+5. **Code style**
+   - Java: Google Java Format (enforced by CI).
+   - Use `.editorconfig` defaults for whitespace/newlines.
+
+6. **Security**
+   - Do not include secrets in code or tests.
+
