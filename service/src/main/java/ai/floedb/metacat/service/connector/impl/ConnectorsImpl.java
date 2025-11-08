@@ -205,7 +205,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                     .build();
 
                             var spec = request.getSpec();
-
                             var display = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
                             var uri = mustNonEmpty(spec.getUri(), "uri", corr);
 
@@ -215,7 +214,67 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                               throw GrpcErrors.invalidArgument(
                                   corr,
                                   "connector.missing_destination_catalog",
-                                  Map.of("field", "destination.catalog_id|catalog_display_name"));
+                                  Map.of("id", "destination.catalog_id|catalog_display_name"));
+                            }
+
+                            var dest = spec.getDestination();
+                            var destB = dest.toBuilder();
+
+                            if (dest.hasCatalogDisplayName() && !dest.hasCatalogId()) {
+                              final String dName = dest.getCatalogDisplayName().trim();
+                              catalogRepo
+                                  .getByName(tenantId, dName)
+                                  .ifPresentOrElse(
+                                      cat -> {
+                                        destB.setCatalogId(cat.getResourceId());
+                                        destB.clearCatalogDisplayName();
+                                      },
+                                      () -> {
+                                        throw GrpcErrors.notFound(
+                                            corr,
+                                            "connector.destination_catalog_not_found",
+                                            Map.of("display_name", dName));
+                                      });
+                            }
+
+                            if (destB.hasCatalogId()) {
+                              var catId = destB.getCatalogId();
+                              if (!tenantId.equals(catId.getTenantId())) {
+                                throw GrpcErrors.invalidArgument(
+                                    corr,
+                                    "connector.destination_catalog_cross_tenant",
+                                    Map.of(
+                                        "field",
+                                        "destination.catalog_id",
+                                        "tenant_id",
+                                        catId.getTenantId()));
+                              }
+                              if (catalogRepo.getById(catId).isEmpty()) {
+                                throw GrpcErrors.notFound(
+                                    corr,
+                                    "connector.destination_catalog_not_found",
+                                    Map.of("display_name", catId.getId()));
+                              }
+                            }
+
+                            if (dest.hasCatalogId() && dest.hasCatalogDisplayName()) {
+                              var byName =
+                                  catalogRepo.getByName(
+                                      tenantId, dest.getCatalogDisplayName().trim());
+                              if (byName.isEmpty()
+                                  || !byName
+                                      .get()
+                                      .getResourceId()
+                                      .getId()
+                                      .equals(dest.getCatalogId().getId())) {
+                                throw GrpcErrors.invalidArgument(
+                                    corr,
+                                    "connector.destination_catalog_mismatch",
+                                    Map.of(
+                                        "catalog_id", dest.getCatalogId().getId(),
+                                        "catalog_display_name", dest.getCatalogDisplayName()));
+                              }
+                              destB.clearCatalogDisplayName();
                             }
 
                             if (!spec.hasSource()
@@ -225,6 +284,35 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                   corr,
                                   "connector.missing_source_namespace",
                                   Map.of("field", "source.namespace"));
+                            }
+
+                            if (destB.hasCatalogId()
+                                && dest.hasNamespace()
+                                && !dest.hasNamespaceId()) {
+                              NamespacePath dNs = dest.getNamespace();
+                              namespaceRepo
+                                  .getByPath(
+                                      tenantId, destB.getCatalogId().getId(), dNs.getSegmentsList())
+                                  .ifPresent(
+                                      ns -> {
+                                        destB.setNamespaceId(ns.getResourceId());
+                                        destB.clearNamespace();
+                                      });
+                            }
+
+                            if (destB.hasCatalogId()
+                                && destB.hasNamespaceId()
+                                && dest.hasTableDisplayName()
+                                && !dest.hasTableId()) {
+                              String dTbl = dest.getTableDisplayName();
+                              tableRepo
+                                  .getByName(
+                                      tenantId,
+                                      destB.getCatalogId().getId(),
+                                      destB.getNamespaceId().getId(),
+                                      dTbl)
+                                  .ifPresent(tbl -> destB.setTableId(tbl.getResourceId()));
+                              destB.clearTableDisplayName();
                             }
 
                             var builder =
@@ -240,60 +328,10 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                     .setUpdatedAt(tsNow)
                                     .setState(ConnectorState.CS_ACTIVE);
 
-                            if (spec.hasDescription()) {
+                            if (spec.hasDescription())
                               builder.setDescription(spec.getDescription());
-                            }
-                            if (spec.hasSource()) {
-                              builder.setSource(spec.getSource());
-                            }
-                            if (spec.hasDestination()) {
-                              var dest = spec.getDestination();
-                              var destB = dest.toBuilder();
-
-                              if (dest.hasCatalogDisplayName() && !dest.hasCatalogId()) {
-                                String dCat = dest.getCatalogDisplayName();
-                                catalogRepo
-                                    .getByName(tenantId, dCat)
-                                    .ifPresent(
-                                        cat -> {
-                                          destB.setCatalogId(cat.getResourceId());
-                                          destB.clearCatalogDisplayName();
-                                        });
-                              }
-
-                              ResourceId catalogId =
-                                  destB.hasCatalogId() ? destB.getCatalogId() : null;
-
-                              if (catalogId != null
-                                  && dest.hasNamespace()
-                                  && !dest.hasNamespaceId()) {
-                                NamespacePath dNs = dest.getNamespace();
-                                namespaceRepo
-                                    .getByPath(tenantId, catalogId.getId(), dNs.getSegmentsList())
-                                    .ifPresent(
-                                        ns -> {
-                                          destB.setNamespaceId(ns.getResourceId());
-                                          destB.clearNamespace();
-                                        });
-                              }
-
-                              ResourceId namespaceId =
-                                  destB.hasNamespaceId() ? destB.getNamespaceId() : null;
-
-                              if (catalogId != null
-                                  && namespaceId != null
-                                  && dest.hasTableDisplayName()
-                                  && !dest.hasTableId()) {
-                                String dTbl = dest.getTableDisplayName();
-                                tableRepo
-                                    .getByName(
-                                        tenantId, catalogId.getId(), namespaceId.getId(), dTbl)
-                                    .ifPresent(tbl -> destB.setTableId(tbl.getResourceId()));
-                                destB.clearTableDisplayName();
-                              }
-
-                              builder.setDestination(destB.build());
-                            }
+                            if (spec.hasSource()) builder.setSource(spec.getSource());
+                            builder.setDestination(destB.build());
 
                             var connector = builder.build();
                             connectorRepo.create(connector);

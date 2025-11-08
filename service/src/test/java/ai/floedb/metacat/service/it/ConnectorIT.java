@@ -2,6 +2,7 @@ package ai.floedb.metacat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.metacat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.IdempotencyKey;
@@ -37,6 +38,9 @@ public class ConnectorIT {
   @GrpcClient("metacat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
+  @GrpcClient("metacat")
+  CatalogServiceGrpc.CatalogServiceBlockingStub catalogService;
+
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerScheduler scheduler;
   @Inject CatalogRepository catalogs;
@@ -71,6 +75,7 @@ public class ConnectorIT {
   @Test
   void connectorEndToEnd() throws Exception {
     var tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
+    TestSupport.createCatalog(catalogService, "cat-e2e", "");
     var conn =
         TestSupport.createConnector(
             connectors,
@@ -167,6 +172,18 @@ public class ConnectorIT {
     Assumptions.assumeTrue(enabled, "Disabled by test.glue.enabled=false");
 
     var tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
+
+    var src =
+        SourceSelector.newBuilder()
+            .setNamespace(
+                NamespacePath.newBuilder().addAllSegments(List.of("tpcds_iceberg")).build())
+            .setTable("call_center")
+            .build();
+
+    TestSupport.createCatalog(catalogService, "glue-iceberg-rest", "");
+
+    var dst = DestinationTarget.newBuilder().setCatalogDisplayName("glue-iceberg-rest").build();
+
     var conn =
         TestSupport.createConnector(
             connectors,
@@ -174,6 +191,7 @@ public class ConnectorIT {
                 .setDisplayName("Glue Iceberg")
                 .setKind(ConnectorKind.CK_ICEBERG)
                 .setUri("https://glue.us-east-1.amazonaws.com/iceberg/")
+                .setSource(src)
                 .setDestination(dest("glue-iceberg-rest"))
                 .setAuth(AuthConfig.newBuilder().setScheme("aws-sigv4").build())
                 .build());
@@ -234,6 +252,7 @@ public class ConnectorIT {
 
   @Test
   void createConnectorIdempotent() {
+    TestSupport.createCatalog(catalogService, "cat-idem", "");
     var spec =
         ConnectorSpec.newBuilder()
             .setDisplayName("idem-1")
@@ -276,6 +295,7 @@ public class ConnectorIT {
 
   @Test
   void listConnectorsPagination() {
+    TestSupport.createCatalog(catalogService, "cat-p", "");
     for (int i = 0; i < 5; i++) {
       TestSupport.createConnector(
           connectors,
@@ -306,7 +326,7 @@ public class ConnectorIT {
 
   @Test
   void updateConnectorRenameConflict() throws Exception {
-
+    TestSupport.createCatalog(catalogService, "cat-u", "");
     var a =
         TestSupport.createConnector(
             connectors,
@@ -358,6 +378,7 @@ public class ConnectorIT {
 
   @Test
   void updateConnectorPreconditionMismatch() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-pre", "");
     var c =
         TestSupport.createConnector(
             connectors,
@@ -389,6 +410,7 @@ public class ConnectorIT {
 
   @Test
   void deleteConnectorIdempotent() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-del", "");
     var c =
         TestSupport.createConnector(
             connectors,

@@ -179,17 +179,23 @@ public final class GrpcErrors {
       Throwable t) {
 
     Map<String, String> p = new LinkedHashMap<>();
-    if (params != null) p.putAll(params);
+    if (params != null) {
+      p.putAll(params);
+    }
 
     if (messageKey == null || messageKey.isBlank()) {
       if (t != null) {
         Throwable root = t;
-        while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+        while (root.getCause() != null && root.getCause() != root) {
+          root = root.getCause();
+        }
         p.put("error_class", t.getClass().getName());
         p.put("root_class", root.getClass().getName());
         p.put("cause", root.getClass().getSimpleName());
         String m = root.getMessage();
-        if (m != null && !m.isBlank()) p.putIfAbsent("root_message", m);
+        if (m != null && !m.isBlank()) {
+          p.putIfAbsent("root_message", m);
+        }
       } else {
         String inferred = p.getOrDefault("error_class", p.getOrDefault("root_class", "unknown"));
         String simple =

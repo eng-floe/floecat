@@ -1,7 +1,5 @@
 package ai.floedb.metacat.service.repo.model;
 
-import static java.util.Map.of;
-
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.Namespace;
@@ -25,7 +23,7 @@ public final class Schemas {
           "tenant",
           key -> Keys.tenantPointerById(key.tenantId()),
           key -> Keys.tenantBlobUri(key.tenantId()),
-          v -> of("byName", Keys.tenantPointerByName(v.getDisplayName())),
+          v -> Map.of("byName", Keys.tenantPointerByName(v.getDisplayName())),
           v -> new TenantKey(v.getResourceId().getId()));
 
   public static final ResourceSchema<Catalog, CatalogKey> CATALOG =
@@ -34,7 +32,7 @@ public final class Schemas {
           key -> Keys.catalogPointerById(key.tenantId(), key.catalogId()),
           key -> Keys.catalogBlobUri(key.tenantId(), key.catalogId()),
           v ->
-              of(
+              Map.of(
                   "byName",
                   Keys.catalogPointerByName(v.getResourceId().getTenantId(), v.getDisplayName())),
           v -> new CatalogKey(v.getResourceId().getTenantId(), v.getResourceId().getId()));
@@ -60,7 +58,7 @@ public final class Schemas {
           key -> Keys.tablePointerById(key.tenantId(), key.tableId()),
           key -> Keys.tableBlobUri(key.tenantId(), key.tableId()),
           v ->
-              of(
+              Map.of(
                   "byName",
                   Keys.tablePointerByName(
                       v.getResourceId().getTenantId(),
@@ -75,7 +73,7 @@ public final class Schemas {
           key -> Keys.snapshotPointerById(key.tenantId(), key.tableId(), key.snapshotId()),
           key -> Keys.snapshotBlobUri(key.tenantId(), key.tableId(), key.snapshotId()),
           v ->
-              of(
+              Map.of(
                   "byId",
                       Keys.snapshotPointerById(
                           v.getTableId().getTenantId(), v.getTableId().getId(), v.getSnapshotId()),
@@ -94,7 +92,7 @@ public final class Schemas {
                   Keys.snapshotTableStatsPointer(key.tenantId(), key.tableId(), key.snapshotId()),
               (TableStatsKey key) ->
                   Keys.snapshotTableStatsBlobUri(key.tenantId(), key.tableId(), key.sha256()),
-              (TableStats v) -> java.util.Map.of(),
+              (TableStats v) -> Map.of(),
               (TableStats v) -> {
                 var norm = TableStatsNormalizer.normalize(v);
                 var sha = TableStatsNormalizer.sha256Hex(norm.toByteArray());
@@ -112,7 +110,7 @@ public final class Schemas {
               (ColumnStatsKey key) ->
                   Keys.snapshotColumnStatsBlobUri(
                       key.tenantId(), key.tableId(), key.columnId(), key.sha256()),
-              (ColumnStats v) -> java.util.Map.of(),
+              (ColumnStats v) -> Map.of(),
               (ColumnStats v) -> {
                 var norm = ColumnStatsNormalizer.normalize(v);
                 var sha = ColumnStatsNormalizer.sha256Hex(norm.toByteArray());
@@ -131,7 +129,7 @@ public final class Schemas {
           key -> Keys.viewPointerById(key.tenantId(), key.viewId()),
           key -> Keys.viewBlobUri(key.tenantId(), key.viewId()),
           v ->
-              of(
+              Map.of(
                   "byName",
                   Keys.viewPointerByName(
                       v.getResourceId().getTenantId(),
@@ -146,7 +144,7 @@ public final class Schemas {
           key -> Keys.connectorPointerById(key.tenantId(), key.connectorId()),
           key -> Keys.connectorBlobUri(key.tenantId(), key.connectorId()),
           v ->
-              of(
+              Map.of(
                   "byName",
                   Keys.connectorPointerByName(v.getResourceId().getTenantId(), v.getDisplayName())),
           v -> new ConnectorKey(v.getResourceId().getTenantId(), v.getResourceId().getId()));

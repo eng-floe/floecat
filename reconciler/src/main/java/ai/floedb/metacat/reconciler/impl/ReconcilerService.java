@@ -52,17 +52,17 @@ public class ReconcilerService {
           0, 0, 1, new IllegalArgumentException("Connector not found: " + connectorId.getId(), e));
     }
 
+    if (stored.getState() != ConnectorState.CS_ACTIVE) {
+      return new Result(
+          0, 0, 1, new IllegalStateException("Connector not ACTIVE: " + connectorId.getId()));
+    }
+
     DestinationTarget.Builder destB =
         stored.hasDestination()
             ? stored.getDestination().toBuilder()
             : DestinationTarget.newBuilder();
 
     FieldMask.Builder dmaskB = FieldMask.newBuilder();
-
-    if (stored.getState() != ConnectorState.CS_ACTIVE) {
-      return new Result(
-          0, 0, 1, new IllegalStateException("Connector not ACTIVE: " + connectorId.getId()));
-    }
 
     final SourceSelector source =
         stored.hasSource() ? stored.getSource() : SourceSelector.getDefaultInstance();
@@ -72,26 +72,7 @@ public class ReconcilerService {
     var cfg = ConnectorConfigMapper.fromProto(stored);
 
     try (MetacatConnector connector = ConnectorFactory.create(cfg)) {
-      final ResourceId destCatalogId;
-      if (dest.hasCatalogId()) {
-        destCatalogId = dest.getCatalogId();
-      } else {
-        String destCatalogDisplay =
-            (dest.getCatalogDisplayName() == null || dest.getCatalogDisplayName().isBlank())
-                ? null
-                : dest.getCatalogDisplayName();
-        if (destCatalogDisplay == null) {
-          return new Result(
-              0,
-              0,
-              1,
-              new IllegalArgumentException("destination.catalog_display_name is required"));
-        }
-        destCatalogId = ensureCatalog(destCatalogDisplay, connector);
-        destB.setCatalogId(destCatalogId);
-        destB.clearCatalogDisplayName();
-        dmaskB.addAllPaths(List.of("destination.catalog_id", "destination.catalog_display_name"));
-      }
+      final ResourceId destCatalogId = dest.getCatalogId();
 
       final String sourceNsFq;
       if (source.hasNamespace() && !source.getNamespace().getSegmentsList().isEmpty()) {
@@ -229,32 +210,6 @@ public class ReconcilerService {
     } catch (Exception e) {
       return new Result(scanned, changed, errors, e);
     }
-  }
-
-  private ResourceId ensureCatalog(String displayName, MetacatConnector connector) {
-    try {
-      var response =
-          clients
-              .directory()
-              .resolveCatalog(
-                  ResolveCatalogRequest.newBuilder()
-                      .setRef(NameRef.newBuilder().setCatalog(displayName).build())
-                      .build());
-      return response.getResourceId();
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
-        throw e;
-      }
-    }
-    var request =
-        CreateCatalogRequest.newBuilder()
-            .setSpec(
-                CatalogSpec.newBuilder()
-                    .setDisplayName(displayName)
-                    .setConnectorRef(connector.id())
-                    .build())
-            .build();
-    return clients.catalog().createCatalog(request).getCatalog().getResourceId();
   }
 
   private ResourceId ensureNamespace(ResourceId catalogId, String namespaceFq) {

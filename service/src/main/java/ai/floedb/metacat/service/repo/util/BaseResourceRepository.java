@@ -112,11 +112,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     }
   }
 
-  private void reserveIndexOrIdempotent(String key, String blobUri) {
+  private boolean reserveIndexOrIdempotent(String key, String blobUri) {
     var reserve = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
 
     if (pointerStore.compareAndSet(key, 0L, reserve)) {
-      return;
+      return true;
     }
 
     var pointer = pointerStore.get(key).orElse(null);
@@ -128,21 +128,27 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     if (!blobUri.equals(pointer.getBlobUri())) {
       throw new NameConflictException("pointer bound to different blob: " + key);
     }
+
+    return false;
   }
 
   protected void reserveAllOrRollback(String... keyBlobPairs) {
-    final var reserved = new ArrayList<String>(keyBlobPairs.length / 2);
+    final var createdKeys = new ArrayList<String>(keyBlobPairs.length / 2);
     try {
-      for (int pairIndex = 0; pairIndex < keyBlobPairs.length; pairIndex += 2) {
-        final var key = keyBlobPairs[pairIndex];
-        final var blobUri = keyBlobPairs[pairIndex + 1];
-        reserveIndexOrIdempotent(key, blobUri);
-        reserved.add(key);
+      for (int i = 0; i < keyBlobPairs.length; i += 2) {
+        final var key = keyBlobPairs[i];
+        final var blobUri = keyBlobPairs[i + 1];
+        if (reserveIndexOrIdempotent(key, blobUri)) {
+          createdKeys.add(key);
+        }
       }
-    } catch (NameConflictException | AbortRetryableException e) {
-      for (int i = reserved.size() - 1; i >= 0; i--) {
-        final var k = reserved.get(i);
-        pointerStore.get(k).ifPresent(pointer -> compareAndDeleteOrFalse(k, pointer.getVersion()));
+    } catch (Throwable e) {
+      for (int i = createdKeys.size() - 1; i >= 0; i--) {
+        final var k = createdKeys.get(i);
+        try {
+          compareAndDeleteOrFalse(k, 1L);
+        } catch (Throwable ignore) {
+        }
       }
       throw e;
     }

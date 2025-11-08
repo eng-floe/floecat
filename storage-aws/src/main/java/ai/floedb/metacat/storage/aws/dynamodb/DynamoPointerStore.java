@@ -458,7 +458,9 @@ public final class DynamoPointerStore implements PointerStore {
 
   private static MappedPrefix mapPrefix(String prefix) {
     String p = prefix.startsWith("/") ? prefix.substring(1) : prefix;
-    if (!p.endsWith("/")) p = p + "/";
+    if (!p.endsWith("/")) {
+      p = p + "/";
+    }
 
     if (p.equals("tenants/")
         || p.equals("idempotency/")
