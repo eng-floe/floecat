@@ -48,7 +48,6 @@ import ai.floedb.metacat.catalog.rpc.UpdateCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.metacat.catalog.rpc.UpstreamRef;
-import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.Precondition;
@@ -106,7 +105,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.stream.Collectors;
 import org.jline.reader.Completer;
 import org.jline.reader.EndOfFileException;
@@ -426,9 +424,7 @@ public class Shell implements Runnable {
                 .putAllProperties(properties)
                 .setPolicyRef(nvl(policyRef, ""))
                 .build();
-        var resp =
-            catalogs.createCatalog(
-                CreateCatalogRequest.newBuilder().setSpec(spec).setIdempotency(newIdem()).build());
+        var resp = catalogs.createCatalog(CreateCatalogRequest.newBuilder().setSpec(spec).build());
         printCatalogs(List.of(resp.getCatalog()));
       }
       case "get" -> {
@@ -456,7 +452,7 @@ public class Shell implements Runnable {
         Map<String, String> properties = parseKeyValueList(args, "--props");
 
         var sb = CatalogSpec.newBuilder();
-        LinkedHashSet<String> mask = new java.util.LinkedHashSet<>();
+        LinkedHashSet<String> mask = new LinkedHashSet<>();
 
         if (display != null) {
           sb.setDisplayName(display);
@@ -604,11 +600,7 @@ public class Shell implements Runnable {
                 .build();
 
         var resp =
-            namespaces.createNamespace(
-                CreateNamespaceRequest.newBuilder()
-                    .setSpec(spec)
-                    .setIdempotency(newIdem())
-                    .build());
+            namespaces.createNamespace(CreateNamespaceRequest.newBuilder().setSpec(spec).build());
         printNamespaces(List.of(resp.getNamespace()));
       }
       case "get" -> {
@@ -829,9 +821,7 @@ public class Shell implements Runnable {
                 .putAllProperties(props)
                 .build();
 
-        var resp =
-            tables.createTable(
-                CreateTableRequest.newBuilder().setSpec(spec).setIdempotency(newIdem()).build());
+        var resp = tables.createTable(CreateTableRequest.newBuilder().setSpec(spec).build());
         printTable(resp.getTable());
       }
       case "get" -> {
@@ -1199,10 +1189,7 @@ public class Shell implements Runnable {
 
         var resp =
             connectors.createConnector(
-                CreateConnectorRequest.newBuilder()
-                    .setSpec(spec.build())
-                    .setIdempotency(newIdem())
-                    .build());
+                CreateConnectorRequest.newBuilder().setSpec(spec.build()).build());
         printConnectors(List.of(resp.getConnector()));
       }
       case "update" -> {
@@ -1467,7 +1454,7 @@ public class Shell implements Runnable {
             resp.getSummary(),
             resp.getCapabilitiesMap().entrySet().stream()
                 .map(e -> e.getKey() + "=" + e.getValue())
-                .collect(java.util.stream.Collectors.joining(",")));
+                .collect(Collectors.joining(",")));
       }
       case "trigger" -> {
         if (args.size() < 2) {
@@ -2719,10 +2706,6 @@ public class Shell implements Runnable {
       return Precondition.getDefaultInstance();
     }
     return Precondition.newBuilder().setExpectedEtag(etag).build();
-  }
-
-  private IdempotencyKey newIdem() {
-    return IdempotencyKey.newBuilder().setKey(UUID.randomUUID().toString()).build();
   }
 
   private String nvl(String s, String d) {

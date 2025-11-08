@@ -30,6 +30,7 @@ import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.Base64;
 import java.util.Map;
 import java.util.Set;
 import org.jboss.logging.Logger;
@@ -75,7 +76,6 @@ public class TenantServiceImpl extends BaseServiceImpl implements TenantService 
         .invoke(L::ok);
   }
 
-  @Override
   public Uni<GetTenantResponse> getTenant(GetTenantRequest request) {
     var L = LogHelper.start(LOG, "GetTenant");
 
@@ -113,19 +113,62 @@ public class TenantServiceImpl extends BaseServiceImpl implements TenantService 
     return mapFailures(
             runWithRetry(
                 () -> {
-                  final var principalContext = principal.get();
-                  final var correlationId = principalContext.getCorrelationId();
-                  final var tenantId = principalContext.getTenantId();
-
-                  authz.require(principalContext, "tenant.write");
+                  final var pc = principal.get();
+                  final var corr = pc.getCorrelationId();
+                  final var tenantId = pc.getTenantId();
+                  authz.require(pc, "tenant.write");
 
                   final var tsNow = nowTs();
 
-                  var fingerprint = canonicalFingerprint(request.getSpec());
-                  var idempotencyKey =
-                      request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
-                          ? request.getIdempotency().getKey()
-                          : hashFingerprint(fingerprint);
+                  final var spec = request.getSpec();
+                  final String rawName = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
+                  final String normName = normalizeName(rawName);
+
+                  final String explicitKey =
+                      request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
+                  final String idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
+
+                  final byte[] fingerprint = canonicalFingerprint(spec);
+
+                  final String tenantUuid =
+                      deterministicUuid(
+                          tenantId,
+                          "tenant",
+                          Base64.getUrlEncoder().withoutPadding().encodeToString(fingerprint));
+
+                  final var resourceId =
+                      ResourceId.newBuilder()
+                          .setTenantId(tenantId)
+                          .setId(tenantUuid)
+                          .setKind(ResourceKind.RK_TENANT)
+                          .build();
+
+                  final var desiredTenant =
+                      Tenant.newBuilder()
+                          .setResourceId(resourceId)
+                          .setDisplayName(normName)
+                          .setDescription(spec.getDescription())
+                          .setCreatedAt(tsNow)
+                          .build();
+
+                  if (idempotencyKey == null) {
+                    var existingOpt = tenantRepo.getByName(normName);
+                    if (existingOpt.isPresent()) {
+                      var existing = existingOpt.get();
+                      var meta = tenantRepo.metaForSafe(existing.getResourceId());
+                      return CreateTenantResponse.newBuilder()
+                          .setTenant(existing)
+                          .setMeta(meta)
+                          .build();
+                    }
+
+                    tenantRepo.create(desiredTenant);
+                    var meta = tenantRepo.metaForSafe(resourceId);
+                    return CreateTenantResponse.newBuilder()
+                        .setTenant(desiredTenant)
+                        .setMeta(meta)
+                        .build();
+                  }
 
                   var result =
                       MutationOps.createProto(
@@ -134,30 +177,8 @@ public class TenantServiceImpl extends BaseServiceImpl implements TenantService 
                           idempotencyKey,
                           () -> fingerprint,
                           () -> {
-                            final String tenantUuid =
-                                deterministicUuid(tenantId, "tenant", idempotencyKey);
-
-                            var resourceId =
-                                ResourceId.newBuilder()
-                                    .setTenantId(tenantId)
-                                    .setId(tenantUuid)
-                                    .setKind(ResourceKind.RK_TENANT)
-                                    .build();
-
-                            var tenant =
-                                Tenant.newBuilder()
-                                    .setResourceId(resourceId)
-                                    .setDisplayName(
-                                        mustNonEmpty(
-                                            request.getSpec().getDisplayName(),
-                                            "display_name",
-                                            correlationId))
-                                    .setDescription(request.getSpec().getDescription())
-                                    .setCreatedAt(tsNow)
-                                    .build();
-
-                            tenantRepo.create(tenant);
-                            return new IdempotencyGuard.CreateResult<>(tenant, resourceId);
+                            tenantRepo.create(desiredTenant);
+                            return new IdempotencyGuard.CreateResult<>(desiredTenant, resourceId);
                           },
                           (t) -> tenantRepo.metaFor(t.getResourceId()),
                           idempotencyStore,

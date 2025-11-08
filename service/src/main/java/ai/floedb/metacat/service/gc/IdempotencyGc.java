@@ -9,30 +9,28 @@ import ai.floedb.metacat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.time.Clock;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.eclipse.microprofile.config.ConfigProvider;
 
 @ApplicationScoped
 public class IdempotencyGc {
 
   @Inject BlobStore blobStore;
   @Inject PointerStore pointerStore;
-  @Inject Clock clock;
-
-  @ConfigProperty(name = "metacat.gc.idempotency.page-size", defaultValue = "200")
-  int pageSize;
-
-  @ConfigProperty(name = "metacat.gc.idempotency.batch-limit", defaultValue = "1000")
-  int batchLimit;
-
-  @ConfigProperty(name = "metacat.gc.idempotency.slice-millis", defaultValue = "4000")
-  long sliceMillis;
 
   public record Result(
       int scanned, int expired, int ptrDeleted, int blobDeleted, String nextToken) {}
 
   public Result runSliceForTenant(String tenantId, String pageTokenIn) {
-    final long deadline = clock.millis() + sliceMillis;
+    final var cfg = ConfigProvider.getConfig();
+
+    final int pageSize =
+        cfg.getOptionalValue("metacat.gc.idempotency.page-size", Integer.class).orElse(200);
+    final int batchLimit =
+        cfg.getOptionalValue("metacat.gc.idempotency.batch-limit", Integer.class).orElse(1000);
+    final long sliceMillis =
+        cfg.getOptionalValue("metacat.gc.idempotency.slice-millis", Long.class).orElse(4000L);
+
+    final long deadline = System.currentTimeMillis() + sliceMillis;
     final String prefix = Keys.idempotencyPrefixTenant(tenantId);
     String token = (pageTokenIn == null) ? "" : pageTokenIn;
 
@@ -41,33 +39,33 @@ public class IdempotencyGc {
     int ptrDeleted = 0;
     int blobDeleted = 0;
 
-    while (scanned < batchLimit && clock.millis() < deadline) {
-      StringBuilder nextTokenBuilder = new StringBuilder();
-      var pointers = pointerStore.listPointersByPrefix(prefix, pageSize, token, nextTokenBuilder);
-      token = nextTokenBuilder.toString();
-
+    while (scanned < batchLimit && System.currentTimeMillis() < deadline) {
+      StringBuilder nextToken = new StringBuilder();
+      var pointers = pointerStore.listPointersByPrefix(prefix, pageSize, token, nextToken);
+      token = nextToken.toString();
       if (pointers.isEmpty()) {
         break;
       }
 
       for (Pointer p : pointers) {
-        if (clock.millis() >= deadline || scanned >= batchLimit) break;
+        if (System.currentTimeMillis() >= deadline || scanned >= batchLimit) {
+          break;
+        }
+
         scanned++;
 
         boolean hasPtrExpiry = p.hasExpiresAt();
         boolean isExpiredByPtr =
-            hasPtrExpiry && Timestamps.toMillis(p.getExpiresAt()) <= clock.millis();
+            hasPtrExpiry && Timestamps.toMillis(p.getExpiresAt()) <= System.currentTimeMillis();
 
         if (isExpiredByPtr) {
           expired++;
           if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
             ptrDeleted++;
           }
-
           if (blobStore.delete(p.getBlobUri())) {
             blobDeleted++;
           }
-
           continue;
         }
 
@@ -93,7 +91,7 @@ public class IdempotencyGc {
 
           if (rec != null && rec.hasExpiresAt()) {
             long expMs = Timestamps.toMillis(rec.getExpiresAt());
-            if (expMs <= clock.millis()) {
+            if (expMs <= System.currentTimeMillis()) {
               expired++;
               if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
                 ptrDeleted++;
@@ -101,8 +99,6 @@ public class IdempotencyGc {
               if (blobStore.delete(p.getBlobUri())) {
                 blobDeleted++;
               }
-
-              continue;
             }
           }
         }

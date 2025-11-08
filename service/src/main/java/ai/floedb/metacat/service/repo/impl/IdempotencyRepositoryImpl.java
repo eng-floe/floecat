@@ -8,6 +8,7 @@ import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.repo.util.BaseResourceRepository.CorruptionException;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
+import ai.floedb.metacat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.metacat.storage.errors.StorageNotFoundException;
 import ai.floedb.metacat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.ByteString;
@@ -42,7 +43,8 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
       var bytes = blobs.get(p.get().getBlobUri());
       return Optional.of(IdempotencyRecord.parseFrom(bytes));
     } catch (StorageNotFoundException nf) {
-      return Optional.empty();
+      throw new StorageAbortRetryableException(
+          "idempotency blob not yet visible: " + p.get().getBlobUri());
     } catch (Exception e) {
       throw new CorruptionException(
           "failed to parse idempotency record: " + p.get().getBlobUri(), e);

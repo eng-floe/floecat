@@ -6,6 +6,7 @@ import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.*;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.gc.IdempotencyGc;
+import ai.floedb.metacat.service.it.profiles.GcOnProfile;
 import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
@@ -16,6 +17,7 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -27,6 +29,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
+@TestProfile(GcOnProfile.class)
 class ConcurrencyOCCIdempotencyIT {
 
   @GrpcClient("metacat")

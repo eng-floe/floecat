@@ -183,161 +183,176 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   var tsNow = nowTs();
                   var fp = canonicalFingerprint(request.getSpec());
-                  var idemKey =
-                      request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
-                          ? request.getIdempotency().getKey()
-                          : hashFingerprint(fp);
+                  var explicitKey =
+                      request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
+                  var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
-                  var connectorProto =
+                  var connUuid =
+                      deterministicUuid(
+                          tenantId,
+                          "connector",
+                          java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(fp));
+
+                  var connectorId =
+                      ResourceId.newBuilder()
+                          .setTenantId(tenantId)
+                          .setId(connUuid)
+                          .setKind(ResourceKind.RK_CONNECTOR)
+                          .build();
+
+                  var spec = request.getSpec();
+                  var display = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
+                  var uri = mustNonEmpty(spec.getUri(), "uri", corr);
+
+                  if (!spec.hasDestination()
+                      || (!spec.getDestination().hasCatalogId()
+                          && spec.getDestination().getCatalogDisplayName().isBlank())) {
+                    throw GrpcErrors.invalidArgument(
+                        corr,
+                        "connector.missing_destination_catalog",
+                        Map.of("id", "destination.catalog_id|catalog_display_name"));
+                  }
+
+                  var dest = spec.getDestination();
+                  var destB = dest.toBuilder();
+
+                  if (dest.hasCatalogDisplayName() && !dest.hasCatalogId()) {
+                    final String dName = dest.getCatalogDisplayName().trim();
+                    catalogRepo
+                        .getByName(tenantId, dName)
+                        .ifPresentOrElse(
+                            cat -> {
+                              destB.setCatalogId(cat.getResourceId());
+                              destB.clearCatalogDisplayName();
+                            },
+                            () -> {
+                              throw GrpcErrors.notFound(
+                                  corr,
+                                  "connector.destination_catalog_not_found",
+                                  Map.of("display_name", dName));
+                            });
+                  }
+
+                  if (destB.hasCatalogId()) {
+                    var catId = destB.getCatalogId();
+                    if (!tenantId.equals(catId.getTenantId())) {
+                      throw GrpcErrors.invalidArgument(
+                          corr,
+                          "connector.destination_catalog_cross_tenant",
+                          Map.of(
+                              "field", "destination.catalog_id", "tenant_id", catId.getTenantId()));
+                    }
+                    if (catalogRepo.getById(catId).isEmpty()) {
+                      throw GrpcErrors.notFound(
+                          corr,
+                          "connector.destination_catalog_not_found",
+                          Map.of("display_name", catId.getId()));
+                    }
+                  }
+
+                  if (dest.hasCatalogId() && dest.hasCatalogDisplayName()) {
+                    var byName =
+                        catalogRepo.getByName(tenantId, dest.getCatalogDisplayName().trim());
+                    if (byName.isEmpty()
+                        || !byName
+                            .get()
+                            .getResourceId()
+                            .getId()
+                            .equals(dest.getCatalogId().getId())) {
+                      throw GrpcErrors.invalidArgument(
+                          corr,
+                          "connector.destination_catalog_mismatch",
+                          Map.of(
+                              "catalog_id",
+                              dest.getCatalogId().getId(),
+                              "catalog_display_name",
+                              dest.getCatalogDisplayName()));
+                    }
+                    destB.clearCatalogDisplayName();
+                  }
+
+                  if (!spec.hasSource()
+                      || !spec.getSource().hasNamespace()
+                      || spec.getSource().getNamespace().getSegmentsCount() == 0) {
+                    throw GrpcErrors.invalidArgument(
+                        corr,
+                        "connector.missing_source_namespace",
+                        Map.of("field", "source.namespace"));
+                  }
+
+                  if (destB.hasCatalogId() && dest.hasNamespace() && !dest.hasNamespaceId()) {
+                    NamespacePath dNs = dest.getNamespace();
+                    namespaceRepo
+                        .getByPath(tenantId, destB.getCatalogId().getId(), dNs.getSegmentsList())
+                        .ifPresent(
+                            ns -> {
+                              destB.setNamespaceId(ns.getResourceId());
+                              destB.clearNamespace();
+                            });
+                  }
+
+                  if (destB.hasCatalogId()
+                      && destB.hasNamespaceId()
+                      && dest.hasTableDisplayName()
+                      && !dest.hasTableId()) {
+                    String dTbl = dest.getTableDisplayName();
+                    tableRepo
+                        .getByName(
+                            tenantId,
+                            destB.getCatalogId().getId(),
+                            destB.getNamespaceId().getId(),
+                            dTbl)
+                        .ifPresent(tbl -> destB.setTableId(tbl.getResourceId()));
+                    destB.clearTableDisplayName();
+                  }
+
+                  var builder =
+                      Connector.newBuilder()
+                          .setResourceId(connectorId)
+                          .setDisplayName(display)
+                          .setKind(spec.getKind())
+                          .setUri(uri)
+                          .putAllProperties(spec.getPropertiesMap())
+                          .setAuth(spec.getAuth())
+                          .setPolicy(spec.getPolicy())
+                          .setCreatedAt(tsNow)
+                          .setUpdatedAt(tsNow)
+                          .setState(ConnectorState.CS_ACTIVE);
+
+                  if (spec.hasDescription()) builder.setDescription(spec.getDescription());
+                  if (spec.hasSource()) builder.setSource(spec.getSource());
+                  builder.setDestination(destB.build());
+
+                  var connector = builder.build();
+
+                  if (idempotencyKey == null) {
+                    var existing = connectorRepo.getById(connectorId);
+                    if (existing.isPresent()) {
+                      var meta = connectorRepo.metaFor(existing.get().getResourceId());
+                      return CreateConnectorResponse.newBuilder()
+                          .setConnector(existing.get())
+                          .setMeta(meta)
+                          .build();
+                    }
+                    connectorRepo.create(connector);
+                    var meta = connectorRepo.metaFor(connectorId);
+                    return CreateConnectorResponse.newBuilder()
+                        .setConnector(connector)
+                        .setMeta(meta)
+                        .build();
+                  }
+
+                  var result =
                       MutationOps.createProto(
                           tenantId,
                           "CreateConnector",
-                          idemKey,
+                          idempotencyKey,
                           () -> fp,
                           () -> {
-                            String connUuid = deterministicUuid(tenantId, "connector", idemKey);
-
-                            var connectorId =
-                                ResourceId.newBuilder()
-                                    .setTenantId(tenantId)
-                                    .setId(connUuid)
-                                    .setKind(ResourceKind.RK_CONNECTOR)
-                                    .build();
-
-                            var spec = request.getSpec();
-                            var display = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
-                            var uri = mustNonEmpty(spec.getUri(), "uri", corr);
-
-                            if (!spec.hasDestination()
-                                || (!spec.getDestination().hasCatalogId()
-                                    && spec.getDestination().getCatalogDisplayName().isBlank())) {
-                              throw GrpcErrors.invalidArgument(
-                                  corr,
-                                  "connector.missing_destination_catalog",
-                                  Map.of("id", "destination.catalog_id|catalog_display_name"));
-                            }
-
-                            var dest = spec.getDestination();
-                            var destB = dest.toBuilder();
-
-                            if (dest.hasCatalogDisplayName() && !dest.hasCatalogId()) {
-                              final String dName = dest.getCatalogDisplayName().trim();
-                              catalogRepo
-                                  .getByName(tenantId, dName)
-                                  .ifPresentOrElse(
-                                      cat -> {
-                                        destB.setCatalogId(cat.getResourceId());
-                                        destB.clearCatalogDisplayName();
-                                      },
-                                      () -> {
-                                        throw GrpcErrors.notFound(
-                                            corr,
-                                            "connector.destination_catalog_not_found",
-                                            Map.of("display_name", dName));
-                                      });
-                            }
-
-                            if (destB.hasCatalogId()) {
-                              var catId = destB.getCatalogId();
-                              if (!tenantId.equals(catId.getTenantId())) {
-                                throw GrpcErrors.invalidArgument(
-                                    corr,
-                                    "connector.destination_catalog_cross_tenant",
-                                    Map.of(
-                                        "field",
-                                        "destination.catalog_id",
-                                        "tenant_id",
-                                        catId.getTenantId()));
-                              }
-                              if (catalogRepo.getById(catId).isEmpty()) {
-                                throw GrpcErrors.notFound(
-                                    corr,
-                                    "connector.destination_catalog_not_found",
-                                    Map.of("display_name", catId.getId()));
-                              }
-                            }
-
-                            if (dest.hasCatalogId() && dest.hasCatalogDisplayName()) {
-                              var byName =
-                                  catalogRepo.getByName(
-                                      tenantId, dest.getCatalogDisplayName().trim());
-                              if (byName.isEmpty()
-                                  || !byName
-                                      .get()
-                                      .getResourceId()
-                                      .getId()
-                                      .equals(dest.getCatalogId().getId())) {
-                                throw GrpcErrors.invalidArgument(
-                                    corr,
-                                    "connector.destination_catalog_mismatch",
-                                    Map.of(
-                                        "catalog_id", dest.getCatalogId().getId(),
-                                        "catalog_display_name", dest.getCatalogDisplayName()));
-                              }
-                              destB.clearCatalogDisplayName();
-                            }
-
-                            if (!spec.hasSource()
-                                || !spec.getSource().hasNamespace()
-                                || spec.getSource().getNamespace().getSegmentsCount() == 0) {
-                              throw GrpcErrors.invalidArgument(
-                                  corr,
-                                  "connector.missing_source_namespace",
-                                  Map.of("field", "source.namespace"));
-                            }
-
-                            if (destB.hasCatalogId()
-                                && dest.hasNamespace()
-                                && !dest.hasNamespaceId()) {
-                              NamespacePath dNs = dest.getNamespace();
-                              namespaceRepo
-                                  .getByPath(
-                                      tenantId, destB.getCatalogId().getId(), dNs.getSegmentsList())
-                                  .ifPresent(
-                                      ns -> {
-                                        destB.setNamespaceId(ns.getResourceId());
-                                        destB.clearNamespace();
-                                      });
-                            }
-
-                            if (destB.hasCatalogId()
-                                && destB.hasNamespaceId()
-                                && dest.hasTableDisplayName()
-                                && !dest.hasTableId()) {
-                              String dTbl = dest.getTableDisplayName();
-                              tableRepo
-                                  .getByName(
-                                      tenantId,
-                                      destB.getCatalogId().getId(),
-                                      destB.getNamespaceId().getId(),
-                                      dTbl)
-                                  .ifPresent(tbl -> destB.setTableId(tbl.getResourceId()));
-                              destB.clearTableDisplayName();
-                            }
-
-                            var builder =
-                                Connector.newBuilder()
-                                    .setResourceId(connectorId)
-                                    .setDisplayName(display)
-                                    .setKind(spec.getKind())
-                                    .setUri(uri)
-                                    .putAllProperties(spec.getPropertiesMap())
-                                    .setAuth(spec.getAuth())
-                                    .setPolicy(spec.getPolicy())
-                                    .setCreatedAt(tsNow)
-                                    .setUpdatedAt(tsNow)
-                                    .setState(ConnectorState.CS_ACTIVE);
-
-                            if (spec.hasDescription())
-                              builder.setDescription(spec.getDescription());
-                            if (spec.hasSource()) builder.setSource(spec.getSource());
-                            builder.setDestination(destB.build());
-
-                            var connector = builder.build();
                             connectorRepo.create(connector);
                             return new IdempotencyGuard.CreateResult<>(connector, connectorId);
                           },
-                          (conn) -> connectorRepo.metaFor(conn.getResourceId()),
+                          c -> connectorRepo.metaFor(c.getResourceId()),
                           idempotencyStore,
                           tsNow,
                           idempotencyTtlSeconds(),
@@ -346,8 +361,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           rec -> connectorRepo.getById(rec.getResourceId()).isPresent());
 
                   return CreateConnectorResponse.newBuilder()
-                      .setConnector(connectorProto.body)
-                      .setMeta(connectorProto.meta)
+                      .setConnector(result.body)
+                      .setMeta(result.meta)
                       .build();
                 }),
             correlationId())

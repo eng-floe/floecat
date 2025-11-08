@@ -17,28 +17,31 @@ public class TestDataResetter {
   public void wipeAll() {
     var tenantIds = listTenantIds();
 
-    tenantIds.parallelStream().forEach(tid -> blobs.deletePrefix("/tenants/" + tid + "/"));
-    blobs.deletePrefix("/idempotency/");
-
-    tenantIds.parallelStream().forEach(tid -> ptr.deleteByPrefix("/tenants/" + tid + "/"));
+    for (var tid : tenantIds) {
+      ptr.deleteByPrefix("/tenants/" + tid + "/");
+    }
     ptr.deleteByPrefix("/idempotency/");
-
-    blobs.deletePrefix("/tenants/");
     ptr.deleteByPrefix("/tenants/");
+
+    for (var tid : tenantIds) {
+      blobs.deletePrefix("/tenants/" + tid + "/");
+    }
     blobs.deletePrefix("/idempotency/");
-    ptr.deleteByPrefix("/idempotency/");
+    blobs.deletePrefix("/tenants/");
   }
 
   private List<String> listTenantIds() {
-    ArrayList<String> ids = new ArrayList<>();
+    var ids = new ArrayList<String>();
     String token = "";
     do {
-      StringBuilder next = new StringBuilder();
+      var next = new StringBuilder();
       var rows = ptr.listPointersByPrefix(GLOBAL_TENANTS_BY_ID_PREFIX, 200, token, next);
       for (var r : rows) {
-        String k = r.getKey();
+        var k = r.getKey();
         int idx = k.lastIndexOf('/');
-        if (idx > 0 && idx + 1 < k.length()) ids.add(k.substring(idx + 1));
+        if (idx > 0 && idx + 1 < k.length()) {
+          ids.add(k.substring(idx + 1));
+        }
       }
       token = next.toString();
     } while (!token.isBlank());

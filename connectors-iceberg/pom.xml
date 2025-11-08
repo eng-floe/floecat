@@ -82,6 +82,10 @@
           <groupId>log4j</groupId>
           <artifactId>log4j</artifactId>
         </exclusion>
+        <exclusion>
+          <groupId>javax.xml.stream</groupId>
+          <artifactId>stax-api</artifactId>
+        </exclusion>
       </exclusions>
     </dependency>
 

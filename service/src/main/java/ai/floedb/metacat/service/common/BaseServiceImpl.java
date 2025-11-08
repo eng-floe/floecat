@@ -176,7 +176,7 @@ public abstract class BaseServiceImpl {
   }
 
   protected String deterministicUuid(String tenant, String kind, String key) {
-    var name = (kind + ":" + key).getBytes(StandardCharsets.UTF_8);
+    var name = (tenant + ":" + kind + ":" + key).getBytes(StandardCharsets.UTF_8);
     return UUID.nameUUIDFromBytes(name).toString();
   }
 

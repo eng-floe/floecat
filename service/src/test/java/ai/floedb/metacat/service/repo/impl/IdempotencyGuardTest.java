@@ -199,29 +199,42 @@ public class IdempotencyGuardTest {
         resourceId("rid-old"),
         meta(1));
 
-    var result =
-        IdempotencyGuard.runOnce(
-            TENANT,
-            OP,
-            idemKey,
-            req,
-            () -> new IdempotencyGuard.CreateResult<>("NEW", resourceId("rid-new")),
-            metaOfVersion(2),
-            strSer(),
-            strParser(),
-            repo,
-            60,
-            NOW,
-            () -> "corr",
-            rec -> false);
-    assertThat(result).isEqualTo("NEW");
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                IdempotencyGuard.runOnce(
+                    TENANT,
+                    OP,
+                    idemKey,
+                    req,
+                    () -> new IdempotencyGuard.CreateResult<>("NEW", resourceId("rid-new")),
+                    metaOfVersion(2),
+                    s -> s.getBytes(StandardCharsets.UTF_8),
+                    b -> new String(b, StandardCharsets.UTF_8),
+                    repo,
+                    60,
+                    NOW,
+                    () -> "corr",
+                    rec -> false));
+    assertThat(ex.getStatus().getCode()).isEqualTo(Status.Code.ABORTED);
+
+    var st = StatusProto.fromThrowable(ex);
+    assertThat(st).isNotNull();
+    ai.floedb.metacat.common.rpc.Error mcError = null;
+    for (Any any : st.getDetailsList()) {
+      if (any.is(ai.floedb.metacat.common.rpc.Error.class)) {
+        mcError = any.unpack(ai.floedb.metacat.common.rpc.Error.class);
+        break;
+      }
+    }
+    assertThat(mcError).isNotNull();
+    assertThat(mcError.getCode()).isEqualTo(ErrorCode.MC_CONFLICT);
+    assertThat(mcError.getMessageKey()).isEqualTo("idempotency_already_succeeded_not_replayable");
 
     var rec = repo.get(Keys.idempotencyKey(TENANT, OP, idemKey)).orElseThrow();
-    assertThat(rec.getPayload().toStringUtf8()).isEqualTo("NEW");
-
-    rec = repo.get(Keys.idempotencyKey(TENANT, OP, idemKey)).orElseThrow();
     assertThat(rec.getStatus()).isEqualTo(IdempotencyRecord.Status.SUCCEEDED);
-    assertThat(rec.getPayload().toStringUtf8()).isEqualTo("NEW");
+    assertThat(rec.getPayload().toStringUtf8()).isEqualTo("OLD");
   }
 
   @Test
@@ -268,7 +281,7 @@ public class IdempotencyGuardTest {
   }
 
   @Test
-  void runOnceVetoReplayCleanup() throws Exception {
+  void runOnceVetoReplayKeepsRecordAndConflicts() throws Exception {
     String idemKey = "k1";
     byte[] req = "REQ".getBytes(StandardCharsets.UTF_8);
 
@@ -281,7 +294,9 @@ public class IdempotencyGuardTest {
         resourceId("rid-old"),
         meta(1));
 
-    assertThatThrownBy(
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
             () ->
                 IdempotencyGuard.runOnce(
                     TENANT,
@@ -289,7 +304,7 @@ public class IdempotencyGuardTest {
                     idemKey,
                     req,
                     () -> {
-                      throw new RuntimeException("failure");
+                      throw new AssertionError("creator must NOT be called");
                     },
                     s -> meta(2),
                     s -> s.getBytes(StandardCharsets.UTF_8),
@@ -298,10 +313,62 @@ public class IdempotencyGuardTest {
                     60,
                     NOW,
                     () -> "corr",
-                    rec -> false))
-        .hasMessageContaining("failure");
+                    rec -> false));
 
-    assertThat(repo.get(Keys.idempotencyKey(TENANT, OP, idemKey))).isEmpty();
+    assertThat(ex.getStatus().getCode()).isEqualTo(Status.Code.ABORTED);
+
+    var st = StatusProto.fromThrowable(ex);
+    assertThat(st).isNotNull();
+
+    ai.floedb.metacat.common.rpc.Error mcError = null;
+    for (Any any : st.getDetailsList()) {
+      if (any.is(ai.floedb.metacat.common.rpc.Error.class)) {
+        mcError = any.unpack(ai.floedb.metacat.common.rpc.Error.class);
+        break;
+      }
+    }
+    assertThat(mcError).isNotNull();
+    assertThat(mcError.getCode()).isEqualTo(ErrorCode.MC_CONFLICT);
+    assertThat(mcError.getMessageKey()).isEqualTo("idempotency_already_succeeded_not_replayable");
+    assertThat(mcError.getParamsMap()).containsEntry("op", OP).containsEntry("key", idemKey);
+
+    assertThat(repo.get(Keys.idempotencyKey(TENANT, OP, idemKey))).isPresent();
+  }
+
+  @Test
+  void runOnceReplayReturnsStoredPayload() throws Exception {
+    String idemKey = "k1";
+    byte[] req = "REQ".getBytes(StandardCharsets.UTF_8);
+
+    seedSucceeded(
+        TENANT,
+        OP,
+        idemKey,
+        req,
+        "OLD".getBytes(StandardCharsets.UTF_8),
+        resourceId("rid-old"),
+        meta(1));
+
+    String out =
+        IdempotencyGuard.runOnce(
+            TENANT,
+            OP,
+            idemKey,
+            req,
+            () -> {
+              throw new AssertionError("creator must NOT be called");
+            },
+            s -> meta(2),
+            s -> s.getBytes(StandardCharsets.UTF_8),
+            b -> new String(b, StandardCharsets.UTF_8),
+            repo,
+            60,
+            NOW,
+            () -> "corr",
+            rec -> true);
+
+    assertThat(out).isEqualTo("OLD");
+    assertThat(repo.get(Keys.idempotencyKey(TENANT, OP, idemKey))).isPresent();
   }
 
   private static Function<String, byte[]> strSer() {

@@ -142,48 +142,43 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
     return mapFailures(
             runWithRetry(
                 () -> {
-                  var principalContext = principal.get();
-                  var correlationId = principalContext.getCorrelationId();
-                  authz.require(principalContext, "view.write");
+                  var pc = principal.get();
+                  var corr = pc.getCorrelationId();
+                  authz.require(pc, "view.write");
 
                   if (!request.hasSpec()) {
-                    throw GrpcErrors.invalidArgument(correlationId, "view.missing_spec", Map.of());
+                    throw GrpcErrors.invalidArgument(corr, "view.missing_spec", Map.of());
                   }
                   var spec = request.getSpec();
 
                   if (!spec.hasCatalogId()) {
-                    throw GrpcErrors.invalidArgument(
-                        correlationId, "view.missing_catalog_id", Map.of());
+                    throw GrpcErrors.invalidArgument(corr, "view.missing_catalog_id", Map.of());
                   }
                   if (!spec.hasNamespaceId()) {
-                    throw GrpcErrors.invalidArgument(
-                        correlationId, "view.missing_namespace_id", Map.of());
+                    throw GrpcErrors.invalidArgument(corr, "view.missing_namespace_id", Map.of());
                   }
 
                   var catalogId = spec.getCatalogId();
-                  ensureKind(catalogId, ResourceKind.RK_CATALOG, "spec.catalog_id", correlationId);
+                  ensureKind(catalogId, ResourceKind.RK_CATALOG, "spec.catalog_id", corr);
                   catalogRepo
                       .getById(catalogId)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
-                                  correlationId, "catalog", Map.of("id", catalogId.getId())));
+                                  corr, "catalog", Map.of("id", catalogId.getId())));
 
                   var namespaceId = spec.getNamespaceId();
-                  ensureKind(
-                      namespaceId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", correlationId);
+                  ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", corr);
                   var namespace =
                       namespaceRepo
                           .getById(namespaceId)
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
-                                      correlationId,
-                                      "namespace",
-                                      Map.of("id", namespaceId.getId())));
+                                      corr, "namespace", Map.of("id", namespaceId.getId())));
                   if (!namespace.getCatalogId().getId().equals(catalogId.getId())) {
                     throw GrpcErrors.invalidArgument(
-                        correlationId,
+                        corr,
                         "namespace.catalog_mismatch",
                         Map.of(
                             "namespace_id", namespaceId.getId(),
@@ -192,48 +187,75 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   }
 
                   var tsNow = nowTs();
-                  var fingerprint = canonicalFingerprint(request.getSpec());
-                  var idempotencyKey =
-                      request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
-                          ? request.getIdempotency().getKey()
-                          : hashFingerprint(fingerprint);
 
-                  var tenantId = principalContext.getTenantId();
-                  var viewProto =
+                  var rawName = mustNonEmpty(spec.getDisplayName(), "spec.display_name", corr);
+                  var normName = normalizeName(rawName);
+
+                  var explicitKey =
+                      request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
+                  var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
+
+                  var fingerprint =
+                      canonicalFingerprint(spec.toBuilder().setDisplayName(normName).build());
+
+                  var tenantId = pc.getTenantId();
+                  var viewUuid =
+                      deterministicUuid(
+                          tenantId,
+                          "view",
+                          java.util.Base64.getUrlEncoder()
+                              .withoutPadding()
+                              .encodeToString(fingerprint));
+
+                  var viewResourceId =
+                      ResourceId.newBuilder()
+                          .setTenantId(tenantId)
+                          .setId(viewUuid)
+                          .setKind(ResourceKind.RK_VIEW)
+                          .build();
+
+                  var view =
+                      View.newBuilder()
+                          .setResourceId(viewResourceId)
+                          .setCatalogId(spec.getCatalogId())
+                          .setNamespaceId(spec.getNamespaceId())
+                          .setDisplayName(normName)
+                          .setDescription(spec.getDescription())
+                          .setSql(mustNonEmpty(spec.getSql(), "spec.sql", corr))
+                          .setCreatedAt(tsNow)
+                          .putAllProperties(spec.getPropertiesMap())
+                          .build();
+
+                  if (idempotencyKey == null) {
+                    var existing =
+                        viewRepo.getByName(
+                            tenantId,
+                            spec.getCatalogId().getId(),
+                            spec.getNamespaceId().getId(),
+                            normName);
+                    if (existing.isPresent()) {
+                      var meta = viewRepo.metaForSafe(existing.get().getResourceId());
+                      return CreateViewResponse.newBuilder()
+                          .setView(existing.get())
+                          .setMeta(meta)
+                          .build();
+                    }
+                    viewRepo.create(view);
+                    var meta = viewRepo.metaForSafe(viewResourceId);
+                    return CreateViewResponse.newBuilder().setView(view).setMeta(meta).build();
+                  }
+
+                  var result =
                       MutationOps.createProto(
                           tenantId,
                           "CreateView",
                           idempotencyKey,
                           () -> fingerprint,
                           () -> {
-                            String viewUuid = deterministicUuid(tenantId, "view", idempotencyKey);
-
-                            var viewResourceId =
-                                ResourceId.newBuilder()
-                                    .setTenantId(tenantId)
-                                    .setId(viewUuid)
-                                    .setKind(ResourceKind.RK_VIEW)
-                                    .build();
-
-                            var view =
-                                View.newBuilder()
-                                    .setResourceId(viewResourceId)
-                                    .setCatalogId(spec.getCatalogId())
-                                    .setNamespaceId(spec.getNamespaceId())
-                                    .setDisplayName(
-                                        mustNonEmpty(
-                                            spec.getDisplayName(),
-                                            "spec.display_name",
-                                            correlationId))
-                                    .setDescription(spec.getDescription())
-                                    .setSql(mustNonEmpty(spec.getSql(), "spec.sql", correlationId))
-                                    .setCreatedAt(tsNow)
-                                    .putAllProperties(spec.getPropertiesMap())
-                                    .build();
                             viewRepo.create(view);
                             return new IdempotencyGuard.CreateResult<>(view, viewResourceId);
                           },
-                          (view) -> viewRepo.metaForSafe(view.getResourceId()),
+                          v -> viewRepo.metaForSafe(v.getResourceId()),
                           idempotencyStore,
                           tsNow,
                           idempotencyTtlSeconds(),
@@ -242,8 +264,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           rec -> viewRepo.getById(rec.getResourceId()).isPresent());
 
                   return CreateViewResponse.newBuilder()
-                      .setView(viewProto.body)
-                      .setMeta(viewProto.meta)
+                      .setView(result.body)
+                      .setMeta(result.meta)
                       .build();
                 }),
             correlationId())

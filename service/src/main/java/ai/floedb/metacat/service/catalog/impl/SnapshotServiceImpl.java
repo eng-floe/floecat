@@ -140,51 +140,65 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
     return mapFailures(
             runWithRetry(
                 () -> {
-                  var principalContext = principal.get();
-                  var tenantId = principalContext.getTenantId();
-                  var correlationId = principalContext.getCorrelationId();
+                  var pc = principal.get();
+                  var tenantId = pc.getTenantId();
+                  var corr = pc.getCorrelationId();
 
-                  authz.require(principalContext, "table.write");
+                  authz.require(pc, "table.write");
 
                   var tableId = request.getSpec().getTableId();
-                  ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
+                  ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
 
                   tableRepo
                       .getById(tableId)
                       .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId, "table", Map.of("id", tableId.getId())));
+                          () -> GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
 
                   var tsNow = nowTs();
 
-                  var fingerprint = request.getSpec().toBuilder().build().toByteArray();
-                  var idempotencyKey =
-                      request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
-                          ? request.getIdempotency().getKey()
-                          : hashFingerprint(fingerprint);
+                  var explicitKey =
+                      request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
+                  var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
-                  var snapshotProto =
+                  var fingerprint = request.getSpec().toBuilder().build().toByteArray();
+
+                  var snap =
+                      Snapshot.newBuilder()
+                          .setTableId(tableId)
+                          .setSnapshotId(request.getSpec().getSnapshotId())
+                          .setIngestedAt(tsNow)
+                          .setUpstreamCreatedAt(request.getSpec().getUpstreamCreatedAt())
+                          .setParentSnapshotId(request.getSpec().getParentSnapshotId())
+                          .build();
+
+                  if (idempotencyKey == null) {
+                    var existing = snapshotRepo.getById(tableId, snap.getSnapshotId());
+                    if (existing.isPresent()) {
+                      var meta = snapshotRepo.metaForSafe(tableId, snap.getSnapshotId());
+                      return CreateSnapshotResponse.newBuilder()
+                          .setSnapshot(existing.get())
+                          .setMeta(meta)
+                          .build();
+                    }
+                    snapshotRepo.create(snap);
+                    var meta = snapshotRepo.metaForSafe(tableId, snap.getSnapshotId());
+                    return CreateSnapshotResponse.newBuilder()
+                        .setSnapshot(snap)
+                        .setMeta(meta)
+                        .build();
+                  }
+
+                  var result =
                       MutationOps.createProto(
                           tenantId,
                           "CreateSnapshot",
                           idempotencyKey,
                           () -> fingerprint,
                           () -> {
-                            var snap =
-                                Snapshot.newBuilder()
-                                    .setTableId(tableId)
-                                    .setSnapshotId(request.getSpec().getSnapshotId())
-                                    .setIngestedAt(tsNow)
-                                    .setUpstreamCreatedAt(request.getSpec().getUpstreamCreatedAt())
-                                    .setParentSnapshotId(request.getSpec().getParentSnapshotId())
-                                    .build();
                             snapshotRepo.create(snap);
                             return new IdempotencyGuard.CreateResult<>(snap, snap.getTableId());
                           },
-                          (snapshot) ->
-                              snapshotRepo.metaForSafe(
-                                  snapshot.getTableId(), snapshot.getSnapshotId()),
+                          s -> snapshotRepo.metaForSafe(s.getTableId(), s.getSnapshotId()),
                           idempotencyStore,
                           tsNow,
                           idempotencyTtlSeconds(),
@@ -192,12 +206,12 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                           Snapshot::parseFrom,
                           rec ->
                               snapshotRepo
-                                  .getById(rec.getResourceId(), request.getSpec().getSnapshotId())
+                                  .getById(rec.getResourceId(), snap.getSnapshotId())
                                   .isPresent());
 
                   return CreateSnapshotResponse.newBuilder()
-                      .setSnapshot(snapshotProto.body)
-                      .setMeta(snapshotProto.meta)
+                      .setSnapshot(result.body)
+                      .setMeta(result.meta)
                       .build();
                 }),
             correlationId())

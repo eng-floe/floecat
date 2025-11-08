@@ -7,16 +7,21 @@ import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.Precondition;
+import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.metacat.service.repo.IdempotencyRepository;
+import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
+import ai.floedb.metacat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -32,6 +37,7 @@ class CatalogMutationIT {
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
+  @Inject IdempotencyRepository idempotencyStore;
 
   @BeforeEach
   void resetStores() {
@@ -177,11 +183,16 @@ class CatalogMutationIT {
   void catalogCreateIdempotencyMismatch() throws Exception {
     var key = IdempotencyKey.newBuilder().setKey(catalogPrefix + "k-cat-2").build();
 
-    catalog.createCatalog(
-        CreateCatalogRequest.newBuilder()
-            .setSpec(CatalogSpec.newBuilder().setDisplayName(catalogPrefix + "idem_cat2").build())
-            .setIdempotency(key)
-            .build());
+    CreateCatalogResponse ccr =
+        catalog.createCatalog(
+            CreateCatalogRequest.newBuilder()
+                .setSpec(
+                    CatalogSpec.newBuilder().setDisplayName(catalogPrefix + "idem_cat2").build())
+                .setIdempotency(key)
+                .build());
+
+    ResourceId catId = ccr.getCatalog().getResourceId();
+    awaitIdemVisible(catId.getTenantId(), "CreateCatalog", key.getKey(), Duration.ofSeconds(2));
 
     var ex =
         assertThrows(
@@ -197,5 +208,18 @@ class CatalogMutationIT {
                         .build()));
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
+  }
+
+  private void awaitIdemVisible(String tenant, String op, String key, Duration timeout)
+      throws InterruptedException {
+    long until = System.currentTimeMillis() + timeout.toMillis();
+    while (System.currentTimeMillis() < until) {
+      var recOpt = idempotencyStore.get(Keys.idempotencyKey(tenant, op, key));
+      if (recOpt.isPresent() && recOpt.get().getStatus() == IdempotencyRecord.Status.SUCCEEDED) {
+        return;
+      }
+      Thread.sleep(25);
+    }
+    fail("Idempotency record not visible in time");
   }
 }

@@ -193,10 +193,10 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     return mapFailures(
             runWithRetry(
                 () -> {
-                  var principalContext = principal.get();
-                  var tenantId = principalContext.getTenantId();
+                  var pc = principal.get();
+                  var tenantId = pc.getTenantId();
 
-                  authz.require(principalContext, "table.write");
+                  authz.require(pc, "table.write");
 
                   var tsNow = nowTs();
 
@@ -219,14 +219,25 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                                   Map.of("id", Long.toString(request.getSnapshotId()))));
 
                   var fingerprint = request.getStats().toByteArray();
-                  var idempotencyKey =
-                      request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
-                          ? request.getIdempotency().getKey()
-                          : hashFingerprint(fingerprint);
+                  var explicitKey =
+                      request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
+                  var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
-                  var tableStatsProto =
+                  if (idempotencyKey == null) {
+                    stats.putTableStats(
+                        request.getTableId(), request.getSnapshotId(), request.getStats());
+                    var meta =
+                        stats.metaForTableStats(
+                            request.getTableId(), request.getSnapshotId(), tsNow);
+                    return PutTableStatsResponse.newBuilder()
+                        .setStats(request.getStats())
+                        .setMeta(meta)
+                        .build();
+                  }
+
+                  var result =
                       MutationOps.createProto(
-                          principalContext.getTenantId(),
+                          tenantId,
                           "PutTableStats",
                           idempotencyKey,
                           () -> fingerprint,
@@ -236,7 +247,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                             return new IdempotencyGuard.CreateResult<>(
                                 request.getStats(), request.getTableId());
                           },
-                          (ignored) ->
+                          ignored ->
                               stats.metaForTableStats(
                                   request.getTableId(), request.getSnapshotId(), tsNow),
                           idempotencyStore,
@@ -251,7 +262,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
 
                   return PutTableStatsResponse.newBuilder()
                       .setStats(request.getStats())
-                      .setMeta(tableStatsProto.meta)
+                      .setMeta(result.meta)
                       .build();
                 }),
             correlationId())
@@ -268,10 +279,10 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     return mapFailures(
             runWithRetry(
                 () -> {
-                  var principalContext = principal.get();
-                  var tenantId = principalContext.getTenantId();
+                  var pc = principal.get();
+                  var tenantId = pc.getTenantId();
 
-                  authz.require(principalContext, "table.write");
+                  authz.require(pc, "table.write");
 
                   var tsNow = nowTs();
 
@@ -302,10 +313,16 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                             .build();
 
                     var fingerprint = raw.toByteArray();
-                    var idempotencyKey =
-                        request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
-                            ? request.getIdempotency().getKey()
-                            : hashFingerprint(fingerprint);
+                    var explicitKey =
+                        request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
+                    var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
+
+                    if (idempotencyKey == null) {
+                      stats.putColumnStats(
+                          request.getTableId(), request.getSnapshotId(), columnStats);
+                      upserted++;
+                      continue;
+                    }
 
                     MutationOps.createProto(
                         tenantId,
@@ -318,11 +335,11 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                           return new IdempotencyGuard.CreateResult<>(
                               columnStats, request.getTableId());
                         },
-                        (colStats) ->
+                        cs ->
                             stats.metaForColumnStats(
                                 request.getTableId(),
                                 request.getSnapshotId(),
-                                colStats.getColumnId(),
+                                cs.getColumnId(),
                                 tsNow),
                         idempotencyStore,
                         tsNow,

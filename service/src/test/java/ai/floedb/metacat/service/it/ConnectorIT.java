@@ -173,16 +173,7 @@ public class ConnectorIT {
 
     var tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
 
-    var src =
-        SourceSelector.newBuilder()
-            .setNamespace(
-                NamespacePath.newBuilder().addAllSegments(List.of("tpcds_iceberg")).build())
-            .setTable("call_center")
-            .build();
-
     TestSupport.createCatalog(catalogService, "glue-iceberg-rest", "");
-
-    var dst = DestinationTarget.newBuilder().setCatalogDisplayName("glue-iceberg-rest").build();
 
     var conn =
         TestSupport.createConnector(
@@ -191,7 +182,7 @@ public class ConnectorIT {
                 .setDisplayName("Glue Iceberg")
                 .setKind(ConnectorKind.CK_ICEBERG)
                 .setUri("https://glue.us-east-1.amazonaws.com/iceberg/")
-                .setSource(src)
+                .setSource(source(List.of("tpcds_iceberg")))
                 .setDestination(dest("glue-iceberg-rest"))
                 .setAuth(AuthConfig.newBuilder().setScheme("aws-sigv4").build())
                 .build());
@@ -204,7 +195,7 @@ public class ConnectorIT {
     var catId =
         catalogs.getByName(tenantId.getId(), "glue-iceberg-rest").orElseThrow().getResourceId();
 
-    assertEquals(2, namespaces.count(tenantId.getId(), catId.getId(), List.of()));
+    assertEquals(1, namespaces.count(tenantId.getId(), catId.getId(), List.of()));
 
     var tpcdsNsId =
         namespaces

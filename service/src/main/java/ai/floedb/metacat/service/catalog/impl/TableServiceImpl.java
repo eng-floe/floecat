@@ -157,17 +157,17 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     return mapFailures(
             runWithRetry(
                 () -> {
-                  var principalContext = principal.get();
-                  var tenantId = principalContext.getTenantId();
-                  var correlationId = principalContext.getCorrelationId();
-                  authz.require(principalContext, "table.write");
+                  var pc = principal.get();
+                  var tenantId = pc.getTenantId();
+                  var corr = pc.getCorrelationId();
+                  authz.require(pc, "table.write");
 
                   catalogRepo
                       .getById(request.getSpec().getCatalogId())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
-                                  correlationId,
+                                  corr,
                                   "catalog",
                                   Map.of("id", request.getSpec().getCatalogId().getId())));
 
@@ -176,58 +176,80 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
-                                  correlationId,
+                                  corr,
                                   "namespace",
                                   Map.of("id", request.getSpec().getNamespaceId().getId())));
 
                   var tsNow = nowTs();
 
-                  var fingerprint = canonicalFingerprint(request.getSpec());
-                  var idempotencyKey =
-                      request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
-                          ? request.getIdempotency().getKey()
-                          : hashFingerprint(fingerprint);
+                  var spec = request.getSpec();
+                  var rawName = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
+                  var normName = normalizeName(rawName);
 
-                  var tableProto =
+                  var explicitKey =
+                      request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
+                  var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
+
+                  var fingerprint =
+                      canonicalFingerprint(spec.toBuilder().setDisplayName(normName).build());
+                  var tableUuid =
+                      deterministicUuid(
+                          tenantId,
+                          "table",
+                          java.util.Base64.getUrlEncoder()
+                              .withoutPadding()
+                              .encodeToString(fingerprint));
+
+                  var tableResourceId =
+                      ResourceId.newBuilder()
+                          .setTenantId(tenantId)
+                          .setId(tableUuid)
+                          .setKind(ResourceKind.RK_TABLE)
+                          .build();
+
+                  var table =
+                      Table.newBuilder()
+                          .setResourceId(tableResourceId)
+                          .setDisplayName(normName)
+                          .setDescription(spec.getDescription())
+                          .setCatalogId(spec.getCatalogId())
+                          .setNamespaceId(spec.getNamespaceId())
+                          .setCreatedAt(tsNow)
+                          .setSchemaJson(mustNonEmpty(spec.getSchemaJson(), "schema_json", corr))
+                          .setUpstream(spec.getUpstream())
+                          .putAllProperties(spec.getPropertiesMap())
+                          .build();
+
+                  if (idempotencyKey == null) {
+                    var existing =
+                        tableRepo.getByName(
+                            tenantId,
+                            spec.getCatalogId().getId(),
+                            spec.getNamespaceId().getId(),
+                            normName);
+                    if (existing.isPresent()) {
+                      var meta = tableRepo.metaForSafe(existing.get().getResourceId());
+                      return CreateTableResponse.newBuilder()
+                          .setTable(existing.get())
+                          .setMeta(meta)
+                          .build();
+                    }
+                    tableRepo.create(table);
+                    var meta = tableRepo.metaForSafe(tableResourceId);
+                    return CreateTableResponse.newBuilder().setTable(table).setMeta(meta).build();
+                  }
+
+                  var result =
                       MutationOps.createProto(
                           tenantId,
                           "CreateTable",
                           idempotencyKey,
                           () -> fingerprint,
                           () -> {
-                            String tableUuid = deterministicUuid(tenantId, "table", idempotencyKey);
-
-                            var tableResourceId =
-                                ResourceId.newBuilder()
-                                    .setTenantId(tenantId)
-                                    .setId(tableUuid)
-                                    .setKind(ResourceKind.RK_TABLE)
-                                    .build();
-
-                            var table =
-                                Table.newBuilder()
-                                    .setResourceId(tableResourceId)
-                                    .setDisplayName(
-                                        mustNonEmpty(
-                                            request.getSpec().getDisplayName(),
-                                            "display_name",
-                                            correlationId))
-                                    .setDescription(request.getSpec().getDescription())
-                                    .setCatalogId(request.getSpec().getCatalogId())
-                                    .setNamespaceId(request.getSpec().getNamespaceId())
-                                    .setCreatedAt(tsNow)
-                                    .setSchemaJson(
-                                        mustNonEmpty(
-                                            request.getSpec().getSchemaJson(),
-                                            "schema_json",
-                                            correlationId))
-                                    .setUpstream(request.getSpec().getUpstream())
-                                    .putAllProperties(request.getSpec().getPropertiesMap())
-                                    .build();
                             tableRepo.create(table);
                             return new IdempotencyGuard.CreateResult<>(table, tableResourceId);
                           },
-                          (table) -> tableRepo.metaForSafe(table.getResourceId()),
+                          t -> tableRepo.metaForSafe(t.getResourceId()),
                           idempotencyStore,
                           tsNow,
                           idempotencyTtlSeconds(),
@@ -236,8 +258,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           rec -> tableRepo.getById(rec.getResourceId()).isPresent());
 
                   return CreateTableResponse.newBuilder()
-                      .setTable(tableProto.body)
-                      .setMeta(tableProto.meta)
+                      .setTable(result.body)
+                      .setMeta(result.meta)
                       .build();
                 }),
             correlationId())

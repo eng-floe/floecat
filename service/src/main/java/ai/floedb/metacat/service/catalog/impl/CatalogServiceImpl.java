@@ -120,52 +120,74 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
     return mapFailures(
             runWithRetry(
                 () -> {
-                  var principalContext = principal.get();
-                  var correlationId = principalContext.getCorrelationId();
-                  var tenantId = principalContext.getTenantId();
+                  var pc = principal.get();
+                  var corr = pc.getCorrelationId();
+                  var tenantId = pc.getTenantId();
 
-                  authz.require(principalContext, "catalog.write");
-
-                  var fingerprint = canonicalFingerprint(request.getSpec());
-                  var idempotencyKey =
-                      request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
-                          ? request.getIdempotency().getKey()
-                          : hashFingerprint(fingerprint);
+                  authz.require(pc, "catalog.write");
 
                   var tsNow = nowTs();
 
-                  var catalogProto =
+                  var spec = request.getSpec();
+                  var rawName = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
+                  var normName = normalizeName(rawName);
+
+                  var explicitKey =
+                      request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
+                  var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
+
+                  var fingerprint = canonicalFingerprint(spec);
+                  var catalogUuid =
+                      deterministicUuid(
+                          tenantId,
+                          "catalog",
+                          java.util.Base64.getUrlEncoder()
+                              .withoutPadding()
+                              .encodeToString(fingerprint));
+
+                  var catalogId =
+                      ResourceId.newBuilder()
+                          .setTenantId(tenantId)
+                          .setId(catalogUuid)
+                          .setKind(ResourceKind.RK_CATALOG)
+                          .build();
+
+                  var built =
+                      Catalog.newBuilder()
+                          .setResourceId(catalogId)
+                          .setDisplayName(normName)
+                          .setDescription(spec.getDescription())
+                          .setCreatedAt(tsNow)
+                          .build();
+
+                  if (idempotencyKey == null) {
+                    var existing = catalogRepo.getByName(tenantId, normName);
+                    if (existing.isPresent()) {
+                      var meta = catalogRepo.metaForSafe(existing.get().getResourceId());
+                      return CreateCatalogResponse.newBuilder()
+                          .setCatalog(existing.get())
+                          .setMeta(meta)
+                          .build();
+                    }
+                    catalogRepo.create(built);
+                    var meta = catalogRepo.metaForSafe(catalogId);
+                    return CreateCatalogResponse.newBuilder()
+                        .setCatalog(built)
+                        .setMeta(meta)
+                        .build();
+                  }
+
+                  var result =
                       MutationOps.createProto(
                           tenantId,
                           "CreateCatalog",
                           idempotencyKey,
                           () -> fingerprint,
                           () -> {
-                            String catalogUuid =
-                                deterministicUuid(tenantId, "catalog", idempotencyKey);
-
-                            var catalogId =
-                                ResourceId.newBuilder()
-                                    .setTenantId(tenantId)
-                                    .setId(catalogUuid)
-                                    .setKind(ResourceKind.RK_CATALOG)
-                                    .build();
-
-                            var built =
-                                Catalog.newBuilder()
-                                    .setResourceId(catalogId)
-                                    .setDisplayName(
-                                        mustNonEmpty(
-                                            request.getSpec().getDisplayName(),
-                                            "display_name",
-                                            correlationId))
-                                    .setDescription(request.getSpec().getDescription())
-                                    .setCreatedAt(tsNow)
-                                    .build();
                             catalogRepo.create(built);
                             return new IdempotencyGuard.CreateResult<>(built, catalogId);
                           },
-                          (catalog) -> catalogRepo.metaForSafe(catalog.getResourceId()),
+                          c -> catalogRepo.metaForSafe(c.getResourceId()),
                           idempotencyStore,
                           tsNow,
                           idempotencyTtlSeconds(),
@@ -174,8 +196,8 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                           rec -> catalogRepo.getById(rec.getResourceId()).isPresent());
 
                   return CreateCatalogResponse.newBuilder()
-                      .setCatalog(catalogProto.body)
-                      .setMeta(catalogProto.meta)
+                      .setCatalog(result.body)
+                      .setMeta(result.meta)
                       .build();
                 }),
             correlationId())

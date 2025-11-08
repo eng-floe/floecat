@@ -5,6 +5,7 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.model.Keys;
+import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.metacat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.Duration;
@@ -36,34 +37,39 @@ public final class IdempotencyGuard {
       Function<IdempotencyRecord, Boolean> canReplay) {
 
     if (idempotencyKey == null || idempotencyKey.isBlank()) {
-      var result = creator.get();
-      return result.resource();
+      return creator.get().resource();
     }
 
-    String key = Keys.idempotencyKey(tenantId, opName, idempotencyKey);
-    String requestHash = sha256B64(requestBytes);
+    final String key = Keys.idempotencyKey(tenantId, opName, idempotencyKey);
+    final String requestHash = sha256B64(requestBytes);
 
-    var existing = store.get(key);
-    if (existing.isPresent()) {
-      var rec = existing.get();
-      if (!rec.getRequestHash().equals(requestHash)) {
+    var existingOpt = store.get(key);
+    if (existingOpt.isPresent()) {
+      var rec = existingOpt.get();
+
+      if (!requestHash.equals(rec.getRequestHash())) {
         throw GrpcErrors.conflict(
             corrId.get(), "idempotency_mismatch", Map.of("op", opName, "key", idempotencyKey));
       }
-      if (rec.getStatus() == IdempotencyRecord.Status.SUCCEEDED) {
-        boolean replayOk = (canReplay == null) || Boolean.TRUE.equals(canReplay.apply(rec));
-        if (replayOk) {
-          return parser.apply(rec.getPayload().toByteArray());
-        }
 
-        store.delete(key);
-      } else {
-        // ignore
+      switch (rec.getStatus()) {
+        case SUCCEEDED -> {
+          boolean replayOk = (canReplay == null) || Boolean.TRUE.equals(canReplay.apply(rec));
+          if (replayOk) return parser.apply(rec.getPayload().toByteArray());
+          throw GrpcErrors.conflict(
+              corrId.get(),
+              "idempotency_already_succeeded_not_replayable",
+              Map.of("op", opName, "key", idempotencyKey));
+        }
+        case PENDING ->
+            throw new StorageAbortRetryableException("idempotency record pending: key=" + key);
+        default ->
+            throw new StorageAbortRetryableException("idempotency state transient: key=" + key);
       }
     }
 
-    long ttlMillis = Math.max(1, ttlSeconds) * 1000L;
-    Timestamp expiresAt =
+    final long ttlMillis = Math.max(1, ttlSeconds) * 1000L;
+    final Timestamp expiresAt =
         Timestamps.add(
             now,
             Duration.newBuilder()
@@ -71,26 +77,33 @@ public final class IdempotencyGuard {
                 .setNanos((int) ((ttlMillis % 1000) * 1_000_000))
                 .build());
 
-    boolean iCreated = store.createPending(tenantId, key, opName, requestHash, now, expiresAt);
-    if (!iCreated) {
+    final boolean createdPending =
+        store.createPending(tenantId, key, opName, requestHash, now, expiresAt);
+    if (!createdPending) {
       var againOpt = store.get(key);
       if (againOpt.isEmpty()) {
         throw new StorageAbortRetryableException("idempotency record not yet visible: key=" + key);
       }
       var again = againOpt.get();
-      if (!again.getRequestHash().equals(requestHash)) {
+
+      if (!requestHash.equals(again.getRequestHash())) {
         throw GrpcErrors.conflict(
             corrId.get(), "idempotency_mismatch", Map.of("op", opName, "key", idempotencyKey));
       }
-      if (again.getStatus() == IdempotencyRecord.Status.SUCCEEDED) {
-        boolean replayOk = (canReplay == null) || Boolean.TRUE.equals(canReplay.apply(again));
-        if (replayOk) {
-          return parser.apply(again.getPayload().toByteArray());
-        }
 
-        store.delete(key);
-      } else {
-        throw new StorageAbortRetryableException("idempotency record pending: key=" + key);
+      switch (again.getStatus()) {
+        case SUCCEEDED -> {
+          boolean replayOk = (canReplay == null) || Boolean.TRUE.equals(canReplay.apply(again));
+          if (replayOk) return parser.apply(again.getPayload().toByteArray());
+          throw GrpcErrors.conflict(
+              corrId.get(),
+              "idempotency_already_succeeded_not_replayable",
+              Map.of("op", opName, "key", idempotencyKey));
+        }
+        case PENDING ->
+            throw new StorageAbortRetryableException("idempotency record pending: key=" + key);
+        default ->
+            throw new StorageAbortRetryableException("idempotency state transient: key=" + key);
       }
     }
 
@@ -98,11 +111,16 @@ public final class IdempotencyGuard {
       var created = creator.get();
       var meta = metaExtractor.apply(created.resource());
       var payload = serializer.apply(created.resource());
+
       store.finalizeSuccess(
           tenantId, key, opName, requestHash, created.resourceId(), meta, payload, now, expiresAt);
+
       return created.resource();
     } catch (Throwable t) {
-      if (iCreated) {
+      boolean retryable =
+          (t instanceof BaseResourceRepository.AbortRetryableException)
+              || (t instanceof StorageAbortRetryableException);
+      if (!retryable) {
         store.delete(key);
       }
       throw t;
