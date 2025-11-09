@@ -45,7 +45,7 @@ public final class Keys {
     for (int i = 0; i < segs.size(); i++) {
       enc[i] = encode(req("segments[" + i + "]", segs.get(i)));
     }
-    return String.join("/", enc);
+    return String.join(".", enc);
   }
 
   private static String normalizeColumnId(String columnId) {
@@ -131,7 +131,7 @@ public final class Keys {
     if (parentSegmentsOrEmpty == null) { // allow explicit "root" prefix
       throw new IllegalArgumentException("key arg 'parent_segments' is null; use List.of()");
     }
-    String joined = parentSegmentsOrEmpty.isEmpty() ? "" : joinEncoded(parentSegmentsOrEmpty) + "/";
+    String joined = parentSegmentsOrEmpty.isEmpty() ? "" : joinEncoded(parentSegmentsOrEmpty) + ".";
     return "/tenants/" + encode(tid) + "/catalogs/" + encode(cid) + "/namespaces/by-path/" + joined;
   }
 

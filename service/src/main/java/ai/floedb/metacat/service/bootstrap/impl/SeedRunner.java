@@ -265,6 +265,6 @@ public class SeedRunner {
   }
 
   private static String displayPathKey(String catalogId, List<String> path) {
-    return catalogId + "/" + String.join("/", path);
+    return catalogId + "." + String.join(".", path);
   }
 }

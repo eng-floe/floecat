@@ -385,7 +385,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                             if (parents.isEmpty()) {
                               var segs =
-                                  Arrays.stream(display.split("[./]"))
+                                  Arrays.stream(display.split("."))
                                       .map(String::trim)
                                       .filter(s -> !s.isEmpty())
                                       .collect(Collectors.toList());
@@ -693,10 +693,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
           var s = normalizeName(seg);
           if (s.isBlank()) {
             throw GrpcErrors.invalidArgument(corr, "path.segment.blank", Map.of());
-          }
-          if (s.indexOf('/') >= 0) {
-            throw GrpcErrors.invalidArgument(
-                corr, "path.segment.contains_slash", Map.of("segment", seg));
           }
         }
         var leaf = normalizeName(path.get(path.size() - 1));

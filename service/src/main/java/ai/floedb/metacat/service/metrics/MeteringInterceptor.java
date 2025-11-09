@@ -98,10 +98,16 @@ public class MeteringInterceptor implements ServerInterceptor {
 
   private static String simplifyOp(String fullMethod) {
     int slash = fullMethod.indexOf('/');
-    if (slash <= 0) return fullMethod;
+    if (slash <= 0) {
+      return fullMethod;
+    }
+
     String svc = fullMethod.substring(0, slash);
     int lastDot = svc.lastIndexOf('.');
-    if (lastDot >= 0) svc = svc.substring(lastDot + 1);
+    if (lastDot >= 0) {
+      svc = svc.substring(lastDot + 1);
+    }
+
     String method = fullMethod.substring(slash + 1);
     return svc + "." + method;
   }

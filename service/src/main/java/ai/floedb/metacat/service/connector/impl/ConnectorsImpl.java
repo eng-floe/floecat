@@ -233,23 +233,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                             });
                   }
 
-                  if (destB.hasCatalogId()) {
-                    var catId = destB.getCatalogId();
-                    if (!tenantId.equals(catId.getTenantId())) {
-                      throw GrpcErrors.invalidArgument(
-                          corr,
-                          "connector.destination_catalog_cross_tenant",
-                          Map.of(
-                              "field", "destination.catalog_id", "tenant_id", catId.getTenantId()));
-                    }
-                    if (catalogRepo.getById(catId).isEmpty()) {
-                      throw GrpcErrors.notFound(
-                          corr,
-                          "connector.destination_catalog_not_found",
-                          Map.of("display_name", catId.getId()));
-                    }
-                  }
-
                   if (dest.hasCatalogId() && dest.hasCatalogDisplayName()) {
                     var byName =
                         catalogRepo.getByName(tenantId, dest.getCatalogDisplayName().trim());
@@ -699,7 +682,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
     if (maskTargets(mask, "uri")) {
       if (!spec.hasUri() || spec.getUri().isBlank()) {
-        throw GrpcErrors.invalidArgument(corr, "field", Map.of("field", "uri"));
+        throw GrpcErrors.invalidArgument(corr, "uri.cannot_clear", Map.of());
       }
       b.setUri(spec.getUri());
     }

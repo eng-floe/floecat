@@ -118,7 +118,7 @@ public abstract class BaseServiceImpl {
   protected void ensureKind(
       ResourceId resourceId, ResourceKind expected, String field, String correlationId) {
     if (resourceId == null || resourceId.getKind() != expected) {
-      throw GrpcErrors.invalidArgument(correlationId, "field", Map.of("field", field));
+      throw GrpcErrors.invalidArgument(correlationId, "kind", Map.of("field", field));
     }
   }
 
@@ -183,7 +183,7 @@ public abstract class BaseServiceImpl {
   protected static String prettyNamespacePath(List<String> parents, String leaf) {
     var parts = new ArrayList<>(parents);
     parts.add(leaf);
-    return String.join("/", parts);
+    return String.join(".", parts);
   }
 
   protected Timestamp nowTs() {

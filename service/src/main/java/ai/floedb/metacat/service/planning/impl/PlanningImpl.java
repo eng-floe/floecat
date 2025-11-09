@@ -314,10 +314,6 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
       if (pathSegment == null || pathSegment.isBlank()) {
         throw GrpcErrors.invalidArgument(correlationId(), "path.segment.blank", Map.of());
       }
-      if (pathSegment.contains("/")) {
-        throw GrpcErrors.invalidArgument(
-            correlationId(), "path.segment.contains_slash", Map.of("segment", pathSegment));
-      }
     }
   }
 

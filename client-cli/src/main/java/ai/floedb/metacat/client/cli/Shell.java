@@ -534,7 +534,7 @@ public class Shell implements Runnable {
       rb.setNamespaceId(resolveNamespaceId(explicitId));
     } else if (looksLikeUuid(tokenArg)) {
       rb.setNamespaceId(resolveNamespaceId(tokenArg));
-    } else if (tokenArg.contains(".") || tokenArg.contains("/")) {
+    } else if (tokenArg.contains(".")) {
       ParsedFq p = parseFqFlexible(tokenArg, false);
       rb.setCatalogId(resolveCatalogId(p.catalog)).addAllPath(p.nsParts);
     } else {
@@ -2326,7 +2326,7 @@ public class Shell implements Runnable {
     if (s == null || s.isBlank()) {
       return List.of();
     }
-    return Arrays.stream(s.split("[./]")).map(String::trim).filter(x -> !x.isEmpty()).toList();
+    return Arrays.stream(s.split(".")).map(String::trim).filter(x -> !x.isEmpty()).toList();
   }
 
   private String rid(ResourceId id) {
@@ -2686,7 +2686,7 @@ public class Shell implements Runnable {
     String remainder = head[1];
 
     List<String> segs =
-        Arrays.stream(remainder.split("[./]")).map(String::trim).filter(x -> !x.isEmpty()).toList();
+        Arrays.stream(remainder.split(".")).map(String::trim).filter(x -> !x.isEmpty()).toList();
     if (segs.isEmpty()) {
       throw new IllegalArgumentException("Namespace path is empty");
     }
@@ -2791,8 +2791,7 @@ public class Shell implements Runnable {
   }
 
   private NamespacePath toNsPath(String path) {
-    var segs =
-        Arrays.stream(path.split("[./]")).map(String::trim).filter(x -> !x.isEmpty()).toList();
+    var segs = Arrays.stream(path.split(".")).map(String::trim).filter(x -> !x.isEmpty()).toList();
     return NamespacePath.newBuilder().addAllSegments(segs).build();
   }
 }

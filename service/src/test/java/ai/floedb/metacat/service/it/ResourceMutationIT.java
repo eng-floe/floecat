@@ -148,7 +148,7 @@ class ResourceMutationIT {
         nsDelBlocked,
         Status.Code.ABORTED,
         ErrorCode.MC_CONFLICT,
-        "Namespace \"db_it/schema_it/it_schema\" contains tables and/or children.");
+        "Namespace \"db_it.schema_it.it_schema\" contains tables and/or children.");
 
     TestSupport.deleteTable(table, nsId, tblId);
 

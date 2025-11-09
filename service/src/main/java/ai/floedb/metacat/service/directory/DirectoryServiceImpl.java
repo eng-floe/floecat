@@ -158,7 +158,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                                           "catalog_id",
                                           cat.getResourceId().getId(),
                                           "path",
-                                          String.join("/", fullPath))));
+                                          String.join(".", fullPath))));
 
                   return ResolveNamespaceResponse.newBuilder()
                       .setResourceId(namespace.getResourceId())
@@ -255,7 +255,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                                           "catalog_id",
                                           catalog.getResourceId().getId(),
                                           "path",
-                                          String.join("/", nameRef.getPathList()))));
+                                          String.join(".", nameRef.getPathList()))));
 
                   Table table =
                       tables
@@ -273,7 +273,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                                           "catalog",
                                           nameRef.getCatalog(),
                                           "path",
-                                          String.join("/", nameRef.getPathList()),
+                                          String.join(".", nameRef.getPathList()),
                                           "name",
                                           nameRef.getName())));
 
@@ -378,7 +378,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                                           "catalog_id",
                                           catalog.getResourceId().getId(),
                                           "path",
-                                          String.join("/", nameRef.getPathList()))));
+                                          String.join(".", nameRef.getPathList()))));
 
                   View view =
                       views
@@ -396,7 +396,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                                           "catalog",
                                           nameRef.getCatalog(),
                                           "path",
-                                          String.join("/", nameRef.getPathList()),
+                                          String.join(".", nameRef.getPathList()),
                                           "name",
                                           nameRef.getName())));
 
@@ -528,7 +528,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                                                 "catalog_id",
                                                 catalog.getResourceId().getId(),
                                                 "path",
-                                                String.join("/", nameRef.getPathList()))));
+                                                String.join(".", nameRef.getPathList()))));
 
                         Optional<View> viewOpt =
                             views.getByName(
@@ -597,7 +597,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                                             "catalog_id",
                                             catalog.getResourceId().getId(),
                                             "path",
-                                            String.join("/", prefix.getPathList()))));
+                                            String.join(".", prefix.getPathList()))));
 
                     StringBuilder next = new StringBuilder();
                     var entries =
@@ -771,7 +771,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                                             "catalog_id",
                                             catalog.getResourceId().getId(),
                                             "path",
-                                            String.join("/", prefix.getPathList()))));
+                                            String.join(".", prefix.getPathList()))));
 
                     StringBuilder next = new StringBuilder();
                     var entries =
@@ -826,10 +826,6 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
     for (String pathSegment : ref.getPathList()) {
       if (pathSegment == null || pathSegment.isBlank()) {
         throw GrpcErrors.invalidArgument(correlationId(), "path.segment.blank", Map.of());
-      }
-      if (pathSegment.contains("/")) {
-        throw GrpcErrors.invalidArgument(
-            correlationId(), "path.segment.contains_slash", Map.of("segment", pathSegment));
       }
     }
   }
