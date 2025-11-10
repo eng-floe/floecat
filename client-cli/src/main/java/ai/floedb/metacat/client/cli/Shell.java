@@ -161,6 +161,9 @@ public class Shell implements Runnable {
 
   private static final int DEFAULT_PAGE_SIZE = 1000;
 
+  private final boolean debugErrors =
+      Boolean.getBoolean("metacat.shell.debug") || System.getenv("METACAT_SHELL_DEBUG") != null;
+
   private volatile String currentTenantId =
       System.getenv().getOrDefault("METACAT_TENANT", "").trim();
 
@@ -237,24 +240,43 @@ public class Shell implements Runnable {
         try {
           dispatch(line);
         } catch (Exception e) {
-          Throwable root = e;
-          while (root.getCause() != null) {
-            root = root.getCause();
-          }
-
-          out.println(
-              "! "
-                  + e.getClass().getSimpleName()
-                  + ": "
-                  + (e.getMessage() == null ? "-" : e.getMessage()));
-          if (root != e && root.getMessage() != null) {
-            out.println(
-                "! caused by: " + root.getClass().getSimpleName() + ": " + root.getMessage());
-          }
+          printError(e);
         }
       }
     } catch (Exception e) {
       out.println("Fatal: " + e);
+    }
+  }
+
+  private void printError(Throwable t) {
+    var chain = new ArrayList<Throwable>();
+    Throwable cur = t;
+    while (cur != null && !chain.contains(cur)) {
+      chain.add(cur);
+      cur = cur.getCause();
+    }
+
+    Throwable root = chain.get(chain.size() - 1);
+    String msg =
+        (root.getMessage() != null && !root.getMessage().isBlank())
+            ? root.getMessage()
+            : (t.getMessage() != null ? t.getMessage() : "An error occurred");
+
+    System.out.println("! " + msg);
+
+    for (int i = chain.size() - 2; i >= 0; i--) {
+      var c = chain.get(i);
+      if (c.getMessage() != null && !c.getMessage().isBlank()) {
+        System.out.println("! caused by: " + c.getMessage());
+      }
+    }
+
+    if (debugErrors) {
+      System.out.println("! [debug] exception: " + t.getClass().getName());
+      for (int i = chain.size() - 2; i >= 0; i--) {
+        System.out.println("! [debug] caused by: " + chain.get(i).getClass().getName());
+      }
+      t.printStackTrace(System.out);
     }
   }
 
@@ -1368,25 +1390,43 @@ public class Shell implements Runnable {
   private ReconcilePolicy buildPolicy(
       boolean enabled, long intervalSec, int maxPar, long notBeforeSec) {
     ReconcilePolicy.Builder b = ReconcilePolicy.newBuilder().setEnabled(enabled);
-    if (maxPar > 0) b.setMaxParallel(maxPar);
-    if (intervalSec > 0) b.setInterval(durSeconds(intervalSec));
-    if (notBeforeSec > 0) b.setNotBefore(tsSeconds(notBeforeSec));
+    if (maxPar > 0) {
+      b.setMaxParallel(maxPar);
+    }
+    if (intervalSec > 0) {
+      b.setInterval(durSeconds(intervalSec));
+    }
+    if (notBeforeSec > 0) {
+      b.setNotBefore(tsSeconds(notBeforeSec));
+    }
     return b.build();
   }
 
   private SourceSelector buildSource(String ns, String table, List<String> cols) {
     var b = SourceSelector.newBuilder();
-    if (!nvl(ns, "").isBlank()) b.setNamespace(toNsPath(ns));
-    if (!nvl(table, "").isBlank()) b.setTable(table);
-    if (cols != null && !cols.isEmpty()) b.addAllColumns(cols);
+    if (!nvl(ns, "").isBlank()) {
+      b.setNamespace(toNsPath(ns));
+    }
+    if (!nvl(table, "").isBlank()) {
+      b.setTable(table);
+    }
+    if (cols != null && !cols.isEmpty()) {
+      b.addAllColumns(cols);
+    }
     return b.build();
   }
 
   private DestinationTarget buildDest(String cat, String ns, String table) {
     var b = DestinationTarget.newBuilder();
-    if (!nvl(cat, "").isBlank()) b.setCatalogDisplayName(cat);
-    if (!nvl(ns, "").isBlank()) b.setNamespace(toNsPath(ns));
-    if (!nvl(table, "").isBlank()) b.setTableDisplayName(table);
+    if (!nvl(cat, "").isBlank()) {
+      b.setCatalogDisplayName(cat);
+    }
+    if (!nvl(ns, "").isBlank()) {
+      b.setNamespace(toNsPath(ns));
+    }
+    if (!nvl(table, "").isBlank()) {
+      b.setTableDisplayName(table);
+    }
     return b.build();
   }
 
@@ -2202,17 +2242,20 @@ public class Shell implements Runnable {
   }
 
   private void printNamespaces(List<Namespace> rows) {
-    out.printf("%-36s  %-24s  %-26s  %-16s  %n", "NAMESPACE_ID", "CREATED_AT", "PARENTS", "LEAF");
+    out.printf(
+        "%-36s  %-24s  %-26s  %-16s  %s%n",
+        "NAMESPACE_ID", "CREATED_AT", "PARENTS", "LEAF", "DESCRIPTION");
 
     for (var ns : rows) {
       var parentsList = ns.getParentsList();
       var leaf = ns.getDisplayName();
       out.printf(
-          "%-36s  %-24s  %-26s  %-16s  %n",
+          "%-36s  %-24s  %-26s  %-16s  %s%n",
           rid(ns.getResourceId()),
           ts(ns.getCreatedAt()),
           parentsAsList(parentsList),
-          Quotes.quoteIfNeeded(leaf));
+          Quotes.quoteIfNeeded(leaf),
+          ns.hasDescription() ? ns.getDescription() : "");
     }
   }
 
@@ -2232,6 +2275,7 @@ public class Shell implements Runnable {
     out.println("Table:");
     out.printf("  id:           %s%n", rid(t.getResourceId()));
     out.printf("  name:         %s%n", t.getDisplayName());
+    out.printf("  description:  %s%n", t.hasDescription() ? t.getDescription() : "");
     out.printf("  format:       %s%n", upstream.getFormat().name());
     out.printf("  root_uri:     %s%n", upstream.getUri());
     out.printf("  created_at:   %s%n", ts(t.getCreatedAt()));
@@ -2480,7 +2524,9 @@ public class Shell implements Runnable {
     List<String> segs = splitPathRespectingQuotesAndEscapes(fq);
 
     if (segs.size() < 3) {
-      throw new IllegalArgumentException("Missing table/view name: use catalog.NS/.../NSk.<table>");
+      throw new IllegalArgumentException(
+          "Invalid table path: at least a catalog, one namespace, and a table name are required "
+              + "(e.g. catalog.namespace.table)");
     }
 
     String catalog = Quotes.unquote(segs.get(0));
@@ -2491,12 +2537,21 @@ public class Shell implements Runnable {
   }
 
   private NameRef nameRefForNamespace(String fqNs, boolean includeLeafInPath) {
-    if (fqNs == null) throw new IllegalArgumentException("Fully qualified name is required");
+    if (fqNs == null) {
+      throw new IllegalArgumentException("Fully qualified name is required");
+    }
+
     fqNs = fqNs.trim();
-    if (fqNs.isEmpty()) throw new IllegalArgumentException("Namespace path is empty");
+    if (fqNs.isEmpty()) {
+      throw new IllegalArgumentException("Namespace path is empty");
+    }
 
     List<String> segs = splitPathRespectingQuotesAndEscapes(fqNs);
-    if (segs.size() < 2) throw new IllegalArgumentException("Namespace path is empty");
+    if (segs.size() < 2) {
+      throw new IllegalArgumentException(
+          "Invalid namespace path: at least a catalog and one namespace are required "
+              + "(e.g. catalog.namespace)");
+    }
 
     String catalog = Quotes.unquote(segs.get(0));
     List<String> path = segs.subList(1, segs.size()).stream().map(Quotes::unquote).toList();
@@ -2511,12 +2566,21 @@ public class Shell implements Runnable {
   }
 
   private static NameRef nameRefForTablePrefix(String s) {
-    if (s == null) throw new IllegalArgumentException("Fully qualified name is required");
+    if (s == null) {
+      throw new IllegalArgumentException("Fully qualified name is required");
+    }
+
     s = s.trim();
-    if (s.isEmpty()) throw new IllegalArgumentException("Namespace path is empty");
+    if (s.isEmpty()) {
+      throw new IllegalArgumentException("Namespace path is empty");
+    }
 
     List<String> segs = splitPathRespectingQuotesAndEscapes(s);
-    if (segs.size() < 2) throw new IllegalArgumentException("Namespace path is empty");
+    if (segs.size() < 2) {
+      throw new IllegalArgumentException(
+          "Invalid namespace path: at least a catalog and one namespace are required "
+              + "(e.g. catalog.namespace)");
+    }
 
     String catalog = Quotes.unquote(segs.get(0));
     List<String> rest = segs.subList(1, segs.size()).stream().map(Quotes::unquote).toList();
