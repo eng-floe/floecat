@@ -328,9 +328,6 @@ public class Shell implements Runnable {
 
   private void dispatch(String inputLine) {
     var tokens = tokenize(inputLine);
-    out.println(
-        "TOKENS !!=" + tokens.stream().map(t -> "[" + t + "]").collect(Collectors.joining(" ")));
-
     if (tokens.isEmpty()) {
       return;
     }
