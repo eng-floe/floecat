@@ -60,8 +60,12 @@ public class InMemoryPointerStore implements PointerStore {
     int start = 0;
     if (pageToken != null && !pageToken.isEmpty()) {
       int idx = Collections.binarySearch(keys, pageToken);
-      start = (idx >= 0) ? idx + 1 : (-idx - 1);
+      if (idx < 0) {
+        throw new IllegalArgumentException("bad page token");
+      }
+      start = idx + 1;
     }
+
     if (start >= keys.size()) {
       if (nextTokenOut != null) {
         nextTokenOut.setLength(0);

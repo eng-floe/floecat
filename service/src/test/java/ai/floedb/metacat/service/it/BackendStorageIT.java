@@ -164,6 +164,14 @@ class BackendStorageIT {
     assertTrue(ptr.get(keyNsPtr).isEmpty(), "ns canonical pointer should be deleted");
     assertTrue(blobs.head(keyNsBlob).isEmpty(), "ns blob should be deleted");
 
+    var schemaNsId =
+        TestSupport.resolveNamespaceId(
+            directory, cat.getDisplayName(), List.of("db_it", "schema_it"));
+    TestSupport.deleteNamespace(namespace, schemaNsId, true);
+
+    var dbNsId = TestSupport.resolveNamespaceId(directory, cat.getDisplayName(), List.of("db_it"));
+    TestSupport.deleteNamespace(namespace, dbNsId, true);
+
     TestSupport.deleteCatalog(catalog, catId, true);
     String catByIdKey = Keys.catalogPointerById(catId.getTenantId(), catId.getId());
     String catByNameKey = Keys.catalogPointerByName(catId.getTenantId(), catName);
@@ -462,7 +470,6 @@ class BackendStorageIT {
     t1.join();
     t2.join();
 
-    // At most one should fail with FAILED_PRECONDITION, but both updates can succeed
     assertTrue(errs.size() <= 1, "at most one writer should fail");
     if (!errs.isEmpty()) {
       var sre = (io.grpc.StatusRuntimeException) errs.get(0);
@@ -470,7 +477,6 @@ class BackendStorageIT {
     }
 
     long v2 = ptr.get(canon).orElseThrow().getVersion();
-    // Two attempts occurred and either 2 bumps (both succeeded) or 1 bump (one failed)
     assertTrue(v2 == v0 + 1 || v2 == v0 + 2, "one or two successful bumps expected");
   }
 

@@ -469,7 +469,6 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
             run(
                 () -> {
                   var principalContext = principal.get();
-
                   authz.require(principalContext, List.of("catalog.read", "view.read"));
 
                   final int limit =
@@ -482,22 +481,15 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   var tenantId = principalContext.getTenantId();
 
                   if (request.hasList()) {
-                    var names = request.getList().getNamesList();
-
-                    final int start;
-                    if (token == null || token.isEmpty()) {
-                      start = 0;
-                    } else {
-                      try {
-                        start = parseIntToken(token, correlationId());
-                      } catch (NumberFormatException nfe) {
-                        throw GrpcErrors.invalidArgument(
-                            correlationId(), "page_token.invalid", Map.of("page_token", token));
-                      }
+                    if (token != null && !token.isEmpty()) {
+                      throw GrpcErrors.invalidArgument(
+                          correlationId(), "page_token.invalid", Map.of("page_token", token));
                     }
-                    final int end = Math.min(names.size(), start + Math.max(1, limit));
 
-                    for (int i = start; i < end; i++) {
+                    var names = request.getList().getNamesList();
+                    final int end = Math.min(names.size(), Math.max(1, limit));
+
+                    for (int i = 0; i < end; i++) {
                       NameRef nameRef = names.get(i);
                       try {
                         validateNameRefOrThrow(nameRef);
@@ -525,10 +517,8 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                                             correlationId(),
                                             "namespace.by_path_missing",
                                             Map.of(
-                                                "catalog_id",
-                                                catalog.getResourceId().getId(),
-                                                "path",
-                                                String.join(".", nameRef.getPathList()))));
+                                                "catalog_id", catalog.getResourceId().getId(),
+                                                "path", String.join(".", nameRef.getPathList()))));
 
                         Optional<View> viewOpt =
                             views.getByName(
@@ -564,9 +554,8 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                     }
 
                     builder.setPage(
-                        PageResponse.newBuilder()
-                            .setTotalSize(names.size())
-                            .setNextPageToken(end < names.size() ? Integer.toString(end) : ""));
+                        PageResponse.newBuilder().setTotalSize(names.size()).setNextPageToken(""));
+
                     return builder.build();
                   }
 
@@ -594,20 +583,25 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                                         correlationId(),
                                         "namespace.by_path_missing",
                                         Map.of(
-                                            "catalog_id",
-                                            catalog.getResourceId().getId(),
-                                            "path",
-                                            String.join(".", prefix.getPathList()))));
+                                            "catalog_id", catalog.getResourceId().getId(),
+                                            "path", String.join(".", prefix.getPathList()))));
 
                     StringBuilder next = new StringBuilder();
-                    var entries =
-                        views.list(
-                            tenantId,
-                            catalog.getResourceId().getId(),
-                            namespace.getResourceId().getId(),
-                            Math.max(1, limit),
-                            token,
-                            next);
+                    final List<View> entries;
+                    try {
+                      entries =
+                          views.list(
+                              tenantId,
+                              catalog.getResourceId().getId(),
+                              namespace.getResourceId().getId(),
+                              Math.max(1, limit),
+                              token,
+                              next);
+                    } catch (IllegalArgumentException badToken) {
+                      throw GrpcErrors.invalidArgument(
+                          correlationId(), "page_token.invalid", Map.of("page_token", token));
+                    }
+
                     int total =
                         views.count(
                             tenantId,
@@ -653,7 +647,6 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
             run(
                 () -> {
                   var principalContext = principal.get();
-
                   authz.require(principalContext, List.of("catalog.read", "table.read"));
 
                   final int limit =
@@ -666,49 +659,51 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   var tenantId = principalContext.getTenantId();
 
                   if (request.hasList()) {
-                    var names = request.getList().getNamesList();
-
-                    final int start;
-                    if (token == null || token.isEmpty()) {
-                      start = 0;
-                    } else {
-                      try {
-                        start = parseIntToken(token, correlationId());
-                      } catch (NumberFormatException nfe) {
-                        throw GrpcErrors.invalidArgument(
-                            correlationId(), "page_token.invalid", Map.of("page_token", token));
-                      }
+                    if (token != null && !token.isEmpty()) {
+                      throw GrpcErrors.invalidArgument(
+                          correlationId(), "page_token.invalid", Map.of("page_token", token));
                     }
-                    final int end = Math.min(names.size(), start + Math.max(1, limit));
 
-                    for (int i = start; i < end; i++) {
+                    var names = request.getList().getNamesList();
+                    final int end = Math.min(names.size(), Math.max(1, limit));
+
+                    for (int i = 0; i < end; i++) {
                       NameRef nameRef = names.get(i);
                       try {
                         validateNameRefOrThrow(nameRef);
                         validateTableNameOrThrow(nameRef);
 
                         Catalog catalog =
-                            catalogs.getByName(tenantId, nameRef.getCatalog()).orElseThrow();
+                            catalogs
+                                .getByName(tenantId, nameRef.getCatalog())
+                                .orElseThrow(
+                                    () ->
+                                        GrpcErrors.notFound(
+                                            correlationId(),
+                                            "catalog",
+                                            Map.of("id", nameRef.getCatalog())));
+
                         Namespace namespace =
                             namespaces
                                 .getByPath(
                                     tenantId,
                                     catalog.getResourceId().getId(),
                                     nameRef.getPathList())
-                                .orElseThrow();
+                                .orElseThrow(
+                                    () ->
+                                        GrpcErrors.notFound(
+                                            correlationId(),
+                                            "namespace.by_path_missing",
+                                            Map.of(
+                                                "catalog_id", catalog.getResourceId().getId(),
+                                                "path", String.join(".", nameRef.getPathList()))));
 
                         Optional<Table> tableOpt =
-                            tables
-                                .list(
-                                    tenantId,
-                                    catalog.getResourceId().getId(),
-                                    namespace.getResourceId().getId(),
-                                    Integer.MAX_VALUE,
-                                    "",
-                                    new StringBuilder())
-                                .stream()
-                                .filter(t -> t.getDisplayName().equals(nameRef.getName()))
-                                .findFirst();
+                            tables.getByName(
+                                tenantId,
+                                catalog.getResourceId().getId(),
+                                namespace.getResourceId().getId(),
+                                nameRef.getName());
 
                         var tableId =
                             tableOpt
@@ -738,9 +733,8 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                     }
 
                     builder.setPage(
-                        PageResponse.newBuilder()
-                            .setTotalSize(names.size())
-                            .setNextPageToken(end < names.size() ? Integer.toString(end) : ""));
+                        PageResponse.newBuilder().setTotalSize(names.size()).setNextPageToken(""));
+
                     return builder.build();
                   }
 
@@ -768,20 +762,25 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                                         correlationId(),
                                         "namespace.by_path_missing",
                                         Map.of(
-                                            "catalog_id",
-                                            catalog.getResourceId().getId(),
-                                            "path",
-                                            String.join(".", prefix.getPathList()))));
+                                            "catalog_id", catalog.getResourceId().getId(),
+                                            "path", String.join(".", prefix.getPathList()))));
 
                     StringBuilder next = new StringBuilder();
-                    var entries =
-                        tables.list(
-                            tenantId,
-                            catalog.getResourceId().getId(),
-                            namespace.getResourceId().getId(),
-                            Math.max(1, limit),
-                            token,
-                            next);
+                    final List<Table> entries;
+                    try {
+                      entries =
+                          tables.list(
+                              tenantId,
+                              catalog.getResourceId().getId(),
+                              namespace.getResourceId().getId(),
+                              Math.max(1, limit),
+                              token,
+                              next);
+                    } catch (IllegalArgumentException badToken) {
+                      throw GrpcErrors.invalidArgument(
+                          correlationId(), "page_token.invalid", Map.of("page_token", token));
+                    }
+
                     int total =
                         tables.count(
                             tenantId,

@@ -32,7 +32,6 @@ import ai.floedb.metacat.catalog.rpc.NdvApprox;
 import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveFQTablesRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveFQTablesResponse;
-import ai.floedb.metacat.catalog.rpc.ResolveFQTablesResponse.Entry;
 import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveViewRequest;
@@ -48,6 +47,8 @@ import ai.floedb.metacat.catalog.rpc.UpdateCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.metacat.catalog.rpc.UpstreamRef;
+import ai.floedb.metacat.client.cli.util.CsvListParserUtil;
+import ai.floedb.metacat.client.cli.util.FQNameParserUtil;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.Precondition;
@@ -98,13 +99,13 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.jline.reader.Completer;
 import org.jline.reader.EndOfFileException;
@@ -259,7 +260,7 @@ public class Shell implements Runnable {
 
   private void printHelp() {
     out.println(
-        """
+"""
          Commands:
          tenant <id>
          catalogs
@@ -268,7 +269,12 @@ public class Shell implements Runnable {
          catalog update <display_name|id> [--display <name>] [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...] [--etag <etag>]
          catalog delete <display_name|id> [--require-empty] [--etag <etag>]
          namespaces (<catalog | catalog.ns[.ns...]> | <UUID>) [--id <UUID>] [--prefix P] [--recursive]
-         namespace create <catalog.ns[.ns...]> [--desc <text>] [--props k=v ...] [--policy <id>]
+         namespace create <catalog|catalog.ns[.ns...]> [--display <leaf>] [--path a.b[.c]] [--desc <text>] [--props k=v ...] [--policy <id>]
+             # Examples:
+             #   namespace create cat1 --display "a.b.c"
+             #   namespace create cat1 --path a --display "b.c"
+             #   namespace create cat1.a.b
+             #   namespace create cat1.a\\.b.c      (treats 'a.b' as one namespace)
          namespace get <id | catalog.ns[.ns...]>
          namespace update <id|catalog.ns[.ns...]>
              [--display <name>] [--desc <text>]
@@ -317,11 +323,14 @@ public class Shell implements Runnable {
          connector job <jobId>
          help
          quit
-        """);
+""");
   }
 
   private void dispatch(String inputLine) {
     var tokens = tokenize(inputLine);
+    out.println(
+        "TOKENS !!=" + tokens.stream().map(t -> "[" + t + "]").collect(Collectors.joining(" ")));
+
     if (tokens.isEmpty()) {
       return;
     }
@@ -373,27 +382,12 @@ public class Shell implements Runnable {
   }
 
   private void cmdCatalogs() {
-    ListCatalogsRequest.Builder rb =
-        ListCatalogsRequest.newBuilder()
-            .setPage(PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).build());
-
-    List<Catalog> all = new ArrayList<>();
-    String pageToken = "";
-    do {
-      var pageReq =
-          rb.setPage(
-                  PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).setPageToken(pageToken))
-              .build();
-      var resp = catalogs.listCatalogs(pageReq);
-
-      all.addAll(resp.getCatalogsList());
-
-      pageToken = resp.hasPage() ? resp.getPage().getNextPageToken() : "";
-      if (pageToken == null) {
-        pageToken = "";
-      }
-    } while (!pageToken.isBlank());
-
+    List<Catalog> all =
+        collectPages(
+            DEFAULT_PAGE_SIZE,
+            pr -> catalogs.listCatalogs(ListCatalogsRequest.newBuilder().setPage(pr).build()),
+            r -> r.getCatalogsList(),
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
     printCatalogs(all);
   }
 
@@ -411,10 +405,10 @@ public class Shell implements Runnable {
                   + " <id>] [--props k=v ...]");
           return;
         }
-        String display = args.get(1);
-        String desc = parseStringFlag(args, "--desc", null);
-        String connectorRef = parseStringFlag(args, "--connector", null);
-        String policyRef = parseStringFlag(args, "--policy", null);
+        String display = Quotes.unquote(args.get(1));
+        String desc = Quotes.unquote(parseStringFlag(args, "--desc", null));
+        String connectorRef = Quotes.unquote(parseStringFlag(args, "--connector", null));
+        String policyRef = Quotes.unquote(parseStringFlag(args, "--policy", null));
         Map<String, String> properties = parseKeyValueList(args, "--props");
         var spec =
             CatalogSpec.newBuilder()
@@ -434,7 +428,9 @@ public class Shell implements Runnable {
         }
         var resp =
             catalogs.getCatalog(
-                GetCatalogRequest.newBuilder().setCatalogId(resolveCatalogId(args.get(1))).build());
+                GetCatalogRequest.newBuilder()
+                    .setCatalogId(resolveCatalogId(Quotes.unquote(args.get(1))))
+                    .build());
         printCatalogs(List.of(resp.getCatalog()));
       }
       case "update" -> {
@@ -444,18 +440,18 @@ public class Shell implements Runnable {
                   + " [--connector <id>] [--policy <id>] [--props k=v ...] [--etag <etag>]");
           return;
         }
-        String id = args.get(1);
-        String display = parseStringFlag(args, "--display", null);
-        String desc = parseStringFlag(args, "--desc", null);
-        String connectorRef = parseStringFlag(args, "--connector", null);
-        String policyRef = parseStringFlag(args, "--policy", null);
+        String id = Quotes.unquote(args.get(1));
+        String display = Quotes.unquote(parseStringFlag(args, "--display", null));
+        String desc = Quotes.unquote(parseStringFlag(args, "--desc", null));
+        String connectorRef = Quotes.unquote(parseStringFlag(args, "--connector", null));
+        String policyRef = Quotes.unquote(parseStringFlag(args, "--policy", null));
         Map<String, String> properties = parseKeyValueList(args, "--props");
 
         var sb = CatalogSpec.newBuilder();
         LinkedHashSet<String> mask = new LinkedHashSet<>();
 
         if (display != null) {
-          sb.setDisplayName(display);
+          sb.setDisplayName(Quotes.unquote(display));
           mask.add("display_name");
         }
 
@@ -498,7 +494,7 @@ public class Shell implements Runnable {
         boolean requireEmpty = args.contains("--require-empty");
         var req =
             DeleteCatalogRequest.newBuilder()
-                .setCatalogId(resolveCatalogId(args.get(1)))
+                .setCatalogId(resolveCatalogId(Quotes.unquote(args.get(1))))
                 .setRequireEmpty(requireEmpty)
                 .setPrecondition(preconditionFromEtag(args))
                 .build();
@@ -517,8 +513,9 @@ public class Shell implements Runnable {
       return;
     }
 
-    String tokenArg = args.get(0).trim();
-    String namePrefix = parseStringFlag(args, "--prefix", "");
+    String raw = args.get(0).trim();
+    String explicitId = Quotes.unquote(parseStringFlag(args, "--id", ""));
+    String namePrefix = Quotes.unquote(parseStringFlag(args, "--prefix", ""));
     boolean recursive = args.contains("--recursive");
     boolean childrenOnly = !recursive;
 
@@ -529,35 +526,25 @@ public class Shell implements Runnable {
             .setNamePrefix(nvl(namePrefix, ""))
             .setPage(PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).build());
 
-    String explicitId = parseStringFlag(args, "--id", "");
     if (!explicitId.isBlank()) {
-      rb.setNamespaceId(resolveNamespaceId(explicitId));
-    } else if (looksLikeUuid(tokenArg)) {
-      rb.setNamespaceId(resolveNamespaceId(tokenArg));
-    } else if (tokenArg.contains(".")) {
-      ParsedFq p = parseFqFlexible(tokenArg, false);
-      rb.setCatalogId(resolveCatalogId(p.catalog)).addAllPath(p.nsParts);
+      rb.setNamespaceId(resolveNamespaceIdFlexible(explicitId));
+    } else if (looksLikeQuotedOrRawUuid(raw)) {
+      rb.setNamespaceId(resolveNamespaceIdFlexible(raw));
     } else {
-      rb.setCatalogId(resolveCatalogId(tokenArg));
+      try {
+        NameRef ref = nameRefForNamespace(raw, true);
+        rb.setCatalogId(resolveCatalogId(ref.getCatalog())).addAllPath(ref.getPathList());
+      } catch (IllegalArgumentException ex) {
+        rb.setCatalogId(resolveCatalogId(raw));
+      }
     }
 
-    List<Namespace> all = new ArrayList<>();
-    String pageToken = "";
-    do {
-      var pageReq =
-          rb.setPage(
-                  PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).setPageToken(pageToken))
-              .build();
-      var resp = namespaces.listNamespaces(pageReq);
-
-      all.addAll(resp.getNamespacesList());
-
-      pageToken = resp.hasPage() ? resp.getPage().getNextPageToken() : "";
-      if (pageToken == null) {
-        pageToken = "";
-      }
-    } while (!pageToken.isBlank());
-
+    List<Namespace> all =
+        collectPages(
+            DEFAULT_PAGE_SIZE,
+            pr -> namespaces.listNamespaces(rb.setPage(pr).build()),
+            r -> r.getNamespacesList(),
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
     printNamespaces(all);
   }
 
@@ -571,30 +558,57 @@ public class Shell implements Runnable {
       case "create" -> {
         if (args.size() < 2) {
           out.println(
-              "usage: namespace create <catalog.ns[.ns...]> [--desc <text>] [--props k=v ...]"
-                  + " [--policy <id>]");
+              "usage: namespace create <catalog|catalog.ns[.ns...]> "
+                  + "[--display <leaf>] [--path a.b[.c]] "
+                  + "[--desc <text>] [--props k=v ...] [--policy <id>]");
           return;
         }
-        String fq = args.get(1);
-        ParsedFq p = parseFqFlexible(fq, false);
-        if (p.nsParts.isEmpty()) {
-          throw new IllegalArgumentException("Namespace path is empty in: " + fq);
-        }
 
-        ResourceId catalogId = resolveCatalogId(p.catalog);
-        String display = p.nsParts.get(p.nsParts.size() - 1);
-        List<String> parents = p.nsParts.subList(0, p.nsParts.size() - 1);
-
-        String desc = parseStringFlag(args, "--desc", "");
+        String token = args.get(1).trim();
+        String desc = Quotes.unquote(parseStringFlag(args, "--desc", ""));
         Map<String, String> properties = parseKeyValueList(args, "--props");
-        String policy = parseStringFlag(args, "--policy", "");
+        String policy = Quotes.unquote(parseStringFlag(args, "--policy", ""));
+
+        String leafOpt = Quotes.unquote(parseStringFlag(args, "--display", null));
+        String pathOpt = parseStringFlag(args, "--path", null);
+
+        String catalog;
+        List<String> parents;
+        String leaf;
+
+        if (leafOpt != null || pathOpt != null) {
+          int firstDot = token.indexOf('.');
+          catalog = Quotes.unquote((firstDot > 0) ? token.substring(0, firstDot) : token);
+          if (catalog.isBlank()) {
+            out.println("Error: catalog is required before --path/--display.");
+            return;
+          }
+          parents =
+              (pathOpt == null || pathOpt.isBlank())
+                  ? List.of()
+                  : splitPathRespectingQuotesAndEscapes(pathOpt);
+          if (leafOpt == null || leafOpt.isBlank()) {
+            out.println("Error: --display is required when using --path/explicit mode.");
+            return;
+          }
+          leaf = leafOpt;
+        } else {
+          NameRef nr = nameRefForNamespace(token, true);
+          catalog = nr.getCatalog();
+          if (nr.getPathList().isEmpty()) {
+            out.println("Namespace path is empty.");
+            return;
+          }
+          parents = nr.getPathList().subList(0, nr.getPathCount() - 1);
+          leaf = nr.getPathList().get(nr.getPathCount() - 1);
+        }
 
         var spec =
             NamespaceSpec.newBuilder()
-                .setCatalogId(catalogId)
-                .setDisplayName(display)
-                .setDescription(desc)
+                .setCatalogId(resolveCatalogId(catalog))
                 .addAllPath(parents)
+                .setDisplayName(leaf)
+                .setDescription(desc)
                 .putAllProperties(properties)
                 .setPolicyRef(policy)
                 .build();
@@ -609,9 +623,9 @@ public class Shell implements Runnable {
           return;
         }
         ResourceId nsId =
-            looksLikeUuid(args.get(1))
-                ? namespaceRid(args.get(1))
-                : resolveNamespaceId(args.get(1));
+            looksLikeQuotedOrRawUuid(args.get(1))
+                ? namespaceRid(Quotes.unquote(args.get(1)))
+                : resolveNamespaceIdFlexible(args.get(1));
         var resp =
             namespaces.getNamespace(GetNamespaceRequest.newBuilder().setNamespaceId(nsId).build());
         printNamespaces(List.of(resp.getNamespace()));
@@ -628,20 +642,20 @@ public class Shell implements Runnable {
         }
 
         ResourceId namespaceId =
-            looksLikeUuid(args.get(1))
-                ? namespaceRid(args.get(1))
+            looksLikeQuotedOrRawUuid(args.get(1))
+                ? namespaceRid(Quotes.unquote(args.get(1)))
                 : directory
                     .resolveNamespace(
                         ResolveNamespaceRequest.newBuilder()
-                            .setRef(nameRefForNamespace(args.get(1)))
+                            .setRef(nameRefForNamespace(args.get(1), false))
                             .build())
                     .getResourceId();
 
-        String display = parseStringFlag(args, "--display", null);
-        String desc = parseStringFlag(args, "--desc", null);
-        String policyRef = parseStringFlag(args, "--policy", null);
+        String display = Quotes.unquote(parseStringFlag(args, "--display", null));
+        String desc = Quotes.unquote(parseStringFlag(args, "--desc", null));
+        String policyRef = Quotes.unquote(parseStringFlag(args, "--policy", null));
         String pathStr = parseStringFlag(args, "--path", null);
-        String catalogStr = parseStringFlag(args, "--catalog", null);
+        String catalogStr = Quotes.unquote(parseStringFlag(args, "--catalog", null));
         Map<String, String> properties = parseKeyValueList(args, "--props");
 
         if (display != null && pathStr != null) {
@@ -668,7 +682,8 @@ public class Shell implements Runnable {
         }
 
         if (pathStr != null) {
-          var pathList = pathStr.isBlank() ? List.<String>of() : pathToList(pathStr);
+          var pathList =
+              pathStr.isBlank() ? List.<String>of() : splitPathRespectingQuotesAndEscapes(pathStr);
           sb.clearPath().addAllPath(pathList);
           mask.add("path");
         }
@@ -707,10 +722,9 @@ public class Shell implements Runnable {
           return;
         }
         boolean requireEmpty = args.contains("--require-empty");
-        ResourceId nsId =
-            looksLikeUuid(args.get(1))
-                ? namespaceRid(args.get(1))
-                : resolveNamespaceId(args.get(1));
+
+        ResourceId nsId = resolveNamespaceIdFlexible(args.get(1));
+
         var req =
             DeleteNamespaceRequest.newBuilder()
                 .setNamespaceId(nsId)
@@ -726,7 +740,7 @@ public class Shell implements Runnable {
 
   private void cmdTables(List<String> args) {
     if (args.isEmpty()) {
-      out.println("usage: tables <catalog.db.schema[.prefix]>");
+      out.println("usage: tables <catalog.ns[.ns...][.prefix]>");
       return;
     }
     var prefix = nameRefForTablePrefix(args.get(0));
@@ -736,23 +750,12 @@ public class Shell implements Runnable {
             .setPrefix(prefix)
             .setPage(PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).build());
 
-    List<Entry> all = new ArrayList<>();
-    String pageToken = "";
-    do {
-      var pageReq =
-          rb.setPage(
-                  PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).setPageToken(pageToken))
-              .build();
-      var resp = directory.resolveFQTables(pageReq);
-
-      all.addAll(resp.getTablesList());
-
-      pageToken = resp.hasPage() ? resp.getPage().getNextPageToken() : "";
-      if (pageToken == null) {
-        pageToken = "";
-      }
-    } while (!pageToken.isBlank());
-
+    List<ResolveFQTablesResponse.Entry> all =
+        collectPages(
+            DEFAULT_PAGE_SIZE,
+            pr -> directory.resolveFQTables(rb.setPage(pr).build()),
+            ResolveFQTablesResponse::getTablesList,
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
     printResolvedTables(all);
   }
 
@@ -775,22 +778,27 @@ public class Shell implements Runnable {
 
         var ref = nameRefForTable(args.get(1));
         ResourceId catalogId = resolveCatalogId(ref.getCatalog());
-        String nsFq =
-            ref.getCatalog()
-                + (ref.getPathList().isEmpty() ? "" : "." + String.join(".", ref.getPathList()));
-        ResourceId namespaceId = resolveNamespaceId(nsFq);
+
+        NameRef nsRef =
+            NameRef.newBuilder().setCatalog(ref.getCatalog()).addAllPath(ref.getPathList()).build();
+
+        ResourceId namespaceId =
+            directory
+                .resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(nsRef).build())
+                .getResourceId();
+
         String name = ref.getName();
 
-        String desc = parseStringFlag(args, "--desc", "");
-        String root = parseStringFlag(args, "--root", "");
-        String schema = parseStringFlag(args, "--schema", "");
-        List<String> parts = csvToList(parseStringFlag(args, "--parts", ""));
-        String formatStr = parseStringFlag(args, "--format", "");
+        String desc = Quotes.unquote(parseStringFlag(args, "--desc", ""));
+        String root = Quotes.unquote(parseStringFlag(args, "--root", ""));
+        String schema = Quotes.unquote(parseStringFlag(args, "--schema", ""));
+        List<String> parts = csvList(Quotes.unquote(parseStringFlag(args, "--parts", "")));
+        String formatStr = Quotes.unquote(parseStringFlag(args, "--format", ""));
         Map<String, String> props = parseKeyValueList(args, "--props");
 
-        String upConnector = parseStringFlag(args, "--up-connector", "");
-        String upNs = parseStringFlag(args, "--up-ns", "");
-        String upTable = parseStringFlag(args, "--up-table", "");
+        String upConnector = Quotes.unquote(parseStringFlag(args, "--up-connector", ""));
+        String upNs = Quotes.unquote(parseStringFlag(args, "--up-ns", ""));
+        String upTable = Quotes.unquote(parseStringFlag(args, "--up-table", ""));
 
         var ub =
             UpstreamRef.newBuilder()
@@ -802,7 +810,7 @@ public class Shell implements Runnable {
           ub.setConnectorId(resolveConnectorId(upConnector));
         }
         if (!upNs.isBlank()) {
-          ub.clearNamespacePath().addAllNamespacePath(pathToList(upNs));
+          ub.clearNamespacePath().addAllNamespacePath(splitPathRespectingQuotesAndEscapes(upNs));
         }
         if (!upTable.isBlank()) {
           ub.setTableDisplayName(upTable);
@@ -829,15 +837,7 @@ public class Shell implements Runnable {
           out.println("usage: table get <id|catalog.ns[.ns...].table>");
           return;
         }
-        ResourceId tableId;
-        if (looksLikeUuid(args.get(1))) {
-          tableId = tableRid(args.get(1));
-        } else {
-          var r =
-              directory.resolveTable(
-                  ResolveTableRequest.newBuilder().setRef(nameRefForTable(args.get(1))).build());
-          tableId = r.getResourceId();
-        }
+        ResourceId tableId = resolveTableIdFlexible(args.get(1));
         var resp = tables.getTable(GetTableRequest.newBuilder().setTableId(tableId).build());
         printTable(resp.getTable());
       }
@@ -852,29 +852,21 @@ public class Shell implements Runnable {
           return;
         }
 
-        ResourceId tableId =
-            looksLikeUuid(args.get(1))
-                ? tableRid(args.get(1))
-                : directory
-                    .resolveTable(
-                        ResolveTableRequest.newBuilder()
-                            .setRef(nameRefForTable(args.get(1)))
-                            .build())
-                    .getResourceId();
+        ResourceId tableId = resolveTableIdFlexible(args.get(1));
 
-        String catalogStr = parseStringFlag(args, "--catalog", null);
-        String nsStr = parseStringFlag(args, "--namespace", null);
-        String name = parseStringFlag(args, "--name", null);
-        String desc = parseStringFlag(args, "--desc", null);
-        String root = parseStringFlag(args, "--root", null);
-        String schema = parseStringFlag(args, "--schema", null);
-        List<String> parts = csvToList(parseStringFlag(args, "--parts", ""));
-        String formatStr = parseStringFlag(args, "--format", "");
+        String catalogStr = Quotes.unquote(parseStringFlag(args, "--catalog", null));
+        String nsStr = Quotes.unquote(parseStringFlag(args, "--namespace", null));
+        String name = Quotes.unquote(parseStringFlag(args, "--name", null));
+        String desc = Quotes.unquote(parseStringFlag(args, "--desc", null));
+        String root = Quotes.unquote(parseStringFlag(args, "--root", null));
+        String schema = Quotes.unquote(parseStringFlag(args, "--schema", null));
+        List<String> parts = csvList(Quotes.unquote(parseStringFlag(args, "--parts", "")));
+        String formatStr = Quotes.unquote(parseStringFlag(args, "--format", ""));
         Map<String, String> props = parseKeyValueList(args, "--props");
 
-        String upConnector = parseStringFlag(args, "--up-connector", null);
-        String upNs = parseStringFlag(args, "--up-ns", null);
-        String upTable = parseStringFlag(args, "--up-table", null);
+        String upConnector = Quotes.unquote(parseStringFlag(args, "--up-connector", null));
+        String upNs = Quotes.unquote(parseStringFlag(args, "--up-ns", null));
+        String upTable = Quotes.unquote(parseStringFlag(args, "--up-table", null));
 
         boolean changingCatalog = catalogStr != null && !catalogStr.isBlank();
         boolean changingNs = nsStr != null && !nsStr.isBlank();
@@ -948,7 +940,7 @@ public class Shell implements Runnable {
         }
 
         if (upNs != null && !upNs.isBlank()) {
-          ub.clearNamespacePath().addAllNamespacePath(pathToList(upNs));
+          ub.clearNamespacePath().addAllNamespacePath(splitPathRespectingQuotesAndEscapes(upNs));
           maskPaths.add("upstream.namespace_path");
           touchUpstream = true;
         }
@@ -988,15 +980,7 @@ public class Shell implements Runnable {
                   + " [--etag <etag>]");
           return;
         }
-        ResourceId tableId =
-            looksLikeUuid(args.get(1))
-                ? tableRid(args.get(1))
-                : directory
-                    .resolveTable(
-                        ResolveTableRequest.newBuilder()
-                            .setRef(nameRefForTable(args.get(1)))
-                            .build())
-                    .getResourceId();
+        ResourceId tableId = resolveTableIdFlexible(args.get(1));
         var req =
             DeleteTableRequest.newBuilder()
                 .setTableId(tableId)
@@ -1017,27 +1001,13 @@ public class Shell implements Runnable {
   }
 
   private List<Connector> listAllConnectors(ConnectorKind kind, int pageSize) {
-    List<Connector> out = new ArrayList<>();
-    String pageToken = "";
-    do {
-      var req =
-          ListConnectorsRequest.newBuilder()
-              .setPage(
-                  PageRequest.newBuilder().setPageSize(pageSize).setPageToken(pageToken).build())
-              .build();
-
-      var resp = connectors.listConnectors(req);
-      List<Connector> connectorsList = resp.getConnectorsList();
-
-      for (Connector c : connectorsList) {
-        if (kind == null || c.getKind() == kind) {
-          out.add(c);
-        }
-      }
-
-      pageToken = resp.getPage().getNextPageToken();
-    } while (!pageToken.isEmpty());
-    return out;
+    List<Connector> all =
+        collectPages(
+            pageSize,
+            pr -> connectors.listConnectors(ListConnectorsRequest.newBuilder().setPage(pr).build()),
+            r -> r.getConnectorsList(),
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
+    return (kind == null) ? all : all.stream().filter(c -> c.getKind() == kind).toList();
   }
 
   private void cmdConnectorCrud(List<String> args) {
@@ -1046,32 +1016,18 @@ public class Shell implements Runnable {
       return;
     }
     String sub = args.get(0);
+
     switch (sub) {
       case "list" -> {
-        String kind = parseStringFlag(args, "--kind", "");
+        String kindStr = Quotes.unquote(parseStringFlag(args, "--kind", ""));
         int pageSize = parseIntFlag(args, "--page-size", DEFAULT_PAGE_SIZE);
+        ConnectorKind filter = parseConnectorKind(kindStr);
+        filter = (filter == ConnectorKind.CK_UNSPECIFIED && kindStr.isBlank()) ? null : filter;
 
-        ConnectorKind connectorKind = ConnectorKind.CK_UNSPECIFIED;
-        if (!kind.isBlank()) {
-          switch (kind.toLowerCase(Locale.ROOT)) {
-            case "iceberg" -> {
-              connectorKind = ConnectorKind.CK_ICEBERG;
-            }
-            case "delta" -> {
-              connectorKind = ConnectorKind.CK_DELTA;
-            }
-            case "glue" -> {
-              connectorKind = ConnectorKind.CK_GLUE;
-            }
-            case "unity" -> {
-              connectorKind = ConnectorKind.CK_UNITY;
-            }
-          }
-        }
-
-        var all = listAllConnectors(connectorKind, pageSize);
+        var all = listAllConnectors(filter, pageSize);
         printConnectors(all);
       }
+
       case "get" -> {
         if (args.size() < 2) {
           out.println("usage: connector get <display_name|id>");
@@ -1080,12 +1036,13 @@ public class Shell implements Runnable {
         var resp =
             connectors.getConnector(
                 GetConnectorRequest.newBuilder()
-                    .setConnectorId(resolveConnectorId(args.get(1)))
+                    .setConnectorId(resolveConnectorId(Quotes.unquote(args.get(1))))
                     .build());
         printConnectors(List.of(resp.getConnector()));
       }
+
       case "create" -> {
-        if (args.size() < 4) {
+        if (args.size() < 6) {
           out.println(
               "usage: connector create "
                   + "<display_name> <source_type (ICEBERG|DELTA|GLUE|UNITY)> <uri> "
@@ -1099,74 +1056,32 @@ public class Shell implements Runnable {
           return;
         }
 
-        String display = args.get(1);
-        ConnectorKind kind = parseConnectorKind(args.get(2));
-        String uri = args.get(3);
-        String sourceNamespace = args.get(4);
-        String destCatalog = args.get(5);
+        String display = Quotes.unquote(args.get(1));
+        ConnectorKind kind = parseConnectorKind(Quotes.unquote(args.get(2)));
+        String uri = Quotes.unquote(args.get(3));
+        String sourceNamespace = Quotes.unquote(args.get(4));
+        String destCatalog = Quotes.unquote(args.get(5));
 
-        String sourceTable = parseStringFlag(args, "--source-table", "");
-        List<String> sourceCols = csvAllowHashes(parseStringFlag(args, "--source-cols", ""));
+        String sourceTable = Quotes.unquote(parseStringFlag(args, "--source-table", ""));
+        List<String> sourceCols =
+            csvList(Quotes.unquote(parseStringFlag(args, "--source-cols", "")));
+        String destNamespace = Quotes.unquote(parseStringFlag(args, "--dest-ns", ""));
+        String destTable = Quotes.unquote(parseStringFlag(args, "--dest-table", ""));
 
-        String destNamespace = parseStringFlag(args, "--dest-ns", "");
-        String destTable = parseStringFlag(args, "--dest-table", "");
-
-        String description = parseStringFlag(args, "--desc", "");
-        String authScheme = parseStringFlag(args, "--auth-scheme", "");
+        String description = Quotes.unquote(parseStringFlag(args, "--desc", ""));
+        String authScheme = Quotes.unquote(parseStringFlag(args, "--auth-scheme", ""));
         Map<String, String> authProps = parseKeyValueList(args, "--auth");
         Map<String, String> headerHints = parseKeyValueList(args, "--head");
-        String secretRef = parseStringFlag(args, "--secret", "");
+        String secretRef = Quotes.unquote(parseStringFlag(args, "--secret", ""));
+
         boolean policyEnabled = args.contains("--policy-enabled");
         long intervalSec = parseLongFlag(args, "--policy-interval-sec", 0L);
         int maxPar = parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = parseLongFlag(args, "--policy-not-before-epoch", 0L);
         Map<String, String> properties = parseKeyValueList(args, "--props");
 
-        var auth =
-            AuthConfig.newBuilder()
-                .setScheme(authScheme)
-                .putAllProperties(authProps)
-                .putAllHeaderHints(headerHints)
-                .setSecretRef(secretRef)
-                .build();
-
-        var policy =
-            ReconcilePolicy.newBuilder()
-                .setEnabled(policyEnabled)
-                .setMaxParallel(maxPar)
-                .setNotBefore(notBeforeSec == 0 ? nullTs() : tsSeconds(notBeforeSec))
-                .setInterval(intervalSec == 0 ? nullDur() : durSeconds(intervalSec))
-                .build();
-
-        var src = SourceSelector.newBuilder();
-        boolean setSource = false;
-        if (!sourceNamespace.isBlank()) {
-          src.setNamespace(toNsPath(sourceNamespace));
-          setSource = true;
-        }
-        if (!sourceTable.isBlank()) {
-          src.setTable(sourceTable);
-          setSource = true;
-        }
-        if (!sourceCols.isEmpty()) {
-          src.addAllColumns(sourceCols);
-          setSource = true;
-        }
-
-        var dst = DestinationTarget.newBuilder();
-        boolean setDestination = false;
-        if (!destCatalog.isBlank()) {
-          dst.setCatalogDisplayName(destCatalog);
-          setDestination = true;
-        }
-        if (!destNamespace.isBlank()) {
-          dst.setNamespace(toNsPath(destNamespace));
-          setDestination = true;
-        }
-        if (!destTable.isBlank()) {
-          dst.setTableDisplayName(destTable);
-          setDestination = true;
-        }
+        var auth = buildAuth(authScheme, authProps, headerHints, secretRef);
+        var policy = buildPolicy(policyEnabled, intervalSec, maxPar, notBeforeSec);
 
         var spec =
             ConnectorSpec.newBuilder()
@@ -1178,13 +1093,16 @@ public class Shell implements Runnable {
                 .setAuth(auth)
                 .setPolicy(policy);
 
-        if (setSource) {
-          spec.setSource(src.build());
-        } else {
+        boolean haveSource =
+            !sourceNamespace.isBlank() || !sourceTable.isBlank() || !sourceCols.isEmpty();
+        if (haveSource) {
+          spec.setSource(buildSource(sourceNamespace, sourceTable, sourceCols));
         }
 
-        if (setDestination) {
-          spec.setDestination(dst.build());
+        boolean haveDest =
+            !destCatalog.isBlank() || !destNamespace.isBlank() || !destTable.isBlank();
+        if (haveDest) {
+          spec.setDestination(buildDest(destCatalog, destNamespace, destTable));
         }
 
         var resp =
@@ -1192,6 +1110,7 @@ public class Shell implements Runnable {
                 CreateConnectorRequest.newBuilder().setSpec(spec.build()).build());
         printConnectors(List.of(resp.getConnector()));
       }
+
       case "update" -> {
         if (args.size() < 2) {
           out.println(
@@ -1205,25 +1124,26 @@ public class Shell implements Runnable {
           return;
         }
 
-        ResourceId connectorId = resolveConnectorId(args.get(1));
+        ResourceId connectorId = resolveConnectorId(Quotes.unquote(args.get(1)));
 
-        String display = parseStringFlag(args, "--display", "");
-        String kindStr = parseStringFlag(args, "--kind", "");
-        String uri = parseStringFlag(args, "--uri", "");
-        String description = parseStringFlag(args, "--desc", "");
+        String display = Quotes.unquote(parseStringFlag(args, "--display", ""));
+        String kindStr = Quotes.unquote(parseStringFlag(args, "--kind", ""));
+        String uri = Quotes.unquote(parseStringFlag(args, "--uri", ""));
+        String description = Quotes.unquote(parseStringFlag(args, "--desc", ""));
 
-        String sourceNs = parseStringFlag(args, "--source-ns", "");
-        String sourceTable = parseStringFlag(args, "--source-table", "");
-        List<String> sourceCols = csvAllowHashes(parseStringFlag(args, "--source-cols", ""));
+        String sourceNs = Quotes.unquote(parseStringFlag(args, "--source-ns", ""));
+        String sourceTable = Quotes.unquote(parseStringFlag(args, "--source-table", ""));
+        List<String> sourceCols =
+            csvList(Quotes.unquote(parseStringFlag(args, "--source-cols", "")));
 
-        String destCatalog = parseStringFlag(args, "--dest-catalog", "");
-        String destNs = parseStringFlag(args, "--dest-ns", "");
-        String destTable = parseStringFlag(args, "--dest-table", "");
+        String destCatalog = Quotes.unquote(parseStringFlag(args, "--dest-catalog", ""));
+        String destNs = Quotes.unquote(parseStringFlag(args, "--dest-ns", ""));
+        String destTable = Quotes.unquote(parseStringFlag(args, "--dest-table", ""));
 
-        String authScheme = parseStringFlag(args, "--auth-scheme", "");
+        String authScheme = Quotes.unquote(parseStringFlag(args, "--auth-scheme", ""));
         Map<String, String> authProps = parseKeyValueList(args, "--auth");
         Map<String, String> headerHints = parseKeyValueList(args, "--head");
-        String secretRef = parseStringFlag(args, "--secret", "");
+        String secretRef = Quotes.unquote(parseStringFlag(args, "--secret", ""));
         String policyEnabledStr = parseStringFlag(args, "--policy-enabled", "");
         long intervalSec = parseLongFlag(args, "--policy-interval-sec", 0L);
         int maxPar = parseIntFlag(args, "--policy-max-par", 0);
@@ -1260,83 +1180,44 @@ public class Shell implements Runnable {
                 || !headerHints.isEmpty()
                 || !secretRef.isBlank();
         if (authSet) {
-          var ab = AuthConfig.newBuilder();
-          if (!authScheme.isBlank()) {
-            ab.setScheme(authScheme);
-            mask.add("auth.scheme");
-          }
-          if (!secretRef.isBlank()) {
-            ab.setSecretRef(secretRef);
-            mask.add("auth.secret_ref");
-          }
-          if (!authProps.isEmpty()) {
-            ab.putAllProperties(authProps);
-            mask.add("auth.properties");
-          }
-          if (!headerHints.isEmpty()) {
-            ab.putAllHeaderHints(headerHints);
-            mask.add("auth.header_hints");
-          }
+          var ab = buildAuth(authScheme, authProps, headerHints, secretRef);
           spec.setAuth(ab);
+          if (!authScheme.isBlank()) mask.add("auth.scheme");
+          if (!secretRef.isBlank()) mask.add("auth.secret_ref");
+          if (!authProps.isEmpty()) mask.add("auth.properties");
+          if (!headerHints.isEmpty()) mask.add("auth.header_hints");
         }
 
         boolean policySet =
             !policyEnabledStr.isBlank() || intervalSec != 0L || maxPar != 0 || notBeforeSec != 0L;
         if (policySet) {
-          var pb = ReconcilePolicy.newBuilder();
-          if (!policyEnabledStr.isBlank()) {
-            pb.setEnabled(Boolean.parseBoolean(policyEnabledStr));
-            mask.add("policy.enabled");
-          }
-          if (intervalSec != 0L) {
-            pb.setInterval(durSeconds(intervalSec));
-            mask.add("policy.interval");
-          }
-          if (maxPar != 0) {
-            pb.setMaxParallel(maxPar);
-            mask.add("policy.max_parallel");
-          }
-          if (notBeforeSec != 0L) {
-            pb.setNotBefore(tsSeconds(notBeforeSec));
-            mask.add("policy.not_before");
-          }
+          var pb =
+              buildPolicy(
+                  !policyEnabledStr.isBlank() && Boolean.parseBoolean(policyEnabledStr),
+                  intervalSec,
+                  maxPar,
+                  notBeforeSec);
           spec.setPolicy(pb);
+          if (!policyEnabledStr.isBlank()) mask.add("policy.enabled");
+          if (intervalSec != 0L) mask.add("policy.interval");
+          if (maxPar != 0) mask.add("policy.max_parallel");
+          if (notBeforeSec != 0L) mask.add("policy.not_before");
         }
 
         boolean sourceSet = !sourceNs.isBlank() || !sourceTable.isBlank() || !sourceCols.isEmpty();
         if (sourceSet) {
-          var src = SourceSelector.newBuilder();
-          if (!sourceNs.isBlank()) {
-            src.setNamespace(toNsPath(sourceNs));
-            mask.add("source.namespace");
-          }
-          if (!sourceTable.isBlank()) {
-            src.setTable(sourceTable);
-            mask.add("source.table");
-          }
-          if (!sourceCols.isEmpty()) {
-            src.addAllColumns(sourceCols);
-            mask.add("source.columns");
-          }
-          spec.setSource(src);
+          spec.setSource(buildSource(sourceNs, sourceTable, sourceCols));
+          if (!sourceNs.isBlank()) mask.add("source.namespace");
+          if (!sourceTable.isBlank()) mask.add("source.table");
+          if (!sourceCols.isEmpty()) mask.add("source.columns");
         }
 
         boolean destSet = !destCatalog.isBlank() || !destNs.isBlank() || !destTable.isBlank();
         if (destSet) {
-          var dst = DestinationTarget.newBuilder();
-          if (!destCatalog.isBlank()) {
-            dst.setCatalogDisplayName(destCatalog);
-            mask.add("destination.catalog_display_name");
-          }
-          if (!destNs.isBlank()) {
-            dst.setNamespace(toNsPath(destNs));
-            mask.add("destination.namespace");
-          }
-          if (!destTable.isBlank()) {
-            dst.setTableDisplayName(destTable);
-            mask.add("destination.table_display_name");
-          }
-          spec.setDestination(dst);
+          spec.setDestination(buildDest(destCatalog, destNs, destTable));
+          if (!destCatalog.isBlank()) mask.add("destination.catalog_display_name");
+          if (!destNs.isBlank()) mask.add("destination.namespace");
+          if (!destTable.isBlank()) mask.add("destination.table_display_name");
         }
 
         if (mask.isEmpty()) {
@@ -1355,6 +1236,7 @@ public class Shell implements Runnable {
         var resp = connectors.updateConnector(req);
         printConnectors(List.of(resp.getConnector()));
       }
+
       case "delete" -> {
         if (args.size() < 2) {
           out.println("usage: connector delete <display_name|id> [--etag <etag>]");
@@ -1362,12 +1244,13 @@ public class Shell implements Runnable {
         }
         var req =
             DeleteConnectorRequest.newBuilder()
-                .setConnectorId(resolveConnectorId(args.get(1)))
+                .setConnectorId(resolveConnectorId(Quotes.unquote(args.get(1))))
                 .setPrecondition(preconditionFromEtag(args))
                 .build();
         connectors.deleteConnector(req);
         out.println("ok");
       }
+
       case "validate" -> {
         if (args.size() < 3) {
           out.println(
@@ -1380,42 +1263,31 @@ public class Shell implements Runnable {
           return;
         }
 
-        ConnectorKind kind = parseConnectorKind(args.get(1));
-        String uri = args.get(2);
+        ConnectorKind kind = parseConnectorKind(Quotes.unquote(args.get(1)));
+        String uri = Quotes.unquote(args.get(2));
 
-        String sourceNs = parseStringFlag(args, "--source-ns", "");
-        String sourceTable = parseStringFlag(args, "--source-table", "");
-        List<String> sourceCols = csvAllowHashes(parseStringFlag(args, "--source-cols", ""));
+        String sourceNs = Quotes.unquote(parseStringFlag(args, "--source-ns", ""));
+        String sourceTable = Quotes.unquote(parseStringFlag(args, "--source-table", ""));
+        List<String> sourceCols =
+            csvList(Quotes.unquote(parseStringFlag(args, "--source-cols", "")));
 
-        String destCatalog = parseStringFlag(args, "--dest-catalog", "");
-        String destNs = parseStringFlag(args, "--dest-ns", "");
-        String destTable = parseStringFlag(args, "--dest-table", "");
+        String destCatalog = Quotes.unquote(parseStringFlag(args, "--dest-catalog", ""));
+        String destNs = Quotes.unquote(parseStringFlag(args, "--dest-ns", ""));
+        String destTable = Quotes.unquote(parseStringFlag(args, "--dest-table", ""));
 
-        String authScheme = parseStringFlag(args, "--auth-scheme", "");
+        String authScheme = Quotes.unquote(parseStringFlag(args, "--auth-scheme", ""));
         Map<String, String> authProps = parseKeyValueList(args, "--auth");
         Map<String, String> headerHints = parseKeyValueList(args, "--head");
-        String secretRef = parseStringFlag(args, "--secret", "");
+        String secretRef = Quotes.unquote(parseStringFlag(args, "--secret", ""));
+
         boolean policyEnabled = args.contains("--policy-enabled");
         long intervalSec = parseLongFlag(args, "--policy-interval-sec", 0L);
         int maxPar = parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = parseLongFlag(args, "--policy-not-before-epoch", 0L);
         Map<String, String> properties = parseKeyValueList(args, "--props");
 
-        var auth =
-            AuthConfig.newBuilder()
-                .setScheme(authScheme)
-                .putAllProperties(authProps)
-                .putAllHeaderHints(headerHints)
-                .setSecretRef(secretRef)
-                .build();
-
-        var policy =
-            ReconcilePolicy.newBuilder()
-                .setEnabled(policyEnabled)
-                .setMaxParallel(maxPar)
-                .setNotBefore(notBeforeSec == 0 ? nullTs() : tsSeconds(notBeforeSec))
-                .setInterval(intervalSec == 0 ? nullDur() : durSeconds(intervalSec))
-                .build();
+        var auth = buildAuth(authScheme, authProps, headerHints, secretRef);
+        var policy = buildPolicy(policyEnabled, intervalSec, maxPar, notBeforeSec);
 
         var spec =
             ConnectorSpec.newBuilder()
@@ -1427,22 +1299,10 @@ public class Shell implements Runnable {
                 .setPolicy(policy);
 
         boolean sourceSet = !sourceNs.isBlank() || !sourceTable.isBlank() || !sourceCols.isEmpty();
-        if (sourceSet) {
-          var src = SourceSelector.newBuilder();
-          if (!sourceNs.isBlank()) src.setNamespace(toNsPath(sourceNs));
-          if (!sourceTable.isBlank()) src.setTable(sourceTable);
-          if (!sourceCols.isEmpty()) src.addAllColumns(sourceCols);
-          spec.setSource(src);
-        }
+        if (sourceSet) spec.setSource(buildSource(sourceNs, sourceTable, sourceCols));
 
         boolean destSet = !destCatalog.isBlank() || !destNs.isBlank() || !destTable.isBlank();
-        if (destSet) {
-          var dst = DestinationTarget.newBuilder();
-          if (!destCatalog.isBlank()) dst.setCatalogDisplayName(destCatalog);
-          if (!destNs.isBlank()) dst.setNamespace(toNsPath(destNs));
-          if (!destTable.isBlank()) dst.setTableDisplayName(destTable);
-          spec.setDestination(dst);
-        }
+        if (destSet) spec.setDestination(buildDest(destCatalog, destNs, destTable));
 
         var resp =
             connectors.validateConnector(
@@ -1456,6 +1316,7 @@ public class Shell implements Runnable {
                 .map(e -> e.getKey() + "=" + e.getValue())
                 .collect(Collectors.joining(",")));
       }
+
       case "trigger" -> {
         if (args.size() < 2) {
           out.println("usage: connector trigger <display_name|id> [--full]");
@@ -1465,11 +1326,12 @@ public class Shell implements Runnable {
         var resp =
             connectors.triggerReconcile(
                 TriggerReconcileRequest.newBuilder()
-                    .setConnectorId(resolveConnectorId(args.get(1)))
+                    .setConnectorId(resolveConnectorId(Quotes.unquote(args.get(1))))
                     .setFullRescan(full)
                     .build());
         out.println(resp.getJobId());
       }
+
       case "job" -> {
         if (args.size() < 2) {
           out.println("usage: connector job <jobId>");
@@ -1477,7 +1339,7 @@ public class Shell implements Runnable {
         }
         var resp =
             connectors.getReconcileJob(
-                GetReconcileJobRequest.newBuilder().setJobId(args.get(1)).build());
+                GetReconcileJobRequest.newBuilder().setJobId(Quotes.unquote(args.get(1))).build());
         out.printf(
             "job_id=%s connector_id=%s state=%s message=%s started=%s finished=%s scanned=%d"
                 + " changed=%d errors=%d%n",
@@ -1491,8 +1353,44 @@ public class Shell implements Runnable {
             resp.getTablesChanged(),
             resp.getErrors());
       }
+
       default -> out.println("unknown subcommand");
     }
+  }
+
+  private AuthConfig buildAuth(
+      String scheme, Map<String, String> props, Map<String, String> heads, String secret) {
+    return AuthConfig.newBuilder()
+        .setScheme(nvl(scheme, ""))
+        .putAllProperties(props)
+        .putAllHeaderHints(heads)
+        .setSecretRef(nvl(secret, ""))
+        .build();
+  }
+
+  private ReconcilePolicy buildPolicy(
+      boolean enabled, long intervalSec, int maxPar, long notBeforeSec) {
+    ReconcilePolicy.Builder b = ReconcilePolicy.newBuilder().setEnabled(enabled);
+    if (maxPar > 0) b.setMaxParallel(maxPar);
+    if (intervalSec > 0) b.setInterval(durSeconds(intervalSec));
+    if (notBeforeSec > 0) b.setNotBefore(tsSeconds(notBeforeSec));
+    return b.build();
+  }
+
+  private SourceSelector buildSource(String ns, String table, List<String> cols) {
+    var b = SourceSelector.newBuilder();
+    if (!nvl(ns, "").isBlank()) b.setNamespace(toNsPath(ns));
+    if (!nvl(table, "").isBlank()) b.setTable(table);
+    if (cols != null && !cols.isEmpty()) b.addAllColumns(cols);
+    return b.build();
+  }
+
+  private DestinationTarget buildDest(String cat, String ns, String table) {
+    var b = DestinationTarget.newBuilder();
+    if (!nvl(cat, "").isBlank()) b.setCatalogDisplayName(cat);
+    if (!nvl(ns, "").isBlank()) b.setNamespace(toNsPath(ns));
+    if (!nvl(table, "").isBlank()) b.setTableDisplayName(table);
+    return b.build();
   }
 
   private void cmdResolve(List<String> args) {
@@ -1526,7 +1424,7 @@ public class Shell implements Runnable {
                       directory
                           .resolveNamespace(
                               ResolveNamespaceRequest.newBuilder()
-                                  .setRef(nameRefForNamespace(s))
+                                  .setRef(nameRefForNamespace(s, false))
                                   .build())
                           .getResourceId()));
       case "catalog" ->
@@ -1547,7 +1445,9 @@ public class Shell implements Runnable {
       return;
     }
     String fq = args.get(1);
-    var r = directory.resolveTable(ResolveTableRequest.newBuilder().setRef(nameFromFq(fq)).build());
+    var r =
+        directory.resolveTable(
+            ResolveTableRequest.newBuilder().setRef(nameRefForTable(fq)).build());
     var t = tables.getTable(GetTableRequest.newBuilder().setTableId(r.getResourceId()).build());
     printTable(t.getTable());
   }
@@ -1557,16 +1457,20 @@ public class Shell implements Runnable {
       out.println("usage: snapshots <tableFQ>");
       return;
     }
-    var r =
-        directory.resolveTable(
-            ResolveTableRequest.newBuilder().setRef(nameFromFq(args.get(0))).build());
-    var resp =
-        snapshots.listSnapshots(
-            ListSnapshotsRequest.newBuilder()
-                .setTableId(r.getResourceId())
-                .setPage(PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).build())
-                .build());
-    printSnapshots(resp.getSnapshotsList());
+    var tableId =
+        directory
+            .resolveTable(
+                ResolveTableRequest.newBuilder().setRef(nameRefForTable(args.get(0))).build())
+            .getResourceId();
+    var snaps =
+        collectPages(
+            DEFAULT_PAGE_SIZE,
+            pr ->
+                snapshots.listSnapshots(
+                    ListSnapshotsRequest.newBuilder().setTableId(tableId).setPage(pr).build()),
+            r -> r.getSnapshotsList(),
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
+    printSnapshots(snaps);
   }
 
   private void cmdStats(List<String> args) {
@@ -1589,7 +1493,9 @@ public class Shell implements Runnable {
       return;
     }
     String fq = args.get(0);
-    var r = directory.resolveTable(ResolveTableRequest.newBuilder().setRef(nameFromFq(fq)).build());
+    var r =
+        directory.resolveTable(
+            ResolveTableRequest.newBuilder().setRef(nameRefForTable(fq)).build());
     var req =
         GetTableStatsRequest.newBuilder()
             .setTableId(r.getResourceId())
@@ -1611,34 +1517,22 @@ public class Shell implements Runnable {
     int limit = parseIntFlag(args, "--limit", 2000);
     int pageSize = Math.min(limit, DEFAULT_PAGE_SIZE);
 
-    var r = directory.resolveTable(ResolveTableRequest.newBuilder().setRef(nameFromFq(fq)).build());
+    var resp =
+        directory.resolveTable(
+            ResolveTableRequest.newBuilder().setRef(nameRefForTable(fq)).build());
 
     ListColumnStatsRequest.Builder rb =
         ListColumnStatsRequest.newBuilder()
-            .setTableId(r.getResourceId())
-            .setSnapshot(parseSnapshotSelector(args))
-            .setPage(PageRequest.newBuilder().setPageSize(limit).build());
+            .setTableId(resp.getResourceId())
+            .setSnapshot(parseSnapshotSelector(args));
 
-    List<ColumnStats> all = new ArrayList<>();
-    String pageToken = "";
-    do {
-      var pageReq =
-          rb.setPage(PageRequest.newBuilder().setPageSize(pageSize).setPageToken(pageToken))
-              .build();
-      var resp = statistics.listColumnStats(pageReq);
-
-      all.addAll(resp.getColumnsList());
-      if (all.size() >= limit) {
-        all = all.subList(0, limit);
-        break;
-      }
-
-      pageToken = resp.hasPage() ? resp.getPage().getNextPageToken() : "";
-      if (pageToken == null) {
-        pageToken = "";
-      }
-    } while (!pageToken.isBlank());
-
+    List<ColumnStats> all =
+        collectPages(
+            pageSize,
+            pr -> statistics.listColumnStats(rb.setPage(pr).build()),
+            r -> r.getColumnsList(),
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
+    if (all.size() > limit) all = all.subList(0, limit);
     printColumnStats(all);
   }
 
@@ -1729,7 +1623,7 @@ public class Shell implements Runnable {
           }
           NameRef nr;
           try {
-            nr = nameRefForNamespaceTarget(args.get(i + 1));
+            nr = nameRefForNamespace(args.get(i + 1), true);
           } catch (IllegalArgumentException e) {
             out.println("plan begin: " + e.getMessage());
             return;
@@ -1912,7 +1806,7 @@ public class Shell implements Runnable {
             return -1;
           }
           try {
-            snapshotRef = snapshotFromToken(args.get(i + 1));
+            snapshotRef = snapshotFromTokenOrCurrent(args.get(i + 1));
           } catch (IllegalArgumentException e) {
             out.println("plan begin: " + e.getMessage());
             return -1;
@@ -2140,24 +2034,25 @@ public class Shell implements Runnable {
   }
 
   private ResourceId resolveConnectorId(String token) {
-    if (looksLikeUuid(token)) {
-      return connectorRid(token);
+    String t = Quotes.unquote(token);
+    if (looksLikeUuid(t)) {
+      return connectorRid(t);
     }
 
     var all = listAllConnectors(null, DEFAULT_PAGE_SIZE);
 
-    var exact = all.stream().filter(c -> token.equals(c.getDisplayName())).toList();
+    var exact = all.stream().filter(c -> t.equals(c.getDisplayName())).toList();
     if (exact.size() == 1) {
       return exact.get(0).getResourceId();
     }
 
-    var ci = all.stream().filter(c -> token.equalsIgnoreCase(c.getDisplayName())).toList();
+    var ci = all.stream().filter(c -> t.equalsIgnoreCase(c.getDisplayName())).toList();
     if (ci.size() == 1) {
       return ci.get(0).getResourceId();
     }
 
     if (exact.isEmpty() && ci.isEmpty()) {
-      throw new IllegalArgumentException("Connector not found: " + token);
+      throw new IllegalArgumentException("Connector not found: " + t);
     }
 
     String alts =
@@ -2166,86 +2061,33 @@ public class Shell implements Runnable {
                 .map(c -> c.getDisplayName() + " (" + rid(c.getResourceId()) + ")")
                 .collect(Collectors.joining(", "));
     throw new IllegalArgumentException(
-        "Connector name is ambiguous: " + token + ". Candidates: " + alts);
+        "Connector name is ambiguous: " + t + ". Candidates: " + alts);
   }
 
   private ResourceId resolveCatalogId(String token) {
-    if (looksLikeUuid(token)) {
-      return catalogRid(token);
+    String t = Quotes.unquote(token);
+    if (looksLikeUuid(t)) {
+      return catalogRid(t);
     }
     return directory
-        .resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(nameCatalog(token)).build())
+        .resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(nameCatalog(t)).build())
         .getResourceId();
   }
 
   private ResourceId resolveNamespaceId(String tokenOrFq) {
-    if (looksLikeUuid(tokenOrFq)) {
-      return namespaceRid(tokenOrFq);
+    String t = tokenOrFq == null ? "" : tokenOrFq.trim();
+    String tu = Quotes.unquote(t);
+    if (looksLikeUuid(tu)) {
+      return namespaceRid(tu);
     }
     return directory
         .resolveNamespace(
-            ResolveNamespaceRequest.newBuilder().setRef(nameRefForNamespace(tokenOrFq)).build())
+            ResolveNamespaceRequest.newBuilder().setRef(nameRefForNamespace(tu, false)).build())
         .getResourceId();
   }
 
   private NameRef nameCatalog(String name) {
-    return NameRef.newBuilder().setCatalog(name).build();
-  }
-
-  private NameRef nameFromFq(String fq) {
-    ParsedFq p = parseFqFlexible(fq, true);
-    if (p.object.isEmpty()) {
-      throw new IllegalArgumentException("Missing table name in FQ: " + fq);
-    }
-    return NameRef.newBuilder()
-        .setCatalog(p.catalog)
-        .addAllPath(p.nsParts)
-        .setName(p.object.get())
-        .build();
-  }
-
-  private SnapshotRef parseSnapshotSelector(List<String> args) {
-    int idx = args.indexOf("--snapshot");
-    boolean current = args.contains("--current");
-    SnapshotRef.Builder b = SnapshotRef.newBuilder();
-    if (idx >= 0 && idx + 1 < args.size()) {
-      b.setSnapshotId(Long.parseLong(args.get(idx + 1)));
-    } else if (current) {
-      b.setSpecial(SpecialSnapshot.SS_CURRENT);
-    } else {
-      b.setSpecial(SpecialSnapshot.SS_CURRENT);
-    }
-    return b.build();
-  }
-
-  private int parseIntFlag(List<String> args, String flag, int dflt) {
-    int i = args.indexOf(flag);
-    if (i >= 0 && i + 1 < args.size()) {
-      try {
-        return Integer.parseInt(args.get(i + 1));
-      } catch (Exception ignore) {
-      }
-    }
-    return dflt;
-  }
-
-  private long parseLongFlag(List<String> args, String flag, long dflt) {
-    int i = args.indexOf(flag);
-    if (i >= 0 && i + 1 < args.size()) {
-      try {
-        return Long.parseLong(args.get(i + 1));
-      } catch (Exception ignore) {
-      }
-    }
-    return dflt;
-  }
-
-  private String parseStringFlag(List<String> args, String flag, String dflt) {
-    int i = args.indexOf(flag);
-    if (i >= 0 && i + 1 < args.size()) {
-      return args.get(i + 1);
-    }
-    return dflt;
+    return NameRef.newBuilder().setCatalog(Quotes.unquote(name)).build();
   }
 
   private Map<String, String> parseKeyValueList(List<String> args, String flag) {
@@ -2299,34 +2141,31 @@ public class Shell implements Runnable {
     }
   }
 
-  private SnapshotRef snapshotFromToken(String token) {
-    if (token == null || token.isBlank()) {
-      throw new IllegalArgumentException("snapshot selector is blank");
-    }
-    String trimmed = token.trim();
-    if ("current".equalsIgnoreCase(trimmed)) {
+  private SnapshotRef snapshotFromTokenOrCurrent(String tokenOrNull) {
+    if (tokenOrNull == null || tokenOrNull.isBlank() || tokenOrNull.equalsIgnoreCase("current"))
       return SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build();
-    }
     try {
-      long id = Long.parseLong(trimmed);
-      return SnapshotRef.newBuilder().setSnapshotId(id).build();
+      return SnapshotRef.newBuilder().setSnapshotId(Long.parseLong(tokenOrNull.trim())).build();
     } catch (NumberFormatException e) {
-      throw new IllegalArgumentException("invalid snapshot selector '" + token + "'");
+      throw new IllegalArgumentException("invalid snapshot selector '" + tokenOrNull + "'");
     }
   }
 
-  private List<String> csvToList(String s) {
-    if (s == null || s.isBlank()) {
-      return List.of();
-    }
-    return Arrays.stream(s.split(",")).map(String::trim).filter(x -> !x.isEmpty()).toList();
+  private SnapshotRef parseSnapshotSelector(List<String> args) {
+    int idx = args.indexOf("--snapshot");
+    return snapshotFromTokenOrCurrent(
+        idx >= 0 && idx + 1 < args.size() ? args.get(idx + 1) : "current");
   }
 
-  private List<String> pathToList(String s) {
-    if (s == null || s.isBlank()) {
-      return List.of();
+  private static List<String> csvList(String s) {
+    try {
+      return CsvListParserUtil.items(s).stream()
+          .map(Quotes::unquote)
+          .filter(t -> t != null && !t.isBlank())
+          .toList();
+    } catch (RuntimeException e) {
+      throw new IllegalArgumentException("invalid CSV list: " + s, e);
     }
-    return Arrays.stream(s.split(".")).map(String::trim).filter(x -> !x.isEmpty()).toList();
   }
 
   private String rid(ResourceId id) {
@@ -2342,28 +2181,41 @@ public class Shell implements Runnable {
           "%-40s  %-24s  %-24s  %s%n",
           rid(c.getResourceId()),
           ts(c.getCreatedAt()),
-          c.getDisplayName(),
+          Quotes.quoteIfNeeded(c.getDisplayName()),
           c.hasDescription() ? c.getDescription() : "");
     }
   }
 
+  private static String joinFqQuoted(String catalog, List<String> nsParts, String obj) {
+    StringBuilder sb = new StringBuilder();
+    sb.append(Quotes.quoteIfNeeded(catalog));
+    for (String ns : nsParts) {
+      sb.append('.').append(Quotes.quoteIfNeeded(ns));
+    }
+    if (obj != null) {
+      sb.append('.').append(Quotes.quoteIfNeeded(obj));
+    }
+    return sb.toString();
+  }
+
+  private String parentsAsList(List<String> parents) {
+    return "["
+        + parents.stream().map(Quotes::quoteIfNeeded).collect(Collectors.joining(", "))
+        + "]";
+  }
+
   private void printNamespaces(List<Namespace> rows) {
-    out.printf(
-        "%-36s  %-5s  %-24s  %-24s  %s%n",
-        "NAMESPACE_ID", "TYPE", "CREATED_AT", "PATH", "DESCRIPTION");
+    out.printf("%-36s  %-24s  %-26s  %-16s  %n", "NAMESPACE_ID", "CREATED_AT", "PARENTS", "LEAF");
 
     for (var ns : rows) {
-      String type = ns.hasResourceId() ? "real" : "virt";
-      String created = ns.hasCreatedAt() ? ts(ns.getCreatedAt()) : "-";
-      String path =
-          String.join(".", ns.getParentsList().isEmpty() ? List.of() : ns.getParentsList())
-              + (ns.getDisplayName().isBlank()
-                  ? ""
-                  : (ns.getParentsList().isEmpty() ? "" : ".") + ns.getDisplayName());
-
-      String id = ns.hasResourceId() ? ns.getResourceId().getId() : "<virtual>";
-      String desc = ns.hasDescription() ? ns.getDescription() : "";
-      out.printf("%-36s  %-5s  %-24s  %-24s  %s%n", id, type, created, path, desc);
+      var parentsList = ns.getParentsList();
+      var leaf = ns.getDisplayName();
+      out.printf(
+          "%-36s  %-24s  %-26s  %-16s  %n",
+          rid(ns.getResourceId()),
+          ts(ns.getCreatedAt()),
+          parentsAsList(parentsList),
+          Quotes.quoteIfNeeded(leaf));
     }
   }
 
@@ -2371,16 +2223,15 @@ public class Shell implements Runnable {
     out.printf("%-40s  %s%n", "TABLE_ID", "NAME");
     for (var e : entries) {
       String catalog = e.getName().getCatalog();
-      String namespace = String.join(".", e.getName().getPathList());
+      List<String> path = e.getName().getPathList();
       String table = e.getName().getName();
-      String fq =
-          namespace.isEmpty() ? (catalog + "." + table) : (catalog + "." + namespace + "." + table);
+      String fq = joinFqQuoted(catalog, path, table);
       out.printf("%-40s  %s%n", rid(e.getResourceId()), fq);
     }
   }
 
   private void printTable(Table t) {
-    UpstreamRef upstream = t.getUpstream();
+    UpstreamRef upstream = t.hasUpstream() ? t.getUpstream() : UpstreamRef.getDefaultInstance();
     out.println("Table:");
     out.printf("  id:           %s%n", rid(t.getResourceId()));
     out.printf("  name:         %s%n", t.getDisplayName());
@@ -2499,34 +2350,43 @@ public class Shell implements Runnable {
           (W_URI > 0 ? trunc(uri, W_URI) : uri));
 
       if (c.hasDestination()) {
-        String destNs = "";
-        String destTbl = "";
+        String destCatDisplay = "";
+        List<String> destNsParts = List.of();
+        String destTableDisplay = null;
+
+        if (c.getDestination().hasCatalogId()) {
+          var resp =
+              directory.lookupCatalog(
+                  LookupCatalogRequest.newBuilder()
+                      .setResourceId(c.getDestination().getCatalogId())
+                      .build());
+          destCatDisplay = resp.getDisplayName();
+        }
 
         if (c.getDestination().hasNamespaceId()) {
-          var nsId = c.getDestination().getNamespaceId();
-          var resp =
+          var nsResp =
               directory.lookupNamespace(
-                  LookupNamespaceRequest.newBuilder().setResourceId(nsId).build());
-          var ref = resp.getRef();
-          if (ref.getPathList().isEmpty()) {
-            destNs = ref.getName();
-          } else {
-            destNs = String.join(".", ref.getPathList()) + "." + ref.getName();
-          }
+                  LookupNamespaceRequest.newBuilder()
+                      .setResourceId(c.getDestination().getNamespaceId())
+                      .build());
+          var ref = nsResp.getRef();
+          ArrayList<String> parts = new ArrayList<>(ref.getPathList());
+          if (!ref.getName().isBlank()) parts.add(ref.getName());
+          destNsParts = parts;
         }
 
         if (c.getDestination().hasTableId()) {
-          var tblId = c.getDestination().getTableId();
-          var resp =
-              directory.lookupTable(LookupTableRequest.newBuilder().setResourceId(tblId).build());
-          var ref = resp.getName();
-          destTbl = ref.getName();
+          var tblResp =
+              directory.lookupTable(
+                  LookupTableRequest.newBuilder()
+                      .setResourceId(c.getDestination().getTableId())
+                      .build());
+          destTableDisplay = tblResp.getName().getName();
         }
 
-        if (!destTbl.isEmpty()) {
-          out.println("  destination: " + destCat + "." + destNs + "." + destTbl);
-        } else if (!destNs.isEmpty()) {
-          out.println("  destination: " + destCat + "." + destNs);
+        if (!destCatDisplay.isBlank()) {
+          String fq = joinFqQuoted(destCatDisplay, destNsParts, destTableDisplay);
+          out.println("  destination: " + fq);
         }
       }
 
@@ -2588,14 +2448,6 @@ public class Shell implements Runnable {
     return Timestamp.newBuilder().setSeconds(epochSeconds).build();
   }
 
-  private Timestamp nullTs() {
-    return Timestamp.getDefaultInstance();
-  }
-
-  private Duration nullDur() {
-    return Duration.getDefaultInstance();
-  }
-
   private Duration durSeconds(long seconds) {
     return Duration.newBuilder().setSeconds(seconds).build();
   }
@@ -2613,91 +2465,72 @@ public class Shell implements Runnable {
     }
     if (n.hasApprox()) {
       NdvApprox approx = n.getApprox();
-      double estimate = approx.getEstimate();
-      return String.valueOf(estimate);
+      return approx.getEstimate() == Math.rint(approx.getEstimate())
+          ? Long.toString(Math.round(approx.getEstimate()))
+          : String.format(Locale.ROOT, "%.3f", approx.getEstimate());
     }
     return "-";
   }
 
-  private NameRef nameRefForTable(String fq) {
-    ParsedFq p = parseFqFlexible(fq, true);
-    if (p.object.isEmpty()) {
-      throw new IllegalArgumentException("Missing table/view name: use catalog.NS/.../NSk.<table>");
-    }
-    return NameRef.newBuilder()
-        .setCatalog(p.catalog)
-        .addAllPath(p.nsParts)
-        .setName(p.object.get())
-        .build();
-  }
-
-  private NameRef nameRefForNamespace(String fqNs) {
-    ParsedFq p = parseFqFlexible(fqNs, false);
-    if (p.object.isPresent()) {
-      throw new IllegalArgumentException("Namespace must not include a table name");
-    }
-    if (p.nsParts.isEmpty()) {
-      throw new IllegalArgumentException("Namespace path is empty");
-    }
-    List<String> parents = p.nsParts.subList(0, p.nsParts.size() - 1);
-    String leaf = p.nsParts.get(p.nsParts.size() - 1);
-    return NameRef.newBuilder().setCatalog(p.catalog).addAllPath(parents).setName(leaf).build();
-  }
-
-  private NameRef nameRefForNamespaceTarget(String fqNs) {
-    ParsedFq p = parseFqFlexible(fqNs, false);
-    if (p.nsParts.isEmpty()) {
-      throw new IllegalArgumentException("Namespace path is empty");
-    }
-    return NameRef.newBuilder().setCatalog(p.catalog).addAllPath(p.nsParts).build();
-  }
-
-  private NameRef nameRefForTablePrefix(String fqPrefix) {
-    ParsedFq p = parseFqFlexible(fqPrefix, false);
-    NameRef.Builder b = NameRef.newBuilder().setCatalog(p.catalog).addAllPath(p.nsParts);
-    p.object.ifPresent(b::setName);
-    return b.build();
-  }
-
-  private static final class ParsedFq {
-    final String catalog;
-    final List<String> nsParts;
-    final Optional<String> object;
-
-    ParsedFq(String catalog, List<String> nsParts, String object) {
-      this.catalog = catalog;
-      this.nsParts = nsParts;
-      this.object = Optional.ofNullable(object).filter(s -> !s.isBlank());
-    }
-  }
-
-  private ParsedFq parseFqFlexible(String s, boolean expectObject) {
-    s = s.trim();
-    if (s.isEmpty() || !s.contains(".")) {
+  private static NameRef nameRefForTable(String fq) {
+    if (fq == null) throw new IllegalArgumentException("Fully qualified name is required");
+    fq = fq.trim();
+    if (fq.isEmpty()) {
       throw new IllegalArgumentException(
           "Fully qualified name must contain a catalog and namespace");
     }
 
-    String[] head = s.split("\\.", 2);
-    if (head.length < 2) {
-      throw new IllegalArgumentException("Expected form: catalog.ns[.ns...][.object]");
-    }
-    String catalog = head[0];
-    String remainder = head[1];
+    List<String> segs = splitPathRespectingQuotesAndEscapes(fq);
 
-    List<String> segs =
-        Arrays.stream(remainder.split(".")).map(String::trim).filter(x -> !x.isEmpty()).toList();
-    if (segs.isEmpty()) {
-      throw new IllegalArgumentException("Namespace path is empty");
+    if (segs.size() < 3) {
+      throw new IllegalArgumentException("Missing table/view name: use catalog.NS/.../NSk.<table>");
     }
 
-    if (expectObject && segs.size() >= 2) {
-      String object = segs.get(segs.size() - 1);
-      List<String> ns = segs.subList(0, segs.size() - 1);
-      return new ParsedFq(catalog, ns, object);
+    String catalog = Quotes.unquote(segs.get(0));
+    String object = Quotes.unquote(segs.get(segs.size() - 1));
+    List<String> ns = segs.subList(1, segs.size() - 1).stream().map(Quotes::unquote).toList();
+
+    return NameRef.newBuilder().setCatalog(catalog).addAllPath(ns).setName(object).build();
+  }
+
+  private NameRef nameRefForNamespace(String fqNs, boolean includeLeafInPath) {
+    if (fqNs == null) throw new IllegalArgumentException("Fully qualified name is required");
+    fqNs = fqNs.trim();
+    if (fqNs.isEmpty()) throw new IllegalArgumentException("Namespace path is empty");
+
+    List<String> segs = splitPathRespectingQuotesAndEscapes(fqNs);
+    if (segs.size() < 2) throw new IllegalArgumentException("Namespace path is empty");
+
+    String catalog = Quotes.unquote(segs.get(0));
+    List<String> path = segs.subList(1, segs.size()).stream().map(Quotes::unquote).toList();
+
+    NameRef.Builder b = NameRef.newBuilder().setCatalog(catalog);
+    if (includeLeafInPath) {
+      b.addAllPath(path);
     } else {
-      return new ParsedFq(catalog, segs, null);
+      b.addAllPath(path.subList(0, path.size() - 1)).setName(path.get(path.size() - 1));
     }
+    return b.build();
+  }
+
+  private static NameRef nameRefForTablePrefix(String s) {
+    if (s == null) throw new IllegalArgumentException("Fully qualified name is required");
+    s = s.trim();
+    if (s.isEmpty()) throw new IllegalArgumentException("Namespace path is empty");
+
+    List<String> segs = splitPathRespectingQuotesAndEscapes(s);
+    if (segs.size() < 2) throw new IllegalArgumentException("Namespace path is empty");
+
+    String catalog = Quotes.unquote(segs.get(0));
+    List<String> rest = segs.subList(1, segs.size()).stream().map(Quotes::unquote).toList();
+
+    NameRef.Builder b = NameRef.newBuilder().setCatalog(catalog);
+    if (rest.size() >= 2) {
+      b.addAllPath(rest.subList(0, rest.size() - 1)).setName(rest.get(rest.size() - 1));
+    } else {
+      b.addAllPath(rest);
+    }
+    return b.build();
   }
 
   private Precondition preconditionFromEtag(List<String> args) {
@@ -2743,26 +2576,36 @@ public class Shell implements Runnable {
   private List<String> tokenize(String line) {
     List<String> out = new ArrayList<>();
     StringBuilder cur = new StringBuilder();
-    boolean inSingle = false, inDouble = false, escaping = false;
+    boolean inSingle = false;
+    boolean inDouble = false;
+    boolean escaping = false;
+
     for (int i = 0; i < line.length(); i++) {
       char ch = line.charAt(i);
+
       if (escaping) {
-        cur.append(ch);
+        cur.append('\\').append(ch);
         escaping = false;
         continue;
       }
+
       if (ch == '\\') {
         escaping = true;
         continue;
       }
+
       if (ch == '\'' && !inDouble) {
         inSingle = !inSingle;
+        cur.append(ch);
         continue;
       }
+
       if (ch == '"' && !inSingle) {
         inDouble = !inDouble;
+        cur.append(ch);
         continue;
       }
+
       if (!inSingle && !inDouble && Character.isWhitespace(ch)) {
         if (cur.length() > 0) {
           out.add(cur.toString());
@@ -2770,12 +2613,20 @@ public class Shell implements Runnable {
         }
         continue;
       }
+
       cur.append(ch);
     }
+
     if (inSingle || inDouble) {
       throw new IllegalArgumentException("Unclosed quote in command");
     }
-    if (cur.length() > 0) out.add(cur.toString());
+
+    if (escaping) {
+      cur.append('\\');
+    }
+    if (cur.length() > 0) {
+      out.add(cur.toString());
+    }
     return out;
   }
 
@@ -2785,13 +2636,141 @@ public class Shell implements Runnable {
     }
   }
 
-  private List<String> csvAllowHashes(String s) {
-    if (s == null || s.isBlank()) return List.of();
-    return Arrays.stream(s.split(",")).map(String::trim).filter(x -> !x.isEmpty()).toList();
+  private static List<String> splitPathRespectingQuotesAndEscapes(String input) {
+    return FQNameParserUtil.segments(input);
   }
 
   private NamespacePath toNsPath(String path) {
-    var segs = Arrays.stream(path.split(".")).map(String::trim).filter(x -> !x.isEmpty()).toList();
-    return NamespacePath.newBuilder().addAllSegments(segs).build();
+    return NamespacePath.newBuilder()
+        .addAllSegments(splitPathRespectingQuotesAndEscapes(path))
+        .build();
+  }
+
+  private <T> T parseFlag(List<String> args, String flag, T dflt, Function<String, T> fn) {
+    int i = args.indexOf(flag);
+    if (i >= 0 && i + 1 < args.size()) {
+      try {
+        return fn.apply(args.get(i + 1));
+      } catch (Exception ignore) {
+      }
+    }
+    return dflt;
+  }
+
+  private String parseStringFlag(List<String> a, String f, String d) {
+    return parseFlag(a, f, d, s -> s);
+  }
+
+  private int parseIntFlag(List<String> a, String f, int d) {
+    return parseFlag(a, f, d, Integer::parseInt);
+  }
+
+  private long parseLongFlag(List<String> a, String f, long d) {
+    return parseFlag(a, f, d, Long::parseLong);
+  }
+
+  private <T, R> List<T> collectPages(
+      int pageSize,
+      Function<PageRequest, R> fetch,
+      Function<R, List<T>> items,
+      Function<R, String> next) {
+
+    List<T> all = new ArrayList<>();
+    String token = "";
+    do {
+      R resp =
+          fetch.apply(PageRequest.newBuilder().setPageSize(pageSize).setPageToken(token).build());
+      all.addAll(items.apply(resp));
+      token = Optional.ofNullable(next.apply(resp)).orElse("");
+    } while (!token.isBlank());
+    return all;
+  }
+
+  private boolean looksLikeQuotedOrRawUuid(String s) {
+    return looksLikeUuid(Quotes.unquote(nvl(s, "")));
+  }
+
+  private ResourceId resolveNamespaceIdFlexible(String tok) {
+    String u = Quotes.unquote(nvl(tok, ""));
+    if (looksLikeUuid(u)) {
+      return namespaceRid(u);
+    }
+
+    NameRef ref = nameRefForNamespace(tok, false);
+    return directory
+        .resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(ref).build())
+        .getResourceId();
+  }
+
+  private ResourceId resolveTableIdFlexible(String tok) {
+    String u = Quotes.unquote(nvl(tok, ""));
+    if (looksLikeUuid(u)) {
+      return tableRid(u);
+    }
+
+    NameRef ref = nameRefForTable(tok);
+    return directory
+        .resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build())
+        .getResourceId();
+  }
+
+  static final class Quotes {
+    static boolean needsQuotes(String s) {
+      if (s == null || s.isEmpty()) {
+        return true;
+      }
+
+      for (int i = 0; i < s.length(); i++) {
+        char c = s.charAt(i);
+        if (Character.isWhitespace(c) || c == '.' || c == '"' || c == '\'' || c == '\\')
+          return true;
+      }
+      return false;
+    }
+
+    static String quoteIfNeeded(String s) {
+      if (s == null) {
+        return null;
+      }
+
+      if (!needsQuotes(s)) {
+        return s;
+      }
+
+      return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    static String unquote(String s) {
+      if (s == null) {
+        return null;
+      }
+
+      s = s.trim();
+      if (s.isEmpty()) {
+        return s;
+      }
+
+      if (!((s.startsWith("\"") && s.endsWith("\"")) || (s.startsWith("'") && s.endsWith("'")))) {
+        return s;
+      }
+
+      char q = s.charAt(0);
+      String body = s.substring(1, s.length() - 1);
+      StringBuilder out = new StringBuilder(body.length());
+      for (int i = 0; i < body.length(); i++) {
+        char c = body.charAt(i);
+        if (c == '\\' && i + 1 < body.length()) {
+          char n = body.charAt(++i);
+          if (n == '\\' || n == q) {
+            out.append(n);
+            continue;
+          }
+          out.append('\\').append(n);
+          continue;
+        }
+        out.append(c);
+      }
+      return out.toString();
+    }
   }
 }

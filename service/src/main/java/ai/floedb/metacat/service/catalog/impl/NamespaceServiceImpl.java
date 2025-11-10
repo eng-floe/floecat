@@ -32,12 +32,10 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashSet;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -52,13 +50,10 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
   private static final Set<String> NAMESPACE_MUTABLE_PATHS =
       Set.of("display_name", "description", "path", "policy_ref", "properties", "catalog_id");
+  private static final String PATH_DELIM = "\u001F";
+  private static final String NS_TOKEN_PREFIX = "ns:";
 
   private static final Logger LOG = Logger.getLogger(NamespaceService.class);
-
-  private enum Mode {
-    CHILDREN_ONLY,
-    RECURSIVE
-  }
 
   @Override
   public Uni<ListNamespacesResponse> listNamespaces(ListNamespacesRequest request) {
@@ -98,51 +93,69 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     parentPath = new ArrayList<>(request.getPathList());
                   } else {
                     throw GrpcErrors.invalidArgument(
-                        correlationId(), null, Map.of("field", "parent"));
+                        correlationId(), "selector.required", Map.of());
                   }
 
-                  boolean childrenOnly = request.getChildrenOnly();
-                  boolean recursive = request.getRecursive();
-                  if (childrenOnly && recursive) {
+                  final boolean recursive = request.getRecursive();
+                  if (request.getChildrenOnly() && recursive) {
                     throw GrpcErrors.invalidArgument(
                         correlationId(),
                         null,
                         Map.of("children_only", "true", "recursive", "true"));
                   }
-                  final Mode mode =
-                      (childrenOnly || !recursive) ? Mode.CHILDREN_ONLY : Mode.RECURSIVE;
+
                   final String namePrefix = request.getNamePrefix().trim();
 
                   var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
-                  final int want = pageIn.limit;
-                  final int batch = Math.max(1, want * 4);
-                  String cursor = pageIn.token;
+                  final int want = Math.max(1, pageIn.limit);
+                  final int batch = Math.max(want * 4, 64);
 
-                  final ArrayList<Namespace> out = new ArrayList<>(want);
-                  final HashSet<String> seenVirtual = new HashSet<>();
-                  final HashSet<String> realImmediateNames = new HashSet<>();
+                  final boolean isServiceToken =
+                      pageIn.token != null && pageIn.token.startsWith(NS_TOKEN_PREFIX);
+                  final String resumeAfterRel = isServiceToken ? decodeNsToken(pageIn.token) : "";
+                  String cursor = isServiceToken ? "" : pageIn.token;
+
+                  var out = new ArrayList<Namespace>(want);
+                  String lastEmittedRel = "";
 
                   while (out.size() < want) {
                     var next = new StringBuilder();
-                    var scanned =
-                        namespaceRepo.list(
-                            tenantId, catalogId.getId(), parentPath, batch, cursor, next);
+                    final List<Namespace> scanned;
+                    try {
+                      scanned =
+                          namespaceRepo.list(
+                              tenantId, catalogId.getId(), parentPath, batch, cursor, next);
+                    } catch (IllegalArgumentException badToken) {
+                      throw GrpcErrors.invalidArgument(
+                          correlationId(), "page_token.invalid", Map.of("page_token", cursor));
+                    }
 
-                    if (mode == Mode.RECURSIVE) {
-                      collectRecursive(scanned, parentPath, namePrefix, out, want);
+                    if (recursive) {
+                      for (var ns : scanned) {
+                        if (!isDescendantOf(ns, parentPath)) continue;
+
+                        var rel = relativeQualifiedName(ns, parentPath);
+                        if (!namePrefix.isBlank() && !rel.startsWith(namePrefix)) continue;
+
+                        if (!resumeAfterRel.isBlank() && rel.compareTo(resumeAfterRel) <= 0)
+                          continue;
+
+                        out.add(ns);
+                        lastEmittedRel = rel;
+                        if (out.size() >= want) break;
+                      }
                     } else {
-                      collectImmediateAndRecord(
-                          scanned, parentPath, namePrefix, out, want, realImmediateNames);
-                      if (out.size() < want) {
-                        collectVirtualSegmentsSkippingReal(
-                            scanned,
-                            catalogId,
-                            parentPath,
-                            namePrefix,
-                            realImmediateNames,
-                            seenVirtual,
-                            out,
-                            want);
+                      for (var ns : scanned) {
+                        if (!isImmediateChildOf(ns, parentPath)) continue;
+
+                        var rel = relativeQualifiedName(ns, parentPath);
+                        if (!namePrefix.isBlank() && !rel.startsWith(namePrefix)) continue;
+                        if (!resumeAfterRel.isBlank() && rel.compareTo(resumeAfterRel) <= 0)
+                          continue;
+
+                        out.add(ns);
+                        lastEmittedRel = rel;
+                        if (out.size() >= want) break;
                       }
                     }
 
@@ -150,12 +163,20 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     if (cursor.isBlank()) {
                       break;
                     }
+
+                    if (out.size() >= want) break;
+                  }
+
+                  String nextToken = cursor;
+                  if (nextToken.isBlank() && out.size() == want) {
+                    nextToken = encodeNsToken(lastEmittedRel);
                   }
 
                   final int total =
-                      countNamespaces(tenantId, catalogId.getId(), parentPath, namePrefix, mode);
+                      countNamespaces(
+                          tenantId, catalogId.getId(), parentPath, namePrefix, recursive);
 
-                  var page = MutationOps.pageOut(cursor, total);
+                  var page = MutationOps.pageOut(nextToken, total);
                   return ListNamespacesResponse.newBuilder()
                       .addAllNamespaces(out)
                       .setPage(page)
@@ -168,141 +189,98 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         .invoke(L::ok);
   }
 
-  private static void collectImmediateAndRecord(
-      List<Namespace> batch,
-      List<String> parentPath,
-      String namePrefix,
-      List<Namespace> out,
-      int cap,
-      Set<String> realImmediateNames) {
-
-    for (var ns : batch) {
-      if (!isImmediateChildOf(ns, parentPath)) {
-        continue;
-      }
-      var name = ns.getDisplayName();
-      if (!namePrefix.isBlank() && !name.startsWith(namePrefix)) {
-        continue;
-      }
-      realImmediateNames.add(name);
-      out.add(ns);
-
-      if (out.size() >= cap) {
-        break;
-      }
-    }
-  }
-
-  private void collectVirtualSegmentsSkippingReal(
-      List<Namespace> batch,
-      ResourceId catalogId,
-      List<String> parentPath,
-      String namePrefix,
-      Set<String> realImmediateNames,
-      Set<String> seenVirtual,
-      List<Namespace> out,
-      int cap) {
-
-    for (var ns : batch) {
-      var seg = nextSegmentAfterParent(ns, parentPath);
-      if (seg == null) {
-        continue;
-      }
-      if (realImmediateNames.contains(seg)) {
-        continue;
-      }
-      if (!namePrefix.isBlank() && !seg.startsWith(namePrefix)) {
-        continue;
-      }
-      if (seenVirtual.add(seg)) {
-        out.add(synthesizeVirtual(catalogId, parentPath, seg));
-
-        if (out.size() >= cap) {
-          break;
-        }
-      }
-    }
-  }
-
-  private static void collectRecursive(
-      List<Namespace> batch,
-      List<String> parentPath,
-      String namePrefix,
-      List<Namespace> out,
-      int cap) {
-    for (var ns : batch) {
-      if (!isDescendantOf(ns, parentPath)) {
-        continue;
-      }
-      if (!namePrefix.isBlank() && !ns.getDisplayName().startsWith(namePrefix)) {
-        continue;
-      }
-      out.add(ns);
-
-      if (out.size() >= cap) {
-        break;
-      }
-    }
-  }
-
   private int countNamespaces(
-      String tenantId, String catalogId, List<String> parentPath, String namePrefix, Mode mode) {
+      String tenantId,
+      String catalogId,
+      List<String> parentPath,
+      String namePrefix,
+      boolean recursive) {
 
+    int count = 0;
     String cursor = "";
-
-    if (mode == Mode.RECURSIVE) {
-      int count = 0;
-      while (true) {
-        var next = new StringBuilder();
-        var page = namespaceRepo.list(tenantId, catalogId, parentPath, 1000, cursor, next);
-        for (var ns : page) {
-          if (isDescendantOf(ns, parentPath)
-              && (namePrefix.isBlank() || ns.getDisplayName().startsWith(namePrefix))) {
-            count++;
-          }
-        }
-        cursor = next.toString();
-
-        if (cursor.isBlank()) {
-          break;
-        }
-      }
-      return count;
-    }
-
-    int countReal = 0;
-    final Set<String> realImmediateNames = new HashSet<>();
-    final Set<String> segsVirtual = new HashSet<>();
-
     while (true) {
       var next = new StringBuilder();
-      var page = namespaceRepo.list(tenantId, catalogId, parentPath, 1000, cursor, next);
+      final List<Namespace> page;
+      try {
+        page = namespaceRepo.list(tenantId, catalogId, parentPath, 1000, cursor, next);
+      } catch (IllegalArgumentException bad) {
+        throw GrpcErrors.invalidArgument(
+            correlationId(), "page_token.invalid", Map.of("page_token", cursor));
+      }
 
       for (var ns : page) {
-        if (isImmediateChildOf(ns, parentPath)) {
-          var name = ns.getDisplayName();
-          if (namePrefix.isBlank() || name.startsWith(namePrefix)) {
-            countReal++;
-            realImmediateNames.add(name);
-          }
-        } else {
-          var seg = nextSegmentAfterParent(ns, parentPath);
-          if (seg != null && (namePrefix.isBlank() || seg.startsWith(namePrefix))) {
-            if (!realImmediateNames.contains(seg)) {
-              segsVirtual.add(seg);
-            }
+        boolean matchesScope =
+            recursive ? isDescendantOf(ns, parentPath) : isImmediateChildOf(ns, parentPath);
+        if (!matchesScope) {
+          continue;
+        }
+
+        if (!namePrefix.isBlank()) {
+          var rel = relativeQualifiedName(ns, parentPath);
+          if (!rel.startsWith(namePrefix)) {
+            continue;
           }
         }
+
+        count++;
       }
 
       cursor = next.toString();
-
       if (cursor.isBlank()) {
         break;
       }
     }
+    return count;
+  }
 
-    return countReal + segsVirtual.size();
+  private static boolean isDescendantOf(Namespace ns, List<String> parentPath) {
+    var p = ns.getParentsList();
+    if (p.size() < parentPath.size()) {
+      return false;
+    }
+    for (int i = 0; i < parentPath.size(); i++) {
+      if (!p.get(i).equals(parentPath.get(i))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static boolean isImmediateChildOf(Namespace ns, List<String> parentPath) {
+    var p = ns.getParentsList();
+    if (p.size() != parentPath.size()) {
+      return false;
+    }
+
+    for (int i = 0; i < parentPath.size(); i++) {
+      if (!p.get(i).equals(parentPath.get(i))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static ArrayList<String> append(List<String> parents, String last) {
+    var pp = new ArrayList<String>(parents.size() + 1);
+    pp.addAll(parents);
+    pp.add(last);
+    return pp;
+  }
+
+  private static String relativeQualifiedName(Namespace ns, List<String> parentPath) {
+    var p = ns.getParentsList();
+    int n = parentPath.size();
+    var segs = new ArrayList<String>(p.size() - n + 1);
+
+    for (int i = n; i < p.size(); i++) {
+      segs.add(p.get(i));
+    }
+
+    if (!ns.getDisplayName().isBlank()) {
+      segs.add(ns.getDisplayName());
+    }
+
+    return String.join(".", segs);
   }
 
   @Override
@@ -343,19 +321,46 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   var correlationId = princ.getCorrelationId();
                   authz.require(princ, "namespace.write");
 
+                  var spec = request.getSpec();
                   catalogRepo
-                      .getById(request.getSpec().getCatalogId())
+                      .getById(spec.getCatalogId())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
                                   correlationId,
                                   "catalog",
-                                  Map.of("id", request.getSpec().getCatalogId().getId())));
+                                  Map.of("id", spec.getCatalogId().getId())));
 
                   var tsNow = nowTs();
 
-                  var fingerprint = canonicalFingerprint(request.getSpec());
-                  var idempotencyKey =
+                  String displayWork =
+                      mustNonEmpty(spec.getDisplayName(), "display_name", correlationId);
+                  List<String> parentsWork = new ArrayList<>(spec.getPathList());
+
+                  final String display = normalizeName(displayWork);
+                  if (display.isBlank()) {
+                    throw GrpcErrors.invalidArgument(
+                        correlationId, "display_name.cannot_clear", Map.of());
+                  }
+                  for (String seg : parentsWork) {
+                    var s = normalizeName(seg);
+                    if (s.isBlank()) {
+                      throw GrpcErrors.invalidArgument(
+                          correlationId, "path.segment.blank", Map.of());
+                    }
+                  }
+                  final List<String> parents = List.copyOf(parentsWork);
+                  final List<String> fullPath = new java.util.ArrayList<>(parents);
+                  fullPath.add(display);
+
+                  final byte[] fingerprint =
+                      new Canonicalizer()
+                          .scalar("cat", nullSafeId(spec.getCatalogId()))
+                          .list("parents", parents)
+                          .scalar("name", display)
+                          .bytes();
+
+                  final String idempotencyKey =
                       request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
                           ? request.getIdempotency().getKey()
                           : hashFingerprint(fingerprint);
@@ -367,8 +372,19 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           idempotencyKey,
                           () -> fingerprint,
                           () -> {
+                            if (!parents.isEmpty()) {
+                              ensurePathChainExists(
+                                  tenantId, spec.getCatalogId(), parents, tsNow, correlationId);
+                            }
+
                             String namespaceUuid =
-                                deterministicUuid(tenantId, "namespace", idempotencyKey);
+                                deterministicUuid(
+                                    tenantId,
+                                    "namespace",
+                                    spec.getCatalogId().getId()
+                                        + "/"
+                                        + String.join(PATH_DELIM, fullPath));
+
                             var namespaceId =
                                 ResourceId.newBuilder()
                                     .setTenantId(tenantId)
@@ -376,39 +392,21 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                     .setKind(ResourceKind.RK_NAMESPACE)
                                     .build();
 
-                            String display =
-                                mustNonEmpty(
-                                    request.getSpec().getDisplayName(),
-                                    "display_name",
-                                    correlationId);
-                            List<String> parents = new ArrayList<>(request.getSpec().getPathList());
-
-                            if (parents.isEmpty()) {
-                              var segs =
-                                  Arrays.stream(display.split("."))
-                                      .map(String::trim)
-                                      .filter(s -> !s.isEmpty())
-                                      .collect(Collectors.toList());
-                              if (segs.size() > 1) {
-                                parents = new ArrayList<>(segs.subList(0, segs.size() - 1));
-                                display = segs.get(segs.size() - 1);
-                              }
-                            }
-
                             var built =
                                 Namespace.newBuilder()
                                     .setResourceId(namespaceId)
                                     .setDisplayName(display)
                                     .clearParents()
                                     .addAllParents(parents)
-                                    .setDescription(request.getSpec().getDescription())
-                                    .setCatalogId(request.getSpec().getCatalogId())
+                                    .setDescription(spec.getDescription())
+                                    .setCatalogId(spec.getCatalogId())
                                     .setCreatedAt(tsNow)
                                     .build();
+
                             namespaceRepo.create(built);
                             return new IdempotencyGuard.CreateResult<>(built, namespaceId);
                           },
-                          (namespace) -> namespaceRepo.metaForSafe(namespace.getResourceId()),
+                          (ns) -> namespaceRepo.metaForSafe(ns.getResourceId()),
                           idempotencyStore,
                           tsNow,
                           idempotencyTtlSeconds(),
@@ -426,6 +424,51 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private void ensurePathChainExists(
+      String tenantId,
+      ResourceId catalogId,
+      List<String> parents,
+      com.google.protobuf.Timestamp tsNow,
+      String corr) {
+
+    var chain = new ArrayList<String>(parents.size());
+    for (String segRaw : parents) {
+      var seg = normalizeName(segRaw);
+      if (seg.isBlank()) {
+        throw GrpcErrors.invalidArgument(corr, "path.segment.blank", Map.of());
+      }
+      chain.add(seg);
+      var existing = namespaceRepo.getByPath(tenantId, catalogId.getId(), chain);
+      if (existing.isPresent()) {
+        continue;
+      }
+
+      String uuid =
+          deterministicUuid(
+              tenantId, "namespace", catalogId.getId() + "/" + String.join(PATH_DELIM, chain));
+      var rid =
+          ResourceId.newBuilder()
+              .setTenantId(tenantId)
+              .setId(uuid)
+              .setKind(ResourceKind.RK_NAMESPACE)
+              .build();
+
+      var parentList = chain.size() > 1 ? chain.subList(0, chain.size() - 1) : List.<String>of();
+      var display = chain.get(chain.size() - 1);
+
+      var ns =
+          Namespace.newBuilder()
+              .setResourceId(rid)
+              .setCatalogId(catalogId)
+              .clearParents()
+              .addAllParents(parentList)
+              .setDisplayName(display)
+              .setCreatedAt(tsNow)
+              .build();
+      namespaceRepo.create(ns);
+    }
   }
 
   @Override
@@ -574,50 +617,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     return false;
   }
 
-  private static boolean isDescendantOf(Namespace ns, List<String> parentPath) {
-    var p = ns.getParentsList();
-    if (p.size() < parentPath.size()) return false;
-    for (int i = 0; i < parentPath.size(); i++) {
-      if (!p.get(i).equals(parentPath.get(i))) return false;
-    }
-    return true;
-  }
-
-  private static boolean isImmediateChildOf(Namespace ns, List<String> parentPath) {
-    var p = ns.getParentsList();
-    if (p.size() != parentPath.size()) return false;
-    for (int i = 0; i < parentPath.size(); i++) {
-      if (!p.get(i).equals(parentPath.get(i))) return false;
-    }
-    return true;
-  }
-
-  private static String nextSegmentAfterParent(Namespace ns, List<String> parentPath) {
-    var p = ns.getParentsList();
-    if (p.size() < parentPath.size()) return null;
-    for (int i = 0; i < parentPath.size(); i++) {
-      if (!p.get(i).equals(parentPath.get(i))) return null;
-    }
-    if (p.size() == parentPath.size()) return null;
-    return p.get(parentPath.size());
-  }
-
-  private Namespace synthesizeVirtual(ResourceId catalogId, List<String> parentPath, String child) {
-    return Namespace.newBuilder()
-        .setDisplayName(child)
-        .clearParents()
-        .addAllParents(parentPath)
-        .setCatalogId(catalogId)
-        .build();
-  }
-
-  private static ArrayList<String> append(List<String> parents, String last) {
-    var pp = new ArrayList<String>(parents.size() + 1);
-    pp.addAll(parents);
-    pp.add(last);
-    return pp;
-  }
-
   private Namespace applyNamespaceSpecPatch(
       Namespace current, NamespaceSpec spec, FieldMask mask, String corr) {
 
@@ -625,13 +624,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     if (paths.isEmpty()) {
       throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
     }
-
     for (var p : paths) {
       if (!NAMESPACE_MUTABLE_PATHS.contains(p)) {
         throw GrpcErrors.invalidArgument(corr, "update_mask.path.invalid", Map.of("path", p));
       }
     }
-
     if (paths.contains("path") && paths.contains("display_name")) {
       throw GrpcErrors.invalidArgument(
           corr,
@@ -665,19 +662,13 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     }
 
     if (maskTargets(mask, "description")) {
-      if (spec.hasDescription()) {
-        b.setDescription(spec.getDescription());
-      } else {
-        b.clearDescription();
-      }
+      if (spec.hasDescription()) b.setDescription(spec.getDescription());
+      else b.clearDescription();
     }
 
     if (maskTargets(mask, "policy_ref")) {
-      if (spec.hasPolicyRef()) {
-        b.setPolicyRef(spec.getPolicyRef());
-      } else {
-        b.clearPolicyRef();
-      }
+      if (spec.hasPolicyRef()) b.setPolicyRef(spec.getPolicyRef());
+      else b.clearPolicyRef();
     }
 
     if (maskTargets(mask, "properties")) {
@@ -686,30 +677,37 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
     if (maskTargets(mask, "path")) {
       var path = spec.getPathList();
+      for (var seg : path) {
+        var s = normalizeName(seg);
+        if (s.isBlank()) {
+          throw GrpcErrors.invalidArgument(corr, "path.segment.blank", Map.of());
+        }
+      }
       if (path.isEmpty()) {
         b.clearParents();
       } else {
-        for (var seg : path) {
-          var s = normalizeName(seg);
-          if (s.isBlank()) {
-            throw GrpcErrors.invalidArgument(corr, "path.segment.blank", Map.of());
-          }
-        }
         var leaf = normalizeName(path.get(path.size() - 1));
-        var parents = path.subList(0, path.size() - 1);
+        var parentsOnly = path.subList(0, path.size() - 1);
         b.setDisplayName(leaf);
-        b.clearParents().addAllParents(parents);
+        b.clearParents().addAllParents(parentsOnly);
       }
     }
 
     return b.build();
   }
 
-  private static byte[] canonicalFingerprint(NamespaceSpec s) {
-    return new Canonicalizer()
-        .scalar("cat", nullSafeId(s.getCatalogId()))
-        .list("parents", s.getPathList())
-        .scalar("name", normalizeName(s.getDisplayName()))
-        .bytes();
+  private static String encodeNsToken(String resumeAfterRel) {
+    if (resumeAfterRel == null || resumeAfterRel.isBlank()) return "";
+    return NS_TOKEN_PREFIX
+        + java.util.Base64.getUrlEncoder()
+            .withoutPadding()
+            .encodeToString(resumeAfterRel.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+  }
+
+  private static String decodeNsToken(String token) {
+    if (token == null || token.isBlank() || !token.startsWith(NS_TOKEN_PREFIX)) return "";
+    var s = token.substring(NS_TOKEN_PREFIX.length());
+    var bytes = Base64.getUrlDecoder().decode(s);
+    return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
   }
 }

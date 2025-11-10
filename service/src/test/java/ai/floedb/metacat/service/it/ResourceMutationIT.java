@@ -159,6 +159,15 @@ class ResourceMutationIT {
     TestSupport.assertGrpcAndMc(tblGone, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, null);
 
     TestSupport.deleteNamespace(namespace, nsId, true);
+
+    var schemaNsId =
+        TestSupport.resolveNamespaceId(
+            directory, cat.getDisplayName(), List.of("db_it", "schema_it"));
+    TestSupport.deleteNamespace(namespace, schemaNsId, true);
+
+    var dbNsId = TestSupport.resolveNamespaceId(directory, cat.getDisplayName(), List.of("db_it"));
+    TestSupport.deleteNamespace(namespace, dbNsId, true);
+
     TestSupport.deleteCatalog(catalog, catId, true);
 
     StatusRuntimeException catGone =

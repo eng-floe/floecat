@@ -39,13 +39,18 @@ public final class Keys {
     return URLEncoder.encode(Objects.requireNonNull(s, "encode value"), StandardCharsets.UTF_8);
   }
 
-  private static String joinEncoded(List<String> segments) {
-    var segs = reqPath("segments", segments);
-    String[] enc = new String[segs.size()];
-    for (int i = 0; i < segs.size(); i++) {
-      enc[i] = encode(req("segments[" + i + "]", segs.get(i)));
+  private static String joinPathSegments(List<String> segments) {
+    if (segments == null) {
+      throw new IllegalArgumentException("key arg 'segments' is null; use List.of()");
     }
-    return String.join(".", enc);
+    if (segments.isEmpty()) {
+      return "";
+    }
+    String[] enc = new String[segments.size()];
+    for (int i = 0; i < segments.size(); i++) {
+      enc[i] = encode(req("segments[" + i + "]", segments.get(i)));
+    }
+    return String.join("/", enc);
   }
 
   private static String normalizeColumnId(String columnId) {
@@ -120,7 +125,7 @@ public final class Keys {
       String tenantId, String catalogId, List<String> pathSegments) {
     String tid = req("tenant_id", tenantId);
     String cid = req("catalog_id", catalogId);
-    String joined = joinEncoded(pathSegments);
+    String joined = joinPathSegments(reqPath("segments", pathSegments));
     return "/tenants/" + encode(tid) + "/catalogs/" + encode(cid) + "/namespaces/by-path/" + joined;
   }
 
@@ -128,11 +133,11 @@ public final class Keys {
       String tenantId, String catalogId, List<String> parentSegmentsOrEmpty) {
     String tid = req("tenant_id", tenantId);
     String cid = req("catalog_id", catalogId);
-    if (parentSegmentsOrEmpty == null) { // allow explicit "root" prefix
+    if (parentSegmentsOrEmpty == null)
       throw new IllegalArgumentException("key arg 'parent_segments' is null; use List.of()");
-    }
-    String joined = parentSegmentsOrEmpty.isEmpty() ? "" : joinEncoded(parentSegmentsOrEmpty) + ".";
-    return "/tenants/" + encode(tid) + "/catalogs/" + encode(cid) + "/namespaces/by-path/" + joined;
+    String joined = joinPathSegments(parentSegmentsOrEmpty);
+    String suffix = joined.isEmpty() ? "" : joined + "/";
+    return "/tenants/" + encode(tid) + "/catalogs/" + encode(cid) + "/namespaces/by-path/" + suffix;
   }
 
   public static String namespaceBlobUri(String tenantId, String namespaceId) {

@@ -84,8 +84,13 @@ $(PROTO_JAR): proto/pom.xml $(shell find proto -type f -name '*.proto' -o -name 
 # Tests
 # ===================================================
 .PHONY: test unit-test integration-test verify
-test:
+test: cli-test
+	@echo "==> [BUILD] installing parent POM to local repo"
+	$(MVN) $(MVN_TESTALL) install -N
+	@echo "==> [TEST] service module"
 	$(MVN) $(MVN_TESTALL) -pl service -am verify
+	@echo "==> [TEST] client-cli module"
+	@cd client-cli && $(MVN) $(MVN_TESTALL) test
 
 unit-test:
 	$(MVN) $(MVN_TESTALL) -pl service -am -DskipITs=true test
@@ -185,26 +190,21 @@ status:
 # CLI
 # ===================================================
 
-.PHONY: cli-clean
-cli-clean:
-	@echo "==> [CLI] clean output"
-	rm -rf client-cli/target
-
-$(CLI_JAR): $(CLI_SRC)
-	@echo "==> [CLI] package (incremental)"
-	$(MVN) -q -f client-cli/pom.xml \
+.PHONY: cli
+cli:
+	@mvn -q -f pom.xml -pl client-cli -am \
 	  -Dquarkus.package.jar.type=fast-jar \
 	  -DskipTests -DskipITs=true \
 	  package
-	@test -f "$@" || { echo "ERROR: expected $@ not found"; exit 1; }
-
-.PHONY: cli
-cli: $(CLI_JAR)
 
 .PHONY: cli-run
 cli-run: cli
 	@echo "==> [RUN] client CLI"
-	java -jar $(CLI_JAR) $(ARGS)
+	@java -jar $(CLI_JAR) $(ARGS)
+
+.PHONY: cli-test
+cli-test:
+	@mvn -q -f pom.xml -pl client-cli -am  test
 
 # ===================================================
 # Docker (Quarkus container-image)

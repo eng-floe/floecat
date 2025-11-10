@@ -11,7 +11,6 @@ import ai.floedb.metacat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.SnapshotService;
 import ai.floedb.metacat.common.rpc.MutationMeta;
-import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.IdempotencyGuard;
@@ -27,6 +26,7 @@ import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.List;
 import java.util.Map;
 import org.jboss.logging.Logger;
 
@@ -49,7 +49,6 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
             run(
                 () -> {
                   var principalContext = principal.get();
-
                   authz.require(principalContext, "table.read");
 
                   tableRepo
@@ -61,22 +60,22 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                   "table",
                                   Map.of("id", request.getTableId().getId())));
 
-                  final int limit =
-                      (request.hasPage() && request.getPage().getPageSize() > 0)
-                          ? request.getPage().getPageSize()
-                          : 50;
-                  final String token = request.hasPage() ? request.getPage().getPageToken() : "";
-                  final StringBuilder next = new StringBuilder();
+                  var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
 
-                  var snaps =
-                      snapshotRepo.list(request.getTableId(), Math.max(1, limit), token, next);
+                  var next = new StringBuilder();
+                  final List<Snapshot> snaps;
+                  try {
+                    snaps =
+                        snapshotRepo.list(
+                            request.getTableId(), Math.max(1, pageIn.limit), pageIn.token, next);
+                  } catch (IllegalArgumentException badToken) {
+                    throw GrpcErrors.invalidArgument(
+                        correlationId(), "page_token.invalid", Map.of("page_token", pageIn.token));
+                  }
+
                   int total = snapshotRepo.count(request.getTableId());
 
-                  var page =
-                      PageResponse.newBuilder()
-                          .setNextPageToken(next.toString())
-                          .setTotalSize(total)
-                          .build();
+                  var page = MutationOps.pageOut(next.toString(), total);
 
                   return ListSnapshotsResponse.newBuilder()
                       .addAllSnapshots(snaps)

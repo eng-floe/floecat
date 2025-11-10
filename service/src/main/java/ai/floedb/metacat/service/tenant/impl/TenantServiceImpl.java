@@ -31,6 +31,7 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.jboss.logging.Logger;
@@ -60,7 +61,13 @@ public class TenantServiceImpl extends BaseServiceImpl implements TenantService 
                   var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
                   var next = new StringBuilder();
 
-                  var tenants = tenantRepo.list(Math.max(1, pageIn.limit), pageIn.token, next);
+                  List<Tenant> tenants;
+                  try {
+                    tenants = tenantRepo.list(Math.max(1, pageIn.limit), pageIn.token, next);
+                  } catch (IllegalArgumentException badToken) {
+                    throw GrpcErrors.invalidArgument(
+                        correlationId(), "page_token.invalid", Map.of("page_token", pageIn.token));
+                  }
 
                   var page = MutationOps.pageOut(next.toString(), tenantRepo.count());
 

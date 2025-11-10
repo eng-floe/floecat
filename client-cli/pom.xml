@@ -36,6 +36,19 @@
     </dependency>
 
     <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <version>5.13.4</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+      <version>5.13.4</version>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
       <groupId>ai.floedb.metacat</groupId>
       <artifactId>metacat-proto</artifactId>
       <version>${project.version}</version>
@@ -52,10 +65,36 @@
       <artifactId>jline</artifactId>
       <version>3.30.6</version>
     </dependency>
+
+    <dependency>
+      <groupId>org.antlr</groupId>
+      <artifactId>antlr4-runtime</artifactId>
+      <version>4.13.2</version>
+    </dependency>
   </dependencies>
 
   <build>
     <plugins>
+      <plugin>
+        <groupId>org.antlr</groupId>
+        <artifactId>antlr4-maven-plugin</artifactId>
+        <version>4.13.2</version>
+        <executions>
+          <execution>
+            <id>generate-antlr-sources</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>antlr4</goal>
+            </goals>
+            <configuration>
+              <packageName>ai.floedb.metacat.client.cli.fq</packageName>
+              <visitor>true</visitor>
+              <listener>false</listener>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
       <plugin>
         <groupId>io.quarkus</groupId>
         <artifactId>quarkus-maven-plugin</artifactId>
@@ -68,6 +107,19 @@
             </goals>
           </execution>
         </executions>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.5.4</version>
+        <configuration>
+          <reuseForks>true</reuseForks>
+          <forkCount>1</forkCount>
+          <includes>
+            <include>**/*Test.java</include>
+          </includes>
+        </configuration>
       </plugin>
     </plugins>
   </build>

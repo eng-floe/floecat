@@ -45,7 +45,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   @Inject IdempotencyRepository idempotencyStore;
 
   private static final Set<String> CATALOG_MUTABLE_PATHS =
-      Set.of("display_name", "description", "connector_ref", "options", "policy_ref");
+      Set.of("display_name", "description", "connector_ref", "properties", "policy_ref");
 
   private static final Logger LOG = Logger.getLogger(CatalogService.class);
 
@@ -62,12 +62,18 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
                   var next = new StringBuilder();
 
-                  var catalogs =
-                      catalogRepo.list(
-                          principalContext.getTenantId(),
-                          Math.max(1, pageIn.limit),
-                          pageIn.token,
-                          next);
+                  List<Catalog> catalogs = null;
+                  try {
+                    catalogs =
+                        catalogRepo.list(
+                            principalContext.getTenantId(),
+                            Math.max(1, pageIn.limit),
+                            pageIn.token,
+                            next);
+                  } catch (IllegalArgumentException badToken) {
+                    throw GrpcErrors.invalidArgument(
+                        correlationId(), "page_token.invalid", Map.of("page_token", pageIn.token));
+                  }
 
                   var page =
                       MutationOps.pageOut(

@@ -46,11 +46,145 @@ class CatalogMutationIT {
   }
 
   @Test
+  void createMissingDisplayName() throws Exception {
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                catalog.createCatalog(
+                    CreateCatalogRequest.newBuilder()
+                        .setSpec(CatalogSpec.newBuilder().setDescription("x"))
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex,
+        Status.Code.INVALID_ARGUMENT,
+        ErrorCode.MC_INVALID_ARGUMENT,
+        "Invalid value for display_name");
+  }
+
+  @Test
+  void createSameNameReturnsExistingWithoutIdempotency() {
+    var c1 = TestSupport.createCatalog(catalog, catalogPrefix + "same_name", "d1");
+    var c2 =
+        catalog.createCatalog(
+            CreateCatalogRequest.newBuilder()
+                .setSpec(
+                    CatalogSpec.newBuilder()
+                        .setDisplayName(catalogPrefix + "same_name")
+                        .setDescription("d2")
+                        .build())
+                .build());
+
+    assertEquals(c1.getResourceId().getId(), c2.getCatalog().getResourceId().getId());
+    assertNotNull(c2.getMeta().getPointerKey());
+  }
+
+  @Test
+  void updateInvalidMaskPath() throws Exception {
+    var c = TestSupport.createCatalog(catalog, catalogPrefix + "upd_mask_bad", "desc");
+    var badMask = FieldMask.newBuilder().addPaths("not_a_real_field").build();
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                catalog.updateCatalog(
+                    UpdateCatalogRequest.newBuilder()
+                        .setCatalogId(c.getResourceId())
+                        .setSpec(CatalogSpec.newBuilder().build())
+                        .setUpdateMask(badMask)
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex,
+        Status.Code.INVALID_ARGUMENT,
+        ErrorCode.MC_INVALID_ARGUMENT,
+        "Update field mask is invalid: not_a_real_field");
+  }
+
+  @Test
+  void updateWrongKindOnCatalogId() throws Exception {
+    var c = TestSupport.createCatalog(catalog, catalogPrefix + "upd_kind", "desc");
+
+    var wrongKind =
+        ResourceId.newBuilder()
+            .setTenantId(c.getResourceId().getTenantId())
+            .setId(c.getResourceId().getId())
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                catalog.updateCatalog(
+                    UpdateCatalogRequest.newBuilder()
+                        .setCatalogId(wrongKind)
+                        .setSpec(CatalogSpec.newBuilder().build())
+                        .setUpdateMask(FieldMask.newBuilder().addPaths("display_name").build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "kind");
+  }
+
+  @Test
+  void noopUpdateWithCorrectPreconditionsSucceeds() {
+    var resp =
+        catalog.createCatalog(
+            CreateCatalogRequest.newBuilder()
+                .setSpec(
+                    CatalogSpec.newBuilder()
+                        .setDisplayName("noop_ok")
+                        .setDescription("desc")
+                        .build())
+                .build());
+    var metaBefore = resp.getMeta();
+    var c = resp.getCatalog();
+
+    var mask = FieldMask.newBuilder().addPaths("display_name").build();
+
+    catalog.updateCatalog(
+        UpdateCatalogRequest.newBuilder()
+            .setCatalogId(c.getResourceId())
+            .setSpec(CatalogSpec.newBuilder().setDisplayName(c.getDisplayName()).build())
+            .setUpdateMask(mask)
+            .setPrecondition(
+                Precondition.newBuilder()
+                    .setExpectedVersion(metaBefore.getPointerVersion())
+                    .setExpectedEtag(metaBefore.getEtag())
+                    .build())
+            .build());
+
+    assertEquals(metaBefore.getPointerVersion(), resp.getMeta().getPointerVersion());
+    assertEquals(metaBefore.getEtag(), resp.getMeta().getEtag());
+    assertEquals(c.getDisplayName(), resp.getCatalog().getDisplayName());
+  }
+
+  @Test
   void CatalogIdempotentCreateReturnsSameResult() throws Exception {
     var first = TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1");
     var second = TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1");
 
     assertEquals(first.getResourceId(), second.getResourceId());
+  }
+
+  @Test
+  void CatalogInvalidId() throws Exception {
+    var badId =
+        ResourceId.newBuilder()
+            .setTenantId(TestSupport.DEFAULT_SEED_TENANT)
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("00000000-0000-0000-0000-000000000001")
+            .build();
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> catalog.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(badId).build()));
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Catalog not found");
   }
 
   @Test

@@ -158,18 +158,6 @@ public abstract class BaseServiceImpl {
     }
   }
 
-  protected int parseIntToken(String token, String corrId) {
-    if (token == null || token.isEmpty()) {
-      return 0;
-    }
-
-    try {
-      return Integer.parseInt(token);
-    } catch (NumberFormatException nfe) {
-      throw GrpcErrors.invalidArgument(corrId, "page_token.invalid", Map.of("page_token", token));
-    }
-  }
-
   protected String correlationId() {
     var pctx = principal != null ? principal.get() : null;
     return pctx != null ? pctx.getCorrelationId() : "";

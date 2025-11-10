@@ -5,121 +5,94 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
+import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.PageRequest;
-import ai.floedb.metacat.common.rpc.PrincipalContext;
-import ai.floedb.metacat.common.rpc.ResourceId;
-import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
-import ai.floedb.metacat.service.repo.impl.CatalogRepository;
+import ai.floedb.metacat.service.util.PagingTestUtil;
 import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
-import com.google.protobuf.util.Timestamps;
-import io.grpc.ClientInterceptor;
-import io.grpc.Metadata;
-import io.grpc.stub.MetadataUtils;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
-import java.time.Clock;
-import java.util.UUID;
 import org.junit.jupiter.api.*;
 
 @QuarkusTest
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class CatalogPagingIT {
-  @Inject CatalogRepository repo;
 
   @GrpcClient("metacat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
-  private static final String TENANT = TestSupport.DEFAULT_SEED_TENANT;
-  private static final int LIMIT = 10;
-  private static final int TOTAL = 25;
-
-  private final Clock clock = Clock.systemUTC();
-
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
+
+  private static final int LIMIT = 10;
+  private static final int TOTAL = 25;
 
   @BeforeEach
   void resetStores() {
     resetter.wipeAll();
     seeder.seedData();
-    seedAndClient();
-  }
-
-  void seedAndClient() {
-    var tenantId = TestSupport.createTenantId(TENANT);
-
     for (int i = 1; i <= TOTAL; i++) {
       String name = String.format("it-cat-%03d", i);
-      String cid = UUID.nameUUIDFromBytes((TENANT + "/" + name).getBytes()).toString();
-
-      var rid =
-          ResourceId.newBuilder()
-              .setTenantId(tenantId.getId())
-              .setId(cid)
-              .setKind(ResourceKind.RK_CATALOG)
-              .build();
-
-      var cat =
-          Catalog.newBuilder()
-              .setResourceId(rid)
-              .setDisplayName(name)
-              .setDescription("paging test")
-              .setCreatedAt(Timestamps.fromMillis(clock.millis()))
-              .build();
-
-      repo.create(cat);
+      TestSupport.createCatalog(catalog, name, "");
     }
-
-    var pc =
-        PrincipalContext.newBuilder()
-            .setTenantId(tenantId.getId())
-            .setSubject("it-user")
-            .addPermissions("catalog.read")
-            .build();
-
-    Metadata headers = new Metadata();
-    Metadata.Key<byte[]> pincipalContextBytes =
-        Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
-    headers.put(pincipalContextBytes, pc.toByteArray());
-
-    ClientInterceptor attach = MetadataUtils.newAttachHeadersInterceptor(headers);
-    this.catalog = catalog.withInterceptors(attach);
   }
 
   @Test
-  void listCatalogsPagingAndTotals() {
-    var pageAllReq =
-        ListCatalogsRequest.newBuilder()
-            .setPage(PageRequest.newBuilder().setPageSize(1000))
-            .build();
-    var pageAll = catalog.listCatalogs(pageAllReq);
-    var total = pageAll.getPage().getTotalSize();
-    assertTrue(total >= TOTAL);
+  void listCatalogsPagingAndTotals_generalHelper() {
+    PagingTestUtil.GrpcPager<Catalog> pager =
+        (pageSize, token) -> {
+          var resp =
+              catalog.listCatalogs(
+                  ListCatalogsRequest.newBuilder()
+                      .setPage(
+                          PageRequest.newBuilder()
+                              .setPageSize(pageSize)
+                              .setPageToken(token == null ? "" : token))
+                      .build());
+          return new PagingTestUtil.PageChunk<>(
+              resp.getCatalogsList(),
+              resp.getPage().getNextPageToken(),
+              resp.getPage().getTotalSize());
+        };
 
-    var page1Req =
-        ListCatalogsRequest.newBuilder()
-            .setPage(PageRequest.newBuilder().setPageSize(LIMIT))
-            .build();
+    PagingTestUtil.assertBasicTwoPageFlow(pager, LIMIT);
 
-    var page1 = catalog.listCatalogs(page1Req);
-    assertEquals(LIMIT, page1.getCatalogsCount(), "first page should return LIMIT items");
-    assertFalse(page1.getPage().getNextPageToken().isEmpty(), "next_page_token should be set");
-    assertEquals(total, page1.getPage().getTotalSize(), "total_size should be TOTAL");
+    var pageAll =
+        catalog.listCatalogs(
+            ListCatalogsRequest.newBuilder()
+                .setPage(PageRequest.newBuilder().setPageSize(1000))
+                .build());
+    assertTrue(pageAll.getPage().getTotalSize() >= TOTAL);
+  }
 
-    var page2Req =
-        ListCatalogsRequest.newBuilder()
-            .setPage(
-                PageRequest.newBuilder()
-                    .setPageSize(LIMIT)
-                    .setPageToken(page1.getPage().getNextPageToken()))
-            .build();
+  @Test
+  void listPagingInvalidToken_catalogs() throws Exception {
+    var page1 =
+        catalog.listCatalogs(
+            ListCatalogsRequest.newBuilder()
+                .setPage(PageRequest.newBuilder().setPageSize(2).build())
+                .build());
+    assertEquals(2, page1.getCatalogsCount());
+    assertFalse(page1.getPage().getNextPageToken().isBlank());
 
-    var page2 = catalog.listCatalogs(page2Req);
-    assertEquals(LIMIT, page2.getCatalogsCount(), "second page should have the remainder");
-    assertEquals(
-        total, page2.getPage().getTotalSize(), "total_size should remain TOTAL across pages");
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                catalog.listCatalogs(
+                    ListCatalogsRequest.newBuilder()
+                        .setPage(
+                            PageRequest.newBuilder().setPageSize(2).setPageToken("bogus-token"))
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex,
+        Status.Code.INVALID_ARGUMENT,
+        ErrorCode.MC_INVALID_ARGUMENT,
+        "Invalid page token: bogus-token");
   }
 }

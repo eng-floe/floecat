@@ -33,6 +33,7 @@ import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.jboss.logging.Logger;
@@ -94,14 +95,22 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                       Map.of("id", namespaceId.getId())));
 
                   var catalogId = namespace.getCatalogId();
-                  var tables =
-                      tableRepo.list(
-                          principalContext.getTenantId(),
-                          catalogId.getId(),
-                          namespaceId.getId(),
-                          Math.max(1, pageIn.limit),
-                          pageIn.token,
-                          next);
+
+                  List<Table> tables;
+                  try {
+
+                    tables =
+                        tableRepo.list(
+                            principalContext.getTenantId(),
+                            catalogId.getId(),
+                            namespaceId.getId(),
+                            Math.max(1, pageIn.limit),
+                            pageIn.token,
+                            next);
+                  } catch (IllegalArgumentException badToken) {
+                    throw GrpcErrors.invalidArgument(
+                        correlationId(), "page_token.invalid", Map.of("page_token", pageIn.token));
+                  }
 
                   var page =
                       MutationOps.pageOut(

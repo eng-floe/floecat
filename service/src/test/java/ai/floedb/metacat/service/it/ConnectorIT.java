@@ -112,7 +112,7 @@ public class ConnectorIT {
 
     var catId = catalogs.getByName(tenantId.getId(), "cat-e2e").orElseThrow().getResourceId();
 
-    assertEquals(2, namespaces.count(tenantId.getId(), catId.getId(), List.of()));
+    assertEquals(3, namespaces.count(tenantId.getId(), catId.getId(), List.of()));
 
     var dbNsId = namespaces.getByPath(tenantId.getId(), catId.getId(), List.of("db")).orElseThrow();
     var anaNsId =
