@@ -87,7 +87,6 @@
               <goal>antlr4</goal>
             </goals>
             <configuration>
-              <packageName>ai.floedb.metacat.client.cli.fq</packageName>
               <visitor>true</visitor>
               <listener>false</listener>
             </configuration>
