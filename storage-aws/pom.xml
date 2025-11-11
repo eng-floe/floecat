@@ -11,7 +11,7 @@
   <artifactId>metacat-storage-aws</artifactId>
 
   <properties>
-    <aws.sdk.version>2.38.1</aws.sdk.version>
+    <aws.sdk.version>2.38.3</aws.sdk.version>
   </properties>
 
   <dependencyManagement>
