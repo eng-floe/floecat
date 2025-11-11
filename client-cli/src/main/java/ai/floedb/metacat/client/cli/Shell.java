@@ -2322,11 +2322,11 @@ public class Shell implements Runnable {
 
   private void printColumnStats(List<ColumnStats> cols) {
     out.printf(
-        "%-8s %-28s %-12s %-10s %-10s %-24s %-24s %-12s%n",
-        "CID", "NAME", "TYPE", "NULLS", "NaNs", "MIN", "MAX", "NDV");
+        "%-8s %-28s %-12s %-10s %-10s %-24s %-24s %-24s %-24s%n",
+        "CID", "NAME", "TYPE", "NULLS", "NaNs", "MIN", "MAX", "NDV", "#THETA SKETCHES");
     for (var c : cols) {
       out.printf(
-          "%-8s %-28s %-12s %-10s %-10s %-24s %-24s %-12s%n",
+          "%-8s %-28s %-12s %-10s %-10s %-24s %-24s %-24s %-24s%n",
           c.getColumnId(),
           trunc(c.getColumnName(), 28),
           trunc(c.getLogicalType(), 12),
@@ -2334,7 +2334,8 @@ public class Shell implements Runnable {
           Long.toString(c.getNanCount()),
           trunc(c.getMin(), 24),
           trunc(c.getMax(), 24),
-          c.hasNdv() ? ndvToString(c.getNdv()) : "-");
+          c.hasNdv() ? ndvToString(c.getNdv()) : "-",
+          c.hasNdv() ? c.getNdv().getSketchesCount() : "-");
     }
   }
 
