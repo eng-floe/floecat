@@ -99,7 +99,7 @@ integration-test:
 	$(MVN) $(MVN_TESTALL) -pl service -am -DskipUTs=true -DfailIfNoTests=false verify
 
 verify:
-	$(MVN) $(MVN_TESTALL) -pl service -am verify
+	$(MVN) $(MVN_TESTALL) -pl service,client-cli -am verify
 
 # ===================================================
 # Clean
