@@ -2276,6 +2276,7 @@ public class Shell implements Runnable {
     out.printf("  id:           %s%n", rid(t.getResourceId()));
     out.printf("  name:         %s%n", t.getDisplayName());
     out.printf("  description:  %s%n", t.hasDescription() ? t.getDescription() : "");
+    out.printf("  schema:       %s%n", t.getSchemaJson());
     out.printf("  format:       %s%n", upstream.getFormat().name());
     out.printf("  root_uri:     %s%n", upstream.getUri());
     out.printf("  created_at:   %s%n", ts(t.getCreatedAt()));

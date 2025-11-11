@@ -3,6 +3,7 @@ package ai.floedb.metacat.service.it;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.CatalogServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.IdempotencyKey;
@@ -26,7 +27,9 @@ import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.time.Duration;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.*;
 
@@ -239,6 +242,84 @@ public class ConnectorIT {
     }
 
     return job;
+  }
+
+  @Test
+  void dummyNestedSchemaAndFiltering() {
+    var proto =
+        Connector.newBuilder()
+            .setDisplayName("dummy-conn-nested")
+            .setKind(ConnectorKind.CK_UNITY)
+            .setUri("dummy://ignored")
+            .setDestination(dest("cat-e2e"))
+            .build();
+
+    var cfg = ConnectorConfigMapper.fromProto(proto);
+    try (var conn = ConnectorFactory.create(cfg)) {
+      assertEquals("dummy", conn.id());
+
+      var td = conn.describe("db", "events");
+      assertTrue(td.schemaJson().contains("\"user\""));
+      assertTrue(td.schemaJson().contains("\"items\""));
+      assertTrue(td.schemaJson().contains("\"attrs\""));
+
+      var onlyIds =
+          conn.enumerateSnapshotsWithStats(
+              "db",
+              "events",
+              ResourceId.newBuilder().setTenantId("t").setId("tbl").build(),
+              Set.of("#1", "#4", "#9"));
+
+      var cs1 = onlyIds.get(0).columnStats();
+      var ids1 =
+          cs1.stream().map(ColumnStats::getColumnId).collect(java.util.stream.Collectors.toSet());
+      var names1 =
+          cs1.stream().map(ColumnStats::getColumnName).collect(java.util.stream.Collectors.toSet());
+
+      assertEquals(Set.of("1", "4", "9"), ids1);
+      assertEquals(Set.of("id", "user.id", "items.element.qty"), names1);
+
+      var onlyNames =
+          conn.enumerateSnapshotsWithStats(
+              "db",
+              "events",
+              ResourceId.newBuilder().setTenantId("t").setId("tbl").build(),
+              Set.of("user.name", "attrs.value"));
+
+      var cs2 = onlyNames.get(0).columnStats();
+      var ids2 =
+          cs2.stream().map(ColumnStats::getColumnId).collect(java.util.stream.Collectors.toSet());
+      var names2 =
+          cs2.stream().map(ColumnStats::getColumnName).collect(java.util.stream.Collectors.toSet());
+
+      assertEquals(Set.of("5", "12"), ids2);
+      assertEquals(Set.of("user.name", "attrs.value"), names2);
+
+      var mixed =
+          conn.enumerateSnapshotsWithStats(
+              "db",
+              "events",
+              ResourceId.newBuilder().setTenantId("t").setId("tbl").build(),
+              Set.of("#2", "items.element.sku"));
+
+      var cs3 = mixed.get(0).columnStats();
+      var ids3 =
+          cs3.stream().map(ColumnStats::getColumnId).collect(java.util.stream.Collectors.toSet());
+      var names3 =
+          cs3.stream().map(ColumnStats::getColumnName).collect(java.util.stream.Collectors.toSet());
+
+      assertEquals(Set.of("2", "8"), ids3);
+      assertEquals(Set.of("ts", "items.element.sku"), names3);
+
+      var allCols =
+          conn.enumerateSnapshotsWithStats(
+              "db",
+              "events",
+              ResourceId.newBuilder().setTenantId("t").setId("tbl").build(),
+              Collections.emptySet());
+
+      assertEquals(8, allCols.get(0).columnStats().size());
+    }
   }
 
   @Test
