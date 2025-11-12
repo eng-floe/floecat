@@ -11,10 +11,12 @@ import ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.GetNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.GetTableRequest;
 import ai.floedb.metacat.catalog.rpc.GetTableStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
@@ -314,6 +316,8 @@ public class Shell implements Runnable {
          resolve table <fq> | resolve view <fq> | resolve catalog <name> | resolve namespace <fq>
          describe table <fq>
          snapshots <tableFQ>
+         snapshot get <id|catalog.ns[.ns...].table> <snapshot_id>
+         snapshot delete <id|catalog.ns[.ns...].table> <snapshot_id>
          stats table <tableFQ> [--snapshot <id>|--current] (defaults to --current)
          stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
          plan begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
@@ -373,6 +377,7 @@ public class Shell implements Runnable {
       case "resolve" -> cmdResolve(tail(tokens));
       case "describe" -> cmdDescribe(tail(tokens));
       case "snapshots" -> cmdSnapshots(tail(tokens));
+      case "snapshot" -> cmdSnapshotCrud(tail(tokens));
       case "stats" -> cmdStats(tail(tokens));
       case "plan" -> cmdPlan(tail(tokens));
       default -> out.println("Unknown command. Type 'help'.");
@@ -1508,6 +1513,49 @@ public class Shell implements Runnable {
             r -> r.getSnapshotsList(),
             r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
     printSnapshots(snaps);
+  }
+
+  private void cmdSnapshotCrud(List<String> args) {
+    if (args.isEmpty()) {
+      out.println("usage: snapshot <get|delete> ...");
+      return;
+    }
+    String sub = args.get(0);
+    switch (sub) {
+      case "get" -> {
+        if (args.size() < 3) {
+          out.println("usage: snapshot get <id|catalog.ns[.ns...].table> <snapshot_id>");
+          return;
+        }
+        ResourceId tableId = resolveTableIdFlexible(args.get(1));
+        long snapshotId = Long.parseLong(args.get(2));
+        var resp =
+            snapshots.getSnapshot(
+                GetSnapshotRequest.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                    .build());
+        Snapshot snapshot = resp.getSnapshot();
+        printSnapshots(List.of(snapshot));
+      }
+      case "delete" -> {
+        if (args.size() < 3) {
+          out.println("usage: snapshot delete <id|catalog.ns[.ns...].table> <snapshot_id>");
+          return;
+        }
+        ResourceId tableId = resolveTableIdFlexible(args.get(1));
+        long snapshotId = Long.parseLong(args.get(2));
+        var req =
+            DeleteSnapshotRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshotId(snapshotId)
+                .setPrecondition(preconditionFromEtag(args))
+                .build();
+        snapshots.deleteSnapshot(req);
+        out.println("ok");
+      }
+      default -> out.println("unknown subcommand");
+    }
   }
 
   private void cmdStats(List<String> args) {

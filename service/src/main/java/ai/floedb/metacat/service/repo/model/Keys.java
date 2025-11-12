@@ -260,9 +260,8 @@ public final class Keys {
   public static String snapshotTableStatsBlobUri(String tenantId, String tableId, String sha256) {
     String tid = req("tenant_id", tenantId);
     String tbid = req("table_id", tableId);
-    String sha = req("sha256", sha256);
     return String.format(
-        "/tenants/%s/tables/%s/table-stats/%s.pb", encode(tid), encode(tbid), encode(sha));
+        "/tenants/%s/tables/%s/table-stats/%s.pb", encode(tid), encode(tbid), encode(sha256));
   }
 
   public static String snapshotColumnStatsBlobUri(
@@ -270,10 +269,9 @@ public final class Keys {
     String tid = req("tenant_id", tenantId);
     String tbid = req("table_id", tableId);
     String cid = normalizeColumnId(columnId);
-    String sha = req("sha256", sha256);
     return String.format(
         "/tenants/%s/tables/%s/column-stats/%s/%s.pb",
-        encode(tid), encode(tbid), encode(cid), encode(sha));
+        encode(tid), encode(tbid), encode(cid), encode(sha256));
   }
 
   public static String snapshotStatsPrefix(String tenantId, String tableId, long snapshotId) {

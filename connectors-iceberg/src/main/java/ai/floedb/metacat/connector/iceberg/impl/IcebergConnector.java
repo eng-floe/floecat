@@ -3,6 +3,7 @@ package ai.floedb.metacat.connector.iceberg.impl;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.common.GenericStatsEngine;
+import ai.floedb.metacat.connector.common.ProtoStatsBuilder;
 import ai.floedb.metacat.connector.common.StatsEngine;
 import ai.floedb.metacat.connector.common.ndv.ColumnNdv;
 import ai.floedb.metacat.connector.common.ndv.FilteringNdvProvider;
@@ -260,66 +261,51 @@ public final class IcebergConnector implements MetacatConnector {
   private record EngineOut(StatsEngine.Result<Integer> result) {}
 
   private EngineOut runEngine(Table table, long snapshotId, Set<Integer> colIds) {
-    var colNames = buildColumnNameMap(table.schema(), colIds);
-    var logicalTypes = buildLogicalTypeMap(table.schema(), colIds);
+    try (var planner = new IcebergPlanner(table, snapshotId, colIds, null)) {
 
-    Map<String, ColumnNdv> puffinMap = null;
-    try {
-      puffinMap = PuffinNdvProvider.readPuffinNdvWithSketches(table, snapshotId, colNames::get);
-    } catch (IOException ioe) {
-      // ignore
-    }
+      Map<Integer, String> colNames = planner.columnNamesByKey();
+      Map<Integer, LogicalType> logicalTypes = planner.logicalTypesByKey();
 
-    NdvProvider bootstrap =
-        (puffinMap == null || puffinMap.isEmpty()) ? null : new StaticOnceNdvProvider(puffinMap);
-
-    int missing = 0;
-    final int totalCols = colNames.size();
-
-    if (bootstrap != null) {
-      final Map<String, ColumnNdv> puffinMapFinal = puffinMap;
-      for (String columnName : colNames.values()) {
-        ColumnNdv columnNdv = puffinMapFinal.get(columnName);
-        boolean hasData =
-            columnNdv != null
-                && (columnNdv.approx != null
-                    || (columnNdv.sketches != null && !columnNdv.sketches.isEmpty()));
-        if (!hasData) {
-          missing++;
-        }
+      Map<String, ColumnNdv> puffinMap = null;
+      try {
+        puffinMap = PuffinNdvProvider.readPuffinNdvWithSketches(table, snapshotId, colNames::get);
+      } catch (IOException ioe) {
+        // ignore
       }
-    } else {
-      missing = totalCols;
-    }
 
-    NdvProvider perFileNdv = null;
-    if (missing > 0) {
-      var parquetNdv = new ParquetNdvProvider(path -> table.io().newInputFile(path));
-      perFileNdv = FilteringNdvProvider.bySuffix(Set.of(".parquet", ".parq"), parquetNdv);
-    }
+      NdvProvider bootstrap =
+          (puffinMap == null || puffinMap.isEmpty()) ? null : new StaticOnceNdvProvider(puffinMap);
 
-    try (var planner = new IcebergPlanner(table, snapshotId, colIds, perFileNdv)) {
+      final int totalCols = colNames.size();
+      int missing;
+      if (bootstrap != null) {
+        final Map<String, ColumnNdv> m = puffinMap;
+        int miss = 0;
+        for (String columnName : colNames.values()) {
+          ColumnNdv ndv = m.get(columnName);
+          boolean hasData =
+              ndv != null
+                  && (ndv.approx != null || (ndv.sketches != null && !ndv.sketches.isEmpty()));
+          if (!hasData) miss++;
+        }
+        missing = miss;
+      } else {
+        missing = totalCols;
+      }
+
+      NdvProvider perFileNdv = null;
+      if (missing > 0) {
+        var parquetNdv = ParquetNdvProvider.forIcebergIO(path -> table.io().newInputFile(path));
+        perFileNdv = FilteringNdvProvider.bySuffix(Set.of(".parquet", ".parq"), parquetNdv);
+      }
+
       var engine = new GenericStatsEngine<>(planner, perFileNdv, bootstrap, colNames, logicalTypes);
+
       var result = engine.compute();
       return new EngineOut(result);
     } catch (Exception e) {
       throw new RuntimeException("Stats compute failed for snapshot " + snapshotId, e);
     }
-  }
-
-  private static Map<Integer, String> buildColumnNameMap(Schema schema, Set<Integer> includeIds) {
-    return schema.columns().stream()
-        .filter(f -> includeIds == null || includeIds.contains(f.fieldId()))
-        .collect(Collectors.toUnmodifiableMap(Types.NestedField::fieldId, Types.NestedField::name));
-  }
-
-  private static Map<Integer, LogicalType> buildLogicalTypeMap(
-      Schema schema, Set<Integer> includeIds) {
-    return schema.columns().stream()
-        .filter(f -> includeIds == null || includeIds.contains(f.fieldId()))
-        .map(f -> Map.entry(f.fieldId(), IcebergTypeMapper.toLogical(f.type())))
-        .filter(e -> e.getValue() != null)
-        .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
   }
 
   private static Set<Integer> resolveFieldIdsNested(Schema schema, Set<String> selectors) {

@@ -1,4 +1,4 @@
-package ai.floedb.metacat.connector.iceberg.impl;
+package ai.floedb.metacat.connector.common;
 
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.Ndv;
@@ -6,7 +6,6 @@ import ai.floedb.metacat.catalog.rpc.NdvApprox;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.common.rpc.ResourceId;
-import ai.floedb.metacat.connector.common.StatsEngine;
 import ai.floedb.metacat.connector.common.ndv.NdvSketch;
 import ai.floedb.metacat.types.LogicalType;
 import ai.floedb.metacat.types.LogicalTypeProtoAdapter;
@@ -18,9 +17,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 
-final class ProtoStatsBuilder {
+public final class ProtoStatsBuilder {
 
-  static TableStats toTableStats(
+  public static TableStats toTableStats(
       ResourceId tableId,
       long snapshotId,
       long upstreamCreatedAtMs,
@@ -45,7 +44,7 @@ final class ProtoStatsBuilder {
         .build();
   }
 
-  static <K> List<ColumnStats> toColumnStats(
+  public static <K> List<ColumnStats> toColumnStats(
       ResourceId tableId,
       long snapshotId,
       TableFormat format,

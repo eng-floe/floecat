@@ -27,6 +27,8 @@ public final class ValueEncoders {
     switch (t.kind()) {
       case BOOLEAN:
         return Boolean.toString((Boolean) value);
+      case INT16:
+        return Short.toString((Short) value);
       case INT32:
         return Integer.toString((Integer) value);
       case INT64:
@@ -132,6 +134,8 @@ public final class ValueEncoders {
     switch (t.kind()) {
       case BOOLEAN:
         return Boolean.parseBoolean(encoded);
+      case INT16:
+        return Short.parseShort(encoded);
       case INT32:
         return Integer.parseInt(encoded);
       case INT64:

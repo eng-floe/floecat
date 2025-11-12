@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.Schema;
@@ -34,13 +35,19 @@ final class IcebergPlanner implements Planner<Integer> {
   private final Map<Integer, Type> idToIceType = new HashMap<>();
   private final NdvProvider ndvProvider;
   private final Set<Integer> columnSet;
+  private final Schema schema;
 
-  IcebergPlanner(Table table, long snapshotId, Set<Integer> colIds, NdvProvider ndvProvider) {
+  IcebergPlanner(
+      Table table,
+      long snapshotId,
+      Set<Integer> colIds,
+      NdvProvider ndvProvider,
+      boolean planFiles) {
     this.ndvProvider = ndvProvider;
 
     Snapshot snap = table.snapshot(snapshotId);
     int schemaId = (snap != null) ? snap.schemaId() : table.schema().schemaId();
-    Schema schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
+    this.schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
 
     for (Types.NestedField field : schema.columns()) {
       idToName.put(field.fieldId(), field.name());
@@ -53,15 +60,34 @@ final class IcebergPlanner implements Planner<Integer> {
             ? Collections.unmodifiableSet(new LinkedHashSet<>(idToName.keySet()))
             : Collections.unmodifiableSet(new LinkedHashSet<>(colIds));
 
-    TableScan scan = table.newScan().useSnapshot(snapshotId).includeColumnStats();
-
-    try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
-      for (FileScanTask task : tasks) {
-        files.add(toPlanned(task.file()));
+    if (planFiles) {
+      TableScan scan = table.newScan().useSnapshot(snapshotId).includeColumnStats();
+      try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
+        for (FileScanTask task : tasks) {
+          files.add(toPlanned(task.file()));
+        }
+      } catch (Exception e) {
+        throw new RuntimeException("Iceberg planning failed (snapshot " + snapshotId + ")", e);
       }
-    } catch (Exception e) {
-      throw new RuntimeException("Iceberg planning failed (snapshot " + snapshotId + ")", e);
     }
+  }
+
+  IcebergPlanner(Table table, long snapshotId, Set<Integer> colIds, NdvProvider ndvProvider) {
+    this(table, snapshotId, colIds, ndvProvider, true);
+  }
+
+  @Override
+  public Map<Integer, String> columnNamesByKey() {
+    return idToName.entrySet().stream()
+        .filter(e -> columnSet == null || columnSet.contains(e.getKey()))
+        .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
+  }
+
+  @Override
+  public Map<Integer, LogicalType> logicalTypesByKey() {
+    return idToLogical.entrySet().stream()
+        .filter(e -> columnSet == null || columnSet.contains(e.getKey()))
+        .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
   }
 
   @Override

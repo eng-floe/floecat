@@ -165,6 +165,7 @@ public class ReconcilerService {
           changed++;
         } catch (Exception e) {
           errors++;
+          e.printStackTrace();
           errSummaries.add(
               "ns="
                   + destNsFq
@@ -379,7 +380,7 @@ public class ReconcilerService {
       if (snapshotBundle == null) continue;
 
       long snapshotId = snapshotBundle.snapshotId();
-      if (snapshotId <= 0 || !seen.add(snapshotId)) {
+      if (snapshotId < 0 || !seen.add(snapshotId)) {
         continue;
       }
 

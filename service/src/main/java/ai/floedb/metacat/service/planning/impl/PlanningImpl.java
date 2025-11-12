@@ -5,6 +5,7 @@ import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
+import ai.floedb.metacat.common.rpc.SpecialSnapshot;
 import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.metacat.planning.rpc.*;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
@@ -329,13 +330,18 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
 
     if (snapshotRef == null || snapshotRef.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
       var cur =
-          snapshot.getCurrentSnapshot(
-              GetCurrentSnapshotRequest.newBuilder().setTableId(tableId).build());
+          snapshot.getSnapshot(
+              GetSnapshotRequest.newBuilder()
+                  .setTableId(tableId)
+                  .setSnapshot(
+                      SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
+                  .build());
       return cur.hasSnapshot() ? cur.getSnapshot().getSnapshotId() : 0L;
     }
 
     return snapshot
-        .getCurrentSnapshot(GetCurrentSnapshotRequest.newBuilder().setTableId(tableId).build())
+        .getSnapshot(
+            GetSnapshotRequest.newBuilder().setTableId(tableId).setSnapshot(snapshotRef).build())
         .getSnapshot()
         .getSnapshotId();
   }

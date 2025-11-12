@@ -26,10 +26,11 @@ message ListSnapshotsResponse {
   ai.floedb.metacat.common.PageResponse page = 2;
 }
 
-message GetCurrentSnapshotRequest {
+message GetSnapshotRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
+  ai.floedb.metacat.common.SnapshotRef snapshot = 2;
 }
-message GetCurrentSnapshotResponse {
+message GetSnapshotResponse {
   Snapshot snapshot = 1;
 }
 
@@ -63,7 +64,7 @@ message DeleteSnapshotResponse {
 
 service SnapshotService {
   rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
-  rpc GetCurrentSnapshot(GetCurrentSnapshotRequest) returns (GetCurrentSnapshotResponse);
+  rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
   rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
   rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
 }

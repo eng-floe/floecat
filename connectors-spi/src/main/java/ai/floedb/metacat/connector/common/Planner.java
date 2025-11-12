@@ -2,22 +2,29 @@ package ai.floedb.metacat.connector.common;
 
 import ai.floedb.metacat.connector.common.ndv.NdvProvider;
 import ai.floedb.metacat.types.LogicalType;
-import java.util.Iterator;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 
 public interface Planner<K> extends AutoCloseable, Iterable<PlannedFile<K>> {
-  @Override
-  Iterator<PlannedFile<K>> iterator();
+  Map<K, String> columnNamesByKey();
 
-  @Override
-  void close();
-
-  Function<K, String> nameOf();
-
-  Function<K, LogicalType> typeOf();
+  Map<K, LogicalType> logicalTypesByKey();
 
   NdvProvider ndvProvider();
 
   Set<K> columns();
+
+  default Function<K, String> nameOf() {
+    var byKey = columnNamesByKey();
+    return byKey::get;
+  }
+
+  default Function<K, LogicalType> typeOf() {
+    var byKey = logicalTypesByKey();
+    return byKey::get;
+  }
+
+  @Override
+  default void close() {}
 }

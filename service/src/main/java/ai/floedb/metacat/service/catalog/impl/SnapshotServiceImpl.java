@@ -4,14 +4,16 @@ import ai.floedb.metacat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.CreateSnapshotResponse;
 import ai.floedb.metacat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteSnapshotResponse;
-import ai.floedb.metacat.catalog.rpc.GetCurrentSnapshotRequest;
-import ai.floedb.metacat.catalog.rpc.GetCurrentSnapshotResponse;
+import ai.floedb.metacat.catalog.rpc.GetSnapshotRequest;
+import ai.floedb.metacat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.metacat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.SnapshotService;
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.common.rpc.SnapshotRef;
+import ai.floedb.metacat.common.rpc.SpecialSnapshot;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.LogHelper;
@@ -19,6 +21,7 @@ import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
+import ai.floedb.metacat.service.repo.impl.StatsRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
@@ -35,6 +38,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
   @Inject TableRepository tableRepo;
   @Inject SnapshotRepository snapshotRepo;
+  @Inject StatsRepository statsRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
@@ -90,7 +94,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   }
 
   @Override
-  public Uni<GetCurrentSnapshotResponse> getCurrentSnapshot(GetCurrentSnapshotRequest request) {
+  public Uni<GetSnapshotResponse> getSnapshot(GetSnapshotRequest request) {
     var L = LogHelper.start(LOG, "GetCurrentSnapshot");
 
     return mapFailures(
@@ -100,30 +104,70 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
                   authz.require(principalContext, "table.read");
 
+                  final var tableId = request.getTableId();
                   tableRepo
-                      .getById(request.getTableId())
+                      .getById(tableId)
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
-                                  correlationId(),
-                                  "table",
-                                  Map.of("id", request.getTableId().getId())));
+                                  correlationId(), "table", Map.of("id", tableId.getId())));
 
-                  var snap =
-                      snapshotRepo
-                          .getCurrentSnapshot(request.getTableId())
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(),
-                                      "snapshot",
-                                      Map.of(
-                                          "reason",
-                                          "no_snapshots",
-                                          "table_id",
-                                          request.getTableId().getId())));
+                  final var ref = request.getSnapshot();
+                  if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
+                    throw GrpcErrors.invalidArgument(correlationId(), "snapshot.missing", Map.of());
+                  }
 
-                  return GetCurrentSnapshotResponse.newBuilder().setSnapshot(snap).build();
+                  Snapshot snap;
+                  switch (ref.getWhichCase()) {
+                    case SNAPSHOT_ID -> {
+                      var snapId = ref.getSnapshotId();
+                      snap =
+                          snapshotRepo
+                              .getById(request.getTableId(), snapId)
+                              .orElseThrow(
+                                  () ->
+                                      GrpcErrors.notFound(
+                                          correlationId(),
+                                          "snapshot",
+                                          Map.of(
+                                              "reason",
+                                              "no_snapshots",
+                                              "table_id",
+                                              request.getTableId().getId())));
+                    }
+                    case SPECIAL -> {
+                      if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
+                        throw GrpcErrors.invalidArgument(
+                            correlationId(), "snapshot.special.missing", Map.of());
+                      }
+                      snap =
+                          snapshotRepo
+                              .getCurrentSnapshot(tableId)
+                              .orElseThrow(
+                                  () ->
+                                      GrpcErrors.notFound(
+                                          correlationId(),
+                                          "snapshot",
+                                          Map.of("id", tableId.getId())));
+                    }
+                    case AS_OF -> {
+                      var asOf = ref.getAsOf();
+                      snap =
+                          snapshotRepo
+                              .getAsOf(tableId, asOf)
+                              .orElseThrow(
+                                  () ->
+                                      GrpcErrors.notFound(
+                                          correlationId(),
+                                          "snapshot",
+                                          Map.of("id", tableId.getId())));
+                    }
+                    default ->
+                        throw GrpcErrors.invalidArgument(
+                            correlationId(), "snapshot.missing", Map.of());
+                  }
+
+                  return GetSnapshotResponse.newBuilder().setSnapshot(snap).build();
                 }),
             correlationId())
         .onFailure()
@@ -240,10 +284,8 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   try {
                     meta = snapshotRepo.metaFor(tableId, snapshotId);
                   } catch (BaseResourceRepository.NotFoundException e) {
-                    snapshotRepo.delete(tableId, snapshotId);
-                    return DeleteSnapshotResponse.newBuilder()
-                        .setMeta(snapshotRepo.metaForSafe(tableId, snapshotId))
-                        .build();
+                    statsRepo.deleteAllStatsForSnapshot(tableId, snapshotId);
+                    return DeleteSnapshotResponse.newBuilder().build();
                   }
 
                   long expectedVersion = meta.getPointerVersion();
@@ -261,6 +303,8 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                               "expected", Long.toString(expectedVersion),
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
+
+                    statsRepo.deleteAllStatsForSnapshot(tableId, snapshotId);
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
                     throw GrpcErrors.preconditionFailed(

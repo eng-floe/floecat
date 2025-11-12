@@ -30,6 +30,7 @@
     <module>reconciler</module>
     <module>connectors-spi</module>
     <module>connectors-iceberg</module>
+    <module>connectors-delta</module>
 
     <module>service</module>
   </modules>

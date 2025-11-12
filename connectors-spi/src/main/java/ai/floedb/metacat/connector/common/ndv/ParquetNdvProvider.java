@@ -4,7 +4,7 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -16,8 +16,8 @@ import org.apache.parquet.column.page.PageReadStore;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.example.data.simple.convert.GroupRecordConverter;
 import org.apache.parquet.hadoop.ParquetFileReader;
+import org.apache.parquet.hadoop.util.HadoopInputFile;
 import org.apache.parquet.io.ColumnIOFactory;
-import org.apache.parquet.io.InputFile;
 import org.apache.parquet.io.MessageColumnIO;
 import org.apache.parquet.io.RecordReader;
 import org.apache.parquet.io.SeekableInputStream;
@@ -28,22 +28,38 @@ import org.apache.parquet.schema.Type;
 
 public final class ParquetNdvProvider implements NdvProvider {
 
-  private final Function<String, org.apache.iceberg.io.InputFile> icebergLookup;
+  private final Function<String, org.apache.parquet.io.InputFile> parquetLookup;
+
   private final int thetaK;
 
-  public ParquetNdvProvider(Function<String, org.apache.iceberg.io.InputFile> icebergLookup) {
-    this(icebergLookup, 4096);
+  public ParquetNdvProvider(Function<String, org.apache.parquet.io.InputFile> parquetLookup) {
+    this(parquetLookup, 4096);
   }
 
   public ParquetNdvProvider(
-      Function<String, org.apache.iceberg.io.InputFile> icebergLookup, int thetaK) {
-    this.icebergLookup = Objects.requireNonNull(icebergLookup, "icebergLookup");
-
+      Function<String, org.apache.parquet.io.InputFile> parquetLookup, int thetaK) {
+    this.parquetLookup = Objects.requireNonNull(parquetLookup, "parquetLookup");
     if (thetaK < 16) {
       throw new IllegalArgumentException("thetaK too small");
     }
 
     this.thetaK = thetaK;
+  }
+
+  public static ParquetNdvProvider forHadoop(org.apache.hadoop.conf.Configuration conf) {
+    return new ParquetNdvProvider(
+        path -> {
+          try {
+            return HadoopInputFile.fromPath(new org.apache.hadoop.fs.Path(path), conf);
+          } catch (IOException e) {
+            throw new RuntimeException("Unable to open parquet via Hadoop: " + path, e);
+          }
+        });
+  }
+
+  public static ParquetNdvProvider forIcebergIO(
+      Function<String, org.apache.iceberg.io.InputFile> icebergLookup) {
+    return new ParquetNdvProvider(path -> new ParquetInputFileAdapter(icebergLookup.apply(path)));
   }
 
   @Override
@@ -59,22 +75,18 @@ public final class ParquetNdvProvider implements NdvProvider {
 
       final List<String> present =
           sinks.keySet().stream().filter(fileSchema::containsField).collect(Collectors.toList());
-
       final List<String> limited = present.size() > 32 ? present.subList(0, 32) : present;
-
       if (limited.isEmpty()) {
         return;
       }
 
-      final Map<String, UpdateSketch> thetaByCol = new HashMap<>();
+      final Map<String, UpdateSketch> thetaByCol = new LinkedHashMap<>(limited.size());
       for (String columnName : limited) {
         thetaByCol.put(columnName, UpdateSketch.builder().setNominalEntries(thetaK).build());
       }
 
       final List<Type> types = new ArrayList<>(limited.size());
-      for (String columnName : limited) {
-        types.add(fileSchema.getType(columnName));
-      }
+      for (String columnName : limited) types.add(fileSchema.getType(columnName));
       final MessageType projection = new MessageType(fileSchema.getName(), types);
 
       final ColumnIOFactory cioFactory = new ColumnIOFactory();
@@ -85,51 +97,45 @@ public final class ParquetNdvProvider implements NdvProvider {
 
         final MessageColumnIO columnIO = cioFactory.getColumnIO(projection, fileSchema);
         final GroupRecordConverter converter = new GroupRecordConverter(projection);
-        final RecordReader<Group> recordReader = columnIO.getRecordReader(pages, converter);
-        for (long rowIndex = 0; rowIndex < rowCount; rowIndex++) {
-          final Group g = recordReader.read();
+        final RecordReader<Group> rr = columnIO.getRecordReader(pages, converter);
 
-          for (int columnIndex = 0; columnIndex < projection.getFieldCount(); columnIndex++) {
-            final String colName = projection.getFieldName(columnIndex);
-
-            if (g.getFieldRepetitionCount(columnIndex) == 0) {
+        for (long r = 0; r < rowCount; r++) {
+          final Group g = rr.read();
+          for (int c = 0; c < projection.getFieldCount(); c++) {
+            final String col = projection.getFieldName(c);
+            if (g.getFieldRepetitionCount(c) == 0) {
               continue;
             }
 
-            final Type type = projection.getType(columnIndex);
+            final Type t = projection.getType(c);
             try {
-              if (!type.isPrimitive()) {
-                updateSketch(thetaByCol, colName, g.getValueToString(columnIndex, 0));
+              if (!t.isPrimitive()) {
+                updateSketch(thetaByCol, col, g.getValueToString(c, 0));
               } else {
                 final PrimitiveType.PrimitiveTypeName p =
-                    type.asPrimitiveType().getPrimitiveTypeName();
-                final LogicalTypeAnnotation logicalType = type.getLogicalTypeAnnotation();
+                    t.asPrimitiveType().getPrimitiveTypeName();
+                final LogicalTypeAnnotation l = t.getLogicalTypeAnnotation();
                 switch (p) {
                   case INT32 -> {
-                    if (logicalType instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) {
-                      updateSketch(thetaByCol, colName, g.getValueToString(columnIndex, 0));
-                    } else {
-                      updateSketch(thetaByCol, colName, g.getInteger(columnIndex, 0));
-                    }
+                    if (l instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation)
+                      updateSketch(thetaByCol, col, g.getValueToString(c, 0));
+                    else updateSketch(thetaByCol, col, g.getInteger(c, 0));
                   }
                   case INT64 -> {
-                    if (logicalType instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) {
-                      updateSketch(thetaByCol, colName, g.getValueToString(columnIndex, 0));
-                    } else {
-                      updateSketch(thetaByCol, colName, g.getLong(columnIndex, 0));
-                    }
+                    if (l instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation)
+                      updateSketch(thetaByCol, col, g.getValueToString(c, 0));
+                    else updateSketch(thetaByCol, col, g.getLong(c, 0));
                   }
-                  case FLOAT -> updateSketch(thetaByCol, colName, g.getFloat(columnIndex, 0));
-                  case DOUBLE -> updateSketch(thetaByCol, colName, g.getDouble(columnIndex, 0));
-                  case BOOLEAN -> updateSketch(thetaByCol, colName, g.getBoolean(columnIndex, 0));
-                  case BINARY, FIXED_LEN_BYTE_ARRAY, INT96 -> {
-                    updateSketch(thetaByCol, colName, g.getValueToString(columnIndex, 0));
-                  }
-                  default -> updateSketch(thetaByCol, colName, g.getValueToString(columnIndex, 0));
+                  case FLOAT -> updateSketch(thetaByCol, col, g.getFloat(c, 0));
+                  case DOUBLE -> updateSketch(thetaByCol, col, g.getDouble(c, 0));
+                  case BOOLEAN -> updateSketch(thetaByCol, col, g.getBoolean(c, 0));
+                  case BINARY, FIXED_LEN_BYTE_ARRAY, INT96 ->
+                      updateSketch(thetaByCol, col, g.getValueToString(c, 0));
+                  default -> updateSketch(thetaByCol, col, g.getValueToString(c, 0));
                 }
               }
-            } catch (ClassCastException cce) {
-              updateSketch(thetaByCol, colName, g.getValueToString(columnIndex, 0));
+            } catch (ClassCastException ignore) {
+              updateSketch(thetaByCol, col, g.getValueToString(c, 0));
             }
           }
         }
@@ -141,19 +147,17 @@ public final class ParquetNdvProvider implements NdvProvider {
           continue;
         }
 
-        if (out.approx == null) {
-          out.approx = new NdvApprox();
-        }
+        if (out.approx == null) out.approx = new NdvApprox();
 
-        UpdateSketch updateSketch = thetaByCol.get(column);
-        if (updateSketch == null) {
+        UpdateSketch us = thetaByCol.get(column);
+        if (us == null) {
           continue;
         }
 
-        CompactSketch compactSketch = updateSketch.compact(true, null);
-        out.mergeTheta(compactSketch);
+        CompactSketch cs = us.compact(true, null);
+        out.mergeTheta(cs);
 
-        out.approx.estimate = compactSketch.getEstimate();
+        out.approx.estimate = cs.getEstimate();
         out.approx.method = "apache-datasketches-theta";
         out.approx.rowsSeen =
             (out.approx.rowsSeen == null ? 0L : out.approx.rowsSeen) + totalRowsSeen;
@@ -163,42 +167,35 @@ public final class ParquetNdvProvider implements NdvProvider {
     }
   }
 
-  private static void updateSketch(Map<String, UpdateSketch> thetaByCol, String col, int value) {
-    thetaByCol.get(col).update(value);
-  }
-
-  private static void updateSketch(Map<String, UpdateSketch> thetaByCol, String col, long value) {
-    thetaByCol.get(col).update(value);
-  }
-
-  private static void updateSketch(
-      Map<String, UpdateSketch> thetaByCol, String col, boolean value) {
-    thetaByCol.get(col).update(value ? 1 : 0);
-  }
-
-  private static void updateSketch(Map<String, UpdateSketch> thetaByCol, String col, float value) {
-    int bits = Float.floatToIntBits(value);
-    thetaByCol.get(col).update(bits);
-  }
-
-  private static void updateSketch(Map<String, UpdateSketch> thetaByCol, String col, double value) {
-    long bits = Double.doubleToLongBits(value);
-    thetaByCol.get(col).update(bits);
-  }
-
-  private static void updateSketch(Map<String, UpdateSketch> thetaByCol, String col, String value) {
-    if (value == null) {
-      value = "";
-    }
-    thetaByCol.get(col).update(value);
-  }
-
   private ParquetFileReader open(String path) throws IOException {
-    org.apache.iceberg.io.InputFile ifile = icebergLookup.apply(path);
-    return ParquetFileReader.open(new ParquetInputFileAdapter(ifile));
+    return ParquetFileReader.open(parquetLookup.apply(path));
   }
 
-  private static final class ParquetInputFileAdapter implements InputFile {
+  private static void updateSketch(Map<String, UpdateSketch> m, String col, int v) {
+    m.get(col).update(v);
+  }
+
+  private static void updateSketch(Map<String, UpdateSketch> m, String col, long v) {
+    m.get(col).update(v);
+  }
+
+  private static void updateSketch(Map<String, UpdateSketch> m, String col, boolean v) {
+    m.get(col).update(v ? 1 : 0);
+  }
+
+  private static void updateSketch(Map<String, UpdateSketch> m, String col, float v) {
+    m.get(col).update(Float.floatToIntBits(v));
+  }
+
+  private static void updateSketch(Map<String, UpdateSketch> m, String col, double v) {
+    m.get(col).update(Double.doubleToLongBits(v));
+  }
+
+  private static void updateSketch(Map<String, UpdateSketch> m, String col, String v) {
+    m.get(col).update(v == null ? "" : v);
+  }
+
+  private static final class ParquetInputFileAdapter implements org.apache.parquet.io.InputFile {
     private final org.apache.iceberg.io.InputFile inputFile;
 
     ParquetInputFileAdapter(org.apache.iceberg.io.InputFile in) {
@@ -264,27 +261,23 @@ public final class ParquetNdvProvider implements NdvProvider {
         while (dst.hasRemaining()) {
           int toRead = Math.min(tmp.length, dst.remaining());
           int n = d.read(tmp, 0, toRead);
-          if (n <= 0) break;
+          if (n <= 0) {
+            break;
+          }
+
           dst.put(tmp, 0, n);
           total += n;
-          if (n < toRead) break;
+          if (n < toRead) {
+            break;
+          }
         }
-
         return total == 0 ? -1 : total;
       }
     }
 
     @Override
     public void readFully(byte[] bytes) throws IOException {
-      int off = 0, len = bytes.length;
-      while (len > 0) {
-        int n = d.read(bytes, off, len);
-        if (n < 0) {
-          throw new EOFException("EOF while reading fully");
-        }
-        off += n;
-        len -= n;
-      }
+      readFully(bytes, 0, bytes.length);
     }
 
     @Override
@@ -295,6 +288,7 @@ public final class ParquetNdvProvider implements NdvProvider {
         if (n < 0) {
           throw new EOFException("EOF while reading fully");
         }
+
         o += n;
         remaining -= n;
       }

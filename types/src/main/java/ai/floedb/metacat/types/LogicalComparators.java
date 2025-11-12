@@ -30,10 +30,13 @@ public final class LogicalComparators {
     return ((Comparable) na).compareTo(nb);
   }
 
-  private static Object normalize(LogicalType t, Object v) {
+  public static Object normalize(LogicalType t, Object v) {
     switch (t.kind()) {
       case BOOLEAN:
         return (Boolean) v;
+
+      case INT16:
+        return (v instanceof Short) ? v : ((Number) v).shortValue();
 
       case INT32:
         return (v instanceof Integer) ? v : ((Number) v).intValue();
