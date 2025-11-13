@@ -12,7 +12,10 @@ public final class Canonicalizer {
   private final Deque<String> prefix = new ArrayDeque<>();
 
   private String buildKey(String k) {
-    if (prefix.isEmpty()) return k;
+    if (prefix.isEmpty()) {
+      return k;
+    }
+
     var it = prefix.descendingIterator();
     StringBuilder full = new StringBuilder(32);
     while (it.hasNext()) {

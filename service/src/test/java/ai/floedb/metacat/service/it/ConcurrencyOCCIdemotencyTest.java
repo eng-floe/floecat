@@ -239,7 +239,9 @@ class ConcurrencyOCCIdempotencyIT {
 
     for (String k : sharedIdemKeys) {
       var tid = successfulCreatesByIdem.get(k);
-      if (tid == null) continue;
+      if (tid == null) {
+        continue;
+      }
       var ref =
           NameRef.newBuilder()
               .setCatalog(catName)

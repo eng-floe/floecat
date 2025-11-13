@@ -563,10 +563,18 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   }
 
   private static boolean upstreamTouched(FieldMask mask) {
-    if (mask == null) return false;
-    if (mask.getPathsList().contains("upstream")) return true;
+    if (mask == null) {
+      return false;
+    }
+
+    if (mask.getPathsList().contains("upstream")) {
+      return true;
+    }
+
     for (var p : mask.getPathsList()) {
-      if (p.startsWith("upstream.")) return true;
+      if (p.startsWith("upstream.")) {
+        return true;
+      }
     }
     return false;
   }

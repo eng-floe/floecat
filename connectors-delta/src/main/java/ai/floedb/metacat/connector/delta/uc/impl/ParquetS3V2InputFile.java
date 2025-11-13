@@ -57,14 +57,19 @@ public class ParquetS3V2InputFile implements InputFile {
     public int read() throws IOException {
       byte[] b = new byte[1];
       int n = read(b, 0, 1);
-      if (n == -1) return -1;
+      if (n == -1) {
+        return -1;
+      }
+
       return b[0] & 0xFF;
     }
 
     @Override
     public int read(byte[] b, int off, int len) throws IOException {
       if (closed) throw new IOException("stream closed");
-      if (len == 0) return 0;
+      if (len == 0) {
+        return 0;
+      }
 
       int n = reader.readAt(pos, b, off, len);
       if (n > 0) {
@@ -80,7 +85,9 @@ public class ParquetS3V2InputFile implements InputFile {
       }
 
       int len = buf.remaining();
-      if (len == 0) return 0;
+      if (len == 0) {
+        return 0;
+      }
 
       byte[] tmp = new byte[Math.min(len, 64 * 1024)];
       int total = 0;

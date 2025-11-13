@@ -2,7 +2,21 @@ package ai.floedb.metacat.reconciler.impl;
 
 import static ai.floedb.metacat.reconciler.util.NameParts.split;
 
-import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.catalog.rpc.ColumnStats;
+import ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.CreateSnapshotRequest;
+import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
+import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
+import ai.floedb.metacat.catalog.rpc.NamespaceSpec;
+import ai.floedb.metacat.catalog.rpc.PutColumnStatsBatchRequest;
+import ai.floedb.metacat.catalog.rpc.PutTableStatsRequest;
+import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
+import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
+import ai.floedb.metacat.catalog.rpc.SnapshotSpec;
+import ai.floedb.metacat.catalog.rpc.TableFormat;
+import ai.floedb.metacat.catalog.rpc.TableSpec;
+import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
+import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.rpc.Connector;
@@ -24,6 +38,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -379,7 +394,9 @@ public class ReconcilerService {
 
     var seen = new HashSet<Long>();
     for (var snapshotBundle : bundles) {
-      if (snapshotBundle == null) continue;
+      if (snapshotBundle == null) {
+        continue;
+      }
 
       long snapshotId = snapshotBundle.snapshotId();
       if (snapshotId < 0 || !seen.add(snapshotId)) {
@@ -443,7 +460,10 @@ public class ReconcilerService {
   }
 
   private static TableFormat toTableFormat(ConnectorFormat format) {
-    if (format == null) return TableFormat.TF_UNSPECIFIED;
+    if (format == null) {
+      return TableFormat.TF_UNSPECIFIED;
+    }
+
     String name = format.name();
     int i = name.indexOf('_');
     String stem = (i >= 0 && i + 1 < name.length()) ? name.substring(i + 1) : name;
@@ -457,7 +477,10 @@ public class ReconcilerService {
 
   private MetacatConnector.TableDescriptor overrideDisplay(
       MetacatConnector.TableDescriptor upstream, String destNamespace, String destTable) {
-    if (destNamespace == null && destTable == null) return upstream;
+    if (destNamespace == null && destTable == null) {
+      return upstream;
+    }
+
     return new MetacatConnector.TableDescriptor(
         destNamespace != null ? destNamespace : upstream.namespaceFq(),
         destTable != null ? destTable : upstream.tableName(),
@@ -468,9 +491,18 @@ public class ReconcilerService {
   }
 
   private static boolean matchesSelector(ColumnStats c, Set<String> selectors) {
-    if (selectors == null || selectors.isEmpty()) return true;
-    if (selectors.contains(c.getColumnName())) return true;
-    if (!c.getColumnId().isBlank() && selectors.contains("#" + c.getColumnId())) return true;
+    if (selectors == null || selectors.isEmpty()) {
+      return true;
+    }
+
+    if (selectors.contains(c.getColumnName())) {
+      return true;
+    }
+
+    if (!c.getColumnId().isBlank() && selectors.contains("#" + c.getColumnId())) {
+      return true;
+    }
+
     return false;
   }
 
@@ -486,12 +518,21 @@ public class ReconcilerService {
   }
 
   private static Set<String> normalizeSelectors(List<String> in) {
-    if (in == null || in.isEmpty()) return Set.of();
-    var out = new java.util.LinkedHashSet<String>();
+    if (in == null || in.isEmpty()) {
+      return Set.of();
+    }
+
+    var out = new LinkedHashSet<String>();
     for (var s : in) {
-      if (s == null) continue;
+      if (s == null) {
+        continue;
+      }
+
       var t = s.trim();
-      if (t.isEmpty()) continue;
+      if (t.isEmpty()) {
+        continue;
+      }
+
       out.add(t.startsWith("#") ? "#" + t.substring(1).trim() : t);
     }
     return out;

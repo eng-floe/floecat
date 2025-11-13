@@ -84,7 +84,10 @@ public class S3BlobStore implements BlobStore {
 
       return Optional.of(hb.build());
     } catch (S3Exception e) {
-      if (e.statusCode() == 404) return Optional.empty();
+      if (e.statusCode() == 404) {
+        return Optional.empty();
+      }
+
       throw mapAndWrap("HEAD", k, e);
     } catch (SdkClientException e) {
       throw new StorageAbortRetryableException(msg("HEAD", k, e.getMessage()));

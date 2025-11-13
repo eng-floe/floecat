@@ -4,7 +4,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public abstract class UcBaseSupport {
   protected final ObjectMapper M = new ObjectMapper();
@@ -69,7 +73,10 @@ public abstract class UcBaseSupport {
             .path("tables");
     var out = new ArrayList<String>();
     for (var t : tables) {
-      if (!"TABLE".equalsIgnoreCase(t.path("table_type").asText("TABLE"))) continue;
+      if (!"TABLE".equalsIgnoreCase(t.path("table_type").asText("TABLE"))) {
+        continue;
+      }
+
       out.add(t.path("name").asText());
     }
     out.sort(Comparator.naturalOrder());

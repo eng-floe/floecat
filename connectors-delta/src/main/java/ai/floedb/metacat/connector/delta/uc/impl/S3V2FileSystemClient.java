@@ -145,8 +145,14 @@ final class S3V2FileSystemClient implements FileIO {
         }
 
         while (true) {
-          if (pageIter != null && pageIter.hasNext()) return true;
-          if (continuationToken == null && pageIter != null) return false;
+          if (pageIter != null && pageIter.hasNext()) {
+            return true;
+          }
+
+          if (continuationToken == null && pageIter != null) {
+            return false;
+          }
+
           fetchNextPage();
         }
       }

@@ -55,7 +55,10 @@ public final class IdempotencyGuard {
       switch (rec.getStatus()) {
         case SUCCEEDED -> {
           boolean replayOk = (canReplay == null) || Boolean.TRUE.equals(canReplay.apply(rec));
-          if (replayOk) return parser.apply(rec.getPayload().toByteArray());
+          if (replayOk) {
+            return parser.apply(rec.getPayload().toByteArray());
+          }
+
           throw GrpcErrors.conflict(
               corrId.get(),
               "idempotency_already_succeeded_not_replayable",
@@ -94,7 +97,10 @@ public final class IdempotencyGuard {
       switch (again.getStatus()) {
         case SUCCEEDED -> {
           boolean replayOk = (canReplay == null) || Boolean.TRUE.equals(canReplay.apply(again));
-          if (replayOk) return parser.apply(again.getPayload().toByteArray());
+          if (replayOk) {
+            return parser.apply(again.getPayload().toByteArray());
+          }
+
           throw GrpcErrors.conflict(
               corrId.get(),
               "idempotency_already_succeeded_not_replayable",

@@ -1,6 +1,9 @@
 package ai.floedb.metacat.service.planning.impl;
 
-import ai.floedb.metacat.catalog.rpc.*;
+import ai.floedb.metacat.catalog.rpc.GetTableRequest;
+import ai.floedb.metacat.catalog.rpc.GetTableResponse;
+import ai.floedb.metacat.catalog.rpc.Table;
+import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.rpc.Connector;

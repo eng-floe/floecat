@@ -138,7 +138,9 @@ public final class LogicalCoercions {
         }
         long x = Long.parseLong(s);
         long ax = Math.abs(x);
-        if (ax >= 1_000_000_000_000L && ax < 1_000_000_000_000_000L) return Instant.ofEpochMilli(x);
+        if (ax >= 1_000_000_000_000L && ax < 1_000_000_000_000_000L) {
+          return Instant.ofEpochMilli(x);
+        }
         if (ax >= 1_000_000_000_000_000L) {
           long secs = Math.floorDiv(x, 1_000_000L);
           long micros = Math.floorMod(x, 1_000_000L);

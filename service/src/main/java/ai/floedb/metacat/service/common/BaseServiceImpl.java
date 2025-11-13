@@ -243,7 +243,10 @@ public abstract class BaseServiceImpl {
   }
 
   protected static List<List<String>> toPathsClean(List<NamespacePath> in) {
-    if (in == null || in.isEmpty()) return java.util.List.of();
+    if (in == null || in.isEmpty()) {
+      return List.of();
+    }
+
     return in.stream()
         .map(
             np ->
@@ -256,7 +259,10 @@ public abstract class BaseServiceImpl {
   }
 
   protected static List<String> normalizeSelectors(List<String> cols) {
-    if (cols == null || cols.isEmpty()) return List.of();
+    if (cols == null || cols.isEmpty()) {
+      return List.of();
+    }
+
     var seen = new LinkedHashSet<String>();
     for (String c : cols) {
       if (c == null) {
@@ -301,7 +307,10 @@ public abstract class BaseServiceImpl {
   }
 
   protected static boolean maskTargetsUnder(FieldMask mask, String container) {
-    if (mask == null) return false;
+    if (mask == null) {
+      return false;
+    }
+
     String prefix = container + ".";
     for (var p : mask.getPathsList()) {
       if (p.startsWith(prefix)) {

@@ -46,8 +46,12 @@ final class DatabricksCliTokenProvider implements AccessTokenProvider {
   @Override
   public synchronized String accessToken() {
     String env = System.getenv("DATABRICKS_TOKEN");
-    if (env != null && !env.isBlank()) return env.trim();
-    if (cachedAccess != null && !expiringSoon(cachedExpiry)) return cachedAccess;
+    if (env != null && !env.isBlank()) {
+      return env.trim();
+    }
+    if (cachedAccess != null && !expiringSoon(cachedExpiry)) {
+      return cachedAccess;
+    }
 
     try {
       var ct =
@@ -80,7 +84,10 @@ final class DatabricksCliTokenProvider implements AccessTokenProvider {
   private record CacheTok(String accessToken, String refreshToken, Instant expiry) {}
 
   private Optional<CacheTok> readCacheForHost() throws Exception {
-    if (!Files.exists(cachePath)) return Optional.empty();
+    if (!Files.exists(cachePath)) {
+      return Optional.empty();
+    }
+
     JsonNode root = M.readTree(Files.readString(cachePath));
     JsonNode tokens = root.path("tokens");
     if (!tokens.isObject()) {
@@ -91,6 +98,7 @@ final class DatabricksCliTokenProvider implements AccessTokenProvider {
     if (t.isMissingNode()) {
       t = tokens.path(host + "/");
     }
+
     if (t.isMissingNode()) {
       return Optional.empty();
     }

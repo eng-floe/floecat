@@ -2,7 +2,21 @@ package ai.floedb.metacat.connector.delta.uc.impl;
 
 import ai.floedb.metacat.types.LogicalKind;
 import ai.floedb.metacat.types.LogicalType;
-import io.delta.kernel.types.*;
+import io.delta.kernel.types.BinaryType;
+import io.delta.kernel.types.BooleanType;
+import io.delta.kernel.types.ByteType;
+import io.delta.kernel.types.DataType;
+import io.delta.kernel.types.DateType;
+import io.delta.kernel.types.DecimalType;
+import io.delta.kernel.types.DoubleType;
+import io.delta.kernel.types.FloatType;
+import io.delta.kernel.types.IntegerType;
+import io.delta.kernel.types.LongType;
+import io.delta.kernel.types.ShortType;
+import io.delta.kernel.types.StringType;
+import io.delta.kernel.types.StructField;
+import io.delta.kernel.types.StructType;
+import io.delta.kernel.types.TimestampType;
 import java.util.LinkedHashMap;
 import java.util.Map;
 

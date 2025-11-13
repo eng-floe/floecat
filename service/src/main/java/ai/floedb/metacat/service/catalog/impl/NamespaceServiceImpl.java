@@ -132,30 +132,44 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                     if (recursive) {
                       for (var ns : scanned) {
-                        if (!isDescendantOf(ns, parentPath)) continue;
+                        if (!isDescendantOf(ns, parentPath)) {
+                          continue;
+                        }
 
                         var rel = relativeQualifiedName(ns, parentPath);
-                        if (!namePrefix.isBlank() && !rel.startsWith(namePrefix)) continue;
+                        if (!namePrefix.isBlank() && !rel.startsWith(namePrefix)) {
+                          continue;
+                        }
 
                         if (!resumeAfterRel.isBlank() && rel.compareTo(resumeAfterRel) <= 0)
                           continue;
 
                         out.add(ns);
                         lastEmittedRel = rel;
-                        if (out.size() >= want) break;
+                        if (out.size() >= want) {
+                          break;
+                        }
                       }
                     } else {
                       for (var ns : scanned) {
-                        if (!isImmediateChildOf(ns, parentPath)) continue;
+                        if (!isImmediateChildOf(ns, parentPath)) {
+                          continue;
+                        }
 
                         var rel = relativeQualifiedName(ns, parentPath);
-                        if (!namePrefix.isBlank() && !rel.startsWith(namePrefix)) continue;
-                        if (!resumeAfterRel.isBlank() && rel.compareTo(resumeAfterRel) <= 0)
+                        if (!namePrefix.isBlank() && !rel.startsWith(namePrefix)) {
                           continue;
+                        }
+
+                        if (!resumeAfterRel.isBlank() && rel.compareTo(resumeAfterRel) <= 0) {
+                          continue;
+                        }
 
                         out.add(ns);
                         lastEmittedRel = rel;
-                        if (out.size() >= want) break;
+                        if (out.size() >= want) {
+                          break;
+                        }
                       }
                     }
 
@@ -164,7 +178,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       break;
                     }
 
-                    if (out.size() >= want) break;
+                    if (out.size() >= want) {
+                      break;
+                    }
                   }
 
                   String nextToken = cursor;
@@ -609,10 +625,14 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
       var next = new StringBuilder();
       var page = namespaceRepo.list(tenantId, catalogId, parentPath, 200, cursor, next);
       for (var ns : page) {
-        if (isImmediateChildOf(ns, parentPath)) return true;
+        if (isImmediateChildOf(ns, parentPath)) {
+          return true;
+        }
       }
       cursor = next.toString();
-      if (cursor.isBlank()) break;
+      if (cursor.isBlank()) {
+        break;
+      }
     }
     return false;
   }
@@ -697,7 +717,10 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   }
 
   private static String encodeNsToken(String resumeAfterRel) {
-    if (resumeAfterRel == null || resumeAfterRel.isBlank()) return "";
+    if (resumeAfterRel == null || resumeAfterRel.isBlank()) {
+      return "";
+    }
+
     return NS_TOKEN_PREFIX
         + java.util.Base64.getUrlEncoder()
             .withoutPadding()
@@ -705,7 +728,10 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   }
 
   private static String decodeNsToken(String token) {
-    if (token == null || token.isBlank() || !token.startsWith(NS_TOKEN_PREFIX)) return "";
+    if (token == null || token.isBlank() || !token.startsWith(NS_TOKEN_PREFIX)) {
+      return "";
+    }
+
     var s = token.substring(NS_TOKEN_PREFIX.length());
     var bytes = Base64.getUrlDecoder().decode(s);
     return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);

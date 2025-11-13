@@ -12,7 +12,10 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import jakarta.inject.Provider;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -61,13 +64,17 @@ public class IdempotencyGcScheduler {
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
       skipExecutionIf = DisabledOrStopping.class)
   void tick() {
-    if (stopping) return;
+    if (stopping) {
+      return;
+    }
 
     var cfg = ConfigProvider.getConfig();
     boolean enabled =
         cfg.getOptionalValue("metacat.gc.idempotency.enabled", Boolean.class).orElse(true);
     enabledGauge.set(enabled ? 1 : 0);
-    if (!enabled) return;
+    if (!enabled) {
+      return;
+    }
 
     final TenantRepository tenantRepo;
     final IdempotencyGc gc;
