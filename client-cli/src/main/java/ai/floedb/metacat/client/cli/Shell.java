@@ -2630,7 +2630,16 @@ public class Shell implements Runnable {
     String catalog = Quotes.unquote(segs.get(0));
     List<String> rest = segs.subList(1, segs.size()).stream().map(Quotes::unquote).toList();
 
-    return NameRef.newBuilder().setCatalog(catalog).addAllPath(rest).build();
+    NameRef.Builder b = NameRef.newBuilder().setCatalog(catalog);
+
+    if (rest.size() >= 2) {
+      b.addAllPath(rest.subList(0, rest.size() - 1));
+      b.setName(rest.get(rest.size() - 1));
+    } else {
+      b.addAllPath(rest);
+    }
+
+    return b.build();
   }
 
   private Precondition preconditionFromEtag(List<String> args) {
