@@ -9,11 +9,16 @@ import io.delta.kernel.utils.FileStatus;
 import java.io.IOException;
 import java.net.URI;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Optional;
 import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.model.*;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
+import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.model.S3Object;
 
 final class S3V2FileSystemClient implements FileIO {
   private final S3Client s3;
@@ -24,7 +29,7 @@ final class S3V2FileSystemClient implements FileIO {
 
   @Override
   public InputFile newInputFile(String path, long fileSize) {
-    return new S3InputFile(s3, resolvePath(path), fileSize);
+    return new S3InputFile(s3, resolvePath(path));
   }
 
   @Override
@@ -126,10 +131,7 @@ final class S3V2FileSystemClient implements FileIO {
         continuationToken = resp.isTruncated() ? resp.nextContinuationToken() : null;
 
         List<S3Object> objs = resp.contents();
-        pageIter =
-            (objs == null)
-                ? java.util.Collections.<S3Object>emptyList().iterator()
-                : objs.iterator();
+        pageIter = (objs == null) ? Collections.<S3Object>emptyList().iterator() : objs.iterator();
       }
 
       @Override
@@ -211,36 +213,34 @@ final class S3V2FileSystemClient implements FileIO {
   static final class S3InputFile implements InputFile {
     private final S3Client s3;
     private final String resolvedPath;
-    private long fileSize;
 
-    S3InputFile(S3Client s3, String resolvedPath, long fileSize) {
+    private final String bucket;
+    private final String key;
+    private final S3RangeReader rangeReader;
+
+    S3InputFile(S3Client s3, String resolvedPath) {
       this.s3 = s3;
       this.resolvedPath = resolvedPath;
-      this.fileSize = fileSize;
-    }
 
-    @Override
-    public SeekableInputStream newStream() throws IOException {
-      var u = URI.create(resolvedPath);
-      var bucket = u.getHost();
-      var key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
-      return new S3SeekableInputStream(s3, bucket, key);
-    }
+      var u = java.net.URI.create(resolvedPath);
+      this.bucket = u.getHost();
+      this.key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
 
-    @Override
-    public long length() throws IOException {
-      if (fileSize == -1) {
-        var u = URI.create(resolvedPath);
-        var bucket = u.getHost();
-        var key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
-        try {
-          var head = s3.headObject(b -> b.bucket(bucket).key(key));
-          fileSize = head.contentLength();
-        } catch (S3Exception e) {
-          throw new IOException("Failed to get file length: " + resolvedPath, e);
-        }
+      try {
+        this.rangeReader = new S3RangeReader(s3, bucket, key);
+      } catch (IOException e) {
+        throw new RuntimeException("Failed to initialize S3RangeReader for " + resolvedPath, e);
       }
-      return fileSize;
+    }
+
+    @Override
+    public SeekableInputStream newStream() {
+      return new S3SeekableInputStream(rangeReader);
+    }
+
+    @Override
+    public long length() {
+      return rangeReader.length();
     }
 
     @Override
@@ -250,23 +250,19 @@ final class S3V2FileSystemClient implements FileIO {
   }
 
   static final class S3SeekableInputStream extends SeekableInputStream {
-    private final S3Client s3;
-    private final String bucket;
-    private final String key;
+    private final S3RangeReader reader;
     private long pos = 0;
     private boolean closed = false;
 
-    S3SeekableInputStream(S3Client s3, String bucket, String key) {
-      this.s3 = s3;
-      this.bucket = bucket;
-      this.key = key;
+    S3SeekableInputStream(S3RangeReader reader) {
+      this.reader = reader;
     }
 
     @Override
     public int read() throws IOException {
       byte[] b = new byte[1];
-      int read = read(b, 0, 1);
-      if (read == -1) {
+      int n = read(b, 0, 1);
+      if (n == -1) {
         return -1;
       }
 
@@ -278,44 +274,26 @@ final class S3V2FileSystemClient implements FileIO {
       if (closed) {
         throw new IOException("stream closed");
       }
-
       if (len == 0) {
         return 0;
       }
 
-      long start = pos;
-      long end = start + len - 1;
-      try (var obj =
-          s3.getObject(
-              GetObjectRequest.builder()
-                  .bucket(bucket)
-                  .key(key)
-                  .range("bytes=" + start + "-" + end)
-                  .build())) {
-        int r = obj.read(b, off, len);
-        if (r > 0) {
-          pos += r;
-        }
-
-        return r;
-      } catch (S3Exception e) {
-        if (e.statusCode() == 416) {
-          return -1;
-        }
-
-        throw new IOException("Error reading from S3 at position " + start, e);
+      int n = reader.readAt(pos, b, off, len);
+      if (n > 0) {
+        pos += n;
       }
+      return n;
     }
 
     @Override
     public void readFully(byte[] b, int off, int len) throws IOException {
-      int bytesRead = 0;
-      while (bytesRead < len) {
-        int currentRead = read(b, off + bytesRead, len - bytesRead);
-        if (currentRead == -1) {
-          throw new IOException("Reached end of stream before reading fully required bytes.");
+      int done = 0;
+      while (done < len) {
+        int n = read(b, off + done, len - done);
+        if (n == -1) {
+          throw new IOException("Reached EOF while reading fully");
         }
-        bytesRead += currentRead;
+        done += n;
       }
     }
 
@@ -336,6 +314,7 @@ final class S3V2FileSystemClient implements FileIO {
     @Override
     public void close() {
       closed = true;
+      reader.close();
     }
   }
 }

@@ -6,133 +6,128 @@ import java.nio.ByteBuffer;
 import org.apache.parquet.io.InputFile;
 import org.apache.parquet.io.SeekableInputStream;
 import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.model.S3Exception;
 
 public class ParquetS3V2InputFile implements InputFile {
-  private final S3Client s3;
-  private final String bucket, key;
-  private final long len;
+  private final S3RangeReader reader;
+  private final String bucket;
+  private final String key;
 
   ParquetS3V2InputFile(S3Client s3, String s3Uri) {
-    this.s3 = s3;
     var u = URI.create(s3Uri.startsWith("s3a://") ? "s3://" + s3Uri.substring(6) : s3Uri);
     this.bucket = u.getHost();
     this.key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
-    this.len = s3.headObject(b -> b.bucket(bucket).key(key)).contentLength();
+    try {
+      this.reader = new S3RangeReader(s3, bucket, key);
+    } catch (IOException e) {
+      throw new RuntimeException("Failed to initialize S3RangeReader for " + s3Uri, e);
+    }
   }
 
   @Override
   public long getLength() {
-    return len;
+    return reader.length();
   }
 
   @Override
   public SeekableInputStream newStream() {
-    return new SeekableInputStream() {
-      long pos = 0;
+    return new ParquetS3SeekableInputStream(reader);
+  }
 
-      @Override
-      public long getPos() {
-        return pos;
+  private static final class ParquetS3SeekableInputStream extends SeekableInputStream {
+    private final S3RangeReader reader;
+    private long pos = 0;
+    private boolean closed = false;
+
+    ParquetS3SeekableInputStream(S3RangeReader reader) {
+      this.reader = reader;
+    }
+
+    @Override
+    public long getPos() {
+      return pos;
+    }
+
+    @Override
+    public void seek(long newPos) throws IOException {
+      if (newPos < 0) throw new IOException("negative seek");
+      this.pos = newPos;
+    }
+
+    @Override
+    public int read() throws IOException {
+      byte[] b = new byte[1];
+      int n = read(b, 0, 1);
+      if (n == -1) return -1;
+      return b[0] & 0xFF;
+    }
+
+    @Override
+    public int read(byte[] b, int off, int len) throws IOException {
+      if (closed) throw new IOException("stream closed");
+      if (len == 0) return 0;
+
+      int n = reader.readAt(pos, b, off, len);
+      if (n > 0) {
+        pos += n;
+      }
+      return n;
+    }
+
+    @Override
+    public int read(ByteBuffer buf) throws IOException {
+      if (closed) {
+        throw new IOException("stream closed");
       }
 
-      @Override
-      public void seek(long newPos) throws IOException {
-        if (newPos < 0) {
-          throw new IOException("negative seek");
+      int len = buf.remaining();
+      if (len == 0) return 0;
+
+      byte[] tmp = new byte[Math.min(len, 64 * 1024)];
+      int total = 0;
+      while (buf.hasRemaining()) {
+        int toRead = Math.min(tmp.length, buf.remaining());
+        int n = read(tmp, 0, toRead);
+        if (n == -1) {
+          return (total == 0) ? -1 : total;
         }
-        this.pos = newPos;
+        buf.put(tmp, 0, n);
+        total += n;
       }
+      return total;
+    }
 
-      @Override
-      public int read() throws IOException {
-        byte[] b = new byte[1];
-        int read = read(b, 0, 1);
-        if (read == -1) {
-          return -1;
-        }
-
-        return b[0] & 0xFF;
-      }
-
-      @Override
-      public int read(byte[] b, int off, int len) throws IOException {
-        if (len == 0) {
-          return 0;
-        }
-
-        long start = pos;
-        long end = start + len - 1;
-        try (var obj =
-            s3.getObject(
-                builder -> builder.bucket(bucket).key(key).range("bytes=" + start + "-" + end))) {
-          int r = obj.read(b, off, len);
-          if (r > 0) {
-            pos += r;
-          }
-          return r;
-        } catch (S3Exception e) {
-          if (e.statusCode() == 416) return -1;
-          throw new IOException("S3 read error at range bytes=" + start + "-" + end, e);
+    @Override
+    public void readFully(ByteBuffer buf) throws IOException {
+      while (buf.hasRemaining()) {
+        int n = read(buf);
+        if (n == -1) {
+          throw new IOException(
+              "Reached EOF before reading fully into ByteBuffer; remaining=" + buf.remaining());
         }
       }
+    }
 
-      @Override
-      public int read(ByteBuffer buf) throws IOException {
-        int len = buf.remaining();
-        if (len == 0) {
-          return 0;
+    @Override
+    public void readFully(byte[] bytes) throws IOException {
+      readFully(bytes, 0, bytes.length);
+    }
+
+    @Override
+    public void readFully(byte[] bytes, int off, int len) throws IOException {
+      int done = 0;
+      while (done < len) {
+        int n = read(bytes, off + done, len - done);
+        if (n == -1) {
+          throw new IOException("Reached EOF before reading fully; remaining=" + (len - done));
         }
-
-        long start = pos;
-        long end = start + len - 1;
-
-        try (var obj =
-            s3.getObject(
-                builder -> builder.bucket(bucket).key(key).range("bytes=" + start + "-" + end))) {
-          byte[] b = new byte[len];
-          int bytesRead = obj.read(b, 0, len);
-
-          if (bytesRead > 0) {
-            buf.put(b, 0, bytesRead);
-            pos += bytesRead;
-            return bytesRead;
-          } else {
-            return bytesRead;
-          }
-        } catch (S3Exception e) {
-          if (e.statusCode() == 416) return -1;
-          throw new IOException("S3 read error with ByteBuffer", e);
-        }
+        done += n;
       }
+    }
 
-      @Override
-      public void readFully(ByteBuffer buf) throws IOException {
-        while (buf.hasRemaining()) {
-          int bytesRead = read(buf);
-          if (bytesRead == -1) {
-            throw new IOException(
-                "Reached end of stream before reading fully required bytes into ByteBuffer.");
-          }
-        }
-      }
-
-      @Override
-      public void readFully(byte[] bytes) throws IOException {
-        readFully(bytes, 0, bytes.length);
-      }
-
-      @Override
-      public void readFully(byte[] bytes, int off, int len) throws IOException {
-        int bytesRead = 0;
-        while (bytesRead < len) {
-          int currentRead = read(bytes, off + bytesRead, len - bytesRead);
-          if (currentRead == -1) {
-            throw new IOException("Reached end of stream before reading fully required bytes.");
-          }
-          bytesRead += currentRead;
-        }
-      }
-    };
+    @Override
+    public void close() {
+      closed = true;
+      reader.close();
+    }
   }
 }

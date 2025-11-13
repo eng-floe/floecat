@@ -9,6 +9,7 @@ import ai.floedb.metacat.connector.common.ndv.ColumnNdv;
 import ai.floedb.metacat.connector.common.ndv.FilteringNdvProvider;
 import ai.floedb.metacat.connector.common.ndv.NdvProvider;
 import ai.floedb.metacat.connector.common.ndv.ParquetNdvProvider;
+import ai.floedb.metacat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.metacat.connector.common.ndv.StaticOnceNdvProvider;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
@@ -32,11 +33,23 @@ public final class IcebergConnector implements MetacatConnector {
   private final String connectorId;
   private final RESTCatalog catalog;
   private final GlueIcebergFilter glueFilter;
+  private final boolean ndvEnabled;
+  private final double ndvSampleFraction;
+  private final long ndvMaxFiles;
 
-  private IcebergConnector(String connectorId, RESTCatalog catalog, GlueIcebergFilter filter) {
+  private IcebergConnector(
+      String connectorId,
+      RESTCatalog catalog,
+      GlueIcebergFilter filter,
+      boolean ndvEnabled,
+      double ndvSampleFraction,
+      long ndvMaxFiles) {
     this.connectorId = connectorId;
     this.catalog = catalog;
     this.glueFilter = filter;
+    this.ndvEnabled = ndvEnabled;
+    this.ndvSampleFraction = ndvSampleFraction;
+    this.ndvMaxFiles = ndvMaxFiles;
   }
 
   public static MetacatConnector create(
@@ -52,14 +65,16 @@ public final class IcebergConnector implements MetacatConnector {
     props.put("type", "rest");
     props.put("uri", uri);
 
-    if (options != null) {
-      for (var e : options.entrySet()) {
+    Map<String, String> opts = (options == null) ? Collections.emptyMap() : options;
+    if (!opts.isEmpty()) {
+      for (var e : opts.entrySet()) {
         String k = e.getKey();
         if (k.startsWith("rest.") || k.startsWith("s3.") || k.equals("io-impl")) {
           props.put(k, e.getValue());
         }
       }
     }
+
     String scheme = (authScheme == null ? "none" : authScheme.trim().toLowerCase(Locale.ROOT));
     switch (scheme) {
       case "aws-sigv4" -> {
@@ -102,7 +117,27 @@ public final class IcebergConnector implements MetacatConnector {
     RESTCatalog cat = new RESTCatalog();
     cat.initialize("metacat-iceberg", Collections.unmodifiableMap(props));
 
-    return new IcebergConnector("iceberg-rest", cat, new GlueIcebergFilter(glue));
+    boolean ndvEnabled = parseNdvEnabled(options);
+    double ndvSampleFraction = parseNdvSampleFraction(options);
+
+    long ndvMaxFiles = 0L;
+    if (options != null) {
+      try {
+        ndvMaxFiles = Long.parseLong(options.getOrDefault("stats.ndv.max_files", "0"));
+        if (ndvMaxFiles < 0) {
+          ndvMaxFiles = 0;
+        }
+      } catch (NumberFormatException ignore) {
+      }
+    }
+
+    return new IcebergConnector(
+        "iceberg-rest",
+        cat,
+        new GlueIcebergFilter(glue),
+        ndvEnabled,
+        ndvSampleFraction,
+        ndvMaxFiles);
   }
 
   @Override
@@ -266,11 +301,18 @@ public final class IcebergConnector implements MetacatConnector {
       Map<Integer, String> colNames = planner.columnNamesByKey();
       Map<Integer, LogicalType> logicalTypes = planner.logicalTypesByKey();
 
+      if (!ndvEnabled) {
+        NdvProvider none = null;
+        StatsEngine<Integer> engine =
+            new GenericStatsEngine<>(planner, none, null, colNames, logicalTypes);
+        var result = engine.compute();
+        return new EngineOut(result);
+      }
+
       Map<String, ColumnNdv> puffinMap = null;
       try {
         puffinMap = PuffinNdvProvider.readPuffinNdvWithSketches(table, snapshotId, colNames::get);
       } catch (IOException ioe) {
-        // ignore
       }
 
       NdvProvider bootstrap =
@@ -296,7 +338,13 @@ public final class IcebergConnector implements MetacatConnector {
       NdvProvider perFileNdv = null;
       if (missing > 0) {
         var parquetNdv = ParquetNdvProvider.forIcebergIO(path -> table.io().newInputFile(path));
-        perFileNdv = FilteringNdvProvider.bySuffix(Set.of(".parquet", ".parq"), parquetNdv);
+        NdvProvider base = FilteringNdvProvider.bySuffix(Set.of(".parquet", ".parq"), parquetNdv);
+
+        if (ndvSampleFraction < 1.0 || ndvMaxFiles > 0) {
+          base = new SamplingNdvProvider(base, ndvSampleFraction, ndvMaxFiles);
+        }
+
+        perFileNdv = base;
       }
 
       var engine = new GenericStatsEngine<>(planner, perFileNdv, bootstrap, colNames, logicalTypes);
@@ -354,6 +402,37 @@ public final class IcebergConnector implements MetacatConnector {
       Types.NestedField val = mt.fields().get(1);
       collectNested(key, name, out);
       collectNested(val, name, out);
+    }
+  }
+
+  private static boolean parseNdvEnabled(Map<String, String> options) {
+    if (options != null) {
+      String v = options.getOrDefault("stats.ndv.enabled", "true");
+      return !v.equalsIgnoreCase("false");
+    }
+    return false;
+  }
+
+  private static double parseNdvSampleFraction(Map<String, String> options) {
+    if (options == null) {
+      return 0.0d;
+    }
+
+    String raw = options.get("stats.ndv.sample_fraction");
+    if (raw == null || raw.isBlank()) {
+      return 1.0d;
+    }
+    try {
+      double f = Double.parseDouble(raw.trim());
+      if (f <= 0.0d) {
+        return 0.0d;
+      }
+      if (f > 1.0d) {
+        return 1.0d;
+      }
+      return f;
+    } catch (NumberFormatException nfe) {
+      return 1.0d;
     }
   }
 

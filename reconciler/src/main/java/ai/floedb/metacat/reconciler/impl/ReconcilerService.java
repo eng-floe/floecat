@@ -365,7 +365,9 @@ public class ReconcilerService {
     try {
       clients.snapshot().createSnapshot(request);
     } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.ALREADY_EXISTS) return;
+      if (e.getStatus().getCode() == Status.Code.ALREADY_EXISTS) {
+        return;
+      }
       throw e;
     }
   }

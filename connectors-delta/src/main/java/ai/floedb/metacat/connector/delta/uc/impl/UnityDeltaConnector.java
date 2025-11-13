@@ -6,9 +6,9 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.common.GenericStatsEngine;
 import ai.floedb.metacat.connector.common.ProtoStatsBuilder;
 import ai.floedb.metacat.connector.common.StatsEngine;
-import ai.floedb.metacat.connector.common.ndv.FilteringNdvProvider;
 import ai.floedb.metacat.connector.common.ndv.NdvProvider;
 import ai.floedb.metacat.connector.common.ndv.ParquetNdvProvider;
+import ai.floedb.metacat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.metacat.connector.spi.AuthProvider;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
@@ -46,6 +46,9 @@ public final class UnityDeltaConnector implements MetacatConnector {
   private final Engine engine;
   private final Function<String, InputFile> parquetInput;
   private final S3Client s3Client;
+  private final boolean ndvEnabled;
+  private final double ndvSampleFraction;
+  private final long ndvMaxFiles;
 
   private UnityDeltaConnector(
       String connectorId,
@@ -53,20 +56,25 @@ public final class UnityDeltaConnector implements MetacatConnector {
       SqlStmtClient sql,
       Engine engine,
       S3Client s3Client,
-      java.util.function.Function<String, org.apache.parquet.io.InputFile> parquetInput) {
+      Function<String, InputFile> parquetInput,
+      boolean ndvEnabled,
+      double ndvSampleFraction,
+      long ndvMaxFiles) {
     this.connectorId = connectorId;
     this.ucHttp = ucHttp;
     this.sql = sql;
     this.engine = engine;
     this.s3Client = s3Client;
     this.parquetInput = parquetInput;
+    this.ndvEnabled = ndvEnabled;
+    this.ndvSampleFraction = ndvSampleFraction;
+    this.ndvMaxFiles = ndvMaxFiles;
   }
 
   public static MetacatConnector create(
       String uri, Map<String, String> options, AuthProvider authProvider) {
     Objects.requireNonNull(uri, "Unity base uri");
     String host = uri.endsWith("/") ? uri.substring(0, uri.length() - 1) : uri;
-
     int connectMs = Integer.parseInt(options.getOrDefault("http.connect.ms", "10000"));
     int readMs = Integer.parseInt(options.getOrDefault("http.read.ms", "60000"));
     String warehouse = options.getOrDefault("databricks.sql.warehouse_id", "");
@@ -81,8 +89,6 @@ public final class UnityDeltaConnector implements MetacatConnector {
             .credentialsProvider(DefaultCredentialsProvider.builder().build())
             .build();
 
-    var s3Client = s3;
-
     var engine = DefaultEngine.create(new S3V2FileSystemClient(s3));
 
     var uc = new UcHttp(host, connectMs, readMs, authProvider);
@@ -95,7 +101,27 @@ public final class UnityDeltaConnector implements MetacatConnector {
               return new ParquetS3V2InputFile(s3, s3uri);
             });
 
-    return new UnityDeltaConnector("delta-unity", uc, sql, engine, s3Client, inputFn);
+    boolean ndvEnabled = Boolean.parseBoolean(options.getOrDefault("stats.ndv.enabled", "false"));
+
+    double ndvSampleFraction = 1.0;
+    try {
+      ndvSampleFraction =
+          Double.parseDouble(options.getOrDefault("stats.ndv.sample_fraction", "1.0"));
+      if (ndvSampleFraction <= 0.0 || ndvSampleFraction > 1.0) {
+        ndvSampleFraction = 1.0;
+      }
+    } catch (NumberFormatException ignore) {
+    }
+
+    long ndvMaxFiles = 0L;
+    try {
+      ndvMaxFiles = Long.parseLong(options.getOrDefault("stats.ndv.max_files", "0"));
+      if (ndvMaxFiles < 0) ndvMaxFiles = 0;
+    } catch (NumberFormatException ignore) {
+    }
+
+    return new UnityDeltaConnector(
+        "delta-unity", uc, sql, engine, s3, inputFn, ndvEnabled, ndvSampleFraction, ndvMaxFiles);
   }
 
   @Override
@@ -123,7 +149,9 @@ public final class UnityDeltaConnector implements MetacatConnector {
                                 + UcBaseSupport.url(catalogName))
                         .body())
                 .path("schemas");
-        for (var s : schemas) out.add(catalogName + "." + s.path("name").asText());
+        for (var s : schemas) {
+          out.add(catalogName + "." + s.path("name").asText());
+        }
       }
       out.sort(String::compareTo);
       return out;
@@ -341,8 +369,16 @@ public final class UnityDeltaConnector implements MetacatConnector {
 
     NdvProvider bootstrap = null;
 
-    var parquetNdv = new ParquetNdvProvider(parquetInput);
-    var perFileNdv = FilteringNdvProvider.bySuffix(Set.of(".parquet", ".parq"), parquetNdv);
+    NdvProvider ndvProvider = null;
+
+    if (ndvEnabled) {
+      NdvProvider base = new ParquetNdvProvider(parquetInput);
+      if (ndvSampleFraction < 1.0 || ndvMaxFiles > 0) {
+        base = new SamplingNdvProvider(base, ndvSampleFraction, ndvMaxFiles);
+      }
+
+      ndvProvider = base;
+    }
 
     try (var planner =
         new DeltaPlanner(
@@ -352,13 +388,13 @@ public final class UnityDeltaConnector implements MetacatConnector {
             version,
             includeNames,
             nameToType,
-            perFileNdv,
+            ndvProvider,
             true)) {
 
       var engine =
           new GenericStatsEngine<>(
               planner,
-              parquetNdv,
+              ndvProvider,
               bootstrap,
               planner.columnNamesByKey(),
               planner.logicalTypesByKey());

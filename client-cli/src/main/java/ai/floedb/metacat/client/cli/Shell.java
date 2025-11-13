@@ -1051,7 +1051,6 @@ public class Shell implements Runnable {
         var all = listAllConnectors(filter, pageSize);
         printConnectors(all);
       }
-
       case "get" -> {
         if (args.size() < 2) {
           out.println("usage: connector get <display_name|id>");
@@ -1064,19 +1063,17 @@ public class Shell implements Runnable {
                     .build());
         printConnectors(List.of(resp.getConnector()));
       }
-
       case "create" -> {
         if (args.size() < 6) {
           out.println(
-              "usage: connector create "
-                  + "<display_name> <source_type (ICEBERG|DELTA|GLUE|UNITY)> <uri> "
-                  + "<source_namespace (a[.b[.c]...])> <destination_catalog (name)> "
-                  + "[--source-table <name>] [--source-cols c1,#id2,...] "
-                  + "[--dest-ns <a.b[.c]>] [--dest-table <name>] "
-                  + "[--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...] "
-                  + "[--head k=v ...] [--secret <ref>] "
-                  + "[--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>] "
-                  + "[--policy-not-before-epoch <sec>] [--props k=v ...]");
+              "usage: connector create <display_name> <kind (ICEBERG|DELTA|GLUE|UNITY)> <uri>"
+                  + " <source_namespace (a[.b[.c]...])> <destination_catalog (name)>"
+                  + " [--source-table <name>] [--source-cols c1,#id2,...] [--dest-ns <a.b[.c]>]"
+                  + " [--dest-table <name>] [--desc <text>] [--auth-scheme <scheme>] [--auth k=v"
+                  + " ...] [--head k=v ...] [--secret <ref>] [--policy-enabled] (if provided,"
+                  + " policy.enabled=true) [--policy-interval-sec <n>] [--policy-max-par <n>]"
+                  + " [--policy-not-before-epoch <sec>] [--props k=v ...]  (e.g."
+                  + " stats.ndv.enabled=false,stats.ndv.sample_fraction=0.1)");
           return;
         }
 
@@ -1134,7 +1131,6 @@ public class Shell implements Runnable {
                 CreateConnectorRequest.newBuilder().setSpec(spec.build()).build());
         printConnectors(List.of(resp.getConnector()));
       }
-
       case "update" -> {
         if (args.size() < 2) {
           out.println(
@@ -1260,7 +1256,6 @@ public class Shell implements Runnable {
         var resp = connectors.updateConnector(req);
         printConnectors(List.of(resp.getConnector()));
       }
-
       case "delete" -> {
         if (args.size() < 2) {
           out.println("usage: connector delete <display_name|id> [--etag <etag>]");
@@ -1282,8 +1277,7 @@ public class Shell implements Runnable {
                   + " [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]"
                   + " [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols c1,#id2,...]"
                   + " [--dest-catalog <name>] [--dest-ns <a.b[.c]>] [--dest-table <name>]"
-                  + " [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]"
-                  + " [--policy-not-before-epoch <sec>] [--props k=v ...]");
+                  + " [--props k=v ...]");
           return;
         }
 
@@ -1304,14 +1298,9 @@ public class Shell implements Runnable {
         Map<String, String> headerHints = parseKeyValueList(args, "--head");
         String secretRef = Quotes.unquote(parseStringFlag(args, "--secret", ""));
 
-        boolean policyEnabled = args.contains("--policy-enabled");
-        long intervalSec = parseLongFlag(args, "--policy-interval-sec", 0L);
-        int maxPar = parseIntFlag(args, "--policy-max-par", 0);
-        long notBeforeSec = parseLongFlag(args, "--policy-not-before-epoch", 0L);
         Map<String, String> properties = parseKeyValueList(args, "--props");
 
         var auth = buildAuth(authScheme, authProps, headerHints, secretRef);
-        var policy = buildPolicy(policyEnabled, intervalSec, maxPar, notBeforeSec);
 
         var spec =
             ConnectorSpec.newBuilder()
@@ -1319,8 +1308,7 @@ public class Shell implements Runnable {
                 .setKind(kind)
                 .setUri(uri)
                 .putAllProperties(properties)
-                .setAuth(auth)
-                .setPolicy(policy);
+                .setAuth(auth);
 
         boolean sourceSet = !sourceNs.isBlank() || !sourceTable.isBlank() || !sourceCols.isEmpty();
         if (sourceSet) spec.setSource(buildSource(sourceNs, sourceTable, sourceCols));
@@ -1340,7 +1328,6 @@ public class Shell implements Runnable {
                 .map(e -> e.getKey() + "=" + e.getValue())
                 .collect(Collectors.joining(",")));
       }
-
       case "trigger" -> {
         if (args.size() < 2) {
           out.println("usage: connector trigger <display_name|id> [--full]");
@@ -1355,7 +1342,6 @@ public class Shell implements Runnable {
                     .build());
         out.println(resp.getJobId());
       }
-
       case "job" -> {
         if (args.size() < 2) {
           out.println("usage: connector job <jobId>");
@@ -2525,6 +2511,15 @@ public class Shell implements Runnable {
                   + (a.getSecretRef().isBlank() ? "" : " secret_ref=" + a.getSecretRef()));
         }
       }
+
+      if (!c.getPropertiesMap().isEmpty()) {
+        String propsStr =
+            c.getPropertiesMap().entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .map(e -> e.getKey() + "=" + e.getValue())
+                .collect(Collectors.joining(", "));
+        out.println("  properties: " + propsStr);
+      }
     }
   }
 
@@ -2635,13 +2630,7 @@ public class Shell implements Runnable {
     String catalog = Quotes.unquote(segs.get(0));
     List<String> rest = segs.subList(1, segs.size()).stream().map(Quotes::unquote).toList();
 
-    NameRef.Builder b = NameRef.newBuilder().setCatalog(catalog);
-    if (rest.size() >= 2) {
-      b.addAllPath(rest.subList(0, rest.size() - 1)).setName(rest.get(rest.size() - 1));
-    } else {
-      b.addAllPath(rest);
-    }
-    return b.build();
+    return NameRef.newBuilder().setCatalog(catalog).addAllPath(rest).build();
   }
 
   private Precondition preconditionFromEtag(List<String> args) {
