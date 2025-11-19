@@ -4,6 +4,7 @@ import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.common.GenericStatsEngine;
+import ai.floedb.metacat.connector.common.PlannedFile;
 import ai.floedb.metacat.connector.common.ProtoStatsBuilder;
 import ai.floedb.metacat.connector.common.StatsEngine;
 import ai.floedb.metacat.connector.common.ndv.NdvProvider;
@@ -45,7 +46,6 @@ public final class UnityDeltaConnector implements MetacatConnector {
   private final SqlStmtClient sql;
   private final Engine engine;
   private final Function<String, InputFile> parquetInput;
-  private final S3Client s3Client;
   private final boolean ndvEnabled;
   private final double ndvSampleFraction;
   private final long ndvMaxFiles;
@@ -55,7 +55,6 @@ public final class UnityDeltaConnector implements MetacatConnector {
       UcHttp ucHttp,
       SqlStmtClient sql,
       Engine engine,
-      S3Client s3Client,
       Function<String, InputFile> parquetInput,
       boolean ndvEnabled,
       double ndvSampleFraction,
@@ -64,7 +63,6 @@ public final class UnityDeltaConnector implements MetacatConnector {
     this.ucHttp = ucHttp;
     this.sql = sql;
     this.engine = engine;
-    this.s3Client = s3Client;
     this.parquetInput = parquetInput;
     this.ndvEnabled = ndvEnabled;
     this.ndvSampleFraction = ndvSampleFraction;
@@ -94,12 +92,7 @@ public final class UnityDeltaConnector implements MetacatConnector {
     var uc = new UcHttp(host, connectMs, readMs, authProvider);
     var sql = warehouse.isBlank() ? null : new SqlStmtClient(host, authProvider, warehouse, readMs);
 
-    var inputFn =
-        (Function<String, InputFile>)
-            (p -> {
-              String s3uri = p.startsWith("s3a://") ? "s3://" + p.substring(6) : p;
-              return new ParquetS3V2InputFile(s3, s3uri);
-            });
+    Function<String, InputFile> inputFn = p -> new ParquetS3V2InputFile(s3, p);
 
     boolean ndvEnabled = Boolean.parseBoolean(options.getOrDefault("stats.ndv.enabled", "false"));
 
@@ -121,7 +114,7 @@ public final class UnityDeltaConnector implements MetacatConnector {
     }
 
     return new UnityDeltaConnector(
-        "delta-unity", uc, sql, engine, s3, inputFn, ndvEnabled, ndvSampleFraction, ndvMaxFiles);
+        "delta-unity", uc, sql, engine, inputFn, ndvEnabled, ndvSampleFraction, ndvMaxFiles);
   }
 
   @Override
@@ -285,40 +278,28 @@ public final class UnityDeltaConnector implements MetacatConnector {
     final String tableRoot = storageLocation(namespaceFq, tableName);
     final Table table = Table.forPath(engine, tableRoot);
 
-    final Snapshot snap =
-        snapshotId > 0
-            ? table.getSnapshotAsOfVersion(engine, snapshotId)
-            : (asOfTime > 0
-                ? table.getSnapshotAsOfTimestamp(engine, asOfTime)
-                : table.getLatestSnapshot(engine));
+    final Snapshot snap = resolveSnapshot(table, snapshotId, asOfTime);
     final long version = snap.getVersion();
 
-    final DeltaFileEnumerator files = new DeltaFileEnumerator(engine, tableRoot, version);
+    try (var planner =
+        new DeltaPlanner(engine, parquetInput, tableRoot, version, null, null, null, false)) {
 
-    final List<PlanFile> data = new ArrayList<>();
-    for (var f : files.dataFiles()) {
-      data.add(
-          PlanFile.newBuilder()
-              .setFilePath(f.path())
-              .setFileFormat("PARQUET")
-              .setFileSizeInBytes(f.sizeBytes())
-              .setRecordCount(f.rowCount())
-              .setFileContent(FileContent.DATA)
-              .build());
+      List<PlanFile> data = new ArrayList<>();
+      for (PlannedFile<String> pf : planner) {
+        data.add(
+            PlanFile.newBuilder()
+                .setFilePath(pf.path())
+                .setFileFormat("PARQUET")
+                .setFileSizeInBytes(pf.sizeBytes())
+                .setRecordCount(pf.rowCount())
+                .setFileContent(FileContent.DATA)
+                .build());
+      }
+
+      return new PlanBundle(data, null);
+    } catch (Exception e) {
+      throw new RuntimeException("Enumerating Delta files failed (version " + version + ")", e);
     }
-    final List<PlanFile> deletes = new ArrayList<>();
-    for (var df : files.deleteFiles()) {
-      deletes.add(
-          PlanFile.newBuilder()
-              .setFilePath(df.path())
-              .setFileFormat("PARQUET")
-              .setFileSizeInBytes(df.sizeBytes())
-              .setRecordCount(df.rowCount())
-              .setFileContent(
-                  df.isEquality() ? FileContent.EQUALITY_DELETES : FileContent.POSITION_DELETES)
-              .build());
-    }
-    return new PlanBundle(data, deletes);
   }
 
   @Override
@@ -334,7 +315,7 @@ public final class UnityDeltaConnector implements MetacatConnector {
         throw new IllegalStateException("Table has no storage_location: " + full);
       }
 
-      return normalizeS3(loc);
+      return loc;
     } catch (Exception e) {
       throw new RuntimeException(
           "Failed to resolve storage_location for " + namespaceFq + "." + tableName, e);
@@ -345,18 +326,6 @@ public final class UnityDeltaConnector implements MetacatConnector {
     if (!n.path(field).isMissingNode()) {
       props.put(field, n.path(field).asText());
     }
-  }
-
-  private static String normalizeS3(String uri) {
-    if (uri == null) {
-      return null;
-    }
-
-    if (uri.startsWith("s3://")) {
-      return "s3a://" + uri.substring(5);
-    }
-
-    return uri;
   }
 
   private record EngineOut(StatsEngine.Result<String> result) {}
@@ -383,7 +352,7 @@ public final class UnityDeltaConnector implements MetacatConnector {
     try (var planner =
         new DeltaPlanner(
             this.engine,
-            this.s3Client,
+            this.parquetInput,
             tableRoot,
             version,
             includeNames,
@@ -417,11 +386,26 @@ public final class UnityDeltaConnector implements MetacatConnector {
     var byName = new LinkedHashMap<String, ColumnStats>();
     for (var c : in) {
       String name = c.getColumnName();
-      String newCid = Integer.toString(pos.get(name));
+      Integer p = pos.get(name);
+      if (p == null) {
+        continue;
+      }
+      String newCid = Integer.toString(p);
       var normalized = c.toBuilder().setColumnId(newCid).build();
       byName.put(name, normalized);
     }
 
     return new ArrayList<>(byName.values());
+  }
+
+  private Snapshot resolveSnapshot(Table table, long snapshotId, long asOfTime) {
+    if (snapshotId > 0) {
+      return table.getSnapshotAsOfVersion(engine, snapshotId);
+    }
+    if (asOfTime > 0) {
+      return table.getSnapshotAsOfTimestamp(engine, asOfTime);
+    }
+
+    return table.getLatestSnapshot(engine);
   }
 }

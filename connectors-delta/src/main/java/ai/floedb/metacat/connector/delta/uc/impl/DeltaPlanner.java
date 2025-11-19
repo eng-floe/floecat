@@ -34,7 +34,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
-import software.amazon.awssdk.services.s3.S3Client;
+import org.apache.parquet.io.InputFile;
 
 final class DeltaPlanner implements Planner<String> {
 
@@ -45,7 +45,7 @@ final class DeltaPlanner implements Planner<String> {
 
   DeltaPlanner(
       Engine engine,
-      S3Client s3Client,
+      Function<String, InputFile> parquetInput,
       String tableRoot,
       long version,
       Set<String> includeColumns,
@@ -150,10 +150,7 @@ final class DeltaPlanner implements Planner<String> {
                   }
                 }
               } else {
-                engine.getFileSystemClient();
-                var in =
-                    new ParquetS3V2InputFile(
-                        s3Client, path.startsWith("s3a://") ? "s3://" + path.substring(6) : path);
+                var in = parquetInput.apply(path);
 
                 var bfs = ParquetFooterStats.read(in, columnSet, nameToLogical);
 

@@ -97,28 +97,22 @@ public class ReconcilerService {
             0, 0, 1, new IllegalArgumentException("connector.source.namespace is required"));
       }
 
-      final String destNsFq =
-          (dest.hasNamespace() && !dest.getNamespace().getSegmentsList().isEmpty())
-              ? fq(dest.getNamespace().getSegmentsList())
-              : sourceNsFq;
+      final String destNsFq;
+      final ResourceId destNamespaceId;
 
-      final ResourceId destNamespaceId = ensureNamespace(destCatalogId, destNsFq);
-
-      if (destB.hasNamespaceId()) {
-        if (!destB.getNamespaceId().getId().equals(destNamespaceId.getId())) {
-          return new Result(
-              0,
-              0,
-              1,
-              new IllegalStateException(
-                  "Connector destination.namespace_id disagrees with resolved namespace "
-                      + "(expected="
-                      + destNsFq
-                      + ", existingId="
-                      + destB.getNamespaceId().getId()
-                      + ")"));
-        }
+      if (dest.hasNamespaceId()) {
+        destNamespaceId = dest.getNamespaceId();
+        destNsFq = null;
       } else {
+        destNsFq =
+            (dest.hasNamespace() && !dest.getNamespace().getSegmentsList().isEmpty())
+                ? fq(dest.getNamespace().getSegmentsList())
+                : sourceNsFq;
+
+        destNamespaceId = ensureNamespace(destCatalogId, destNsFq);
+      }
+
+      if (!destB.hasNamespaceId()) {
         destB.setNamespaceId(destNamespaceId);
         destB.clearNamespace();
         dmaskB.addAllPaths(List.of("destination.namespace_id", "destination.namespace"));
