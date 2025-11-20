@@ -1,107 +1,177 @@
 # Metacat
 
-Metacat is a lightweight catalog-of-catalogs for the modern data lakehouse.
-It federates metadata from Delta and Iceberg catalogs into a unified, gRPC-based service for discovery, access control, and query planning.
+Metacat is a catalog-of-catalogs for modern data lakehouses. It federates metadata harvested from
+Delta Lake and Iceberg sources, stores the canonical view in an append-only blob store, and exposes
+the resulting hierarchy over gRPC for discovery, authorization, and query planning.
 
-## Build and Run
+The repository is purposely modular. Each top-level directory corresponds to an operational
+component (service runtime, connector packages, storage backends, CLI, etc.). Detailed,
+component-specific documentation lives under [`docs/`](docs); see the [Documentation Map](#documentation-map).
 
-Requires Java 17+, Maven, and Make.
+## System Overview
 
-### Quick Start
+Metacat tracks a resource graph anchored at Tenants and spanning Catalogs, Namespaces, Tables,
+Views, Snapshots, statistics, and planning artifacts.
+
+```
+Tenant
+ └── Catalog (logical catalog-of-catalogs)
+      └── Namespace (hierarchical path)
+           ├── Table (Iceberg/Delta metadata, upstream reference)
+           │    └── Snapshot (immutable upstream checkpoints)
+           └── View (stored definition)
+```
+
+Two storage primitives underpin every service:
+
+- **BlobStore** – immutable protobuf payloads such as `catalog.pb`, `table.pb`,
+  `snapshots/{snapshot_id}/stats/table.pb`. Blobs are content-addressed via SHA256 ETAGs.
+- **PointerStore** – versioned key→blob indirection to support atomic compare-and-set (CAS),
+  hierarchical listing, and name→ID lookups. Keys use deterministic prefixes:
+  `/tenants/{tenant_id}/catalogs/by-name/{name}`, `/tables/{table_id}/snapshots/{id}`, etc.
+
+The gRPC service (Quarkus) enforces tenancy, authorization, and idempotency while orchestrating
+connectors that ingest upstream metadata, reconciling it into the canonical blob/pointer stores, and
+serving planner-ready bundles.
+
+## Component Architecture
+
+The following modules compose the system (see linked docs for deep dives):
+
+| Component | Responsibility |
+|-----------|----------------|
+| [`proto/`](docs/proto.md) | All protobuf/gRPC contracts (catalog, planning, connectors, statistics, types). |
+| [`service/`](docs/service.md) | Quarkus runtime, resource repositories, planning bundle assembly, GC, security, metrics. |
+| [`client-cli/`](docs/client-cli.md) | Interactive shell for humans; exercises every public RPC. |
+| [`connectors-spi/`](docs/connectors-spi.md) | Connector interfaces, stats engines, NDV helpers, auth shims. |
+| [`connectors-iceberg/`](docs/connectors-iceberg.md) | Iceberg REST + AWS Glue connector implementation. |
+| [`connectors-delta/`](docs/connectors-delta.md) | Unity Catalog/Delta Lake connector using Delta Kernel + Databricks APIs. |
+| [`reconciler/`](docs/reconciler.md) | Connector scheduler/worker, reconciliation orchestration, job store. |
+| [`storage-spi/`](docs/storage-spi.md) | Blob/pointer persistence contracts shared by service and GC. |
+| [`storage-memory/`](docs/storage-memory.md) | In-memory dev/test stores (CAS semantics maintained). |
+| [`storage-aws/`](docs/storage-aws.md) | Production DynamoDB pointer store + S3 blob store. |
+| [`types/`](docs/types.md) | Logical type system utilities, coercions, min/max encoding. |
+| [`log/`](docs/log.md) | Runtime log directory layout (service log + audit channel). |
+
+### Data & Control Flow
+
+1. **Connectors** (Delta/Iceberg) enumerate upstream namespaces, tables, snapshots, and file-level
+   stats via the shared SPI.
+2. The **Reconciler** schedules connector runs, materializes local Tables/Snapshots/Stats through
+   repository APIs, and records incremental NDV, histograms, and file plans.
+3. The **Service** exposes CRUD RPCs for catalogs/namespaces/tables/views, plus planning and
+   statistics APIs. Requests traverse interceptors that inject `PrincipalContext`, correlation IDs,
+   and optional plan leases before hitting service implementations.
+4. **Repositories** translate RPCs into pointer/blob mutations, enforce optimistic concurrency, and
+   update idempotency records.
+5. **Planner RPCs** hydrate `CatalogBundle` payloads by combining stored metadata, statistics, and
+   built-in type/function registries.
+
+## Resource Model & Storage Layout
+
+Metacat stores every entity twice: the immutable protobuf payload lives in a BlobStore while a
+PointerStore entry (with versions) exposes hierarchical lookup and CAS updates. This design keeps
+history in blobs while enabling fast name-based resolution via pointers.
+
+Blobs follow deterministic prefixes:
+
+```
+/tenants/{tenant_id}
+/tenants/{tenant_id}/catalogs/{catalog_id}
+/tenants/{tenant_id}/namespaces/{namespace_id}
+/tenants/{tenant_id}/tables/{table_id}/snapshots/{snapshot_id}
+/tenants/{tenant_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/(table|column/{column_id})
+```
+
+Pointers capture hierarchy and name lookups:
+
+```
+/tenants/{tenant_id}/by-id/{tenant_id}
+/tenants/{tenant_id}/by-name/{tenant_name}
+/tenants/{tenant_id}/catalogs/by-id/{catalog_id}
+/tenants/{tenant_id}/catalogs/by-name/{catalog_name}
+/tenants/{tenant_id}/catalogs/{catalog_id}/namespaces/by-id/{namespace_id}
+/tenants/{tenant_id}/catalogs/{catalog_id}/namespaces/by-name/{namespace_name}
+```
+
+Each pointer carries a monotonically increasing version; repositories use compare-and-set to enforce
+idempotency and optimistic concurrency. Two storage implementations ship with the repo:
+
+- **Memory** – `InMemoryPointerStore` + `InMemoryBlobStore` (default for `make run`).
+- **AWS** – DynamoDB pointer table + S3 blob bucket (see `service/src/main/resources/application.properties`).
+
+## Build, Run, and Test
+
+Requirements: Java 25+, Maven, Make.
 
 ```bash
-# build protobuf stubs + service
+# Generate protobuf stubs and build every module
 make build
 
-# run Quarkus dev server (foreground)
+# Run the Quarkus service in foreground (hot reload)
 make run
 
-# start Quarkus dev in background
+# Background the service / shut it down
 make start
-
-# stop background process
 make stop
 
-# tail logs
+# Tail structured service + audit logs
 make logs
 ```
 
-## Testing
+Seed data is enabled by default (`metacat.seed.enabled=true`); the service starts with a demo tenant,
+catalogs, namespaces, tables, and snapshots.
+
+Testing:
 
 ```bash
-# run unit + integration tests
+# Unit + integration tests across modules
 make test
-```
 
-You can also run per-module tests:
-
-```bash
+# Only run unit or integration suites
 make unit-test
 make integration-test
 ```
 
-## Examples
+## Accessing the APIs
 
-The Metacat APIs can be accessed with a gRPC client, for example, `grpcurl`. To do so, start the server with `make run`,
-and then issue the following requests:
-
-### ListCatalogs
+Use any gRPC client (for example `grpcurl`) once the service listens on `localhost:9100`.
 
 ```bash
-grpcurl -plaintext -d '{}' localhost:9100 ai.floedb.metacat.catalog.CatalogService/ListCatalogs
+grpcurl -plaintext -d '{}' \
+  localhost:9100 ai.floedb.metacat.catalog.CatalogService/ListCatalogs
+
+grpcurl -plaintext -d '{
+  "catalog_id": {"tenant_id":"31a47986-efaf-35f5-b810-09ba18ca81d2",
+                 "id":"109c1761-323a-3f72-83da-ff4f89c3b581","kind":"RK_CATALOG"}
+}' localhost:9100 ai.floedb.metacat.catalog.NamespaceService/ListNamespaces
+
+grpcurl -plaintext -d '{
+  "namespace_id": {"tenant_id":"31a47986-efaf-35f5-b810-09ba18ca81d2",
+                   "id":"86853a0f-a999-3c72-9a81-6dc66d1923a2","kind":"RK_NAMESPACE"}
+}' localhost:9100 ai.floedb.metacat.catalog.TableService/ListTables
 ```
 
-### ListNamespaces
+The [`client-cli`](docs/client-cli.md) module provides an interactive shell with auto-completion and
+context-aware rendering. After building it (`make cli` or `make cli-run`), launch with:
 
 ```bash
-grpcurl -plaintext \
-  -d '{
-    "catalog_id": {
-      "tenant_id": "31a47986-efaf-35f5-b810-09ba18ca81d2",
-      "id": "109c1761-323a-3f72-83da-ff4f89c3b581",
-      "kind": "RK_CATALOG"
-    }
-  }' \
-  localhost:9100 ai.floedb.metacat.catalog.NamespaceService/ListNamespaces
+java --enable-native-access=ALL-UNNAMED \
+  -jar client-cli/target/quarkus-app/quarkus-run.jar
 ```
 
-### ListTables
-
-```bash
-grpcurl -plaintext \
-  -d '{
-    "namespace_id": {
-      "tenant_id": "31a47986-efaf-35f5-b810-09ba18ca81d2",
-      "id": "86853a0f-a999-3c72-9a81-6dc66d1923a2",
-      "kind": "RK_NAMESPACE"
-    }
-  }' \
-  localhost:9100 ai.floedb.metacat.catalog.TableService/ListTables
-```
-
-This early version of Metacat is seeded with test catalogs, namespaces and tables for testing.
-
-## Command-Line Interface
-
-There is also a simple interactive shell to run commands against the service. To build the CLI:
+Set the tenant context first:
 
 ```
-make cli
+tenant 31a47986-efaf-35f5-b810-09ba18ca81d2
 ```
 
-To build and run the CLI:
+Then explore `catalog`, `namespace`, `table`, `connector`, and `plan` commands. The CLI exercises
+the same gRPC surface described in [`docs/service.md`](docs/service.md).
 
-```
-make cli-run
-```
+### CLI Command Reference
 
-Once built, run it without rebuilding with:
-
-```
-java --enable-native-access=ALL-UNNAMED -jar client-cli/target/quarkus-app/quarkus-run.jar
-```
-
-The supported shell commands and options are:
+The interactive shell surfaces most service capabilities directly. Full command list:
 
 ```
 Commands:
@@ -112,7 +182,7 @@ catalog get <display_name|id>
 catalog update <display_name|id> [--display <name>] [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...] [--etag <etag>]
 catalog delete <display_name|id> [--require-empty] [--etag <etag>]
 namespaces (<catalog | catalog.ns[.ns...]> | <UUID>) [--id <UUID>] [--prefix P] [--recursive]
-namespace create <catalog.ns[.ns...]> [--desc <text>] [--props k=v ...] [--policy <id>]
+namespace create <catalog.ns[.ns...]> [--desc <text>] [--props k=v ...]
 namespace get <id | catalog.ns[.ns...]>
 namespace update <id|catalog.ns[.ns...]>
     [--display <name>] [--desc <text>]
@@ -124,18 +194,28 @@ tables <catalog.ns[.ns...][.prefix]>
 table create <catalog.ns[.ns...].name> [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...]
     [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
 table get <id|catalog.ns[.ns...].table>
-table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...] [--etag <etag>]
-    [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
-table delete <id|fq> [--purge-stats] [--purge-snaps] [--etag <etag>]
-resolve table <fq> | resolve view <fq> | resolve catalog <name> | resolve namespace <fq>
-describe table <fq>
-snapshots <tableFQ>
-stats table <tableFQ> [--snapshot <id>|--current] (defaults to --current)
-stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
-plan begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
+table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>]
+    [--root <uri>] [--schema <json>] [--parts k=v ...] [--format ICEBERG|DELTA] [--props k=v ...] [--etag <etag>]
+
+snapshots <catalog.ns[.ns...].table>
+snapshots get <table> <snapshot_id|current>
+snapshots delete <table> <snapshot_id>
+
+stats table <catalog.ns[.ns...].table> [--snapshot <id|current>]
+stats column <catalog.ns[.ns...].table> [--snapshot <id|current>] [--column <name>]
+
+resolve <catalog.ns[.ns...].table>
+describe <catalog.ns[.ns...].table>
+
+plan begin [--ttl <seconds>] [--as-of-default <timestamp>]
+    (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>]
+     | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>]
+     | view-id <uuid>
+     | namespace <catalog.ns[.ns...]>)+
 plan renew <plan_id> [--ttl <seconds>]
 plan end <plan_id> [--commit|--abort]
 plan get <plan_id>
+
 connectors
 connector list [--kind <KIND>] [--page-size <N>]
 connector get <display_name|id>
@@ -159,104 +239,55 @@ connector validate <kind> <uri>
     [--policy-not-before-epoch <sec>] [--props k=v ...]
 connector trigger <display_name|id> [--full]
 connector job <jobId>
+
 help
 quit
 ```
 
-A tenant ID must be configured in the shell before the commands can be used. To use the default seeded tenant, enter into the metacat CLI:
+## Documentation Map
+
+All component references, extension points, APIs, and data-flow diagrams are captured under `docs/`.
 
 ```
-tenant 31a47986-efaf-35f5-b810-09ba18ca81d2
+docs/
+├── proto.md
+├── service.md
+├── client-cli.md
+├── connectors-spi.md
+├── connectors-iceberg.md
+├── connectors-delta.md
+├── reconciler.md
+├── storage-spi.md
+├── storage-memory.md
+├── storage-aws.md
+├── types.md
+└── log.md
 ```
 
-## Project Structure
-
-| Module | Purpose |
-|--------|---------|
-| proto/ | Protobuf and gRPC interface definitions (ai.floedb.metacat.*) |
-| service/ | Quarkus service layer, repositories, and tests |
-| connectors-spi | Generic interfaces that connectors that pull statistics from upstream repositories must implement |
-| connectors-iceberg | A connector to an upstream AWS Glue repository of Iceberg tables |
-| client-cli | The interactive shell |
-| reconciler | The service that schedules and runs connectors |
-| types | Generic type handling for Iceberg and Delta parquet tables |
-| storage-spi | Generic interfaces that pointer and blob stores that persist metacat data must implement |
-| storage-memory | In-memory pointer and blob stores |
-| storage-aws | DynamoDB pointer store and S3 blob store implementations |
-
-## Key Concepts
-
-Metacat maintains a canonical resource hierarchy in an immutable object store and a pointer index for fast lookup.
-
-Blobs are named with the following prefixes:
-
-```bash
-/tenants/{tenant_id}
-/tenants/{tenant_id}/catalogs/{catalog_id}
-/tenants/{tenant_id}/namespaces/{namespace_id}
-/tenants/{tenant_id}/tables/{table_id}/snapshots/{snapshot_id}
-/tenants/{tenant_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/(table|column/{column_id})
-...
-```
-
-Pointers to the blobs capture the hierarchical relationships between tenants, catalogs, namespaces and tables:
-
-```bash
-/tenants/{tenant_id}/by-id/{tenant_id}
-/tenants/{tenant_id}/by-name/{tenant_name}
-/tenants/{tenant_id}/catalogs/by-id/{catalog_id}
-/tenants/{tenant_id}/catalogs/by-name/{catalog_name}
-/tenants/{tenant_id}/catalogs/{catalog_id}/namespaces/by-id/{namespace-id}
-/tenants/{tenant_id}/catalogs/{catalog_name}/namespaces/by-name/{namespace_name}
-...
-```
-
-This arrangement allows fast name to id resolution and listing.
-
-Each level (Catalog, Namespace, Table, Snapshot) is represented by:
-
-- BlobStore → immutable protobuf payloads (catalog.pb, namespace.pb, table.pb, snapshot.pb,...)
-- PointerStore → lightweight key→blob mappings with versions for fast enumeration and CAS updates.
-
-There are two pointer/blob store implementations right now. The first is a simple in memory pointer and blob store for testing. The second uses AWS DynamoDB as the pointer store and AWS S3 as the blob store. The choice of pointer and blob store can be configured in the `application.properties` file.
+Cross-links between files describe how modules interact (for example, the planner bundle assembly
+section in `service.md` references the type system in `types.md` and the connector SPI in
+`connectors-spi.md`).
 
 ## Contributing
 
-This repo enforces branch protections and CI, so please follow these steps:
+Metacat enforces branch protections and CI. Preferred workflow:
 
-1. **Fork or branch**
-   - Internal contributors: create a feature branch from `main`.
-   - External contributors: fork the repo.
+1. **Fork or branch** – Create a feature branch from `main` (internal) or fork the repo (external).
+2. **Develop** – Keep commits focused, add/extend tests, and run `make fmt` for Google Java Format.
+   Execute `make verify` (build + unit/integration tests) before pushing.
+3. **Open a PR** – Target `main`. CI enforces formatting and `make verify`. PRs require green checks
+   and at least one approval. Merge via squash.
 
-2. **Develop**
-   - Make changes and keep commits focused.
-   - Add unit/integration tests.
-   - Format Java code locally:
+Follow conventional commits (`feat:`, `fix:`, etc.) and avoid embedding secrets. CI enforces Google
+Java Format via the Spotify `fmt` plugin. Use `.editorconfig` for whitespace settings.
 
-     ```bash
-     make fmt
-     ```
+## Observability & Operations
 
-   - Run the full test suite:
+- **Logging** – JSON console logs plus rotating files under `log/`. Audit logs route gRPC request
+  summaries to `log/audit.json`; see [`docs/log.md`](docs/log.md).
+- **Metrics** – Micrometer/Prometheus exporters summarise pointer/blob IO and reconciliation stats.
+- **Tracing** – OpenTelemetry (TraceContext propagator) is enabled; export pipelines can be wired by
+  overriding `quarkus.otel.traces.exporter`.
 
-     ```bash
-     make verify
-     ```
-
-3. **Open a Pull Request**
-   - Target branch: `main`
-   - CI will run:
-     - Build & tests (`make verify`)
-     - Formatting check (`make fmt`)
-   - PRs require at least one approval and all checks to pass.
-   - Merge method: **Squash merge**.
-
-4. **Commit messages**
-   - Prefer conventional commits (e.g., `feat: ...`, `fix: ...`, `chore: ...`, `docs: ...`, `test: ...`).
-
-5. **Code style**
-   - Java: Google Java Format (enforced by CI).
-   - Use `.editorconfig` defaults for whitespace/newlines.
-
-6. **Security**
-   - Do not include secrets in code or tests.
+Configuration flags are documented per module (for example storage backend selection in
+[`docs/storage-spi.md`](docs/storage-spi.md), GC cadence in [`docs/service.md`](docs/service.md)).
