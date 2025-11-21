@@ -4,11 +4,15 @@ import ai.floedb.metacat.connector.common.ndv.ColumnNdv;
 import ai.floedb.metacat.connector.common.ndv.NdvProvider;
 import ai.floedb.metacat.types.LogicalComparators;
 import ai.floedb.metacat.types.LogicalType;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.BiConsumer;
 
 public final class GenericStatsEngine<K> implements StatsEngine<K> {
@@ -78,6 +82,8 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       }
     }
 
+    final List<FileAgg<K>> fileAggs = new ArrayList<>();
+
     for (PlannedFile<K> file : planner) {
       files++;
       rows += file.rowCount();
@@ -90,13 +96,15 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       mergeBounds(acc.columns, file.upperBounds(), false);
 
       if (ndvProvider != null && !ndvByName.isEmpty()) {
-        Map<String, ColumnNdv> sinksNeedingNdv = ndvByName;
         try {
-          ndvProvider.contributeNdv(file.path(), sinksNeedingNdv);
+          ndvProvider.contributeNdv(file.path(), ndvByName);
         } catch (Exception ignore) {
           // ignore and continue
         }
       }
+
+      Map<K, ColumnAgg> fileCols = buildFileColumnAggs(file);
+      fileAggs.add(new FileAggImpl<>(file.path(), file.rowCount(), file.sizeBytes(), fileCols));
     }
 
     final Map<K, ColumnAgg> out = new LinkedHashMap<>(acc.columns.size());
@@ -108,7 +116,12 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       out.put(columnNameNdv.getKey(), columnAcc.freeze());
     }
 
-    return new ResultImpl<>(rows, bytes, files, Collections.unmodifiableMap(out));
+    return new ResultImpl<>(
+        rows,
+        bytes,
+        files,
+        Collections.unmodifiableMap(out),
+        Collections.unmodifiableList(fileAggs));
   }
 
   private static final class Acc<K> {
@@ -238,17 +251,127 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     }
   }
 
+  private static final class FileAggImpl<K> implements FileAgg<K> {
+    private final String path;
+    private final long rowCount;
+    private final long sizeBytes;
+    private final Map<K, ColumnAgg> columns;
+
+    FileAggImpl(String path, long rowCount, long sizeBytes, Map<K, ColumnAgg> columns) {
+      this.path = path;
+      this.rowCount = rowCount;
+      this.sizeBytes = sizeBytes;
+      this.columns = columns;
+    }
+
+    @Override
+    public String path() {
+      return path;
+    }
+
+    @Override
+    public long rowCount() {
+      return rowCount;
+    }
+
+    @Override
+    public long sizeBytes() {
+      return sizeBytes;
+    }
+
+    @Override
+    public Map<K, ColumnAgg> columns() {
+      return columns;
+    }
+  }
+
+  private Map<K, ColumnAgg> buildFileColumnAggs(PlannedFile<K> file) {
+    Map<K, ColumnAgg> out = new LinkedHashMap<>();
+
+    Map<K, Long> valueCounts = file.valueCounts();
+    Map<K, Long> nullCounts = file.nullCounts();
+    Map<K, Long> nanCounts = file.nanCounts();
+    Map<K, Object> lowers = file.lowerBounds();
+    Map<K, Object> uppers = file.upperBounds();
+
+    Set<K> keys = new LinkedHashSet<>();
+    if (valueCounts != null) keys.addAll(valueCounts.keySet());
+    if (nullCounts != null) keys.addAll(nullCounts.keySet());
+    if (nanCounts != null) keys.addAll(nanCounts.keySet());
+    if (lowers != null) keys.addAll(lowers.keySet());
+    if (uppers != null) keys.addAll(uppers.keySet());
+
+    for (K key : keys) {
+      Long vc = valueCounts != null ? valueCounts.get(key) : null;
+      Long nc = nullCounts != null ? nullCounts.get(key) : null;
+      Long nn = nanCounts != null ? nanCounts.get(key) : null;
+      Object lo = lowers != null ? lowers.get(key) : null;
+      Object hi = uppers != null ? uppers.get(key) : null;
+
+      final Long fVc = vc;
+      final Long fNc = nc;
+      final Long fNn = nn;
+      final Object fLo = lo;
+      final Object fHi = hi;
+
+      ColumnAgg colAgg =
+          new ColumnAgg() {
+            @Override
+            public Long ndvExact() {
+              return null;
+            }
+
+            @Override
+            public ColumnNdv ndv() {
+              return null;
+            }
+
+            @Override
+            public Long valueCount() {
+              return fVc;
+            }
+
+            @Override
+            public Long nullCount() {
+              return fNc;
+            }
+
+            @Override
+            public Long nanCount() {
+              return fNn;
+            }
+
+            @Override
+            public Object min() {
+              return fLo;
+            }
+
+            @Override
+            public Object max() {
+              return fHi;
+            }
+          };
+
+      out.put(key, colAgg);
+    }
+
+    return Collections.unmodifiableMap(out);
+  }
+
   private static final class ResultImpl<K> implements Result<K> {
     private final long rows;
     private final long bytes;
     private final long files;
     private final Map<K, ColumnAgg> cols;
+    private final List<FileAgg<K>> fileAggs;
 
-    ResultImpl(long rows, long bytes, long files, Map<K, ColumnAgg> cols) {
+    ResultImpl(
+        long rows, long bytes, long files, Map<K, ColumnAgg> cols, List<FileAgg<K>> fileAggs) {
       this.rows = rows;
       this.bytes = bytes;
       this.files = files;
       this.cols = cols;
+      this.fileAggs = fileAggs;
     }
 
     @Override
@@ -269,6 +392,11 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     @Override
     public Map<K, ColumnAgg> columns() {
       return cols;
+    }
+
+    @Override
+    public List<FileAgg<K>> files() {
+      return fileAggs;
     }
   }
 

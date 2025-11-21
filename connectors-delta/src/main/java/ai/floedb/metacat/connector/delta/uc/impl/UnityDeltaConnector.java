@@ -269,8 +269,18 @@ public final class UnityDeltaConnector implements MetacatConnector {
             createdMs,
             result.totalRowCount());
 
+    var fileStats =
+        ProtoStatsBuilder.toFileColumnStats(
+            destinationTableId,
+            version,
+            TableFormat.TF_DELTA,
+            result.files(),
+            name -> name,
+            nameToType::get,
+            createdMs);
+
     var normCols = normalizeColumnStats(cStats, kernelSchema);
-    return List.of(new SnapshotBundle(version, parent, createdMs, tStats, normCols));
+    return List.of(new SnapshotBundle(version, parent, createdMs, tStats, normCols, fileStats));
   }
 
   @Override

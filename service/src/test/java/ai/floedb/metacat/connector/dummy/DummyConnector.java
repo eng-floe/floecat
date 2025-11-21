@@ -1,6 +1,7 @@
 package ai.floedb.metacat.connector.dummy;
 
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
+import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
@@ -9,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 public final class DummyConnector implements MetacatConnector {
@@ -150,7 +152,68 @@ public final class DummyConnector implements MetacatConnector {
               .build());
     }
 
-    return List.of(new SnapshotBundle(snapshotId, 0L, createdAt, tStats, cstats));
+    String basePath =
+        "s3://dummy/" + namespace.replace('.', '/') + "/" + table + "/snapshot-" + snapshotId;
+
+    Function<Integer, List<ColumnStats>> perFileCols =
+        fileIndex -> {
+          List<ColumnStats> cols = new ArrayList<>();
+          for (Col c : selected) {
+            long valueCount =
+                switch (fileIndex) {
+                  case 0 -> 10L;
+                  case 1 -> 20L;
+                  default -> 30L;
+                };
+            cols.add(
+                ColumnStats.newBuilder()
+                    .setTableId(destinationTableId)
+                    .setSnapshotId(snapshotId)
+                    .setColumnId(c.colId)
+                    .setColumnName(c.name)
+                    .setLogicalType(c.logical)
+                    .setValueCount(valueCount)
+                    .setNullCount(0L)
+                    .setMin("f" + fileIndex + "_min_" + c.colId)
+                    .setMax("f" + fileIndex + "_max_" + c.colId)
+                    .build());
+          }
+          return cols;
+        };
+
+    var f1 =
+        FileColumnStats.newBuilder()
+            .setTableId(destinationTableId)
+            .setSnapshotId(snapshotId)
+            .setFilePath(basePath + "/part-00000.parquet")
+            .setRowCount(30)
+            .setSizeBytes(512)
+            .addAllColumns(perFileCols.apply(0))
+            .build();
+
+    var f2 =
+        FileColumnStats.newBuilder()
+            .setTableId(destinationTableId)
+            .setSnapshotId(snapshotId)
+            .setFilePath(basePath + "/part-00001.parquet")
+            .setRowCount(30)
+            .setSizeBytes(512)
+            .addAllColumns(perFileCols.apply(1))
+            .build();
+
+    var f3 =
+        FileColumnStats.newBuilder()
+            .setTableId(destinationTableId)
+            .setSnapshotId(snapshotId)
+            .setFilePath(basePath + "/part-00002.parquet")
+            .setRowCount(40)
+            .setSizeBytes(1024)
+            .addAllColumns(perFileCols.apply(2))
+            .build();
+
+    List<FileColumnStats> fileStats = List.of(f1, f2, f3);
+
+    return List.of(new SnapshotBundle(snapshotId, 0L, createdAt, tStats, cstats, fileStats));
   }
 
   @Override

@@ -69,6 +69,7 @@ message ColumnStats {
   string column_name = 4;
   string logical_type = 5;
   UpstreamStamp upstream = 6;
+  int64 value_count = 9;
   int64 null_count = 10;
   int64 nan_count = 11;
   Ndv ndv = 12;
@@ -77,6 +78,17 @@ message ColumnStats {
   bytes histogram = 30;
   bytes tdigest = 31;
   map<string, string> properties = 99;
+}
+
+// ---------- File-level stats ------------
+
+message FileColumnStats {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  string file_path = 3;
+  int64 row_count = 4;
+  int64 size_bytes = 5;
+  repeated ColumnStats columns = 6;
 }
 
 // ---------- Requests/Responses ----------
@@ -102,6 +114,16 @@ message PutColumnStatsBatchResponse {
   int32 upserted = 1;
 }
 
+message PutFileColumnStatsBatchRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  repeated FileColumnStats files = 3;
+  ai.floedb.metacat.common.IdempotencyKey idempotency = 4;
+}
+message PutFileColumnStatsBatchResponse {
+  int32 upserted = 1;
+}
+
 message GetTableStatsRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
   ai.floedb.metacat.common.SnapshotRef snapshot = 2;
@@ -122,11 +144,23 @@ message ListColumnStatsResponse {
   ai.floedb.metacat.common.PageResponse page = 2;
 }
 
+message ListFileColumnStatsRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  ai.floedb.metacat.common.SnapshotRef snapshot = 2;
+  ai.floedb.metacat.common.PageRequest page = 3;
+}
+message ListFileColumnStatsResponse {
+  repeated FileColumnStats file_columns = 1;
+  ai.floedb.metacat.common.PageResponse page = 2;
+}
+
 // ---------- Services ----------
 
 service TableStatisticsService {
   rpc GetTableStats(GetTableStatsRequest) returns (GetTableStatsResponse);
   rpc ListColumnStats(ListColumnStatsRequest) returns (ListColumnStatsResponse);
+  rpc ListFileColumnStats(ListFileColumnStatsRequest) returns (ListFileColumnStatsResponse);
   rpc PutTableStats(PutTableStatsRequest) returns (PutTableStatsResponse);
   rpc PutColumnStatsBatch(PutColumnStatsBatchRequest) returns (PutColumnStatsBatchResponse);
+  rpc PutFileColumnStatsBatch(PutFileColumnStatsBatchRequest) returns (PutFileColumnStatsBatchResponse);
 }

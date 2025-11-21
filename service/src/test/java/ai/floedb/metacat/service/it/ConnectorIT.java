@@ -5,12 +5,16 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.metacat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.ListFileColumnStatsRequest;
+import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.common.rpc.SnapshotRef;
+import ai.floedb.metacat.common.rpc.SpecialSnapshot;
 import ai.floedb.metacat.connector.rpc.*;
 import ai.floedb.metacat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.metacat.connector.spi.ConnectorFactory;
@@ -30,6 +34,7 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.*;
 
@@ -43,6 +48,9 @@ public class ConnectorIT {
 
   @GrpcClient("metacat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalogService;
+
+  @GrpcClient("metacat")
+  TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statsService;
 
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerScheduler scheduler;
@@ -164,6 +172,68 @@ public class ConnectorIT {
     var job3 = runReconcile(rid);
     assertNotNull(job3);
     assertEquals("JS_SUCCEEDED", job3.state, () -> "job failed: " + job3.message);
+  }
+
+  @Test
+  void dummyConnectorStatsRoundTrip() throws Exception {
+    var tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
+    TestSupport.createCatalog(catalogService, "cat-stats", "");
+
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("dummy-stats")
+                .setKind(ConnectorKind.CK_UNITY)
+                .setUri("dummy://ignored")
+                .setSource(source(List.of("db")))
+                .setDestination(dest("cat-stats"))
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .build());
+
+    var job = runReconcile(conn.getResourceId());
+    assertNotNull(job);
+    assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
+
+    var catId = catalogs.getByName(tenantId.getId(), "cat-stats").orElseThrow().getResourceId();
+
+    var dbNsId = namespaces.getByPath(tenantId.getId(), catId.getId(), List.of("db")).orElseThrow();
+
+    var tbl =
+        tables
+            .list(
+                tenantId.getId(),
+                catId.getId(),
+                dbNsId.getResourceId().getId(),
+                50,
+                "",
+                new StringBuilder())
+            .get(0)
+            .getResourceId();
+
+    var fileResp =
+        statsService.listFileColumnStats(
+            ListFileColumnStatsRequest.newBuilder()
+                .setTableId(tbl)
+                .setSnapshot(
+                    SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
+                .setPage(PageRequest.newBuilder().setPageSize(100))
+                .build());
+
+    assertEquals(3, fileResp.getFileColumnsCount(), "expected 3 files");
+
+    for (var f : fileResp.getFileColumnsList()) {
+      assertTrue(f.getColumnsCount() > 0, "file should have per-column stats");
+
+      var byName =
+          f.getColumnsList().stream()
+              .collect(Collectors.toMap(ColumnStats::getColumnName, cs -> cs));
+
+      assertTrue(byName.containsKey("id"), "per-file stats should include id column");
+      var idCol = byName.get("id");
+      assertEquals(0L, idCol.getNullCount());
+      assertTrue(idCol.getValueCount() > 0, "value_count should be > 0 for id");
+    }
   }
 
   @Test

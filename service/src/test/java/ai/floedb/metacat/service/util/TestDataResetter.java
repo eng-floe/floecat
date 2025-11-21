@@ -20,13 +20,11 @@ public class TestDataResetter {
     for (var tid : tenantIds) {
       ptr.deleteByPrefix("/tenants/" + tid + "/");
     }
-    ptr.deleteByPrefix("/idempotency/");
     ptr.deleteByPrefix("/tenants/");
 
     for (var tid : tenantIds) {
       blobs.deletePrefix("/tenants/" + tid + "/");
     }
-    blobs.deletePrefix("/idempotency/");
     blobs.deletePrefix("/tenants/");
   }
 

@@ -9,6 +9,7 @@ import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.NamespaceSpec;
 import ai.floedb.metacat.catalog.rpc.PutColumnStatsBatchRequest;
+import ai.floedb.metacat.catalog.rpc.PutFileColumnStatsBatchRequest;
 import ai.floedb.metacat.catalog.rpc.PutTableStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
@@ -47,6 +48,7 @@ public class ReconcilerService {
   @Inject GrpcClients clients;
 
   private static final int COLUMN_STATS_BATCH_SIZE = 5;
+  private static final int FILE_STATS_BATCH_SIZE = 5;
 
   public Result reconcile(ResourceId connectorId, boolean fullRescan) {
     long scanned = 0;
@@ -441,6 +443,23 @@ public class ReconcilerService {
                         .addAllColumns(chunk)
                         .build());
           }
+        }
+      }
+
+      var fileCols = snapshotBundle.fileStats();
+      if (fileCols != null && !fileCols.isEmpty()) {
+
+        for (int i = 0; i < fileCols.size(); i += FILE_STATS_BATCH_SIZE) {
+          var chunk = fileCols.subList(i, Math.min(i + FILE_STATS_BATCH_SIZE, fileCols.size()));
+
+          clients
+              .statistics()
+              .putFileColumnStatsBatch(
+                  PutFileColumnStatsBatchRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setSnapshotId(snapshotId)
+                      .addAllFiles(chunk)
+                      .build());
         }
       }
     }

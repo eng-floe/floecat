@@ -2,6 +2,7 @@ package ai.floedb.metacat.service.repo.model;
 
 import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
+import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
@@ -119,6 +120,28 @@ public final class Schemas {
                     v.getTableId().getId(),
                     v.getSnapshotId(),
                     v.getColumnId(),
+                    sha);
+              })
+          .withCasBlobs();
+
+  public static final ResourceSchema<FileColumnStats, FileColumnStatsKey> FILE_COLUMN_STATS =
+      ResourceSchema.<FileColumnStats, FileColumnStatsKey>of(
+              "file-column-stats",
+              (FileColumnStatsKey key) ->
+                  Keys.snapshotFileStatsPointer(
+                      key.tenantId(), key.tableId(), key.snapshotId(), key.filePath()),
+              (FileColumnStatsKey key) ->
+                  Keys.snapshotFileStatsBlobUri(
+                      key.tenantId(), key.tableId(), key.filePath(), key.sha256()),
+              v -> Map.of(),
+              v -> {
+                var bytes = v.toByteArray();
+                var sha = ColumnStatsNormalizer.sha256Hex(bytes);
+                return new FileColumnStatsKey(
+                    v.getTableId().getTenantId(),
+                    v.getTableId().getId(),
+                    v.getSnapshotId(),
+                    v.getFilePath(),
                     sha);
               })
           .withCasBlobs();

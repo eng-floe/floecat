@@ -1,10 +1,12 @@
 package ai.floedb.metacat.service.repo.impl;
 
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
+import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.repo.model.ColumnStatsKey;
+import ai.floedb.metacat.service.repo.model.FileColumnStatsKey;
 import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.repo.model.Schemas;
 import ai.floedb.metacat.service.repo.model.TableStatsKey;
@@ -22,6 +24,7 @@ public class StatsRepository {
 
   private final GenericResourceRepository<TableStats, TableStatsKey> tableStatsRepo;
   private final GenericResourceRepository<ColumnStats, ColumnStatsKey> columnStatsRepo;
+  private final GenericResourceRepository<FileColumnStats, FileColumnStatsKey> fileStatsRepo;
 
   @Inject
   public StatsRepository(PointerStore pointerStore, BlobStore blobStore) {
@@ -41,6 +44,15 @@ public class StatsRepository {
             Schemas.COLUMN_STATS,
             ColumnStats::parseFrom,
             ColumnStats::toByteArray,
+            "application/x-protobuf");
+
+    this.fileStatsRepo =
+        new GenericResourceRepository<>(
+            pointerStore,
+            blobStore,
+            Schemas.FILE_COLUMN_STATS,
+            FileColumnStats::parseFrom,
+            FileColumnStats::toByteArray,
             "application/x-protobuf");
   }
 
@@ -99,16 +111,58 @@ public class StatsRepository {
     return columnStatsRepo.countByPrefix(prefix);
   }
 
+  public void putFileColumnStats(ResourceId tableId, long snapshotId, FileColumnStats value) {
+    fileStatsRepo.create(value);
+  }
+
+  public Optional<FileColumnStats> getFileColumnStats(
+      ResourceId tableId, long snapshotId, String filePath) {
+    return fileStatsRepo.getByKey(
+        new FileColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, filePath, ""));
+  }
+
+  public int putFileColumnStatsBatch(
+      ResourceId tableId, long snapshotId, List<FileColumnStats> batch) {
+    int created = 0;
+    for (FileColumnStats fs : batch) {
+      FileColumnStatsKey key =
+          new FileColumnStatsKey(
+              fs.getTableId().getTenantId(),
+              fs.getTableId().getId(),
+              fs.getSnapshotId(),
+              fs.getFilePath(),
+              "");
+      if (fileStatsRepo.getByKey(key).isEmpty()) {
+        created++;
+      }
+      fileStatsRepo.create(fs);
+    }
+    return created;
+  }
+
+  public List<FileColumnStats> listFileStats(
+      ResourceId tableId, long snapshotId, int limit, String token, StringBuilder nextOut) {
+    String prefix =
+        Keys.snapshotFileStatsPrefix(tableId.getTenantId(), tableId.getId(), snapshotId);
+    return fileStatsRepo.listByPrefix(prefix, limit, token, nextOut);
+  }
+
+  public int countFileStats(ResourceId tableId, long snapshotId) {
+    String prefix =
+        Keys.snapshotFileStatsPrefix(tableId.getTenantId(), tableId.getId(), snapshotId);
+    return fileStatsRepo.countByPrefix(prefix);
+  }
+
   public boolean deleteAllStatsForSnapshot(ResourceId tableId, long snapshotId) {
     deleteTableStats(tableId, snapshotId);
 
-    String prefix =
+    String colPrefix =
         Keys.snapshotColumnStatsPrefix(tableId.getTenantId(), tableId.getId(), snapshotId);
     String token = "";
     StringBuilder next = new StringBuilder();
 
     do {
-      List<ColumnStats> page = columnStatsRepo.listByPrefix(prefix, 200, token, next);
+      List<ColumnStats> page = columnStatsRepo.listByPrefix(colPrefix, 200, token, next);
       for (ColumnStats cs : page) {
         ColumnStatsKey key =
             new ColumnStatsKey(
@@ -118,6 +172,27 @@ public class StatsRepository {
                 cs.getColumnId(),
                 "");
         columnStatsRepo.delete(key);
+      }
+      token = next.toString();
+      next.setLength(0);
+    } while (!token.isEmpty());
+
+    String filePrefix =
+        Keys.snapshotFileStatsPrefix(tableId.getTenantId(), tableId.getId(), snapshotId);
+    token = "";
+    next.setLength(0);
+
+    do {
+      List<FileColumnStats> page = fileStatsRepo.listByPrefix(filePrefix, 200, token, next);
+      for (FileColumnStats fs : page) {
+        FileColumnStatsKey key =
+            new FileColumnStatsKey(
+                fs.getTableId().getTenantId(),
+                fs.getTableId().getId(),
+                fs.getSnapshotId(),
+                fs.getFilePath(),
+                "");
+        fileStatsRepo.delete(key);
       }
       token = next.toString();
       next.setLength(0);
@@ -156,5 +231,23 @@ public class StatsRepository {
   public MutationMeta metaForColumnStatsSafe(ResourceId tableId, long snapshotId, String columnId) {
     return columnStatsRepo.metaForSafe(
         new ColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, columnId, ""));
+  }
+
+  public MutationMeta metaForFileColumnStats(ResourceId tableId, long snapshotId, String filePath) {
+    return fileStatsRepo.metaFor(
+        new FileColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, filePath, ""));
+  }
+
+  public MutationMeta metaForFileColumnStats(
+      ResourceId tableId, long snapshotId, String filePath, Timestamp nowTs) {
+    return fileStatsRepo.metaFor(
+        new FileColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, filePath, ""),
+        nowTs);
+  }
+
+  public MutationMeta metaForFileColumnStatsSafe(
+      ResourceId tableId, long snapshotId, String filePath) {
+    return fileStatsRepo.metaForSafe(
+        new FileColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, filePath, ""));
   }
 }
