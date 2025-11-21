@@ -241,8 +241,23 @@ public final class IcebergConnector implements MetacatConnector {
               },
               createdMs,
               engineOutput.result().totalRowCount());
+      var fileStats =
+          ProtoStatsBuilder.toFileColumnStats(
+              destinationTableId,
+              snapshotId,
+              TableFormat.TF_ICEBERG,
+              engineOutput.result().files(),
+              id -> {
+                var f = table.schema().findField((Integer) id);
+                return f == null ? "" : f.name();
+              },
+              id -> {
+                var f = table.schema().findField((Integer) id);
+                return f == null ? null : IcebergTypeMapper.toLogical(f.type());
+              },
+              createdMs);
 
-      out.add(new SnapshotBundle(snapshotId, parentId, createdMs, tStats, cStats));
+      out.add(new SnapshotBundle(snapshotId, parentId, createdMs, tStats, cStats, fileStats));
     }
     return out;
   }
@@ -256,9 +271,9 @@ public final class IcebergConnector implements MetacatConnector {
     TableScan scan = table.newScan().includeColumnStats();
     if (snapshotId > 0) {
       scan.useSnapshot(snapshotId);
-    } /* else {
-        scan.asOfTime(asOfTime);
-      } */
+    } else {
+      scan.asOfTime(asOfTime);
+    }
 
     Snapshot snap = table.snapshot(snapshotId);
     int schemaId = (snap != null) ? snap.schemaId() : table.schema().schemaId();

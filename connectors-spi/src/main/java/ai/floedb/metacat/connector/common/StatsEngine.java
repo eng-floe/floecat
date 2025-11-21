@@ -2,6 +2,7 @@ package ai.floedb.metacat.connector.common;
 
 import ai.floedb.metacat.connector.common.ndv.ColumnNdv;
 import ai.floedb.metacat.types.LogicalType;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -25,6 +26,10 @@ public interface StatsEngine<K> {
     long fileCount();
 
     Map<K, ColumnAgg> columns();
+
+    default List<FileAgg<K>> files() {
+      return List.of();
+    }
   }
 
   interface ColumnAgg {
@@ -41,5 +46,15 @@ public interface StatsEngine<K> {
     Object min();
 
     Object max();
+  }
+
+  interface FileAgg<K> {
+    String path();
+
+    long rowCount();
+
+    long sizeBytes();
+
+    Map<K, ColumnAgg> columns();
   }
 }

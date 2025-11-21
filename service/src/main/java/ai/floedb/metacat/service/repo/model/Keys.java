@@ -282,6 +282,35 @@ public final class Keys {
     return snapshotColumnStatsDirectoryPointer(tenantId, tableId, snapshotId);
   }
 
+  public static String snapshotFileStatsDirectoryPointer(
+      String tenantId, String tableId, long snapshotId) {
+    return snapshotStatsRootPointer(tenantId, tableId, snapshotId) + "files/";
+  }
+
+  public static String snapshotFileStatsPointer(
+      String tenantId, String tableId, long snapshotId, String filePath) {
+    String tid = req("tenant_id", tenantId);
+    String tbid = req("table_id", tableId);
+    long sid = reqNonNegative("snapshot_id", snapshotId);
+    String fp = req("file_path", filePath);
+    return snapshotFileStatsDirectoryPointer(tid, tbid, sid) + encode(fp);
+  }
+
+  public static String snapshotFileStatsBlobUri(
+      String tenantId, String tableId, String filePath, String sha256) {
+    String tid = req("tenant_id", tenantId);
+    String tbid = req("table_id", tableId);
+    String fp = req("file_path", filePath);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/tenants/%s/tables/%s/file-stats/%s/%s.pb",
+        encode(tid), encode(tbid), encode(fp), encode(sha));
+  }
+
+  public static String snapshotFileStatsPrefix(String tenantId, String tableId, long snapshotId) {
+    return snapshotFileStatsDirectoryPointer(tenantId, tableId, snapshotId);
+  }
+
   // ===== View =====
 
   public static String viewPointerById(String tenantId, String viewId) {

@@ -14,6 +14,7 @@ import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.GetSnapshotRequest;
@@ -21,6 +22,7 @@ import ai.floedb.metacat.catalog.rpc.GetTableRequest;
 import ai.floedb.metacat.catalog.rpc.GetTableStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.metacat.catalog.rpc.ListColumnStatsRequest;
+import ai.floedb.metacat.catalog.rpc.ListFileColumnStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
@@ -320,6 +322,7 @@ public class Shell implements Runnable {
          snapshot delete <id|catalog.ns[.ns...].table> <snapshot_id>
          stats table <tableFQ> [--snapshot <id>|--current] (defaults to --current)
          stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
+         stats files <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
          plan begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
          plan renew <plan_id> [--ttl <seconds>]
          plan end <plan_id> [--commit|--abort]
@@ -1553,6 +1556,7 @@ public class Shell implements Runnable {
     switch (sub) {
       case "table" -> statsTable(args.subList(1, args.size()));
       case "columns" -> statsColumns(args.subList(1, args.size()));
+      case "files" -> statsFiles(args.subList(1, args.size()));
       default -> out.println("unknown stats subcommand: " + sub);
     }
   }
@@ -1605,6 +1609,41 @@ public class Shell implements Runnable {
             r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
     if (all.size() > limit) all = all.subList(0, limit);
     printColumnStats(all);
+  }
+
+  private void statsFiles(List<String> args) {
+    if (args.isEmpty()) {
+      out.println(
+          "usage: stats files <tableFQ> [--snapshot <id>|--current] (defaults to --current)"
+              + " [--limit N]");
+      return;
+    }
+
+    String fq = args.get(0);
+    int limit = parseIntFlag(args, "--limit", 1000);
+    int pageSize = Math.min(limit, DEFAULT_PAGE_SIZE);
+
+    var resolved =
+        directory.resolveTable(
+            ResolveTableRequest.newBuilder().setRef(nameRefForTable(fq)).build());
+
+    ListFileColumnStatsRequest.Builder rb =
+        ListFileColumnStatsRequest.newBuilder()
+            .setTableId(resolved.getResourceId())
+            .setSnapshot(parseSnapshotSelector(args));
+
+    List<FileColumnStats> all =
+        collectPages(
+            pageSize,
+            pr -> statistics.listFileColumnStats(rb.setPage(pr).build()),
+            r -> r.getFileColumnsList(),
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
+
+    if (all.size() > limit) {
+      all = all.subList(0, limit);
+    }
+
+    printFileColumnStats(all);
   }
 
   private void cmdPlan(List<String> args) {
@@ -2356,20 +2395,55 @@ public class Shell implements Runnable {
 
   private void printColumnStats(List<ColumnStats> cols) {
     out.printf(
-        "%-8s %-28s %-12s %-10s %-10s %-24s %-24s %-24s %-24s%n",
-        "CID", "NAME", "TYPE", "NULLS", "NaNs", "MIN", "MAX", "NDV", "#THETA SKETCHES");
+        "%-8s %-28s %-12s %-12s %-10s %-10s %-24s %-24s %-24s %-24s%n",
+        "CID", "NAME", "TYPE", "VALUES", "NULLS", "NaNs", "MIN", "MAX", "NDV", "#THETA SKETCHES");
+
     for (var c : cols) {
       out.printf(
-          "%-8s %-28s %-12s %-10s %-10s %-24s %-24s %-24s %-24s%n",
+          "%-8s %-28s %-12s %-12s %-10s %-10s %-24s %-24s %-24s %-24s%n",
           c.getColumnId(),
           trunc(c.getColumnName(), 28),
           trunc(c.getLogicalType(), 12),
+          Long.toString(c.getValueCount()),
           Long.toString(c.getNullCount()),
           Long.toString(c.getNanCount()),
           trunc(c.getMin(), 24),
           trunc(c.getMax(), 24),
           c.hasNdv() ? ndvToString(c.getNdv()) : "-",
           c.hasNdv() ? c.getNdv().getSketchesCount() : "-");
+    }
+  }
+
+  private void printFileColumnStats(List<FileColumnStats> files) {
+    if (files == null || files.isEmpty()) {
+      out.println("No file stats found.");
+      return;
+    }
+
+    out.printf("%-4s %-10s %-12s %s%n", "IDX", "ROWS", "BYTES", "PATH");
+    for (int i = 0; i < files.size(); i++) {
+      FileColumnStats fs = files.get(i);
+      out.printf("%-4d %-10d %-12d %s%n", i, fs.getRowCount(), fs.getSizeBytes(), fs.getFilePath());
+
+      var cols = fs.getColumnsList();
+      if (!cols.isEmpty()) {
+        out.println("    columns:");
+        for (ColumnStats c : cols) {
+          String ndv = c.hasNdv() ? ndvToString(c.getNdv()) : "-";
+          out.printf(
+              "      %-8s %-24s %-10s values=%-8d nulls=%-8d NaNs=%-8d min=%-20s max=%-20s"
+                  + " ndv=%s%n",
+              c.getColumnId(),
+              trunc(c.getColumnName(), 24),
+              trunc(c.getLogicalType(), 10),
+              c.getValueCount(),
+              c.getNullCount(),
+              c.getNanCount(),
+              trunc(c.getMin(), 20),
+              trunc(c.getMax(), 20),
+              ndv);
+        }
+      }
     }
   }
 

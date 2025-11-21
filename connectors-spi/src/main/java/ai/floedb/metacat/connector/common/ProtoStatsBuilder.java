@@ -1,6 +1,7 @@
 package ai.floedb.metacat.connector.common;
 
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
+import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.Ndv;
 import ai.floedb.metacat.catalog.rpc.NdvApprox;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
@@ -77,6 +78,10 @@ public final class ProtoStatsBuilder {
               .setColumnId(String.valueOf(id))
               .setColumnName(name == null ? "" : name)
               .setUpstream(commonUpstream);
+
+      if (agg.valueCount() != null) {
+        columnStatBuilder.setValueCount(agg.valueCount());
+      }
 
       if (agg.nullCount() != null) {
         columnStatBuilder.setNullCount(agg.nullCount());
@@ -181,5 +186,90 @@ public final class ProtoStatsBuilder {
     }
 
     return list;
+  }
+
+  public static <K> List<FileColumnStats> toFileColumnStats(
+      ResourceId tableId,
+      long snapshotId,
+      TableFormat format,
+      List<StatsEngine.FileAgg<K>> files,
+      Function<K, String> nameOf,
+      Function<K, LogicalType> typeOf,
+      long upstreamCreatedAtMs) {
+
+    if (files == null || files.isEmpty()) {
+      return List.of();
+    }
+
+    var commonUpstream =
+        LogicalTypeProtoAdapter.upstreamStamp(
+            format,
+            "",
+            Long.toString(snapshotId),
+            Timestamps.fromMillis(upstreamCreatedAtMs),
+            Map.of());
+
+    List<FileColumnStats> out = new ArrayList<>(files.size());
+
+    for (StatsEngine.FileAgg<K> fa : files) {
+      List<ColumnStats> cols = new ArrayList<>(fa.columns().size());
+
+      for (var entry : fa.columns().entrySet()) {
+        K colKey = entry.getKey();
+        StatsEngine.ColumnAgg agg = entry.getValue();
+
+        String name = nameOf.apply(colKey);
+        LogicalType logicalType = typeOf.apply(colKey);
+
+        var colBuilder =
+            ColumnStats.newBuilder()
+                .setTableId(tableId)
+                .setSnapshotId(snapshotId)
+                .setColumnId(String.valueOf(colKey))
+                .setColumnName(name == null ? "" : name)
+                .setUpstream(commonUpstream);
+
+        if (agg.valueCount() != null) {
+          colBuilder.setValueCount(agg.valueCount());
+        }
+        if (agg.nullCount() != null) {
+          colBuilder.setNullCount(agg.nullCount());
+        }
+        if (agg.nanCount() != null) {
+          colBuilder.setNanCount(agg.nanCount());
+        }
+
+        if (logicalType != null) {
+          colBuilder.setLogicalType(LogicalTypeProtoAdapter.encodeLogicalType(logicalType));
+
+          if (agg.min() != null) {
+            colBuilder.setMin(ValueEncoders.encodeToString(logicalType, agg.min()));
+          }
+          if (agg.max() != null) {
+            colBuilder.setMax(ValueEncoders.encodeToString(logicalType, agg.max()));
+          }
+        }
+
+        if (agg.ndvExact() != null) {
+          colBuilder.setNdv(Ndv.newBuilder().setExact(agg.ndvExact()).build());
+        } else if (agg.ndv() != null) {
+          // ignore for now
+        }
+
+        cols.add(colBuilder.build());
+      }
+
+      out.add(
+          FileColumnStats.newBuilder()
+              .setTableId(tableId)
+              .setSnapshotId(snapshotId)
+              .setFilePath(fa.path())
+              .setRowCount(fa.rowCount())
+              .setSizeBytes(fa.sizeBytes())
+              .addAllColumns(cols)
+              .build());
+    }
+
+    return out;
   }
 }

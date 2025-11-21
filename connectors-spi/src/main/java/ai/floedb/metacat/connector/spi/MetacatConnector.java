@@ -1,6 +1,7 @@
 package ai.floedb.metacat.connector.spi;
 
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
+import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.planning.rpc.PlanFile;
@@ -44,7 +45,8 @@ public interface MetacatConnector extends Closeable {
       long parentId,
       long upstreamCreatedAtMs,
       TableStats tableStats,
-      List<ColumnStats> columnStats) {}
+      List<ColumnStats> columnStats,
+      List<FileColumnStats> fileStats) {}
 
   record PlanBundle(List<PlanFile> dataFiles, List<PlanFile> deleteFiles) {}
 }

@@ -115,10 +115,10 @@ public final class DynamoPointerStore implements PointerStore {
         exprValues.put(":e", AttributeValue.fromN(Long.toString(ttl)));
       }
 
+      exprNames.put("#e", ATTR_EXPIRES_AT);
+
       final String updateExpr =
-          hasTtl
-              ? "SET #b = :b, #v = :next, " + ATTR_EXPIRES_AT + " = :e"
-              : "SET #b = :b, #v = :next";
+          hasTtl ? "SET #b = :b, #v = :next, #e = :e" : "SET #b = :b, #v = :next REMOVE #e";
 
       try {
         dynamoDb.updateItem(
@@ -472,7 +472,6 @@ public final class DynamoPointerStore implements PointerStore {
     }
 
     if (p.equals("tenants/")
-        || p.equals("idempotency/")
         || p.startsWith("tenants/by-id/")
         || p.startsWith("tenants/by-name/")) {
       return new MappedPrefix(GLOBAL_PK, p);

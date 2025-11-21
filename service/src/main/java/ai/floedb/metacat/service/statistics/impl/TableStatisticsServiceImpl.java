@@ -1,12 +1,17 @@
 package ai.floedb.metacat.service.statistics.impl;
 
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
+import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.GetTableStatsRequest;
 import ai.floedb.metacat.catalog.rpc.GetTableStatsResponse;
 import ai.floedb.metacat.catalog.rpc.ListColumnStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ListColumnStatsResponse;
+import ai.floedb.metacat.catalog.rpc.ListFileColumnStatsRequest;
+import ai.floedb.metacat.catalog.rpc.ListFileColumnStatsResponse;
 import ai.floedb.metacat.catalog.rpc.PutColumnStatsBatchRequest;
 import ai.floedb.metacat.catalog.rpc.PutColumnStatsBatchResponse;
+import ai.floedb.metacat.catalog.rpc.PutFileColumnStatsBatchRequest;
+import ai.floedb.metacat.catalog.rpc.PutFileColumnStatsBatchResponse;
 import ai.floedb.metacat.catalog.rpc.PutTableStatsRequest;
 import ai.floedb.metacat.catalog.rpc.PutTableStatsResponse;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
@@ -172,6 +177,73 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
 
                   return ListColumnStatsResponse.newBuilder()
                       .addAllColumns(items)
+                      .setPage(
+                          PageResponse.newBuilder()
+                              .setNextPageToken(next.toString())
+                              .setTotalSize(total)
+                              .build())
+                      .build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
+  public Uni<ListFileColumnStatsResponse> listFileColumnStats(ListFileColumnStatsRequest request) {
+
+    var L = LogHelper.start(LOG, "ListFileColumnStats");
+
+    return mapFailures(
+            run(
+                () -> {
+                  var principalContext = principal.get();
+                  authz.require(principalContext, "catalog.read");
+
+                  final int limit =
+                      (request.hasPage() && request.getPage().getPageSize() > 0)
+                          ? request.getPage().getPageSize()
+                          : 200;
+                  final String token = request.hasPage() ? request.getPage().getPageToken() : "";
+                  final StringBuilder next = new StringBuilder();
+
+                  final var tableId = request.getTableId();
+                  final var ref = request.getSnapshot();
+                  if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
+                    throw GrpcErrors.invalidArgument(correlationId(), "snapshot.missing", Map.of());
+                  }
+
+                  final long snapId;
+                  switch (ref.getWhichCase()) {
+                    case SNAPSHOT_ID -> snapId = ref.getSnapshotId();
+                    case SPECIAL -> {
+                      if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
+                        throw GrpcErrors.invalidArgument(
+                            correlationId(), "snapshot.special.missing", Map.of());
+                      }
+                      snapId =
+                          snapshots
+                              .getCurrentSnapshot(tableId)
+                              .map(Snapshot::getSnapshotId)
+                              .orElseThrow(
+                                  () ->
+                                      GrpcErrors.notFound(
+                                          correlationId(),
+                                          "snapshot",
+                                          Map.of("id", tableId.getId())));
+                    }
+                    default ->
+                        throw GrpcErrors.invalidArgument(
+                            correlationId(), "snapshot.missing", Map.of());
+                  }
+
+                  var items = stats.listFileStats(tableId, snapId, Math.max(1, limit), token, next);
+                  int total = stats.countFileStats(tableId, snapId);
+
+                  return ListFileColumnStatsResponse.newBuilder()
+                      .addAllFileColumns(items)
                       .setPage(
                           PageResponse.newBuilder()
                               .setNextPageToken(next.toString())
@@ -358,6 +430,103 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                   }
 
                   return PutColumnStatsBatchResponse.newBuilder().setUpserted(upserted).build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
+  public Uni<PutFileColumnStatsBatchResponse> putFileColumnStatsBatch(
+      PutFileColumnStatsBatchRequest request) {
+
+    var L = LogHelper.start(LOG, "PutFileColumnStatsBatch");
+
+    return mapFailures(
+            runWithRetry(
+                () -> {
+                  var pc = principal.get();
+                  var tenantId = pc.getTenantId();
+
+                  authz.require(pc, "table.write");
+
+                  var tsNow = nowTs();
+
+                  tables
+                      .getById(request.getTableId())
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(),
+                                  "table",
+                                  Map.of("id", request.getTableId().getId())));
+
+                  snapshots
+                      .getById(request.getTableId(), request.getSnapshotId())
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(),
+                                  "snapshot",
+                                  Map.of("id", Long.toString(request.getSnapshotId()))));
+
+                  int upserted = 0;
+
+                  for (var raw : request.getFilesList()) {
+                    var fileStats =
+                        raw.toBuilder()
+                            .setTableId(request.getTableId())
+                            .setSnapshotId(request.getSnapshotId())
+                            .build();
+
+                    var fingerprint = raw.toByteArray();
+                    var explicitKey =
+                        request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
+                    var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
+
+                    if (idempotencyKey == null) {
+                      stats.putFileColumnStats(
+                          request.getTableId(), request.getSnapshotId(), fileStats);
+                      upserted++;
+                      continue;
+                    }
+
+                    MutationOps.createProto(
+                        tenantId,
+                        "PutFileColumnStats",
+                        idempotencyKey,
+                        () -> fingerprint,
+                        () -> {
+                          stats.putFileColumnStats(
+                              request.getTableId(), request.getSnapshotId(), fileStats);
+                          return new IdempotencyGuard.CreateResult<>(
+                              fileStats, request.getTableId());
+                        },
+                        fs ->
+                            stats.metaForFileColumnStats(
+                                request.getTableId(),
+                                request.getSnapshotId(),
+                                fs.getFilePath(),
+                                tsNow),
+                        idempotencyStore,
+                        tsNow,
+                        idempotencyTtlSeconds(),
+                        this::correlationId,
+                        FileColumnStats::parseFrom,
+                        rec ->
+                            stats
+                                .getFileColumnStats(
+                                    request.getTableId(),
+                                    request.getSnapshotId(),
+                                    raw.getFilePath())
+                                .isPresent());
+
+                    upserted++;
+                  }
+
+                  return PutFileColumnStatsBatchResponse.newBuilder().setUpserted(upserted).build();
                 }),
             correlationId())
         .onFailure()
