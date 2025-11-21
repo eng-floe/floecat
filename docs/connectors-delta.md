@@ -1,7 +1,7 @@
 # Delta / Unity Catalog Connector
 
 ## Overview
-`connectors-delta/` implements a connector targeting Databricks Unity Catalog-powered Delta Lake
+`connectors/delta/` implements a connector targeting Databricks Unity Catalog-powered Delta Lake
 warehouses. It uses the Delta Kernel, Unity Catalog REST APIs, Databricks SQL endpoints, and AWS S3
 (thru the v2 client) to enumerate tables, collect statistics, and plan files.
 

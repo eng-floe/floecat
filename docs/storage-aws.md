@@ -1,7 +1,7 @@
 # AWS Storage Backend
 
 ## Overview
-`storage-aws/` contains production-grade implementations of the storage SPI backed by Amazon
+`storage/aws/` contains production-grade implementations of the storage SPI backed by Amazon
 DynamoDB (pointer store) and Amazon S3 (blob store). It also includes bootstrapping helpers to ensure
 DynamoDB tables exist before the service starts.
 

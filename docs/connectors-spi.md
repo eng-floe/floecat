@@ -1,7 +1,7 @@
 # Connector SPI
 
 ## Overview
-`connectors-spi/` defines the contract that every upstream metadata connector must implement. The
+`connectors/spi/` defines the contract that every upstream metadata connector must implement. The
 SPI abstracts discovery of namespaces/tables, enumeration of snapshots with statistics, planning of
 physical files for a snapshot, and authentication adapters. It also packages shared tooling for
 column statistics and NDV estimation.

@@ -43,13 +43,13 @@ The following modules compose the system (see linked docs for deep dives):
 | [`proto/`](docs/proto.md) | All protobuf/gRPC contracts (catalog, planning, connectors, statistics, types). |
 | [`service/`](docs/service.md) | Quarkus runtime, resource repositories, planning bundle assembly, GC, security, metrics. |
 | [`client-cli/`](docs/client-cli.md) | Interactive shell for humans; exercises every public RPC. |
-| [`connectors-spi/`](docs/connectors-spi.md) | Connector interfaces, stats engines, NDV helpers, auth shims. |
-| [`connectors-iceberg/`](docs/connectors-iceberg.md) | Iceberg REST + AWS Glue connector implementation. |
-| [`connectors-delta/`](docs/connectors-delta.md) | Unity Catalog/Delta Lake connector using Delta Kernel + Databricks APIs. |
+| [`connectors/spi/`](docs/connectors-spi.md) | Connector interfaces, stats engines, NDV helpers, auth shims. |
+| [`connectors/iceberg/`](docs/connectors-iceberg.md) | Iceberg REST + AWS Glue connector implementation. |
+| [`connectors/delta/`](docs/connectors-delta.md) | Unity Catalog/Delta Lake connector using Delta Kernel + Databricks APIs. |
 | [`reconciler/`](docs/reconciler.md) | Connector scheduler/worker, reconciliation orchestration, job store. |
-| [`storage-spi/`](docs/storage-spi.md) | Blob/pointer persistence contracts shared by service and GC. |
-| [`storage-memory/`](docs/storage-memory.md) | In-memory dev/test stores (CAS semantics maintained). |
-| [`storage-aws/`](docs/storage-aws.md) | Production DynamoDB pointer store + S3 blob store. |
+| [`storage/spi/`](docs/storage-spi.md) | Blob/pointer persistence contracts shared by service and GC. |
+| [`storage/memory/`](docs/storage-memory.md) | In-memory dev/test stores (CAS semantics maintained). |
+| [`storage/aws/`](docs/storage-aws.md) | Production DynamoDB pointer store + S3 blob store. |
 | [`types/`](docs/types.md) | Logical type system utilities, coercions, min/max encoding. |
 | [`log/`](docs/log.md) | Runtime log directory layout (service log + audit channel). |
 

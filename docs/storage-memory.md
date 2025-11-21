@@ -1,7 +1,7 @@
 # In-Memory Storage
 
 ## Overview
-`storage-memory/` provides reference implementations of the storage SPI for local development and
+`storage/memory/` provides reference implementations of the storage SPI for local development and
 unit tests. It stores pointers and blobs in concurrent in-memory maps while preserving the atomic
 semantics expected by the service.
 
