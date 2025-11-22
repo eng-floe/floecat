@@ -6,19 +6,25 @@
     <groupId>ai.floedb.metacat</groupId>
     <artifactId>metacat</artifactId>
     <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../..</relativePath>
   </parent>
 
-  <artifactId>metacat-connectors-delta</artifactId>
+  <artifactId>metacat-storage-aws</artifactId>
 
   <properties>
-    <delta.kernel.api.version>4.0.0</delta.kernel.api.version>
-    <hadoop.version>3.4.2</hadoop.version>
     <aws.sdk.version>2.38.3</aws.sdk.version>
-    <parquet.version>1.16.0</parquet.version>
   </properties>
 
   <dependencyManagement>
     <dependencies>
+      <dependency>
+        <groupId>io.quarkus.platform</groupId>
+        <artifactId>quarkus-bom</artifactId>
+        <version>${quarkus.platform.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
       <dependency>
         <groupId>software.amazon.awssdk</groupId>
         <artifactId>bom</artifactId>
@@ -32,40 +38,61 @@
   <dependencies>
     <dependency>
       <groupId>ai.floedb.metacat</groupId>
-      <artifactId>metacat-connectors-spi</artifactId>
+      <artifactId>metacat-storage-spi</artifactId>
       <version>${project.version}</version>
     </dependency>
 
     <dependency>
-      <groupId>io.delta</groupId>
-      <artifactId>delta-kernel-api</artifactId>
-      <version>${delta.kernel.api.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>io.delta</groupId>
-      <artifactId>delta-kernel-defaults</artifactId>
-      <version>${delta.kernel.api.version}</version>
+      <groupId>io.quarkus</groupId>
+      <artifactId>quarkus-arc</artifactId>
     </dependency>
 
     <dependency>
-      <groupId>org.apache.parquet</groupId>
-      <artifactId>parquet-hadoop</artifactId>
-      <version>${parquet.version}</version>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>url-connection-client</artifactId>
     </dependency>
 
     <dependency>
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>s3</artifactId>
     </dependency>
+
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>dynamodb</artifactId>
+    </dependency>
+
     <dependency>
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>sso</artifactId>
-      <scope>runtime</scope>
     </dependency>
+
     <dependency>
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>ssooidc</artifactId>
-      <scope>runtime</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>sts</artifactId>
     </dependency>
   </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>io.smallrye</groupId>
+        <artifactId>jandex-maven-plugin</artifactId>
+        <version>3.5.1</version>
+        <executions>
+          <execution>
+            <id>make-index</id>
+            <goals>
+              <goal>jandex</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
 </project>

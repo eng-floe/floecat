@@ -24,13 +24,13 @@
     <module>proto</module>
     <module>types</module>
     <module>client-cli</module>
-    <module>storage-spi</module>
-    <module>storage-memory</module>
-    <module>storage-aws</module>
+    <module>storage/spi</module>
+    <module>storage/memory</module>
+    <module>storage/aws</module>
     <module>reconciler</module>
-    <module>connectors-spi</module>
-    <module>connectors-iceberg</module>
-    <module>connectors-delta</module>
+    <module>connectors/spi</module>
+    <module>connectors/iceberg</module>
+    <module>connectors/delta</module>
 
     <module>service</module>
   </modules>
