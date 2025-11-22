@@ -49,9 +49,6 @@ import java.util.Set;
 public class ReconcilerService {
   @Inject GrpcClients clients;
 
-  private static final int COLUMN_STATS_BATCH_SIZE = 5;
-  private static final int FILE_STATS_BATCH_SIZE = 5;
-
   public Result reconcile(ResourceId connectorId, boolean fullRescan) {
     long scanned = 0;
     long changed = 0;
@@ -431,17 +428,12 @@ public class ReconcilerService {
 
         if (!filtered.isEmpty()) {
           List<PutColumnStatsRequest> columnRequests = new ArrayList<>();
-          for (int i = 0; i < filtered.size(); i += COLUMN_STATS_BATCH_SIZE) {
-            var chunk =
-                filtered.subList(i, Math.min(i + COLUMN_STATS_BATCH_SIZE, filtered.size())).stream()
-                    .map(c -> c.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
-                    .toList();
-
+          for (var c : filtered) {
             columnRequests.add(
                 PutColumnStatsRequest.newBuilder()
                     .setTableId(tableId)
                     .setSnapshotId(snapshotId)
-                    .addAllColumns(chunk)
+                    .addColumns(c.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
                     .build());
           }
           clients
@@ -455,14 +447,12 @@ public class ReconcilerService {
       var fileCols = snapshotBundle.fileStats();
       if (fileCols != null && !fileCols.isEmpty()) {
         List<PutFileColumnStatsRequest> fileRequests = new ArrayList<>();
-        for (int i = 0; i < fileCols.size(); i += FILE_STATS_BATCH_SIZE) {
-          var chunk = fileCols.subList(i, Math.min(i + FILE_STATS_BATCH_SIZE, fileCols.size()));
-
+        for (var f : fileCols) {
           fileRequests.add(
               PutFileColumnStatsRequest.newBuilder()
                   .setTableId(tableId)
                   .setSnapshotId(snapshotId)
-                  .addAllFiles(chunk)
+                  .addFiles(f.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
                   .build());
         }
         clients

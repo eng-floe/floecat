@@ -20,7 +20,6 @@ classes manage OAuth2/SP token acquisition, Databricks SQL execution, and custom
 - **`UcBaseSupport` / `UcHttp`** – HTTP helpers for constructing API URLs, encoding parameters, and
   handling retries/timeouts.
 - **`DeltaTypeMapper`** – Maps Delta/Parquet logical types into Metacat logical types for stats.
-- **`DeltaFileEnumerator`** – Reads `_delta_log` to walk snapshot transactions and collect file paths.
 
 ## Public API / Surface Area
 `UnityDeltaConnector` implements the SPI methods:
@@ -31,7 +30,8 @@ classes manage OAuth2/SP token acquisition, Databricks SQL execution, and custom
 - `describe(namespace, table)` – Fetches table metadata from Unity Catalog, reads the Delta schema via
   Delta Kernel, and returns a `TableDescriptor` containing location, partition keys, and properties.
 - `enumerateSnapshotsWithStats(...)` – Iterates Delta snapshots, optionally samples Parquet files to
-  produce NDV stats (`SamplingNdvProvider`, `ParquetNdvProvider`), and emits `SnapshotBundle`s.
+  produce NDV stats (`SamplingNdvProvider`, `ParquetNdvProvider`), and emits `SnapshotBundle`s with
+  per-file stats (row count/size plus per-column metrics when available).
 - `plan(namespace, table, snapshotId, asOf)` – Uses `DeltaPlanner` to read snapshot manifests and
   produce `PlanFile` entries labelled with `FileContent` (data, position deletes, equality deletes).
 
@@ -58,7 +58,7 @@ ConnectorFactory.create(cfg)
   → listNamespaces/listTables via Unity Catalog REST
   → describe via REST + Delta Kernel schema inspection
   → enumerateSnapshotsWithStats
-      → Delta Kernel Snapshot → Parquet stats engine → SnapshotBundle
+      → Delta Kernel Snapshot → Parquet stats engine → SnapshotBundle (table/column/file stats)
   → plan
       → DeltaPlanner traverses _delta_log → PlanFile entries for data/delete files
 ```

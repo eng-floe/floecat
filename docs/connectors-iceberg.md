@@ -29,9 +29,10 @@ AWS Glue lookups, and optionally captures NDV sketches from Parquet files.
   database/table metadata.
 - `describe(namespace, table)` – Loads the table, serialises the Iceberg schema to JSON via
   `SchemaParser.toJson`, captures partition keys, and returns table properties.
-- `enumerateSnapshotsWithStats(...)` – Iterates Iceberg snapshots, loads table/column stats using the
-  configured `StatsEngine` and NDV providers, and emits `SnapshotBundle`s including upstream
-  timestamps, parent IDs, and stats payloads.
+- `enumerateSnapshotsWithStats(...)` – Iterates Iceberg snapshots, loads table/column stats using
+  the configured `StatsEngine` and NDV providers, and emits `SnapshotBundle`s including upstream
+  timestamps, parent IDs, stats payloads, and per-file stats (row count/size plus per-column
+  metrics when available).
 - `plan(namespace, table, snapshotId, asOfTimestamp)` – Builds an Iceberg `TableScan`, iterates
   `FileScanTask`s, and emits per-file `PlanFile`s labelled with `FileContent` (data vs delete).
 
@@ -57,7 +58,8 @@ ConnectorFactory.create(cfg)
       → Initialize RESTCatalog and Glue filter
   → listNamespaces/listTables/describe
   → enumerateSnapshotsWithStats
-      → For each snapshot load Table, StatsEngine pulls Parquet stats, NDV provider merges sketches
+      → For each snapshot load Table, StatsEngine pulls Parquet stats (table/column + per-file),
+        NDV provider merges sketches
   → plan
       → Build TableScan, collect FileScanTask -> PlanFile
 ```

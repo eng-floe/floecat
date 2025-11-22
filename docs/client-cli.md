@@ -30,7 +30,8 @@ The CLI exposes commands documented at runtime via `help`. Highlights:
 - `namespaces` / `namespace <subcommand>` – Inspect namespace hierarchies, create nested paths.
 - `tables` / `table <subcommand>` – Manage table definitions, specify schema JSON, upstream
   connectors, and properties.
-- `snapshots` / `stats` – Query snapshot lineage and table/column statistics.
+- `snapshots` / `stats` – Query snapshot lineage and table/column/file statistics (`stats files`
+  lists per-file row/byte counts and per-column metrics).
 - `resolve` / `describe` – Exercise DirectoryService for name→ID lookups.
 - `plan` – Execute the plan lifecycle: `plan begin`, `plan renew`, `plan get`, `plan end`, and view
   plan contents (snapshot pins, obligations, file lists).
