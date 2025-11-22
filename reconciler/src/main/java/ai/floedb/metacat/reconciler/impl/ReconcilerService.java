@@ -8,8 +8,8 @@ import ai.floedb.metacat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.NamespaceSpec;
-import ai.floedb.metacat.catalog.rpc.PutColumnStatsBatchRequest;
-import ai.floedb.metacat.catalog.rpc.PutFileColumnStatsBatchRequest;
+import ai.floedb.metacat.catalog.rpc.PutColumnStatsRequest;
+import ai.floedb.metacat.catalog.rpc.PutFileColumnStatsRequest;
 import ai.floedb.metacat.catalog.rpc.PutTableStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
@@ -35,8 +35,10 @@ import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -428,39 +430,46 @@ public class ReconcilerService {
                 : cols.stream().filter(c -> matchesSelector(c, includeSelectors)).toList();
 
         if (!filtered.isEmpty()) {
+          List<PutColumnStatsRequest> columnRequests = new ArrayList<>();
           for (int i = 0; i < filtered.size(); i += COLUMN_STATS_BATCH_SIZE) {
             var chunk =
                 filtered.subList(i, Math.min(i + COLUMN_STATS_BATCH_SIZE, filtered.size())).stream()
                     .map(c -> c.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
                     .toList();
 
-            clients
-                .statistics()
-                .putColumnStatsBatch(
-                    PutColumnStatsBatchRequest.newBuilder()
-                        .setTableId(tableId)
-                        .setSnapshotId(snapshotId)
-                        .addAllColumns(chunk)
-                        .build());
+            columnRequests.add(
+                PutColumnStatsRequest.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshotId(snapshotId)
+                    .addAllColumns(chunk)
+                    .build());
           }
+          clients
+              .statisticsMutiny()
+              .putColumnStats(Multi.createFrom().iterable(columnRequests))
+              .await()
+              .atMost(Duration.ofMinutes(1));
         }
       }
 
       var fileCols = snapshotBundle.fileStats();
       if (fileCols != null && !fileCols.isEmpty()) {
-
+        List<PutFileColumnStatsRequest> fileRequests = new ArrayList<>();
         for (int i = 0; i < fileCols.size(); i += FILE_STATS_BATCH_SIZE) {
           var chunk = fileCols.subList(i, Math.min(i + FILE_STATS_BATCH_SIZE, fileCols.size()));
 
-          clients
-              .statistics()
-              .putFileColumnStatsBatch(
-                  PutFileColumnStatsBatchRequest.newBuilder()
-                      .setTableId(tableId)
-                      .setSnapshotId(snapshotId)
-                      .addAllFiles(chunk)
-                      .build());
+          fileRequests.add(
+              PutFileColumnStatsRequest.newBuilder()
+                  .setTableId(tableId)
+                  .setSnapshotId(snapshotId)
+                  .addAllFiles(chunk)
+                  .build());
         }
+        clients
+            .statisticsMutiny()
+            .putFileColumnStats(Multi.createFrom().iterable(fileRequests))
+            .await()
+            .atMost(Duration.ofMinutes(1));
       }
     }
   }

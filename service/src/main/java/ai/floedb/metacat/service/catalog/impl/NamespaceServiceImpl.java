@@ -366,7 +366,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     }
                   }
                   final List<String> parents = List.copyOf(parentsWork);
-                  final List<String> fullPath = new java.util.ArrayList<>(parents);
+                  final List<String> fullPath = new ArrayList<>(parents);
                   fullPath.add(display);
 
                   final byte[] fingerprint =
@@ -722,7 +722,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     }
 
     return NS_TOKEN_PREFIX
-        + java.util.Base64.getUrlEncoder()
+        + Base64.getUrlEncoder()
             .withoutPadding()
             .encodeToString(resumeAfterRel.getBytes(java.nio.charset.StandardCharsets.UTF_8));
   }

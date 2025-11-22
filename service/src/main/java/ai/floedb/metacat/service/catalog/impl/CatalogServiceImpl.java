@@ -30,6 +30,7 @@ import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -147,9 +148,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                       deterministicUuid(
                           tenantId,
                           "catalog",
-                          java.util.Base64.getUrlEncoder()
-                              .withoutPadding()
-                              .encodeToString(fingerprint));
+                          Base64.getUrlEncoder().withoutPadding().encodeToString(fingerprint));
 
                   var catalogId =
                       ResourceId.newBuilder()

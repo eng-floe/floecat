@@ -47,6 +47,9 @@ class StatsIT {
   @GrpcClient("metacat")
   TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistic;
 
+  @GrpcClient("metacat")
+  MutinyTableStatisticsServiceGrpc.MutinyTableStatisticsServiceStub statisticMutiny;
+
   String tablePrefix = this.getClass().getSimpleName() + "_";
 
   @Inject TestDataResetter resetter;
@@ -147,13 +150,18 @@ class StatsIT {
             .build();
 
     var putColsRespOld =
-        statistic.putColumnStatsBatch(
-            PutColumnStatsBatchRequest.newBuilder()
-                .setTableId(tblId)
-                .setSnapshotId(snapOld)
-                .addColumns(colIdStats)
-                .addColumns(colTsStats)
-                .build());
+        statisticMutiny
+            .putColumnStats(
+                io.smallrye.mutiny.Multi.createFrom()
+                    .items(
+                        PutColumnStatsRequest.newBuilder()
+                            .setTableId(tblId)
+                            .setSnapshotId(snapOld)
+                            .addColumns(colIdStats)
+                            .addColumns(colTsStats)
+                            .build()))
+            .await()
+            .atMost(java.time.Duration.ofSeconds(30));
     assertTrue(putColsRespOld.getUpserted() >= 2);
 
     var gotTableOld =
@@ -195,17 +203,24 @@ class StatsIT {
             .setStats(tableStatsNew)
             .build());
 
-    statistic.putColumnStatsBatch(
-        PutColumnStatsBatchRequest.newBuilder()
-            .setTableId(tblId)
-            .setSnapshotId(snapNew)
-            .addColumns(
-                colIdStats.toBuilder()
-                    .setSnapshotId(snapNew)
-                    .setNdv(Ndv.newBuilder().setExact(2_500)))
-            .addColumns(
-                colTsStats.toBuilder().setSnapshotId(snapNew).setNdv(Ndv.newBuilder().build()))
-            .build());
+    statisticMutiny
+        .putColumnStats(
+            io.smallrye.mutiny.Multi.createFrom()
+                .items(
+                    PutColumnStatsRequest.newBuilder()
+                        .setTableId(tblId)
+                        .setSnapshotId(snapNew)
+                        .addColumns(
+                            colIdStats.toBuilder()
+                                .setSnapshotId(snapNew)
+                                .setNdv(Ndv.newBuilder().setExact(2_500)))
+                        .addColumns(
+                            colTsStats.toBuilder()
+                                .setSnapshotId(snapNew)
+                                .setNdv(Ndv.newBuilder().build()))
+                        .build()))
+        .await()
+        .atMost(java.time.Duration.ofSeconds(30));
 
     var currentTableStats =
         statistic.getTableStats(

@@ -80,7 +80,7 @@ public class StatsRepository {
         new ColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, columnId, ""));
   }
 
-  public int putColumnStatsBatch(ResourceId tableId, long snapshotId, List<ColumnStats> batch) {
+  public int putColumnStats(ResourceId tableId, long snapshotId, List<ColumnStats> batch) {
     int created = 0;
     for (ColumnStats cs : batch) {
       ColumnStatsKey key =
@@ -121,8 +121,7 @@ public class StatsRepository {
         new FileColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, filePath, ""));
   }
 
-  public int putFileColumnStatsBatch(
-      ResourceId tableId, long snapshotId, List<FileColumnStats> batch) {
+  public int putFileColumnStats(ResourceId tableId, long snapshotId, List<FileColumnStats> batch) {
     int created = 0;
     for (FileColumnStats fs : batch) {
       FileColumnStatsKey key =
