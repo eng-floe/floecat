@@ -58,8 +58,9 @@ helpers like `deterministicUuid`. Highlights:
 - **ViewServiceImpl** – Stores SQL definitions and references to base tables.
 - **SnapshotServiceImpl** – Binds snapshots to tables, ensuring parent-child relationships remain
   intact.
-- **TableStatisticsServiceImpl** – Persists per-snapshot table/column stats in bulk, validating
-  NDV/histogram payloads, and paginates listing requests.
+- **TableStatisticsServiceImpl** – Persists per-snapshot table/column/file stats; validates
+  NDV/histogram payloads; paginates table, column, and file-level listings; uses client-streaming
+  `PutColumnStats`/`PutFileColumnStats` to batch writes per stream.
 - **DirectoryServiceImpl** – Provides fast name↔ID lookup using pointer prefixes.
 - **TenantServiceImpl** – Administers tenants and enforces conventional permissions.
 - **ConnectorsImpl** – Manages connector lifecycle, validates `ConnectorSpec` via SPI factories,
@@ -109,6 +110,12 @@ all relation columns reference deduplicated `TypeInfo`s.
 `IdempotencyGc` runs on a configurable cadence (see `metacat.gc.*` config) and sweeps expired
 idempotency records in slices to avoid starvation. `SeedRunner` populates demo data when
 `metacat.seed.enabled=true`.
+
+### Statistics streaming semantics
+`TableStatisticsServiceImpl` enforces a single `table_id` + `snapshot_id` per streamed call to
+`PutColumnStats`/`PutFileColumnStats`, rejects mixed idempotency keys within a stream, and applies
+idempotent writes when a key is present. Each stream returns one response summarising the total
+rows upserted after all batches have been consumed.
 
 ## Data Flow & Lifecycle
 ### Typical request path

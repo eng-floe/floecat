@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.time.Instant;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Optional;
@@ -112,7 +113,7 @@ final class S3V2FileSystemClient implements FileIO {
 
     return new CloseableIterator<>() {
       private String continuationToken = null;
-      private java.util.Iterator<S3Object> pageIter = null;
+      private Iterator<S3Object> pageIter = null;
       private boolean yieldedFirst = (firstStatus == null);
       private FileStatus firstToYield = firstStatus;
       private boolean closed = false;
@@ -159,7 +160,10 @@ final class S3V2FileSystemClient implements FileIO {
 
       @Override
       public FileStatus next() {
-        if (closed) throw new java.util.NoSuchElementException("Iterator closed");
+        if (closed) {
+          throw new NoSuchElementException("Iterator closed");
+        }
+
         if (!yieldedFirst && firstToYield != null) {
           yieldedFirst = true;
           FileStatus out = firstToYield;

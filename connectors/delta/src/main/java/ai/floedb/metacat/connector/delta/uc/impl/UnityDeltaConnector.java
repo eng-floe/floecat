@@ -249,7 +249,7 @@ public final class UnityDeltaConnector implements MetacatConnector {
             : includeColumns.stream()
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
-                .collect(Collectors.toCollection(java.util.LinkedHashSet::new));
+                .collect(Collectors.toCollection(LinkedHashSet::new));
 
     EngineOut engineOut = runEngine(tableRoot, version, includeNames, nameToType);
     var result = engineOut.result();

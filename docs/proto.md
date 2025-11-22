@@ -16,7 +16,7 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
   imports this file.
 - **`catalog/*.proto`** – CRUD APIs for catalogs, namespaces, tables, views, snapshots, directory
   lookups, and table statistics. Each service exposes the same Create/List/Get/Update/Delete (CLGUD)
-  lifecycle with `PageRequest`/`PageResponse` support.
+  lifecycle with `PageRequest`/`PageResponse` support; stats schemas also cover per-file statistics.
 - **`connector/connector.proto`** – Connector management RPCs plus reconciliation job tracking and
   validation routines.
 - **`planning/planning.proto`** – Plan lifecycle (`BeginPlan`, `Renew`, `End`, `GetPlan`) and the
@@ -36,7 +36,7 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 | `TableService` | `ListTables`, `GetTable`, `CreateTable`, `UpdateTable`, `DeleteTable` | `TableSpec` carries `UpstreamRef` with connector link, schema JSON, and partition info. |
 | `ViewService` | Similar CRUD semantics, storing SQL definitions and metadata. |
 | `SnapshotService` | `ListSnapshots`, `GetSnapshot`, `CreateSnapshot`, `DeleteSnapshot` | Pins upstream checkpoints and timestamps. |
-| `TableStatisticsService` | `GetTableStats`, `ListColumnStats`, `PutTableStats`, `PutColumnStatsBatch` | Accepts per-snapshot NDV, histogram, TDigest payloads. |
+| `TableStatisticsService` | `GetTableStats`, `ListColumnStats`, `ListFileColumnStats`, `PutTableStats`, client-streaming `PutColumnStats` + `PutFileColumnStats` | Accepts per-snapshot NDV/histogram payloads and per-file column stats; streaming RPCs collapse multiple batches into a single call. |
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
 | `TenantService` | Tenant CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `TriggerReconcile`, `GetReconcileJob`. |
@@ -63,6 +63,9 @@ before hitting repository storage.
   tables must be `RK_TABLE`). Clients should populate the `kind` enum to improve error messages.
 - **`SnapshotRef` semantics** – `oneof which { snapshot_id | as_of | special }`. `special` currently
   allows `SS_CURRENT`. Planner RPCs interpret `as_of` timestamps when enumerating snapshots.
+- **File-level stats** – `FileColumnStats` mirrors `ColumnStats` but anchors counts and sketches to
+  a file path. `PutFileColumnStats` uses the same idempotency key across streamed batches for the
+  same table/snapshot pair; the service enforces consistent `table_id`/`snapshot_id` in a stream.
 - **Idempotency/Preconditions** – Mutating RPCs accept `IdempotencyKey` or `Precondition` (expected
   CAS version/ETag). Repository logic mirrors these fields, so clients should obey the same values
   when retrying.

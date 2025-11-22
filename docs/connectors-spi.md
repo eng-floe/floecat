@@ -2,9 +2,9 @@
 
 ## Overview
 `connectors/spi/` defines the contract that every upstream metadata connector must implement. The
-SPI abstracts discovery of namespaces/tables, enumeration of snapshots with statistics, planning of
-physical files for a snapshot, and authentication adapters. It also packages shared tooling for
-column statistics and NDV estimation.
+SPI abstracts discovery of namespaces/tables, enumeration of snapshots with statistics (table,
+column, and file-level), planning of physical files for a snapshot, and authentication adapters. It
+also packages shared tooling for column statistics, file statistics, and NDV estimation.
 
 Connectors implement `MetacatConnector` and typically wrap an upstream catalog API (Iceberg REST,
 Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Metacat protobufs.
@@ -17,7 +17,7 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Metac
   - `listTables(namespaceFq)`.
   - `describe(namespaceFq, tableName)` → `TableDescriptor` with location, schema JSON, partition
     keys, properties.
-  - `enumerateSnapshotsWithStats(...)` → `SnapshotBundle`s containing per-snapshot table/column stats.
+  - `enumerateSnapshotsWithStats(...)` → `SnapshotBundle`s containing per-snapshot table/column/file stats.
   - `plan(namespaceFq, tableName, snapshotId, asOfTime)` → `PlanBundle` describing data/delete files.
 - **`ConnectorFactory`** – Instantiates connectors given a `ConnectorConfig` (URI, options,
   authentication). The service uses it to validate specs and the reconciler uses it during runs.
@@ -44,7 +44,9 @@ interface MetacatConnector extends Closeable {
 }
 ```
 `TableDescriptor`, `SnapshotBundle`, and `PlanBundle` are immutable records; connectors populate them
-with canonical metadata that the reconciler ingests.
+with canonical metadata that the reconciler ingests. `SnapshotBundle.fileStats` is optional but
+should be populated when Parquet footers or upstream metadata can provide per-file row counts,
+sizes, and per-column stats.
 
 `ConnectorConfig` encodes:
 - Kind + source/destination selectors (`SourceSelector`, `DestinationTarget`).
@@ -58,7 +60,8 @@ with canonical metadata that the reconciler ingests.
   store) so connectors can merge Parquet-level NDV sketches with streaming approximations. The SPI
   exposes `NdvApprox` structures mirroring `catalog/stats.proto` for compatibility.
 - **Parquet helpers** – `ParquetFooterStats` and `ParquetNdvProvider` parse Parquet metadata once and
-  reuse the results for multiple columns to minimize IO.
+  reuse the results for multiple columns to minimize IO; `ProtoStatsBuilder.toFileColumnStats`
+  packages footer-derived stats into `FileColumnStats` payloads.
 - **Planner integration** – `Planner` interface (under `connector/common`) converts connector output
   into planner-specific `PlanFile` lists, ensuring file stats include `ColumnStats` when available.
 - **Error propagation** – Connector implementations should wrap transient upstream failures inside
@@ -70,7 +73,7 @@ ConnectorFactory.create(ConnectorConfig)
   → MetacatConnector (opens upstream clients, auth providers)
       → listNamespaces/listTables → service repo ensures namespace/table existence
       → describe → Table specs persisted with upstream references
-      → enumerateSnapshotsWithStats → StatsRepository writes Table/Column stats per snapshot
+      → enumerateSnapshotsWithStats → StatsRepository writes Table/Column/File stats per snapshot
       → plan → PlanContext.runPlanning returns data/delete file manifests to planners
   ← close() cleans up HTTP/S3/DB connections
 ```

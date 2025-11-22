@@ -1,5 +1,6 @@
 package ai.floedb.metacat.connector.common.ndv;
 
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
@@ -23,7 +24,7 @@ public final class FilteringNdvProvider implements NdvProvider {
   public static FilteringNdvProvider bySuffix(Set<String> lowercaseSuffixes, NdvProvider delegate) {
     return new FilteringNdvProvider(
         p -> {
-          String s = p.toLowerCase(java.util.Locale.ROOT);
+          String s = p.toLowerCase(Locale.ROOT);
           for (String suf : lowercaseSuffixes) {
             if (s.endsWith(suf)) {
               return true;

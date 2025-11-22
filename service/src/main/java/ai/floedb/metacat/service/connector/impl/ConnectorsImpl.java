@@ -51,6 +51,7 @@ import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -191,7 +192,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       deterministicUuid(
                           tenantId,
                           "connector",
-                          java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(fp));
+                          Base64.getUrlEncoder().withoutPadding().encodeToString(fp));
 
                   var connectorId =
                       ResourceId.newBuilder()

@@ -8,16 +8,17 @@ import ai.floedb.metacat.catalog.rpc.ListColumnStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ListColumnStatsResponse;
 import ai.floedb.metacat.catalog.rpc.ListFileColumnStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ListFileColumnStatsResponse;
-import ai.floedb.metacat.catalog.rpc.PutColumnStatsBatchRequest;
-import ai.floedb.metacat.catalog.rpc.PutColumnStatsBatchResponse;
-import ai.floedb.metacat.catalog.rpc.PutFileColumnStatsBatchRequest;
-import ai.floedb.metacat.catalog.rpc.PutFileColumnStatsBatchResponse;
+import ai.floedb.metacat.catalog.rpc.PutColumnStatsRequest;
+import ai.floedb.metacat.catalog.rpc.PutColumnStatsResponse;
+import ai.floedb.metacat.catalog.rpc.PutFileColumnStatsRequest;
+import ai.floedb.metacat.catalog.rpc.PutFileColumnStatsResponse;
 import ai.floedb.metacat.catalog.rpc.PutTableStatsRequest;
 import ai.floedb.metacat.catalog.rpc.PutTableStatsResponse;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.TableStatisticsService;
 import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.common.rpc.PageResponse;
+import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.common.rpc.SpecialSnapshot;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
@@ -32,9 +33,12 @@ import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcService;
+import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -345,92 +349,26 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
   }
 
   @Override
-  public Uni<PutColumnStatsBatchResponse> putColumnStatsBatch(PutColumnStatsBatchRequest request) {
-    var L = LogHelper.start(LOG, "PutColumnStatsBatch");
+  public Uni<PutColumnStatsResponse> putColumnStats(Multi<PutColumnStatsRequest> requests) {
+    var L = LogHelper.start(LOG, "PutColumnStats");
+
+    var state = new AtomicReference<>(StreamState.initial());
+    AtomicInteger upserted = new AtomicInteger();
 
     return mapFailures(
-            runWithRetry(
-                () -> {
-                  var pc = principal.get();
-                  var tenantId = pc.getTenantId();
-
-                  authz.require(pc, "table.write");
-
-                  var tsNow = nowTs();
-
-                  tables
-                      .getById(request.getTableId())
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId(),
-                                  "table",
-                                  Map.of("id", request.getTableId().getId())));
-
-                  snapshots
-                      .getById(request.getTableId(), request.getSnapshotId())
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId(),
-                                  "snapshot",
-                                  Map.of("id", Long.toString(request.getSnapshotId()))));
-
-                  int upserted = 0;
-                  for (var raw : request.getColumnsList()) {
-                    var columnStats =
-                        raw.toBuilder()
-                            .setTableId(request.getTableId())
-                            .setSnapshotId(request.getSnapshotId())
-                            .build();
-
-                    var fingerprint = raw.toByteArray();
-                    var explicitKey =
-                        request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
-                    var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
-
-                    if (idempotencyKey == null) {
-                      stats.putColumnStats(
-                          request.getTableId(), request.getSnapshotId(), columnStats);
-                      upserted++;
-                      continue;
-                    }
-
-                    MutationOps.createProto(
-                        tenantId,
-                        "PutColumnStats",
-                        idempotencyKey,
-                        () -> fingerprint,
-                        () -> {
-                          stats.putColumnStats(
-                              request.getTableId(), request.getSnapshotId(), columnStats);
-                          return new IdempotencyGuard.CreateResult<>(
-                              columnStats, request.getTableId());
-                        },
-                        cs ->
-                            stats.metaForColumnStats(
-                                request.getTableId(),
-                                request.getSnapshotId(),
-                                cs.getColumnId(),
-                                tsNow),
-                        idempotencyStore,
-                        tsNow,
-                        idempotencyTtlSeconds(),
-                        this::correlationId,
-                        ColumnStats::parseFrom,
-                        rec ->
-                            stats
-                                .getColumnStats(
-                                    request.getTableId(),
-                                    request.getSnapshotId(),
-                                    raw.getColumnId())
-                                .isPresent());
-
-                    upserted++;
-                  }
-
-                  return PutColumnStatsBatchResponse.newBuilder().setUpserted(upserted).build();
-                }),
+            requests
+                .onItem()
+                .transformToUniAndConcatenate(
+                    req -> runWithRetry(() -> processColumnStats(state, req, upserted)))
+                .collect()
+                .last()
+                .onItem()
+                .ifNull()
+                .failWith(
+                    () ->
+                        GrpcErrors.invalidArgument(correlationId(), "column_stats.empty", Map.of()))
+                .replaceWith(
+                    () -> PutColumnStatsResponse.newBuilder().setUpserted(upserted.get()).build()),
             correlationId())
         .onFailure()
         .invoke(L::fail)
@@ -439,99 +377,197 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
   }
 
   @Override
-  public Uni<PutFileColumnStatsBatchResponse> putFileColumnStatsBatch(
-      PutFileColumnStatsBatchRequest request) {
+  public Uni<PutFileColumnStatsResponse> putFileColumnStats(
+      Multi<PutFileColumnStatsRequest> requests) {
 
-    var L = LogHelper.start(LOG, "PutFileColumnStatsBatch");
+    var L = LogHelper.start(LOG, "PutFileColumnStats");
+
+    var state = new AtomicReference<>(StreamState.initial());
+    AtomicInteger upserted = new AtomicInteger();
 
     return mapFailures(
-            runWithRetry(
-                () -> {
-                  var pc = principal.get();
-                  var tenantId = pc.getTenantId();
-
-                  authz.require(pc, "table.write");
-
-                  var tsNow = nowTs();
-
-                  tables
-                      .getById(request.getTableId())
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId(),
-                                  "table",
-                                  Map.of("id", request.getTableId().getId())));
-
-                  snapshots
-                      .getById(request.getTableId(), request.getSnapshotId())
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId(),
-                                  "snapshot",
-                                  Map.of("id", Long.toString(request.getSnapshotId()))));
-
-                  int upserted = 0;
-
-                  for (var raw : request.getFilesList()) {
-                    var fileStats =
-                        raw.toBuilder()
-                            .setTableId(request.getTableId())
-                            .setSnapshotId(request.getSnapshotId())
-                            .build();
-
-                    var fingerprint = raw.toByteArray();
-                    var explicitKey =
-                        request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
-                    var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
-
-                    if (idempotencyKey == null) {
-                      stats.putFileColumnStats(
-                          request.getTableId(), request.getSnapshotId(), fileStats);
-                      upserted++;
-                      continue;
-                    }
-
-                    MutationOps.createProto(
-                        tenantId,
-                        "PutFileColumnStats",
-                        idempotencyKey,
-                        () -> fingerprint,
-                        () -> {
-                          stats.putFileColumnStats(
-                              request.getTableId(), request.getSnapshotId(), fileStats);
-                          return new IdempotencyGuard.CreateResult<>(
-                              fileStats, request.getTableId());
-                        },
-                        fs ->
-                            stats.metaForFileColumnStats(
-                                request.getTableId(),
-                                request.getSnapshotId(),
-                                fs.getFilePath(),
-                                tsNow),
-                        idempotencyStore,
-                        tsNow,
-                        idempotencyTtlSeconds(),
-                        this::correlationId,
-                        FileColumnStats::parseFrom,
-                        rec ->
-                            stats
-                                .getFileColumnStats(
-                                    request.getTableId(),
-                                    request.getSnapshotId(),
-                                    raw.getFilePath())
-                                .isPresent());
-
-                    upserted++;
-                  }
-
-                  return PutFileColumnStatsBatchResponse.newBuilder().setUpserted(upserted).build();
-                }),
+            requests
+                .onItem()
+                .transformToUniAndConcatenate(
+                    req -> runWithRetry(() -> processFileColumnStats(state, req, upserted)))
+                .collect()
+                .last()
+                .onItem()
+                .ifNull()
+                .failWith(
+                    () ->
+                        GrpcErrors.invalidArgument(
+                            correlationId(), "file_column_stats.empty", Map.of()))
+                .replaceWith(
+                    () ->
+                        PutFileColumnStatsResponse.newBuilder()
+                            .setUpserted(upserted.get())
+                            .build()),
             correlationId())
         .onFailure()
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private record StreamState(
+      ResourceId tableId, long snapshotId, String idempotencyKey, boolean validated) {
+    static StreamState initial() {
+      return new StreamState(null, -1L, null, false);
+    }
+
+    StreamState with(
+        ResourceId tableId, long snapshotId, String idempotencyKey, boolean validated) {
+      return new StreamState(tableId, snapshotId, idempotencyKey, validated);
+    }
+  }
+
+  private StreamState ensureState(StreamState state, ResourceId tableId, long snapshotId) {
+    if (state.tableId == null) {
+      return state.with(tableId, snapshotId, null, false);
+    }
+    if (!state.tableId.equals(tableId) || state.snapshotId != snapshotId) {
+      throw GrpcErrors.invalidArgument(correlationId(), "stats.inconsistent_target", Map.of());
+    }
+    return state;
+  }
+
+  private StreamState ensureIdempotency(StreamState state, String candidate) {
+    if (candidate == null || candidate.isBlank()) {
+      return state;
+    }
+    if (state.idempotencyKey == null) {
+      return state.with(state.tableId, state.snapshotId, candidate.trim(), state.validated);
+    }
+    if (!state.idempotencyKey.equals(candidate.trim())) {
+      throw GrpcErrors.invalidArgument(correlationId(), "idempotency.inconsistent_key", Map.of());
+    }
+    return state;
+  }
+
+  private StreamState validateOnce(StreamState state) {
+    if (state.validated) {
+      return state;
+    }
+    var pc = principal.get();
+    authz.require(pc, "table.write");
+
+    tables
+        .getById(state.tableId)
+        .orElseThrow(
+            () ->
+                GrpcErrors.notFound(correlationId(), "table", Map.of("id", state.tableId.getId())));
+
+    snapshots
+        .getById(state.tableId, state.snapshotId)
+        .orElseThrow(
+            () ->
+                GrpcErrors.notFound(
+                    correlationId(), "snapshot", Map.of("id", Long.toString(state.snapshotId))));
+
+    return state.with(state.tableId, state.snapshotId, state.idempotencyKey, true);
+  }
+
+  private Boolean processColumnStats(
+      AtomicReference<StreamState> stateRef, PutColumnStatsRequest req, AtomicInteger upserted) {
+    StreamState computed =
+        ensureState(stateRef.get(), req.getTableId(), req.getSnapshotId()); // may throw on mismatch
+    computed =
+        ensureIdempotency(computed, req.hasIdempotency() ? req.getIdempotency().getKey() : null);
+    computed = validateOnce(computed);
+    stateRef.set(computed);
+    final StreamState next = computed;
+
+    var tenantId = principal.get().getTenantId();
+    var tsNow = nowTs();
+
+    for (var raw : req.getColumnsList()) {
+      var columnStats =
+          raw.toBuilder().setTableId(next.tableId()).setSnapshotId(next.snapshotId()).build();
+      var fingerprint = raw.toByteArray();
+
+      if (next.idempotencyKey() == null) {
+        stats.putColumnStats(next.tableId(), next.snapshotId(), columnStats);
+        upserted.incrementAndGet();
+        continue;
+      }
+
+      MutationOps.createProto(
+          tenantId,
+          "PutColumnStats",
+          next.idempotencyKey(),
+          () -> fingerprint,
+          () -> {
+            stats.putColumnStats(next.tableId(), next.snapshotId(), columnStats);
+            return new IdempotencyGuard.CreateResult<>(columnStats, next.tableId());
+          },
+          cs ->
+              stats.metaForColumnStats(next.tableId(), next.snapshotId(), cs.getColumnId(), tsNow),
+          idempotencyStore,
+          tsNow,
+          idempotencyTtlSeconds(),
+          this::correlationId,
+          ColumnStats::parseFrom,
+          rec ->
+              stats
+                  .getColumnStats(next.tableId(), next.snapshotId(), raw.getColumnId())
+                  .isPresent());
+
+      upserted.incrementAndGet();
+    }
+    return Boolean.TRUE;
+  }
+
+  private Boolean processFileColumnStats(
+      AtomicReference<StreamState> stateRef,
+      PutFileColumnStatsRequest req,
+      AtomicInteger upserted) {
+    StreamState computed =
+        ensureState(stateRef.get(), req.getTableId(), req.getSnapshotId()); // may throw on mismatch
+    computed =
+        ensureIdempotency(computed, req.hasIdempotency() ? req.getIdempotency().getKey() : null);
+    computed = validateOnce(computed);
+    stateRef.set(computed);
+    final StreamState next = computed;
+
+    var tenantId = principal.get().getTenantId();
+    var tsNow = nowTs();
+
+    for (var raw : req.getFilesList()) {
+      var fileStats =
+          raw.toBuilder().setTableId(next.tableId()).setSnapshotId(next.snapshotId()).build();
+      var fingerprint = raw.toByteArray();
+
+      if (next.idempotencyKey() == null) {
+        stats.putFileColumnStats(next.tableId(), next.snapshotId(), fileStats);
+        upserted.incrementAndGet();
+        continue;
+      }
+
+      MutationOps.createProto(
+          tenantId,
+          "PutFileColumnStats",
+          next.idempotencyKey(),
+          () -> fingerprint,
+          () -> {
+            stats.putFileColumnStats(next.tableId(), next.snapshotId(), fileStats);
+            return new IdempotencyGuard.CreateResult<>(fileStats, next.tableId());
+          },
+          fs ->
+              stats.metaForFileColumnStats(
+                  next.tableId(), next.snapshotId(), fs.getFilePath(), tsNow),
+          idempotencyStore,
+          tsNow,
+          idempotencyTtlSeconds(),
+          this::correlationId,
+          FileColumnStats::parseFrom,
+          rec ->
+              stats
+                  .getFileColumnStats(next.tableId(), next.snapshotId(), raw.getFilePath())
+                  .isPresent());
+
+      upserted.incrementAndGet();
+    }
+    return Boolean.TRUE;
   }
 }

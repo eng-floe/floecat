@@ -2,6 +2,7 @@ package ai.floedb.metacat.reconciler.impl;
 
 import ai.floedb.metacat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.MutinyTableStatisticsServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
@@ -31,6 +32,9 @@ public class GrpcClients {
   TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics;
 
   @GrpcClient("metacat")
+  MutinyTableStatisticsServiceGrpc.MutinyTableStatisticsServiceStub statisticsMutiny;
+
+  @GrpcClient("metacat")
   ConnectorsGrpc.ConnectorsBlockingStub connector;
 
   public DirectoryServiceGrpc.DirectoryServiceBlockingStub directory() {
@@ -55,6 +59,10 @@ public class GrpcClients {
 
   public TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics() {
     return statistics;
+  }
+
+  public MutinyTableStatisticsServiceGrpc.MutinyTableStatisticsServiceStub statisticsMutiny() {
+    return statisticsMutiny;
   }
 
   public ConnectorsGrpc.ConnectorsBlockingStub connector() {

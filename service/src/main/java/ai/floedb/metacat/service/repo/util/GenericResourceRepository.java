@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
 public class GenericResourceRepository<T, K extends ResourceKey> extends BaseResourceRepository<T> {
 
@@ -24,7 +25,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       BlobStore blobStore,
       ResourceSchema<T, K> schema,
       ProtoParser<T> parser,
-      java.util.function.Function<T, byte[]> toBytes,
+      Function<T, byte[]> toBytes,
       String contentType) {
     super(pointerStore, blobStore, parser, toBytes, contentType);
     this.schema = Objects.requireNonNull(schema, "schema");

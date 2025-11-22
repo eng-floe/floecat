@@ -22,10 +22,13 @@ import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.inject.Inject;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.text.Normalizer;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -206,9 +209,9 @@ public abstract class BaseServiceImpl {
 
   protected static String hashFingerprint(byte[] data) {
     try {
-      var md = java.security.MessageDigest.getInstance("SHA-256");
-      return java.util.Base64.getEncoder().encodeToString(md.digest(data));
-    } catch (java.security.NoSuchAlgorithmException e) {
+      var md = MessageDigest.getInstance("SHA-256");
+      return Base64.getEncoder().encodeToString(md.digest(data));
+    } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 not supported", e);
     }
   }
@@ -228,7 +231,7 @@ public abstract class BaseServiceImpl {
 
   protected static Map<String, String> cleanKeysOnly(Map<String, String> in) {
     if (in == null || in.isEmpty()) {
-      return java.util.Map.of();
+      return Map.of();
     }
 
     var out = new LinkedHashMap<String, String>();
@@ -282,7 +285,7 @@ public abstract class BaseServiceImpl {
         }
       }
     }
-    return java.util.List.copyOf(seen);
+    return List.copyOf(seen);
   }
 
   protected static String cleanUri(String uri) {

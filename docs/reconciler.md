@@ -39,8 +39,8 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
 - **Destination binding** – When reconciling, the service ensures the connector’s declared
   destination catalog/namespace/table IDs align with actual resources. Any mismatch triggers a
   `ConnectorState` update or raises conflicts.
-- **Statistics ingestion** – Column stats are batched (`COLUMN_STATS_BATCH_SIZE = 5`) to reduce RPC
-  roundtrips. The reconciler uses `PutColumnStatsBatch` for efficiency.
+- **Statistics ingestion** – Table stats plus column/file stats are streamed one request per item via
+  `PutColumnStats` / `PutFileColumnStats`, keeping a single idempotency key per table/snapshot.
 - **Error handling** – Exceptions inside the per-table loop are caught, logged, and recorded in the
   job summary (`errors++`). The job proceeds to the next table, incrementing `scanned` regardless of
   success.
