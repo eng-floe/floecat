@@ -237,6 +237,62 @@ public class ConnectorIT {
   }
 
   @Test
+  void dummyConnectorRespectsDestinationTableDisplayName() throws Exception {
+    var tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
+    TestSupport.createCatalog(catalogService, "cat-dest-table", "");
+
+    var dest =
+        DestinationTarget.newBuilder()
+            .setCatalogDisplayName("cat-dest-table")
+            .setNamespace(
+                NamespacePath.newBuilder().addSegments("analytics").addSegments("sales").build())
+            .setTableDisplayName("my_events_copy")
+            .build();
+
+    var src =
+        SourceSelector.newBuilder()
+            .setNamespace(NamespacePath.newBuilder().addSegments("db").build())
+            .setTable("events")
+            .build();
+
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("dummy-dest-table")
+                .setKind(ConnectorKind.CK_UNITY)
+                .setUri("dummy://ignored")
+                .setSource(src)
+                .setDestination(dest)
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .build());
+
+    var job = runReconcile(conn.getResourceId());
+    assertNotNull(job);
+    assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
+
+    var catId =
+        catalogs.getByName(tenantId.getId(), "cat-dest-table").orElseThrow().getResourceId();
+
+    var ns =
+        namespaces
+            .getByPath(tenantId.getId(), catId.getId(), List.of("analytics", "sales"))
+            .orElseThrow();
+
+    var outTables =
+        tables.list(
+            tenantId.getId(),
+            catId.getId(),
+            ns.getResourceId().getId(),
+            50,
+            "",
+            new StringBuilder());
+
+    assertEquals(1, outTables.size(), "expected exactly one table in destination namespace");
+    assertEquals("my_events_copy", outTables.get(0).getDisplayName());
+  }
+
+  @Test
   void GlueIcebergRESTconnectorEndToEnd() throws Exception {
     boolean enabled =
         ConfigProvider.getConfig()
