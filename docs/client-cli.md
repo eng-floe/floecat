@@ -1,6 +1,7 @@
 # Client CLI
 
 ## Overview
+
 `client-cli/` packages a Picocli-based interactive shell backed by the same gRPC stubs used by the
 service. It is the quickest way for developers and operators to explore catalogs, namespaces, tables,
 connectors, and planning workflows without writing bespoke clients.
@@ -10,6 +11,7 @@ fully-qualified name parsing (`FQNameParserUtil`) and CSV-like argument parsing 
 (`CsvListParserUtil`).
 
 ## Architecture & Responsibilities
+
 - **`Shell` (top-level Picocli command)** – Boots an interactive REPL using JLine, configures history
   persistence (`~/.metacat_shell_history`), auto-completion, and command dispatch. Commands share a
   current tenant context and use injected blocking stubs annotated with `@GrpcClient("metacat")`.
@@ -19,12 +21,15 @@ fully-qualified name parsing (`FQNameParserUtil`) and CSV-like argument parsing 
   `MutationMeta`, pagination, and plan descriptors.
 
 Responsibilities:
+
 - Provide a REPL for catalog CRUD operations.
 - Manage gRPC connections and propagate `PrincipalContext` headers (via Quarkus client interceptors).
 - Perform minimal validation before sending requests (for example verifying namespace path syntax).
 
 ## Public API / Surface Area
+
 The CLI exposes commands documented at runtime via `help`. Highlights:
+
 - `tenant <UUID>` – Sets `currentTenantId` environment for subsequent commands.
 - `catalogs` / `catalog <subcommand>` – List/create/update/delete catalogs.
 - `namespaces` / `namespace <subcommand>` – Inspect namespace hierarchies, create nested paths.
@@ -42,6 +47,7 @@ syntactic sugar such as `catalog.ns.table` references and `--props k=v` repeated
 `map<string,string>` fields.
 
 ## Important Internal Details
+
 - **Tenant context** – Commands fail fast if `currentTenantId` is empty. The REPL prompts the user to
   run `tenant <id>` first or set `METACAT_TENANT` before launching.
 - **Error handling** – Set `METACAT_SHELL_DEBUG=true` (or `-Dmetacat.shell.debug=true`) to print full
@@ -53,15 +59,18 @@ syntactic sugar such as `catalog.ns.table` references and `--props k=v` repeated
   returned by connectors via the planning SPI.
 
 ## Data Flow & Lifecycle
+
 ```
 User command → Picocli parser → Shell subcommand → gRPC stub call
   → Interceptors attach tenant/principal headers → Service executes request
   ← Response printed (tables/JSON summaries)
 ```
+
 Commands run synchronously inside the REPL thread; long-running operations (for example connector
 reconciliation) show job IDs that can be polled via `connector job <id>`.
 
 ## Configuration & Extensibility
+
 - Build via `make cli` or run directly with `make cli-run` (delegates to `quarkus:dev`).
 - Configure the target endpoint using Quarkus client properties (default `localhost:9100`).
 - Extend commands by adding nested `@Command` classes under `Shell`. Because the CLI already injects
@@ -70,25 +79,32 @@ reconciliation) show job IDs that can be polled via `connector job <id>`.
   arg shapes.
 
 ## Examples & Scenarios
-- **Provisioning a namespace**
+
+- **Provisioning a catalog and namespace**
+
   ```
   tenant 31a47986-efaf-35f5-b810-09ba18ca81d2
+  catalog create demo --desc "Demo catalog"
   namespace create demo.sales --desc "Sales sandbox" --props owner=analyst
   ```
-- **Creating a table referencing an upstream connector**
+
+- **Creating a connector to an upstream Glue Iceberg table**
+
   ```
-  table create demo.sales.events \
-    --schema @schema/events.json \
-    --up-connector glue-catalog --up-ns demo.sales --up-table events \
-    --format ICEBERG
+  connector create "glue-iceberg" ICEBERG
+    "https://glue.us-east-1.amazonaws.com/iceberg/"
+    tpcds_iceberg demo --auth-scheme aws-sigv4
+    --source-table call_center
+    --dest-ns sales --dest-table my_call_center
   ```
-- **Planning a query read**
+
+- **Triggering a connector to read an upstream table**
+
   ```
-  plan begin table demo.sales.events --snapshot current --ttl 120
-  plan get <plan-id>
-  plan end <plan-id> --commit
+  connector trigger glue-iceberg
   ```
 
 ## Cross-References
+
 - RPC contract details: [`docs/proto.md`](proto.md)
 - Service behavior enforced by catalog/table/plan implementations: [`docs/service.md`](service.md)

@@ -279,15 +279,20 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       && destB.hasNamespaceId()
                       && dest.hasTableDisplayName()
                       && !dest.hasTableId()) {
-                    String dTbl = dest.getTableDisplayName();
-                    tableRepo
-                        .getByName(
+                    String dTbl = dest.getTableDisplayName().trim();
+                    var tblOpt =
+                        tableRepo.getByName(
                             tenantId,
                             destB.getCatalogId().getId(),
                             destB.getNamespaceId().getId(),
-                            dTbl)
-                        .ifPresent(tbl -> destB.setTableId(tbl.getResourceId()));
-                    destB.clearTableDisplayName();
+                            dTbl);
+
+                    if (tblOpt.isPresent()) {
+                      destB.setTableId(tblOpt.get().getResourceId());
+                      destB.clearTableDisplayName();
+                    } else {
+                      destB.setTableDisplayName(dTbl);
+                    }
                   }
 
                   var builder =
