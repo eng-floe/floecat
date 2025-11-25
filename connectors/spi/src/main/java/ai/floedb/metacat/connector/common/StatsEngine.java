@@ -56,5 +56,13 @@ public interface StatsEngine<K> {
     long sizeBytes();
 
     Map<K, ColumnAgg> columns();
+
+    default boolean isDelete() {
+      return false;
+    }
+
+    default boolean isEqualityDelete() {
+      return false;
+    }
   }
 }

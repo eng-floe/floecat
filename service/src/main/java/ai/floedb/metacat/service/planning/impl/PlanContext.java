@@ -1,24 +1,23 @@
 package ai.floedb.metacat.service.planning.impl;
 
+import ai.floedb.metacat.catalog.rpc.FileColumnStats;
+import ai.floedb.metacat.catalog.rpc.FileContent;
 import ai.floedb.metacat.catalog.rpc.GetTableRequest;
 import ai.floedb.metacat.catalog.rpc.GetTableResponse;
+import ai.floedb.metacat.catalog.rpc.ListFileColumnStatsRequest;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
+import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.PrincipalContext;
-import ai.floedb.metacat.common.rpc.ResourceId;
-import ai.floedb.metacat.connector.rpc.Connector;
-import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
-import ai.floedb.metacat.connector.rpc.GetConnectorRequest;
-import ai.floedb.metacat.connector.spi.ConnectorConfigMapper;
-import ai.floedb.metacat.connector.spi.ConnectorFactory;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
 import ai.floedb.metacat.planning.rpc.PlanStatus;
 import ai.floedb.metacat.planning.rpc.SnapshotPin;
 import ai.floedb.metacat.planning.rpc.SnapshotSet;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import com.google.protobuf.InvalidProtocolBufferException;
-import io.grpc.StatusRuntimeException;
 import java.time.Clock;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.Objects;
@@ -108,10 +107,9 @@ public final class PlanContext {
     return this.toBuilder().expiresAtMs(next).version(newVersion).build();
   }
 
-  public MetacatConnector.PlanBundle runPlanning(
+  public MetacatConnector.PlanBundle runPlanningFromStore(
       TableServiceGrpc.TableServiceBlockingStub tables,
-      ConnectorsGrpc.ConnectorsBlockingStub connectors) {
-    // TODO: Make this async and more robust
+      TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats) {
     try {
       if (snapshotSet != null) {
         SnapshotSet snapshots;
@@ -128,33 +126,9 @@ public final class PlanContext {
           GetTableResponse tableResponse =
               tables.getTable(GetTableRequest.newBuilder().setTableId(s.getTableId()).build());
           Table table = tableResponse.getTable();
-          if (table.hasUpstream()) {
-            ResourceId id = table.getUpstream().getConnectorId();
-
-            final Connector stored;
-            try {
-              stored =
-                  connectors
-                      .getConnector(GetConnectorRequest.newBuilder().setConnectorId(id).build())
-                      .getConnector();
-            } catch (StatusRuntimeException e) {
-              throw new IllegalArgumentException("Connector not found: " + id.getId(), e);
-            }
-
-            var cfg = ConnectorConfigMapper.fromProto(stored);
-
-            try (MetacatConnector connector = ConnectorFactory.create(cfg)) {
-              String sourceNsFq =
-                  !table.getUpstream().getNamespacePathList().isEmpty()
-                      ? String.join(".", table.getUpstream().getNamespacePathList())
-                      : "";
-              String sourceTable = table.getUpstream().getTableDisplayName();
-              planStatus.set(PlanStatus.COMPLETED);
-
-              return connector.plan(
-                  sourceNsFq, sourceTable, s.getSnapshotId(), s.getAsOf().getSeconds());
-            }
-          }
+          var bundle = buildFromStats(table, s.getSnapshotId(), stats);
+          planStatus.set(PlanStatus.COMPLETED);
+          return bundle;
         }
       }
     } finally {
@@ -163,6 +137,54 @@ public final class PlanContext {
       }
     }
     return null;
+  }
+
+  private MetacatConnector.PlanBundle buildFromStats(
+      Table table,
+      long snapshotId,
+      TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats) {
+    var data = new ArrayList<ai.floedb.metacat.planning.rpc.PlanFile>();
+    var deletes = new ArrayList<ai.floedb.metacat.planning.rpc.PlanFile>();
+    String format = table.getUpstream().getFormat().name();
+
+    String pageToken = "";
+    do {
+      var req =
+          ListFileColumnStatsRequest.newBuilder()
+              .setTableId(table.getResourceId())
+              .setSnapshot(
+                  ai.floedb.metacat.common.rpc.SnapshotRef.newBuilder().setSnapshotId(snapshotId))
+              .setPage(PageRequest.newBuilder().setPageSize(1000).setPageToken(pageToken))
+              .build();
+      var resp = stats.listFileColumnStats(req);
+      for (FileColumnStats fcs : resp.getFileColumnsList()) {
+        var pf =
+            ai.floedb.metacat.planning.rpc.PlanFile.newBuilder()
+                .setFilePath(fcs.getFilePath())
+                .setFileFormat(format)
+                .setFileSizeInBytes(fcs.getSizeBytes())
+                .setRecordCount(fcs.getRowCount())
+                .setFileContent(mapContent(fcs.getFileContent()))
+                .addAllColumns(fcs.getColumnsList())
+                .build();
+        if (fcs.getFileContent() == FileContent.FC_DATA) {
+          data.add(pf);
+        } else {
+          deletes.add(pf);
+        }
+      }
+      pageToken = resp.hasPage() ? resp.getPage().getNextPageToken() : "";
+    } while (!pageToken.isBlank());
+
+    return new MetacatConnector.PlanBundle(data, deletes);
+  }
+
+  private ai.floedb.metacat.catalog.rpc.FileContent mapContent(FileContent fc) {
+    return switch (fc) {
+      case FC_EQUALITY_DELETES -> ai.floedb.metacat.catalog.rpc.FileContent.FC_EQUALITY_DELETES;
+      case FC_POSITION_DELETES -> ai.floedb.metacat.catalog.rpc.FileContent.FC_POSITION_DELETES;
+      default -> ai.floedb.metacat.catalog.rpc.FileContent.FC_DATA;
+    };
   }
 
   public PlanContext end(boolean commit, long graceExpiresAtMs, long newVersion) {

@@ -1,5 +1,7 @@
 package ai.floedb.metacat.connector.iceberg.impl;
 
+import ai.floedb.metacat.catalog.rpc.FileColumnStats;
+import ai.floedb.metacat.catalog.rpc.FileContent;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.common.GenericStatsEngine;
@@ -13,7 +15,6 @@ import ai.floedb.metacat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.metacat.connector.common.ndv.StaticOnceNdvProvider;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
-import ai.floedb.metacat.planning.rpc.FileContent;
 import ai.floedb.metacat.planning.rpc.PlanFile;
 import ai.floedb.metacat.types.LogicalType;
 import java.io.IOException;
@@ -257,7 +258,34 @@ public final class IcebergConnector implements MetacatConnector {
               },
               createdMs);
 
-      out.add(new SnapshotBundle(snapshotId, parentId, createdMs, tStats, cStats, fileStats));
+      List<FileColumnStats> deleteStats = new ArrayList<>();
+      TableScan scan = table.newScan().useSnapshot(snapshotId);
+      try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
+        for (FileScanTask task : tasks) {
+          for (var df : task.deletes()) {
+            deleteStats.add(
+                FileColumnStats.newBuilder()
+                    .setTableId(destinationTableId)
+                    .setSnapshotId(snapshotId)
+                    .setFilePath(df.location())
+                    .setRowCount(df.recordCount())
+                    .setSizeBytes(df.fileSizeInBytes())
+                    .setFileContent(
+                        df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
+                            ? FileContent.FC_EQUALITY_DELETES
+                            : FileContent.FC_POSITION_DELETES)
+                    .build());
+          }
+        }
+      } catch (Exception e) {
+        throw new RuntimeException(
+            "Failed to enumerate delete files for snapshot " + snapshotId, e);
+      }
+
+      List<FileColumnStats> allFiles = new ArrayList<>(fileStats);
+      allFiles.addAll(deleteStats);
+
+      out.add(new SnapshotBundle(snapshotId, parentId, createdMs, tStats, cStats, allFiles));
     }
     return out;
   }
@@ -291,7 +319,7 @@ public final class IcebergConnector implements MetacatConnector {
                   .setFileFormat(df.format().name())
                   .setFileSizeInBytes(df.fileSizeInBytes())
                   .setRecordCount(df.recordCount())
-                  .setFileContent(FileContent.DATA);
+                  .setFileContent(FileContent.FC_DATA);
           result.dataFiles().add(pf.build());
         }
 
@@ -304,8 +332,8 @@ public final class IcebergConnector implements MetacatConnector {
                   .setRecordCount(df.recordCount())
                   .setFileContent(
                       df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
-                          ? FileContent.EQUALITY_DELETES
-                          : FileContent.POSITION_DELETES);
+                          ? FileContent.FC_EQUALITY_DELETES
+                          : FileContent.FC_POSITION_DELETES);
           result.deleteFiles().add(pf.build());
         }
       }

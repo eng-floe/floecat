@@ -6,12 +6,12 @@ import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.common.rpc.SpecialSnapshot;
-import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.metacat.planning.rpc.BeginPlanRequest;
 import ai.floedb.metacat.planning.rpc.BeginPlanResponse;
 import ai.floedb.metacat.planning.rpc.EndPlanRequest;
@@ -60,7 +60,7 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
   TableServiceGrpc.TableServiceBlockingStub tables;
 
   @GrpcClient("metacat")
-  ConnectorsGrpc.ConnectorsBlockingStub connectors;
+  TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats;
 
   @Inject PlanContextStore plans;
 
@@ -169,7 +169,7 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
                           planId, principalContext, expansionBytes, snapshotBytes, ttlMs, 1L);
                   plans.put(planContext);
 
-                  var planBundle = planContext.runPlanning(tables, connectors);
+                  var planBundle = planContext.runPlanningFromStore(tables, stats);
 
                   try {
                     return BeginPlanResponse.newBuilder()

@@ -59,18 +59,12 @@ message ExpansionMap {
   repeated ai.floedb.metacat.common.ResourceId read_via_view_tables = 2;
 }
 
-enum FileContent {
-  DATA = 0;
-  POSITION_DELETES = 1;
-  EQUALITY_DELETES = 2;
-}
-
 message PlanFile {
   string file_path = 1;
   string file_format = 2;
   uint64 file_size_in_bytes = 3;
   uint64 record_count = 4;
-  FileContent file_content = 5;
+  ai.floedb.metacat.catalog.FileContent file_content = 5;
   repeated ai.floedb.metacat.catalog.ColumnStats columns = 6;
 }
 
@@ -91,6 +85,8 @@ message BeginPlanRequest {
   repeated PlanInput inputs = 1;
   google.protobuf.Timestamp as_of_default = 2;
   int32 ttl_seconds = 3;
+  // reserved for future predicate/projection pushdown; see planning_ex.proto for extended shape
+  reserved 4, 5, 6;
 }
 
 message BeginPlanResponse {

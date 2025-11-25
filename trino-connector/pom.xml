@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>ai.floedb.metacat</groupId>
+  <artifactId>trino-metacat-connector</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+  <name>trino-metacat-connector</name>
+
+  <properties>
+    <maven.compiler.source>21</maven.compiler.source>
+    <maven.compiler.target>21</maven.compiler.target>
+    <trino.version>476</trino.version>
+    <trino.grpc.version>1.54.1</trino.grpc.version>
+  </properties>
+
+  <dependencies>
+    <!-- Trino SPI: provided by the engine -->
+    <dependency>
+      <groupId>io.trino</groupId>
+      <artifactId>trino-spi</artifactId>
+      <version>${trino.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- The Iceberg connector + FS stack your code depends on -->
+    <dependency>
+      <groupId>io.trino</groupId>
+      <artifactId>trino-iceberg</artifactId>
+      <version>${trino.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.trino</groupId>
+      <artifactId>trino-filesystem</artifactId>
+      <version>${trino.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.trino</groupId>
+      <artifactId>trino-filesystem-manager</artifactId>
+      <version>${trino.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.trino</groupId>
+      <artifactId>trino-plugin-toolkit</artifactId>
+      <version>${trino.version}</version>
+    </dependency>
+
+    <!-- OpenTelemetry API is in engine, you only need it as provided -->
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-api</artifactId>
+      <version>1.40.0</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- DI API -->
+    <dependency>
+      <groupId>jakarta.inject</groupId>
+      <artifactId>jakarta.inject-api</artifactId>
+      <version>2.0.1</version>
+    </dependency>
+
+    <!-- Validation API: for @NotNull -->
+    <dependency>
+      <groupId>jakarta.validation</groupId>
+      <artifactId>jakarta.validation-api</artifactId>
+      <version>3.0.2</version>
+    </dependency>
+
+    <!-- Your Metacat RPC stubs -->
+    <dependency>
+      <groupId>ai.floedb.metacat</groupId>
+      <artifactId>metacat-proto</artifactId>
+      <version>${project.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>io.grpc</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.quarkus</groupId>
+          <artifactId>quarkus-grpc</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.quarkus</groupId>
+          <artifactId>quarkus-grpc-common</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.quarkus</groupId>
+          <artifactId>quarkus-grpc-stubs</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.vertx</groupId>
+          <artifactId>vertx-grpc</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-api</artifactId>
+      <version>${trino.grpc.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-protobuf</artifactId>
+      <version>${trino.grpc.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-stub</artifactId>
+      <version>${trino.grpc.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-netty-shaded</artifactId>
+      <version>${trino.grpc.version}</version>
+    </dependency>
+
+    <!-- Logging API -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>2.0.16</version>
+    </dependency>
+
+    <dependency>
+      <groupId>info.debatty</groupId>
+      <artifactId>java-string-similarity</artifactId>
+      <version>2.0.0</version>
+    </dependency>
+
+    <dependency>
+      <groupId>io.airlift</groupId>
+      <artifactId>bootstrap</artifactId>
+      <version>378</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.12.1</version>
+        <configuration>
+          <release>${maven.compiler.target}</release>
+        </configuration>
+      </plugin>
+
+      <!-- Optional: copy runtime deps into a folder you can just drop into Trino -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.6.1</version>
+        <executions>
+          <execution>
+            <id>copy-dependencies</id>
+            <phase>package</phase>
+            <goals>
+              <goal>copy-dependencies</goal>
+            </goals>
+            <configuration>
+              <includeScope>runtime</includeScope>
+              <outputDirectory>${project.build.directory}/plugin-deps</outputDirectory>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

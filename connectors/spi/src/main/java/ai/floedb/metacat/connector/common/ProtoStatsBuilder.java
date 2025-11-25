@@ -266,6 +266,12 @@ public final class ProtoStatsBuilder {
               .setFilePath(fa.path())
               .setRowCount(fa.rowCount())
               .setSizeBytes(fa.sizeBytes())
+              .setFileContent(
+                  fa.isDelete()
+                      ? (fa.isEqualityDelete()
+                      ? ai.floedb.metacat.catalog.rpc.FileContent.FC_EQUALITY_DELETES
+                      : ai.floedb.metacat.catalog.rpc.FileContent.FC_POSITION_DELETES)
+                  : ai.floedb.metacat.catalog.rpc.FileContent.FC_DATA)
               .addAllColumns(cols)
               .build());
     }

@@ -18,6 +18,7 @@ import io.delta.kernel.expressions.Column;
 import io.delta.kernel.expressions.Literal;
 import io.delta.kernel.internal.InternalScanFileUtils;
 import io.delta.kernel.internal.actions.AddFile;
+import io.delta.kernel.internal.actions.DeletionVectorDescriptor;
 import io.delta.kernel.statistics.DataFileStatistics;
 import io.delta.kernel.types.StructType;
 import io.delta.kernel.utils.CloseableIterator;
@@ -42,6 +43,8 @@ final class DeltaPlanner implements Planner<String> {
   private final Map<String, LogicalType> nameToLogical = new LinkedHashMap<>();
   private final NdvProvider ndvProvider;
   private final Set<String> columnSet;
+  private final List<DeletionVectorDescriptor> diskDeletionVectors = new ArrayList<>();
+  private boolean hasInlineDeletionVectors = false;
 
   DeltaPlanner(
       Engine engine,
@@ -99,6 +102,15 @@ final class DeltaPlanner implements Planner<String> {
             if (includeStats) {
               AddFile add =
                   new AddFile(scanFileRow.getStruct(InternalScanFileUtils.ADD_FILE_ORDINAL));
+              add.getDeletionVector()
+                  .ifPresent(
+                      dv -> {
+                        if (dv.isInline()) {
+                          hasInlineDeletionVectors = true;
+                        } else if (dv.isOnDisk()) {
+                          diskDeletionVectors.add(dv);
+                        }
+                      });
               Optional<DataFileStatistics> optStats = add.getStats();
               if (optStats.isPresent()) {
                 DataFileStatistics stats = optStats.get();
@@ -136,6 +148,7 @@ final class DeltaPlanner implements Planner<String> {
                     }
                   }
                 }
+
                 Map<Column, Literal> maxsMap = stats.getMaxValues();
                 if (maxsMap != null && !maxsMap.isEmpty()) {
                   maxs = new LinkedHashMap<>(maxsMap.size());
@@ -187,6 +200,18 @@ final class DeltaPlanner implements Planner<String> {
     } catch (Exception e) {
       throw new RuntimeException("Delta planning failed (version " + version + ")", e);
     }
+  }
+
+  boolean hasDeletionVectors() {
+    return !diskDeletionVectors.isEmpty() || hasInlineDeletionVectors;
+  }
+
+  boolean hasInlineDeletionVectors() {
+    return hasInlineDeletionVectors;
+  }
+
+  List<DeletionVectorDescriptor> deletionVectors() {
+    return Collections.unmodifiableList(diskDeletionVectors);
   }
 
   @Override

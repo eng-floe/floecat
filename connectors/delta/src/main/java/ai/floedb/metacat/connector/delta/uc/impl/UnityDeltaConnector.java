@@ -1,6 +1,7 @@
 package ai.floedb.metacat.connector.delta.uc.impl;
 
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
+import ai.floedb.metacat.catalog.rpc.FileContent;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.common.GenericStatsEngine;
@@ -13,7 +14,6 @@ import ai.floedb.metacat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.metacat.connector.spi.AuthProvider;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
-import ai.floedb.metacat.planning.rpc.FileContent;
 import ai.floedb.metacat.planning.rpc.PlanFile;
 import ai.floedb.metacat.types.LogicalType;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -22,6 +22,7 @@ import io.delta.kernel.Snapshot;
 import io.delta.kernel.Table;
 import io.delta.kernel.defaults.engine.DefaultEngine;
 import io.delta.kernel.engine.Engine;
+import io.delta.kernel.internal.actions.DeletionVectorDescriptor;
 import io.delta.kernel.types.StructType;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -252,6 +253,10 @@ public final class UnityDeltaConnector implements MetacatConnector {
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
     EngineOut engineOut = runEngine(tableRoot, version, includeNames, nameToType);
+    if (engineOut.hasInlineDeletionVectors()) {
+      throw new UnsupportedOperationException(
+          "Delta table uses inline deletion vectors; not supported for snapshot " + version);
+    }
     var result = engineOut.result();
 
     var tStats =
@@ -279,6 +284,22 @@ public final class UnityDeltaConnector implements MetacatConnector {
             nameToType::get,
             createdMs);
 
+    for (DeletionVectorDescriptor dv : engineOut.deletionVectors()) {
+      String dvPath =
+          (dv.isOnDisk() && dv.getPathOrInlineDv() != null) ? dv.getPathOrInlineDv() : "";
+      long rowCount = dv.getCardinality();
+      long sizeBytes = dv.getSizeInBytes();
+      fileStats.add(
+          ai.floedb.metacat.catalog.rpc.FileColumnStats.newBuilder()
+              .setTableId(destinationTableId)
+              .setSnapshotId(version)
+              .setFilePath(dvPath)
+              .setRowCount(rowCount)
+              .setSizeBytes(sizeBytes)
+              .setFileContent(ai.floedb.metacat.catalog.rpc.FileContent.FC_POSITION_DELETES)
+              .build());
+    }
+
     var normCols = normalizeColumnStats(cStats, kernelSchema);
     return List.of(new SnapshotBundle(version, parent, createdMs, tStats, normCols, fileStats));
   }
@@ -294,6 +315,11 @@ public final class UnityDeltaConnector implements MetacatConnector {
     try (var planner =
         new DeltaPlanner(engine, parquetInput, tableRoot, version, null, null, null, false)) {
 
+      if (planner.hasInlineDeletionVectors()) {
+        throw new UnsupportedOperationException(
+            "Delta table uses inline deletion vectors; not supported for snapshot " + version);
+      }
+
       List<PlanFile> data = new ArrayList<>();
       for (PlannedFile<String> pf : planner) {
         data.add(
@@ -302,11 +328,27 @@ public final class UnityDeltaConnector implements MetacatConnector {
                 .setFileFormat("PARQUET")
                 .setFileSizeInBytes(pf.sizeBytes())
                 .setRecordCount(pf.rowCount())
-                .setFileContent(FileContent.DATA)
+                .setFileContent(FileContent.FC_DATA)
                 .build());
       }
 
-      return new PlanBundle(data, null);
+      List<PlanFile> deletes = new ArrayList<>();
+      for (DeletionVectorDescriptor dv : planner.deletionVectors()) {
+        String dvPath =
+            (dv.isOnDisk() && dv.getPathOrInlineDv() != null) ? dv.getPathOrInlineDv() : "";
+        long rowCount = dv.getCardinality();
+        long sizeBytes = dv.getSizeInBytes();
+        deletes.add(
+            PlanFile.newBuilder()
+                .setFilePath(dvPath)
+                .setFileFormat("DELETION_VECTOR")
+                .setFileSizeInBytes(sizeBytes)
+                .setRecordCount(rowCount)
+                .setFileContent(FileContent.FC_POSITION_DELETES)
+                .build());
+      }
+
+      return new PlanBundle(data, deletes);
     } catch (Exception e) {
       throw new RuntimeException("Enumerating Delta files failed (version " + version + ")", e);
     }
@@ -338,7 +380,11 @@ public final class UnityDeltaConnector implements MetacatConnector {
     }
   }
 
-  private record EngineOut(StatsEngine.Result<String> result) {}
+  private record EngineOut(
+      StatsEngine.Result<String> result,
+      boolean hasDeletionVectors,
+      boolean hasInlineDeletionVectors,
+      List<DeletionVectorDescriptor> deletionVectors) {}
 
   private EngineOut runEngine(
       String tableRoot,
@@ -379,7 +425,11 @@ public final class UnityDeltaConnector implements MetacatConnector {
               planner.logicalTypesByKey());
 
       var result = engine.compute();
-      return new EngineOut(result);
+      return new EngineOut(
+          result,
+          planner.hasDeletionVectors(),
+          planner.hasInlineDeletionVectors(),
+          planner.deletionVectors());
     } catch (Exception e) {
       throw new RuntimeException("Delta stats compute failed (version " + version + ")", e);
     }

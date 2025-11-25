@@ -89,6 +89,14 @@ message FileColumnStats {
   int64 row_count = 4;
   int64 size_bytes = 5;
   repeated ColumnStats columns = 6;
+  FileContent file_content = 7;
+}
+
+enum FileContent {
+  FC_UNSPECIFIED = 0;
+  FC_DATA = 1;
+  FC_POSITION_DELETES = 2;
+  FC_EQUALITY_DELETES = 3;
 }
 
 // ---------- Requests/Responses ----------
