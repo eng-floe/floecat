@@ -3,7 +3,7 @@
 ## Overview
 `connectors/spi/` defines the contract that every upstream metadata connector must implement. The
 SPI abstracts discovery of namespaces/tables, enumeration of snapshots with statistics (table,
-column, and file-level), planning of physical files for a snapshot, and authentication adapters. It
+column, and file-level), enumeration of physical files for a snapshot, and authentication adapters. It
 also packages shared tooling for column statistics, file statistics, and NDV estimation.
 
 Connectors implement `MetacatConnector` and typically wrap an upstream catalog API (Iceberg REST,
@@ -18,7 +18,8 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Metac
   - `describe(namespaceFq, tableName)` → `TableDescriptor` with location, schema JSON, partition
     keys, properties.
   - `enumerateSnapshotsWithStats(...)` → `SnapshotBundle`s containing per-snapshot table/column/file stats.
-  - `plan(namespaceFq, tableName, snapshotId, asOfTime)` → `PlanBundle` describing data/delete files.
+  - `plan(namespaceFq, tableName, snapshotId, asOfTime)` → `ScanBundle` describing data/delete files pinned to the snapshot. (The SPI keeps the upstream “plan” term so Iceberg/Delta authors can map it directly to their native APIs.)
+- _Terminology note_: elsewhere in the repo “planning” refers to the dedicated planner service. Within the SPI the `plan()` verb simply mirrors upstream engines (`TableScan.planFiles()` in Iceberg, Delta manifests) to keep connector authors oriented; the returned `ScanBundle` is purely execution metadata.
 - **`ConnectorFactory`** – Instantiates connectors given a `ConnectorConfig` (URI, options,
   authentication). The service uses it to validate specs and the reconciler uses it during runs.
 - **`ConnectorConfigMapper`** – Bidirectional conversion between RPC `Connector` protobufs and the
@@ -40,10 +41,10 @@ interface MetacatConnector extends Closeable {
   List<String> listTables(String namespaceFq);
   TableDescriptor describe(String namespaceFq, String tableName);
   List<SnapshotBundle> enumerateSnapshotsWithStats(...);
-  PlanBundle plan(...);
+  ScanBundle plan(...);
 }
 ```
-`TableDescriptor`, `SnapshotBundle`, and `PlanBundle` are immutable records; connectors populate them
+`TableDescriptor`, `SnapshotBundle`, and `ScanBundle` are immutable records; connectors populate them
 with canonical metadata that the reconciler ingests. `SnapshotBundle.fileStats` is optional but
 should be populated when Parquet footers or upstream metadata can provide per-file row counts,
 sizes, and per-column stats.
@@ -63,7 +64,7 @@ sizes, and per-column stats.
   reuse the results for multiple columns to minimize IO; `ProtoStatsBuilder.toFileColumnStats`
   packages footer-derived stats into `FileColumnStats` payloads.
 - **Planner integration** – `Planner` interface (under `connector/common`) converts connector output
-  into planner-specific `PlanFile` lists, ensuring file stats include `ColumnStats` when available.
+  into executor-facing `ScanFile` lists, ensuring file stats include `ColumnStats` when available.
 - **Error propagation** – Connector implementations should wrap transient upstream failures inside
   unchecked exceptions so `ReconcilerService` can count them and continue scanning other tables.
 
@@ -74,7 +75,7 @@ ConnectorFactory.create(ConnectorConfig)
       → listNamespaces/listTables → service repo ensures namespace/table existence
       → describe → Table specs persisted with upstream references
       → enumerateSnapshotsWithStats → StatsRepository writes Table/Column/File stats per snapshot
-      → plan → PlanContext.runPlanning returns data/delete file manifests to planners
+      → plan → QueryContext.fetchScanBundle returns data/delete file manifests to planners
   ← close() cleans up HTTP/S3/DB connections
 ```
 `ConnectorFactory.create` is invoked both in `ConnectorsImpl.validate` (short-lived) and in the
@@ -95,9 +96,9 @@ reconciler (long-running); connectors must tolerate repeated instantiation and r
 - **Reconciliation run** – `ReconcilerService` constructs a connector inside a try-with-resources
   block, iterates `listTables`, calls `enumerateSnapshotsWithStats`, and writes the returned
   `SnapshotBundle`s (table stats + column stats) through the service’s gRPC API.
-- **Planning** – During `PlanContext.runPlanning`, if a table has an `UpstreamRef.connector_id`, the
-  planning code instantiates that connector via the SPI and calls `plan()` to fetch file lists pinned
-  to the requested snapshot.
+- **Query lifecycle** – During `QueryContext.fetchScanBundle`, if a table has an `UpstreamRef.connector_id`,
+  the query lifecycle code instantiates that connector via the SPI and calls `plan()` to fetch file lists
+  pinned to the requested snapshot.
 
 ## Cross-References
 - Service connector management and reconciliation triggers:

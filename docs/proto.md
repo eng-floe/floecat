@@ -2,12 +2,12 @@
 
 ## Overview
 Metacat's public surface is entirely gRPC. The `proto/` module defines canonical protobuf
-structures for resource identifiers, catalog services, planning bundles, connectors, statistics, and
+structures for resource identifiers, catalog services, query lifecycle metadata, connectors, statistics, and
 helper schemas. Every other module depends on these contracts for serialization, validation, and
 compatibility.
 
-The contract files are organised by domain (`common/`, `catalog/`, `planning/`, `connector/`,
-`tenant/`, `types/`, `statistics/`). Generated Java stubs live under the `ai.floedb.metacat.*.rpc`
+The contract files are organised by domain (`common/`, `catalog/`, `query/`, `execution/`,
+`connector/`, `tenant/`, `types/`, `statistics/`). Generated Java stubs live under the `ai.floedb.metacat.*.rpc`
 packages and are consumed by the Quarkus service, connectors, CLI, and reconciler.
 
 ## Architecture & Responsibilities
@@ -19,8 +19,10 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
   lifecycle with `PageRequest`/`PageResponse` support; stats schemas also cover per-file statistics.
 - **`connector/connector.proto`** – Connector management RPCs plus reconciliation job tracking and
   validation routines.
-- **`planning/planning.proto`** – Plan lifecycle (`BeginPlan`, `Renew`, `End`, `GetPlan`) and the
-  `CatalogBundle` assembly schema consumed by query planners.
+- **`query/lifecycle.proto`** – Query lifecycle (`BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`) and the
+  snapshot pin metadata sent down to the SQL planner.
+- **`execution/scan.proto`** – Scan metadata (data/delete files + per-file stats) produced by
+  connectors and consumed at execution time.
 - **`types/types.proto`** – Logical type registry (Boolean/Decimal/etc.) and scalar encodings used by
   statistics and bundles.
 - **`tenant/tenant.proto`** – Tenant CRUD service for multi-tenancy bootstrap.
@@ -40,20 +42,21 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
 | `TenantService` | Tenant CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `TriggerReconcile`, `GetReconcileJob`. |
-| `Planning` | `BeginPlan`, `RenewPlan`, `EndPlan`, `GetPlan`, `GetCatalogBundle`. |
+| `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`. |
 
 Each RPC requires a populated `tenant_id` within the `ResourceId`s; the Quarkus service checks this
 before hitting repository storage.
 
-### Catalog Bundle Schema
-`planning.proto` introduces higher-level records tailored to planners:
-- `CatalogRelation` wraps tables, views, or session temps with namespace paths and catalog metadata.
-- `TableRelation` embeds stored `Table` definitions, derived `Column` descriptors, constraints, and
-  optional statistics.
-- `TypeRegistry` surfaces as a list of `TypeInfo` entries, letting multiple relations reference the
-  same complex type by ID.
-- `Builtins` enumerates functions, operators, casts, collations, and aggregates a planner may need.
-- `SessionMetadata` echoes overrides (GUCs, search path, temp relations) returned to the caller.
+### Planner Lifecycle & Execution Scan Schemas
+`query/lifecycle.proto` captures everything the planner needs to hold a lease:
+- `QueryInput` resolves tables/views by name or ID and optionally pins snapshots.
+- `QueryDescriptor` mirrors the live query context (IDs, expiry timestamps, snapshot pins, expansion
+  maps, table obligations, and scan files supplied by connectors).
+
+`execution/scan.proto` describes the scan inputs that executors consume:
+- `ScanFile` entries include the file path, size, record count, format, per-column stats, and whether
+  the file is data vs equality/position deletes.
+- `ScanFileContent` enumerates the delete/data categories.
 
 ## Important Internal Details
 - **Field numbering** – All proto files reserve low numbers for required identity fields and push
@@ -69,7 +72,7 @@ before hitting repository storage.
 - **Idempotency/Preconditions** – Mutating RPCs accept `IdempotencyKey` or `Precondition` (expected
   CAS version/ETag). Repository logic mirrors these fields, so clients should obey the same values
   when retrying.
-- **Plan Lifecycle** – `PlanDescriptor.plan_status` moves through `SUBMITTED → COMPLETED/FAILED`
+- **Query Lifecycle** – `QueryDescriptor.query_status` moves through `SUBMITTED → COMPLETED/FAILED`
   depending on connector planning success. Lease expirations are surfaced via `expires_at`.
 
 ## Data Flow & Lifecycle
@@ -77,19 +80,19 @@ before hitting repository storage.
    [`docs/service.md`](service.md#security-and-context)) and call gRPC endpoints.
 2. Mutations include `IdempotencyKey` for once-and-only-once semantics; the service persists a hash
   of the request along with the resultant `MutationMeta` so replays yield the previous payload.
-3. Connectors written against the SPI return `PlanFile` and stats payloads that exactly match the
-  protos defined here; the reconciler pipes them back via `catalog` and `planning` services.
-4. Planners issue `GetCatalogBundle` with a list of `RelationRef`s, optionally specifying
-  `RelationKind` and `SnapshotRef`. The response remains stable until referenced snapshots change.
+3. Connectors written against the SPI return `ScanFile` and stats payloads that exactly match the
+  protos defined here; the reconciler pipes them back via the catalog/statistics services.
+4. Planners call `QueryService.BeginQuery` to create query leases, optionally extend them via
+  `RenewQuery`, and close them out via `EndQuery` once execution is complete.
 
-_State diagram for the plan lease protocol:_
+_State diagram for the query lease protocol:_
 
 ```
-[BeginPlan] --> (PlanContext: SUBMITTED)
+[BeginQuery] --> (QueryContext: SUBMITTED)
     | planning succeeds
     v
-(PlanContext: COMPLETED) --renew--> (extend expires_at)
-    | EndPlan(commit=true/false)
+(QueryContext: COMPLETED) --renew--> (extend expires_at)
+    | EndQuery(commit=true/false)
     v
 (ENDED_COMMIT or ENDED_ABORT) --grace--> [expiry]
 ```
@@ -100,9 +103,8 @@ _State diagram for the plan lease protocol:_
 - **Custom properties** – Many records expose `map<string,string> properties` for lightweight
   extensions. Document keys in the consuming module (for example connector-specific hints in
   [`docs/connectors-spi.md`](connectors-spi.md)).
-- **Bundles** – Clients can skip built-ins via `CatalogBundleRequest.include_builtins=false` if they
-  cache previous responses. Session temp relations can be supplied inline by populating
-  `SessionOverrides.temp_relations`.
+- **Query leases** – Clients decide how aggressively to renew leases; planners should renew before
+  `expires_at` and call `EndQuery` even on failure so `QueryContextStore` can release pins eagerly.
 
 ## Examples & Scenarios
 ### Creating a table via gRPC
@@ -124,16 +126,13 @@ grpcurl -plaintext -d '{
 }' localhost:9100 ai.floedb.metacat.catalog.TableService/CreateTable
 ```
 
-### Fetching a catalog bundle for a query plan
+### Beginning a query lifecycle lease
 ```bash
 grpcurl -plaintext -d '{
-  "relations": [
-    {"relation_kind": "RELATION_KIND_TABLE",
-     "name": {"catalog":"demo", "path":["sales"], "name":"events"},
-     "snapshot": {"special": "SS_CURRENT"}}
-  ],
-  "session": {"search_path": ["demo.sales"], "gucs": {"role": "analyst"}}
-}' localhost:9100 ai.floedb.metacat.planning.Planning/GetCatalogBundle
+  "inputs": [
+    {"name": {"catalog":"demo","path":["sales"],"name":"events"}}
+  ]
+}' localhost:9100 ai.floedb.metacat.query.QueryService/BeginQuery
 ```
 
 ## Cross-References
@@ -142,4 +141,4 @@ grpcurl -plaintext -d '{
   [`docs/connectors-spi.md`](connectors-spi.md),
   [`docs/connectors-iceberg.md`](connectors-iceberg.md),
   [`docs/connectors-delta.md`](connectors-delta.md)
-- Planner bundle assembly internals: [`docs/service.md#planning-and-bundle-assembly`](service.md#planning-and-bundle-assembly)
+- Query lifecycle internals: [`docs/service.md#query-lifecycle-service`](service.md#query-lifecycle-service)

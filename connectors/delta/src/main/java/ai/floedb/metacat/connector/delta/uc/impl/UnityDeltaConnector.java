@@ -13,8 +13,8 @@ import ai.floedb.metacat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.metacat.connector.spi.AuthProvider;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
-import ai.floedb.metacat.planning.rpc.FileContent;
-import ai.floedb.metacat.planning.rpc.PlanFile;
+import ai.floedb.metacat.execution.rpc.ScanFile;
+import ai.floedb.metacat.execution.rpc.ScanFileContent;
 import ai.floedb.metacat.types.LogicalType;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -284,7 +284,7 @@ public final class UnityDeltaConnector implements MetacatConnector {
   }
 
   @Override
-  public PlanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime) {
+  public ScanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime) {
     final String tableRoot = storageLocation(namespaceFq, tableName);
     final Table table = Table.forPath(engine, tableRoot);
 
@@ -294,19 +294,19 @@ public final class UnityDeltaConnector implements MetacatConnector {
     try (var planner =
         new DeltaPlanner(engine, parquetInput, tableRoot, version, null, null, null, false)) {
 
-      List<PlanFile> data = new ArrayList<>();
+      List<ScanFile> data = new ArrayList<>();
       for (PlannedFile<String> pf : planner) {
         data.add(
-            PlanFile.newBuilder()
+            ScanFile.newBuilder()
                 .setFilePath(pf.path())
                 .setFileFormat("PARQUET")
                 .setFileSizeInBytes(pf.sizeBytes())
                 .setRecordCount(pf.rowCount())
-                .setFileContent(FileContent.DATA)
+                .setFileContent(ScanFileContent.SCAN_FILE_CONTENT_DATA)
                 .build());
       }
 
-      return new PlanBundle(data, null);
+      return new ScanBundle(data, null);
     } catch (Exception e) {
       throw new RuntimeException("Enumerating Delta files failed (version " + version + ")", e);
     }

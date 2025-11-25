@@ -1,16 +1,16 @@
 syntax = "proto3";
 
-package ai.floedb.metacat.planning;
+package ai.floedb.metacat.query;
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.planning.rpc";
-option java_outer_classname = "PlanningProto";
+option java_package = "ai.floedb.metacat.query.rpc";
+option java_outer_classname = "QueryServiceProto";
 
 import "common/common.proto";
 import "google/protobuf/timestamp.proto";
-import "catalog/stats.proto";
+import "execution/scan.proto";
 
-message PlanInput {
+message QueryInput {
   oneof target {
     ai.floedb.metacat.common.NameRef name = 1;
     ai.floedb.metacat.common.ResourceId table_id = 2;
@@ -19,7 +19,7 @@ message PlanInput {
   ai.floedb.metacat.common.SnapshotRef snapshot = 10;
 }
 
-enum PlanStatus {
+enum QueryStatus {
   SUBMITTED = 0;
   COMPLETED = 1;
   FAILED = 2;
@@ -40,11 +40,11 @@ message TableObligations {
 
   message ColumnMask {
     string column = 1;
-    string expression = 2; // SQL expression to compute masked value
+    string expression = 2;
   }
 
   repeated ColumnMask masks = 2;
-  string row_filter_expression = 3; // boolean SQL predicate; empty = no filter
+  string row_filter_expression = 3;
 }
 
 message ExpansionMap {
@@ -55,75 +55,62 @@ message ExpansionMap {
   }
 
   repeated ExpandedView views = 1;
-
   repeated ai.floedb.metacat.common.ResourceId read_via_view_tables = 2;
 }
 
-enum FileContent {
-  DATA = 0;
-  POSITION_DELETES = 1;
-  EQUALITY_DELETES = 2;
-}
-
-message PlanFile {
-  string file_path = 1;
-  string file_format = 2;
-  uint64 file_size_in_bytes = 3;
-  uint64 record_count = 4;
-  FileContent file_content = 5;
-  repeated ai.floedb.metacat.catalog.ColumnStats columns = 6;
-}
-
-message PlanDescriptor {
-  string plan_id = 1;
+message QueryDescriptor {
+  string query_id = 1;
   string tenant_id = 2;
-  PlanStatus plan_status = 3;
+  QueryStatus query_status = 3;
   google.protobuf.Timestamp created_at = 4;
   google.protobuf.Timestamp expires_at = 5;
   SnapshotSet snapshots = 6;
   ExpansionMap expansion = 7;
   repeated TableObligations obligations = 8;
-  repeated PlanFile data_files = 9;
-  repeated PlanFile delete_files = 10;
+  repeated ai.floedb.metacat.execution.ScanFile data_files = 9;
+  repeated ai.floedb.metacat.execution.ScanFile delete_files = 10;
 }
 
-message BeginPlanRequest {
-  repeated PlanInput inputs = 1;
+message BeginQueryRequest {
+  repeated QueryInput inputs = 1;
   google.protobuf.Timestamp as_of_default = 2;
   int32 ttl_seconds = 3;
 }
 
-message BeginPlanResponse {
-  PlanDescriptor plan = 1;
+message BeginQueryResponse {
+  QueryDescriptor query = 1;
 }
 
-message RenewPlanRequest {
-  string plan_id = 1;
+message RenewQueryRequest {
+  string query_id = 1;
   int32 ttl_seconds = 2;
 }
-message RenewPlanResponse {
-  string plan_id = 1;
+
+message RenewQueryResponse {
+  string query_id = 1;
   google.protobuf.Timestamp expires_at = 2;
 }
 
-message EndPlanRequest {
-  string plan_id = 1;
+message EndQueryRequest {
+  string query_id = 1;
   bool commit = 2;
 }
-message EndPlanResponse {
-  string plan_id = 1;
+
+message EndQueryResponse {
+  string query_id = 1;
 }
 
-message GetPlanRequest {
-  string plan_id = 1;
-}
-message GetPlanResponse {
-  PlanDescriptor plan = 1;
+message GetQueryRequest {
+  string query_id = 1;
 }
 
-service Planning {
-  rpc BeginPlan(BeginPlanRequest) returns (BeginPlanResponse);
-  rpc RenewPlan(RenewPlanRequest) returns (RenewPlanResponse);
-  rpc EndPlan(EndPlanRequest) returns (EndPlanResponse);
-  rpc GetPlan(GetPlanRequest) returns (GetPlanResponse);
+message GetQueryResponse {
+  QueryDescriptor query = 1;
+}
+
+service QueryService {
+  rpc BeginQuery(BeginQueryRequest) returns (BeginQueryResponse);
+  rpc RenewQuery(RenewQueryRequest) returns (RenewQueryResponse);
+  rpc EndQuery(EndQueryRequest) returns (EndQueryResponse);
+  rpc GetQuery(GetQueryRequest) returns (GetQueryResponse);
 }

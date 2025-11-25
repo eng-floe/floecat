@@ -59,7 +59,7 @@ Extensibility:
 ## Examples & Scenarios
 - **Production deployment** – Set `metacat.kv=dynamodb`, `metacat.blob=s3`, supply the DynamoDB table
   name and S3 bucket. On startup, `AwsClients` initialises AWS SDK clients and repositories begin
-  writing to DynamoDB/S3. Stats ingestion and planner bundles now persist durably.
+  writing to DynamoDB/S3. Stats ingestion and scan bundles now persist durably.
 - **Disaster recovery** – Because blobs are immutable and pointers encode versions, restoring a table
   involves rehydrating DynamoDB pointers (versions) and replaying snapshots stored in S3. GC settings
   control how long idempotency records and tombstones linger.

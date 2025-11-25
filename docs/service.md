@@ -3,13 +3,14 @@
 ## Overview
 The `service/` module is the authoritative runtime for Metacat. It hosts the Quarkus gRPC server,
 implements every public API from [`proto/`](proto.md), manages multi-tenant security contexts,
-translates requests into pointer/blob mutations, assembles planner bundles, and operates background
+translates requests into pointer/blob mutations, assembles execution scan bundles, and operates background
 tasks such as idempotency GC and repository seeding.
 
 It is structured for testability: each gRPC service delegates to repository abstractions, which in
 turn encapsulate storage backends. Tests such as
 `service/src/test/java/ai/floedb/metacat/service/repo/impl/TableRepositoryTest.java` and
-`CatalogBundleAssemblerTest.java` probe repository semantics and planner assembly logic.
+`service/src/test/java/ai/floedb/metacat/service/it/QueryServiceIT.java` probe repository semantics and
+query lifecycle / scan bundle logic.
 
 ## Architecture & Responsibilities
 ```
@@ -18,8 +19,8 @@ turn encapsulate storage backends. Tests such as
 │  ├─ Interceptors (context, localization, metering)                         │
 │  ├─ Security (PrincipalProvider, Authorizer)                               │
 │  ├─ Services (Catalog, Namespace, Table, View, Snapshot, Tenant,           │
-│  │            Directory, Statistics, Connectors, Planning)                 │
-│  ├─ Planning (PlanContextStore, CatalogBundleAssembler, TypeRegistry)      │
+│  │            Directory, Statistics, Connectors, QueryService)             │
+│  ├─ QueryService (QueryContextStore, QueryServiceImpl)                     │
 │  ├─ Repositories (CatalogRepository, NamespaceRepository, TableRepository, │
 │  │                ViewRepository, SnapshotRepository, StatsRepository,     │
 │  │                ConnectorRepository, TenantRepository,                   │
@@ -31,7 +32,7 @@ turn encapsulate storage backends. Tests such as
 ### Key packages
 - `service/common` – Shared helpers (`BaseServiceImpl`, `IdempotencyGuard`, `Canonicalizer`,
   pagination utilities, structured logging).
-- `service/context` – gRPC interceptors injecting `PrincipalContext`, correlation IDs, plan IDs, and
+- `service/context` – gRPC interceptors injecting `PrincipalContext`, correlation IDs, query IDs, and
   bridging outbound headers.
 - `service/security` – Minimal `PrincipalProvider` and `Authorizer` scaffolding; pluggable for
   production identity providers.
@@ -39,8 +40,8 @@ turn encapsulate storage backends. Tests such as
   includes key generation utilities (`Keys`, `ResourceKey`) and value normalizers.
 - `service/catalog` / `directory` / `tenant` / `statistics` / `connector` – gRPC service
   implementations.
-- `service/planning` – Plan lifecycle management (`PlanContext`, `PlanContextStore`) and bundle
-  assembly (`CatalogBundleAssembler`, `TypeRegistry`, `BuiltinMetadata`).
+- `service/query` – Query lifecycle management (`QueryContext`, `QueryContextStore`,
+  `QueryServiceImpl`).
 - `service/gc` – Scheduled cleanup of stale idempotency entries.
 - `service/bootstrap` – Optional seeding of demo tenants and catalog data.
 - `service/metrics` – `MeteringInterceptor` + `StorageUsageMetrics` for Micrometer integration.
@@ -65,8 +66,8 @@ helpers like `deterministicUuid`. Highlights:
 - **TenantServiceImpl** – Administers tenants and enforces conventional permissions.
 - **ConnectorsImpl** – Manages connector lifecycle, validates `ConnectorSpec` via SPI factories,
   wires reconciliation job submission, and exposes `ValidateConnector` + `TriggerReconcile`.
-- **PlanningImpl** – Administers plan leases (`BeginPlan`, `RenewPlan`, `EndPlan`, `GetPlan`) and
-  proxies `GetCatalogBundle` to `CatalogBundleAssembler`.
+- **QueryServiceImpl** – Administers query leases (`BeginQuery`, `RenewQuery`, `EndQuery`,
+  `GetQuery`) and fetches connector scan metadata (`ScanBundle`s) to include in the lease payload.
 
 ## Important Internal Details
 ### BaseServiceImpl & Idempotency
@@ -87,7 +88,7 @@ Each repository extends `BaseResourceRepository<T>`:
 implementations.
 
 ### Security and Context
-`InboundContextInterceptor` reads `x-principal-bin`, `x-plan-id`, and `x-correlation-id` headers,
+`InboundContextInterceptor` reads `x-principal-bin`, `x-query-id`, and `x-correlation-id` headers,
 validates tenant membership, hydrates MDC/OpenTelemetry attributes, and falls back to a development
 principal (full permissions) if no credentials exist. `OutboundContextClientInterceptor` mirrors the
 same headers for internal gRPC calls (service-to-service).
@@ -95,16 +96,13 @@ same headers for internal gRPC calls (service-to-service).
 `Authorizer` currently performs simple list membership checks on `PrincipalContext.permissions`; it
 can be replaced by injecting a custom implementation.
 
-### Planning and Bundle Assembly
-`PlanContextStore` is a Caffeine cache keyed by plan ID. Each `PlanContext` tracks state, expiration,
-`PrincipalContext`, encoded `SnapshotSet`, and `ExpansionMap`. `PlanningImpl.beginPlan` resolves
-name or ID references via Directory/Snapshot/Table services, pins snapshots, stores the plan, and
-optionally contacts connectors to fetch `PlanBundle`s (data/delete files).
-
-`CatalogBundleAssembler` resolves tables/views by ID or name, enforces tenancy/kind expectations,
-reads Iceberg schemas to emit `Column`/`TypeSpec` entries, queries statistics for pinned snapshots,
-normalizes session temp relations, and attaches builtin function/type metadata. `TypeRegistry` ensures
-all relation columns reference deduplicated `TypeInfo`s.
+### Query Lifecycle Service
+`QueryContextStore` is a Caffeine cache keyed by query ID. Each `QueryContext` tracks state,
+expiration, `PrincipalContext`, encoded `SnapshotSet`, and `ExpansionMap`.
+`QueryServiceImpl.beginQuery` resolves name or ID references via Directory/Snapshot/Table services,
+pins snapshots, stores the lease, and optionally contacts connectors to fetch `ScanBundle`s
+(data/delete files) so that planners have scan metadata up front. The lease data (snapshots,
+expansion map, obligations, scan files) is returned to the caller inside the `QueryDescriptor`.
 
 ### GC and Bootstrap
 `IdempotencyGc` runs on a configurable cadence (see `metacat.gc.*` config) and sweeps expired
@@ -121,24 +119,13 @@ rows upserted after all batches have been consumed.
 ### Typical request path
 ```
 client → Quarkus Server
-  → InboundContextInterceptor (principal/plan/correlation)
+  → InboundContextInterceptor (principal/query/correlation)
   → LocalizeErrorsInterceptor (message catalog)
   → MeteringInterceptor (metrics/latency)
   → ServiceImpl (authz + validation)
       → Repository (CAS pointer/blob operations)
   ← response + MutationMeta
 ```
-
-### Planner bundle assembly sequence
-1. `Planning.GetCatalogBundle` receives `CatalogBundleRequest` with relation refs.
-2. `CatalogBundleAssembler` uses repositories to fetch catalog/namespace/table/view records.
-3. When relations reference tables, it loads the Iceberg schema JSON using
-   `org.apache.iceberg.SchemaParser`, converts each field into `Column` entries, resolves type IDs via
-   `TypeRegistry`, and captures partition flags.
-4. If a `SnapshotRef` is specified, the assembler queries `SnapshotRepository` for the snapshot ID,
-   then `StatsRepository` for table/column stats.
-5. Session overrides are normalised (`search_path`, default namespace, temp relations) and merged
-   with builtin metadata, forming the final `CatalogBundle`.
 
 ## Configuration & Extensibility
 Notable `application.properties` keys:
@@ -149,7 +136,7 @@ Notable `application.properties` keys:
 | `quarkus.grpc.clients.metacat.*` | Loopback client config for internal RPC calls. |
 | `metacat.seed.enabled` | Enable demo data seeding. |
 | `metacat.kv` / `metacat.blob` | Select pointer/blob store implementation (`memory`, `dynamodb`, `s3`). |
-| `metacat.plan.*` | Default TTL, grace period, max cache size, safety expiry for plan contexts. |
+| `metacat.query.*` | Default TTL, grace period, max cache size, safety expiry for query contexts. |
 | `metacat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for GC. |
 | `quarkus.log.*` | JSON logging, file rotation, audit handlers per RPC package. |
 | `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters. |
@@ -158,8 +145,8 @@ Extension points:
 - **Storage** – Provide custom `PointerStore`/`BlobStore` (see [`docs/storage-spi.md`](storage-spi.md)).
 - **Security** – Replace `Authorizer` or interceptors with CDI alternatives.
 - **Connectors** – Register new SPI implementations and expose them via `ConnectorRepository`.
-- **Planning** – Supply additional builtin metadata or `CatalogRelation` enrichments by extending
-  `BuiltinMetadata`.
+- **QueryService** – Extend query metadata by enriching `QueryContext` creation or injecting
+  additional connector metadata via `QueryContext.fetchScanBundle`.
 
 ## Examples & Scenarios
 - **Create Catalog** – `CatalogServiceImpl.createCatalog` canonicalises `display_name`, generates a
@@ -168,12 +155,8 @@ Extension points:
   caller supplies an `IdempotencyKey`, the repository short-circuits duplicates.
 - **Delete Namespace** – Namespace deletions with `require_empty=true` check child counts via
   `NamespaceRepository.countChildren`. If tables exist, the service raises `MC_CONFLICT.namespace.not_empty`.
-- **Bundle fetch** – When a planner issues `GetCatalogBundle`, `PlanningImpl` verifies
-  `catalog.read`, passes the request to `CatalogBundleAssembler`, and responds with a `CatalogBundle`
-  referencing deduplicated `TypeInfo`s and builtin functions. The assembler caches builtin metadata
-  so includes can be toggled per request.
-- **Plan lease renewal** – Clients call `Planning.RenewPlan` before `expires_at`; the store extends
-  the TTL if the plan remains `ACTIVE`. A stale or ended plan returns `MC_NOT_FOUND.plan.not_found`.
+- **Query lease renewal** – Clients call `QueryService.RenewQuery` before `expires_at`; the store extends
+  the TTL if the query remains `ACTIVE`. A stale or ended query returns `MC_NOT_FOUND.query.not_found`.
 
 ## Cross-References
 - RPC contracts: [`docs/proto.md`](proto.md)

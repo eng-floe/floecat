@@ -4,22 +4,22 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.common.rpc.ResourceId;
-import ai.floedb.metacat.service.planning.impl.PlanContext;
+import ai.floedb.metacat.service.query.impl.QueryContext;
 import ai.floedb.metacat.service.util.TestSupport;
 import java.time.Clock;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
-class PlanContextTest {
+class QueryContextTest {
   private final Clock clock = Clock.systemUTC();
 
-  private static PrincipalContext pc(ResourceId tenantId, String subject, String planId) {
+  private static PrincipalContext pc(ResourceId tenantId, String subject, String queryId) {
     var b =
         PrincipalContext.newBuilder()
             .setTenantId(tenantId.getId())
             .setSubject(subject == null ? "test-user" : subject);
-    if (planId != null) {
-      b.setPlanId(planId);
+    if (queryId != null) {
+      b.setQueryId(queryId);
     }
     return b.build();
   }
@@ -27,12 +27,12 @@ class PlanContextTest {
   @Test
   void newActive_valid() {
     ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
-    var pc = pc(tenantId, "alice", "plan-123");
-    var ctx = PlanContext.newActive("plan-123", pc, null, null, 1_000, 1);
+    var pc = pc(tenantId, "alice", "query-123");
+    var ctx = QueryContext.newActive("query-123", pc, null, null, 1_000, 1);
 
-    assertEquals("plan-123", ctx.getPlanId());
+    assertEquals("query-123", ctx.getQueryId());
     assertEquals(pc, ctx.getPrincipal());
-    assertEquals(PlanContext.State.ACTIVE, ctx.getState());
+    assertEquals(QueryContext.State.ACTIVE, ctx.getState());
     assertTrue(ctx.getExpiresAtMs() > ctx.getCreatedAtMs());
     assertEquals(1, ctx.getVersion());
     assertTrue(ctx.remainingTtlMs(clock.millis()) > 0);
@@ -44,8 +44,8 @@ class PlanContextTest {
     var pc = pc(tenantId, "alice", "p1");
     Executable ex =
         () ->
-            PlanContext.builder()
-                .planId("p1")
+            QueryContext.builder()
+                .queryId("p1")
                 .principal(pc)
                 .createdAtMs(2000)
                 .expiresAtMs(1000)
@@ -58,7 +58,7 @@ class PlanContextTest {
   void extendLease_isMonotonic() {
     ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     var pc = pc(tenantId, "alice", "p1");
-    var ctx = PlanContext.newActive("p1", pc, null, null, 200, 1);
+    var ctx = QueryContext.newActive("p1", pc, null, null, 200, 1);
     long originalExp = ctx.getExpiresAtMs();
 
     var same = ctx.extendLease(originalExp - 50, 2);
@@ -74,11 +74,11 @@ class PlanContextTest {
   void end_commit_setsStateAndGrace() {
     ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     var pc = pc(tenantId, "alice", "p1");
-    var ctx = PlanContext.newActive("p1", pc, null, null, 100, 1);
+    var ctx = QueryContext.newActive("p1", pc, null, null, 100, 1);
     long targetGrace = clock.millis() + 500;
     var ended = ctx.end(true, targetGrace, 2);
 
-    assertEquals(PlanContext.State.ENDED_COMMIT, ended.getState());
+    assertEquals(QueryContext.State.ENDED_COMMIT, ended.getState());
     assertTrue(ended.getExpiresAtMs() >= targetGrace);
     assertEquals(2, ended.getVersion());
   }
@@ -87,10 +87,10 @@ class PlanContextTest {
   void asExpired_onlyIfActive() {
     ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     var pc = pc(tenantId, "alice", "p1");
-    var ctx = PlanContext.newActive("p1", pc, null, null, 100, 1);
+    var ctx = QueryContext.newActive("p1", pc, null, null, 100, 1);
 
     var expired = ctx.asExpired(2);
-    assertEquals(PlanContext.State.EXPIRED, expired.getState());
+    assertEquals(QueryContext.State.EXPIRED, expired.getState());
     assertEquals(2, expired.getVersion());
 
     var again = expired.asExpired(3);

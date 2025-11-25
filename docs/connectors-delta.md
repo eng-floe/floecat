@@ -14,7 +14,7 @@ classes manage OAuth2/SP token acquisition, Databricks SQL execution, and custom
   - Uses Delta Kernel (`io.delta.kernel.Table`) for schema and snapshot access.
   - Executes Databricks SQL statements via `SqlStmtClient` if a warehouse is configured.
   - Reads Parquet data with `S3V2FileSystemClient` and `ParquetS3V2InputFile` for NDV/statistics.
-  - Plans files using `DeltaPlanner`, emitting `PlanFile`s for data/delete manifests.
+  - Plans files using `DeltaPlanner`, emitting `ScanFile`s for data/delete manifests.
 - **`DatabricksAuthFactory`** – Produces `AuthProvider`s (OAuth2 bearer tokens, service principal
   tokens, CLI profiles) consumed by `UcHttp` and SQL client.
 - **`UcBaseSupport` / `UcHttp`** – HTTP helpers for constructing API URLs, encoding parameters, and
@@ -33,7 +33,8 @@ classes manage OAuth2/SP token acquisition, Databricks SQL execution, and custom
   produce NDV stats (`SamplingNdvProvider`, `ParquetNdvProvider`), and emits `SnapshotBundle`s with
   per-file stats (row count/size plus per-column metrics when available).
 - `plan(namespace, table, snapshotId, asOf)` – Uses `DeltaPlanner` to read snapshot manifests and
-  produce `PlanFile` entries labelled with `FileContent` (data, position deletes, equality deletes).
+  produce a `ScanBundle` whose entries are labelled with `ScanFileContent` (data, position deletes,
+  equality deletes).
 
 ## Important Internal Details
 - **Authentication** – Supports OAuth2 bearer tokens, Databricks CLI profiles, and service principal
@@ -60,7 +61,7 @@ ConnectorFactory.create(cfg)
   → enumerateSnapshotsWithStats
       → Delta Kernel Snapshot → Parquet stats engine → SnapshotBundle (table/column/file stats)
   → plan
-      → DeltaPlanner traverses _delta_log → PlanFile entries for data/delete files
+      → DeltaPlanner traverses _delta_log → ScanBundle entries for data/delete files
 ```
 Connector resources (HTTP clients, S3 client, Delta engine) are closed when `close()` is invoked.
 

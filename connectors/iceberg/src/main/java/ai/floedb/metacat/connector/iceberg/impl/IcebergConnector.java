@@ -13,8 +13,8 @@ import ai.floedb.metacat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.metacat.connector.common.ndv.StaticOnceNdvProvider;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
-import ai.floedb.metacat.planning.rpc.FileContent;
-import ai.floedb.metacat.planning.rpc.PlanFile;
+import ai.floedb.metacat.execution.rpc.ScanFile;
+import ai.floedb.metacat.execution.rpc.ScanFileContent;
 import ai.floedb.metacat.types.LogicalType;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -263,7 +263,7 @@ public final class IcebergConnector implements MetacatConnector {
   }
 
   @Override
-  public PlanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime) {
+  public ScanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime) {
     Namespace ns = Namespace.of(namespaceFq.split("\\."));
     TableIdentifier tid = TableIdentifier.of(ns, tableName);
     Table table = catalog.loadTable(tid);
@@ -280,32 +280,32 @@ public final class IcebergConnector implements MetacatConnector {
     Schema schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
     var schemaColumns = schema.columns();
 
-    PlanBundle result = new PlanBundle(new ArrayList<>(), new ArrayList<>());
+    ScanBundle result = new ScanBundle(new ArrayList<>(), new ArrayList<>());
     try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
       for (FileScanTask task : tasks) {
         {
           DataFile df = task.file();
           var pf =
-              PlanFile.newBuilder()
+              ScanFile.newBuilder()
                   .setFilePath(df.location())
                   .setFileFormat(df.format().name())
                   .setFileSizeInBytes(df.fileSizeInBytes())
                   .setRecordCount(df.recordCount())
-                  .setFileContent(FileContent.DATA);
+                  .setFileContent(ScanFileContent.SCAN_FILE_CONTENT_DATA);
           result.dataFiles().add(pf.build());
         }
 
         for (var df : task.deletes()) {
           var pf =
-              PlanFile.newBuilder()
+              ScanFile.newBuilder()
                   .setFilePath(df.location())
                   .setFileFormat(df.format().name())
                   .setFileSizeInBytes(df.fileSizeInBytes())
                   .setRecordCount(df.recordCount())
                   .setFileContent(
                       df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
-                          ? FileContent.EQUALITY_DELETES
-                          : FileContent.POSITION_DELETES);
+                          ? ScanFileContent.SCAN_FILE_CONTENT_EQUALITY_DELETES
+                          : ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES);
           result.deleteFiles().add(pf.build());
         }
       }

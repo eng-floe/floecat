@@ -217,8 +217,8 @@ public final class DummyConnector implements MetacatConnector {
   }
 
   @Override
-  public PlanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime) {
-    return new PlanBundle(List.of(), List.of());
+  public ScanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime) {
+    return new ScanBundle(List.of(), List.of());
   }
 
   @Override

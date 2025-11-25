@@ -10,7 +10,7 @@ control (`log/audit.json`). Runtime logs are created automatically when the serv
   Contains structured JSON or plain text (depending on config) capturing application logs, stack
   traces, and diagnostics.
 - **Audit log (`log/audit.json`)** – Dedicated handler for RPC-level audit entries. The service routes
-  specific categories (catalog, namespace, directory, table, view, tenant, planning, connector RPCs)
+  specific categories (catalog, namespace, directory, table, view, tenant, query lifecycle, connector RPCs)
   to this handler via `quarkus.log.category.*.handlers=audit`.
 
 Log rotation is configured in `service/src/main/resources/application.properties` (max file size,
@@ -22,7 +22,7 @@ by tailing files (`make logs`), shipping them to log sinks, or truncating them b
 
 ## Important Internal Details
 - **JSON format** – Both service and audit logs use Quarkus JSON logging by default
-  (`quarkus.log.console.json.enabled=true`). Each entry includes MDC fields such as `plan_id`,
+  (`quarkus.log.console.json.enabled=true`). Each entry includes MDC fields such as `query_id`,
   `correlation_id`, `tenant_id`, and `subject`, populated by `InboundContextInterceptor`.
 - **Rotation** – Controlled by `quarkus.log.file.rotation.*`. Files rotate daily (`.yyyy-MM-dd`) or
   when they exceed `20M`, keeping 14 backups.
