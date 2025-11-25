@@ -4,7 +4,7 @@ import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.common.rpc.ResourceId;
-import ai.floedb.metacat.planning.rpc.PlanFile;
+import ai.floedb.metacat.execution.rpc.ScanFile;
 import java.io.Closeable;
 import java.util.List;
 import java.util.Map;
@@ -27,7 +27,7 @@ public interface MetacatConnector extends Closeable {
       ResourceId destinationTableId,
       Set<String> includeColumns);
 
-  PlanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime);
+  ScanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime);
 
   @Override
   void close();
@@ -48,5 +48,5 @@ public interface MetacatConnector extends Closeable {
       List<ColumnStats> columnStats,
       List<FileColumnStats> fileStats) {}
 
-  record PlanBundle(List<PlanFile> dataFiles, List<PlanFile> deleteFiles) {}
+  record ScanBundle(List<ScanFile> dataFiles, List<ScanFile> deleteFiles) {}
 }

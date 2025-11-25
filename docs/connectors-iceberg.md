@@ -14,7 +14,7 @@ AWS Glue lookups, and optionally captures NDV sketches from Parquet files.
 - **`IcebergConnectorProvider`** – Exposes the connector via CDI so the service can instantiate it
   using URIs from `ConnectorSpec`.
 - **`IcebergPlanner`** – Implements `connector/common/Planner`, translating Iceberg `TableScan`
-  results into `PlanFile` entries (data/delete files, column stats, formats).
+  results into `ScanFile` entries (data/delete files, column stats, formats).
 - **`IcebergTypeMapper`** – Converts Iceberg Types into Metacat logical types when reporting stats
   or planner column metadata.
 - **`GlueIcebergFilter`** – Uses AWS Glue to quickly enumerate only those tables registered as
@@ -34,7 +34,7 @@ AWS Glue lookups, and optionally captures NDV sketches from Parquet files.
   timestamps, parent IDs, stats payloads, and per-file stats (row count/size plus per-column
   metrics when available).
 - `plan(namespace, table, snapshotId, asOfTimestamp)` – Builds an Iceberg `TableScan`, iterates
-  `FileScanTask`s, and emits per-file `PlanFile`s labelled with `FileContent` (data vs delete).
+  `FileScanTask`s, and emits a `ScanBundle` (data/delete `ScanFile`s) labelled with `ScanFileContent`.
 
 ## Important Internal Details
 - **Authentication** – The connector supports multiple schemes: `aws-sigv4` (default), OAuth2 token,
@@ -46,7 +46,7 @@ AWS Glue lookups, and optionally captures NDV sketches from Parquet files.
 - **S3 IO** – Falls back to `org.apache.iceberg.aws.s3.S3FileIO` unless `io-impl` is specified in
   connector options. Header hints (`rest.header.*`) propagate custom headers to REST calls.
 - **Planning** – `plan()` uses Iceberg scanning APIs with projection pushdown to avoid reading
-  entire Parquet files when only metadata is needed. `PlanFile` entries include file format, size,
+  entire Parquet files when only metadata is needed. `ScanFile` entries include file format, size,
   record count, and per-column stats if emitted by Iceberg.
 
 ## Data Flow & Lifecycle
@@ -60,8 +60,8 @@ ConnectorFactory.create(cfg)
   → enumerateSnapshotsWithStats
       → For each snapshot load Table, StatsEngine pulls Parquet stats (table/column + per-file),
         NDV provider merges sketches
-  → plan
-      → Build TableScan, collect FileScanTask -> PlanFile
+      → plan
+      → Build TableScan, collect FileScanTask -> ScanBundle
 ```
 Resources (RESTCatalog, GlueClient) are closed when the connector is closed.
 
@@ -91,7 +91,7 @@ To extend behaviour:
   `ConnectorsImpl` validates it by creating an `IcebergConnector` and calling `listNamespaces()`.
 - **Reconciliation** – `ReconcilerService` iterates Iceberg tables, uses `describe` to create or
   update Metacat Table records (storing schema JSON + upstream ref), then calls
-  `enumerateSnapshotsWithStats` to ingest snapshots and `plan` when acquiring plan bundles.
+  `enumerateSnapshotsWithStats` to ingest snapshots and `plan` when acquiring scan bundles.
 
 ## Cross-References
 - SPI contract: [`docs/connectors-spi.md`](connectors-spi.md)

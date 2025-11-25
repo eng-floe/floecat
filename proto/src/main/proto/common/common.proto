@@ -82,7 +82,7 @@ message PrincipalContext {
   repeated string roles = 5;
   repeated string permissions = 6;
   repeated string scopes = 7;
-  string plan_id = 8;
+  string query_id = 8;
   string correlation_id = 9;
   string locale = 10;
   google.protobuf.Timestamp issued_at = 11;

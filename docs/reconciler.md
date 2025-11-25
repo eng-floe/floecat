@@ -3,7 +3,7 @@
 ## Overview
 The `reconciler/` module automates ingestion from upstream connectors. It manages a queue of
 reconciliation jobs, leases work to workers, instantiates connectors via the SPI, and calls the
-service’s gRPC APIs to create tables, snapshots, statistics, and plan bundles.
+service’s gRPC APIs to create tables, snapshots, statistics, and scan bundles.
 
 This component decouples connector execution from the main service so that long-running scans do not
 block gRPC threads. The service triggers reconciliations via `Connectors.TriggerReconcile`, which

@@ -3,7 +3,7 @@
 ## Overview
 The `types/` module implements Metacat’s logical type system. It bridges the logical types declared
 in protobuf (`types/types.proto`) with Java helpers used by connectors, statistics engines, and the
-planner bundle assembler.
+execution scan bundle assembler.
 
 Key classes: `LogicalType`, `LogicalKind`, `LogicalTypeProtoAdapter`, `LogicalComparators`,
 `LogicalCoercions`, `ValueEncoders`, and `MinMaxCodec`.
@@ -45,7 +45,7 @@ between wire format and runtime objects.
 Connector reads Parquet schema → maps physical types to LogicalType
   → ValueEncoders encode per-column min/max/ndv bounds
   → StatsRepository stores encoded values (string or bytes)
-  → CatalogBundleAssembler converts stored logical type IDs into planner TypeSpecs via TypeRegistry
+  → Query lifecycle service converts stored logical type IDs into planner TypeSpecs via TypeRegistry
 ```
 
 ## Configuration & Extensibility
@@ -54,10 +54,10 @@ The module is pure Java; no configuration is required. Extending the type system
 - Updating `LogicalTypeProtoAdapter`, `LogicalCoercions`, comparators, and encoders to handle new
   kinds.
 - Ensuring connectors map upstream physical types to the new logical kind, and planners understand
-  the emitted `TypeSpec` (see [`docs/service.md`](service.md#planning-and-bundle-assembly)).
+  the emitted `TypeSpec` (see [`docs/service.md`](service.md#query-lifecycle-service)).
 
 ## Examples & Scenarios
-- **Iceberg schema parsing** – `CatalogBundleAssembler.populateColumns` parses Iceberg schemas,
+- **Iceberg schema parsing** – The query lifecycle service parses Iceberg schemas,
   constructs `TypeSpec`s, registers them with `TypeRegistry`, and uses `LogicalTypeProtoAdapter` to
   maintain consistency between stored schema JSON and bundle metadata.
 - **Statistics ingestion** – NDV providers convert Parquet min/max values using `MinMaxCodec` before
@@ -66,4 +66,4 @@ The module is pure Java; no configuration is required. Extending the type system
 
 ## Cross-References
 - Protobuf type definitions: [`docs/proto.md`](proto.md)
-- Planner bundle assembly: [`docs/service.md`](service.md)
+- Query lifecycle service: [`docs/service.md`](service.md#query-lifecycle-service)

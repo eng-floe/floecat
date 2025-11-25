@@ -3,8 +3,8 @@ package ai.floedb.metacat.service.context.impl;
 import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
-import ai.floedb.metacat.service.planning.PlanContextStore;
-import ai.floedb.metacat.service.planning.impl.PlanContext;
+import ai.floedb.metacat.service.query.QueryContextStore;
+import ai.floedb.metacat.service.query.impl.QueryContext;
 import ai.floedb.metacat.service.repo.impl.TenantRepository;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import io.grpc.Context;
@@ -31,18 +31,18 @@ import org.jboss.logging.MDC;
 public class InboundContextInterceptor implements ServerInterceptor {
   private static final Metadata.Key<byte[]> PRINC_BIN =
       Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
-  private static final Metadata.Key<String> PLAN_ID =
-      Metadata.Key.of("x-plan-id", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> QUERY_ID_HEADER =
+      Metadata.Key.of("x-query-id", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORR =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
 
   public static final Context.Key<PrincipalContext> PC_KEY = PrincipalProvider.KEY;
-  public static final Context.Key<String> PLAN_KEY = Context.key("plan_id");
+  public static final Context.Key<String> QUERY_KEY = Context.key("query_id");
   public static final Context.Key<String> CORR_KEY = Context.key("correlation_id");
 
   private Clock clock = Clock.systemUTC();
 
-  @Inject PlanContextStore planStore;
+  @Inject QueryContextStore queryStore;
   @Inject TenantRepository tenantRepository;
 
   @Override
@@ -54,27 +54,27 @@ public class InboundContextInterceptor implements ServerInterceptor {
             .filter(s -> !s.isBlank())
             .orElse(UUID.randomUUID().toString());
 
-    String planIdHeader = Optional.ofNullable(headers.get(PLAN_ID)).orElse("");
+    String queryIdHeader = Optional.ofNullable(headers.get(QUERY_ID_HEADER)).orElse("");
 
-    ResolvedContext resolvedContext = resolvePrincipalAndPlan(headers, planIdHeader);
+    ResolvedContext resolvedContext = resolvePrincipalAndQuery(headers, queryIdHeader);
 
     PrincipalContext principalContext = resolvedContext.pc();
-    String planId = resolvedContext.planId();
+    String queryId = resolvedContext.queryId();
 
     Context context =
         Context.current()
             .withValue(PC_KEY, principalContext)
-            .withValue(PLAN_KEY, planId)
+            .withValue(QUERY_KEY, queryId)
             .withValue(CORR_KEY, correlationId);
 
-    MDC.put("plan_id", planId);
+    MDC.put("query_id", queryId);
     MDC.put("correlation_id", correlationId);
     MDC.put("tenant_id", principalContext.getTenantId());
     MDC.put("subject", principalContext.getSubject());
 
     var span = Span.current();
     if (span.getSpanContext().isValid()) {
-      span.setAttribute("plan_id", planId);
+      span.setAttribute("query_id", queryId);
       span.setAttribute("correlation_id", correlationId);
       span.setAttribute("tenant_id", principalContext.getTenantId());
       span.setAttribute("subject", principalContext.getSubject());
@@ -93,7 +93,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
             try {
               metadata.put(CORR, correlationId);
             } finally {
-              MDC.remove("plan_id");
+              MDC.remove("query_id");
               MDC.remove("correlation_id");
               MDC.remove("tenant_id");
               MDC.remove("subject");
@@ -106,7 +106,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
     span = io.opentelemetry.api.trace.Span.current();
     if (span.getSpanContext().isValid()) {
-      span.setAttribute("plan_id", planId);
+      span.setAttribute("query_id", queryId);
       span.setAttribute("correlation_id", correlationId);
       span.setAttribute("tenant_id", principalContext.getTenantId());
       span.setAttribute("subject", principalContext.getSubject());
@@ -115,7 +115,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
     return listener;
   }
 
-  private ResolvedContext resolvePrincipalAndPlan(Metadata headers, String planIdHeader) {
+  private ResolvedContext resolvePrincipalAndQuery(Metadata headers, String queryIdHeader) {
     byte[] pcBytes = headers.get(PRINC_BIN);
 
     if (pcBytes != null) {
@@ -123,45 +123,47 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
       validateTenant(pc.getTenantId());
 
-      if (!isBlank(planIdHeader)
-          && !isBlank(pc.getPlanId())
-          && !pc.getPlanId().equals(planIdHeader)) {
+      if (!isBlank(queryIdHeader)
+          && !isBlank(pc.getQueryId())
+          && !pc.getQueryId().equals(queryIdHeader)) {
         throw Status.FAILED_PRECONDITION
-            .withDescription("plan_id mismatch between header and principal")
+            .withDescription("query_id mismatch between header and principal")
             .asRuntimeException();
       }
 
-      String canonicalPlan = !isBlank(pc.getPlanId()) ? pc.getPlanId() : planIdHeader;
-      return new ResolvedContext(pc, canonicalPlan);
+      String canonicalQueryId = !isBlank(pc.getQueryId()) ? pc.getQueryId() : queryIdHeader;
+      return new ResolvedContext(pc, canonicalQueryId);
     }
 
-    if (!isBlank(planIdHeader)) {
-      PlanContext ctx =
-          planStore
-              .get(planIdHeader)
+    if (!isBlank(queryIdHeader)) {
+      QueryContext ctx =
+          queryStore
+              .get(queryIdHeader)
               .orElseThrow(
                   () ->
                       Status.UNAUTHENTICATED
-                          .withDescription("unknown x-plan-id")
+                          .withDescription("unknown x-query-id")
                           .asRuntimeException());
 
       long now = clock.millis();
-      if (ctx.getState() != PlanContext.State.ACTIVE) {
-        throw Status.FAILED_PRECONDITION.withDescription("plan not active").asRuntimeException();
+      if (ctx.getState() != QueryContext.State.ACTIVE) {
+        throw Status.FAILED_PRECONDITION.withDescription("query not active").asRuntimeException();
       }
       if (ctx.getExpiresAtMs() < now) {
-        throw Status.FAILED_PRECONDITION.withDescription("plan lease expired").asRuntimeException();
-      }
-
-      PrincipalContext principalContext = ctx.getPrincipal();
-      if (!isBlank(principalContext.getPlanId())
-          && !principalContext.getPlanId().equals(planIdHeader)) {
         throw Status.FAILED_PRECONDITION
-            .withDescription("plan_id mismatch (store vs principal)")
+            .withDescription("query lease expired")
             .asRuntimeException();
       }
 
-      return new ResolvedContext(principalContext, planIdHeader);
+      PrincipalContext principalContext = ctx.getPrincipal();
+      if (!isBlank(principalContext.getQueryId())
+          && !principalContext.getQueryId().equals(queryIdHeader)) {
+        throw Status.FAILED_PRECONDITION
+            .withDescription("query_id mismatch (store vs principal)")
+            .asRuntimeException();
+      }
+
+      return new ResolvedContext(principalContext, queryIdHeader);
     }
 
     return new ResolvedContext(devContext(), "");
@@ -214,5 +216,5 @@ public class InboundContextInterceptor implements ServerInterceptor {
     }
   }
 
-  private record ResolvedContext(PrincipalContext pc, String planId) {}
+  private record ResolvedContext(PrincipalContext pc, String queryId) {}
 }

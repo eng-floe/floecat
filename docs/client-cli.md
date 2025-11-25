@@ -4,7 +4,7 @@
 
 `client-cli/` packages a Picocli-based interactive shell backed by the same gRPC stubs used by the
 service. It is the quickest way for developers and operators to explore catalogs, namespaces, tables,
-connectors, and planning workflows without writing bespoke clients.
+connectors, and query-lifecycle workflows without writing bespoke clients.
 
 The CLI runs as a Quarkus application, depends on generated RPC stubs, and includes helpers for
 fully-qualified name parsing (`FQNameParserUtil`) and CSV-like argument parsing for column lists
@@ -18,7 +18,7 @@ fully-qualified name parsing (`FQNameParserUtil`) and CSV-like argument parsing 
 - **Utility parsers** – `FQNameParserUtil` splits catalog.namespace.table strings into `NameRef`s;
   `CsvListParserUtil` converts `k=v` style arguments into Java maps/lists.
 - **Display helpers** – The shell formats responses into human-readable tables, summarising
-  `MutationMeta`, pagination, and plan descriptors.
+  `MutationMeta`, pagination, and query descriptors.
 
 Responsibilities:
 
@@ -38,8 +38,8 @@ The CLI exposes commands documented at runtime via `help`. Highlights:
 - `snapshots` / `stats` – Query snapshot lineage and table/column/file statistics (`stats files`
   lists per-file row/byte counts and per-column metrics).
 - `resolve` / `describe` – Exercise DirectoryService for name→ID lookups.
-- `plan` – Execute the plan lifecycle: `plan begin`, `plan renew`, `plan get`, `plan end`, and view
-  plan contents (snapshot pins, obligations, file lists).
+- `query` – Execute the query lease lifecycle: `query begin`, `query renew`, `query get`, `query end`,
+  and view lease contents (snapshot pins, obligations, file lists).
 - `connectors` / `connector <subcommand>` – Manage connector definitions and reconciliation jobs.
 
 Inputs map directly to RPCs (for example `table create` builds `CreateTableRequest`). The CLI adds
@@ -55,8 +55,8 @@ syntactic sugar such as `catalog.ns.table` references and `--props k=v` repeated
   `GrpcErrors`.
 - **Pagination defaults** – `DEFAULT_PAGE_SIZE` is 1000; commands like `catalogs` accept
   `--page-size` overrides and persist `next_page_token` transparently.
-- **Plan display** – `plan get` prints `PlanDescriptor` plus `PlanFile` lists (data/delete files)
-  returned by connectors via the planning SPI.
+- **Query display** – `query get` prints `QueryDescriptor` plus `ScanFile` lists (data/delete files)
+  returned by connectors via the query lifecycle SPI.
 
 ## Data Flow & Lifecycle
 
@@ -107,4 +107,4 @@ reconciliation) show job IDs that can be polled via `connector job <id>`.
 ## Cross-References
 
 - RPC contract details: [`docs/proto.md`](proto.md)
-- Service behavior enforced by catalog/table/plan implementations: [`docs/service.md`](service.md)
+- Service behavior enforced by catalog/table/query implementations: [`docs/service.md`](service.md)

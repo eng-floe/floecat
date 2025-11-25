@@ -11,7 +11,7 @@ component-specific documentation lives under [`docs/`](docs); see the [Documenta
 ## System Overview
 
 Metacat tracks a resource graph anchored at Tenants and spanning Catalogs, Namespaces, Tables,
-Views, Snapshots, statistics, and planning artifacts.
+Views, Snapshots, statistics, and query-lifecycle artifacts.
 
 ```
 Tenant
@@ -32,7 +32,7 @@ Two storage primitives underpin every service:
 
 The gRPC service (Quarkus) enforces tenancy, authorization, and idempotency while orchestrating
 connectors that ingest upstream metadata, reconciling it into the canonical blob/pointer stores, and
-serving planner-ready bundles.
+serving execution-ready scan bundles.
 
 ## Component Architecture
 
@@ -40,8 +40,8 @@ The following modules compose the system (see linked docs for deep dives):
 
 | Component | Responsibility |
 |-----------|----------------|
-| [`proto/`](docs/proto.md) | All protobuf/gRPC contracts (catalog, planning, connectors, statistics, types). |
-| [`service/`](docs/service.md) | Quarkus runtime, resource repositories, planning bundle assembly, GC, security, metrics. |
+| [`proto/`](docs/proto.md) | All protobuf/gRPC contracts (catalog, query lifecycle, execution scans, connectors, statistics, types). |
+| [`service/`](docs/service.md) | Quarkus runtime, resource repositories, query lifecycle service, GC, security, metrics. |
 | [`client-cli/`](docs/client-cli.md) | Interactive shell for humans; exercises every public RPC. |
 | [`connectors/spi/`](docs/connectors-spi.md) | Connector interfaces, stats engines, NDV helpers, auth shims. |
 | [`connectors/iceberg/`](docs/connectors-iceberg.md) | Iceberg REST + AWS Glue connector implementation. |
@@ -58,14 +58,14 @@ The following modules compose the system (see linked docs for deep dives):
 1. **Connectors** (Delta/Iceberg) enumerate upstream namespaces, tables, snapshots, and file-level
    stats via the shared SPI.
 2. The **Reconciler** schedules connector runs, materializes local Tables/Snapshots/Stats through
-   repository APIs, and records incremental NDV, histograms, and file plans.
-3. The **Service** exposes CRUD RPCs for catalogs/namespaces/tables/views, plus planning and
+   repository APIs, and records incremental NDV, histograms, and scan manifests.
+3. The **Service** exposes CRUD RPCs for catalogs/namespaces/tables/views, plus query-lifecycle and
    statistics APIs. Requests traverse interceptors that inject `PrincipalContext`, correlation IDs,
-   and optional plan leases before hitting service implementations.
+   and optional query leases before hitting service implementations.
 4. **Repositories** translate RPCs into pointer/blob mutations, enforce optimistic concurrency, and
    update idempotency records.
-5. **Planner RPCs** hydrate `CatalogBundle` payloads by combining stored metadata, statistics, and
-   built-in type/function registries.
+5. **Query lifecycle RPCs** hand planners lease descriptors (snapshot pins, obligations) plus any
+   connector-provided scan metadata needed before execution.
 
 ## Resource Model & Storage Layout
 
@@ -166,7 +166,7 @@ Set the tenant context first:
 tenant 31a47986-efaf-35f5-b810-09ba18ca81d2
 ```
 
-Then explore `catalog`, `namespace`, `table`, `connector`, and `plan` commands. The CLI exercises
+Then explore `catalog`, `namespace`, `table`, `connector`, and `query` commands. The CLI exercises
 the same gRPC surface described in [`docs/service.md`](docs/service.md).
 
 ### CLI Command Reference
@@ -207,14 +207,14 @@ stats column <catalog.ns[.ns...].table> [--snapshot <id|current>] [--column <nam
 resolve <catalog.ns[.ns...].table>
 describe <catalog.ns[.ns...].table>
 
-plan begin [--ttl <seconds>] [--as-of-default <timestamp>]
+query begin [--ttl <seconds>] [--as-of-default <timestamp>]
     (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>]
      | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>]
      | view-id <uuid>
      | namespace <catalog.ns[.ns...]>)+
-plan renew <plan_id> [--ttl <seconds>]
-plan end <plan_id> [--commit|--abort]
-plan get <plan_id>
+query renew <query_id> [--ttl <seconds>]
+query end <query_id> [--commit|--abort]
+query get <query_id>
 
 connectors
 connector list [--kind <KIND>] [--page-size <N>]
@@ -264,7 +264,7 @@ docs/
 └── log.md
 ```
 
-Cross-links between files describe how modules interact (for example, the planner bundle assembly
+Cross-links between files describe how modules interact (for example, the scan bundle assembly
 section in `service.md` references the type system in `types.md` and the connector SPI in
 `connectors-spi.md`).
 

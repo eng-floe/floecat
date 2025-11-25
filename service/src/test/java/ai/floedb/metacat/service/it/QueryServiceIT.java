@@ -5,11 +5,11 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
-import ai.floedb.metacat.planning.rpc.BeginPlanRequest;
-import ai.floedb.metacat.planning.rpc.EndPlanRequest;
-import ai.floedb.metacat.planning.rpc.PlanInput;
-import ai.floedb.metacat.planning.rpc.PlanningGrpc;
-import ai.floedb.metacat.planning.rpc.RenewPlanRequest;
+import ai.floedb.metacat.query.rpc.BeginQueryRequest;
+import ai.floedb.metacat.query.rpc.EndQueryRequest;
+import ai.floedb.metacat.query.rpc.QueryInput;
+import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
+import ai.floedb.metacat.query.rpc.RenewQueryRequest;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
@@ -21,9 +21,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
-class PlanningIT {
+class QueryServiceIT {
   @GrpcClient("metacat")
-  PlanningGrpc.PlanningBlockingStub planning;
+  QueryServiceGrpc.QueryServiceBlockingStub queries;
 
   @GrpcClient("metacat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
@@ -52,7 +52,7 @@ class PlanningIT {
   }
 
   @Test
-  void planBeginRenewEnd() {
+  void queryBeginRenewEnd() {
     var catName = catalogPrefix + "cat1";
     var cat = TestSupport.createCatalog(catalog, catName, "");
     var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "sch", List.of("db"), "");
@@ -78,9 +78,9 @@ class PlanningIT {
             .build();
 
     var req =
-        BeginPlanRequest.newBuilder()
+        BeginQueryRequest.newBuilder()
             .addInputs(
-                PlanInput.newBuilder()
+                QueryInput.newBuilder()
                     .setName(name)
                     .setTableId(tbl.getResourceId())
                     .setSnapshot(
@@ -89,23 +89,26 @@ class PlanningIT {
             .setTtlSeconds(2)
             .build();
 
-    var begin = planning.beginPlan(req);
-    assertTrue(begin.hasPlan());
-    var beginPlan = begin.getPlan();
-    assertFalse(beginPlan.getPlanId().isBlank());
-    assertTrue(beginPlan.getSnapshots().getPinsCount() >= 0);
+    var begin = queries.beginQuery(req);
+    assertTrue(begin.hasQuery());
+    var beginQuery = begin.getQuery();
+    assertFalse(beginQuery.getQueryId().isBlank());
+    assertTrue(beginQuery.getSnapshots().getPinsCount() >= 0);
 
     var renew =
-        planning.renewPlan(
-            RenewPlanRequest.newBuilder()
-                .setPlanId(beginPlan.getPlanId())
+        queries.renewQuery(
+            RenewQueryRequest.newBuilder()
+                .setQueryId(beginQuery.getQueryId())
                 .setTtlSeconds(2)
                 .build());
-    assertEquals(beginPlan.getPlanId(), renew.getPlanId());
+    assertEquals(beginQuery.getQueryId(), renew.getQueryId());
 
     var end =
-        planning.endPlan(
-            EndPlanRequest.newBuilder().setPlanId(beginPlan.getPlanId()).setCommit(true).build());
-    assertEquals(beginPlan.getPlanId(), end.getPlanId());
+        queries.endQuery(
+            EndQueryRequest.newBuilder()
+                .setQueryId(beginQuery.getQueryId())
+                .setCommit(true)
+                .build());
+    assertEquals(beginQuery.getQueryId(), end.getQueryId());
   }
 }
