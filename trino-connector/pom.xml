@@ -35,13 +35,11 @@
       <groupId>io.trino</groupId>
       <artifactId>trino-filesystem</artifactId>
       <version>${trino.version}</version>
-      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>io.trino</groupId>
       <artifactId>trino-filesystem-manager</artifactId>
       <version>${trino.version}</version>
-      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>io.trino</groupId>
@@ -97,7 +95,22 @@
           <groupId>io.vertx</groupId>
           <artifactId>vertx-grpc</artifactId>
         </exclusion>
+        <exclusion>
+          <groupId>com.google.protobuf</groupId>
+          <artifactId>protobuf-java</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>com.google.protobuf</groupId>
+          <artifactId>protobuf-java-util</artifactId>
+        </exclusion>
       </exclusions>
+    </dependency>
+
+    <!-- Align protobuf to Trino's version; avoid bundling the proto module's newer protobuf-->
+    <dependency>
+      <groupId>com.google.protobuf</groupId>
+      <artifactId>protobuf-java</artifactId>
+      <version>4.32.1</version>
     </dependency>
 
     <dependency>
@@ -132,12 +145,6 @@
       <groupId>info.debatty</groupId>
       <artifactId>java-string-similarity</artifactId>
       <version>2.0.0</version>
-    </dependency>
-
-    <dependency>
-      <groupId>io.airlift</groupId>
-      <artifactId>bootstrap</artifactId>
-      <version>378</version>
     </dependency>
   </dependencies>
 

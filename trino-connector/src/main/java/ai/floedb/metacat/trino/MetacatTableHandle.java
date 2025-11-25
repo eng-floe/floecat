@@ -1,10 +1,10 @@
 package ai.floedb.metacat.trino;
 
+import ai.floedb.metacat.common.rpc.ResourceId;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.trino.plugin.iceberg.IcebergTableHandle;
 import io.trino.plugin.iceberg.TableType;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.predicate.TupleDomain;
@@ -17,29 +17,35 @@ import java.util.Set;
 public class MetacatTableHandle implements ConnectorTableHandle {
 
   private final SchemaTableName schemaTableName;
-  private final ai.floedb.metacat.common.rpc.ResourceId tableId;
+  private final String tableId;
+  private final String tableTenantId;
+  private final String tableKind;
   private final String tableUri;
   private final String schemaJson;
   private final String partitionSpecJson;
   private final String format;
-  private final CatalogHandle catalogHandle;
+  private final String catalogHandleId;
 
   @JsonCreator
   public MetacatTableHandle(
       @JsonProperty("schemaTableName") SchemaTableName schemaTableName,
-      @JsonProperty("tableId") ai.floedb.metacat.common.rpc.ResourceId tableId,
+      @JsonProperty("tableId") String tableId,
+      @JsonProperty("tableTenantId") String tableTenantId,
+      @JsonProperty("tableKind") String tableKind,
       @JsonProperty("tableUri") String tableUri,
       @JsonProperty("schemaJson") String schemaJson,
       @JsonProperty("partitionSpecJson") String partitionSpecJson,
       @JsonProperty("format") String format,
-      @JsonProperty("catalogHandle") CatalogHandle catalogHandle) {
+      @JsonProperty("catalogHandleId") String catalogHandleId) {
     this.schemaTableName = schemaTableName;
     this.tableId = tableId;
+    this.tableTenantId = tableTenantId;
+    this.tableKind = tableKind;
     this.tableUri = tableUri;
     this.schemaJson = schemaJson;
     this.partitionSpecJson = partitionSpecJson;
     this.format = format;
-    this.catalogHandle = catalogHandle;
+    this.catalogHandleId = catalogHandleId;
   }
 
   @JsonProperty
@@ -47,12 +53,34 @@ public class MetacatTableHandle implements ConnectorTableHandle {
     return schemaTableName;
   }
 
+  @com.fasterxml.jackson.annotation.JsonIgnore
+  public ResourceId getTableResourceId() {
+    if (tableTenantId == null || tableTenantId.isBlank()) {
+      throw new IllegalStateException("Missing tenant id on table handle for table " + tableId);
+    }
+    ai.floedb.metacat.common.rpc.ResourceKind kind =
+        (tableKind == null || tableKind.isBlank())
+            ? ai.floedb.metacat.common.rpc.ResourceKind.RK_TABLE
+            : ai.floedb.metacat.common.rpc.ResourceKind.valueOf(tableKind);
+    return ResourceId.newBuilder().setId(tableId).setTenantId(tableTenantId).setKind(kind).build();
+  }
+
   @JsonProperty
-  public ai.floedb.metacat.common.rpc.ResourceId getTableId() {
+  public String getTableId() {
     return tableId;
   }
 
   @JsonProperty
+  public String getTableTenantId() {
+    return tableTenantId;
+  }
+
+  @JsonProperty
+  public String getTableKind() {
+    return tableKind;
+  }
+
+  @JsonProperty("tableUri")
   public String getUri() {
     return tableUri;
   }
@@ -72,9 +100,14 @@ public class MetacatTableHandle implements ConnectorTableHandle {
     return format;
   }
 
+  @JsonProperty("catalogHandleId")
+  public String getCatalogHandleId() {
+    return catalogHandleId;
+  }
+
   public IcebergTableHandle toIcebergTableHandle(Map<String, String> storageProperties) {
     return new IcebergTableHandle(
-        catalogHandle,
+        io.trino.spi.connector.CatalogHandle.fromId(catalogHandleId),
         schemaTableName.getSchemaName(),
         schemaTableName.getTableName(),
         TableType.DATA,

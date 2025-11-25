@@ -1,6 +1,5 @@
 package ai.floedb.metacat.trino;
 
-import static io.trino.spi.StandardErrorCode.REMOTE_TASK_ERROR;
 import static java.util.stream.Collectors.toList;
 
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
@@ -15,11 +14,9 @@ import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import com.google.inject.Inject;
-import io.grpc.StatusRuntimeException;
 import io.trino.plugin.iceberg.ColumnIdentity;
 import io.trino.plugin.iceberg.IcebergColumnHandle;
 import io.trino.plugin.iceberg.TypeConverter;
-import io.trino.spi.TrinoException;
 import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ColumnHandle;
@@ -30,6 +27,7 @@ import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTableVersion;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.connector.SchemaTablePrefix;
 import io.trino.spi.type.TypeManager;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -55,6 +53,9 @@ public class MetacatMetadata implements ConnectorMetadata {
   private final CatalogHandle catalogHandle;
   private final TypeManager typeManager;
 
+  private static final org.slf4j.Logger LOG =
+      org.slf4j.LoggerFactory.getLogger(MetacatMetadata.class);
+
   @Inject
   public MetacatMetadata(
       MetacatClient client,
@@ -71,57 +72,33 @@ public class MetacatMetadata implements ConnectorMetadata {
 
   @Override
   public List<String> listSchemaNames(ConnectorSession session) {
-    String catName = "sales";
+    var catResponse =
+        directoryService.resolveCatalog(
+            ResolveCatalogRequest.newBuilder()
+                .setRef(NameRef.newBuilder().setCatalog(catalogName.toString()).build())
+                .build());
 
-    try {
-      var catResponse =
-          directoryService.resolveCatalog(
-              ResolveCatalogRequest.newBuilder()
-                  .setRef(NameRef.newBuilder().setCatalog(catName).build())
-                  .build());
+    var nsResponse =
+        namespaceService.listNamespaces(
+            ListNamespacesRequest.newBuilder().setCatalogId(catResponse.getResourceId()).build());
 
-      var nsResponse =
-          namespaceService.listNamespaces(
-              ListNamespacesRequest.newBuilder().setCatalogId(catResponse.getResourceId()).build());
-
-      return nsResponse.getNamespacesList().stream()
-          .map(
-              ns -> {
-                if (ns.getParentsCount() == 0) {
-                  return ns.getDisplayName();
-                }
-                String parentPath = String.join(".", ns.getParentsList());
-                return parentPath.isEmpty()
-                    ? ns.getDisplayName()
-                    : parentPath + "." + ns.getDisplayName();
-              })
-          .toList();
-    } catch (StatusRuntimeException e) {
-      // This will show you the real gRPC status + description in Trino
-      throw new TrinoException(
-          REMOTE_TASK_ERROR,
-          "Metacat listSchemaNames failed for catalog '"
-              + catName
-              + "': "
-              + e.getStatus()
-              + " - "
-              + e.getStatus().getDescription(),
-          e);
-    } catch (Exception e) {
-      // Anything else that blows up locally
-      throw new TrinoException(
-          REMOTE_TASK_ERROR,
-          "Metacat listSchemaNames failed for catalog '" + catName + "': " + e.getMessage(),
-          e);
-    }
+    return nsResponse.getNamespacesList().stream()
+        .map(
+            ns -> {
+              if (ns.getParentsCount() == 0) {
+                return ns.getDisplayName();
+              }
+              String parentPath = String.join(".", ns.getParentsList());
+              return parentPath.isEmpty()
+                  ? ns.getDisplayName()
+                  : parentPath + "." + ns.getDisplayName();
+            })
+        .toList();
   }
 
-  @Override
   public List<SchemaTableName> listTables(ConnectorSession session, Optional<String> schemaName) {
-    ResolveFQTablesRequest request =
-        ResolveFQTablesRequest.newBuilder()
-            .setPrefix(NameMapper.prefixFromSchema(schemaName.orElse(null)))
-            .build();
+    NameRef prefix = NameMapper.prefix(catalogName.toString(), schemaName.orElse(null));
+    ResolveFQTablesRequest request = ResolveFQTablesRequest.newBuilder().setPrefix(prefix).build();
     ResolveFQTablesResponse response = directoryService.resolveFQTables(request);
 
     return response.getTablesList().stream().map(NameMapper::toSchemaTableName).collect(toList());
@@ -133,10 +110,16 @@ public class MetacatMetadata implements ConnectorMetadata {
       SchemaTableName tableName,
       Optional<ConnectorTableVersion> startVersion,
       Optional<ConnectorTableVersion> endVersion) {
-    ResolveTableRequest resolveRequest =
-        ResolveTableRequest.newBuilder()
-            .setRef(NameMapper.nameRef(tableName.getSchemaName(), tableName.getTableName()))
-            .build();
+
+    NameRef nameRef =
+        NameMapper.nameRef(
+            catalogName.toString(), tableName.getSchemaName(), tableName.getTableName());
+    LOG.debug(
+        "resolveTable catalog={}, path={}, name={}",
+        nameRef.getCatalog(),
+        nameRef.getPathList(),
+        nameRef.getName());
+    ResolveTableRequest resolveRequest = ResolveTableRequest.newBuilder().setRef(nameRef).build();
     ResourceId tableId = directoryService.resolveTable(resolveRequest).getResourceId();
 
     if (tableId == null || tableId.getId().isEmpty()) {
@@ -163,12 +146,14 @@ public class MetacatMetadata implements ConnectorMetadata {
 
     return new MetacatTableHandle(
         tableName,
-        tableId,
+        tableId.getId(),
+        tableId.getTenantId(),
+        tableId.getKind().name(),
         tableUri,
         schemaJson,
         PartitionSpecParser.toJson(partitionSpec),
         response.getTable().getUpstream().getFormat().name(),
-        catalogHandle);
+        catalogHandle.getId());
   }
 
   @Override
@@ -180,6 +165,24 @@ public class MetacatMetadata implements ConnectorMetadata {
 
     return new ConnectorTableMetadata(
         handle.getSchemaTableName(), columns.values().stream().toList());
+  }
+
+  @Override
+  public Map<SchemaTableName, List<ColumnMetadata>> listTableColumns(
+      ConnectorSession session, SchemaTablePrefix prefix) {
+    List<SchemaTableName> tables =
+        listTables(session, prefix.getSchema().map(Optional::of).orElse(Optional.empty()));
+    Map<SchemaTableName, List<ColumnMetadata>> map = new LinkedHashMap<>();
+    for (SchemaTableName table : tables) {
+      ConnectorTableHandle handle =
+          getTableHandle(session, table, Optional.empty(), Optional.empty());
+      if (handle == null) {
+        continue;
+      }
+      ConnectorTableMetadata meta = getTableMetadata(session, handle);
+      map.put(table, meta.getColumns());
+    }
+    return map;
   }
 
   @Override
@@ -206,6 +209,20 @@ public class MetacatMetadata implements ConnectorMetadata {
       handles.put(col.getName(), icebergCol);
     }
     return handles;
+  }
+
+  @Override
+  public ColumnMetadata getColumnMetadata(
+      ConnectorSession session,
+      ConnectorTableHandle tableHandle,
+      ColumnHandle columnHandle) {
+    IcebergColumnHandle col = (IcebergColumnHandle) columnHandle;
+    return ColumnMetadata.builder()
+        .setName(col.getName())
+        .setType(col.getType())
+        .setNullable(col.isNullable())
+        .setComment(col.getComment())
+        .build();
   }
 
   private Map<String, ColumnMetadata> buildColumns(Schema schema) {

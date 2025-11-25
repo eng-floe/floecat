@@ -19,28 +19,21 @@ final class NameMapper {
   }
 
   static String schemaFrom(NameRef ref) {
-    List<String> parts = new ArrayList<>();
-    if (!ref.getCatalog().isBlank()) {
-      parts.add(ref.getCatalog());
-    }
-    parts.addAll(ref.getPathList().stream().filter(p -> !p.isBlank()).toList());
+    // Schema should be derived from the path only; catalog is handled separately by Trino.
+    List<String> parts = new ArrayList<>(ref.getPathList().stream().filter(p -> !p.isBlank()).toList());
     return parts.stream().collect(Collectors.joining("."));
   }
 
-  static NameRef prefixFromSchema(String schema) {
-    List<String> segs = (schema == null || schema.isBlank()) ? List.of() : List.of(schema.split("\\."));
-    NameRef.Builder b = NameRef.newBuilder();
-    if (!segs.isEmpty()) {
-      b.setCatalog(segs.get(0));
-      if (segs.size() > 1) {
-        b.addAllPath(segs.subList(1, segs.size()));
-      }
+  static NameRef prefix(String catalog, String schema) {
+    NameRef.Builder b = NameRef.newBuilder().setCatalog(catalog);
+    if (schema != null && !schema.isBlank()) {
+      b.addAllPath(List.of(schema.split("\\.")));
     }
     return b.build();
   }
 
-  static NameRef nameRef(String schema, String table) {
-    NameRef.Builder b = prefixFromSchema(schema).toBuilder();
+  static NameRef nameRef(String catalog, String schema, String table) {
+    NameRef.Builder b = prefix(catalog, schema).toBuilder();
     b.setName(table);
     return b.build();
   }

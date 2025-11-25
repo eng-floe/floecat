@@ -18,17 +18,20 @@ public class MetacatConnector implements Connector {
   private final MetacatMetadata metadata;
   private final MetacatSplitManager splitManager;
   private final MetacatPageSourceProvider pageSourceProvider;
+  private final java.util.List<io.trino.spi.session.PropertyMetadata<?>> sessionProperties;
 
   @Inject
   public MetacatConnector(
       LifeCycleManager lifeCycleManager,
       MetacatMetadata metadata,
       MetacatSplitManager splitManager,
-      MetacatPageSourceProvider pageSourceProvider) {
+      MetacatPageSourceProvider pageSourceProvider,
+      MetacatSessionProperties sessionProperties) {
     this.lifeCycleManager = requireNonNull(lifeCycleManager, "lifeCycleManager is null");
     this.metadata = requireNonNull(metadata, "metadata is null");
     this.splitManager = requireNonNull(splitManager, "splitManager is null");
     this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
+    this.sessionProperties = requireNonNull(sessionProperties, "sessionProperties is null").getSessionProperties();
   }
 
   @Override
@@ -51,5 +54,10 @@ public class MetacatConnector implements Connector {
   @Override
   public ConnectorPageSourceProvider getPageSourceProvider() {
     return pageSourceProvider;
+  }
+
+  @Override
+  public java.util.List<io.trino.spi.session.PropertyMetadata<?>> getSessionProperties() {
+    return sessionProperties;
   }
 }
