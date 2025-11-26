@@ -167,6 +167,8 @@ public final class QueryContext {
                 .setFileFormat(format)
                 .setFileSizeInBytes(fcs.getSizeBytes())
                 .setRecordCount(fcs.getRowCount())
+                .setPartitionDataJson(fcs.getPartitionDataJson())
+                .setPartitionSpecId(fcs.getPartitionSpecId())
                 .setFileContent(mapContent(fcs.getFileContent()))
                 .addAllColumns(fcs.getColumnsList())
                 .build();

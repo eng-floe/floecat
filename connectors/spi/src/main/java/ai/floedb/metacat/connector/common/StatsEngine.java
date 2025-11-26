@@ -57,6 +57,14 @@ public interface StatsEngine<K> {
 
     Map<K, ColumnAgg> columns();
 
+    default String partitionDataJson() {
+      return null;
+    }
+
+    default int partitionSpecId() {
+      return 0;
+    }
+
     default boolean isDelete() {
       return false;
     }

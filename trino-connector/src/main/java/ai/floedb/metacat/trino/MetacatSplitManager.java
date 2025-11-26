@@ -1,10 +1,14 @@
 package ai.floedb.metacat.trino;
 
 import ai.floedb.metacat.common.rpc.ResourceId;
-import ai.floedb.metacat.query.rpc.BeginPlanExRequest;
-import ai.floedb.metacat.query.rpc.PlanningExGrpc;
+import ai.floedb.metacat.query.rpc.BeginQueryRequest;
+import ai.floedb.metacat.query.rpc.Operator;
+import ai.floedb.metacat.query.rpc.Predicate;
 import ai.floedb.metacat.query.rpc.QueryInput;
+import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
 import com.google.inject.Inject;
+import io.airlift.slice.Slice;
+import io.trino.plugin.iceberg.IcebergColumnHandle;
 import io.trino.plugin.iceberg.IcebergFileFormat;
 import io.trino.plugin.iceberg.IcebergSplit;
 import io.trino.spi.connector.ConnectorSession;
@@ -17,21 +21,23 @@ import io.trino.spi.connector.DynamicFilter;
 import io.trino.spi.connector.FixedSplitSource;
 import io.trino.spi.predicate.TupleDomain;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.PartitionSpecParser;
 
 public class MetacatSplitManager implements ConnectorSplitManager {
 
-  private final PlanningExGrpc.PlanningExBlockingStub planning;
+  private final QueryServiceGrpc.QueryServiceBlockingStub planning;
 
   private static final org.slf4j.Logger LOG =
       org.slf4j.LoggerFactory.getLogger(MetacatSplitManager.class);
 
   @Inject
-  public MetacatSplitManager(PlanningExGrpc.PlanningExBlockingStub planning) {
+  public MetacatSplitManager(QueryServiceGrpc.QueryServiceBlockingStub planning) {
     this.planning = planning;
   }
 
@@ -46,29 +52,159 @@ public class MetacatSplitManager implements ConnectorSplitManager {
 
     ResourceId rid = metacatHandle.getTableResourceId();
     LOG.debug(
-        "beginPlanEx for tableId id={}, tenant={}, kind={}",
+        "beginQuery for tableId id={}, tenant={}, kind={}",
         rid.getId(),
         rid.getTenantId(),
         rid.getKind());
 
-    BeginPlanExRequest request =
-        BeginPlanExRequest.newBuilder()
+    TupleDomain<IcebergColumnHandle> staticDomain = metacatHandle.getEnforcedConstraint();
+
+    TupleDomain<IcebergColumnHandle> dynamicDomain =
+        constraint.getSummary().transformKeys(ch -> (IcebergColumnHandle) ch);
+
+    TupleDomain<IcebergColumnHandle> effectiveDomain = staticDomain.intersect(dynamicDomain);
+
+    Set<String> requiredColumns = new LinkedHashSet<>();
+    List<Predicate> predicates = new ArrayList<>();
+
+    effectiveDomain
+        .getDomains()
+        .ifPresent(
+            domains -> {
+              domains.forEach(
+                  (colHandle, domain) -> {
+                    String name = colHandle.getName();
+                    requiredColumns.add(name);
+
+                    if (domain.isNullAllowed() && domain.getValues().isAll()) {
+                      predicates.add(
+                          Predicate.newBuilder()
+                              .setColumn(name)
+                              .setOp(Operator.OP_IS_NULL)
+                              .build());
+                      return;
+                    }
+
+                    if (domain.isSingleValue()) {
+                      Object v = domain.getSingleValue();
+                      predicates.add(
+                          Predicate.newBuilder()
+                              .setColumn(name)
+                              .setOp(Operator.OP_EQ)
+                              .addValues(domainValueToString(v))
+                              .build());
+                      return;
+                    }
+
+                    if (domain.getValues().isDiscreteSet()) {
+                      var builder = Predicate.newBuilder().setColumn(name).setOp(Operator.OP_IN);
+
+                      domain
+                          .getValues()
+                          .getDiscreteValues()
+                          .getValues()
+                          .forEach(v -> builder.addValues(domainValueToString(v)));
+
+                      predicates.add(builder.build());
+                      return;
+                    }
+
+                    var ranges = domain.getValues().getRanges();
+                    if (ranges.getRangeCount() == 1) {
+                      var r = ranges.getOrderedRanges().get(0);
+
+                      if (r.isSingleValue()) {
+                        Object v = r.getSingleValue();
+                        predicates.add(
+                            Predicate.newBuilder()
+                                .setColumn(name)
+                                .setOp(Operator.OP_EQ)
+                                .addValues(domainValueToString(v))
+                                .build());
+                        return;
+                      }
+
+                      boolean lowBounded = !r.isLowUnbounded();
+                      boolean highBounded = !r.isHighUnbounded();
+
+                      if (lowBounded && highBounded) {
+                        Object low = r.getLowBoundedValue();
+                        Object high = r.getHighBoundedValue();
+                        predicates.add(
+                            Predicate.newBuilder()
+                                .setColumn(name)
+                                .setOp(Operator.OP_BETWEEN)
+                                .addValues(domainValueToString(low))
+                                .addValues(domainValueToString(high))
+                                .build());
+                      } else if (lowBounded) {
+                        Object low = r.getLowBoundedValue();
+                        predicates.add(
+                            Predicate.newBuilder()
+                                .setColumn(name)
+                                .setOp(r.isLowInclusive() ? Operator.OP_GTE : Operator.OP_GT)
+                                .addValues(domainValueToString(low))
+                                .build());
+                      } else if (highBounded) {
+                        Object high = r.getHighBoundedValue();
+                        predicates.add(
+                            Predicate.newBuilder()
+                                .setColumn(name)
+                                .setOp(r.isHighInclusive() ? Operator.OP_LTE : Operator.OP_LT)
+                                .addValues(domainValueToString(high))
+                                .build());
+                      }
+                      return;
+                    }
+                  });
+            });
+
+    LOG.debug(
+        "split request: tableId={} requiredCols={} predicates={} staticDomain={} dynamicSummary={}",
+        metacatHandle.getTableResourceId().getId(),
+        requiredColumns,
+        predicates,
+        staticDomain,
+        constraint.getSummary());
+
+    BeginQueryRequest.Builder request =
+        BeginQueryRequest.newBuilder()
             .addInputs(
                 QueryInput.newBuilder().setTableId(metacatHandle.getTableResourceId()).build())
-            .setIncludeSchema(false)
-            .build();
-    var response = planning.beginPlanEx(request);
+            .setIncludeSchema(false);
+    if (!requiredColumns.isEmpty()) {
+      request.addAllRequiredColumns(requiredColumns);
+    }
+    if (!predicates.isEmpty()) {
+      request.addAllPredicates(predicates);
+    }
+
+    LOG.debug(
+        "split request: tableId={} requiredCols={} predicates={} constraintSummary={}",
+        metacatHandle.getTableResourceId().getId(),
+        requiredColumns,
+        predicates,
+        constraint.getSummary());
+
+    var response = planning.beginQuery(request.build());
+
+    LOG.debug(
+        "split response: dataFiles={} deleteFiles={}",
+        response.getQuery().getDataFilesCount(),
+        response.getQuery().getDeleteFilesCount());
 
     String partitionSpecJson =
         Optional.ofNullable(metacatHandle.getPartitionSpecJson())
             .orElse(PartitionSpecParser.toJson(PartitionSpec.unpartitioned()));
-    // Iceberg expects {"partition_values":[]} for unpartitioned tables.
-    String partitionDataJson = "{\"partition_values\":[]}";
+    String defaultPartitionDataJson = "{\"partitionValues\":[]}";
 
     List<IcebergSplit> splits = new ArrayList<>();
-    for (var file : response.getPlan().getDataFilesList()) {
+    for (var file : response.getQuery().getDataFilesList()) {
       IcebergFileFormat fileFormat = toIcebergFormat(file.getFileFormat());
-      String dataJson = partitionDataJson;
+      String dataJson = file.getPartitionDataJson();
+      if (dataJson == null || dataJson.isBlank()) {
+        dataJson = defaultPartitionDataJson;
+      }
       IcebergSplit split =
           new IcebergSplit(
               file.getFilePath(),
@@ -97,7 +233,6 @@ public class MetacatSplitManager implements ConnectorSplitManager {
       return IcebergFileFormat.PARQUET;
     }
     String upper = format.toUpperCase();
-    // Metacat uses TF_* enums; default to PARQUET for TF_ICEBERG or unknowns.
     if (upper.startsWith("TF_")) {
       return IcebergFileFormat.PARQUET;
     }
@@ -106,5 +241,15 @@ public class MetacatSplitManager implements ConnectorSplitManager {
     } catch (IllegalArgumentException e) {
       return IcebergFileFormat.PARQUET;
     }
+  }
+
+  private static String domainValueToString(Object value) {
+    if (value == null) {
+      return "null";
+    }
+    if (value instanceof Slice slice) {
+      return slice.toStringUtf8();
+    }
+    return value.toString();
   }
 }

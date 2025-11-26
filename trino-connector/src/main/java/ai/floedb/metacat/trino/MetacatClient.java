@@ -6,7 +6,7 @@ import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.SchemaServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
-import ai.floedb.metacat.query.rpc.PlanningExGrpc;
+import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import jakarta.inject.Inject;
@@ -21,22 +21,19 @@ public final class MetacatClient implements Closeable {
   private final CatalogServiceGrpc.CatalogServiceBlockingStub catalogs;
   private final NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaces;
   private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
-  private final PlanningExGrpc.PlanningExBlockingStub planningEx;
+  private final QueryServiceGrpc.QueryServiceBlockingStub queries;
   private final SchemaServiceGrpc.SchemaServiceBlockingStub schemas;
 
   @Inject
   public MetacatClient(MetacatConfig cfg) {
     Objects.requireNonNull(cfg, "cfg");
-    this.channel =
-        ManagedChannelBuilder.forTarget(cfg.getMetacatUri())
-            .usePlaintext() // TODO: TLS + auth once wiring is added
-            .build();
+    this.channel = ManagedChannelBuilder.forTarget(cfg.getMetacatUri()).usePlaintext().build();
     this.tables = TableServiceGrpc.newBlockingStub(channel);
     this.connectors = ConnectorsGrpc.newBlockingStub(channel);
     this.catalogs = CatalogServiceGrpc.newBlockingStub(channel);
     this.namespaces = NamespaceServiceGrpc.newBlockingStub(channel);
     this.directory = DirectoryServiceGrpc.newBlockingStub(channel);
-    this.planningEx = PlanningExGrpc.newBlockingStub(channel);
+    this.queries = QueryServiceGrpc.newBlockingStub(channel);
     this.schemas = SchemaServiceGrpc.newBlockingStub(channel);
   }
 
@@ -60,8 +57,8 @@ public final class MetacatClient implements Closeable {
     return directory;
   }
 
-  public PlanningExGrpc.PlanningExBlockingStub planning() {
-    return planningEx;
+  public QueryServiceGrpc.QueryServiceBlockingStub queries() {
+    return queries;
   }
 
   public SchemaServiceGrpc.SchemaServiceBlockingStub schemas() {

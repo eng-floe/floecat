@@ -18,6 +18,7 @@ import ai.floedb.metacat.connector.spi.MetacatConnector;
 import ai.floedb.metacat.execution.rpc.ScanFile;
 import ai.floedb.metacat.execution.rpc.ScanFileContent;
 import ai.floedb.metacat.types.LogicalType;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -31,13 +32,18 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
+import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.PartitionField;
+import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableScan;
+import org.apache.iceberg.StructLike;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.io.CloseableIterable;
@@ -320,6 +326,8 @@ public final class IcebergConnector implements MetacatConnector {
                   .setFileFormat(df.format().name())
                   .setFileSizeInBytes(df.fileSizeInBytes())
                   .setRecordCount(df.recordCount())
+                  .setPartitionDataJson(partitionJson(table, df))
+                  .setPartitionSpecId(df.specId())
                   .setFileContent(ScanFileContent.SCAN_FILE_CONTENT_DATA);
           result.dataFiles().add(pf.build());
         }
@@ -331,6 +339,8 @@ public final class IcebergConnector implements MetacatConnector {
                   .setFileFormat(df.format().name())
                   .setFileSizeInBytes(df.fileSizeInBytes())
                   .setRecordCount(df.recordCount())
+                  .setPartitionDataJson(partitionJson(table, df))
+                  .setPartitionSpecId(df.specId())
                   .setFileContent(
                       df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
                           ? ScanFileContent.SCAN_FILE_CONTENT_EQUALITY_DELETES
@@ -343,6 +353,30 @@ public final class IcebergConnector implements MetacatConnector {
     }
 
     return result;
+  }
+
+  private String partitionJson(Table table, ContentFile<?> file) {
+    PartitionSpec spec = table.specs().getOrDefault(file.specId(), table.spec());
+    StructLike partition = file.partition();
+    if (spec == null || spec.fields().isEmpty() || partition == null) {
+      return "{\"partitionValues\":[]}";
+    }
+    try {
+      List<Map<String, Object>> values = new ArrayList<>(spec.fields().size());
+      for (int i = 0; i < spec.fields().size(); i++) {
+        PartitionField field = spec.fields().get(i);
+        Object val = partition.get(i, Object.class);
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("id", field.sourceId());
+        entry.put("value", val);
+        values.add(entry);
+      }
+      Map<String, Object> root = new LinkedHashMap<>();
+      root.put("partitionValues", values);
+      return new ObjectMapper().writeValueAsString(root);
+    } catch (Exception e) {
+      return "";
+    }
   }
 
   @Override

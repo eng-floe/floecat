@@ -10,6 +10,38 @@ import "common/common.proto";
 import "google/protobuf/timestamp.proto";
 import "execution/scan.proto";
 
+enum Operator {
+  OP_EQ         = 0;
+  OP_NEQ        = 1;
+  OP_LT         = 2;
+  OP_LTE        = 3;
+  OP_GT         = 4;
+  OP_GTE        = 5;
+  OP_BETWEEN    = 6;
+  OP_IN         = 7;
+  OP_IS_NULL    = 8;
+  OP_IS_NOT_NULL = 9;
+}
+
+message Predicate {
+  string column = 1;
+  Operator op = 2;
+  repeated string values = 3;
+}
+
+message SchemaColumn {
+  string name = 1;
+  string logical_type = 2;
+  int32 field_id = 3;
+  bool nullable = 4;
+  string physical_path = 5;
+  bool partition_key = 6;
+}
+
+message SchemaDescriptor {
+  repeated SchemaColumn columns = 1;
+}
+
 message QueryInput {
   oneof target {
     ai.floedb.metacat.common.NameRef name = 1;
@@ -75,10 +107,15 @@ message BeginQueryRequest {
   repeated QueryInput inputs = 1;
   google.protobuf.Timestamp as_of_default = 2;
   int32 ttl_seconds = 3;
+
+  repeated string required_columns = 10;
+  repeated Predicate predicates = 11;
+  bool include_schema = 12;
 }
 
 message BeginQueryResponse {
   QueryDescriptor query = 1;
+  SchemaDescriptor schema = 2;
 }
 
 message RenewQueryRequest {

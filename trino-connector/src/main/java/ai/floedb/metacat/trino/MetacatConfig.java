@@ -3,7 +3,6 @@ package ai.floedb.metacat.trino;
 import io.airlift.configuration.Config;
 import jakarta.validation.constraints.NotNull;
 
-/** Configuration class for the Metacat connector. */
 public class MetacatConfig {
 
   private String metacatUri;

@@ -13,9 +13,10 @@ public record MetacatConnectorConfig(
       throw new IllegalArgumentException("metacat.endpoint is required");
     }
     Optional<String> tenant =
-        Optional.ofNullable(props.get("metacat.tenant-id")).map(String::trim).filter(s -> !s.isEmpty());
+        Optional.ofNullable(props.get("metacat.tenant-id"))
+            .map(String::trim)
+            .filter(s -> !s.isEmpty());
 
-    // Collect Trino-style S3 configs (fs.native-s3.* or s3.*) to hand to the reader layer later.
     Map<String, String> s3Props =
         props.entrySet().stream()
             .filter(e -> e.getKey().startsWith("s3.") || e.getKey().startsWith("fs.native-s3."))

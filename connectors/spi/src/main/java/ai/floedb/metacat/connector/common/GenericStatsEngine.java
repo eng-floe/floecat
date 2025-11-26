@@ -104,7 +104,14 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       }
 
       Map<K, ColumnAgg> fileCols = buildFileColumnAggs(file);
-      fileAggs.add(new FileAggImpl<>(file.path(), file.rowCount(), file.sizeBytes(), fileCols));
+      fileAggs.add(
+          new FileAggImpl<>(
+              file.path(),
+              file.rowCount(),
+              file.sizeBytes(),
+              fileCols,
+              file.partitionDataJson(),
+              file.partitionSpecId()));
     }
 
     final Map<K, ColumnAgg> out = new LinkedHashMap<>(acc.columns.size());
@@ -256,12 +263,22 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     private final long rowCount;
     private final long sizeBytes;
     private final Map<K, ColumnAgg> columns;
+    private final String partitionDataJson;
+    private final int partitionSpecId;
 
-    FileAggImpl(String path, long rowCount, long sizeBytes, Map<K, ColumnAgg> columns) {
+    FileAggImpl(
+        String path,
+        long rowCount,
+        long sizeBytes,
+        Map<K, ColumnAgg> columns,
+        String partitionDataJson,
+        int partitionSpecId) {
       this.path = path;
       this.rowCount = rowCount;
       this.sizeBytes = sizeBytes;
       this.columns = columns;
+      this.partitionDataJson = partitionDataJson;
+      this.partitionSpecId = partitionSpecId;
     }
 
     @Override
@@ -282,6 +299,16 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     @Override
     public Map<K, ColumnAgg> columns() {
       return columns;
+    }
+
+    @Override
+    public String partitionDataJson() {
+      return partitionDataJson;
+    }
+
+    @Override
+    public int partitionSpecId() {
+      return partitionSpecId;
     }
   }
 

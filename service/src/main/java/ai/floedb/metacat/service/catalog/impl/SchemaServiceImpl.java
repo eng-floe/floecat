@@ -2,6 +2,7 @@ package ai.floedb.metacat.service.catalog.impl;
 
 import ai.floedb.metacat.catalog.rpc.GetSchemaRequest;
 import ai.floedb.metacat.catalog.rpc.GetSchemaResponse;
+import ai.floedb.metacat.catalog.rpc.GetTableRequest;
 import ai.floedb.metacat.catalog.rpc.SchemaService;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
@@ -25,10 +26,6 @@ import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 import org.jboss.logging.Logger;
 
-/**
- * Placeholder schema service: returns an empty SchemaDescriptor for now. Replace with a real schema
- * mapping (parse Table.schema_json) when ready.
- */
 @GrpcService
 public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService {
 
@@ -46,9 +43,7 @@ public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService 
                   var table =
                       tables
                           .getTable(
-                              ai.floedb.metacat.catalog.rpc.GetTableRequest.newBuilder()
-                                  .setTableId(request.getTableId())
-                                  .build())
+                              GetTableRequest.newBuilder().setTableId(request.getTableId()).build())
                           .getTable();
 
                   String schemaJson = table.getSchemaJson();
@@ -111,7 +106,6 @@ public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService 
         addField(sb, child, physical, partKeys);
       }
     } else if (t instanceof Types.ListType lt && lt.elementType() instanceof Types.StructType st) {
-      // Map nested struct inside list using element field id for path context.
       String childPrefix = physical + "[]";
       for (Types.NestedField child : st.fields()) {
         addField(sb, child, childPrefix, partKeys);

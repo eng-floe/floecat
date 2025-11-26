@@ -4,10 +4,12 @@ import ai.floedb.metacat.connector.common.PlannedFile;
 import ai.floedb.metacat.connector.common.Planner;
 import ai.floedb.metacat.connector.common.ndv.NdvProvider;
 import ai.floedb.metacat.types.LogicalType;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -18,10 +20,13 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.PartitionField;
+import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableScan;
+import org.apache.iceberg.StructLike;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Type;
@@ -36,6 +41,8 @@ final class IcebergPlanner implements Planner<Integer> {
   private final NdvProvider ndvProvider;
   private final Set<Integer> columnSet;
   private final Schema schema;
+  private final Map<Integer, PartitionSpec> specsById;
+  private final PartitionSpec defaultSpec;
 
   IcebergPlanner(
       Table table,
@@ -48,6 +55,8 @@ final class IcebergPlanner implements Planner<Integer> {
     Snapshot snap = table.snapshot(snapshotId);
     int schemaId = (snap != null) ? snap.schemaId() : table.schema().schemaId();
     this.schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
+    this.specsById = table.specs();
+    this.defaultSpec = table.spec();
 
     for (Types.NestedField field : schema.columns()) {
       idToName.put(field.fieldId(), field.name());
@@ -126,6 +135,9 @@ final class IcebergPlanner implements Planner<Integer> {
     Map<Integer, Object> lowers = decodeBounds(dataFile.lowerBounds());
     Map<Integer, Object> uppers = decodeBounds(dataFile.upperBounds());
 
+    PartitionSpec spec = specsById.getOrDefault(dataFile.specId(), defaultSpec);
+    String partJson = partitionJson(spec, dataFile.partition());
+
     return new PlannedFile<>(
         dataFile.location().toString(),
         dataFile.recordCount(),
@@ -134,7 +146,9 @@ final class IcebergPlanner implements Planner<Integer> {
         nullCounts,
         nanCounts,
         lowers,
-        uppers);
+        uppers,
+        partJson,
+        spec == null ? 0 : spec.specId());
   }
 
   private Map<Integer, Object> decodeBounds(Map<Integer, ByteBuffer> raw) {
@@ -156,5 +170,27 @@ final class IcebergPlanner implements Planner<Integer> {
       }
     }
     return out;
+  }
+
+  private String partitionJson(PartitionSpec spec, StructLike partition) {
+    if (spec == null || partition == null || spec.fields().isEmpty()) {
+      return "{\"partitionValues\":[]}";
+    }
+    try {
+      List<Map<String, Object>> values = new ArrayList<>(spec.fields().size());
+      for (int i = 0; i < spec.fields().size(); i++) {
+        PartitionField field = spec.fields().get(i);
+        Object value = partition.get(i, Object.class);
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("id", field.sourceId());
+        entry.put("value", value);
+        values.add(entry);
+      }
+      Map<String, Object> root = new LinkedHashMap<>();
+      root.put("partitionValues", values);
+      return new ObjectMapper().writeValueAsString(root);
+    } catch (Exception e) {
+      return "";
+    }
   }
 }

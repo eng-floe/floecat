@@ -10,4 +10,6 @@ public record PlannedFile<K>(
     Map<K, Long> nullCounts,
     Map<K, Long> nanCounts,
     Map<K, Object> lowerBounds,
-    Map<K, Object> upperBounds) {}
+    Map<K, Object> upperBounds,
+    String partitionDataJson,
+    int partitionSpecId) {}

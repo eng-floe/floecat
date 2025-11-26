@@ -26,8 +26,14 @@ import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTableVersion;
+import io.trino.spi.connector.Constraint;
+import io.trino.spi.connector.ConstraintApplicationResult;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SchemaTablePrefix;
+import io.trino.spi.expression.ConnectorExpression;
+import io.trino.spi.expression.Constant;
+import io.trino.spi.predicate.TupleDomain;
+import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.TypeManager;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -40,10 +46,6 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.types.Types.NestedField;
 
-/**
- * Core metadata implementation. Fetches schemas and tables from the Metacat gRPC service and builds
- * Iceberg-friendly handles, columns, and metadata.
- */
 public class MetacatMetadata implements ConnectorMetadata {
 
   private final NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaceService;
@@ -153,7 +155,8 @@ public class MetacatMetadata implements ConnectorMetadata {
         schemaJson,
         PartitionSpecParser.toJson(partitionSpec),
         response.getTable().getUpstream().getFormat().name(),
-        catalogHandle.getId());
+        catalogHandle.getId(),
+        TupleDomain.all());
   }
 
   @Override
@@ -213,9 +216,7 @@ public class MetacatMetadata implements ConnectorMetadata {
 
   @Override
   public ColumnMetadata getColumnMetadata(
-      ConnectorSession session,
-      ConnectorTableHandle tableHandle,
-      ColumnHandle columnHandle) {
+      ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle columnHandle) {
     IcebergColumnHandle col = (IcebergColumnHandle) columnHandle;
     return ColumnMetadata.builder()
         .setName(col.getName())
@@ -249,5 +250,46 @@ public class MetacatMetadata implements ConnectorMetadata {
       builder.identity(key);
     }
     return builder.build();
+  }
+
+  @Override
+  public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(
+      ConnectorSession session, ConnectorTableHandle table, Constraint constraint) {
+    MetacatTableHandle handle = (MetacatTableHandle) table;
+    TupleDomain<IcebergColumnHandle> incoming =
+        constraint.getSummary().transformKeys(ch -> (IcebergColumnHandle) ch);
+    TupleDomain<IcebergColumnHandle> current = handle.getEnforcedConstraint();
+    TupleDomain<IcebergColumnHandle> domain = current.intersect(incoming);
+
+    if (domain.equals(current)) {
+      return Optional.empty();
+    }
+
+    MetacatTableHandle newHandle =
+        new MetacatTableHandle(
+            handle.getSchemaTableName(),
+            handle.getTableId(),
+            handle.getTableTenantId(),
+            handle.getTableKind(),
+            handle.getUri(),
+            handle.getSchemaJson(),
+            handle.getPartitionSpecJson(),
+            handle.getFormat(),
+            handle.getCatalogHandleId(),
+            domain);
+    ConnectorExpression remainingExpr =
+        constraint.getExpression() == null
+            ? new Constant(Boolean.TRUE, BooleanType.BOOLEAN)
+            : constraint.getExpression();
+
+    LOG.debug(
+        "applyFilter: incoming summary={} current={} new={}",
+        constraint.getSummary(),
+        current,
+        domain);
+
+    return Optional.of(
+        new ConstraintApplicationResult<>(
+            newHandle, constraint.getSummary(), remainingExpr, false));
   }
 }

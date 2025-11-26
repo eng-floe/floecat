@@ -3,6 +3,7 @@ package ai.floedb.metacat.trino;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.trino.plugin.iceberg.IcebergColumnHandle;
 import io.trino.plugin.iceberg.IcebergTableHandle;
 import io.trino.plugin.iceberg.TableType;
 import io.trino.spi.connector.ConnectorTableHandle;
@@ -13,7 +14,6 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
 
-/** Connector table handle carrying the Metacat table id and Iceberg metadata JSON. */
 public class MetacatTableHandle implements ConnectorTableHandle {
 
   private final SchemaTableName schemaTableName;
@@ -25,6 +25,7 @@ public class MetacatTableHandle implements ConnectorTableHandle {
   private final String partitionSpecJson;
   private final String format;
   private final String catalogHandleId;
+  private final TupleDomain<IcebergColumnHandle> enforcedConstraint;
 
   @JsonCreator
   public MetacatTableHandle(
@@ -36,7 +37,8 @@ public class MetacatTableHandle implements ConnectorTableHandle {
       @JsonProperty("schemaJson") String schemaJson,
       @JsonProperty("partitionSpecJson") String partitionSpecJson,
       @JsonProperty("format") String format,
-      @JsonProperty("catalogHandleId") String catalogHandleId) {
+      @JsonProperty("catalogHandleId") String catalogHandleId,
+      @JsonProperty("enforcedConstraint") TupleDomain<IcebergColumnHandle> enforcedConstraint) {
     this.schemaTableName = schemaTableName;
     this.tableId = tableId;
     this.tableTenantId = tableTenantId;
@@ -46,6 +48,7 @@ public class MetacatTableHandle implements ConnectorTableHandle {
     this.partitionSpecJson = partitionSpecJson;
     this.format = format;
     this.catalogHandleId = catalogHandleId;
+    this.enforcedConstraint = enforcedConstraint == null ? TupleDomain.all() : enforcedConstraint;
   }
 
   @JsonProperty
@@ -105,6 +108,11 @@ public class MetacatTableHandle implements ConnectorTableHandle {
     return catalogHandleId;
   }
 
+  @JsonProperty("enforcedConstraint")
+  public TupleDomain<IcebergColumnHandle> getEnforcedConstraint() {
+    return enforcedConstraint;
+  }
+
   public IcebergTableHandle toIcebergTableHandle(Map<String, String> storageProperties) {
     return new IcebergTableHandle(
         io.trino.spi.connector.CatalogHandle.fromId(catalogHandleId),
@@ -115,7 +123,7 @@ public class MetacatTableHandle implements ConnectorTableHandle {
         schemaJson,
         Optional.ofNullable(partitionSpecJson),
         2,
-        TupleDomain.all(),
+        enforcedConstraint,
         TupleDomain.all(),
         OptionalLong.empty(),
         Set.of(),

@@ -7,10 +7,6 @@ import io.trino.spi.SplitWeight;
 import io.trino.spi.connector.ConnectorSplit;
 import java.util.List;
 
-/**
- * Connector split that carries a single data file plus any associated delete files (Iceberg-style)
- * and the projected schema descriptor.
- */
 public final class MetacatSplit implements ConnectorSplit {
   private final ScanFile dataFile;
   private final List<ScanFile> deleteFiles;

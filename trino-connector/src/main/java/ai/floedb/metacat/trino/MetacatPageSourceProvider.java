@@ -36,13 +36,11 @@ public class MetacatPageSourceProvider implements ConnectorPageSourceProvider {
 
     ConnectorTableHandle handleToUse = table;
     if (table instanceof MetacatTableHandle metacatTableHandle) {
-      // Convert our handle to an Iceberg one expected by the underlying page source.
       handleToUse = metacatTableHandle.toIcebergTableHandle(java.util.Map.of());
     }
 
     ConnectorSplit splitToUse = split;
     if (split instanceof IcebergSplit icebergSplit) {
-      // Ensure partition data/spec are non-null to avoid NPEs in Iceberg reader.
       String specJson =
           icebergSplit.getPartitionSpecJson() == null
               ? org.apache.iceberg.PartitionSpecParser.toJson(
@@ -51,14 +49,12 @@ public class MetacatPageSourceProvider implements ConnectorPageSourceProvider {
 
       String dataJson = icebergSplit.getPartitionDataJson();
 
-      // --- CORRECT FIX: Use an empty JSON object "{}" if data is null/blank/empty-array ---
       if (dataJson == null || dataJson.isBlank() || dataJson.equals("{\"partition_values\":[]}")) {
         LOG.info(
             "Fixing partitionDataJson string by using correct casing: '{}'.",
             "{\"partitionValues\":[]}");
-        dataJson = "{\"partitionValues\":[]}"; // <-- Change _values to Values
+        dataJson = "{\"partitionValues\":[]}";
       }
-      // ----------------------------------------------------------------------------------
 
       splitToUse =
           new IcebergSplit(
@@ -70,7 +66,7 @@ public class MetacatPageSourceProvider implements ConnectorPageSourceProvider {
               icebergSplit.getFileFormat(),
               java.util.Optional.of(java.util.List.of()),
               specJson,
-              dataJson, // <-- Use the dataJson string set to "{}"
+              dataJson,
               icebergSplit.getDeletes(),
               icebergSplit.getSplitWeight(),
               icebergSplit.getFileStatisticsDomain(),
@@ -81,7 +77,6 @@ public class MetacatPageSourceProvider implements ConnectorPageSourceProvider {
       LOG.info("split partitionDataJson='{}', partitionSpecJson='{}'", dataJson, specJson);
     }
 
-    // Delegate to Trino's Iceberg reader using the converted handle and the split we built.
     return iceberg.createPageSource(
         transaction, session, splitToUse, handleToUse, columns, dynamicFilter);
   }

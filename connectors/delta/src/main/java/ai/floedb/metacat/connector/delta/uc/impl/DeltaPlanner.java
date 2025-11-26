@@ -12,6 +12,7 @@ import io.delta.kernel.ScanBuilder;
 import io.delta.kernel.Snapshot;
 import io.delta.kernel.Table;
 import io.delta.kernel.data.FilteredColumnarBatch;
+import io.delta.kernel.data.MapValue;
 import io.delta.kernel.data.Row;
 import io.delta.kernel.engine.Engine;
 import io.delta.kernel.expressions.Column;
@@ -98,6 +99,7 @@ final class DeltaPlanner implements Planner<String> {
             Map<String, Long> nanCounts = null;
             Map<String, Object> mins = null;
             Map<String, Object> maxs = null;
+            String partitionJson = "{\"partitionValues\":[]}";
 
             if (includeStats) {
               AddFile add =
@@ -111,6 +113,7 @@ final class DeltaPlanner implements Planner<String> {
                           diskDeletionVectors.add(dv);
                         }
                       });
+              partitionJson = encodePartition(add);
               Optional<DataFileStatistics> optStats = add.getStats();
               if (optStats.isPresent()) {
                 DataFileStatistics stats = optStats.get();
@@ -193,7 +196,16 @@ final class DeltaPlanner implements Planner<String> {
 
             files.add(
                 new PlannedFile<>(
-                    path, rowCount, sizeBytes, valueCounts, nullCounts, nanCounts, mins, maxs));
+                    path,
+                    rowCount,
+                    sizeBytes,
+                    valueCounts,
+                    nullCounts,
+                    nanCounts,
+                    mins,
+                    maxs,
+                    partitionJson,
+                    0));
           }
         }
       }
@@ -212,6 +224,68 @@ final class DeltaPlanner implements Planner<String> {
 
   List<DeletionVectorDescriptor> deletionVectors() {
     return Collections.unmodifiableList(diskDeletionVectors);
+  }
+
+  private String encodePartition(AddFile add) {
+    try {
+      Map<String, String> partitionValues = toPartitionMap(add.getPartitionValues());
+      if (partitionValues == null || partitionValues.isEmpty()) {
+        return "{\"partitionValues\":[]}";
+      }
+      StringBuilder sb = new StringBuilder();
+      sb.append("{\"partitionValues\":[");
+      int i = 0;
+      for (var entry : partitionValues.entrySet()) {
+        if (i++ > 0) {
+          sb.append(',');
+        }
+        sb.append("{\"id\":").append('\"').append(escape(entry.getKey())).append('\"');
+        sb.append(",\"value\":").append(toJsonValue(entry.getValue())).append('}');
+      }
+      sb.append("]}");
+      return sb.toString();
+    } catch (Exception e) {
+      return "";
+    }
+  }
+
+  private String toJsonValue(String value) {
+    if (value == null) {
+      return "null";
+    }
+    if ("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value)) {
+      return value.toLowerCase();
+    }
+    try {
+      Double.parseDouble(value);
+      return value;
+    } catch (NumberFormatException ignore) {
+      // fall through
+    }
+    return "\"" + escape(value) + "\"";
+  }
+
+  private String escape(String s) {
+    return String.valueOf(s).replace("\\", "\\\\").replace("\"", "\\\"");
+  }
+
+  private Map<String, String> toPartitionMap(MapValue mapValue) {
+    if (mapValue == null) {
+      return Map.of();
+    }
+    var keys = mapValue.getKeys();
+    var vals = mapValue.getValues();
+    int size = mapValue.getSize();
+    Map<String, String> out = new LinkedHashMap<>(size);
+    for (int i = 0; i < size; i++) {
+      if (keys.isNullAt(i)) {
+        continue;
+      }
+      String key = keys.getString(i);
+      String value = vals.isNullAt(i) ? null : vals.getString(i);
+      out.put(key, value);
+    }
+    return out;
   }
 
   @Override

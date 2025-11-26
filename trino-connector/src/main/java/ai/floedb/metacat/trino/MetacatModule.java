@@ -7,7 +7,7 @@ import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.SchemaServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
-import ai.floedb.metacat.query.rpc.PlanningExGrpc;
+import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
 import com.google.inject.Binder;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
@@ -58,14 +58,10 @@ public class MetacatModule extends AbstractConfigurationAwareModule {
 
   @Override
   protected void setup(Binder binder) {
-
-    // Configuration class
     configBinder(binder).bindConfig(MetacatConfig.class);
 
-    // gRPC client holder
     binder.bind(MetacatClient.class).in(Scopes.SINGLETON);
 
-    // Core connector classes
     binder.bind(MetacatConnector.class).in(Scopes.SINGLETON);
     binder.bind(MetacatMetadata.class).in(Scopes.SINGLETON);
     binder.bind(MetacatSplitManager.class).in(Scopes.SINGLETON);
@@ -77,18 +73,15 @@ public class MetacatModule extends AbstractConfigurationAwareModule {
         .to(MetacatPageSourceProvider.class)
         .in(Scopes.SINGLETON);
 
-    // Install Trino's filesystem module to provide TrinoFileSystemFactory and related bindings.
     super.install(
         new FileSystemModule(
             catalogName.toString(), nodeManager, openTelemetry, coordinatorFileCaching));
 
-    // Minimal Iceberg FS binding; use the default implementation.
     binder
         .bind(IcebergFileSystemFactory.class)
         .to(DefaultIcebergFileSystemFactory.class)
         .in(Scopes.SINGLETON);
 
-    // Trino services from the engine / connector context
     binder.bind(TypeManager.class).toInstance(typeManager);
     binder.bind(NodeManager.class).toInstance(nodeManager);
     binder.bind(CatalogName.class).toInstance(catalogName);
@@ -101,12 +94,9 @@ public class MetacatModule extends AbstractConfigurationAwareModule {
     return openTelemetry;
   }
 
-  // ----- gRPC channel and stubs -----
-
   @Provides
   @Singleton
   public ManagedChannel createGrpcChannel(MetacatConfig config) {
-    // Plaintext for now; swap to TLS + auth later
     return ManagedChannelBuilder.forTarget(config.getMetacatUri()).usePlaintext().build();
   }
 
@@ -138,8 +128,8 @@ public class MetacatModule extends AbstractConfigurationAwareModule {
 
   @Provides
   @Singleton
-  public PlanningExGrpc.PlanningExBlockingStub createPlanningStub(ManagedChannel channel) {
-    return PlanningExGrpc.newBlockingStub(channel);
+  public QueryServiceGrpc.QueryServiceBlockingStub createQueryStub(ManagedChannel channel) {
+    return QueryServiceGrpc.newBlockingStub(channel);
   }
 
   @Provides
@@ -147,8 +137,6 @@ public class MetacatModule extends AbstractConfigurationAwareModule {
   public SchemaServiceGrpc.SchemaServiceBlockingStub createSchemaStub(ManagedChannel channel) {
     return SchemaServiceGrpc.newBlockingStub(channel);
   }
-
-  // ----- Iceberg / file formats (local utilities only, no FS wiring yet) -----
 
   @Provides
   @Singleton
@@ -176,7 +164,6 @@ public class MetacatModule extends AbstractConfigurationAwareModule {
       OrcReaderOptions orcOptions,
       ParquetReaderOptions parquetOptions,
       TypeManager typeManager) {
-    // Construct the engine's Iceberg page source provider with the bound dependencies.
     return new io.trino.plugin.iceberg.IcebergPageSourceProvider(
         fsFactory, stats, orcOptions, parquetOptions, typeManager);
   }
