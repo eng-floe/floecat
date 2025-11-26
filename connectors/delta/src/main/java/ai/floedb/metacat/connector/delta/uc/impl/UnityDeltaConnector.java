@@ -2,6 +2,7 @@ package ai.floedb.metacat.connector.delta.uc.impl;
 
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.FileColumnStats;
+import ai.floedb.metacat.catalog.rpc.FileContent;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.common.GenericStatsEngine;
@@ -297,7 +298,7 @@ public final class UnityDeltaConnector implements MetacatConnector {
               .setFilePath(dvPath)
               .setRowCount(rowCount)
               .setSizeBytes(sizeBytes)
-              .setFileContent(ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES)
+              .setFileContent(FileContent.FC_POSITION_DELETES)
               .build());
     }
 
