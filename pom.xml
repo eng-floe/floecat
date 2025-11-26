@@ -13,8 +13,8 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <quarkus.platform.version>3.29.2</quarkus.platform.version>
-    <maven.compiler.source>21</maven.compiler.source>
-    <maven.compiler.target>21</maven.compiler.target>
+    <maven.compiler.source>25</maven.compiler.source>
+    <maven.compiler.target>25</maven.compiler.target>
     <skipUTs>false</skipUTs>
     <skipITs>false</skipITs>
     <jvm.args>--add-opens java.base/java.lang=ALL-UNNAMED</jvm.args>
