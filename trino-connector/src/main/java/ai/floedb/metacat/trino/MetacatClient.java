@@ -13,10 +13,6 @@ import jakarta.inject.Inject;
 import java.io.Closeable;
 import java.util.Objects;
 
-/**
- * Thin gRPC client holder. Real metadata/planning calls still need to be implemented; this just
- * opens the channel and exposes stubs.
- */
 public final class MetacatClient implements Closeable {
 
   private final ManagedChannel channel;

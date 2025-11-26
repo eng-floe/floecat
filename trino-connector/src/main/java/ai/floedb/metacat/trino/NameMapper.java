@@ -1,8 +1,8 @@
 package ai.floedb.metacat.trino;
 
+import ai.floedb.metacat.catalog.rpc.ResolveFQTablesResponse;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
-import ai.floedb.metacat.catalog.rpc.ResolveFQTablesResponse;
 import io.trino.spi.connector.SchemaTableName;
 import java.util.ArrayList;
 import java.util.List;
@@ -19,8 +19,8 @@ final class NameMapper {
   }
 
   static String schemaFrom(NameRef ref) {
-    // Schema should be derived from the path only; catalog is handled separately by Trino.
-    List<String> parts = new ArrayList<>(ref.getPathList().stream().filter(p -> !p.isBlank()).toList());
+    List<String> parts =
+        new ArrayList<>(ref.getPathList().stream().filter(p -> !p.isBlank()).toList());
     return parts.stream().collect(Collectors.joining("."));
   }
 

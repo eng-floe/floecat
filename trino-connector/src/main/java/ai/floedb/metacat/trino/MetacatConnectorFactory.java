@@ -10,10 +10,6 @@ import io.trino.spi.connector.ConnectorContext;
 import io.trino.spi.connector.ConnectorFactory;
 import java.util.Map;
 
-/**
- * Creates {@link MetacatConnector} instances. This is the main factory class that Trino interacts
- * with to bootstrap the connector.
- */
 public class MetacatConnectorFactory implements ConnectorFactory {
 
   @Override
