@@ -1,11 +1,11 @@
 package ai.floedb.metacat.service.catalog.impl;
 
+import ai.floedb.metacat.catalog.builtin.BuiltinCatalogLoader;
+import ai.floedb.metacat.catalog.builtin.BuiltinCatalogNotFoundException;
+import ai.floedb.metacat.catalog.builtin.BuiltinCatalogProtoMapper;
 import ai.floedb.metacat.catalog.rpc.BuiltinCatalogService;
 import ai.floedb.metacat.catalog.rpc.GetBuiltinCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.GetBuiltinCatalogResponse;
-import ai.floedb.metacat.service.catalog.builtin.BuiltinCatalogLoader;
-import ai.floedb.metacat.service.catalog.builtin.BuiltinCatalogNotFoundException;
-import ai.floedb.metacat.service.catalog.builtin.BuiltinCatalogProtoMapper;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;

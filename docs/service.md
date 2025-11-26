@@ -40,7 +40,7 @@ query lifecycle / scan bundle logic.
   includes key generation utilities (`Keys`, `ResourceKey`) and value normalizers.
 - `service/catalog` / `directory` / `tenant` / `statistics` / `connector` – gRPC service
   implementations.
-- `service/catalog/builtin` – Builtin catalog loader/cache plus gRPC service adapter.
+- `catalog/builtin` – Shared builtin catalog data model, validator, and loader helpers.
 - `service/query` – Query lifecycle management (`QueryContext`, `QueryContextStore`,
   `QueryServiceImpl`).
 - `service/gc` – Scheduled cleanup of stale idempotency entries.
