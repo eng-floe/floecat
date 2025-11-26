@@ -68,9 +68,7 @@ class OutboundContextClientInterceptorTest {
 
     Channel intercepted =
         ClientInterceptors.intercept(
-            baseChannel,
-            MetadataUtils.newAttachHeadersInterceptor(new Metadata()),
-            interceptor);
+            baseChannel, MetadataUtils.newAttachHeadersInterceptor(new Metadata()), interceptor);
 
     ctx.run(
         () -> {

@@ -9,9 +9,7 @@ class BuiltinCatalogProtoMapperTest {
 
   @Test
   void roundTripCatalog() {
-    var function =
-        new BuiltinFunctionDef(
-            "abs", List.of("int4"), "int4", false, false, true, true);
+    var function = new BuiltinFunctionDef("abs", List.of("int4"), "int4", false, false, true, true);
     var operator = new BuiltinOperatorDef("+", "int4", "int4", "int4_add");
     var scalarType = new BuiltinTypeDef("int4", 23, "N", false, null);
     var arrayType = new BuiltinTypeDef("_int4", 1007, "A", true, "int4");
@@ -19,12 +17,7 @@ class BuiltinCatalogProtoMapperTest {
     var collation = new BuiltinCollationDef("default", "en_US");
     var aggregate =
         new BuiltinAggregateDef(
-            "sum",
-            List.of("int4"),
-            "int8",
-            "int8",
-            "int4_sum_state",
-            "int4_sum_final");
+            "sum", List.of("int4"), "int8", "int8", "int4_sum_state", "int4_sum_final");
 
     var catalog =
         new BuiltinCatalogData(

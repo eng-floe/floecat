@@ -8,8 +8,8 @@ import io.grpc.Metadata;
 import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.junit.TestProfile;
 import io.quarkus.test.junit.QuarkusTestProfile;
+import io.quarkus.test.junit.TestProfile;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -29,7 +29,8 @@ class BuiltinCatalogServiceFileConfigIT {
   /** Uses a temporary filesystem directory to ensure file:// locations work. */
   @Test
   void loadsCatalogFromFileSystem() {
-    var stub = builtins.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata("filetest")));
+    var stub =
+        builtins.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata("filetest")));
     var resp = stub.getBuiltinCatalog(GetBuiltinCatalogRequest.getDefaultInstance());
     assertThat(resp.hasCatalog()).isTrue();
     assertThat(resp.getCatalog().getVersion()).isEqualTo("filetest");

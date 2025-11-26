@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
 
-import ai.floedb.metacat.catalog.rpc.BuiltinAggregate;
 import ai.floedb.metacat.catalog.rpc.BuiltinCatalog;
 import ai.floedb.metacat.catalog.rpc.BuiltinFunction;
 import java.io.IOException;
@@ -99,6 +98,8 @@ class BuiltinCatalogLoaderTest {
 
     var catalog = loader.getCatalog("bin-version");
     assertThat(catalog.version()).isEqualTo("bin-version");
-    assertThat(catalog.functions()).extracting(BuiltinFunctionDef::name).contains("pg_catalog.identity");
+    assertThat(catalog.functions())
+        .extracting(BuiltinFunctionDef::name)
+        .contains("pg_catalog.identity");
   }
 }

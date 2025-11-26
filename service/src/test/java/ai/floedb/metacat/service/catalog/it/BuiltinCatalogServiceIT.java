@@ -12,7 +12,6 @@ import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.api.Test;
-import io.grpc.Status;
 
 @QuarkusTest
 class BuiltinCatalogServiceIT {
@@ -38,16 +37,12 @@ class BuiltinCatalogServiceIT {
     assertThat(catalog.getOperatorsList())
         .extracting(op -> op.getFunctionName())
         .contains("pg_catalog.int4_add");
-    assertThat(catalog.getTypesList())
-        .extracting(t -> t.getName())
-        .contains("pg_catalog._int4");
+    assertThat(catalog.getTypesList()).extracting(t -> t.getName()).contains("pg_catalog._int4");
     assertThat(catalog.getCastsList())
         .extracting(c -> c.getSourceType())
         .contains("pg_catalog.text");
     assertThat(catalog.getCollationsList()).hasSize(1);
-    assertThat(catalog.getAggregatesList())
-        .extracting(a -> a.getName())
-        .contains("pg_catalog.sum");
+    assertThat(catalog.getAggregatesList()).extracting(a -> a.getName()).contains("pg_catalog.sum");
   }
 
   /** If the caller already has the latest version, the RPC should return an empty payload. */
