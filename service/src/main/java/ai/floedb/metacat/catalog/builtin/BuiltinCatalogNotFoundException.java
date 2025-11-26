@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.catalog.builtin;
+package ai.floedb.metacat.catalog.builtin;
 
 /** Thrown when no builtin catalog file exists for the requested engine version. */
 public final class BuiltinCatalogNotFoundException extends RuntimeException {

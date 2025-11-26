@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.catalog.builtin;
+package ai.floedb.metacat.catalog.builtin;
 
 import ai.floedb.metacat.catalog.rpc.BuiltinAggregate;
 import ai.floedb.metacat.catalog.rpc.BuiltinCast;

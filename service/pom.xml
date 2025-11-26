@@ -98,6 +98,11 @@
       <artifactId>metacat-connectors-spi</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>ai.floedb.metacat</groupId>
+      <artifactId>metacat-catalog-builtin</artifactId>
+      <version>${project.version}</version>
+    </dependency>
 
     <dependency>
       <groupId>ai.floedb.metacat</groupId>

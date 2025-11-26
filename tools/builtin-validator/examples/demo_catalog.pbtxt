@@ -1,0 +1,35 @@
+version: "demo"
+types {
+  name: "pg_catalog.int4"
+  category: "N"
+  is_array: false
+}
+functions {
+  name: "pg_catalog.int4_identity"
+  argument_types: "pg_catalog.int4"
+  return_type: "pg_catalog.int4"
+  is_strict: true
+}
+operators {
+  name: "pg_catalog.+"
+  left_type: "pg_catalog.int4"
+  right_type: "pg_catalog.int4"
+  function_name: "pg_catalog.int4_identity"
+}
+casts {
+  source_type: "pg_catalog.int4"
+  target_type: "pg_catalog.int4"
+  method: "assignment"
+}
+collations {
+  name: "pg_catalog.default"
+  locale: "en_US"
+}
+aggregates {
+  name: "pg_catalog.sum"
+  argument_types: "pg_catalog.int4"
+  state_type: "pg_catalog.int4"
+  return_type: "pg_catalog.int4"
+  state_fn: "pg_catalog.int4_identity"
+  final_fn: "pg_catalog.int4_identity"
+}

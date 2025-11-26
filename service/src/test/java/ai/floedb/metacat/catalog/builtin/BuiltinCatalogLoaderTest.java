@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.catalog.builtin;
+package ai.floedb.metacat.catalog.builtin;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
