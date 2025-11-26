@@ -4,7 +4,7 @@
     <artifactId>metacat</artifactId>
     <groupId>ai.floedb.metacat</groupId>
     <version>0.1.0-SNAPSHOT</version>
-    <relativePath>../pom.xml/pom.xml</relativePath>
+    <relativePath>../../pom.xml</relativePath>
   </parent>
   <modelVersion>4.0.0</modelVersion>
   <artifactId>builtin-validator</artifactId>
