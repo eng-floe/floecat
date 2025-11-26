@@ -1,0 +1,78 @@
+syntax = "proto3";
+package ai.floedb.metacat.catalog;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.catalog.rpc";
+
+message GetBuiltinCatalogRequest {
+  // Optional version the caller already has cached. Floecat can return an
+  // empty catalog when the versions match.
+  string current_version = 1;
+}
+
+message GetBuiltinCatalogResponse {
+  BuiltinCatalog catalog = 1;
+}
+
+message BuiltinCatalog {
+  string version = 1;
+
+  repeated BuiltinFunction functions = 2;
+  repeated BuiltinOperator operators = 3;
+  repeated BuiltinType types = 4;
+  repeated BuiltinCast casts = 5;
+  repeated BuiltinCollation collations = 6;
+  repeated BuiltinAggregate aggregates = 7;
+}
+
+message BuiltinFunction {
+  string name = 1;
+  repeated string argument_types = 2;
+  string return_type = 3;
+
+  bool is_aggregate = 4;
+  bool is_window = 5;
+
+  bool is_strict = 10;
+  bool is_immutable = 11;
+}
+
+message BuiltinOperator {
+  string name = 1;
+  string left_type = 2;
+  string right_type = 3;
+  string function_name = 4;
+}
+
+message BuiltinType {
+  string name = 1;
+  uint32 oid = 2;
+  string category = 3;
+  bool is_array = 4;
+  string element_type = 5;
+}
+
+message BuiltinCast {
+  string source_type = 1;
+  string target_type = 2;
+  string method = 3; // implicit, assignment, explicit
+}
+
+message BuiltinCollation {
+  string name = 1;
+  string locale = 2;
+}
+
+message BuiltinAggregate {
+  string name = 1;
+  repeated string argument_types = 2;
+  string state_type = 3;
+  string return_type = 4;
+
+  string state_fn = 5;
+  string final_fn = 6;
+}
+
+service BuiltinCatalogService {
+  rpc GetBuiltinCatalog(GetBuiltinCatalogRequest) returns (GetBuiltinCatalogResponse);
+}

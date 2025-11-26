@@ -32,14 +32,15 @@ query lifecycle / scan bundle logic.
 ### Key packages
 - `service/common` – Shared helpers (`BaseServiceImpl`, `IdempotencyGuard`, `Canonicalizer`,
   pagination utilities, structured logging).
-- `service/context` – gRPC interceptors injecting `PrincipalContext`, correlation IDs, query IDs, and
-  bridging outbound headers.
+- `service/context` – gRPC interceptors injecting `PrincipalContext`, correlation IDs, query IDs,
+  engine versions, and bridging outbound headers.
 - `service/security` – Minimal `PrincipalProvider` and `Authorizer` scaffolding; pluggable for
   production identity providers.
 - `service/repo` – Resource repositories layering pointer/blob stores and parsing protobuf payloads;
   includes key generation utilities (`Keys`, `ResourceKey`) and value normalizers.
 - `service/catalog` / `directory` / `tenant` / `statistics` / `connector` – gRPC service
   implementations.
+- `catalog/builtin` – Shared builtin catalog data model, validator, and loader helpers.
 - `service/query` – Query lifecycle management (`QueryContext`, `QueryContextStore`,
   `QueryServiceImpl`).
 - `service/gc` – Scheduled cleanup of stale idempotency entries.
@@ -68,6 +69,8 @@ helpers like `deterministicUuid`. Highlights:
   wires reconciliation job submission, and exposes `ValidateConnector` + `TriggerReconcile`.
 - **QueryServiceImpl** – Administers query leases (`BeginQuery`, `RenewQuery`, `EndQuery`,
   `GetQuery`) and fetches connector scan metadata (`ScanBundle`s) to include in the lease payload.
+- **BuiltinCatalogServiceImpl** – Loads immutable builtin catalogs from disk/classpath, caches them
+  per engine version, and serves them via `GetBuiltinCatalog`.
 
 ## Important Internal Details
 ### BaseServiceImpl & Idempotency
@@ -88,7 +91,7 @@ Each repository extends `BaseResourceRepository<T>`:
 implementations.
 
 ### Security and Context
-`InboundContextInterceptor` reads `x-principal-bin`, `x-query-id`, and `x-correlation-id` headers,
+`InboundContextInterceptor` reads `x-principal-bin`, `x-query-id`, `x-engine-version`, and `x-correlation-id` headers,
 validates tenant membership, hydrates MDC/OpenTelemetry attributes, and falls back to a development
 principal (full permissions) if no credentials exist. `OutboundContextClientInterceptor` mirrors the
 same headers for internal gRPC calls (service-to-service).
@@ -103,6 +106,12 @@ expiration, `PrincipalContext`, encoded `SnapshotSet`, and `ExpansionMap`.
 pins snapshots, stores the lease, and optionally contacts connectors to fetch `ScanBundle`s
 (data/delete files) so that planners have scan metadata up front. The lease data (snapshots,
 expansion map, obligations, scan files) is returned to the caller inside the `QueryDescriptor`.
+
+### Builtin Catalog Service
+`BuiltinCatalogLoader` reads immutable builtin catalogs (`builtin_catalog_<engine_version>.pb[pbtxt]`)
+from the configured location, caches them by engine version, and exposes them through
+`BuiltinCatalogService.GetBuiltinCatalog`. Clients must send `x-engine-version`; when the caller’s
+`current_version` matches the cached version the RPC returns an empty response to avoid retransfers.
 
 ### GC and Bootstrap
 `IdempotencyGc` runs on a configurable cadence (see `metacat.gc.*` config) and sweeps expired
@@ -137,6 +146,7 @@ Notable `application.properties` keys:
 | `metacat.seed.enabled` | Enable demo data seeding. |
 | `metacat.kv` / `metacat.blob` | Select pointer/blob store implementation (`memory`, `dynamodb`, `s3`). |
 | `metacat.query.*` | Default TTL, grace period, max cache size, safety expiry for query contexts. |
+| `metacat.builtins.location` | Filesystem or classpath location for builtin catalog files (default `classpath:builtins`). |
 | `metacat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for GC. |
 | `quarkus.log.*` | JSON logging, file rotation, audit handlers per RPC package. |
 | `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters. |

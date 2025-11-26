@@ -31,8 +31,10 @@
     <module>connectors/spi</module>
     <module>connectors/iceberg</module>
     <module>connectors/delta</module>
+    <module>catalog/builtin</module>
 
     <module>service</module>
+    <module>tools/builtin-validator</module>
   </modules>
 
   <build>

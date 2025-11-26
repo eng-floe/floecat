@@ -1,0 +1,122 @@
+version: "demo-pg-builtins"
+
+functions {
+  name: "pg_catalog.int4_abs"
+  argument_types: "pg_catalog.int4"
+  return_type: "pg_catalog.int4"
+  is_strict: true
+  is_immutable: true
+}
+functions {
+  name: "pg_catalog.text_length"
+  argument_types: "pg_catalog.text"
+  return_type: "pg_catalog.int4"
+  is_strict: true
+  is_immutable: true
+}
+functions {
+  name: "pg_catalog.text_upper"
+  argument_types: "pg_catalog.text"
+  return_type: "pg_catalog.text"
+  is_strict: true
+  is_immutable: false
+}
+functions {
+  name: "pg_catalog.int4_add"
+  argument_types: "pg_catalog.int4"
+  argument_types: "pg_catalog.int4"
+  return_type: "pg_catalog.int4"
+  is_strict: true
+  is_immutable: true
+}
+functions {
+  name: "pg_catalog.text_concat"
+  argument_types: "pg_catalog.text"
+  argument_types: "pg_catalog.text"
+  return_type: "pg_catalog.text"
+  is_strict: true
+  is_immutable: false
+}
+functions {
+  name: "pg_catalog.sum_int4_state"
+  argument_types: "pg_catalog.int8"
+  argument_types: "pg_catalog.int4"
+  return_type: "pg_catalog.int8"
+  is_strict: true
+  is_aggregate: true
+  is_immutable: true
+}
+functions {
+  name: "pg_catalog.sum_int4_final"
+  argument_types: "pg_catalog.int8"
+  return_type: "pg_catalog.int8"
+  is_strict: true
+  is_aggregate: true
+  is_immutable: true
+}
+
+operators {
+  name: "+"
+  left_type: "pg_catalog.int4"
+  right_type: "pg_catalog.int4"
+  function_name: "pg_catalog.int4_add"
+}
+operators {
+  name: "||"
+  left_type: "pg_catalog.text"
+  right_type: "pg_catalog.text"
+  function_name: "pg_catalog.text_concat"
+}
+
+types {
+  name: "pg_catalog.int4"
+  oid: 23
+  category: "N"
+}
+types {
+  name: "pg_catalog.int8"
+  oid: 20
+  category: "N"
+}
+types {
+  name: "pg_catalog.text"
+  oid: 25
+  category: "S"
+}
+types {
+  name: "pg_catalog._int4"
+  oid: 1007
+  category: "A"
+  is_array: true
+  element_type: "pg_catalog.int4"
+}
+
+casts {
+  source_type: "pg_catalog.text"
+  target_type: "pg_catalog.int4"
+  method: "explicit"
+}
+casts {
+  source_type: "pg_catalog.int4"
+  target_type: "pg_catalog.text"
+  method: "assignment"
+}
+casts {
+  source_type: "pg_catalog.int4"
+  target_type: "pg_catalog._int4"
+  method: "implicit"
+}
+
+collations {
+  name: "pg_catalog.default"
+  locale: "en_US"
+}
+
+aggregates {
+  name: "pg_catalog.sum"
+  argument_types: "pg_catalog.int4"
+  state_type: "pg_catalog.int8"
+  return_type: "pg_catalog.int8"
+  state_fn: "pg_catalog.sum_int4_state"
+  final_fn: "pg_catalog.sum_int4_final"
+}

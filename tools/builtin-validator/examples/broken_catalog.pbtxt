@@ -1,0 +1,28 @@
+version: "broken-demo"
+functions {
+  name: "pg_catalog.add"
+  argument_types: "pg_catalog.int4"
+  argument_types: "pg_catalog.int4"
+  return_type: "pg_catalog.int5"  # invalid on purpose
+}
+operators {
+  name: "pg_catalog.+"
+  left_type: "pg_catalog.int4"
+  right_type: "pg_catalog.int4"
+  function_name: "pg_catalog.add"
+}
+collations {
+  name: "pg_catalog.default"
+  locale: "en_US"
+}
+types {
+  name: "pg_catalog.int4"
+  category: "N"
+  is_array: false
+}
+# intentionally omit pg_catalog.int5 to trigger validator errors
+# duplicate on purpose
+collations {
+  name: "pg_catalog.default"
+  locale: "en_US"
+}
