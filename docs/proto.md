@@ -17,6 +17,8 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 - **`catalog/*.proto`** – CRUD APIs for catalogs, namespaces, tables, views, snapshots, directory
   lookups, and table statistics. Each service exposes the same Create/List/Get/Update/Delete (CLGUD)
   lifecycle with `PageRequest`/`PageResponse` support; stats schemas also cover per-file statistics.
+- **`catalog/builtin.proto`** – `GetBuiltinCatalog` plus message definitions for builtin functions,
+  operators, casts, collations, aggregates, and types loaded from static files.
 - **`connector/connector.proto`** – Connector management RPCs plus reconciliation job tracking and
   validation routines.
 - **`query/lifecycle.proto`** – Query lifecycle (`BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`) and the
@@ -43,6 +45,7 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 | `TenantService` | Tenant CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `TriggerReconcile`, `GetReconcileJob`. |
 | `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`. |
+| `BuiltinCatalogService` | `GetBuiltinCatalog` | Returns the cached builtin catalog for the engine version carried in the `x-engine-version` header; callers can send `current_version` to short circuit identical catalogs. |
 
 Each RPC requires a populated `tenant_id` within the `ResourceId`s; the Quarkus service checks this
 before hitting repository storage.
@@ -57,6 +60,11 @@ before hitting repository storage.
 - `ScanFile` entries include the file path, size, record count, format, per-column stats, and whether
   the file is data vs equality/position deletes.
 - `ScanFileContent` enumerates the delete/data categories.
+
+`catalog/builtin.proto` exposes immutable builtin metadata via `BuiltinCatalogService.GetBuiltinCatalog`
+so planners can hydrate functions/operators/types once per engine version. Clients send the
+`x-engine-version` header; when the RPC’s `current_version` matches the cached catalog Floecat returns
+an empty response.
 
 ## Important Internal Details
 - **Field numbering** – All proto files reserve low numbers for required identity fields and push

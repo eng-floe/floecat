@@ -2,6 +2,7 @@ package ai.floedb.metacat.service.catalog.builtin;
 
 import java.util.List;
 
+/** Immutable representation of a builtin catalog after parsing from protobuf. */
 public record BuiltinCatalogData(
     String version,
     List<BuiltinFunctionDef> functions,

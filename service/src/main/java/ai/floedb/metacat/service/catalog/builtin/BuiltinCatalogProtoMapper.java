@@ -9,6 +9,7 @@ import ai.floedb.metacat.catalog.rpc.BuiltinOperator;
 import ai.floedb.metacat.catalog.rpc.BuiltinType;
 import java.util.Objects;
 
+/** Helper to convert between protobuf `BuiltinCatalog` messages and in-memory records. */
 public final class BuiltinCatalogProtoMapper {
 
   private BuiltinCatalogProtoMapper() {}
