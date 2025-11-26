@@ -6,7 +6,7 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.metacat.catalog.rpc";
 
 import "common/common.proto";
-import "planning/planning_ex.proto";
+import "query/planning_ex.proto";
 
 service SchemaService {
   rpc GetSchema(GetSchemaRequest) returns (GetSchemaResponse);
@@ -17,5 +17,5 @@ message GetSchemaRequest {
 }
 
 message GetSchemaResponse {
-  ai.floedb.metacat.planning.SchemaDescriptor schema = 1;
+  ai.floedb.metacat.query.SchemaDescriptor schema = 1;
 }

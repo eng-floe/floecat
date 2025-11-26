@@ -2,6 +2,7 @@ package ai.floedb.metacat.connector.common;
 
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.FileColumnStats;
+import ai.floedb.metacat.catalog.rpc.FileContent;
 import ai.floedb.metacat.catalog.rpc.Ndv;
 import ai.floedb.metacat.catalog.rpc.NdvApprox;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
@@ -269,9 +270,9 @@ public final class ProtoStatsBuilder {
               .setFileContent(
                   fa.isDelete()
                       ? (fa.isEqualityDelete()
-                      ? ai.floedb.metacat.catalog.rpc.FileContent.FC_EQUALITY_DELETES
-                      : ai.floedb.metacat.catalog.rpc.FileContent.FC_POSITION_DELETES)
-                  : ai.floedb.metacat.catalog.rpc.FileContent.FC_DATA)
+                          ? FileContent.FC_EQUALITY_DELETES
+                          : FileContent.FC_POSITION_DELETES)
+                      : FileContent.FC_DATA)
               .addAllColumns(cols)
               .build());
     }

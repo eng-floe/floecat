@@ -1,13 +1,14 @@
 syntax = "proto3";
 
-package ai.floedb.metacat.planning;
+package ai.floedb.metacat.query;
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.planning.rpc";
+option java_package = "ai.floedb.metacat.query.rpc";
 option java_outer_classname = "PlanStoreProto";
 
 import "common/common.proto";
-import "planning/planning.proto";
+import "query/lifecycle.proto";
+import "execution/scan.proto";
 
 service PlanStore {
   rpc GetPlanBundle(GetPlanBundleRequest) returns (GetPlanBundleResponse);
@@ -19,6 +20,6 @@ message GetPlanBundleRequest {
 }
 
 message GetPlanBundleResponse {
-  repeated PlanFile data_files = 1;
-  repeated PlanFile delete_files = 2;
+  repeated ai.floedb.metacat.execution.ScanFile data_files = 1;
+  repeated ai.floedb.metacat.execution.ScanFile delete_files = 2;
 }

@@ -77,14 +77,14 @@ proto: $(PROTO_JAR)
 
 $(PROTO_JAR): proto/pom.xml $(shell find proto -type f -name '*.proto' -o -name 'pom.xml')
 	@echo "==> [PROTO] package generated stubs ($(VERSION))"
-	$(MVN) -q -f proto/pom.xml -DskipTests package
+	$(MVN) -q -f proto/pom.xml -DskipTests install
 	@test -f "$@" || { echo "ERROR: expected $@ not found"; exit 1; }
 
 # ===================================================
 # Tests
 # ===================================================
 .PHONY: test unit-test integration-test verify
-test: cli-test
+test: $(PROTO_JAR) cli-test
 	@echo "==> [BUILD] installing parent POM to local repo"
 	$(MVN) $(MVN_TESTALL) install -N
 	@echo "==> [TEST] service module"
@@ -203,8 +203,8 @@ cli-run: cli
 	@java -jar $(CLI_JAR) $(ARGS)
 
 .PHONY: cli-test
-cli-test:
-	@mvn -q -f pom.xml -pl client-cli -am  test
+cli-test: $(PROTO_JAR)
+	@mvn -q -f pom.xml -pl client-cli -am test
 
 # ===================================================
 # Docker (Quarkus container-image)

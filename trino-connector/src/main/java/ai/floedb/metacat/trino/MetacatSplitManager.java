@@ -1,9 +1,9 @@
 package ai.floedb.metacat.trino;
 
 import ai.floedb.metacat.common.rpc.ResourceId;
-import ai.floedb.metacat.planning.rpc.BeginPlanExRequest;
-import ai.floedb.metacat.planning.rpc.PlanInput;
-import ai.floedb.metacat.planning.rpc.PlanningExGrpc;
+import ai.floedb.metacat.query.rpc.BeginPlanExRequest;
+import ai.floedb.metacat.query.rpc.PlanningExGrpc;
+import ai.floedb.metacat.query.rpc.QueryInput;
 import com.google.inject.Inject;
 import io.trino.plugin.iceberg.IcebergFileFormat;
 import io.trino.plugin.iceberg.IcebergSplit;
@@ -54,7 +54,7 @@ public class MetacatSplitManager implements ConnectorSplitManager {
     BeginPlanExRequest request =
         BeginPlanExRequest.newBuilder()
             .addInputs(
-                PlanInput.newBuilder().setTableId(metacatHandle.getTableResourceId()).build())
+                QueryInput.newBuilder().setTableId(metacatHandle.getTableResourceId()).build())
             .setIncludeSchema(false)
             .build();
     var response = planning.beginPlanEx(request);

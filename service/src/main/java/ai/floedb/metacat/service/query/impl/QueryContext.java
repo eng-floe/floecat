@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.planning.impl;
+package ai.floedb.metacat.service.query.impl;
 
 import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.FileContent;
@@ -10,10 +10,13 @@ import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.PrincipalContext;
+import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
-import ai.floedb.metacat.planning.rpc.PlanStatus;
-import ai.floedb.metacat.planning.rpc.SnapshotPin;
-import ai.floedb.metacat.planning.rpc.SnapshotSet;
+import ai.floedb.metacat.execution.rpc.ScanFile;
+import ai.floedb.metacat.execution.rpc.ScanFileContent;
+import ai.floedb.metacat.query.rpc.QueryStatus;
+import ai.floedb.metacat.query.rpc.SnapshotPin;
+import ai.floedb.metacat.query.rpc.SnapshotSet;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import com.google.protobuf.InvalidProtocolBufferException;
 import java.time.Clock;
@@ -23,7 +26,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 
-public final class PlanContext {
+public final class QueryContext {
 
   public enum State {
     ACTIVE,
@@ -32,7 +35,7 @@ public final class PlanContext {
     EXPIRED
   }
 
-  private final String planId;
+  private final String queryId;
   private final PrincipalContext principal;
   private final byte[] expansionMap;
   private final byte[] snapshotSet;
@@ -43,10 +46,11 @@ public final class PlanContext {
 
   private static final Clock clock = Clock.systemUTC();
 
-  private AtomicReference<PlanStatus> planStatus = new AtomicReference<>(PlanStatus.SUBMITTED);
+  private final AtomicReference<QueryStatus> queryStatus =
+      new AtomicReference<>(QueryStatus.SUBMITTED);
 
-  private PlanContext(Builder builder) {
-    this.planId = requireNonEmpty(builder.planId, "planId");
+  private QueryContext(Builder builder) {
+    this.queryId = requireNonEmpty(builder.queryId, "queryId");
     this.principal = Objects.requireNonNull(builder.principal, "principal");
     this.expansionMap = copyOrNull(builder.expansionMap);
     this.snapshotSet = copyOrNull(builder.snapshotSet);
@@ -58,11 +62,11 @@ public final class PlanContext {
     }
 
     this.state = Objects.requireNonNull(builder.state, "state");
-    this.version = builder.version < 0 ? 0 : builder.version;
+    this.version = Math.max(0, builder.version);
   }
 
-  public static PlanContext newActive(
-      String planId,
+  public static QueryContext newActive(
+      String queryId,
       PrincipalContext principal,
       byte[] expansionMap,
       byte[] snapshotSet,
@@ -70,7 +74,7 @@ public final class PlanContext {
       long version) {
     long now = clock.millis();
     return builder()
-        .planId(planId)
+        .queryId(queryId)
         .principal(principal)
         .expansionMap(expansionMap)
         .snapshotSet(snapshotSet)
@@ -83,7 +87,7 @@ public final class PlanContext {
 
   public Builder toBuilder() {
     return builder()
-        .planId(planId)
+        .queryId(queryId)
         .principal(principal)
         .expansionMap(expansionMap)
         .snapshotSet(snapshotSet)
@@ -97,7 +101,7 @@ public final class PlanContext {
     return new Builder();
   }
 
-  public PlanContext extendLease(long newExpiresAtMs, long newVersion) {
+  public QueryContext extendLease(long newExpiresAtMs, long newVersion) {
     long next = Math.max(this.expiresAtMs, newExpiresAtMs);
 
     if (next == this.expiresAtMs) {
@@ -107,7 +111,7 @@ public final class PlanContext {
     return this.toBuilder().expiresAtMs(next).version(newVersion).build();
   }
 
-  public MetacatConnector.PlanBundle runPlanningFromStore(
+  public MetacatConnector.ScanBundle fetchScanBundle(
       TableServiceGrpc.TableServiceBlockingStub tables,
       TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats) {
     try {
@@ -118,8 +122,8 @@ public final class PlanContext {
         } catch (InvalidProtocolBufferException e) {
           throw GrpcErrors.internal(
               principal.getCorrelationId(),
-              "plan.snapshot.parse_failed",
-              Map.of("plan_id", planId));
+              "query.snapshot.parse_failed",
+              Map.of("query_id", queryId));
         }
 
         for (SnapshotPin s : snapshots.getPinsList()) {
@@ -127,24 +131,24 @@ public final class PlanContext {
               tables.getTable(GetTableRequest.newBuilder().setTableId(s.getTableId()).build());
           Table table = tableResponse.getTable();
           var bundle = buildFromStats(table, s.getSnapshotId(), stats);
-          planStatus.set(PlanStatus.COMPLETED);
+          queryStatus.set(QueryStatus.COMPLETED);
           return bundle;
         }
       }
     } finally {
-      if (!planStatus.get().equals(PlanStatus.COMPLETED)) {
-        planStatus.set(PlanStatus.FAILED);
+      if (!queryStatus.get().equals(QueryStatus.COMPLETED)) {
+        queryStatus.set(QueryStatus.FAILED);
       }
     }
     return null;
   }
 
-  private MetacatConnector.PlanBundle buildFromStats(
+  private MetacatConnector.ScanBundle buildFromStats(
       Table table,
       long snapshotId,
       TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats) {
-    var data = new ArrayList<ai.floedb.metacat.planning.rpc.PlanFile>();
-    var deletes = new ArrayList<ai.floedb.metacat.planning.rpc.PlanFile>();
+    var data = new ArrayList<ScanFile>();
+    var deletes = new ArrayList<ScanFile>();
     String format = table.getUpstream().getFormat().name();
 
     String pageToken = "";
@@ -152,14 +156,13 @@ public final class PlanContext {
       var req =
           ListFileColumnStatsRequest.newBuilder()
               .setTableId(table.getResourceId())
-              .setSnapshot(
-                  ai.floedb.metacat.common.rpc.SnapshotRef.newBuilder().setSnapshotId(snapshotId))
+              .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
               .setPage(PageRequest.newBuilder().setPageSize(1000).setPageToken(pageToken))
               .build();
       var resp = stats.listFileColumnStats(req);
       for (FileColumnStats fcs : resp.getFileColumnsList()) {
-        var pf =
-            ai.floedb.metacat.planning.rpc.PlanFile.newBuilder()
+        var scanFile =
+            ScanFile.newBuilder()
                 .setFilePath(fcs.getFilePath())
                 .setFileFormat(format)
                 .setFileSizeInBytes(fcs.getSizeBytes())
@@ -168,33 +171,33 @@ public final class PlanContext {
                 .addAllColumns(fcs.getColumnsList())
                 .build();
         if (fcs.getFileContent() == FileContent.FC_DATA) {
-          data.add(pf);
+          data.add(scanFile);
         } else {
-          deletes.add(pf);
+          deletes.add(scanFile);
         }
       }
       pageToken = resp.hasPage() ? resp.getPage().getNextPageToken() : "";
     } while (!pageToken.isBlank());
 
-    return new MetacatConnector.PlanBundle(data, deletes);
+    return new MetacatConnector.ScanBundle(data, deletes);
   }
 
-  private ai.floedb.metacat.catalog.rpc.FileContent mapContent(FileContent fc) {
+  private ScanFileContent mapContent(FileContent fc) {
     return switch (fc) {
-      case FC_EQUALITY_DELETES -> ai.floedb.metacat.catalog.rpc.FileContent.FC_EQUALITY_DELETES;
-      case FC_POSITION_DELETES -> ai.floedb.metacat.catalog.rpc.FileContent.FC_POSITION_DELETES;
-      default -> ai.floedb.metacat.catalog.rpc.FileContent.FC_DATA;
+      case FC_EQUALITY_DELETES -> ScanFileContent.SCAN_FILE_CONTENT_EQUALITY_DELETES;
+      case FC_POSITION_DELETES -> ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES;
+      default -> ScanFileContent.SCAN_FILE_CONTENT_DATA;
     };
   }
 
-  public PlanContext end(boolean commit, long graceExpiresAtMs, long newVersion) {
+  public QueryContext end(boolean commit, long graceExpiresAtMs, long newVersion) {
     var newState = commit ? State.ENDED_COMMIT : State.ENDED_ABORT;
     long nextExp = Math.max(this.expiresAtMs, graceExpiresAtMs);
 
     return this.toBuilder().state(newState).expiresAtMs(nextExp).version(newVersion).build();
   }
 
-  public PlanContext asExpired(long newVersion) {
+  public QueryContext asExpired(long newVersion) {
     if (this.state != State.ACTIVE) {
       return this;
     }
@@ -210,8 +213,8 @@ public final class PlanContext {
     return Math.max(0, expiresAtMs - nowMs);
   }
 
-  public String getPlanId() {
-    return planId;
+  public String getQueryId() {
+    return queryId;
   }
 
   public PrincipalContext getPrincipal() {
@@ -242,12 +245,30 @@ public final class PlanContext {
     return version;
   }
 
-  public PlanStatus getPlanStatus() {
-    return planStatus.get();
+  public QueryStatus getQueryStatus() {
+    return queryStatus.get();
+  }
+
+  private static byte[] copyOrNull(byte[] input) {
+    return input == null ? null : Arrays.copyOf(input, input.length);
+  }
+
+  private static String requireNonEmpty(String value, String field) {
+    if (value == null || value.isBlank()) {
+      throw new IllegalArgumentException(field + " must be provided");
+    }
+    return value;
+  }
+
+  private static long positive(long value, String field) {
+    if (value <= 0) {
+      throw new IllegalArgumentException(field + " must be > 0");
+    }
+    return value;
   }
 
   public static final class Builder {
-    private String planId;
+    private String queryId;
     private PrincipalContext principal;
     private byte[] expansionMap;
     private byte[] snapshotSet;
@@ -258,119 +279,48 @@ public final class PlanContext {
 
     private Builder() {}
 
-    public Builder planId(String v) {
-      this.planId = v;
+    public Builder queryId(String queryId) {
+      this.queryId = queryId;
       return this;
     }
 
-    public Builder principal(PrincipalContext v) {
-      this.principal = v;
+    public Builder principal(PrincipalContext principal) {
+      this.principal = principal;
       return this;
     }
 
-    public Builder expansionMap(byte[] v) {
-      this.expansionMap = v;
+    public Builder expansionMap(byte[] expansionMap) {
+      this.expansionMap = copyOrNull(expansionMap);
       return this;
     }
 
-    public Builder snapshotSet(byte[] v) {
-      this.snapshotSet = v;
+    public Builder snapshotSet(byte[] snapshotSet) {
+      this.snapshotSet = copyOrNull(snapshotSet);
       return this;
     }
 
-    public Builder createdAtMs(long v) {
-      this.createdAtMs = v;
+    public Builder createdAtMs(long createdAtMs) {
+      this.createdAtMs = createdAtMs;
       return this;
     }
 
-    public Builder expiresAtMs(long v) {
-      this.expiresAtMs = v;
+    public Builder expiresAtMs(long expiresAtMs) {
+      this.expiresAtMs = expiresAtMs;
       return this;
     }
 
-    public Builder state(State v) {
-      this.state = v;
+    public Builder state(State state) {
+      this.state = state;
       return this;
     }
 
-    public Builder version(long v) {
-      this.version = v;
+    public Builder version(long version) {
+      this.version = version;
       return this;
     }
 
-    public PlanContext build() {
-      return new PlanContext(this);
+    public QueryContext build() {
+      return new QueryContext(this);
     }
-  }
-
-  private static String requireNonEmpty(String s, String name) {
-    if (s == null || s.isBlank()) {
-      throw new IllegalArgumentException(name + " must be non-empty");
-    }
-
-    return s;
-  }
-
-  private static long positive(long v, String name) {
-    if (v <= 0) {
-      throw new IllegalArgumentException(name + " must be > 0");
-    }
-
-    return v;
-  }
-
-  private static byte[] copyOrNull(byte[] in) {
-    if (in == null) {
-      return null;
-    }
-
-    return Arrays.copyOf(in, in.length);
-  }
-
-  @Override
-  public boolean equals(Object o) {
-    if (this == o) {
-      return true;
-    }
-
-    if (!(o instanceof PlanContext)) {
-      return false;
-    }
-
-    PlanContext that = (PlanContext) o;
-    return createdAtMs == that.createdAtMs
-        && expiresAtMs == that.expiresAtMs
-        && version == that.version
-        && planId.equals(that.planId)
-        && principal.equals(that.principal)
-        && Arrays.equals(expansionMap, that.expansionMap)
-        && Arrays.equals(snapshotSet, that.snapshotSet)
-        && state == that.state;
-  }
-
-  @Override
-  public int hashCode() {
-    int result = Objects.hash(planId, principal, createdAtMs, expiresAtMs, state, version);
-
-    result = 31 * result + Arrays.hashCode(expansionMap);
-    result = 31 * result + Arrays.hashCode(snapshotSet);
-    return result;
-  }
-
-  @Override
-  public String toString() {
-    return "PlanContext{"
-        + "planId='"
-        + planId
-        + '\''
-        + ", createdAtMs="
-        + createdAtMs
-        + ", expiresAtMs="
-        + expiresAtMs
-        + ", state="
-        + state
-        + ", version="
-        + version
-        + '}';
   }
 }

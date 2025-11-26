@@ -1,14 +1,12 @@
 syntax = "proto3";
 
-package ai.floedb.metacat.planning;
+package ai.floedb.metacat.query;
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.planning.rpc";
+option java_package = "ai.floedb.metacat.query.rpc";
 option java_outer_classname = "PlanningExProto";
 
-import "common/common.proto";
-import "catalog/stats.proto";
-import "planning/planning.proto";
+import "query/lifecycle.proto";
 
 import "google/protobuf/timestamp.proto";
 
@@ -37,7 +35,7 @@ message SchemaDescriptor {
 }
 
 message BeginPlanExRequest {
-  repeated ai.floedb.metacat.planning.PlanInput inputs = 1;
+  repeated ai.floedb.metacat.query.QueryInput inputs = 1;
   google.protobuf.Timestamp as_of_default = 2;
   int32 ttl_seconds = 3;
 
@@ -47,6 +45,6 @@ message BeginPlanExRequest {
 }
 
 message BeginPlanExResponse {
-  ai.floedb.metacat.planning.PlanDescriptor plan = 1;
+  ai.floedb.metacat.query.QueryDescriptor plan = 1;
   SchemaDescriptor schema = 2;
 }

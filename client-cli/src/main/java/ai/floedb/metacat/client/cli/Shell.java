@@ -77,22 +77,22 @@ import ai.floedb.metacat.connector.rpc.SourceSelector;
 import ai.floedb.metacat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.metacat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.metacat.connector.rpc.ValidateConnectorRequest;
-import ai.floedb.metacat.planning.rpc.BeginPlanRequest;
-import ai.floedb.metacat.planning.rpc.BeginPlanResponse;
-import ai.floedb.metacat.planning.rpc.EndPlanRequest;
-import ai.floedb.metacat.planning.rpc.EndPlanResponse;
-import ai.floedb.metacat.planning.rpc.ExpansionMap;
-import ai.floedb.metacat.planning.rpc.GetPlanRequest;
-import ai.floedb.metacat.planning.rpc.GetPlanResponse;
-import ai.floedb.metacat.planning.rpc.PlanDescriptor;
-import ai.floedb.metacat.planning.rpc.PlanFile;
-import ai.floedb.metacat.planning.rpc.PlanInput;
-import ai.floedb.metacat.planning.rpc.PlanningGrpc;
-import ai.floedb.metacat.planning.rpc.RenewPlanRequest;
-import ai.floedb.metacat.planning.rpc.RenewPlanResponse;
-import ai.floedb.metacat.planning.rpc.SnapshotPin;
-import ai.floedb.metacat.planning.rpc.SnapshotSet;
-import ai.floedb.metacat.planning.rpc.TableObligations;
+import ai.floedb.metacat.execution.rpc.ScanFile;
+import ai.floedb.metacat.query.rpc.BeginQueryRequest;
+import ai.floedb.metacat.query.rpc.BeginQueryResponse;
+import ai.floedb.metacat.query.rpc.EndQueryRequest;
+import ai.floedb.metacat.query.rpc.EndQueryResponse;
+import ai.floedb.metacat.query.rpc.ExpansionMap;
+import ai.floedb.metacat.query.rpc.GetQueryRequest;
+import ai.floedb.metacat.query.rpc.GetQueryResponse;
+import ai.floedb.metacat.query.rpc.QueryDescriptor;
+import ai.floedb.metacat.query.rpc.QueryInput;
+import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
+import ai.floedb.metacat.query.rpc.RenewQueryRequest;
+import ai.floedb.metacat.query.rpc.RenewQueryResponse;
+import ai.floedb.metacat.query.rpc.SnapshotPin;
+import ai.floedb.metacat.query.rpc.SnapshotSet;
+import ai.floedb.metacat.query.rpc.TableObligations;
 import com.google.protobuf.Duration;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
@@ -161,7 +161,7 @@ public class Shell implements Runnable {
 
   @Inject
   @GrpcClient("metacat")
-  PlanningGrpc.PlanningBlockingStub planning;
+  QueryServiceGrpc.QueryServiceBlockingStub queries;
 
   private static final int DEFAULT_PAGE_SIZE = 1000;
 
@@ -195,7 +195,7 @@ public class Shell implements Runnable {
               "describe",
               "snapshots",
               "stats",
-              "plan",
+              "query",
               "tenant",
               "help",
               "quit",
@@ -323,10 +323,10 @@ public class Shell implements Runnable {
          stats table <tableFQ> [--snapshot <id>|--current] (defaults to --current)
          stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
          stats files <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
-         plan begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
-         plan renew <plan_id> [--ttl <seconds>]
-         plan end <plan_id> [--commit|--abort]
-         plan get <plan_id>
+         query begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
+         query renew <query_id> [--ttl <seconds>]
+         query end <query_id> [--commit|--abort]
+         query get <query_id>
          connectors
          connector list [--kind <KIND>] [--page-size <N>]
          connector get <display_name|id>
@@ -382,7 +382,7 @@ public class Shell implements Runnable {
       case "snapshots" -> cmdSnapshots(tail(tokens));
       case "snapshot" -> cmdSnapshotCrud(tail(tokens));
       case "stats" -> cmdStats(tail(tokens));
-      case "plan" -> cmdPlan(tail(tokens));
+      case "query" -> cmdQuery(tail(tokens));
       default -> out.println("Unknown command. Type 'help'.");
     }
   }
@@ -1646,33 +1646,33 @@ public class Shell implements Runnable {
     printFileColumnStats(all);
   }
 
-  private void cmdPlan(List<String> args) {
+  private void cmdQuery(List<String> args) {
     if (args.isEmpty()) {
-      out.println("usage: plan <begin|renew|end|get> ...");
+      out.println("usage: query <begin|renew|end|get> ...");
       return;
     }
     String sub = args.get(0);
     List<String> tail = args.subList(1, args.size());
     switch (sub) {
-      case "begin" -> planBegin(tail);
-      case "renew" -> planRenew(tail);
-      case "end" -> planEnd(tail);
-      case "get" -> planGet(tail);
-      default -> out.println("usage: plan <begin|renew|end|get> ...");
+      case "begin" -> queryBegin(tail);
+      case "renew" -> queryRenew(tail);
+      case "end" -> queryEnd(tail);
+      case "get" -> queryGet(tail);
+      default -> out.println("usage: query <begin|renew|end|get> ...");
     }
   }
 
-  private void planBegin(List<String> args) {
+  private void queryBegin(List<String> args) {
     if (args.isEmpty()) {
       out.println(
-          "usage: plan begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <fq> "
+          "usage: query begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <fq> "
               + "[--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> "
               + "[--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace"
               + " <fq>)+");
       return;
     }
 
-    List<PlanInput> inputs = new ArrayList<>();
+    List<QueryInput> inputs = new ArrayList<>();
     int ttlSeconds = 0;
     Timestamp asOfDefault = null;
 
@@ -1682,44 +1682,44 @@ public class Shell implements Runnable {
       switch (token) {
         case "--ttl" -> {
           if (i + 1 >= args.size()) {
-            out.println("plan begin: --ttl requires a value");
+            out.println("query begin: --ttl requires a value");
             return;
           }
           try {
             ttlSeconds = Integer.parseInt(args.get(i + 1));
           } catch (NumberFormatException e) {
-            out.println("plan begin: invalid ttl value '" + args.get(i + 1) + "'");
+            out.println("query begin: invalid ttl value '" + args.get(i + 1) + "'");
             return;
           }
           i += 2;
         }
         case "--as-of-default" -> {
           if (i + 1 >= args.size()) {
-            out.println("plan begin: --as-of-default requires a value");
+            out.println("query begin: --as-of-default requires a value");
             return;
           }
           try {
             asOfDefault = parseTimestampFlexible(args.get(i + 1));
           } catch (IllegalArgumentException e) {
-            out.println("plan begin: " + e.getMessage());
+            out.println("query begin: " + e.getMessage());
             return;
           }
           i += 2;
         }
         case "table" -> {
           if (i + 1 >= args.size()) {
-            out.println("plan begin: table requires a fully qualified name");
+            out.println("query begin: table requires a fully qualified name");
             return;
           }
           NameRef nr;
           try {
             nr = nameRefForTable(args.get(i + 1));
           } catch (IllegalArgumentException e) {
-            out.println("plan begin: " + e.getMessage());
+            out.println("query begin: " + e.getMessage());
             return;
           }
-          PlanInput.Builder input = PlanInput.newBuilder().setName(nr);
-          int next = parsePlanInputOptions(args, i + 2, input, true);
+          QueryInput.Builder input = QueryInput.newBuilder().setName(nr);
+          int next = parseQueryInputOptions(args, i + 2, input, true);
           if (next < 0) {
             return;
           }
@@ -1728,18 +1728,18 @@ public class Shell implements Runnable {
         }
         case "namespace" -> {
           if (i + 1 >= args.size()) {
-            out.println("plan begin: namespace requires a fully qualified name");
+            out.println("query begin: namespace requires a fully qualified name");
             return;
           }
           NameRef nr;
           try {
             nr = nameRefForNamespace(args.get(i + 1), true);
           } catch (IllegalArgumentException e) {
-            out.println("plan begin: " + e.getMessage());
+            out.println("query begin: " + e.getMessage());
             return;
           }
-          PlanInput.Builder input = PlanInput.newBuilder().setName(nr);
-          int next = parsePlanInputOptions(args, i + 2, input, false);
+          QueryInput.Builder input = QueryInput.newBuilder().setName(nr);
+          int next = parseQueryInputOptions(args, i + 2, input, false);
           if (next < 0) {
             return;
           }
@@ -1748,12 +1748,12 @@ public class Shell implements Runnable {
         }
         case "table-id" -> {
           if (i + 1 >= args.size()) {
-            out.println("plan begin: table-id requires a value");
+            out.println("query begin: table-id requires a value");
             return;
           }
           ResourceId rid = tableRid(args.get(i + 1));
-          PlanInput.Builder input = PlanInput.newBuilder().setTableId(rid);
-          int next = parsePlanInputOptions(args, i + 2, input, true);
+          QueryInput.Builder input = QueryInput.newBuilder().setTableId(rid);
+          int next = parseQueryInputOptions(args, i + 2, input, true);
           if (next < 0) {
             return;
           }
@@ -1762,12 +1762,12 @@ public class Shell implements Runnable {
         }
         case "view-id" -> {
           if (i + 1 >= args.size()) {
-            out.println("plan begin: view-id requires a value");
+            out.println("query begin: view-id requires a value");
             return;
           }
           ResourceId rid = viewRid(args.get(i + 1));
-          PlanInput.Builder input = PlanInput.newBuilder().setViewId(rid);
-          int next = parsePlanInputOptions(args, i + 2, input, false);
+          QueryInput.Builder input = QueryInput.newBuilder().setViewId(rid);
+          int next = parseQueryInputOptions(args, i + 2, input, false);
           if (next < 0) {
             return;
           }
@@ -1775,18 +1775,18 @@ public class Shell implements Runnable {
           i = next;
         }
         default -> {
-          out.println("plan begin: unknown argument '" + token + "'");
+          out.println("query begin: unknown argument '" + token + "'");
           return;
         }
       }
     }
 
     if (inputs.isEmpty()) {
-      out.println("plan begin: at least one table, view, or namespace input is required");
+      out.println("query begin: at least one table, view, or namespace input is required");
       return;
     }
 
-    BeginPlanRequest.Builder req = BeginPlanRequest.newBuilder().addAllInputs(inputs);
+    BeginQueryRequest.Builder req = BeginQueryRequest.newBuilder().addAllInputs(inputs);
     if (ttlSeconds > 0) {
       req.setTtlSeconds(ttlSeconds);
     }
@@ -1794,16 +1794,16 @@ public class Shell implements Runnable {
       req.setAsOfDefault(asOfDefault);
     }
 
-    BeginPlanResponse resp = planning.beginPlan(req.build());
-    printPlanBegin(resp);
+    BeginQueryResponse resp = queries.beginQuery(req.build());
+    printQueryBegin(resp);
   }
 
-  private void planRenew(List<String> args) {
+  private void queryRenew(List<String> args) {
     if (args.isEmpty()) {
-      out.println("usage: plan renew <plan_id> [--ttl <seconds>]");
+      out.println("usage: query renew <query_id> [--ttl <seconds>]");
       return;
     }
-    String planId = args.get(0);
+    String queryId = args.get(0);
     int ttlSeconds = 0;
 
     int i = 1;
@@ -1811,38 +1811,38 @@ public class Shell implements Runnable {
       String token = args.get(i);
       if ("--ttl".equals(token)) {
         if (i + 1 >= args.size()) {
-          out.println("plan renew: --ttl requires a value");
+          out.println("query renew: --ttl requires a value");
           return;
         }
         try {
           ttlSeconds = Integer.parseInt(args.get(i + 1));
         } catch (NumberFormatException e) {
-          out.println("plan renew: invalid ttl value '" + args.get(i + 1) + "'");
+          out.println("query renew: invalid ttl value '" + args.get(i + 1) + "'");
           return;
         }
         i += 2;
       } else {
-        out.println("plan renew: unknown argument '" + token + "'");
+        out.println("query renew: unknown argument '" + token + "'");
         return;
       }
     }
 
-    RenewPlanRequest.Builder req = RenewPlanRequest.newBuilder().setPlanId(planId);
+    RenewQueryRequest.Builder req = RenewQueryRequest.newBuilder().setQueryId(queryId);
     if (ttlSeconds > 0) {
       req.setTtlSeconds(ttlSeconds);
     }
 
-    RenewPlanResponse resp = planning.renewPlan(req.build());
-    out.println("plan id: " + resp.getPlanId());
+    RenewQueryResponse resp = queries.renewQuery(req.build());
+    out.println("query id: " + resp.getQueryId());
     out.println("expires: " + ts(resp.getExpiresAt()));
   }
 
-  private void planEnd(List<String> args) {
+  private void queryEnd(List<String> args) {
     if (args.isEmpty()) {
-      out.println("usage: plan end <plan_id> [--commit|--abort]");
+      out.println("usage: query end <query_id> [--commit|--abort]");
       return;
     }
-    String planId = args.get(0);
+    String queryId = args.get(0);
     Boolean commit = null;
 
     for (int i = 1; i < args.size(); i++) {
@@ -1850,75 +1850,76 @@ public class Shell implements Runnable {
       switch (token) {
         case "--commit" -> {
           if (commit != null && !commit) {
-            out.println("plan end: cannot specify both --commit and --abort");
+            out.println("query end: cannot specify both --commit and --abort");
             return;
           }
           commit = true;
         }
         case "--abort" -> {
           if (commit != null && commit) {
-            out.println("plan end: cannot specify both --commit and --abort");
+            out.println("query end: cannot specify both --commit and --abort");
             return;
           }
           commit = false;
         }
         default -> {
-          out.println("plan end: unknown argument '" + token + "'");
+          out.println("query end: unknown argument '" + token + "'");
           return;
         }
       }
     }
 
     boolean commitFlag = commit != null ? commit : false;
-    EndPlanResponse resp =
-        planning.endPlan(
-            EndPlanRequest.newBuilder().setPlanId(planId).setCommit(commitFlag).build());
-    out.println("plan id: " + resp.getPlanId());
+    EndQueryResponse resp =
+        queries.endQuery(
+            EndQueryRequest.newBuilder().setQueryId(queryId).setCommit(commitFlag).build());
+    out.println("query id: " + resp.getQueryId());
   }
 
-  private void planGet(List<String> args) {
+  private void queryGet(List<String> args) {
     if (args.isEmpty()) {
-      out.println("usage: plan get <plan_id>");
+      out.println("usage: query get <query_id>");
       return;
     }
-    String planId = args.get(0);
-    GetPlanResponse resp = planning.getPlan(GetPlanRequest.newBuilder().setPlanId(planId).build());
-    if (!resp.hasPlan()) {
-      out.println("plan get: no plan details returned");
+    String queryId = args.get(0);
+    GetQueryResponse resp =
+        queries.getQuery(GetQueryRequest.newBuilder().setQueryId(queryId).build());
+    if (!resp.hasQuery()) {
+      out.println("query get: no query details returned");
       return;
     }
-    printPlanDescriptor(resp.getPlan());
+    printQueryDescriptor(resp.getQuery());
   }
 
-  private int parsePlanInputOptions(
-      List<String> args, int start, PlanInput.Builder input, boolean allowSnapshot) {
+  private int parseQueryInputOptions(
+      List<String> args, int start, QueryInput.Builder input, boolean allowSnapshot) {
     SnapshotRef snapshotRef = null;
     boolean snapshotSet = false;
 
     int i = start;
     while (i < args.size()) {
       String token = args.get(i);
-      if (isPlanInputStartToken(token) || isPlanGlobalFlag(token)) {
+      if (isQueryInputStartToken(token) || isQueryGlobalFlag(token)) {
         break;
       }
       switch (token) {
         case "--snapshot" -> {
           if (!allowSnapshot) {
-            out.println("plan begin: snapshots are not supported for this input type");
+            out.println("query begin: snapshots are not supported for this input type");
             return -1;
           }
           if (i + 1 >= args.size()) {
-            out.println("plan begin: --snapshot requires a value");
+            out.println("query begin: --snapshot requires a value");
             return -1;
           }
           if (snapshotSet) {
-            out.println("plan begin: multiple snapshot selectors provided for one input");
+            out.println("query begin: multiple snapshot selectors provided for one input");
             return -1;
           }
           try {
             snapshotRef = snapshotFromTokenOrCurrent(args.get(i + 1));
           } catch (IllegalArgumentException e) {
-            out.println("plan begin: " + e.getMessage());
+            out.println("query begin: " + e.getMessage());
             return -1;
           }
           snapshotSet = true;
@@ -1926,29 +1927,29 @@ public class Shell implements Runnable {
         }
         case "--as-of" -> {
           if (!allowSnapshot) {
-            out.println("plan begin: --as-of is not supported for this input type");
+            out.println("query begin: --as-of is not supported for this input type");
             return -1;
           }
           if (i + 1 >= args.size()) {
-            out.println("plan begin: --as-of requires a value");
+            out.println("query begin: --as-of requires a value");
             return -1;
           }
           if (snapshotSet) {
-            out.println("plan begin: multiple snapshot selectors provided for one input");
+            out.println("query begin: multiple snapshot selectors provided for one input");
             return -1;
           }
           try {
             Timestamp ts = parseTimestampFlexible(args.get(i + 1));
             snapshotRef = SnapshotRef.newBuilder().setAsOf(ts).build();
           } catch (IllegalArgumentException e) {
-            out.println("plan begin: " + e.getMessage());
+            out.println("query begin: " + e.getMessage());
             return -1;
           }
           snapshotSet = true;
           i += 2;
         }
         default -> {
-          out.println("plan begin: unknown flag '" + token + "'");
+          out.println("query begin: unknown flag '" + token + "'");
           return -1;
         }
       }
@@ -1960,41 +1961,41 @@ public class Shell implements Runnable {
     return i;
   }
 
-  private boolean isPlanInputStartToken(String token) {
+  private boolean isQueryInputStartToken(String token) {
     return switch (token) {
       case "table", "table-id", "view-id", "namespace" -> true;
       default -> false;
     };
   }
 
-  private boolean isPlanGlobalFlag(String token) {
+  private boolean isQueryGlobalFlag(String token) {
     return "--ttl".equals(token) || "--as-of-default".equals(token);
   }
 
-  private void printPlanBegin(BeginPlanResponse resp) {
-    if (!resp.hasPlan()) {
-      out.println("plan begin: no plan returned");
+  private void printQueryBegin(BeginQueryResponse resp) {
+    if (!resp.hasQuery()) {
+      out.println("query begin: no query returned");
       return;
     }
-    printPlanDescriptor(resp.getPlan());
+    printQueryDescriptor(resp.getQuery());
   }
 
-  private void printPlanDescriptor(PlanDescriptor plan) {
-    out.println("plan id: " + plan.getPlanId());
-    if (!plan.getTenantId().isBlank()) {
-      out.println("tenant: " + plan.getTenantId());
+  private void printQueryDescriptor(QueryDescriptor query) {
+    out.println("query id: " + query.getQueryId());
+    if (!query.getTenantId().isBlank()) {
+      out.println("tenant: " + query.getTenantId());
     }
-    out.println("status: " + plan.getPlanStatus().name().toLowerCase(Locale.ROOT));
-    out.println("created: " + ts(plan.getCreatedAt()));
-    out.println("expires: " + ts(plan.getExpiresAt()));
-    printPlanSnapshots(plan.getSnapshots());
-    printPlanExpansion(plan.getExpansion());
-    printPlanObligations(plan.getObligationsList());
-    printPlanFiles("data_files", plan.getDataFilesList());
-    printPlanFiles("delete_files", plan.getDeleteFilesList());
+    out.println("status: " + query.getQueryStatus().name().toLowerCase(Locale.ROOT));
+    out.println("created: " + ts(query.getCreatedAt()));
+    out.println("expires: " + ts(query.getExpiresAt()));
+    printQuerySnapshots(query.getSnapshots());
+    printQueryExpansion(query.getExpansion());
+    printQueryObligations(query.getObligationsList());
+    printQueryFiles("data_files", query.getDataFilesList());
+    printQueryFiles("delete_files", query.getDeleteFilesList());
   }
 
-  private void printPlanSnapshots(SnapshotSet snapshots) {
+  private void printQuerySnapshots(SnapshotSet snapshots) {
     if (snapshots == null || snapshots.getPinsCount() == 0) {
       out.println("snapshots: <none>");
       return;
@@ -2013,7 +2014,7 @@ public class Shell implements Runnable {
     }
   }
 
-  private void printPlanExpansion(ExpansionMap expansion) {
+  private void printQueryExpansion(ExpansionMap expansion) {
     if (expansion == null) {
       out.println("expansion: <none>");
       return;
@@ -2056,7 +2057,7 @@ public class Shell implements Runnable {
     }
   }
 
-  private void printPlanObligations(List<TableObligations> obligations) {
+  private void printQueryObligations(List<TableObligations> obligations) {
     if (obligations == null || obligations.isEmpty()) {
       return;
     }
@@ -2078,13 +2079,13 @@ public class Shell implements Runnable {
     }
   }
 
-  private void printPlanFiles(String label, List<PlanFile> files) {
+  private void printQueryFiles(String label, List<ScanFile> files) {
     if (files == null || files.isEmpty()) {
       out.println(label + ": <none>");
       return;
     }
     out.println(label + ":");
-    for (PlanFile file : files) {
+    for (ScanFile file : files) {
       String content = file.getFileContent().name().toLowerCase(Locale.ROOT);
       out.printf(
           "  - path=%s format=%s size=%dB records=%d content=%s%n",

@@ -1,7 +1,7 @@
 package ai.floedb.metacat.connector.delta.uc.impl;
 
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
-import ai.floedb.metacat.catalog.rpc.FileContent;
+import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.common.GenericStatsEngine;
@@ -14,7 +14,8 @@ import ai.floedb.metacat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.metacat.connector.spi.AuthProvider;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
-import ai.floedb.metacat.planning.rpc.PlanFile;
+import ai.floedb.metacat.execution.rpc.ScanFile;
+import ai.floedb.metacat.execution.rpc.ScanFileContent;
 import ai.floedb.metacat.types.LogicalType;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -290,13 +291,13 @@ public final class UnityDeltaConnector implements MetacatConnector {
       long rowCount = dv.getCardinality();
       long sizeBytes = dv.getSizeInBytes();
       fileStats.add(
-          ai.floedb.metacat.catalog.rpc.FileColumnStats.newBuilder()
+          FileColumnStats.newBuilder()
               .setTableId(destinationTableId)
               .setSnapshotId(version)
               .setFilePath(dvPath)
               .setRowCount(rowCount)
               .setSizeBytes(sizeBytes)
-              .setFileContent(ai.floedb.metacat.catalog.rpc.FileContent.FC_POSITION_DELETES)
+              .setFileContent(ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES)
               .build());
     }
 
@@ -305,7 +306,7 @@ public final class UnityDeltaConnector implements MetacatConnector {
   }
 
   @Override
-  public PlanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime) {
+  public ScanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime) {
     final String tableRoot = storageLocation(namespaceFq, tableName);
     final Table table = Table.forPath(engine, tableRoot);
 
@@ -320,35 +321,35 @@ public final class UnityDeltaConnector implements MetacatConnector {
             "Delta table uses inline deletion vectors; not supported for snapshot " + version);
       }
 
-      List<PlanFile> data = new ArrayList<>();
+      List<ScanFile> data = new ArrayList<>();
       for (PlannedFile<String> pf : planner) {
         data.add(
-            PlanFile.newBuilder()
+            ScanFile.newBuilder()
                 .setFilePath(pf.path())
                 .setFileFormat("PARQUET")
                 .setFileSizeInBytes(pf.sizeBytes())
                 .setRecordCount(pf.rowCount())
-                .setFileContent(FileContent.FC_DATA)
+                .setFileContent(ScanFileContent.SCAN_FILE_CONTENT_DATA)
                 .build());
       }
 
-      List<PlanFile> deletes = new ArrayList<>();
+      List<ScanFile> deletes = new ArrayList<>();
       for (DeletionVectorDescriptor dv : planner.deletionVectors()) {
         String dvPath =
             (dv.isOnDisk() && dv.getPathOrInlineDv() != null) ? dv.getPathOrInlineDv() : "";
         long rowCount = dv.getCardinality();
         long sizeBytes = dv.getSizeInBytes();
         deletes.add(
-            PlanFile.newBuilder()
+            ScanFile.newBuilder()
                 .setFilePath(dvPath)
                 .setFileFormat("DELETION_VECTOR")
                 .setFileSizeInBytes(sizeBytes)
                 .setRecordCount(rowCount)
-                .setFileContent(FileContent.FC_POSITION_DELETES)
+                .setFileContent(ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES)
                 .build());
       }
 
-      return new PlanBundle(data, deletes);
+      return new ScanBundle(data, deletes);
     } catch (Exception e) {
       throw new RuntimeException("Enumerating Delta files failed (version " + version + ")", e);
     }

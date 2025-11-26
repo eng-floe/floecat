@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.planning.impl;
+package ai.floedb.metacat.service.query.impl;
 
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.GetSnapshotRequest;
@@ -12,23 +12,24 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.common.rpc.SpecialSnapshot;
-import ai.floedb.metacat.planning.rpc.BeginPlanRequest;
-import ai.floedb.metacat.planning.rpc.BeginPlanResponse;
-import ai.floedb.metacat.planning.rpc.EndPlanRequest;
-import ai.floedb.metacat.planning.rpc.EndPlanResponse;
-import ai.floedb.metacat.planning.rpc.ExpansionMap;
-import ai.floedb.metacat.planning.rpc.GetPlanRequest;
-import ai.floedb.metacat.planning.rpc.GetPlanResponse;
-import ai.floedb.metacat.planning.rpc.PlanDescriptor;
-import ai.floedb.metacat.planning.rpc.Planning;
-import ai.floedb.metacat.planning.rpc.RenewPlanRequest;
-import ai.floedb.metacat.planning.rpc.RenewPlanResponse;
-import ai.floedb.metacat.planning.rpc.SnapshotPin;
-import ai.floedb.metacat.planning.rpc.SnapshotSet;
+import ai.floedb.metacat.query.rpc.BeginQueryRequest;
+import ai.floedb.metacat.query.rpc.BeginQueryResponse;
+import ai.floedb.metacat.query.rpc.EndQueryRequest;
+import ai.floedb.metacat.query.rpc.EndQueryResponse;
+import ai.floedb.metacat.query.rpc.ExpansionMap;
+import ai.floedb.metacat.query.rpc.GetQueryRequest;
+import ai.floedb.metacat.query.rpc.GetQueryResponse;
+import ai.floedb.metacat.query.rpc.QueryDescriptor;
+import ai.floedb.metacat.query.rpc.QueryService;
+import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
+import ai.floedb.metacat.query.rpc.RenewQueryRequest;
+import ai.floedb.metacat.query.rpc.RenewQueryResponse;
+import ai.floedb.metacat.query.rpc.SnapshotPin;
+import ai.floedb.metacat.query.rpc.SnapshotSet;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.LogHelper;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
-import ai.floedb.metacat.service.planning.PlanContextStore;
+import ai.floedb.metacat.service.query.QueryContextStore;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -46,7 +47,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @GrpcService
-public class PlanningImpl extends BaseServiceImpl implements Planning {
+public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
 
@@ -62,17 +63,17 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
   @GrpcClient("metacat")
   TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats;
 
-  @Inject PlanContextStore plans;
+  @Inject QueryContextStore queryStore;
 
   @Inject
-  @ConfigProperty(name = "metacat.plan.default-ttl-ms", defaultValue = "60000")
+  @ConfigProperty(name = "metacat.query.default-ttl-ms", defaultValue = "60000")
   long defaultTtlMs;
 
-  private static final Logger LOG = Logger.getLogger(Planning.class);
+  private static final Logger LOG = Logger.getLogger(QueryServiceGrpc.class);
 
   @Override
-  public Uni<BeginPlanResponse> beginPlan(BeginPlanRequest request) {
-    var L = LogHelper.start(LOG, "BeginPlan");
+  public Uni<BeginQueryResponse> beginQuery(BeginQueryRequest request) {
+    var L = LogHelper.start(LOG, "BeginQuery");
 
     return mapFailures(
             run(
@@ -84,7 +85,7 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
 
                   if (request.getInputsCount() == 0) {
                     throw GrpcErrors.invalidArgument(
-                        correlationId, "plan.inputs.required", Map.of());
+                        correlationId, "query.inputs.required", Map.of());
                   }
 
                   final long ttlMs =
@@ -139,7 +140,7 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
 
                       default ->
                           throw GrpcErrors.invalidArgument(
-                              correlationId, "plan.target.required", Map.of());
+                              correlationId, "query.target.required", Map.of());
                     }
                   }
 
@@ -160,36 +161,36 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
                     }
                   }
 
-                  String planId = UUID.randomUUID().toString();
+                  String queryId = UUID.randomUUID().toString();
                   byte[] expansionBytes = expansion.toByteArray();
                   byte[] snapshotBytes = snapshots.build().toByteArray();
 
-                  var planContext =
-                      PlanContext.newActive(
-                          planId, principalContext, expansionBytes, snapshotBytes, ttlMs, 1L);
-                  plans.put(planContext);
+                  var queryContext =
+                      QueryContext.newActive(
+                          queryId, principalContext, expansionBytes, snapshotBytes, ttlMs, 1L);
+                  queryStore.put(queryContext);
 
-                  var planBundle = planContext.runPlanningFromStore(tables, stats);
+                  var scanBundle = queryContext.fetchScanBundle(tables, stats);
 
                   try {
-                    return BeginPlanResponse.newBuilder()
-                        .setPlan(
-                            PlanDescriptor.newBuilder()
-                                .setPlanId(planId)
+                    return BeginQueryResponse.newBuilder()
+                        .setQuery(
+                            QueryDescriptor.newBuilder()
+                                .setQueryId(queryId)
                                 .setTenantId(principalContext.getTenantId())
-                                .setPlanStatus(planContext.getPlanStatus())
-                                .setCreatedAt(ts(planContext.getCreatedAtMs()))
-                                .setExpiresAt(ts(planContext.getExpiresAtMs()))
+                                .setQueryStatus(queryContext.getQueryStatus())
+                                .setCreatedAt(ts(queryContext.getCreatedAtMs()))
+                                .setExpiresAt(ts(queryContext.getExpiresAtMs()))
                                 .setSnapshots(SnapshotSet.parseFrom(snapshotBytes))
                                 .setExpansion(ExpansionMap.parseFrom(expansionBytes))
                                 .addAllDataFiles(
-                                    planBundle != null ? planBundle.dataFiles() : List.of())
+                                    scanBundle != null ? scanBundle.dataFiles() : List.of())
                                 .addAllDeleteFiles(
-                                    planBundle != null ? planBundle.deleteFiles() : List.of()))
+                                    scanBundle != null ? scanBundle.deleteFiles() : List.of()))
                         .build();
                   } catch (InvalidProtocolBufferException e) {
                     throw GrpcErrors.internal(
-                        correlationId, "plan.expansion.parse_failed", Map.of("plan_id", planId));
+                        correlationId, "query.expansion.parse_failed", Map.of("query_id", queryId));
                   }
                 }),
             correlationId())
@@ -200,8 +201,8 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
   }
 
   @Override
-  public Uni<RenewPlanResponse> renewPlan(RenewPlanRequest request) {
-    var L = LogHelper.start(LOG, "RenewPlan");
+  public Uni<RenewQueryResponse> renewQuery(RenewQueryRequest request) {
+    var L = LogHelper.start(LOG, "RenewQuery");
 
     return mapFailures(
             run(
@@ -211,7 +212,7 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
 
                   authz.require(principalContext, "catalog.read");
 
-                  String planId = mustNonEmpty(request.getPlanId(), "plan_id", correlationId);
+                  String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
                   final long ttlMs =
                       (request.getTtlSeconds() > 0
                               ? request.getTtlSeconds()
@@ -219,13 +220,13 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
                           * 1000L;
                   final long requestedExp = clock.millis() + ttlMs;
 
-                  var updated = plans.extendLease(planId, requestedExp);
+                  var updated = queryStore.extendLease(queryId, requestedExp);
                   if (updated.isEmpty()) {
                     throw GrpcErrors.notFound(
-                        correlationId, "plan.not_found", Map.of("plan_id", planId));
+                        correlationId, "query.not_found", Map.of("query_id", queryId));
                   }
-                  return RenewPlanResponse.newBuilder()
-                      .setPlanId(planId)
+                  return RenewQueryResponse.newBuilder()
+                      .setQueryId(queryId)
                       .setExpiresAt(ts(updated.get().getExpiresAtMs()))
                       .build();
                 }),
@@ -237,8 +238,8 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
   }
 
   @Override
-  public Uni<EndPlanResponse> endPlan(EndPlanRequest request) {
-    var L = LogHelper.start(LOG, "EndPlan");
+  public Uni<EndQueryResponse> endQuery(EndQueryRequest request) {
+    var L = LogHelper.start(LOG, "EndQuery");
 
     return mapFailures(
             run(
@@ -248,13 +249,13 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
 
                   authz.require(principalContext, "catalog.read");
 
-                  String planId = mustNonEmpty(request.getPlanId(), "plan_id", correlationId);
-                  var ended = plans.end(planId, request.getCommit());
+                  String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+                  var ended = queryStore.end(queryId, request.getCommit());
                   if (ended.isEmpty()) {
                     throw GrpcErrors.notFound(
-                        correlationId, "plan.not_found", Map.of("plan_id", planId));
+                        correlationId, "query.not_found", Map.of("query_id", queryId));
                   }
-                  return EndPlanResponse.newBuilder().setPlanId(planId).build();
+                  return EndQueryResponse.newBuilder().setQueryId(queryId).build();
                 }),
             correlationId())
         .onFailure()
@@ -264,8 +265,8 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
   }
 
   @Override
-  public Uni<GetPlanResponse> getPlan(GetPlanRequest request) {
-    var L = LogHelper.start(LOG, "GetPlan");
+  public Uni<GetQueryResponse> getQuery(GetQueryRequest request) {
+    var L = LogHelper.start(LOG, "GetQuery");
 
     return mapFailures(
             run(
@@ -274,42 +275,46 @@ public class PlanningImpl extends BaseServiceImpl implements Planning {
                   var correlationId = principalContext.getCorrelationId();
                   authz.require(principalContext, "catalog.read");
 
-                  String planId = mustNonEmpty(request.getPlanId(), "plan_id", correlationId);
-                  var planContextOpt = plans.get(planId);
-                  if (planContextOpt.isEmpty()) {
+                  String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+                  var queryContextOpt = queryStore.get(queryId);
+                  if (queryContextOpt.isEmpty()) {
                     throw GrpcErrors.notFound(
-                        correlationId, "plan.not_found", Map.of("plan_id", planId));
+                        correlationId, "query.not_found", Map.of("query_id", queryId));
                   }
-                  var planContext = planContextOpt.get();
+                  var queryContext = queryContextOpt.get();
 
-                  var planDescriptor =
-                      PlanDescriptor.newBuilder()
-                          .setPlanId(planContext.getPlanId())
+                  var queryDescriptor =
+                      QueryDescriptor.newBuilder()
+                          .setQueryId(queryContext.getQueryId())
                           .setTenantId(principalContext.getTenantId())
-                          .setPlanStatus(planContext.getPlanStatus())
-                          .setCreatedAt(ts(planContext.getCreatedAtMs()))
-                          .setExpiresAt(ts(planContext.getExpiresAtMs()));
+                          .setQueryStatus(queryContext.getQueryStatus())
+                          .setCreatedAt(ts(queryContext.getCreatedAtMs()))
+                          .setExpiresAt(ts(queryContext.getExpiresAtMs()));
 
-                  if (planContext.getSnapshotSet() != null) {
+                  if (queryContext.getSnapshotSet() != null) {
                     try {
-                      planDescriptor.setSnapshots(
-                          SnapshotSet.parseFrom(planContext.getSnapshotSet()));
+                      queryDescriptor.setSnapshots(
+                          SnapshotSet.parseFrom(queryContext.getSnapshotSet()));
                     } catch (InvalidProtocolBufferException e) {
                       throw GrpcErrors.internal(
-                          correlationId, "plan.snapshot.parse_failed", Map.of("plan_id", planId));
+                          correlationId,
+                          "query.snapshot.parse_failed",
+                          Map.of("query_id", queryId));
                     }
                   }
-                  if (planContext.getExpansionMap() != null) {
+                  if (queryContext.getExpansionMap() != null) {
                     try {
-                      planDescriptor.setExpansion(
-                          ExpansionMap.parseFrom(planContext.getExpansionMap()));
+                      queryDescriptor.setExpansion(
+                          ExpansionMap.parseFrom(queryContext.getExpansionMap()));
                     } catch (InvalidProtocolBufferException e) {
                       throw GrpcErrors.internal(
-                          correlationId, "plan.expansion.parse_failed", Map.of("plan_id", planId));
+                          correlationId,
+                          "query.expansion.parse_failed",
+                          Map.of("query_id", queryId));
                     }
                   }
 
-                  return GetPlanResponse.newBuilder().setPlan(planDescriptor.build()).build();
+                  return GetQueryResponse.newBuilder().setQuery(queryDescriptor.build()).build();
                 }),
             correlationId())
         .onFailure()

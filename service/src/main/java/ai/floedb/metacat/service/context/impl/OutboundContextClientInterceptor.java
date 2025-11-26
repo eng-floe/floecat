@@ -16,8 +16,8 @@ import java.util.Optional;
 public class OutboundContextClientInterceptor implements io.grpc.ClientInterceptor {
   private static final Metadata.Key<byte[]> PRINC_BIN =
       Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
-  private static final Metadata.Key<String> PLAN_ID =
-      Metadata.Key.of("x-plan-id", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> QUERY_ID =
+      Metadata.Key.of("x-query-id", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORR =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
 
@@ -31,9 +31,9 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
       @Override
       public void start(Listener<RespT> reponseListener, Metadata headers) {
         var principalContext = InboundContextInterceptor.PC_KEY.get();
-        var planId =
-            Optional.ofNullable(InboundContextInterceptor.PLAN_KEY.get())
-                .orElseGet(() -> Baggage.current().getEntryValue("plan_id"));
+        var queryId =
+            Optional.ofNullable(InboundContextInterceptor.QUERY_KEY.get())
+                .orElseGet(() -> Baggage.current().getEntryValue("query_id"));
         var correlationId =
             Optional.ofNullable(InboundContextInterceptor.CORR_KEY.get())
                 .orElseGet(() -> Baggage.current().getEntryValue("correlation_id"));
@@ -42,8 +42,8 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
           headers.put(PRINC_BIN, principalContext.toByteArray());
         }
 
-        if (planId != null && !planId.isBlank()) {
-          headers.put(PLAN_ID, planId);
+        if (queryId != null && !queryId.isBlank()) {
+          headers.put(QUERY_ID, queryId);
         }
 
         if (correlationId != null && !correlationId.isBlank()) {

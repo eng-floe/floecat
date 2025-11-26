@@ -1,7 +1,7 @@
 package ai.floedb.metacat.trino;
 
-import ai.floedb.metacat.planning.rpc.PlanFile;
-import ai.floedb.metacat.planning.rpc.SchemaDescriptor;
+import ai.floedb.metacat.execution.rpc.ScanFile;
+import ai.floedb.metacat.query.rpc.SchemaDescriptor;
 import io.trino.spi.HostAddress;
 import io.trino.spi.SplitWeight;
 import io.trino.spi.connector.ConnectorSplit;
@@ -12,21 +12,21 @@ import java.util.List;
  * and the projected schema descriptor.
  */
 public final class MetacatSplit implements ConnectorSplit {
-  private final PlanFile dataFile;
-  private final List<PlanFile> deleteFiles;
+  private final ScanFile dataFile;
+  private final List<ScanFile> deleteFiles;
   private final SchemaDescriptor schema;
 
-  public MetacatSplit(PlanFile dataFile, List<PlanFile> deleteFiles, SchemaDescriptor schema) {
+  public MetacatSplit(ScanFile dataFile, List<ScanFile> deleteFiles, SchemaDescriptor schema) {
     this.dataFile = dataFile;
     this.deleteFiles = List.copyOf(deleteFiles);
     this.schema = schema;
   }
 
-  public PlanFile dataFile() {
+  public ScanFile dataFile() {
     return dataFile;
   }
 
-  public List<PlanFile> deleteFiles() {
+  public List<ScanFile> deleteFiles() {
     return deleteFiles;
   }
 

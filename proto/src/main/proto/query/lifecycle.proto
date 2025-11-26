@@ -1,0 +1,116 @@
+syntax = "proto3";
+
+package ai.floedb.metacat.query;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.query.rpc";
+option java_outer_classname = "QueryServiceProto";
+
+import "common/common.proto";
+import "google/protobuf/timestamp.proto";
+import "execution/scan.proto";
+
+message QueryInput {
+  oneof target {
+    ai.floedb.metacat.common.NameRef name = 1;
+    ai.floedb.metacat.common.ResourceId table_id = 2;
+    ai.floedb.metacat.common.ResourceId view_id = 3;
+  }
+  ai.floedb.metacat.common.SnapshotRef snapshot = 10;
+}
+
+enum QueryStatus {
+  SUBMITTED = 0;
+  COMPLETED = 1;
+  FAILED = 2;
+}
+
+message SnapshotPin {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  google.protobuf.Timestamp as_of = 3;
+}
+
+message SnapshotSet {
+  repeated SnapshotPin pins = 1;
+}
+
+message TableObligations {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+
+  message ColumnMask {
+    string column = 1;
+    string expression = 2;
+  }
+
+  repeated ColumnMask masks = 2;
+  string row_filter_expression = 3;
+}
+
+message ExpansionMap {
+  message ExpandedView {
+    ai.floedb.metacat.common.ResourceId view_id = 1;
+    string canonical_sql = 2;
+    repeated ai.floedb.metacat.common.ResourceId base_table_ids = 3;
+  }
+
+  repeated ExpandedView views = 1;
+  repeated ai.floedb.metacat.common.ResourceId read_via_view_tables = 2;
+}
+
+message QueryDescriptor {
+  string query_id = 1;
+  string tenant_id = 2;
+  QueryStatus query_status = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  SnapshotSet snapshots = 6;
+  ExpansionMap expansion = 7;
+  repeated TableObligations obligations = 8;
+  repeated ai.floedb.metacat.execution.ScanFile data_files = 9;
+  repeated ai.floedb.metacat.execution.ScanFile delete_files = 10;
+}
+
+message BeginQueryRequest {
+  repeated QueryInput inputs = 1;
+  google.protobuf.Timestamp as_of_default = 2;
+  int32 ttl_seconds = 3;
+}
+
+message BeginQueryResponse {
+  QueryDescriptor query = 1;
+}
+
+message RenewQueryRequest {
+  string query_id = 1;
+  int32 ttl_seconds = 2;
+}
+
+message RenewQueryResponse {
+  string query_id = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message EndQueryRequest {
+  string query_id = 1;
+  bool commit = 2;
+}
+
+message EndQueryResponse {
+  string query_id = 1;
+}
+
+message GetQueryRequest {
+  string query_id = 1;
+}
+
+message GetQueryResponse {
+  QueryDescriptor query = 1;
+}
+
+service QueryService {
+  rpc BeginQuery(BeginQueryRequest) returns (BeginQueryResponse);
+  rpc RenewQuery(RenewQueryRequest) returns (RenewQueryResponse);
+  rpc EndQuery(EndQueryRequest) returns (EndQueryResponse);
+  rpc GetQuery(GetQueryRequest) returns (GetQueryResponse);
+}

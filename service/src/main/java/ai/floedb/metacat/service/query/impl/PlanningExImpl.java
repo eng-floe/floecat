@@ -1,18 +1,18 @@
-package ai.floedb.metacat.service.planning.impl;
+package ai.floedb.metacat.service.query.impl;
 
 import ai.floedb.metacat.catalog.rpc.GetSchemaRequest;
 import ai.floedb.metacat.catalog.rpc.SchemaServiceGrpc;
-import ai.floedb.metacat.planning.rpc.BeginPlanExRequest;
-import ai.floedb.metacat.planning.rpc.BeginPlanExResponse;
-import ai.floedb.metacat.planning.rpc.BeginPlanRequest;
-import ai.floedb.metacat.planning.rpc.PlanningEx;
-import ai.floedb.metacat.planning.rpc.SchemaDescriptor;
-import ai.floedb.metacat.planning.rpc.PlanDescriptor;
-import ai.floedb.metacat.planning.rpc.PlanFile;
+import ai.floedb.metacat.execution.rpc.ScanFile;
+import ai.floedb.metacat.query.rpc.BeginPlanExRequest;
+import ai.floedb.metacat.query.rpc.BeginPlanExResponse;
+import ai.floedb.metacat.query.rpc.BeginQueryRequest;
+import ai.floedb.metacat.query.rpc.PlanningEx;
+import ai.floedb.metacat.query.rpc.Predicate;
+import ai.floedb.metacat.query.rpc.QueryDescriptor;
+import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
+import ai.floedb.metacat.query.rpc.SchemaDescriptor;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.LogHelper;
-import ai.floedb.metacat.service.security.impl.Authorizer;
-import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
@@ -23,15 +23,15 @@ import java.util.stream.Collectors;
 import org.jboss.logging.Logger;
 
 /**
- * Transitional PlanningEx implementation: delegates to the existing Planning service and (optionally)
- * returns an empty SchemaDescriptor. Projection/predicate pushdown is not yet enforced; this
- * preserves compatibility while the richer planner is built.
+ * Transitional PlanningEx implementation: delegates to the existing Planning service and
+ * (optionally) returns an empty SchemaDescriptor. Projection/predicate pushdown is not yet
+ * enforced; this preserves compatibility while the richer planner is built.
  */
 @GrpcService
 public class PlanningExImpl extends BaseServiceImpl implements PlanningEx {
 
   @GrpcClient("metacat")
-  ai.floedb.metacat.planning.rpc.PlanningGrpc.PlanningBlockingStub planning;
+  QueryServiceGrpc.QueryServiceBlockingStub planning;
 
   @GrpcClient("metacat")
   SchemaServiceGrpc.SchemaServiceBlockingStub schemas;
@@ -46,33 +46,35 @@ public class PlanningExImpl extends BaseServiceImpl implements PlanningEx {
             run(
                 () -> {
                   // Build a legacy BeginPlan request from the shared fields.
-                  BeginPlanRequest.Builder legacy =
-                      BeginPlanRequest.newBuilder()
+                  BeginQueryRequest.Builder legacy =
+                      BeginQueryRequest.newBuilder()
                           .addAllInputs(request.getInputsList())
                           .setTtlSeconds(request.getTtlSeconds());
                   if (request.hasAsOfDefault()) {
                     legacy.setAsOfDefault(request.getAsOfDefault());
                   }
 
-                  var planResp = planning.beginPlan(legacy.build());
+                  var planResp = planning.beginQuery(legacy.build());
 
                   SchemaDescriptor schema = SchemaDescriptor.getDefaultInstance();
-                  if (request.getIncludeSchema() && planResp.getPlan().getSnapshots().getPinsCount() > 0) {
+                  if (request.getIncludeSchema()
+                      && planResp.getQuery().getSnapshots().getPinsCount() > 0) {
                     // Use the first pinned table as the schema target (single-table plans for now)
-                    var pin = planResp.getPlan().getSnapshots().getPins(0);
+                    var pin = planResp.getQuery().getSnapshots().getPins(0);
                     schema =
-                        schemas.getSchema(
-                            GetSchemaRequest.newBuilder().setTableId(pin.getTableId()).build())
+                        schemas
+                            .getSchema(
+                                GetSchemaRequest.newBuilder().setTableId(pin.getTableId()).build())
                             .getSchema();
                   }
 
-                  PlanDescriptor pruned =
-                      prune(planResp.getPlan(), request.getRequiredColumnsList(), request.getPredicatesList());
+                  QueryDescriptor pruned =
+                      prune(
+                          planResp.getQuery(),
+                          request.getRequiredColumnsList(),
+                          request.getPredicatesList());
 
-                  return BeginPlanExResponse.newBuilder()
-                      .setPlan(pruned)
-                      .setSchema(schema)
-                      .build();
+                  return BeginPlanExResponse.newBuilder().setPlan(pruned).setSchema(schema).build();
                 }),
             correlationId())
         .onFailure()
@@ -81,24 +83,24 @@ public class PlanningExImpl extends BaseServiceImpl implements PlanningEx {
         .invoke(L::ok);
   }
 
-  private PlanDescriptor prune(
-      PlanDescriptor plan, List<String> requiredColumns, List<ai.floedb.metacat.planning.rpc.Predicate> predicates) {
+  private QueryDescriptor prune(
+      QueryDescriptor plan, List<String> requiredColumns, List<Predicate> predicates) {
     if (requiredColumns == null || requiredColumns.isEmpty()) {
       return filterByPredicates(plan, predicates);
     }
     Set<String> cols = new HashSet<>(requiredColumns);
-    PlanDescriptor.Builder pb = plan.toBuilder().clearDataFiles().clearDeleteFiles();
-    for (PlanFile pf : plan.getDataFilesList()) {
+    QueryDescriptor.Builder pb = plan.toBuilder().clearDataFiles().clearDeleteFiles();
+    for (ScanFile pf : plan.getDataFilesList()) {
       pb.addDataFiles(filterColumns(pf, cols));
     }
-    for (PlanFile pf : plan.getDeleteFilesList()) {
+    for (ScanFile pf : plan.getDeleteFilesList()) {
       pb.addDeleteFiles(filterColumns(pf, cols));
     }
     return filterByPredicates(pb.build(), predicates);
   }
 
-  private PlanFile filterColumns(PlanFile pf, Set<String> cols) {
-    PlanFile.Builder b = pf.toBuilder().clearColumns();
+  private ScanFile filterColumns(ScanFile pf, Set<String> cols) {
+    ScanFile.Builder b = pf.toBuilder().clearColumns();
     for (var c : pf.getColumnsList()) {
       if (cols.contains(c.getColumnName())) {
         b.addColumns(c);
@@ -107,25 +109,22 @@ public class PlanningExImpl extends BaseServiceImpl implements PlanningEx {
     return b.build();
   }
 
-  private PlanDescriptor filterByPredicates(
-      PlanDescriptor plan, List<ai.floedb.metacat.planning.rpc.Predicate> predicates) {
+  private QueryDescriptor filterByPredicates(QueryDescriptor plan, List<Predicate> predicates) {
     if (predicates == null || predicates.isEmpty()) {
       return plan;
     }
-    List<ai.floedb.metacat.planning.rpc.Predicate> equalsPreds =
-        predicates.stream()
-            .filter(p -> !p.getExpression().isBlank())
-            .collect(Collectors.toList());
+    List<Predicate> equalsPreds =
+        predicates.stream().filter(p -> !p.getExpression().isBlank()).collect(Collectors.toList());
     if (equalsPreds.isEmpty()) {
       return plan;
     }
-    PlanDescriptor.Builder pb = plan.toBuilder().clearDataFiles().clearDeleteFiles();
-    for (PlanFile pf : plan.getDataFilesList()) {
+    QueryDescriptor.Builder pb = plan.toBuilder().clearDataFiles().clearDeleteFiles();
+    for (ScanFile pf : plan.getDataFilesList()) {
       if (matches(pf, equalsPreds)) {
         pb.addDataFiles(pf);
       }
     }
-    for (PlanFile pf : plan.getDeleteFilesList()) {
+    for (ScanFile pf : plan.getDeleteFilesList()) {
       if (matches(pf, equalsPreds)) {
         pb.addDeleteFiles(pf);
       }
@@ -133,7 +132,7 @@ public class PlanningExImpl extends BaseServiceImpl implements PlanningEx {
     return pb.build();
   }
 
-  private boolean matches(PlanFile pf, List<ai.floedb.metacat.planning.rpc.Predicate> preds) {
+  private boolean matches(ScanFile pf, List<Predicate> preds) {
     for (var p : preds) {
       String col = p.getColumn();
       String expr = p.getExpression();

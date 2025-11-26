@@ -2,27 +2,28 @@ package ai.floedb.metacat.service.catalog.impl;
 
 import ai.floedb.metacat.catalog.rpc.GetSchemaRequest;
 import ai.floedb.metacat.catalog.rpc.GetSchemaResponse;
-import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.SchemaService;
+import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
-import ai.floedb.metacat.planning.rpc.SchemaDescriptor;
+import ai.floedb.metacat.query.rpc.SchemaColumn;
+import ai.floedb.metacat.query.rpc.SchemaDescriptor;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.LogHelper;
-import io.quarkus.grpc.GrpcClient;
-import io.quarkus.grpc.GrpcService;
-import io.smallrye.mutiny.Uni;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import io.quarkus.grpc.GrpcClient;
+import io.quarkus.grpc.GrpcService;
+import io.smallrye.mutiny.Uni;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
-import org.jboss.logging.Logger;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
-import org.apache.iceberg.SchemaParser;
+import org.jboss.logging.Logger;
 
 /**
  * Placeholder schema service: returns an empty SchemaDescriptor for now. Replace with a real schema
@@ -43,10 +44,11 @@ public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService 
             run(
                 () -> {
                   var table =
-                      tables.getTable(
-                      ai.floedb.metacat.catalog.rpc.GetTableRequest.newBuilder()
-                          .setTableId(request.getTableId())
-                          .build())
+                      tables
+                          .getTable(
+                              ai.floedb.metacat.catalog.rpc.GetTableRequest.newBuilder()
+                                  .setTableId(request.getTableId())
+                                  .build())
                           .getTable();
 
                   String schemaJson = table.getSchemaJson();
@@ -59,18 +61,19 @@ public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService 
                   TableFormat fmt = table.getUpstream().getFormat();
                   SchemaDescriptor schema =
                       switch (fmt) {
-                        case TF_ICEBERG -> mapIceberg(
-                            schemaJson, new HashSet<>(table.getUpstream().getPartitionKeysList()));
-                        case TF_DELTA -> mapDelta(
-                            schemaJson,
-                            new HashSet<>(table.getUpstream().getPartitionKeysList()),
-                            new HashMap<>(table.getUpstream().getFieldIdByPathMap()));
+                        case TF_ICEBERG ->
+                            mapIceberg(
+                                schemaJson,
+                                new HashSet<>(table.getUpstream().getPartitionKeysList()));
+                        case TF_DELTA ->
+                            mapDelta(
+                                schemaJson,
+                                new HashSet<>(table.getUpstream().getPartitionKeysList()),
+                                new HashMap<>(table.getUpstream().getFieldIdByPathMap()));
                         default -> SchemaDescriptor.getDefaultInstance();
                       };
 
-                  return GetSchemaResponse.newBuilder()
-                      .setSchema(schema)
-                      .build();
+                  return GetSchemaResponse.newBuilder().setSchema(schema).build();
                 }),
             correlationId())
         .onFailure()
@@ -88,11 +91,12 @@ public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService 
     return sb.build();
   }
 
-  private void addField(SchemaDescriptor.Builder sb, Types.NestedField f, String prefix, Set<String> partKeys) {
+  private void addField(
+      SchemaDescriptor.Builder sb, Types.NestedField f, String prefix, Set<String> partKeys) {
     String physical = prefix.isEmpty() ? f.name() : prefix + "." + f.name();
     boolean isPartition = partKeys.contains(f.name()) || partKeys.contains(physical);
     sb.addColumns(
-        ai.floedb.metacat.planning.rpc.SchemaColumn.newBuilder()
+        SchemaColumn.newBuilder()
             .setName(f.name())
             .setLogicalType(f.type().toString())
             .setFieldId(f.fieldId())
@@ -147,14 +151,15 @@ public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService 
     ArrayNode fields = (ArrayNode) node.get("fields");
     for (JsonNode f : fields) {
       String name = f.path("name").asText();
-      String logicalType = f.path("type").isTextual() ? f.get("type").asText() : f.path("type").toString();
+      String logicalType =
+          f.path("type").isTextual() ? f.get("type").asText() : f.path("type").toString();
       boolean nullable = f.path("nullable").asBoolean(true);
       String physical = prefix.isEmpty() ? name : prefix + "." + name;
       boolean isPartition = partKeys.contains(name) || partKeys.contains(physical);
       int fieldId = fieldIds.getOrDefault(physical, nextId.getAndIncrement());
 
       sb.addColumns(
-          ai.floedb.metacat.planning.rpc.SchemaColumn.newBuilder()
+          SchemaColumn.newBuilder()
               .setName(name)
               .setLogicalType(logicalType)
               .setFieldId(fieldId)
@@ -164,19 +169,26 @@ public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService 
               .build());
 
       JsonNode typeNode = f.get("type");
-      if (typeNode != null && typeNode.isObject() && "struct".equals(typeNode.path("type").asText(""))) {
-        walkDeltaStruct(
-            sb, typeNode, physical, partKeys, fieldIds, nextId);
+      if (typeNode != null
+          && typeNode.isObject()
+          && "struct".equals(typeNode.path("type").asText(""))) {
+        walkDeltaStruct(sb, typeNode, physical, partKeys, fieldIds, nextId);
       }
-      if (typeNode != null && typeNode.isObject() && "array".equals(typeNode.path("type").asText(""))) {
+      if (typeNode != null
+          && typeNode.isObject()
+          && "array".equals(typeNode.path("type").asText(""))) {
         JsonNode elem = typeNode.get("elementType");
         if (elem != null && elem.isObject() && "struct".equals(elem.path("type").asText(""))) {
           walkDeltaStruct(sb, elem, physical + "[]", partKeys, fieldIds, nextId);
         }
       }
-      if (typeNode != null && typeNode.isObject() && "map".equals(typeNode.path("type").asText(""))) {
+      if (typeNode != null
+          && typeNode.isObject()
+          && "map".equals(typeNode.path("type").asText(""))) {
         JsonNode valueType = typeNode.get("valueType");
-        if (valueType != null && valueType.isObject() && "struct".equals(valueType.path("type").asText(""))) {
+        if (valueType != null
+            && valueType.isObject()
+            && "struct".equals(valueType.path("type").asText(""))) {
           walkDeltaStruct(sb, valueType, physical + "{}", partKeys, fieldIds, nextId);
         }
       }

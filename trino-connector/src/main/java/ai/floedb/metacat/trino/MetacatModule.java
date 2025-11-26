@@ -7,7 +7,7 @@ import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.SchemaServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
-import ai.floedb.metacat.planning.rpc.PlanningExGrpc;
+import ai.floedb.metacat.query.rpc.PlanningExGrpc;
 import com.google.inject.Binder;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
@@ -27,7 +27,6 @@ import io.trino.spi.NodeManager;
 import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorPageSourceProvider;
-import io.trino.plugin.base.session.SessionPropertiesProvider;
 import io.trino.spi.type.TypeManager;
 
 public class MetacatModule extends AbstractConfigurationAwareModule {

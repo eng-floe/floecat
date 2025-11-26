@@ -6,7 +6,7 @@ import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.SchemaServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
-import ai.floedb.metacat.planning.rpc.PlanningExGrpc;
+import ai.floedb.metacat.query.rpc.PlanningExGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import jakarta.inject.Inject;

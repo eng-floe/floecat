@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package ai.floedb.metacat.execution;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.execution.rpc";
+option java_outer_classname = "ExecutionScanProto";
+
+import "catalog/stats.proto";
+
+enum ScanFileContent {
+  SCAN_FILE_CONTENT_DATA = 0;
+  SCAN_FILE_CONTENT_POSITION_DELETES = 1;
+  SCAN_FILE_CONTENT_EQUALITY_DELETES = 2;
+}
+
+message ScanFile {
+  string file_path = 1;
+  string file_format = 2;
+  uint64 file_size_in_bytes = 3;
+  uint64 record_count = 4;
+  ScanFileContent file_content = 5;
+  repeated ai.floedb.metacat.catalog.ColumnStats columns = 6;
+}
+

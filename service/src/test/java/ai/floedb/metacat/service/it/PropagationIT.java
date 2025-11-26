@@ -7,8 +7,8 @@ import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
-import ai.floedb.metacat.service.planning.PlanContextStore;
-import ai.floedb.metacat.service.planning.impl.PlanContext;
+import ai.floedb.metacat.service.query.QueryContextStore;
+import ai.floedb.metacat.service.query.impl.QueryContext;
 import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
 import io.grpc.*;
@@ -27,12 +27,12 @@ class PropagationIT {
   @GrpcClient("metacat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
-  @Inject PlanContextStore planStore;
+  @Inject QueryContextStore queryStore;
 
   private static final Metadata.Key<byte[]> PRINCIPAL_BIN =
       Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
-  private static final Metadata.Key<String> PLAN_ID =
-      Metadata.Key.of("x-plan-id", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> QUERY_ID =
+      Metadata.Key.of("x-query-id", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORR =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
 
@@ -106,15 +106,15 @@ class PropagationIT {
 
   @Test
   void loadPrincipalFromStore() {
-    String planId = "plan-" + UUID.randomUUID();
-    var seededPc = pc().toBuilder().setPlanId(planId).build();
+    String queryId = "query-" + UUID.randomUUID();
+    var seededPc = pc().toBuilder().setQueryId(queryId).build();
 
-    planStore.put(PlanContext.newActive(planId, seededPc, null, null, 60_000L, 1L));
+    queryStore.put(QueryContext.newActive(queryId, seededPc, null, null, 60_000L, 1L));
 
     String corr = "it-corr-" + UUID.randomUUID();
 
     Metadata m = new Metadata();
-    m.put(PLAN_ID, planId);
+    m.put(QUERY_ID, queryId);
     m.put(CORR, corr);
 
     RespHeadersCaptureInterceptor capture = new RespHeadersCaptureInterceptor();
