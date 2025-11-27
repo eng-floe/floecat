@@ -4,8 +4,13 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.query.rpc.SnapshotPin;
+import ai.floedb.metacat.query.rpc.SnapshotSet;
 import ai.floedb.metacat.service.query.impl.QueryContext;
 import ai.floedb.metacat.service.util.TestSupport;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import java.time.Clock;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -95,5 +100,43 @@ class QueryContextTest {
 
     var again = expired.asExpired(3);
     assertSame(expired, again);
+  }
+
+  // Ensures QueryContext surfaces the pinned SnapshotPin for tables participating in the lease.
+  @Test
+  void requireSnapshotPinReturnsPin() {
+    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
+    var pc = pc(tenantId, "alice", "p-lookup");
+    ResourceId tableId = TestSupport.rid(tenantId.getId(), "tbl-lookup", ResourceKind.RK_TABLE);
+    var snapshots =
+        SnapshotSet.newBuilder()
+            .addPins(SnapshotPin.newBuilder().setTableId(tableId).setSnapshotId(77).build())
+            .build();
+    var ctx = QueryContext.newActive("p-lookup", pc, null, snapshots.toByteArray(), 500, 1);
+
+    var pin = ctx.requireSnapshotPin(tableId, "corr-123");
+    assertEquals(77, pin.getSnapshotId());
+    assertTrue(pin.hasTableId());
+  }
+
+  // Ensures QueryContext rejects tables that were not pinned in the lease snapshot set.
+  @Test
+  void requireSnapshotPinMissingTable() {
+    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
+    var pc = pc(tenantId, "alice", "p-missing");
+    ResourceId pinned = TestSupport.rid(tenantId.getId(), "tbl-a", ResourceKind.RK_TABLE);
+    ResourceId other = TestSupport.rid(tenantId.getId(), "tbl-b", ResourceKind.RK_TABLE);
+
+    var snapshots =
+        SnapshotSet.newBuilder()
+            .addPins(SnapshotPin.newBuilder().setTableId(pinned).setSnapshotId(900).build())
+            .build();
+
+    var ctx = QueryContext.newActive("p-missing", pc, null, snapshots.toByteArray(), 500, 1);
+
+    StatusRuntimeException err =
+        assertThrows(
+            StatusRuntimeException.class, () -> ctx.requireSnapshotPin(other, "corr-missing"));
+    assertEquals(Status.Code.NOT_FOUND, err.getStatus().getCode());
   }
 }

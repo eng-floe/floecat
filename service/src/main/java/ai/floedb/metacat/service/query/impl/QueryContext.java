@@ -1,37 +1,51 @@
 package ai.floedb.metacat.service.query.impl;
 
-import ai.floedb.metacat.catalog.rpc.FileColumnStats;
-import ai.floedb.metacat.catalog.rpc.FileContent;
-import ai.floedb.metacat.catalog.rpc.GetTableRequest;
-import ai.floedb.metacat.catalog.rpc.GetTableResponse;
-import ai.floedb.metacat.catalog.rpc.ListFileColumnStatsRequest;
-import ai.floedb.metacat.catalog.rpc.Table;
-import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
-import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
-import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.PrincipalContext;
-import ai.floedb.metacat.common.rpc.SnapshotRef;
-import ai.floedb.metacat.connector.spi.MetacatConnector;
-import ai.floedb.metacat.execution.rpc.ScanFile;
-import ai.floedb.metacat.execution.rpc.ScanFileContent;
+import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.query.rpc.QueryStatus;
 import ai.floedb.metacat.query.rpc.SnapshotPin;
 import ai.floedb.metacat.query.rpc.SnapshotSet;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import com.google.protobuf.InvalidProtocolBufferException;
 import java.time.Clock;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 
+/**
+ * Immutable representation of a query’s server-side state.
+ *
+ * <p>A {@code QueryContext} tracks:
+ *
+ * <ul>
+ *   <li>basic metadata (query ID, principal, created/expiry timestamps),
+ *   <li>the pinned snapshots for all referenced tables,
+ *   <li>the expansion map used during planning,
+ *   <li>the current query lifecycle state,
+ *   <li>a monotonic version, used for consistent updates.
+ * </ul>
+ *
+ * <p>This object does not perform any query execution. It acts as durable metadata stored in {@link
+ * ai.floedb.metacat.service.query.QueryContextStore}.
+ *
+ * <p>Instances are created via the {@link Builder} or the helper {@link #newActive(String,
+ * PrincipalContext, byte[], byte[], long, long)} method.
+ */
 public final class QueryContext {
 
+  /** Represents the high-level lifecycle of a query. */
   public enum State {
+    /** Query is active and may be extended or used for planning. */
     ACTIVE,
+
+    /** Query completed successfully and is now in its commit grace period. */
     ENDED_COMMIT,
+
+    /** Query ended with an abort and is now in its grace period. */
     ENDED_ABORT,
+
+    /** Query expired before being explicitly ended. */
     EXPIRED
   }
 
@@ -46,6 +60,7 @@ public final class QueryContext {
 
   private static final Clock clock = Clock.systemUTC();
 
+  /** Tracks the planning status associated with this query. */
   private final AtomicReference<QueryStatus> queryStatus =
       new AtomicReference<>(QueryStatus.SUBMITTED);
 
@@ -65,6 +80,7 @@ public final class QueryContext {
     this.version = Math.max(0, builder.version);
   }
 
+  /** Constructs a new active {@code QueryContext} with the given TTL. */
   public static QueryContext newActive(
       String queryId,
       PrincipalContext principal,
@@ -72,6 +88,7 @@ public final class QueryContext {
       byte[] snapshotSet,
       long ttlMs,
       long version) {
+
     long now = clock.millis();
     return builder()
         .queryId(queryId)
@@ -85,6 +102,10 @@ public final class QueryContext {
         .build();
   }
 
+  /**
+   * Returns a new builder pre-filled with this instance's fields. Useful for producing modified
+   * copies.
+   */
   public Builder toBuilder() {
     return builder()
         .queryId(queryId)
@@ -97,10 +118,17 @@ public final class QueryContext {
         .version(version);
   }
 
+  /** Returns a fresh builder. */
   public static Builder builder() {
     return new Builder();
   }
 
+  /**
+   * Extends the TTL of the query context.
+   *
+   * <p>If {@code newExpiresAtMs} is before the existing expiration time, the instance is returned
+   * unchanged. Otherwise, a new instance is produced.
+   */
   public QueryContext extendLease(long newExpiresAtMs, long newVersion) {
     long next = Math.max(this.expiresAtMs, newExpiresAtMs);
 
@@ -111,88 +139,50 @@ public final class QueryContext {
     return this.toBuilder().expiresAtMs(next).version(newVersion).build();
   }
 
-  public MetacatConnector.ScanBundle fetchScanBundle(
-      TableServiceGrpc.TableServiceBlockingStub tables,
-      TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats) {
-    try {
-      if (snapshotSet != null) {
-        SnapshotSet snapshots;
-        try {
-          snapshots = SnapshotSet.parseFrom(snapshotSet);
-        } catch (InvalidProtocolBufferException e) {
-          throw GrpcErrors.internal(
-              principal.getCorrelationId(),
-              "query.snapshot.parse_failed",
-              Map.of("query_id", queryId));
-        }
+  /**
+   * Returns the pinned snapshot associated with the given table ID.
+   *
+   * <p>Throws a gRPC error if:
+   *
+   * <ul>
+   *   <li>the query has no snapshot set, or
+   *   <li>no matching pin exists for this table.
+   * </ul>
+   */
+  public SnapshotPin requireSnapshotPin(ResourceId tableId, String correlationId) {
+    Objects.requireNonNull(tableId, "tableId");
 
-        for (SnapshotPin s : snapshots.getPinsList()) {
-          GetTableResponse tableResponse =
-              tables.getTable(GetTableRequest.newBuilder().setTableId(s.getTableId()).build());
-          Table table = tableResponse.getTable();
-          var bundle = buildFromStats(table, s.getSnapshotId(), stats);
-          queryStatus.set(QueryStatus.COMPLETED);
-          return bundle;
-        }
-      }
-    } finally {
-      if (!queryStatus.get().equals(QueryStatus.COMPLETED)) {
-        queryStatus.set(QueryStatus.FAILED);
-      }
+    if (snapshotSet == null) {
+      throw GrpcErrors.invalidArgument(
+          correlationId, "query.snapshots.missing", Map.of("query_id", queryId));
     }
-    return null;
+
+    SnapshotSet snapshots = parseSnapshotSet(correlationId);
+    return snapshots.getPinsList().stream()
+        .filter(pin -> pin.hasTableId() && tableIdMatches(pin.getTableId(), tableId))
+        .findFirst()
+        .orElseThrow(
+            () ->
+                GrpcErrors.notFound(
+                    correlationId,
+                    "query.table.not_pinned",
+                    Map.of("query_id", queryId, "table_id", tableId.getId())));
   }
 
-  private MetacatConnector.ScanBundle buildFromStats(
-      Table table,
-      long snapshotId,
-      TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats) {
-    var data = new ArrayList<ScanFile>();
-    var deletes = new ArrayList<ScanFile>();
-    String format = table.getUpstream().getFormat().name();
-
-    String pageToken = "";
-    do {
-      var req =
-          ListFileColumnStatsRequest.newBuilder()
-              .setTableId(table.getResourceId())
-              .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
-              .setPage(PageRequest.newBuilder().setPageSize(1000).setPageToken(pageToken))
-              .build();
-      var resp = stats.listFileColumnStats(req);
-      for (FileColumnStats fcs : resp.getFileColumnsList()) {
-        var scanFile =
-            ScanFile.newBuilder()
-                .setFilePath(fcs.getFilePath())
-                .setFileFormat(format)
-                .setFileSizeInBytes(fcs.getSizeBytes())
-                .setRecordCount(fcs.getRowCount())
-                .setPartitionDataJson(fcs.getPartitionDataJson())
-                .setPartitionSpecId(fcs.getPartitionSpecId())
-                .addAllEqualityFieldIds(fcs.getEqualityFieldIdsList())
-                .setFileContent(mapContent(fcs.getFileContent()))
-                .addAllColumns(fcs.getColumnsList())
-                .build();
-        if (fcs.getFileContent() == FileContent.FC_DATA) {
-          data.add(scanFile);
-        } else {
-          deletes.add(scanFile);
-        }
-      }
-      pageToken = resp.hasPage() ? resp.getPage().getNextPageToken() : "";
-    } while (!pageToken.isBlank());
-
-    return new MetacatConnector.ScanBundle(data, deletes);
+  /** Safely parses the stored snapshot set. */
+  private SnapshotSet parseSnapshotSet(String correlationId) {
+    try {
+      return SnapshotSet.parseFrom(snapshotSet);
+    } catch (InvalidProtocolBufferException e) {
+      throw GrpcErrors.internal(
+          correlationId, "query.snapshot.parse_failed", Map.of("query_id", queryId));
+    }
   }
 
-  private ScanFileContent mapContent(FileContent fc) {
-    return switch (fc) {
-      case FC_EQUALITY_DELETES -> ScanFileContent.SCAN_FILE_CONTENT_EQUALITY_DELETES;
-      case FC_POSITION_DELETES -> ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES;
-      default -> ScanFileContent.SCAN_FILE_CONTENT_DATA;
-    };
-  }
-
+  /**
+   * Produces a new context representing the end of execution (either commit or abort) with an
+   * extended grace TTL.
+   */
   public QueryContext end(boolean commit, long graceExpiresAtMs, long newVersion) {
     var newState = commit ? State.ENDED_COMMIT : State.ENDED_ABORT;
     long nextExp = Math.max(this.expiresAtMs, graceExpiresAtMs);
@@ -200,18 +190,20 @@ public final class QueryContext {
     return this.toBuilder().state(newState).expiresAtMs(nextExp).version(newVersion).build();
   }
 
+  /** Marks the query as expired if it is still active. */
   public QueryContext asExpired(long newVersion) {
     if (this.state != State.ACTIVE) {
       return this;
     }
-
     return this.toBuilder().state(State.EXPIRED).version(newVersion).build();
   }
 
+  /** Returns true if the query is still active. */
   public boolean isActive() {
     return state == State.ACTIVE;
   }
 
+  /** Returns remaining TTL in milliseconds relative to the provided timestamp. */
   public long remainingTtlMs(long nowMs) {
     return Math.max(0, expiresAtMs - nowMs);
   }
@@ -248,8 +240,42 @@ public final class QueryContext {
     return version;
   }
 
+  /** Returns the planning status associated with this query. */
   public QueryStatus getQueryStatus() {
     return queryStatus.get();
+  }
+
+  /** Marks planning as completed successfully. */
+  public void markPlanningCompleted() {
+    queryStatus.set(QueryStatus.COMPLETED);
+  }
+
+  /** Marks planning as failed. */
+  public void markPlanningFailed() {
+    queryStatus.set(QueryStatus.FAILED);
+  }
+
+  /**
+   * Determines whether two table IDs correspond to the same physical table.
+   *
+   * <p>Tenant IDs must match (if both are provided) and resource IDs must be equal.
+   */
+  private boolean tableIdMatches(ResourceId left, ResourceId right) {
+    if (left == null || right == null) {
+      return false;
+    }
+
+    String leftTenant = left.getTenantId();
+    String rightTenant = right.getTenantId();
+
+    if (!isBlank(leftTenant) && !isBlank(rightTenant) && !Objects.equals(leftTenant, rightTenant)) {
+      return false;
+    }
+    return Objects.equals(left.getId(), right.getId());
+  }
+
+  private boolean isBlank(String value) {
+    return value == null || value.isBlank();
   }
 
   private static byte[] copyOrNull(byte[] input) {
@@ -270,6 +296,7 @@ public final class QueryContext {
     return value;
   }
 
+  /** Builder used to create immutable {@link QueryContext} instances. */
   public static final class Builder {
     private String queryId;
     private PrincipalContext principal;

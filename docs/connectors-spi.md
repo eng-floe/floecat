@@ -75,7 +75,7 @@ ConnectorFactory.create(ConnectorConfig)
       → listNamespaces/listTables → service repo ensures namespace/table existence
       → describe → Table specs persisted with upstream references
       → enumerateSnapshotsWithStats → StatsRepository writes Table/Column/File stats per snapshot
-      → plan → QueryContext.fetchScanBundle returns data/delete file manifests to planners
+      → plan → `QueryService.FetchScanBundle` returns data/delete file manifests to planners
   ← close() cleans up HTTP/S3/DB connections
 ```
 `ConnectorFactory.create` is invoked both in `ConnectorsImpl.validate` (short-lived) and in the
@@ -96,9 +96,9 @@ reconciler (long-running); connectors must tolerate repeated instantiation and r
 - **Reconciliation run** – `ReconcilerService` constructs a connector inside a try-with-resources
   block, iterates `listTables`, calls `enumerateSnapshotsWithStats`, and writes the returned
   `SnapshotBundle`s (table stats + column stats) through the service’s gRPC API.
-- **Query lifecycle** – During `QueryContext.fetchScanBundle`, if a table has an `UpstreamRef.connector_id`,
-  the query lifecycle code instantiates that connector via the SPI and calls `plan()` to fetch file lists
-  pinned to the requested snapshot.
+- **Query lifecycle** – During `QueryService.FetchScanBundle`, if a table has an
+  `UpstreamRef.connector_id`, the server instantiates that connector via the SPI and calls `plan()` to
+  fetch file lists pinned to the requested snapshot.
 
 ## Cross-References
 - Service connector management and reconciliation triggers:

@@ -68,7 +68,8 @@ helpers like `deterministicUuid`. Highlights:
 - **ConnectorsImpl** – Manages connector lifecycle, validates `ConnectorSpec` via SPI factories,
   wires reconciliation job submission, and exposes `ValidateConnector` + `TriggerReconcile`.
 - **QueryServiceImpl** – Administers query leases (`BeginQuery`, `RenewQuery`, `EndQuery`,
-  `GetQuery`) and fetches connector scan metadata (`ScanBundle`s) to include in the lease payload.
+  `GetQuery`) and exposes `FetchScanBundle` so planners can request connector scan metadata on
+  demand.
 - **BuiltinCatalogServiceImpl** – Loads immutable builtin catalogs from disk/classpath, caches them
   per engine version, and serves them via `GetBuiltinCatalog`.
 
@@ -103,9 +104,9 @@ can be replaced by injecting a custom implementation.
 `QueryContextStore` is a Caffeine cache keyed by query ID. Each `QueryContext` tracks state,
 expiration, `PrincipalContext`, encoded `SnapshotSet`, and `ExpansionMap`.
 `QueryServiceImpl.beginQuery` resolves name or ID references via Directory/Snapshot/Table services,
-pins snapshots, stores the lease, and optionally contacts connectors to fetch `ScanBundle`s
-(data/delete files) so that planners have scan metadata up front. The lease data (snapshots,
-expansion map, obligations, scan files) is returned to the caller inside the `QueryDescriptor`.
+pins snapshots, and stores the lease. Planners request connector `ScanBundle`s later via
+`FetchScanBundle`, which streams data/delete files for a specific table. The lease data (snapshots,
+expansion map, obligations) is returned to the caller inside the `QueryDescriptor`.
 
 ### Builtin Catalog Service
 `BuiltinCatalogLoader` reads immutable builtin catalogs (`builtin_catalog_<engine_version>.pb[pbtxt]`)
@@ -156,7 +157,7 @@ Extension points:
 - **Security** – Replace `Authorizer` or interceptors with CDI alternatives.
 - **Connectors** – Register new SPI implementations and expose them via `ConnectorRepository`.
 - **QueryService** – Extend query metadata by enriching `QueryContext` creation or injecting
-  additional connector metadata via `QueryContext.fetchScanBundle`.
+  additional connector metadata via the `FetchScanBundle` RPC / `ScanBundleService`.
 
 ## Examples & Scenarios
 - **Create Catalog** – `CatalogServiceImpl.createCatalog` canonicalises `display_name`, generates a

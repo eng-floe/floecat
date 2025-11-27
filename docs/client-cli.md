@@ -38,8 +38,10 @@ The CLI exposes commands documented at runtime via `help`. Highlights:
 - `snapshots` / `stats` – Query snapshot lineage and table/column/file statistics (`stats files`
   lists per-file row/byte counts and per-column metrics).
 - `resolve` / `describe` – Exercise DirectoryService for name→ID lookups.
-- `query` – Execute the query lease lifecycle: `query begin`, `query renew`, `query get`, `query end`,
-  and view lease contents (snapshot pins, obligations, file lists).
+- `query` – Execute the query lease lifecycle: `query begin`, `query renew`, `query end`, `query get`,
+  and `query fetch-scan`. `query get` surfaces lease metadata (snapshots, expansions, obligations)
+  while `query fetch-scan <query_id> <table_id>` requests the connector-provided `ScanFile` lists for
+  an individual table.
 - `connectors` / `connector <subcommand>` – Manage connector definitions and reconciliation jobs.
 
 Inputs map directly to RPCs (for example `table create` builds `CreateTableRequest`). The CLI adds
@@ -55,8 +57,9 @@ syntactic sugar such as `catalog.ns.table` references and `--props k=v` repeated
   `GrpcErrors`.
 - **Pagination defaults** – `DEFAULT_PAGE_SIZE` is 1000; commands like `catalogs` accept
   `--page-size` overrides and persist `next_page_token` transparently.
-- **Query display** – `query get` prints `QueryDescriptor` plus `ScanFile` lists (data/delete files)
-  returned by connectors via the query lifecycle SPI.
+- **Query display** – `query get` prints the `QueryDescriptor` metadata (snapshots, expansions,
+  obligations). Use `query fetch-scan <query_id> <table_id>` to print the data/delete `ScanFile`
+  entries returned by connectors via the query lifecycle SPI.
 
 ## Data Flow & Lifecycle
 
