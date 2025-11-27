@@ -16,10 +16,6 @@ implemented or wired into the build; it is a design scaffold so we can iterate s
     - `SchemaDescriptor schema` (columns with names, types, field IDs, partition info).
     - `repeated PlanFile data_files`, `repeated PlanFile delete_files` (same as Planning, but
       filtered by predicates).
-- **SchemaService** (new, typed schema fetch without parsing raw JSON):
-  - `GetSchema(ResourceId table_id)` → `SchemaDescriptor`.
-  - `SchemaDescriptor` holds columns with logical types, field IDs, nullability, partition keys,
-    and optional physical paths.
 - **ViewServiceEx** (optional, or reuse existing ViewService with extensions):
   - `GetViewExpanded(ResourceId view_id)` → canonical SQL + base table IDs (mirrors
     `ExpansionMap` semantics).
@@ -41,4 +37,3 @@ implemented or wired into the build; it is a design scaffold so we can iterate s
 - Auth propagation: how to pass principal/session info from Trino to presign service?
 - Delta delete vectors: needed only if serving Delta through Metacat plans; can defer if Trino uses
   native Delta connector.
-

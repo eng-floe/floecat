@@ -11,8 +11,9 @@ yet; it is meant as a starting point to iterate without breaking the existing mo
 
 ## Status
 - Java package scaffolded under `ai.floedb.metacat.trino`.
-- Connector now calls `PlanningEx` and `SchemaService` to fetch pruned plan files + typed schema.
-  Splits carry file paths and content type; metadata maps real columns. Page source still TODO.
+- Connector calls planning to fetch pruned plan files; schema is still parsed from `GetTable`
+  JSON (no SchemaService dependency). Splits carry file paths and content type; metadata maps real
+  columns. Page source still TODO.
 - A standalone `pom.xml` declares Trino SPI + gRPC + Metacat proto dependencies; it is not added to
   the root aggregator.
 

@@ -1,12 +1,15 @@
 package ai.floedb.metacat.trino;
 
 import static io.trino.spi.session.PropertyMetadata.booleanProperty;
+import static io.trino.spi.session.PropertyMetadata.longProperty;
 
+import io.airlift.units.DataSize;
 import io.trino.plugin.base.session.PropertyMetadataUtil;
 import io.trino.plugin.base.session.SessionPropertiesProvider;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.session.PropertyMetadata;
 import java.util.List;
+import java.util.Optional;
 
 public class MetacatSessionProperties implements SessionPropertiesProvider {
   public static final String USE_FILE_SIZE_FROM_METADATA = "use_file_size_from_metadata";
@@ -18,6 +21,8 @@ public class MetacatSessionProperties implements SessionPropertiesProvider {
   public static final String PARQUET_USE_BLOOM_FILTER = "parquet_use_bloom_filter";
   public static final String PARQUET_VECTORIZED_DECODING_ENABLED =
       "parquet_vectorized_decoding_enabled";
+  public static final String SNAPSHOT_ID = "snapshot_id";
+  public static final String AS_OF_EPOCH_MILLIS = "as_of_epoch_millis";
 
   private final List<PropertyMetadata<?>> properties;
 
@@ -32,11 +37,11 @@ public class MetacatSessionProperties implements SessionPropertiesProvider {
             PropertyMetadataUtil.dataSizeProperty(
                 PARQUET_MAX_READ_BLOCK_SIZE,
                 "Maximum Parquet read block size",
-                io.airlift.units.DataSize.of(16, io.airlift.units.DataSize.Unit.MEGABYTE),
+                DataSize.of(16, io.airlift.units.DataSize.Unit.MEGABYTE),
                 false),
             booleanProperty(
                 PARQUET_BATCH_READING_ENABLED, "Enable Parquet batch reading", true, false),
-            io.trino.spi.session.PropertyMetadata.integerProperty(
+            PropertyMetadata.integerProperty(
                 PARQUET_MAX_READ_BLOCK_ROW_COUNT,
                 "Maximum number of rows to read in a Parquet block",
                 8192,
@@ -44,7 +49,7 @@ public class MetacatSessionProperties implements SessionPropertiesProvider {
             PropertyMetadataUtil.dataSizeProperty(
                 PARQUET_SMALL_FILE_THRESHOLD,
                 "Threshold for treating Parquet files as small",
-                io.airlift.units.DataSize.of(64, io.airlift.units.DataSize.Unit.MEGABYTE),
+                DataSize.of(64, io.airlift.units.DataSize.Unit.MEGABYTE),
                 false),
             booleanProperty(PARQUET_IGNORE_STATISTICS, "Ignore Parquet statistics", false, false),
             booleanProperty(
@@ -53,6 +58,16 @@ public class MetacatSessionProperties implements SessionPropertiesProvider {
                 PARQUET_VECTORIZED_DECODING_ENABLED,
                 "Enable Parquet vectorized decoding",
                 true,
+                false),
+            longProperty(
+                SNAPSHOT_ID,
+                "Metacat snapshot id to read (overrides current). Set to -1 to disable.",
+                -1L,
+                false),
+            longProperty(
+                AS_OF_EPOCH_MILLIS,
+                "Read table as of epoch millis (overrides current). Set to -1 to disable.",
+                -1L,
                 false));
   }
 
@@ -63,5 +78,15 @@ public class MetacatSessionProperties implements SessionPropertiesProvider {
 
   public static boolean isUseFileSizeFromMetadata(ConnectorSession session) {
     return session.getProperty(USE_FILE_SIZE_FROM_METADATA, Boolean.class);
+  }
+
+  public static Optional<Long> getSnapshotId(ConnectorSession session) {
+    long v = session.getProperty(SNAPSHOT_ID, Long.class);
+    return v >= 0 ? Optional.of(v) : Optional.empty();
+  }
+
+  public static Optional<Long> getAsOfEpochMillis(ConnectorSession session) {
+    long v = session.getProperty(AS_OF_EPOCH_MILLIS, Long.class);
+    return v >= 0 ? Optional.of(v) : Optional.empty();
   }
 }

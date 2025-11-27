@@ -2,22 +2,29 @@ package ai.floedb.metacat.service.catalog.impl;
 
 import ai.floedb.metacat.catalog.rpc.GetSchemaRequest;
 import ai.floedb.metacat.catalog.rpc.GetSchemaResponse;
-import ai.floedb.metacat.catalog.rpc.GetTableRequest;
 import ai.floedb.metacat.catalog.rpc.SchemaService;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
-import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
+import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.common.rpc.SnapshotRef;
+import ai.floedb.metacat.common.rpc.SpecialSnapshot;
 import ai.floedb.metacat.query.rpc.SchemaColumn;
 import ai.floedb.metacat.query.rpc.SchemaDescriptor;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.LogHelper;
+import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
+import ai.floedb.metacat.service.repo.impl.TableRepository;
+import ai.floedb.metacat.service.security.impl.Authorizer;
+import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
-import io.quarkus.grpc.GrpcClient;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
+import jakarta.inject.Inject;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.iceberg.Schema;
@@ -28,9 +35,10 @@ import org.jboss.logging.Logger;
 
 @GrpcService
 public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService {
-
-  @GrpcClient("metacat")
-  TableServiceGrpc.TableServiceBlockingStub tables;
+  @Inject SnapshotRepository snapshotRepo;
+  @Inject TableRepository tableRepo;
+  @Inject PrincipalProvider principal;
+  @Inject Authorizer authz;
 
   private static final Logger LOG = Logger.getLogger(SchemaService.class);
 
@@ -40,13 +48,29 @@ public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService 
     return mapFailures(
             run(
                 () -> {
+                  var pc = principal.get();
+                  authz.require(pc, "table.read");
+
+                  var tableId = request.getTableId();
+                  ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId());
+
                   var table =
-                      tables
-                          .getTable(
-                              GetTableRequest.newBuilder().setTableId(request.getTableId()).build())
-                          .getTable();
+                      tableRepo
+                          .getById(tableId)
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      correlationId(), "table", Map.of("id", tableId.getId())));
 
                   String schemaJson = table.getSchemaJson();
+                  if (request.hasSnapshot()) {
+                    var ref = request.getSnapshot();
+                    var snap = snapshotRepo.getById(tableId, resolveSnapshotId(tableId, ref));
+                    if (snap.isPresent() && !snap.get().getSchemaJson().isBlank()) {
+                      schemaJson = snap.get().getSchemaJson();
+                    }
+                  }
+
                   if (schemaJson == null || schemaJson.isBlank()) {
                     return GetSchemaResponse.newBuilder()
                         .setSchema(SchemaDescriptor.getDefaultInstance())
@@ -187,5 +211,33 @@ public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService 
         }
       }
     }
+  }
+
+  private long resolveSnapshotId(
+      ai.floedb.metacat.common.rpc.ResourceId tableId, SnapshotRef ref) {
+    return switch (ref.getWhichCase()) {
+      case SNAPSHOT_ID -> ref.getSnapshotId();
+      case AS_OF ->
+          snapshotRepo
+              .getAsOf(tableId, ref.getAsOf())
+              .orElseThrow(
+                  () ->
+                      GrpcErrors.notFound(
+                          correlationId(), "snapshot", Map.of("table_id", tableId.getId())))
+              .getSnapshotId();
+      case SPECIAL -> {
+        if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
+          throw GrpcErrors.invalidArgument(correlationId(), "snapshot.special.missing", Map.of());
+        }
+        yield snapshotRepo
+            .getCurrentSnapshot(tableId)
+            .orElseThrow(
+                () ->
+                    GrpcErrors.notFound(
+                        correlationId(), "snapshot", Map.of("table_id", tableId.getId())))
+            .getSnapshotId();
+      }
+      default -> throw GrpcErrors.invalidArgument(correlationId(), "snapshot.missing", Map.of());
+    };
   }
 }

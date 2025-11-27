@@ -10,14 +10,18 @@ import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveFQTablesRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveFQTablesResponse;
 import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
+import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.SnapshotRef;
 import com.google.inject.Inject;
+import com.google.protobuf.Timestamp;
 import io.trino.plugin.iceberg.ColumnIdentity;
 import io.trino.plugin.iceberg.IcebergColumnHandle;
 import io.trino.plugin.iceberg.TypeConverter;
 import io.trino.spi.catalog.CatalogName;
+import io.trino.spi.connector.Assignment;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
@@ -28,6 +32,7 @@ import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTableVersion;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
+import io.trino.spi.connector.ProjectionApplicationResult;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SchemaTablePrefix;
 import io.trino.spi.expression.ConnectorExpression;
@@ -39,6 +44,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.PartitionSpec.Builder;
 import org.apache.iceberg.PartitionSpecParser;
@@ -51,6 +58,7 @@ public class MetacatMetadata implements ConnectorMetadata {
   private final NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaceService;
   private final TableServiceGrpc.TableServiceBlockingStub tableService;
   private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryService;
+  private final SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotService;
   private final CatalogName catalogName;
   private final CatalogHandle catalogHandle;
   private final TypeManager typeManager;
@@ -67,6 +75,7 @@ public class MetacatMetadata implements ConnectorMetadata {
     this.namespaceService = client.namespaces();
     this.tableService = client.tables();
     this.directoryService = client.directory();
+    this.snapshotService = client.snapshots();
     this.catalogName = catalogName;
     this.catalogHandle = catalogHandle;
     this.typeManager = typeManager;
@@ -144,6 +153,44 @@ public class MetacatMetadata implements ConnectorMetadata {
     List<String> partitionKeys = response.getTable().getUpstream().getPartitionKeysList();
     Map<String, Integer> fieldIds = response.getTable().getUpstream().getFieldIdByPathMap();
 
+    Optional<Long> snapshotId = MetacatSessionProperties.getSnapshotId(session);
+    Optional<Long> asOfMillis = MetacatSessionProperties.getAsOfEpochMillis(session);
+    if (snapshotId.isPresent() && asOfMillis.isPresent()) {
+      throw new IllegalArgumentException(
+          "Only one of snapshot_id or as_of_epoch_millis may be set");
+    }
+
+    if (snapshotId.isPresent() || asOfMillis.isPresent()) {
+      Timestamp asOfTs = null;
+      if (asOfMillis.isPresent()) {
+        long ms = asOfMillis.get();
+        asOfTs =
+            Timestamp.newBuilder()
+                .setSeconds(Math.floorDiv(ms, 1000))
+                .setNanos((int) ((ms % 1000) * 1_000_000))
+                .build();
+      }
+
+      var snapRefBuilder = SnapshotRef.newBuilder();
+      if (snapshotId.isPresent()) {
+        snapRefBuilder.setSnapshotId(snapshotId.get());
+      } else if (asOfTs != null) {
+        snapRefBuilder.setAsOf(asOfTs);
+      } else {
+        snapRefBuilder.setSpecial(ai.floedb.metacat.common.rpc.SpecialSnapshot.SS_CURRENT);
+      }
+
+      var snapReq =
+          ai.floedb.metacat.catalog.rpc.GetSnapshotRequest.newBuilder()
+              .setTableId(tableId)
+              .setSnapshot(snapRefBuilder.build())
+              .build();
+      var snapResp = snapshotService.getSnapshot(snapReq);
+      if (snapResp.hasSnapshot() && !snapResp.getSnapshot().getSchemaJson().isBlank()) {
+        schemaJson = snapResp.getSnapshot().getSchemaJson();
+      }
+    }
+
     PartitionSpec partitionSpec = buildPartitionSpec(schemaJson, partitionKeys, fieldIds);
 
     return new MetacatTableHandle(
@@ -156,7 +203,10 @@ public class MetacatMetadata implements ConnectorMetadata {
         PartitionSpecParser.toJson(partitionSpec),
         response.getTable().getUpstream().getFormat().name(),
         catalogHandle.getId(),
-        TupleDomain.all());
+        TupleDomain.all(),
+        Set.of(),
+        snapshotId.orElse(null),
+        asOfMillis.orElse(null));
   }
 
   @Override
@@ -212,6 +262,47 @@ public class MetacatMetadata implements ConnectorMetadata {
       handles.put(col.getName(), icebergCol);
     }
     return handles;
+  }
+
+  @Override
+  public Optional<ProjectionApplicationResult<ConnectorTableHandle>> applyProjection(
+      ConnectorSession session,
+      ConnectorTableHandle table,
+      List<ConnectorExpression> projections,
+      Map<String, ColumnHandle> assignments) {
+
+    MetacatTableHandle handle = (MetacatTableHandle) table;
+    Set<String> projected =
+        assignments.values().stream()
+            .map(ch -> ((IcebergColumnHandle) ch).getName())
+            .collect(Collectors.toSet());
+
+    MetacatTableHandle newHandle =
+        new MetacatTableHandle(
+            handle.getSchemaTableName(),
+            handle.getTableId(),
+            handle.getTableTenantId(),
+            handle.getTableKind(),
+            handle.getUri(),
+            handle.getSchemaJson(),
+            handle.getPartitionSpecJson(),
+            handle.getFormat(),
+            handle.getCatalogHandleId(),
+            handle.getEnforcedConstraint(),
+            projected,
+            handle.getSnapshotId(),
+            handle.getAsOfEpochMillis());
+
+    List<Assignment> projectionAssignments =
+        assignments.entrySet().stream()
+            .map(
+                e ->
+                    new Assignment(
+                        e.getKey(), e.getValue(), ((IcebergColumnHandle) e.getValue()).getType()))
+            .toList();
+
+    return Optional.of(
+        new ProjectionApplicationResult<>(newHandle, projections, projectionAssignments, false));
   }
 
   @Override
@@ -276,7 +367,10 @@ public class MetacatMetadata implements ConnectorMetadata {
             handle.getPartitionSpecJson(),
             handle.getFormat(),
             handle.getCatalogHandleId(),
-            domain);
+            domain,
+            handle.getProjectedColumns(),
+            handle.getSnapshotId(),
+            handle.getAsOfEpochMillis());
     ConnectorExpression remainingExpr =
         constraint.getExpression() == null
             ? new Constant(Boolean.TRUE, BooleanType.BOOLEAN)

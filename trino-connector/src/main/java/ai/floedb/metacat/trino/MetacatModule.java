@@ -5,7 +5,7 @@ import static io.airlift.configuration.ConfigBinder.configBinder;
 import ai.floedb.metacat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
-import ai.floedb.metacat.catalog.rpc.SchemaServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
 import com.google.inject.Binder;
@@ -22,12 +22,14 @@ import io.trino.orc.OrcReaderOptions;
 import io.trino.parquet.ParquetReaderOptions;
 import io.trino.plugin.base.metrics.FileFormatDataSourceStats;
 import io.trino.plugin.iceberg.IcebergFileSystemFactory;
+import io.trino.plugin.iceberg.IcebergPageSourceProvider;
 import io.trino.plugin.iceberg.catalog.rest.DefaultIcebergFileSystemFactory;
 import io.trino.spi.NodeManager;
 import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorPageSourceProvider;
 import io.trino.spi.type.TypeManager;
+import jakarta.annotation.PreDestroy;
 
 public class MetacatModule extends AbstractConfigurationAwareModule {
 
@@ -61,7 +63,6 @@ public class MetacatModule extends AbstractConfigurationAwareModule {
     configBinder(binder).bindConfig(MetacatConfig.class);
 
     binder.bind(MetacatClient.class).in(Scopes.SINGLETON);
-
     binder.bind(MetacatConnector.class).in(Scopes.SINGLETON);
     binder.bind(MetacatMetadata.class).in(Scopes.SINGLETON);
     binder.bind(MetacatSplitManager.class).in(Scopes.SINGLETON);
@@ -122,6 +123,13 @@ public class MetacatModule extends AbstractConfigurationAwareModule {
 
   @Provides
   @Singleton
+  public SnapshotServiceGrpc.SnapshotServiceBlockingStub createSnapshotStub(
+      ManagedChannel channel) {
+    return SnapshotServiceGrpc.newBlockingStub(channel);
+  }
+
+  @Provides
+  @Singleton
   public CatalogServiceGrpc.CatalogServiceBlockingStub createCatalogStub(ManagedChannel channel) {
     return CatalogServiceGrpc.newBlockingStub(channel);
   }
@@ -130,12 +138,6 @@ public class MetacatModule extends AbstractConfigurationAwareModule {
   @Singleton
   public QueryServiceGrpc.QueryServiceBlockingStub createQueryStub(ManagedChannel channel) {
     return QueryServiceGrpc.newBlockingStub(channel);
-  }
-
-  @Provides
-  @Singleton
-  public SchemaServiceGrpc.SchemaServiceBlockingStub createSchemaStub(ManagedChannel channel) {
-    return SchemaServiceGrpc.newBlockingStub(channel);
   }
 
   @Provides
@@ -158,19 +160,34 @@ public class MetacatModule extends AbstractConfigurationAwareModule {
 
   @Provides
   @Singleton
-  public io.trino.plugin.iceberg.IcebergPageSourceProvider icebergPageSourceProvider(
+  public IcebergPageSourceProvider icebergPageSourceProvider(
       IcebergFileSystemFactory fsFactory,
       FileFormatDataSourceStats stats,
       OrcReaderOptions orcOptions,
       ParquetReaderOptions parquetOptions,
       TypeManager typeManager) {
-    return new io.trino.plugin.iceberg.IcebergPageSourceProvider(
-        fsFactory, stats, orcOptions, parquetOptions, typeManager);
+    return new IcebergPageSourceProvider(fsFactory, stats, orcOptions, parquetOptions, typeManager);
   }
 
   @Provides
   @Singleton
   public Tracer tracer() {
     return tracer;
+  }
+
+  @Singleton
+  public static class ManagedChannelCloser implements AutoCloseable {
+    private final ManagedChannel channel;
+
+    @com.google.inject.Inject
+    public ManagedChannelCloser(ManagedChannel channel) {
+      this.channel = channel;
+    }
+
+    @PreDestroy
+    @Override
+    public void close() {
+      channel.shutdownNow();
+    }
   }
 }

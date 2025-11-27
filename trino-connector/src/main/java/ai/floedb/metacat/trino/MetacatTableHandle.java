@@ -1,11 +1,13 @@
 package ai.floedb.metacat.trino;
 
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.ResourceKind;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.trino.plugin.iceberg.IcebergColumnHandle;
 import io.trino.plugin.iceberg.IcebergTableHandle;
 import io.trino.plugin.iceberg.TableType;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.predicate.TupleDomain;
@@ -26,6 +28,9 @@ public class MetacatTableHandle implements ConnectorTableHandle {
   private final String format;
   private final String catalogHandleId;
   private final TupleDomain<IcebergColumnHandle> enforcedConstraint;
+  private final Set<String> projectedColumns;
+  private final Long snapshotId;
+  private final Long asOfEpochMillis;
 
   @JsonCreator
   public MetacatTableHandle(
@@ -38,7 +43,10 @@ public class MetacatTableHandle implements ConnectorTableHandle {
       @JsonProperty("partitionSpecJson") String partitionSpecJson,
       @JsonProperty("format") String format,
       @JsonProperty("catalogHandleId") String catalogHandleId,
-      @JsonProperty("enforcedConstraint") TupleDomain<IcebergColumnHandle> enforcedConstraint) {
+      @JsonProperty("enforcedConstraint") TupleDomain<IcebergColumnHandle> enforcedConstraint,
+      @JsonProperty("projectedColumns") Set<String> projectedColumns,
+      @JsonProperty("snapshotId") Long snapshotId,
+      @JsonProperty("asOfEpochMillis") Long asOfEpochMillis) {
     this.schemaTableName = schemaTableName;
     this.tableId = tableId;
     this.tableTenantId = tableTenantId;
@@ -49,6 +57,9 @@ public class MetacatTableHandle implements ConnectorTableHandle {
     this.format = format;
     this.catalogHandleId = catalogHandleId;
     this.enforcedConstraint = enforcedConstraint == null ? TupleDomain.all() : enforcedConstraint;
+    this.projectedColumns = projectedColumns == null ? Set.of() : Set.copyOf(projectedColumns);
+    this.snapshotId = snapshotId;
+    this.asOfEpochMillis = asOfEpochMillis;
   }
 
   @JsonProperty
@@ -61,10 +72,10 @@ public class MetacatTableHandle implements ConnectorTableHandle {
     if (tableTenantId == null || tableTenantId.isBlank()) {
       throw new IllegalStateException("Missing tenant id on table handle for table " + tableId);
     }
-    ai.floedb.metacat.common.rpc.ResourceKind kind =
+    ResourceKind kind =
         (tableKind == null || tableKind.isBlank())
-            ? ai.floedb.metacat.common.rpc.ResourceKind.RK_TABLE
-            : ai.floedb.metacat.common.rpc.ResourceKind.valueOf(tableKind);
+            ? ResourceKind.RK_TABLE
+            : ResourceKind.valueOf(tableKind);
     return ResourceId.newBuilder().setId(tableId).setTenantId(tableTenantId).setKind(kind).build();
   }
 
@@ -113,9 +124,24 @@ public class MetacatTableHandle implements ConnectorTableHandle {
     return enforcedConstraint;
   }
 
+  @JsonProperty("projectedColumns")
+  public Set<String> getProjectedColumns() {
+    return projectedColumns;
+  }
+
+  @JsonProperty("snapshotId")
+  public Long getSnapshotId() {
+    return snapshotId;
+  }
+
+  @JsonProperty("asOfEpochMillis")
+  public Long getAsOfEpochMillis() {
+    return asOfEpochMillis;
+  }
+
   public IcebergTableHandle toIcebergTableHandle(Map<String, String> storageProperties) {
     return new IcebergTableHandle(
-        io.trino.spi.connector.CatalogHandle.fromId(catalogHandleId),
+        CatalogHandle.fromId(catalogHandleId),
         schemaTableName.getSchemaName(),
         schemaTableName.getTableName(),
         TableType.DATA,

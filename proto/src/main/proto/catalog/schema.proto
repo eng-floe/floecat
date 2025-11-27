@@ -14,6 +14,7 @@ service SchemaService {
 
 message GetSchemaRequest {
   ai.floedb.metacat.common.ResourceId table_id = 1;
+  ai.floedb.metacat.common.SnapshotRef snapshot = 2;
 }
 
 message GetSchemaResponse {

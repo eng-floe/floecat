@@ -191,11 +191,18 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   SchemaDescriptor schema = SchemaDescriptor.getDefaultInstance();
                   if (request.getIncludeSchema() && snapshots.getPinsCount() > 0) {
                     var pin = snapshots.getPins(0);
-                    schema =
-                        schemas
-                            .getSchema(
-                                GetSchemaRequest.newBuilder().setTableId(pin.getTableId()).build())
-                            .getSchema();
+                    var schemaReq =
+                        GetSchemaRequest.newBuilder()
+                            .setTableId(pin.getTableId())
+                            .setSnapshot(
+                                pin.getSnapshotId() > 0
+                                    ? SnapshotRef.newBuilder().setSnapshotId(pin.getSnapshotId())
+                                    : (pin.hasAsOf()
+                                        ? SnapshotRef.newBuilder().setAsOf(pin.getAsOf())
+                                        : SnapshotRef.newBuilder()
+                                            .setSpecial(SpecialSnapshot.SS_CURRENT)))
+                            .build();
+                    schema = schemas.getSchema(schemaReq).getSchema();
                   }
 
                   try {

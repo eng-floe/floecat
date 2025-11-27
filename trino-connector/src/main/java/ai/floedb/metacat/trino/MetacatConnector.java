@@ -10,7 +10,9 @@ import io.trino.spi.connector.ConnectorPageSourceProvider;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.ConnectorTransactionHandle;
+import io.trino.spi.session.PropertyMetadata;
 import io.trino.spi.transaction.IsolationLevel;
+import java.util.List;
 
 public class MetacatConnector implements Connector {
 
@@ -31,7 +33,8 @@ public class MetacatConnector implements Connector {
     this.metadata = requireNonNull(metadata, "metadata is null");
     this.splitManager = requireNonNull(splitManager, "splitManager is null");
     this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
-    this.sessionProperties = requireNonNull(sessionProperties, "sessionProperties is null").getSessionProperties();
+    this.sessionProperties =
+        requireNonNull(sessionProperties, "sessionProperties is null").getSessionProperties();
   }
 
   @Override
@@ -57,7 +60,16 @@ public class MetacatConnector implements Connector {
   }
 
   @Override
-  public java.util.List<io.trino.spi.session.PropertyMetadata<?>> getSessionProperties() {
+  public List<PropertyMetadata<?>> getSessionProperties() {
     return sessionProperties;
+  }
+
+  @Override
+  public void shutdown() {
+    try {
+      lifeCycleManager.stop();
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
   }
 }
