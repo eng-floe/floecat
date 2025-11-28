@@ -8,6 +8,7 @@ import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.Precondition;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
@@ -21,6 +22,9 @@ import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.SchemaParser;
+import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -44,7 +48,14 @@ class TableMutationIT {
   @GrpcClient("metacat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
-  String tablePrefix = this.getClass().getSimpleName() + "_";
+  private String tablePrefix = this.getClass().getSimpleName() + "_";
+
+  private static final Schema SCHEMA_V1 =
+      new Schema(Types.NestedField.required(1, "id", Types.LongType.get()));
+  private static final Schema SCHEMA_V2 =
+      new Schema(
+          Types.NestedField.required(1, "id", Types.LongType.get()),
+          Types.NestedField.optional(2, "qty", Types.IntegerType.get()));
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
@@ -432,5 +443,60 @@ class TableMutationIT {
     for (int i = 0; i < 100; i++) {
       assertEquals(i, snaps.get(i).getSnapshotId());
     }
+  }
+
+  @Test
+  void snapshotStoresSchemaJsonPerVersion() {
+    // create table with schema v1
+    var cat = TestSupport.createCatalog(catalog, "snapcat", "");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "sch", List.of("db"), "");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "orders",
+            "s3://bucket/orders",
+            SchemaParser.toJson(SCHEMA_V1),
+            "desc");
+
+    // snapshot1 captures v1
+    var snap1 =
+        TestSupport.createSnapshot(snapshot, tbl.getResourceId(), 1L, System.currentTimeMillis());
+
+    // update schema to v2, take snapshot2
+    table.updateTable(
+        UpdateTableRequest.newBuilder()
+            .setTableId(tbl.getResourceId())
+            .setSpec(
+                TableSpec.newBuilder()
+                    .setSchemaJson(SchemaParser.toJson(SCHEMA_V2))
+                    .setUpstream(tbl.getUpstream()))
+            .setUpdateMask(FieldMask.newBuilder().addPaths("schema_json").build())
+            .build());
+    var snap2 =
+        TestSupport.createSnapshot(snapshot, tbl.getResourceId(), 2L, System.currentTimeMillis());
+
+    // fetch snapshots and assert schemas persisted
+    assertEquals(
+        SchemaParser.toJson(SCHEMA_V1),
+        snapshot
+            .getSnapshot(
+                GetSnapshotRequest.newBuilder()
+                    .setTableId(tbl.getResourceId())
+                    .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snap1.getSnapshotId()))
+                    .build())
+            .getSnapshot()
+            .getSchemaJson());
+    assertEquals(
+        SchemaParser.toJson(SCHEMA_V2),
+        snapshot
+            .getSnapshot(
+                GetSnapshotRequest.newBuilder()
+                    .setTableId(tbl.getResourceId())
+                    .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snap2.getSnapshotId()))
+                    .build())
+            .getSnapshot()
+            .getSchemaJson());
   }
 }

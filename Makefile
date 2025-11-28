@@ -102,6 +102,18 @@ verify:
 	$(MVN) $(MVN_TESTALL) -pl service,client-cli -am verify
 
 # ===================================================
+# Trino connector (optional, Java 21/proto recompile)
+# ===================================================
+.PHONY: trino-connector trino-test
+trino-connector:
+	@echo "==> [TRINO] package connector with Java 21/proto rebuild"
+	$(MVN) $(MVN_FLAGS) -Pwith-trino -pl trino-connector -am package
+
+trino-test:
+	@echo "==> [TRINO] test connector only"
+	$(MVN) $(MVN_TESTALL) -Pwith-trino -pl trino-connector -am test
+
+# ===================================================
 # Clean
 # ===================================================
 .PHONY: clean clean-java clean-dev

@@ -72,10 +72,29 @@ public class MetacatMetadata implements ConnectorMetadata {
       CatalogName catalogName,
       CatalogHandle catalogHandle,
       TypeManager typeManager) {
-    this.namespaceService = client.namespaces();
-    this.tableService = client.tables();
-    this.directoryService = client.directory();
-    this.snapshotService = client.snapshots();
+    this(
+        client.namespaces(),
+        client.tables(),
+        client.directory(),
+        client.snapshots(),
+        catalogName,
+        catalogHandle,
+        typeManager);
+  }
+
+  // Testing/helper constructor to allow direct stub injection
+  MetacatMetadata(
+      NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaceService,
+      TableServiceGrpc.TableServiceBlockingStub tableService,
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryService,
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotService,
+      CatalogName catalogName,
+      CatalogHandle catalogHandle,
+      TypeManager typeManager) {
+    this.namespaceService = namespaceService;
+    this.tableService = tableService;
+    this.directoryService = directoryService;
+    this.snapshotService = snapshotService;
     this.catalogName = catalogName;
     this.catalogHandle = catalogHandle;
     this.typeManager = typeManager;
