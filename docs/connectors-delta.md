@@ -1,14 +1,16 @@
 # Delta / Unity Catalog Connector
 
 ## Overview
-`connectors/delta/` implements a connector targeting Databricks Unity Catalog-powered Delta Lake
+
+`connectors/catalogs/delta/` implements a connector targeting Databricks Unity Catalog-powered Delta Lake
 warehouses. It uses the Delta Kernel, Unity Catalog REST APIs, Databricks SQL endpoints, and AWS S3
-(thru the v2 client) to enumerate tables, collect statistics, and plan files.
+(through the v2 client) to enumerate tables, collect statistics, and plan files.
 
 The primary implementation is `UnityDeltaConnector`, exposed via `DeltaConnectorProvider`. Supporting
 classes manage OAuth2/SP token acquisition, Databricks SQL execution, and custom file readers for S3.
 
 ## Architecture & Responsibilities
+
 - **`UnityDeltaConnector`** – Concrete `MetacatConnector` that:
   - Talks to Unity Catalog REST (`UcHttp`) to list catalogs/schemas/tables.
   - Uses Delta Kernel (`io.delta.kernel.Table`) for schema and snapshot access.
@@ -22,7 +24,9 @@ classes manage OAuth2/SP token acquisition, Databricks SQL execution, and custom
 - **`DeltaTypeMapper`** – Maps Delta/Parquet logical types into Metacat logical types for stats.
 
 ## Public API / Surface Area
+
 `UnityDeltaConnector` implements the SPI methods:
+
 - `listNamespaces()` – Fetches catalogs via `/api/2.1/unity-catalog/catalogs`, then enumerates
   schemas per catalog, returning `catalog.schema` pairs.
 - `listTables(namespace)` – Calls `/api/2.1/unity-catalog/tables` filtered by catalog/schema, then
@@ -33,10 +37,11 @@ classes manage OAuth2/SP token acquisition, Databricks SQL execution, and custom
   produce NDV stats (`SamplingNdvProvider`, `ParquetNdvProvider`), and emits `SnapshotBundle`s with
   per-file stats (row count/size plus per-column metrics when available).
 - `plan(namespace, table, snapshotId, asOf)` – Uses `DeltaPlanner` to read snapshot manifests and
-  produce a `ScanBundle` whose entries are labelled with `ScanFileContent` (data, position deletes,
+  produce a `ScanBundle` whose entries are labeled with `ScanFileContent` (data, position deletes,
   equality deletes).
 
 ## Important Internal Details
+
 - **Authentication** – Supports OAuth2 bearer tokens, Databricks CLI profiles, and service principal
   tokens. `DatabricksAuthFactory` inspects connector properties such as `auth.scheme`, `auth.secret`
   references, or CLI hints.
@@ -51,6 +56,7 @@ classes manage OAuth2/SP token acquisition, Databricks SQL execution, and custom
   when computing stats, aligning with `types/` definitions.
 
 ## Data Flow & Lifecycle
+
 ```
 ConnectorFactory.create(cfg)
   → UnityDeltaConnector.create(uri, options, authProvider)
@@ -63,10 +69,13 @@ ConnectorFactory.create(cfg)
   → plan
       → DeltaPlanner traverses _delta_log → ScanBundle entries for data/delete files
 ```
+
 Connector resources (HTTP clients, S3 client, Delta engine) are closed when `close()` is invoked.
 
 ## Configuration & Extensibility
+
 Important connector properties:
+
 - `http.connect.ms`, `http.read.ms` – Timeout controls for Unity Catalog HTTP calls.
 - `databricks.sql.warehouse_id` – Enables SQL statement execution when set.
 - `s3.region` / `aws.region` – Region for the S3 client used to read Parquet files.
@@ -75,6 +84,7 @@ Important connector properties:
   `DatabricksAuthFactory` for supported schemes (OAuth2, service principal, CLI profile).
 
 Extensibility points:
+
 - Implement new auth schemes by extending `AuthProvider` and adding cases in
   `DatabricksAuthFactory`.
 - Plug in additional NDV providers if Delta tables store custom sketches.
@@ -82,7 +92,9 @@ Extensibility points:
   exposes them.
 
 ## Examples & Scenarios
+
 - **Connector Spec** – A Unity Catalog connector might specify:
+
   ```json
   {
     "display_name":"delta-unity",
@@ -96,11 +108,13 @@ Extensibility points:
     "auth":{"scheme":"oauth2","properties":{"token":"..."}}
   }
   ```
+
 - **Full reconciliation** – `ReconcilerService` enters full-rescan mode (`fullRescan=true`), so the
   connector lists every table in the namespace, creates missing namespaces in the destination
   catalog, updates `DestinationTarget` pointers, and ingests snapshot stats for each table.
 
 ## Cross-References
+
 - SPI details: [`docs/connectors-spi.md`](connectors-spi.md)
 - Iceberg connector for contrast: [`docs/connectors-iceberg.md`](connectors-iceberg.md)
 - Service & reconciler integration: [`docs/service.md`](service.md), [`docs/reconciler.md`](reconciler.md)

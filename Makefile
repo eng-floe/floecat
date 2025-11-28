@@ -107,13 +107,13 @@ verify:
 .PHONY: trino-connector trino-test
 trino-connector: proto
 	@echo "==> [TRINO] package connector with Java 21/proto rebuild"
-	$(MVN) $(MVN_FLAGS) -Pwith-trino -pl trino-connector -am generate-sources
-	$(MVN) $(MVN_FLAGS) -Pwith-trino -pl trino-connector -am package
+	$(MVN) $(MVN_FLAGS) -Pwith-trino -pl connectors/clients/trino -am generate-sources
+	$(MVN) $(MVN_FLAGS) -Pwith-trino -pl connectors/clients/trino -am package
 
 trino-test: proto
 	@echo "==> [TRINO] test connector only"
-	$(MVN) $(MVN_TESTALL) -Pwith-trino -pl trino-connector -am generate-sources
-	$(MVN) $(MVN_TESTALL) -Pwith-trino -pl trino-connector -am test
+	$(MVN) $(MVN_TESTALL) -Pwith-trino -pl connectors/clients/trino -am generate-sources
+	$(MVN) $(MVN_TESTALL) -Pwith-trino -pl connectors/clients/trino -am test
 
 # ===================================================
 # Clean

@@ -1,0 +1,45 @@
+package ai.floedb.metacat.client.trino;
+
+import static java.util.Objects.requireNonNull;
+
+import com.google.inject.Injector;
+import io.airlift.bootstrap.Bootstrap;
+import io.airlift.bootstrap.LifeCycleManager;
+import io.trino.spi.connector.Connector;
+import io.trino.spi.connector.ConnectorContext;
+import io.trino.spi.connector.ConnectorFactory;
+import java.util.Map;
+
+public class MetacatConnectorFactory implements ConnectorFactory {
+
+  @Override
+  public String getName() {
+    return "metacat";
+  }
+
+  @Override
+  public Connector create(
+      String catalogName, Map<String, String> config, ConnectorContext context) {
+    requireNonNull(catalogName, "catalogName is null");
+    requireNonNull(config, "config is null");
+
+    Bootstrap app =
+        new Bootstrap(
+            new MetacatModule(
+                catalogName,
+                context.getCatalogHandle(),
+                context.getTypeManager(),
+                context.getNodeManager(),
+                context.getOpenTelemetry(),
+                context.getTracer(),
+                false));
+
+    Injector injector =
+        app.doNotInitializeLogging().setRequiredConfigurationProperties(config).initialize();
+
+    LifeCycleManager lifeCycleManager = injector.getInstance(LifeCycleManager.class);
+    MetacatConnector connector = injector.getInstance(MetacatConnector.class);
+
+    return connector;
+  }
+}

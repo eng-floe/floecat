@@ -29,9 +29,9 @@
     <module>storage/memory</module>
     <module>storage/aws</module>
     <module>reconciler</module>
-    <module>connectors/spi</module>
-    <module>connectors/iceberg</module>
-    <module>connectors/delta</module>
+    <module>connectors/catalogs/spi</module>
+    <module>connectors/catalogs/iceberg</module>
+    <module>connectors/catalogs/delta</module>
 
     <module>service</module>
   </modules>
@@ -43,7 +43,7 @@
         <proto.compiler.release>21</proto.compiler.release>
       </properties>
       <modules>
-        <module>trino-connector</module>
+        <module>connectors/clients/trino</module>
       </modules>
     </profile>
   </profiles>
