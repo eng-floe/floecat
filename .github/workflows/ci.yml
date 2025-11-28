@@ -21,7 +21,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '25'
+          java-version: '21'
 
       - name: Cache Maven
         uses: actions/cache@v4
@@ -36,6 +36,9 @@ jobs:
 
       - name: Verify
         run: make verify
+
+      - name: Trino connector tests
+        run: mvn -Pwith-trino -pl connectors/clients/trino -am test
 
       - name: Check formatting
         run: mvn -q fmt:check
