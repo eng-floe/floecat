@@ -7,6 +7,7 @@ import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.metacat.service.context.impl.TestEngineVersionCaptureInterceptor;
 import ai.floedb.metacat.service.query.QueryContextStore;
 import ai.floedb.metacat.service.query.impl.QueryContext;
 import ai.floedb.metacat.service.util.TestDataResetter;
@@ -33,6 +34,8 @@ class PropagationIT {
       Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
   private static final Metadata.Key<String> QUERY_ID =
       Metadata.Key.of("x-query-id", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ENGINE_VERSION =
+      Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORR =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
 
@@ -52,6 +55,7 @@ class PropagationIT {
   void resetStores() {
     resetter.wipeAll();
     seeder.seedData();
+    TestEngineVersionCaptureInterceptor.reset();
   }
 
   @Test
@@ -134,6 +138,26 @@ class PropagationIT {
                         .map(t -> t.get(CORR))
                         .orElse(null));
     assertEquals(corr, echoed, "server should echo x-correlation-id");
+  }
+
+  /** Verifies engine version headers make it through the inbound server stack. */
+  @Test
+  void engineVersionPropagatesToOutboundCalls() {
+    String corr = "it-corr-" + UUID.randomUUID();
+
+    Metadata principalMeta = new Metadata();
+    principalMeta.put(PRINCIPAL_BIN, pc().toByteArray());
+    principalMeta.put(CORR, corr);
+
+    Metadata engineMeta = new Metadata();
+    engineMeta.put(ENGINE_VERSION, "it-engine");
+
+    catalog
+        .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(engineMeta))
+        .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(principalMeta))
+        .listCatalogs(ListCatalogsRequest.getDefaultInstance());
+
+    assertEquals("it-engine", TestEngineVersionCaptureInterceptor.captured());
   }
 
   private static final class RespHeadersCaptureInterceptor implements ClientInterceptor {

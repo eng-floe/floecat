@@ -32,8 +32,9 @@
     <module>connectors/catalogs/spi</module>
     <module>connectors/catalogs/iceberg</module>
     <module>connectors/catalogs/delta</module>
-
+    <module>catalog/builtin</module>
     <module>service</module>
+    <module>tools/builtin-validator</module>
   </modules>
 
   <profiles>

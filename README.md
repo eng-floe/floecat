@@ -133,6 +133,21 @@ make unit-test
 make integration-test
 ```
 
+### Builtin Catalog Validator
+
+Validate bundled or bespoke builtin catalog protobufs without running the service:
+
+```bash
+mvn -pl tools/builtin-validator package
+java -jar tools/builtin-validator/target/builtin-validator.jar \
+  service/src/main/resources/builtins/builtin_catalog_demo-pg-builtins.pbtxt
+```
+
+Flags:
+
+- `--json` – emit machine-readable output (for CI or scripting).
+- `--strict` – fail the run when warnings are present (warnings are currently reserved for future checks).
+
 ## Accessing the APIs
 
 Use any gRPC client (for example `grpcurl`) once the service listens on `localhost:9100`.
