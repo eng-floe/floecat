@@ -6,10 +6,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.security.ConnectorIdentity;
 import io.trino.spi.type.TimeZoneKey;
+import io.trino.spi.session.PropertyMetadata;
 import java.time.Instant;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
 class MetacatSessionPropertiesTest {
@@ -36,6 +38,20 @@ class MetacatSessionPropertiesTest {
 
     assertTrue(MetacatSessionProperties.getSnapshotId(session).isEmpty());
     assertTrue(MetacatSessionProperties.getAsOfEpochMillis(session).isEmpty());
+  }
+
+  @Test
+  void exposesExpectedDefaults() {
+    MetacatSessionProperties properties = new MetacatSessionProperties();
+    Map<String, PropertyMetadata<?>> byName =
+        properties.getSessionProperties().stream()
+            .collect(Collectors.toMap(PropertyMetadata::getName, p -> p));
+
+    assertEquals(-1L, byName.get(MetacatSessionProperties.SNAPSHOT_ID).getDefaultValue());
+    assertEquals(-1L, byName.get(MetacatSessionProperties.AS_OF_EPOCH_MILLIS).getDefaultValue());
+    assertEquals(
+        Boolean.TRUE,
+        byName.get(MetacatSessionProperties.USE_FILE_SIZE_FROM_METADATA).getDefaultValue());
   }
 
   private static class TestSession implements ConnectorSession {

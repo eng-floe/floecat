@@ -213,8 +213,7 @@ public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService 
     }
   }
 
-  private long resolveSnapshotId(
-      ai.floedb.metacat.common.rpc.ResourceId tableId, SnapshotRef ref) {
+  private long resolveSnapshotId(ai.floedb.metacat.common.rpc.ResourceId tableId, SnapshotRef ref) {
     return switch (ref.getWhichCase()) {
       case SNAPSHOT_ID -> ref.getSnapshotId();
       case AS_OF ->

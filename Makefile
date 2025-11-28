@@ -105,12 +105,14 @@ verify:
 # Trino connector (optional, Java 21/proto recompile)
 # ===================================================
 .PHONY: trino-connector trino-test
-trino-connector:
+trino-connector: proto
 	@echo "==> [TRINO] package connector with Java 21/proto rebuild"
+	$(MVN) $(MVN_FLAGS) -Pwith-trino -pl trino-connector -am generate-sources
 	$(MVN) $(MVN_FLAGS) -Pwith-trino -pl trino-connector -am package
 
-trino-test:
+trino-test: proto
 	@echo "==> [TRINO] test connector only"
+	$(MVN) $(MVN_TESTALL) -Pwith-trino -pl trino-connector -am generate-sources
 	$(MVN) $(MVN_TESTALL) -Pwith-trino -pl trino-connector -am test
 
 # ===================================================

@@ -3,6 +3,7 @@ package ai.floedb.metacat.trino;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.GetSnapshotRequest;
@@ -34,10 +35,19 @@ import io.grpc.Server;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
 import io.grpc.stub.StreamObserver;
+import io.trino.plugin.iceberg.ColumnIdentity;
+import io.trino.plugin.iceberg.IcebergColumnHandle;
 import io.trino.spi.catalog.CatalogName;
+import io.trino.spi.connector.Assignment;
 import io.trino.spi.connector.CatalogHandle;
+import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorSession;
+import io.trino.spi.connector.ConnectorTableHandle;
+import io.trino.spi.connector.Constraint;
+import io.trino.spi.connector.ProjectionApplicationResult;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.predicate.Domain;
+import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.ConnectorIdentity;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.StandardTypes;
@@ -51,10 +61,12 @@ import java.time.Instant;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -79,6 +91,10 @@ class MetacatMetadataTest {
           new Schema(
               Types.NestedField.required(1, "id", Types.LongType.get()),
               Types.NestedField.optional(2, "value", Types.IntegerType.get()))); // adds column
+  private static volatile boolean includeUpstream = true;
+  private static volatile String tableSchemaJson = CURRENT_SCHEMA_JSON;
+  private static volatile String upstreamUri = "s3://bucket/table";
+  private static volatile String snapshotSchemaJson = SNAPSHOT_SCHEMA_JSON;
 
   private static ManagedChannel channel;
   private static Server server;
@@ -122,6 +138,14 @@ class MetacatMetadataTest {
     if (server != null) {
       server.shutdownNow();
     }
+  }
+
+  @AfterEach
+  void resetStubs() {
+    includeUpstream = true;
+    tableSchemaJson = CURRENT_SCHEMA_JSON;
+    upstreamUri = "s3://bucket/table";
+    snapshotSchemaJson = SNAPSHOT_SCHEMA_JSON;
   }
 
   @Test
@@ -172,6 +196,172 @@ class MetacatMetadataTest {
         () ->
             metadata.getTableHandle(
                 session, new SchemaTableName("demo", "tbl"), Optional.empty(), Optional.empty()));
+  }
+
+  @Test
+  void fallsBackToCurrentSchemaWhenSnapshotSchemaIsBlank() {
+    snapshotSchemaJson = "";
+    ConnectorSession session =
+        new TestingSession(
+            Map.of(
+                MetacatSessionProperties.SNAPSHOT_ID, 42L,
+                MetacatSessionProperties.AS_OF_EPOCH_MILLIS, -1L));
+
+    MetacatTableHandle handle =
+        (MetacatTableHandle)
+            metadata.getTableHandle(
+                session, new SchemaTableName("demo", "tbl"), Optional.empty(), Optional.empty());
+
+    assertEquals(CURRENT_SCHEMA_JSON, handle.getSchemaJson());
+    assertEquals(42L, handle.getSnapshotId());
+  }
+
+  @Test
+  void applyFilterIntersectsDomains() {
+    IcebergColumnHandle col =
+        new IcebergColumnHandle(
+            ColumnIdentity.primitiveColumnIdentity(1, "id"),
+            BigintType.BIGINT,
+            java.util.List.of(),
+            BigintType.BIGINT,
+            false,
+            Optional.empty());
+    MetacatTableHandle handle =
+        new MetacatTableHandle(
+            new SchemaTableName("demo", "tbl"),
+            TABLE_ID.getId(),
+            TABLE_ID.getTenantId(),
+            TABLE_ID.getKind().name(),
+            "s3://bucket/table",
+            CURRENT_SCHEMA_JSON,
+            null,
+            TableFormat.TF_ICEBERG.name(),
+            "catalog",
+            TupleDomain.all(),
+            Set.of(),
+            null,
+            null);
+
+    Map<ColumnHandle, Domain> domainMap =
+        Map.of((ColumnHandle) col, Domain.singleValue(BigintType.BIGINT, 5L));
+    Constraint constraint = new Constraint(TupleDomain.withColumnDomains(domainMap));
+
+    var result =
+        metadata.applyFilter(
+            new TestingSession(
+                Map.of(
+                    MetacatSessionProperties.SNAPSHOT_ID, -1L,
+                    MetacatSessionProperties.AS_OF_EPOCH_MILLIS, -1L)),
+            handle,
+            constraint);
+
+    MetacatTableHandle newHandle = (MetacatTableHandle) result.orElseThrow().getHandle();
+    assertEquals(
+        TupleDomain.withColumnDomains(Map.of(col, Domain.singleValue(BigintType.BIGINT, 5L))),
+        newHandle.getEnforcedConstraint());
+  }
+
+  @Test
+  void applyFilterReturnsEmptyWhenUnchanged() {
+    IcebergColumnHandle col =
+        new IcebergColumnHandle(
+            ColumnIdentity.primitiveColumnIdentity(1, "id"),
+            BigintType.BIGINT,
+            java.util.List.of(),
+            BigintType.BIGINT,
+            false,
+            Optional.empty());
+    TupleDomain<IcebergColumnHandle> domain =
+        TupleDomain.withColumnDomains(Map.of(col, Domain.singleValue(BigintType.BIGINT, 5L)));
+    MetacatTableHandle handle =
+        new MetacatTableHandle(
+            new SchemaTableName("demo", "tbl"),
+            TABLE_ID.getId(),
+            TABLE_ID.getTenantId(),
+            TABLE_ID.getKind().name(),
+            "s3://bucket/table",
+            CURRENT_SCHEMA_JSON,
+            null,
+            TableFormat.TF_ICEBERG.name(),
+            "catalog",
+            domain,
+            Set.of(),
+            null,
+            null);
+
+    Constraint constraint =
+        new Constraint((TupleDomain<ColumnHandle>) (TupleDomain<?>) domain);
+    var result =
+        metadata.applyFilter(
+            new TestingSession(
+                Map.of(
+                    MetacatSessionProperties.SNAPSHOT_ID, -1L,
+                    MetacatSessionProperties.AS_OF_EPOCH_MILLIS, -1L)),
+            handle,
+            constraint);
+
+    assertTrue(result.isEmpty());
+  }
+
+  @Test
+  void applyProjectionPreservesAssignments() {
+    IcebergColumnHandle col =
+        new IcebergColumnHandle(
+            ColumnIdentity.primitiveColumnIdentity(1, "bucket"),
+            BigintType.BIGINT,
+            java.util.List.of(),
+            BigintType.BIGINT,
+            false,
+            Optional.empty());
+
+    MetacatTableHandle handle =
+        new MetacatTableHandle(
+            new SchemaTableName("demo", "tbl"),
+            TABLE_ID.getId(),
+            TABLE_ID.getTenantId(),
+            TABLE_ID.getKind().name(),
+            "s3://bucket/table",
+            CURRENT_SCHEMA_JSON,
+            null,
+            TableFormat.TF_ICEBERG.name(),
+            "catalog",
+            TupleDomain.all(),
+            Set.of(),
+            null,
+            null);
+
+    ProjectionApplicationResult<ConnectorTableHandle> result =
+        metadata
+            .applyProjection(
+                new TestingSession(
+                    Map.of(
+                        MetacatSessionProperties.SNAPSHOT_ID, -1L,
+                        MetacatSessionProperties.AS_OF_EPOCH_MILLIS, -1L)),
+                handle,
+                java.util.List.of(),
+                Map.of("bucket", col))
+            .orElseThrow();
+
+    MetacatTableHandle newHandle = (MetacatTableHandle) result.getHandle();
+    assertTrue(newHandle.getProjectedColumns().contains("bucket"));
+    assertEquals(1, result.getAssignments().size());
+    Assignment assignment = result.getAssignments().getFirst();
+    assertEquals("bucket", assignment.getVariable());
+    assertEquals(col, assignment.getColumn());
+  }
+
+  @Test
+  void returnsNullWhenUpstreamMissing() {
+    includeUpstream = false;
+    ConnectorSession session =
+        new TestingSession(
+            Map.of(
+                MetacatSessionProperties.SNAPSHOT_ID, -1L,
+                MetacatSessionProperties.AS_OF_EPOCH_MILLIS, -1L));
+
+    assertNull(
+        metadata.getTableHandle(
+            session, new SchemaTableName("demo", "tbl"), Optional.empty(), Optional.empty()));
   }
 
   private static class TestingSession implements ConnectorSession {
@@ -299,19 +489,17 @@ class MetacatMetadataTest {
     @Override
     public void getTable(
         GetTableRequest request, StreamObserver<GetTableResponse> responseObserver) {
-      var upstream =
-          UpstreamRef.newBuilder()
-              .setUri("s3://bucket/table")
-              .setFormat(TableFormat.TF_ICEBERG)
-              .build();
-      var table =
+      var tableBuilder =
           Table.newBuilder()
               .setResourceId(TABLE_ID)
               .setCatalogId(CATALOG_ID)
-              .setSchemaJson(CURRENT_SCHEMA_JSON)
-              .setUpstream(upstream)
-              .build();
-      responseObserver.onNext(GetTableResponse.newBuilder().setTable(table).build());
+              .setSchemaJson(tableSchemaJson);
+      if (includeUpstream) {
+        var upstream =
+            UpstreamRef.newBuilder().setUri(upstreamUri).setFormat(TableFormat.TF_ICEBERG).build();
+        tableBuilder.setUpstream(upstream);
+      }
+      responseObserver.onNext(GetTableResponse.newBuilder().setTable(tableBuilder.build()).build());
       responseObserver.onCompleted();
     }
   }
@@ -325,7 +513,7 @@ class MetacatMetadataTest {
           Snapshot.newBuilder()
               .setTableId(TABLE_ID)
               .setSnapshotId(ref.hasSnapshotId() ? ref.getSnapshotId() : 0L)
-              .setSchemaJson(SNAPSHOT_SCHEMA_JSON)
+              .setSchemaJson(snapshotSchemaJson)
               .build();
       responseObserver.onNext(GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build());
       responseObserver.onCompleted();

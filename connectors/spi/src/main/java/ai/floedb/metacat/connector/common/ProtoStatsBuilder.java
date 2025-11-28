@@ -267,8 +267,7 @@ public final class ProtoStatsBuilder {
               .setFilePath(fa.path())
               .setRowCount(fa.rowCount())
               .setSizeBytes(fa.sizeBytes())
-              .setPartitionDataJson(
-                  fa.partitionDataJson() == null ? "" : fa.partitionDataJson())
+              .setPartitionDataJson(fa.partitionDataJson() == null ? "" : fa.partitionDataJson())
               .setPartitionSpecId(Math.max(0, fa.partitionSpecId()))
               .setFileContent(
                   fa.isDelete()
