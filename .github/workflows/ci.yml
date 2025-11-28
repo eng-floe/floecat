@@ -17,11 +17,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Setup Java 25 (default)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '25'
 
       - name: Cache Maven
         uses: actions/cache@v4
@@ -36,6 +36,12 @@ jobs:
 
       - name: Verify
         run: make verify
+
+      - name: Setup Java 21 (Trino connector)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
 
       - name: Trino connector tests
         run: mvn -Pwith-trino -pl connectors/clients/trino -am test
