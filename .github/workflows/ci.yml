@@ -37,12 +37,6 @@ jobs:
       - name: Verify
         run: make verify
 
-      - name: Setup Java 21 (Trino connector)
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-
       - name: Trino connector tests
         run: mvn -Pwith-trino -pl connectors/clients/trino -am test
 
