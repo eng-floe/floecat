@@ -12,7 +12,7 @@
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <quarkus.platform.version>3.29.2</quarkus.platform.version>
+    <quarkus.platform.version>3.29.4</quarkus.platform.version>
     <maven.compiler.source>25</maven.compiler.source>
     <maven.compiler.target>25</maven.compiler.target>
     <proto.compiler.release>25</proto.compiler.release>
