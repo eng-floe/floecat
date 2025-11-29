@@ -23,6 +23,9 @@ public class MetacatConnectorFactory implements ConnectorFactory {
     requireNonNull(catalogName, "catalogName is null");
     requireNonNull(config, "config is null");
 
+    boolean coordinatorFileCaching =
+        Boolean.parseBoolean(config.getOrDefault("metacat.coordinator-file-caching", "false"));
+
     Bootstrap app =
         new Bootstrap(
             new MetacatModule(
@@ -32,7 +35,7 @@ public class MetacatConnectorFactory implements ConnectorFactory {
                 context.getNodeManager(),
                 context.getOpenTelemetry(),
                 context.getTracer(),
-                false));
+                coordinatorFileCaching));
 
     Injector injector =
         app.doNotInitializeLogging().setRequiredConfigurationProperties(config).initialize();

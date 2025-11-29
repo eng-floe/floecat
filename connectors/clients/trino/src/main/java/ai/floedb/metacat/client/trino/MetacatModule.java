@@ -68,6 +68,7 @@ public class MetacatModule extends AbstractConfigurationAwareModule {
     binder.bind(MetacatSplitManager.class).in(Scopes.SINGLETON);
     binder.bind(MetacatPageSourceProvider.class).in(Scopes.SINGLETON);
     binder.bind(MetacatSessionProperties.class).in(Scopes.SINGLETON);
+    binder.bind(ManagedChannelCloser.class).asEagerSingleton();
 
     binder
         .bind(ConnectorPageSourceProvider.class)
