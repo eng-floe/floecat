@@ -3,6 +3,7 @@ package ai.floedb.metacat.client.trino;
 import static java.util.stream.Collectors.toList;
 
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.GetTableRequest;
 import ai.floedb.metacat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
@@ -15,6 +16,7 @@ import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
+import ai.floedb.metacat.common.rpc.SpecialSnapshot;
 import com.google.inject.Inject;
 import com.google.protobuf.Timestamp;
 import io.trino.plugin.iceberg.ColumnIdentity;
@@ -144,11 +146,6 @@ public class MetacatMetadata implements ConnectorMetadata {
     NameRef nameRef =
         NameMapper.nameRef(
             catalogName.toString(), tableName.getSchemaName(), tableName.getTableName());
-    LOG.debug(
-        "resolveTable catalog={}, path={}, name={}",
-        nameRef.getCatalog(),
-        nameRef.getPathList(),
-        nameRef.getName());
     ResolveTableRequest resolveRequest = ResolveTableRequest.newBuilder().setRef(nameRef).build();
     ResourceId tableId = directoryService.resolveTable(resolveRequest).getResourceId();
 
@@ -196,11 +193,11 @@ public class MetacatMetadata implements ConnectorMetadata {
       } else if (asOfTs != null) {
         snapRefBuilder.setAsOf(asOfTs);
       } else {
-        snapRefBuilder.setSpecial(ai.floedb.metacat.common.rpc.SpecialSnapshot.SS_CURRENT);
+        snapRefBuilder.setSpecial(SpecialSnapshot.SS_CURRENT);
       }
 
       var snapReq =
-          ai.floedb.metacat.catalog.rpc.GetSnapshotRequest.newBuilder()
+          GetSnapshotRequest.newBuilder()
               .setTableId(tableId)
               .setSnapshot(snapRefBuilder.build())
               .build();

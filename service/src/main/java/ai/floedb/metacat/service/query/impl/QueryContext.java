@@ -169,6 +169,7 @@ public final class QueryContext {
                 .setRecordCount(fcs.getRowCount())
                 .setPartitionDataJson(fcs.getPartitionDataJson())
                 .setPartitionSpecId(fcs.getPartitionSpecId())
+                .addAllEqualityFieldIds(fcs.getEqualityFieldIdsList())
                 .setFileContent(mapContent(fcs.getFileContent()))
                 .addAllColumns(fcs.getColumnsList())
                 .build();

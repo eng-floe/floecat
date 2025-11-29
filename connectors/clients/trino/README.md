@@ -12,7 +12,12 @@ A Metacat-backed Trino connector.
 - Connector calls the Metacat query service to fetch pruned plan files.
 - A standalone `pom.xml` declares Trino SPI + gRPC + Metacat proto dependencies
 
-## Next Steps
+## Configuration
 
-1. Implement `MetacatPageSourceProvider` to read Parquet/ORC using Trino readers against file paths from plan files (or delegate to native connectors) and wire presigning if needed.
-2. Add this module to the root `pom.xml` once it compiles.
+The connector can pass explicit S3 settings through to Trino’s Iceberg file IO via `metacat.s3.*`:
+
+- `metacat.s3.access-key`, `metacat.s3.secret-key`, optional `metacat.s3.session-token`
+- `metacat.s3.region`, optional `metacat.s3.endpoint`
+- Optional STS role: `metacat.s3.sts.role-arn`, `metacat.s3.sts.region`, `metacat.s3.sts.endpoint`, `metacat.s3.role-session-name`
+
+If unset, Trino falls back to its own S3 configuration/credential chain.

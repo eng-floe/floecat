@@ -269,6 +269,10 @@ public final class IcebergConnector implements MetacatConnector {
       try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
         for (FileScanTask task : tasks) {
           for (var df : task.deletes()) {
+            List<Integer> eqIds =
+                df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
+                    ? df.equalityFieldIds()
+                    : List.of();
             deleteStats.add(
                 FileColumnStats.newBuilder()
                     .setTableId(destinationTableId)
@@ -276,6 +280,7 @@ public final class IcebergConnector implements MetacatConnector {
                     .setFilePath(df.location())
                     .setRowCount(df.recordCount())
                     .setSizeBytes(df.fileSizeInBytes())
+                    .addAllEqualityFieldIds(eqIds)
                     .setFileContent(
                         df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
                             ? FileContent.FC_EQUALITY_DELETES

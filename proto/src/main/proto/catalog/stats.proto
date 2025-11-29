@@ -90,9 +90,9 @@ message FileColumnStats {
   int64 size_bytes = 5;
   repeated ColumnStats columns = 6;
   FileContent file_content = 7;
-  // Partition metadata for this file (e.g., Iceberg PartitionDataJson).
   string partition_data_json = 8;
   int32 partition_spec_id = 9;
+  repeated int32 equality_field_ids = 10;
 }
 
 enum FileContent {

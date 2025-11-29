@@ -79,7 +79,7 @@ class MetacatSplitManagerTest {
   @Test
   void includesSnapshotIdInBeginQuery() {
     MetacatSplitManager splitManager =
-        new MetacatSplitManager(QueryServiceGrpc.newBlockingStub(channel));
+        new MetacatSplitManager(QueryServiceGrpc.newBlockingStub(channel), new MetacatConfig());
 
     MetacatTableHandle handle =
         new MetacatTableHandle(
@@ -118,7 +118,7 @@ class MetacatSplitManagerTest {
   @Test
   void includesAsOfInBeginQuery() {
     MetacatSplitManager splitManager =
-        new MetacatSplitManager(QueryServiceGrpc.newBlockingStub(channel));
+        new MetacatSplitManager(QueryServiceGrpc.newBlockingStub(channel), new MetacatConfig());
 
     long asOf = 1_700_000_000_000L;
     MetacatTableHandle handle =
@@ -164,7 +164,7 @@ class MetacatSplitManagerTest {
   @Test
   void buildsPredicatesAndRequiredColumnsFromDomains() throws Exception {
     MetacatSplitManager splitManager =
-        new MetacatSplitManager(QueryServiceGrpc.newBlockingStub(channel));
+        new MetacatSplitManager(QueryServiceGrpc.newBlockingStub(channel), new MetacatConfig());
 
     IcebergColumnHandle idCol =
         new IcebergColumnHandle(
@@ -249,7 +249,7 @@ class MetacatSplitManagerTest {
     planning.partitionDataJson = "";
 
     MetacatSplitManager splitManager =
-        new MetacatSplitManager(QueryServiceGrpc.newBlockingStub(channel));
+        new MetacatSplitManager(QueryServiceGrpc.newBlockingStub(channel), new MetacatConfig());
 
     MetacatTableHandle handle =
         new MetacatTableHandle(
