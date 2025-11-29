@@ -15,6 +15,7 @@ message Snapshot {
   google.protobuf.Timestamp upstream_created_at = 3;
   google.protobuf.Timestamp ingested_at = 4;
   int64 parent_snapshot_id = 5;
+  string schema_json = 6;
 }
 
 message ListSnapshotsRequest {

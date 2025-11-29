@@ -15,6 +15,7 @@
     <quarkus.platform.version>3.29.2</quarkus.platform.version>
     <maven.compiler.source>25</maven.compiler.source>
     <maven.compiler.target>25</maven.compiler.target>
+    <proto.compiler.release>25</proto.compiler.release>
     <skipUTs>false</skipUTs>
     <skipITs>false</skipITs>
     <jvm.args>--add-opens java.base/java.lang=ALL-UNNAMED</jvm.args>
@@ -28,14 +29,25 @@
     <module>storage/memory</module>
     <module>storage/aws</module>
     <module>reconciler</module>
-    <module>connectors/spi</module>
-    <module>connectors/iceberg</module>
-    <module>connectors/delta</module>
+    <module>connectors/catalogs/spi</module>
+    <module>connectors/catalogs/iceberg</module>
+    <module>connectors/catalogs/delta</module>
     <module>catalog/builtin</module>
-
     <module>service</module>
     <module>tools/builtin-validator</module>
   </modules>
+
+  <profiles>
+    <profile>
+      <id>with-trino</id>
+      <properties>
+        <proto.compiler.release>21</proto.compiler.release>
+      </properties>
+      <modules>
+        <module>connectors/clients/trino</module>
+      </modules>
+    </profile>
+  </profiles>
 
   <build>
     <pluginManagement>

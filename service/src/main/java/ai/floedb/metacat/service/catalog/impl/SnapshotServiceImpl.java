@@ -192,10 +192,13 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   var tableId = request.getSpec().getTableId();
                   ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
 
-                  tableRepo
-                      .getById(tableId)
-                      .orElseThrow(
-                          () -> GrpcErrors.notFound(corr, "table", Map.of("id", tableId.getId())));
+                  var table =
+                      tableRepo
+                          .getById(tableId)
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      corr, "table", Map.of("id", tableId.getId())));
 
                   var tsNow = nowTs();
 
@@ -212,6 +215,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                           .setIngestedAt(tsNow)
                           .setUpstreamCreatedAt(request.getSpec().getUpstreamCreatedAt())
                           .setParentSnapshotId(request.getSpec().getParentSnapshotId())
+                          .setSchemaJson(table.getSchemaJson())
                           .build();
 
                   if (idempotencyKey == null) {

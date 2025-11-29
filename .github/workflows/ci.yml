@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Setup Java 25 (default)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -36,6 +36,9 @@ jobs:
 
       - name: Verify
         run: make verify
+
+      - name: Trino connector tests
+        run: mvn -Pwith-trino -pl connectors/clients/trino -am test
 
       - name: Check formatting
         run: mvn -q fmt:check

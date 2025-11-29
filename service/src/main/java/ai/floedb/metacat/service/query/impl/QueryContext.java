@@ -1,24 +1,26 @@
 package ai.floedb.metacat.service.query.impl;
 
+import ai.floedb.metacat.catalog.rpc.FileColumnStats;
+import ai.floedb.metacat.catalog.rpc.FileContent;
 import ai.floedb.metacat.catalog.rpc.GetTableRequest;
 import ai.floedb.metacat.catalog.rpc.GetTableResponse;
+import ai.floedb.metacat.catalog.rpc.ListFileColumnStatsRequest;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
+import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.PrincipalContext;
-import ai.floedb.metacat.common.rpc.ResourceId;
-import ai.floedb.metacat.connector.rpc.Connector;
-import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
-import ai.floedb.metacat.connector.rpc.GetConnectorRequest;
-import ai.floedb.metacat.connector.spi.ConnectorConfigMapper;
-import ai.floedb.metacat.connector.spi.ConnectorFactory;
+import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
+import ai.floedb.metacat.execution.rpc.ScanFile;
+import ai.floedb.metacat.execution.rpc.ScanFileContent;
 import ai.floedb.metacat.query.rpc.QueryStatus;
 import ai.floedb.metacat.query.rpc.SnapshotPin;
 import ai.floedb.metacat.query.rpc.SnapshotSet;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import com.google.protobuf.InvalidProtocolBufferException;
-import io.grpc.StatusRuntimeException;
 import java.time.Clock;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.Objects;
@@ -111,7 +113,7 @@ public final class QueryContext {
 
   public MetacatConnector.ScanBundle fetchScanBundle(
       TableServiceGrpc.TableServiceBlockingStub tables,
-      ConnectorsGrpc.ConnectorsBlockingStub connectors) {
+      TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats) {
     try {
       if (snapshotSet != null) {
         SnapshotSet snapshots;
@@ -128,33 +130,9 @@ public final class QueryContext {
           GetTableResponse tableResponse =
               tables.getTable(GetTableRequest.newBuilder().setTableId(s.getTableId()).build());
           Table table = tableResponse.getTable();
-          if (table.hasUpstream()) {
-            ResourceId id = table.getUpstream().getConnectorId();
-
-            final Connector stored;
-            try {
-              stored =
-                  connectors
-                      .getConnector(GetConnectorRequest.newBuilder().setConnectorId(id).build())
-                      .getConnector();
-            } catch (StatusRuntimeException e) {
-              throw new IllegalArgumentException("Connector not found: " + id.getId(), e);
-            }
-
-            var cfg = ConnectorConfigMapper.fromProto(stored);
-
-            try (MetacatConnector connector = ConnectorFactory.create(cfg)) {
-              String sourceNsFq =
-                  !table.getUpstream().getNamespacePathList().isEmpty()
-                      ? String.join(".", table.getUpstream().getNamespacePathList())
-                      : "";
-              String sourceTable = table.getUpstream().getTableDisplayName();
-              queryStatus.set(QueryStatus.COMPLETED);
-
-              return connector.plan(
-                  sourceNsFq, sourceTable, s.getSnapshotId(), s.getAsOf().getSeconds());
-            }
-          }
+          var bundle = buildFromStats(table, s.getSnapshotId(), stats);
+          queryStatus.set(QueryStatus.COMPLETED);
+          return bundle;
         }
       }
     } finally {
@@ -163,6 +141,56 @@ public final class QueryContext {
       }
     }
     return null;
+  }
+
+  private MetacatConnector.ScanBundle buildFromStats(
+      Table table,
+      long snapshotId,
+      TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats) {
+    var data = new ArrayList<ScanFile>();
+    var deletes = new ArrayList<ScanFile>();
+    String format = table.getUpstream().getFormat().name();
+
+    String pageToken = "";
+    do {
+      var req =
+          ListFileColumnStatsRequest.newBuilder()
+              .setTableId(table.getResourceId())
+              .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
+              .setPage(PageRequest.newBuilder().setPageSize(1000).setPageToken(pageToken))
+              .build();
+      var resp = stats.listFileColumnStats(req);
+      for (FileColumnStats fcs : resp.getFileColumnsList()) {
+        var scanFile =
+            ScanFile.newBuilder()
+                .setFilePath(fcs.getFilePath())
+                .setFileFormat(format)
+                .setFileSizeInBytes(fcs.getSizeBytes())
+                .setRecordCount(fcs.getRowCount())
+                .setPartitionDataJson(fcs.getPartitionDataJson())
+                .setPartitionSpecId(fcs.getPartitionSpecId())
+                .addAllEqualityFieldIds(fcs.getEqualityFieldIdsList())
+                .setFileContent(mapContent(fcs.getFileContent()))
+                .addAllColumns(fcs.getColumnsList())
+                .build();
+        if (fcs.getFileContent() == FileContent.FC_DATA) {
+          data.add(scanFile);
+        } else {
+          deletes.add(scanFile);
+        }
+      }
+      pageToken = resp.hasPage() ? resp.getPage().getNextPageToken() : "";
+    } while (!pageToken.isBlank());
+
+    return new MetacatConnector.ScanBundle(data, deletes);
+  }
+
+  private ScanFileContent mapContent(FileContent fc) {
+    return switch (fc) {
+      case FC_EQUALITY_DELETES -> ScanFileContent.SCAN_FILE_CONTENT_EQUALITY_DELETES;
+      case FC_POSITION_DELETES -> ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES;
+      default -> ScanFileContent.SCAN_FILE_CONTENT_DATA;
+    };
   }
 
   public QueryContext end(boolean commit, long graceExpiresAtMs, long newVersion) {

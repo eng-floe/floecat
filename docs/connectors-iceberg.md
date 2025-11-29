@@ -1,7 +1,7 @@
 # Iceberg Connector
 
 ## Overview
-`connectors/iceberg/` implements the SPI for Iceberg catalogs exposed via the Iceberg REST API and
+`connectors/catalogs/iceberg/` implements the SPI for Iceberg catalogs exposed via the Iceberg REST API and
 AWS Glue. It enables Metacat to ingest schema metadata, partition specs, snapshots, statistics, and
 file manifests from Iceberg tables stored in S3.
 

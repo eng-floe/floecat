@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package ai.floedb.metacat.catalog;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.catalog.rpc";
+
+import "common/common.proto";
+import "query/lifecycle.proto";
+
+service SchemaService {
+  rpc GetSchema(GetSchemaRequest) returns (GetSchemaResponse);
+}
+
+message GetSchemaRequest {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+  ai.floedb.metacat.common.SnapshotRef snapshot = 2;
+}
+
+message GetSchemaResponse {
+  ai.floedb.metacat.query.SchemaDescriptor schema = 1;
+}

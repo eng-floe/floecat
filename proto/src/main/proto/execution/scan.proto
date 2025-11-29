@@ -21,5 +21,7 @@ message ScanFile {
   uint64 record_count = 4;
   ScanFileContent file_content = 5;
   repeated ai.floedb.metacat.catalog.ColumnStats columns = 6;
+  string partition_data_json = 7;
+  int32 partition_spec_id = 8;
+  repeated int32 equality_field_ids = 9;
 }
-

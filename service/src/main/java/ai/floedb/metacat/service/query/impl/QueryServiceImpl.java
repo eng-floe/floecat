@@ -1,17 +1,21 @@
 package ai.floedb.metacat.service.query.impl;
 
+import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.GetSchemaRequest;
 import ai.floedb.metacat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
+import ai.floedb.metacat.catalog.rpc.SchemaServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.common.rpc.SpecialSnapshot;
-import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
+import ai.floedb.metacat.execution.rpc.ScanFile;
 import ai.floedb.metacat.query.rpc.BeginQueryRequest;
 import ai.floedb.metacat.query.rpc.BeginQueryResponse;
 import ai.floedb.metacat.query.rpc.EndQueryRequest;
@@ -19,11 +23,13 @@ import ai.floedb.metacat.query.rpc.EndQueryResponse;
 import ai.floedb.metacat.query.rpc.ExpansionMap;
 import ai.floedb.metacat.query.rpc.GetQueryRequest;
 import ai.floedb.metacat.query.rpc.GetQueryResponse;
+import ai.floedb.metacat.query.rpc.Predicate;
 import ai.floedb.metacat.query.rpc.QueryDescriptor;
 import ai.floedb.metacat.query.rpc.QueryService;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
 import ai.floedb.metacat.query.rpc.RenewQueryRequest;
 import ai.floedb.metacat.query.rpc.RenewQueryResponse;
+import ai.floedb.metacat.query.rpc.SchemaDescriptor;
 import ai.floedb.metacat.query.rpc.SnapshotPin;
 import ai.floedb.metacat.query.rpc.SnapshotSet;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
@@ -32,6 +38,10 @@ import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.query.QueryContextStore;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
+import ai.floedb.metacat.types.LogicalCoercions;
+import ai.floedb.metacat.types.LogicalComparators;
+import ai.floedb.metacat.types.LogicalType;
+import ai.floedb.metacat.types.LogicalTypeProtoAdapter;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import io.quarkus.grpc.GrpcClient;
@@ -39,10 +49,13 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.function.BiFunction;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -61,7 +74,10 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
   TableServiceGrpc.TableServiceBlockingStub tables;
 
   @GrpcClient("metacat")
-  ConnectorsGrpc.ConnectorsBlockingStub connectors;
+  TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats;
+
+  @GrpcClient("metacat")
+  SchemaServiceGrpc.SchemaServiceBlockingStub schemas;
 
   @Inject QueryContextStore queryStore;
 
@@ -170,23 +186,50 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           queryId, principalContext, expansionBytes, snapshotBytes, ttlMs, 1L);
                   queryStore.put(queryContext);
 
-                  var scanBundle = queryContext.fetchScanBundle(tables, connectors);
+                  var scanBundle = queryContext.fetchScanBundle(tables, stats);
+
+                  SchemaDescriptor schema = SchemaDescriptor.getDefaultInstance();
+                  if (request.getIncludeSchema() && snapshots.getPinsCount() > 0) {
+                    var pin = snapshots.getPins(0);
+                    var schemaReq =
+                        GetSchemaRequest.newBuilder()
+                            .setTableId(pin.getTableId())
+                            .setSnapshot(
+                                pin.getSnapshotId() > 0
+                                    ? SnapshotRef.newBuilder().setSnapshotId(pin.getSnapshotId())
+                                    : (pin.hasAsOf()
+                                        ? SnapshotRef.newBuilder().setAsOf(pin.getAsOf())
+                                        : SnapshotRef.newBuilder()
+                                            .setSpecial(SpecialSnapshot.SS_CURRENT)))
+                            .build();
+                    schema = schemas.getSchema(schemaReq).getSchema();
+                  }
 
                   try {
+                    QueryDescriptor descriptor =
+                        QueryDescriptor.newBuilder()
+                            .setQueryId(queryId)
+                            .setTenantId(principalContext.getTenantId())
+                            .setQueryStatus(queryContext.getQueryStatus())
+                            .setCreatedAt(ts(queryContext.getCreatedAtMs()))
+                            .setExpiresAt(ts(queryContext.getExpiresAtMs()))
+                            .setSnapshots(SnapshotSet.parseFrom(snapshotBytes))
+                            .setExpansion(ExpansionMap.parseFrom(expansionBytes))
+                            .addAllDataFiles(
+                                scanBundle != null ? scanBundle.dataFiles() : List.of())
+                            .addAllDeleteFiles(
+                                scanBundle != null ? scanBundle.deleteFiles() : List.of())
+                            .build();
+
+                    QueryDescriptor pruned =
+                        prune(
+                            descriptor,
+                            request.getRequiredColumnsList(),
+                            request.getPredicatesList());
+
                     return BeginQueryResponse.newBuilder()
-                        .setQuery(
-                            QueryDescriptor.newBuilder()
-                                .setQueryId(queryId)
-                                .setTenantId(principalContext.getTenantId())
-                                .setQueryStatus(queryContext.getQueryStatus())
-                                .setCreatedAt(ts(queryContext.getCreatedAtMs()))
-                                .setExpiresAt(ts(queryContext.getExpiresAtMs()))
-                                .setSnapshots(SnapshotSet.parseFrom(snapshotBytes))
-                                .setExpansion(ExpansionMap.parseFrom(expansionBytes))
-                                .addAllDataFiles(
-                                    scanBundle != null ? scanBundle.dataFiles() : List.of())
-                                .addAllDeleteFiles(
-                                    scanBundle != null ? scanBundle.deleteFiles() : List.of()))
+                        .setQuery(pruned)
+                        .setSchema(schema)
                         .build();
                   } catch (InvalidProtocolBufferException e) {
                     throw GrpcErrors.internal(
@@ -327,6 +370,212 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
     long s = Math.floorDiv(millis, 1000);
     int n = (int) ((millis % 1000) * 1_000_000);
     return Timestamp.newBuilder().setSeconds(s).setNanos(n).build();
+  }
+
+  private QueryDescriptor prune(
+      QueryDescriptor plan, List<String> requiredColumns, List<Predicate> predicates) {
+    if (requiredColumns == null || requiredColumns.isEmpty()) {
+      return filterByPredicates(plan, predicates);
+    }
+    Set<String> cols = new HashSet<>(requiredColumns);
+    QueryDescriptor.Builder pb = plan.toBuilder().clearDataFiles().clearDeleteFiles();
+    for (ScanFile pf : plan.getDataFilesList()) {
+      pb.addDataFiles(filterColumns(pf, cols));
+    }
+    for (ScanFile pf : plan.getDeleteFilesList()) {
+      pb.addDeleteFiles(filterColumns(pf, cols));
+    }
+    return filterByPredicates(pb.build(), predicates);
+  }
+
+  private ScanFile filterColumns(ScanFile pf, Set<String> cols) {
+    ScanFile.Builder b = pf.toBuilder().clearColumns();
+    for (var c : pf.getColumnsList()) {
+      if (cols.contains(c.getColumnName())) {
+        b.addColumns(c);
+      }
+    }
+    return b.build();
+  }
+
+  private QueryDescriptor filterByPredicates(QueryDescriptor plan, List<Predicate> predicates) {
+    if (predicates == null || predicates.isEmpty()) {
+      return plan;
+    }
+
+    QueryDescriptor.Builder pb = plan.toBuilder().clearDataFiles().clearDeleteFiles();
+
+    for (ScanFile pf : plan.getDataFilesList()) {
+      if (matches(pf, predicates)) {
+        pb.addDataFiles(pf);
+      }
+    }
+
+    for (ScanFile pf : plan.getDeleteFilesList()) {
+      if (matches(pf, predicates)) {
+        pb.addDeleteFiles(pf);
+      }
+    }
+
+    return pb.build();
+  }
+
+  private boolean matches(ScanFile pf, List<Predicate> preds) {
+    if (preds == null || preds.isEmpty()) {
+      return true;
+    }
+
+    for (Predicate p : preds) {
+      if (!fileMayMatchPredicate(pf, p)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private boolean fileMayMatchPredicate(ScanFile pf, Predicate p) {
+    String col = p.getColumn();
+    if (col == null || col.isBlank()) {
+      return true;
+    }
+
+    ColumnStats cs = null;
+    for (ColumnStats c : pf.getColumnsList()) {
+      if (col.equalsIgnoreCase(c.getColumnName())) {
+        cs = c;
+        break;
+      }
+    }
+
+    if (cs == null) {
+      return true;
+    }
+
+    LogicalType type = LogicalTypeProtoAdapter.columnLogicalType(cs);
+    Object min = LogicalTypeProtoAdapter.columnMin(cs);
+    Object max = LogicalTypeProtoAdapter.columnMax(cs);
+
+    if (min == null || max == null) {
+      return true;
+    }
+
+    var op = p.getOp();
+
+    BiFunction<Object, Object, Integer> cmp = (a, b) -> LogicalComparators.compare(type, a, b);
+
+    java.util.List<String> values = p.getValuesList();
+
+    switch (op) {
+      case OP_EQ -> {
+        if (values.isEmpty()) {
+          return true;
+        }
+        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
+        if (cmp.apply(v, min) < 0 || cmp.apply(v, max) > 0) {
+          return false;
+        }
+        return true;
+      }
+
+      case OP_IN -> {
+        if (values.isEmpty()) {
+          return true;
+        }
+        for (String s : values) {
+          Object v = LogicalCoercions.coerceStatValue(type, s);
+          if (cmp.apply(v, min) >= 0 && cmp.apply(v, max) <= 0) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      case OP_BETWEEN -> {
+        if (values.size() < 2) {
+          return true;
+        }
+        Object a = LogicalCoercions.coerceStatValue(type, values.get(0));
+        Object b = LogicalCoercions.coerceStatValue(type, values.get(1));
+
+        if (cmp.apply(a, b) > 0) {
+          Object tmp = a;
+          a = b;
+          b = tmp;
+        }
+
+        if (cmp.apply(b, min) < 0 || cmp.apply(a, max) > 0) {
+          return false;
+        }
+        return true;
+      }
+
+      case OP_LT -> {
+        if (values.isEmpty()) {
+          return true;
+        }
+        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
+        if (cmp.apply(min, v) >= 0) {
+          return false;
+        }
+        return true;
+      }
+
+      case OP_LTE -> {
+        if (values.isEmpty()) {
+          return true;
+        }
+        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
+        if (cmp.apply(min, v) > 0) {
+          return false;
+        }
+        return true;
+      }
+
+      case OP_GT -> {
+        if (values.isEmpty()) {
+          return true;
+        }
+        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
+        if (cmp.apply(max, v) <= 0) {
+          return false;
+        }
+        return true;
+      }
+
+      case OP_GTE -> {
+        if (values.isEmpty()) {
+          return true;
+        }
+        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
+        if (cmp.apply(max, v) < 0) {
+          return false;
+        }
+        return true;
+      }
+
+      case OP_NEQ -> {
+        if (values.isEmpty()) {
+          return true;
+        }
+        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
+        if (cmp.apply(min, max) == 0 && cmp.apply(min, v) == 0) {
+          return false;
+        }
+        return true;
+      }
+
+      case OP_IS_NULL -> {
+        return true;
+      }
+
+      case OP_IS_NOT_NULL -> {
+        return true;
+      }
+
+      default -> {
+        return true;
+      }
+    }
   }
 
   private void checkNameRef(NameRef nameRef) {

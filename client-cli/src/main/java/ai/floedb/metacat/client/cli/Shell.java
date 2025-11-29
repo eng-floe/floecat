@@ -2094,6 +2094,11 @@ public class Shell implements Runnable {
           file.getFileSizeInBytes(),
           file.getRecordCount(),
           content);
+      if (!file.getPartitionDataJson().isBlank()) {
+        out.printf(
+            "    partition_data: %s (spec_id=%d)%n",
+            file.getPartitionDataJson(), file.getPartitionSpecId());
+      }
       if (!file.getColumnsList().isEmpty()) {
         out.println("    columns:");
         file.getColumnsList()

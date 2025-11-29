@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package ai.floedb.metacat.common;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.common.rpc";
+
+// Simple presign service to hand back short-lived URLs or tokens for file access.
+service ObjectAccess {
+  rpc PresignFiles(PresignFilesRequest) returns (PresignFilesResponse);
+}
+
+message PresignFilesRequest {
+  repeated string file_path = 1;
+}
+
+message PresignFilesResponse {
+  repeated string presigned_url = 1;
+}

@@ -12,6 +12,9 @@
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <protobuf.version>4.32.1</protobuf.version>
+    <maven.compiler.source>${proto.compiler.release}</maven.compiler.source>
+    <maven.compiler.target>${proto.compiler.release}</maven.compiler.target>
   </properties>
 
   <dependencyManagement>
@@ -31,6 +34,12 @@
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-grpc</artifactId>
     </dependency>
+
+    <dependency>
+      <groupId>com.google.protobuf</groupId>
+      <artifactId>protobuf-java</artifactId>
+      <version>${protobuf.version}</version>
+    </dependency>
   </dependencies>
 
   <build>
@@ -46,6 +55,15 @@
             </goals>
           </execution>
         </executions>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <release>${maven.compiler.target}</release>
+        </configuration>
       </plugin>
 
       <plugin>
