@@ -9,6 +9,18 @@ import "google/protobuf/timestamp.proto";
 
 // ----- Snapshot -----
 
+message PartitionField {
+  int32 field_id = 1;
+  string name = 2;
+  string transform = 3;
+}
+
+message PartitionSpecInfo {
+  int32 spec_id = 1;
+  string spec_name = 2;
+  repeated PartitionField fields = 3;
+}
+
 message Snapshot {
   ai.floedb.metacat.common.ResourceId table_id = 1;
   int64 snapshot_id = 2;
@@ -16,6 +28,7 @@ message Snapshot {
   google.protobuf.Timestamp ingested_at = 4;
   int64 parent_snapshot_id = 5;
   string schema_json = 6;
+  PartitionSpecInfo partition_spec = 7;
 }
 
 message ListSnapshotsRequest {
@@ -41,6 +54,8 @@ message SnapshotSpec {
   google.protobuf.Timestamp upstream_created_at = 3;
   google.protobuf.Timestamp ingested_at = 4;
   int64 parent_snapshot_id = 5;
+  optional string schema_json = 6;
+  PartitionSpecInfo partition_spec = 7;
 }
 
 message CreateSnapshotRequest {

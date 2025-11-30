@@ -2,6 +2,7 @@ package ai.floedb.metacat.connector.spi;
 
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.FileColumnStats;
+import ai.floedb.metacat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.execution.rpc.ScanFile;
@@ -46,7 +47,9 @@ public interface MetacatConnector extends Closeable {
       long upstreamCreatedAtMs,
       TableStats tableStats,
       List<ColumnStats> columnStats,
-      List<FileColumnStats> fileStats) {}
+      List<FileColumnStats> fileStats,
+      String schemaJson,
+      PartitionSpecInfo partitionSpec) {}
 
   record ScanBundle(List<ScanFile> dataFiles, List<ScanFile> deleteFiles) {}
 }

@@ -2,6 +2,7 @@ package ai.floedb.metacat.connector.iceberg.impl;
 
 import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.FileContent;
+import ai.floedb.metacat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.common.GenericStatsEngine;
@@ -223,6 +224,10 @@ public final class IcebergConnector implements MetacatConnector {
       long parentId = snapshot.parentId() != null ? snapshot.parentId().longValue() : 0;
       long createdMs = snapshot.timestampMillis();
 
+      int schemaId = (snapshot != null) ? snapshot.schemaId() : table.schema().schemaId();
+      Schema schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
+      String schemaJson = SchemaParser.toJson(schema);
+
       EngineOut engineOutput = runEngine(table, snapshotId, includeIds);
 
       var tStats =
@@ -296,7 +301,16 @@ public final class IcebergConnector implements MetacatConnector {
       List<FileColumnStats> allFiles = new ArrayList<>(fileStats);
       allFiles.addAll(deleteStats);
 
-      out.add(new SnapshotBundle(snapshotId, parentId, createdMs, tStats, cStats, allFiles));
+      out.add(
+          new SnapshotBundle(
+              snapshotId,
+              parentId,
+              createdMs,
+              tStats,
+              cStats,
+              allFiles,
+              schemaJson,
+              toPartitionSpecInfo(table, snapshot)));
     }
     return out;
   }
@@ -381,6 +395,45 @@ public final class IcebergConnector implements MetacatConnector {
     } catch (Exception e) {
       return "";
     }
+  }
+
+  private PartitionSpecInfo toPartitionSpecInfo(Table table, Snapshot snapshot) {
+    if (snapshot == null) {
+      return null;
+    }
+
+    Map<Integer, PartitionSpec> specs = table.specs();
+    Integer snapshotSpecId = null;
+    TableScan scan = table.newScan().useSnapshot(snapshot.snapshotId());
+    CloseableIterable<FileScanTask> tasks = scan.planFiles();
+    Set<Integer> specSet = new LinkedHashSet<>();
+    for (FileScanTask task : tasks) {
+      specSet.add(task.file().specId());
+    }
+
+    if (specSet.size() == 1) {
+      snapshotSpecId = specSet.iterator().next();
+    }
+
+    if (snapshotSpecId == null && table.spec() != null) {
+      snapshotSpecId = table.spec().specId();
+    }
+
+    PartitionSpec spec = snapshotSpecId == null ? null : specs.get(snapshotSpecId);
+    if (spec == null) {
+      return null;
+    }
+
+    PartitionSpecInfo.Builder builder = PartitionSpecInfo.newBuilder().setSpecId(spec.specId());
+    for (PartitionField field : spec.fields()) {
+      builder.addFields(
+          ai.floedb.metacat.catalog.rpc.PartitionField.newBuilder()
+              .setFieldId(field.sourceId())
+              .setName(field.name())
+              .setTransform(field.transform().toString())
+              .build());
+    }
+    return builder.build();
   }
 
   @Override

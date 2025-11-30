@@ -37,6 +37,8 @@ public class InboundContextInterceptor implements ServerInterceptor {
       Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORR =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> TENANT =
+      Metadata.Key.of("x-tenant-id", Metadata.ASCII_STRING_MARSHALLER);
 
   public static final Context.Key<PrincipalContext> PC_KEY = PrincipalProvider.KEY;
   public static final Context.Key<String> QUERY_KEY = Context.key("query_id");
@@ -178,6 +180,11 @@ public class InboundContextInterceptor implements ServerInterceptor {
       return new ResolvedContext(principalContext, queryIdHeader);
     }
 
+    String tenantHeader = headers.get(TENANT);
+    if (!isBlank(tenantHeader)) {
+      return new ResolvedContext(tenantContext(tenantHeader), "");
+    }
+
     return new ResolvedContext(devContext(), "");
   }
 
@@ -215,6 +222,14 @@ public class InboundContextInterceptor implements ServerInterceptor {
         .addPermissions("view.read")
         .addPermissions("view.write")
         .addPermissions("connector.manage")
+        .build();
+  }
+
+  private static PrincipalContext tenantContext(String tenantId) {
+    return PrincipalContext.newBuilder(devContext())
+        .setTenantId(tenantId)
+        .setSubject("rest-gateway")
+        .setLocale("en")
         .build();
   }
 

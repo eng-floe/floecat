@@ -35,6 +35,7 @@
     <module>catalog/builtin</module>
     <module>service</module>
     <module>tools/builtin-validator</module>
+    <module>protocol-gateway</module>
   </modules>
 
   <profiles>

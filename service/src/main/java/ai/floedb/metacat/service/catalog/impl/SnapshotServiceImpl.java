@@ -208,15 +208,23 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
                   var fingerprint = request.getSpec().toBuilder().build().toByteArray();
 
-                  var snap =
+                  var spec = request.getSpec();
+                  var snapBuilder =
                       Snapshot.newBuilder()
                           .setTableId(tableId)
-                          .setSnapshotId(request.getSpec().getSnapshotId())
+                          .setSnapshotId(spec.getSnapshotId())
                           .setIngestedAt(tsNow)
-                          .setUpstreamCreatedAt(request.getSpec().getUpstreamCreatedAt())
-                          .setParentSnapshotId(request.getSpec().getParentSnapshotId())
-                          .setSchemaJson(table.getSchemaJson())
-                          .build();
+                          .setUpstreamCreatedAt(spec.getUpstreamCreatedAt())
+                          .setParentSnapshotId(spec.getParentSnapshotId());
+                  if (spec.hasSchemaJson() && !spec.getSchemaJson().isBlank()) {
+                    snapBuilder.setSchemaJson(spec.getSchemaJson());
+                  } else if (!table.getSchemaJson().isBlank()) {
+                    snapBuilder.setSchemaJson(table.getSchemaJson());
+                  }
+                  if (spec.hasPartitionSpec()) {
+                    snapBuilder.setPartitionSpec(spec.getPartitionSpec());
+                  }
+                  var snap = snapBuilder.build();
 
                   if (idempotencyKey == null) {
                     var existing = snapshotRepo.getById(tableId, snap.getSnapshotId());

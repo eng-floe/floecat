@@ -213,7 +213,8 @@ public final class DummyConnector implements MetacatConnector {
 
     List<FileColumnStats> fileStats = List.of(f1, f2, f3);
 
-    return List.of(new SnapshotBundle(snapshotId, 0L, createdAt, tStats, cstats, fileStats));
+    return List.of(
+        new SnapshotBundle(snapshotId, 0L, createdAt, tStats, cstats, fileStats, "{}", null));
   }
 
   @Override

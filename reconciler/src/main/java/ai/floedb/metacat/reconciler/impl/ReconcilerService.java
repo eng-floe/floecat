@@ -361,16 +361,27 @@ public class ReconcilerService {
     }
   }
 
-  private void ensureSnapshot(
-      ResourceId tableId, long snapshotId, long parentId, long upstreamTsMs) {
-    var spec =
+  private void ensureSnapshot(ResourceId tableId, MetacatConnector.SnapshotBundle snapshotBundle) {
+    if (snapshotBundle == null) {
+      return;
+    }
+    long upstreamTsMs =
+        snapshotBundle.upstreamCreatedAtMs() > 0
+            ? snapshotBundle.upstreamCreatedAtMs()
+            : System.currentTimeMillis();
+    SnapshotSpec.Builder spec =
         SnapshotSpec.newBuilder()
             .setTableId(tableId)
-            .setSnapshotId(snapshotId)
-            .setParentSnapshotId(parentId)
+            .setSnapshotId(snapshotBundle.snapshotId())
+            .setParentSnapshotId(snapshotBundle.parentId())
             .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamTsMs))
-            .setIngestedAt(Timestamps.fromMillis(System.currentTimeMillis()))
-            .build();
+            .setIngestedAt(Timestamps.fromMillis(System.currentTimeMillis()));
+    if (snapshotBundle.schemaJson() != null && !snapshotBundle.schemaJson().isBlank()) {
+      spec.setSchemaJson(snapshotBundle.schemaJson());
+    }
+    if (snapshotBundle.partitionSpec() != null) {
+      spec.setPartitionSpec(snapshotBundle.partitionSpec());
+    }
     var request = CreateSnapshotRequest.newBuilder().setSpec(spec).build();
     try {
       clients.snapshot().createSnapshot(request);
@@ -398,13 +409,7 @@ public class ReconcilerService {
         continue;
       }
 
-      long parentId = snapshotBundle.parentId();
-      long createdAtMs =
-          (snapshotBundle.upstreamCreatedAtMs() > 0)
-              ? snapshotBundle.upstreamCreatedAtMs()
-              : System.currentTimeMillis();
-
-      ensureSnapshot(tableId, snapshotId, parentId, createdAtMs);
+      ensureSnapshot(tableId, snapshotBundle);
 
       var tsIn = snapshotBundle.tableStats();
       if (tsIn != null) {

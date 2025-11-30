@@ -3,6 +3,7 @@ package ai.floedb.metacat.connector.delta.uc.impl;
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.FileContent;
+import ai.floedb.metacat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.common.GenericStatsEngine;
@@ -245,6 +246,8 @@ public final class UnityDeltaConnector implements MetacatConnector {
 
     final StructType kernelSchema = snapshot.getSchema();
     final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaTypeMap(kernelSchema);
+    final String schemaJson = kernelSchema.toJson();
+    final PartitionSpecInfo partitionSpec = toPartitionSpecInfo(snapshot);
 
     final Set<String> includeNames =
         (includeColumns == null || includeColumns.isEmpty())
@@ -303,7 +306,9 @@ public final class UnityDeltaConnector implements MetacatConnector {
     }
 
     var normCols = normalizeColumnStats(cStats, kernelSchema);
-    return List.of(new SnapshotBundle(version, parent, createdMs, tStats, normCols, fileStats));
+    return List.of(
+        new SnapshotBundle(
+            version, parent, createdMs, tStats, normCols, fileStats, schemaJson, partitionSpec));
   }
 
   @Override
@@ -469,5 +474,27 @@ public final class UnityDeltaConnector implements MetacatConnector {
     }
 
     return table.getLatestSnapshot(engine);
+  }
+
+  private static PartitionSpecInfo toPartitionSpecInfo(Snapshot snapshot) {
+    if (snapshot == null) {
+      return null;
+    }
+    var partitionCols = snapshot.getPartitionColumnNames();
+    if (partitionCols == null || partitionCols.isEmpty()) {
+      return null;
+    }
+    PartitionSpecInfo.Builder builder =
+        PartitionSpecInfo.newBuilder().setSpecId(0).setSpecName("delta");
+    int order = 0;
+    for (String column : partitionCols) {
+      builder.addFields(
+          ai.floedb.metacat.catalog.rpc.PartitionField.newBuilder()
+              .setFieldId(++order)
+              .setName(column)
+              .setTransform("identity")
+              .build());
+    }
+    return builder.build();
   }
 }

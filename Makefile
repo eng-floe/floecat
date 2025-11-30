@@ -34,6 +34,7 @@ $(shell mkdir -p $(PID_DIR) $(LOG_DIR) $(BIN_DIR) >/dev/null)
 
 # ---------- Reactor shorthands ----------
 REACTOR_SERVICE := -pl service -am
+REACTOR_REST := -pl protocol-gateway/iceberg-rest -am
 
 # ---------- Version / Artifacts ----------
 VERSION := $(shell sed -n 's:.*<version>\(.*\)</version>.*:\1:p' pom.xml | head -n1)
@@ -134,6 +135,7 @@ clean-dev:
 # ===================================================
 .PHONY: run
 run: $(PROTO_JAR)
+	@$(MAKE) start-rest
 	@echo "==> [DEV] quarkus:dev (profile=$(QUARKUS_PROFILE))"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
@@ -145,59 +147,115 @@ run: $(PROTO_JAR)
 # Dev (background)
 # ===================================================
 SERVICE_NAME := service
-PID_FILE := $(PID_DIR)/$(SERVICE_NAME).pid
-LOG_FILE := $(LOG_DIR)/$(SERVICE_NAME).log
+SERVICE_PID := $(PID_DIR)/$(SERVICE_NAME).pid
+SERVICE_LOG := $(LOG_DIR)/$(SERVICE_NAME).log
+
+REST_NAME := iceberg-rest
+REST_PID := $(PID_DIR)/$(REST_NAME).pid
+REST_LOG := $(LOG_DIR)/$(REST_NAME).log
 
 define _bg_and_pid
 ( \
   set -m; \
-  nohup bash -lc '$(MVN) -f ./pom.xml -Dquarkus.profile=$(QUARKUS_PROFILE) $(QUARKUS_DEV_ARGS) $(REACTOR_SERVICE) $(QUARKUS_DEV_GOAL)' \
-    >> "$(LOG_FILE)" 2>&1 & \
-  echo $$! > "$(PID_FILE)"; \
+  nohup bash -lc '$(MVN) -f ./pom.xml -Dquarkus.profile=$(QUARKUS_PROFILE) $(QUARKUS_DEV_ARGS) $(1) $(QUARKUS_DEV_GOAL)' \
+    >> "$(2)" 2>&1 & \
+  echo $$! > "$(3)"; \
 )
 endef
 
-.PHONY: start
-start: $(PROTO_JAR)
-	@if [ -f "$(PID_FILE)" ] && ps -p $$(cat "$(PID_FILE)") >/dev/null 2>&1; then \
-	  echo "==> [DEV] already running (pid $$(cat $(PID_FILE)))"; \
+.PHONY: run-rest
+run-rest:
+	@echo "==> [DEV] quarkus:dev (REST gateway)"
+	$(MVN) -f ./pom.xml \
+	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+	  $(QUARKUS_DEV_ARGS) \
+	  $(REACTOR_REST) \
+	  $(QUARKUS_DEV_GOAL)
+
+.PHONY: start-service start-rest start
+start: start-service start-rest
+
+start-service: $(PROTO_JAR)
+	@if [ -f "$(SERVICE_PID)" ] && ps -p $$(cat "$(SERVICE_PID)") >/dev/null 2>&1; then \
+	  echo "==> [DEV] service already running (pid $$(cat $(SERVICE_PID)))"; \
 	else \
-	  echo "==> [DEV] starting in background (profile=$(QUARKUS_PROFILE))"; \
-	  $(call _bg_and_pid); \
+	  echo "==> [DEV] starting service in background (profile=$(QUARKUS_PROFILE))"; \
+	  $(call _bg_and_pid,$(REACTOR_SERVICE),$(SERVICE_LOG),$(SERVICE_PID)); \
 	  sleep 1; \
-	  echo "==> [DEV] pid $$(cat $(PID_FILE)) | logs -> $(LOG_FILE)"; \
+	  echo "==> [DEV] service pid $$(cat $(SERVICE_PID)) | logs -> $(SERVICE_LOG)"; \
 	fi
 
-.PHONY: stop
-stop:
-	@if [ -f "$(PID_FILE)" ]; then \
-	  PID=$$(cat "$(PID_FILE)"); \
+.PHONY: start-rest
+start-rest: $(PROTO_JAR)
+	@if [ -f "$(REST_PID)" ] && ps -p $$(cat "$(REST_PID)") >/dev/null 2>&1; then \
+	  echo "==> [DEV] REST gateway already running (pid $$(cat $(REST_PID)))"; \
+	else \
+	  echo "==> [DEV] starting REST gateway in background (profile=$(QUARKUS_PROFILE))"; \
+	  $(call _bg_and_pid,$(REACTOR_REST),$(REST_LOG),$(REST_PID)); \
+	  sleep 1; \
+	  echo "==> [DEV] REST pid $$(cat $(REST_PID)) | logs -> $(REST_LOG)"; \
+	fi
+
+.PHONY: stop stop-service stop-rest
+stop: stop-service stop-rest
+
+stop-service:
+	@if [ -f "$(SERVICE_PID)" ]; then \
+	  PID=$$(cat "$(SERVICE_PID)"); \
 	  if ps -p $$PID >/dev/null 2>&1; then \
-	    echo "==> [DEV] stopping pid $$PID"; \
+	    echo "==> [DEV] stopping service pid $$PID"; \
 	    kill $$PID || true; \
 	  else \
-	    echo "==> [DEV] stale PID file (no process)"; \
+	    echo "==> [DEV] stale service PID file"; \
 	  fi; \
-	  rm -f "$(PID_FILE)"; \
+	  rm -f "$(SERVICE_PID)"; \
 	else \
-	  echo "==> [DEV] not running"; \
+	  echo "==> [DEV] service not running"; \
 	fi
 
-.PHONY: logs
-logs:
-	@if [ -f "$(LOG_FILE)" ]; then \
-	  echo "==> [LOGS] tail -f $(LOG_FILE)"; \
-	  tail -f "$(LOG_FILE)"; \
+.PHONY: stop-rest
+stop-rest:
+	@if [ -f "$(REST_PID)" ]; then \
+	  PID=$$(cat "$(REST_PID)"); \
+	  if ps -p $$PID >/dev/null 2>&1; then \
+	    echo "==> [DEV] stopping REST pid $$PID"; \
+	    kill $$PID || true; \
+	  else \
+	    echo "==> [DEV] stale REST PID file"; \
+	  fi; \
+	  rm -f "$(REST_PID)"; \
 	else \
-	  echo "==> [LOGS] no log file yet: $(LOG_FILE)"; \
+	  echo "==> [DEV] REST gateway not running"; \
+	fi
+
+.PHONY: logs logs-rest
+logs:
+	@if [ -f "$(SERVICE_LOG)" ]; then \
+	  echo "==> [LOGS] tail -f $(SERVICE_LOG)"; \
+	  tail -f "$(SERVICE_LOG)"; \
+	else \
+	  echo "==> [LOGS] no service log yet"; \
+	fi
+
+logs-rest:
+	@if [ -f "$(REST_LOG)" ]; then \
+	  echo "==> [LOGS] tail -f $(REST_LOG)"; \
+	  tail -f "$(REST_LOG)"; \
+	else \
+	  echo "==> [LOGS] no REST log yet"; \
 	fi
 
 .PHONY: status
 status:
-	@if [ -f "$(PID_FILE)" ] && ps -p $$(cat "$(PID_FILE)") >/dev/null 2>&1; then \
-	  echo "==> [STATUS] running (pid $$(cat $(PID_FILE)))"; \
+	@if [ -f "$(SERVICE_PID)" ] && ps -p $$(cat "$(SERVICE_PID)") >/dev/null 2>&1; then \
+	  echo "==> [STATUS] service running (pid $$(cat $(SERVICE_PID)))"; \
 	else \
-	  echo "==> [STATUS] not running"; \
+	  echo "==> [STATUS] service not running"; \
+	fi
+	@if [ -f "$(REST_PID)" ] && ps -p $$(cat "$(REST_PID)") >/dev/null 2>&1; then \
+	  echo "==> [STATUS] REST gateway running (pid $$(cat $(REST_PID)))"; \
+	else \
+	  echo "==> [STATUS] REST gateway not running"; \
 	fi
 
 # ===================================================
