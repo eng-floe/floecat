@@ -25,6 +25,7 @@ import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.PartitionField;
 import ai.floedb.metacat.catalog.rpc.PartitionSpecInfo;
+import ai.floedb.metacat.catalog.rpc.PutTableStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.ResolveNamespaceResponse;
 import ai.floedb.metacat.catalog.rpc.ResolveTableResponse;
@@ -40,8 +41,13 @@ import ai.floedb.metacat.catalog.rpc.View;
 import ai.floedb.metacat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.execution.rpc.ScanFile;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
+import ai.floedb.metacat.query.rpc.BeginQueryRequest;
+import ai.floedb.metacat.query.rpc.BeginQueryResponse;
+import ai.floedb.metacat.query.rpc.QueryDescriptor;
+import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
 import com.google.protobuf.Timestamp;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -67,6 +73,7 @@ class RestResourceTest {
   private ViewServiceGrpc.ViewServiceBlockingStub viewStub;
   private SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub;
   private TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statsStub;
+  private QueryServiceGrpc.QueryServiceBlockingStub queryStub;
   private RequestSpecification defaultSpec;
 
   @BeforeEach
@@ -77,6 +84,7 @@ class RestResourceTest {
     viewStub = mock(ViewServiceGrpc.ViewServiceBlockingStub.class);
     snapshotStub = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
     statsStub = mock(TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub.class);
+    queryStub = mock(QueryServiceGrpc.QueryServiceBlockingStub.class);
 
     when(clients.table()).thenReturn(tableStub);
     when(clients.directory()).thenReturn(directoryStub);
@@ -84,6 +92,7 @@ class RestResourceTest {
     when(clients.view()).thenReturn(viewStub);
     when(clients.snapshot()).thenReturn(snapshotStub);
     when(clients.stats()).thenReturn(statsStub);
+    when(clients.query()).thenReturn(queryStub);
     when(grpc.raw()).thenReturn(clients);
     when(grpc.withHeaders(tableStub)).thenReturn(tableStub);
     when(grpc.withHeaders(directoryStub)).thenReturn(directoryStub);
@@ -91,6 +100,7 @@ class RestResourceTest {
     when(grpc.withHeaders(viewStub)).thenReturn(viewStub);
     when(grpc.withHeaders(snapshotStub)).thenReturn(snapshotStub);
     when(grpc.withHeaders(statsStub)).thenReturn(statsStub);
+    when(grpc.withHeaders(queryStub)).thenReturn(queryStub);
     ResourceId catalogId = ResourceId.newBuilder().setId("cat:default").build();
     when(directoryStub.resolveCatalog(any()))
         .thenReturn(ResolveCatalogResponse.newBuilder().setResourceId(catalogId).build());
@@ -641,5 +651,70 @@ class RestResourceTest {
         .statusCode(200)
         .body("defaults.'catalog-name'", equalTo("metacat"))
         .body("endpoints", hasItems("POST /v1/{prefix}/tables/rename", "POST /v1/{prefix}/views/rename"));
+  }
+
+  @Test
+  void reportsMetrics() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    when(statsStub.putTableStats(any()))
+        .thenReturn(ai.floedb.metacat.catalog.rpc.PutTableStatsResponse.getDefaultInstance());
+
+    given()
+        .body(
+            """
+            {
+              "report-type":"scan",
+              "table-name":"orders",
+              "snapshot-id":5,
+              "metrics":{
+                "total-data-manifests":{"unit":"count","value":1}
+              }
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables/orders/metrics")
+        .then()
+        .statusCode(204);
+
+    ArgumentCaptor<PutTableStatsRequest> req = ArgumentCaptor.forClass(PutTableStatsRequest.class);
+    verify(statsStub).putTableStats(req.capture());
+    assertEquals(5L, req.getValue().getSnapshotId());
+    assertEquals("scan", req.getValue().getStats().getPropertiesMap().get("report-type"));
+  }
+
+  @Test
+  void plansTableScan() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    ScanFile file =
+        ScanFile.newBuilder()
+            .setFilePath("s3://bucket/file.parquet")
+            .setFileFormat("PARQUET")
+            .setFileSizeInBytes(10)
+            .setRecordCount(5)
+            .build();
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-1").addDataFiles(file).build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+
+    given()
+        .body("{\"snapshot-id\":7}")
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables/orders/plan")
+        .then()
+        .statusCode(200)
+        .body("status", equalTo("completed"))
+        .body("'plan-id'", equalTo("plan-1"))
+        .body("'file-scan-tasks'[0].'data-file'.'file-path'", equalTo("s3://bucket/file.parquet"));
+
+    ArgumentCaptor<BeginQueryRequest> req = ArgumentCaptor.forClass(BeginQueryRequest.class);
+    verify(queryStub).beginQuery(req.capture());
+    assertEquals(tableId, req.getValue().getInputs(0).getTableId());
+    assertEquals(7L, req.getValue().getInputs(0).getSnapshot().getSnapshotId());
   }
 }
