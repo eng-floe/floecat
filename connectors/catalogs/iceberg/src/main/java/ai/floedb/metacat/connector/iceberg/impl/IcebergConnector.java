@@ -2,6 +2,13 @@ package ai.floedb.metacat.connector.iceberg.impl;
 
 import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.FileContent;
+import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
+import ai.floedb.metacat.catalog.rpc.IcebergMetadataLogEntry;
+import ai.floedb.metacat.catalog.rpc.IcebergRef;
+import ai.floedb.metacat.catalog.rpc.IcebergSchema;
+import ai.floedb.metacat.catalog.rpc.IcebergSnapshotLogEntry;
+import ai.floedb.metacat.catalog.rpc.IcebergSortField;
+import ai.floedb.metacat.catalog.rpc.IcebergSortOrder;
 import ai.floedb.metacat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -36,13 +43,19 @@ import java.util.stream.Collectors;
 import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.HasTableOperations;
+import org.apache.iceberg.HistoryEntry;
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.SortField;
+import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadata.MetadataLogEntry;
 import org.apache.iceberg.TableScan;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -218,6 +231,8 @@ public final class IcebergConnector implements MetacatConnector {
                 .collect(Collectors.toCollection(LinkedHashSet::new))
             : resolveFieldIdsNested(table.schema(), includeColumns);
 
+    IcebergMetadata icebergMetadata = buildIcebergMetadata(table);
+
     List<SnapshotBundle> out = new ArrayList<>();
     for (Snapshot snapshot : table.snapshots()) {
       long snapshotId = snapshot.snapshotId();
@@ -301,6 +316,11 @@ public final class IcebergConnector implements MetacatConnector {
       List<FileColumnStats> allFiles = new ArrayList<>(fileStats);
       allFiles.addAll(deleteStats);
 
+      Map<String, String> summary =
+          snapshot.summary() == null ? Map.of() : Map.copyOf(snapshot.summary());
+      String manifestList = snapshot.manifestListLocation();
+      long sequenceNumber = snapshot.sequenceNumber();
+
       out.add(
           new SnapshotBundle(
               snapshotId,
@@ -310,7 +330,12 @@ public final class IcebergConnector implements MetacatConnector {
               cStats,
               allFiles,
               schemaJson,
-              toPartitionSpecInfo(table, snapshot)));
+              toPartitionSpecInfo(table, snapshot),
+              sequenceNumber,
+              manifestList,
+              summary,
+              schemaId,
+              icebergMetadata));
     }
     return out;
   }
@@ -424,7 +449,16 @@ public final class IcebergConnector implements MetacatConnector {
       return null;
     }
 
-    PartitionSpecInfo.Builder builder = PartitionSpecInfo.newBuilder().setSpecId(spec.specId());
+    return toPartitionSpecInfo(spec);
+  }
+
+  private PartitionSpecInfo toPartitionSpecInfo(PartitionSpec spec) {
+    if (spec == null) {
+      return null;
+    }
+    String specName = spec.isUnpartitioned() ? "unpartitioned" : "spec-" + spec.specId();
+    PartitionSpecInfo.Builder builder =
+        PartitionSpecInfo.newBuilder().setSpecId(spec.specId()).setSpecName(specName);
     for (PartitionField field : spec.fields()) {
       builder.addFields(
           ai.floedb.metacat.catalog.rpc.PartitionField.newBuilder()
@@ -433,6 +467,116 @@ public final class IcebergConnector implements MetacatConnector {
               .setTransform(field.transform().toString())
               .build());
     }
+    return builder.build();
+  }
+
+  private IcebergMetadata buildIcebergMetadata(Table table) {
+    if (!(table instanceof HasTableOperations hasOps)) {
+      return null;
+    }
+    TableMetadata metadata = hasOps.operations().current();
+    if (metadata == null) {
+      return null;
+    }
+
+    IcebergMetadata.Builder builder =
+        IcebergMetadata.newBuilder()
+            .setTableUuid(metadata.uuid())
+            .setFormatVersion(metadata.formatVersion())
+            .setMetadataLocation(metadata.metadataFileLocation())
+            .setLastUpdatedMs(metadata.lastUpdatedMillis())
+            .setLastColumnId(metadata.lastColumnId())
+            .setCurrentSchemaId(metadata.currentSchemaId())
+            .setDefaultSpecId(metadata.defaultSpecId())
+            .setLastPartitionId(metadata.lastAssignedPartitionId())
+            .setDefaultSortOrderId(metadata.defaultSortOrderId())
+            .setLastSequenceNumber(metadata.lastSequenceNumber());
+
+    Snapshot currentSnapshot = metadata.currentSnapshot();
+    if (currentSnapshot != null) {
+      builder.setCurrentSnapshotId(currentSnapshot.snapshotId());
+    }
+
+    if (metadata.schemas() != null) {
+      for (Schema schema : metadata.schemas()) {
+        builder.addSchemas(
+            IcebergSchema.newBuilder()
+                .setSchemaId(schema.schemaId())
+                .setSchemaJson(SchemaParser.toJson(schema))
+                .addAllIdentifierFieldIds(schema.identifierFieldIds())
+                .setLastColumnId(schema.highestFieldId())
+                .build());
+      }
+    }
+
+    if (metadata.specsById() != null) {
+      for (PartitionSpec spec : metadata.specsById().values()) {
+        PartitionSpecInfo info = toPartitionSpecInfo(spec);
+        if (info != null) {
+          builder.addPartitionSpecs(info);
+        }
+      }
+    }
+
+    if (metadata.sortOrders() != null) {
+      for (SortOrder order : metadata.sortOrders()) {
+        IcebergSortOrder.Builder orderBuilder =
+            IcebergSortOrder.newBuilder().setSortOrderId(order.orderId());
+        for (SortField field : order.fields()) {
+          orderBuilder.addFields(
+              IcebergSortField.newBuilder()
+                  .setSourceFieldId(field.sourceId())
+                  .setTransform(
+                      field.transform() == null ? "identity" : field.transform().toString())
+                  .setDirection(field.direction().name())
+                  .setNullOrder(field.nullOrder().name())
+                  .build());
+        }
+        builder.addSortOrders(orderBuilder.build());
+      }
+    }
+
+    for (HistoryEntry entry : metadata.snapshotLog()) {
+      builder.addSnapshotLog(
+          IcebergSnapshotLogEntry.newBuilder()
+              .setSnapshotId(entry.snapshotId())
+              .setTimestampMs(entry.timestampMillis())
+              .build());
+    }
+
+    for (MetadataLogEntry entry : metadata.previousFiles()) {
+      builder.addMetadataLog(
+          IcebergMetadataLogEntry.newBuilder()
+              .setFile(entry.file())
+              .setTimestampMs(entry.timestampMillis())
+              .build());
+    }
+    builder.addMetadataLog(
+        IcebergMetadataLogEntry.newBuilder()
+            .setFile(metadata.metadataFileLocation())
+            .setTimestampMs(metadata.lastUpdatedMillis())
+            .build());
+
+    metadata
+        .refs()
+        .forEach(
+            (name, ref) -> {
+              IcebergRef.Builder refBuilder =
+                  IcebergRef.newBuilder()
+                      .setSnapshotId(ref.snapshotId())
+                      .setType(ref.type().name());
+              if (ref.maxRefAgeMs() != null) {
+                refBuilder.setMaxReferenceAgeMs(ref.maxRefAgeMs());
+              }
+              if (ref.maxSnapshotAgeMs() != null) {
+                refBuilder.setMaxSnapshotAgeMs(ref.maxSnapshotAgeMs());
+              }
+              if (ref.minSnapshotsToKeep() != null) {
+                refBuilder.setMinSnapshotsToKeep(ref.minSnapshotsToKeep());
+              }
+              builder.putRefs(name, refBuilder.build());
+            });
+
     return builder.build();
   }
 

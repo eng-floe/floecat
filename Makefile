@@ -115,7 +115,7 @@ verify:
 	  verify
 
 # ===================================================
-# Trino connector (optional, Java 21/proto recompile)
+# Trino connector (requires Java 21)
 # ===================================================
 .PHONY: trino-connector trino-test
 trino-connector: proto

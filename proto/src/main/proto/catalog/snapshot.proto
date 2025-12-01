@@ -6,20 +6,10 @@ option java_package = "ai.floedb.metacat.catalog.rpc";
 
 import "common/common.proto";
 import "google/protobuf/timestamp.proto";
+import "catalog/partition.proto";
+import "catalog/iceberg.proto";
 
 // ----- Snapshot -----
-
-message PartitionField {
-  int32 field_id = 1;
-  string name = 2;
-  string transform = 3;
-}
-
-message PartitionSpecInfo {
-  int32 spec_id = 1;
-  string spec_name = 2;
-  repeated PartitionField fields = 3;
-}
 
 message Snapshot {
   ai.floedb.metacat.common.ResourceId table_id = 1;
@@ -29,6 +19,11 @@ message Snapshot {
   int64 parent_snapshot_id = 5;
   string schema_json = 6;
   PartitionSpecInfo partition_spec = 7;
+  int64 sequence_number = 8;
+  string manifest_list = 9;
+  map<string,string> summary = 10;
+  int32 schema_id = 11;
+  IcebergMetadata iceberg = 12;
 }
 
 message ListSnapshotsRequest {
@@ -56,6 +51,11 @@ message SnapshotSpec {
   int64 parent_snapshot_id = 5;
   optional string schema_json = 6;
   PartitionSpecInfo partition_spec = 7;
+  optional int64 sequence_number = 8;
+  optional string manifest_list = 9;
+  map<string,string> summary = 10;
+  optional int32 schema_id = 11;
+  IcebergMetadata iceberg = 12;
 }
 
 message CreateSnapshotRequest {

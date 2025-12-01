@@ -31,8 +31,9 @@ AWS Glue lookups, and optionally captures NDV sketches from Parquet files.
   `SchemaParser.toJson`, captures partition keys, and returns table properties.
 - `enumerateSnapshotsWithStats(...)` – Iterates Iceberg snapshots, loads table/column stats using
   the configured `StatsEngine` and NDV providers, and emits `SnapshotBundle`s including upstream
-  timestamps, parent IDs, stats payloads, and per-file stats (row count/size plus per-column
-  metrics when available).
+  timestamps, parent IDs, stats payloads, per-file stats (row count/size plus per-column metrics),
+  sequence numbers, manifest lists, summary maps, and the entire Iceberg table metadata blob so the
+  catalog retains schema/spec/sort-order/log history.
 - `plan(namespace, table, snapshotId, asOfTimestamp)` – Builds an Iceberg `TableScan`, iterates
   `FileScanTask`s, and emits a `ScanBundle` (data/delete `ScanFile`s) labelled with `ScanFileContent`.
 
@@ -48,6 +49,11 @@ AWS Glue lookups, and optionally captures NDV sketches from Parquet files.
 - **Planning** – `plan()` uses Iceberg scanning APIs with projection pushdown to avoid reading
   entire Parquet files when only metadata is needed. `ScanFile` entries include file format, size,
   record count, and per-column stats if emitted by Iceberg.
+- **Metadata capture** – `enumerateSnapshotsWithStats()` taps `HasTableOperations` and `TableMetadata`
+  to cache the full Iceberg table metadata (format version, table UUID, schema/spec/sort-order
+  history, metadata/snapshot logs, refs) alongside each snapshot bundle. The reconciler persists this
+  payload so the REST gateway can answer Iceberg REST requests without reloading upstream metadata
+  files.
 
 ## Data Flow & Lifecycle
 ```

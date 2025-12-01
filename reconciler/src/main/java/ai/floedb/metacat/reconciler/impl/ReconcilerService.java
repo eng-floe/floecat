@@ -304,12 +304,11 @@ public class ReconcilerService {
             .setDisplayName(landingView.tableName())
             .setSchemaJson(landingView.schemaJson())
             .setUpstream(upstream)
-            .putAllProperties(landingView.properties())
-            .build();
+            .putAllProperties(landingView.properties());
 
     return clients
         .table()
-        .createTable(CreateTableRequest.newBuilder().setSpec(spec).build())
+        .createTable(CreateTableRequest.newBuilder().setSpec(spec.build()).build())
         .getTable()
         .getResourceId();
   }
@@ -337,8 +336,7 @@ public class ReconcilerService {
         TableSpec.newBuilder()
             .setSchemaJson(landingView.schemaJson())
             .setUpstream(upstream)
-            .putAllProperties(landingView.properties())
-            .build();
+            .putAllProperties(landingView.properties());
 
     FieldMask mask =
         FieldMask.newBuilder()
@@ -349,7 +347,7 @@ public class ReconcilerService {
     var req =
         UpdateTableRequest.newBuilder()
             .setTableId(tableId)
-            .setSpec(updated)
+            .setSpec(updated.build())
             .setUpdateMask(mask)
             .build();
     try {
@@ -381,6 +379,21 @@ public class ReconcilerService {
     }
     if (snapshotBundle.partitionSpec() != null) {
       spec.setPartitionSpec(snapshotBundle.partitionSpec());
+    }
+    if (snapshotBundle.sequenceNumber() > 0) {
+      spec.setSequenceNumber(snapshotBundle.sequenceNumber());
+    }
+    if (snapshotBundle.manifestList() != null && !snapshotBundle.manifestList().isBlank()) {
+      spec.setManifestList(snapshotBundle.manifestList());
+    }
+    if (snapshotBundle.summary() != null && !snapshotBundle.summary().isEmpty()) {
+      spec.putAllSummary(snapshotBundle.summary());
+    }
+    if (snapshotBundle.schemaId() > 0) {
+      spec.setSchemaId(snapshotBundle.schemaId());
+    }
+    if (snapshotBundle.icebergMetadata() != null) {
+      spec.setIceberg(snapshotBundle.icebergMetadata());
     }
     var request = CreateSnapshotRequest.newBuilder().setSpec(spec).build();
     try {

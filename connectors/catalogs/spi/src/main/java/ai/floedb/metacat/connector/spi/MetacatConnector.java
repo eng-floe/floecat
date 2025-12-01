@@ -49,7 +49,12 @@ public interface MetacatConnector extends Closeable {
       List<ColumnStats> columnStats,
       List<FileColumnStats> fileStats,
       String schemaJson,
-      PartitionSpecInfo partitionSpec) {}
+      PartitionSpecInfo partitionSpec,
+      long sequenceNumber,
+      String manifestList,
+      Map<String, String> summary,
+      int schemaId,
+      ai.floedb.metacat.catalog.rpc.IcebergMetadata icebergMetadata) {}
 
   record ScanBundle(List<ScanFile> dataFiles, List<ScanFile> deleteFiles) {}
 }

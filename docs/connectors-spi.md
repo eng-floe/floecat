@@ -16,8 +16,8 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Metac
   - `listNamespaces()`.
   - `listTables(namespaceFq)`.
   - `describe(namespaceFq, tableName)` → `TableDescriptor` with location, schema JSON, partition
-    keys, properties.
-  - `enumerateSnapshotsWithStats(...)` → `SnapshotBundle`s containing per-snapshot table/column/file stats.
+    keys, and properties.
+  - `enumerateSnapshotsWithStats(...)` → `SnapshotBundle`s containing per-snapshot table/column/file stats plus optional Iceberg metadata blobs.
   - `plan(namespaceFq, tableName, snapshotId, asOfTime)` → `ScanBundle` describing data/delete files pinned to the snapshot. (The SPI keeps the upstream “plan” term so Iceberg/Delta authors can map it directly to their native APIs.)
 - _Terminology note_: elsewhere in the repo “planning” refers to the dedicated planner service. Within the SPI the `plan()` verb simply mirrors upstream engines (`TableScan.planFiles()` in Iceberg, Delta manifests) to keep connector authors oriented; the returned `ScanBundle` is purely execution metadata.
 - **`ConnectorFactory`** – Instantiates connectors given a `ConnectorConfig` (URI, options,
@@ -45,9 +45,12 @@ interface MetacatConnector extends Closeable {
 }
 ```
 `TableDescriptor`, `SnapshotBundle`, and `ScanBundle` are immutable records; connectors populate them
-with canonical metadata that the reconciler ingests. `SnapshotBundle.fileStats` is optional but
-should be populated when Parquet footers or upstream metadata can provide per-file row counts,
-sizes, and per-column stats.
+with canonical metadata that the reconciler ingests. Iceberg connectors attach the full table
+metadata snapshot (`IcebergMetadata`) to each `SnapshotBundle`, preserving schema/spec/sort-order/log
+history at ingest time. `SnapshotBundle.fileStats` is optional but should be populated when Parquet
+footers or upstream metadata can provide per-file row counts, sizes, and per-column stats. Snapshot
+bundles also carry manifest-list URIs, sequence numbers, summary maps, and the metadata blob so
+downstream APIs can mirror Iceberg’s REST contract.
 
 `ConnectorConfig` encodes:
 - Kind + source/destination selectors (`SourceSelector`, `DestinationTarget`).

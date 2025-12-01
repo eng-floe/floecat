@@ -308,7 +308,19 @@ public final class UnityDeltaConnector implements MetacatConnector {
     var normCols = normalizeColumnStats(cStats, kernelSchema);
     return List.of(
         new SnapshotBundle(
-            version, parent, createdMs, tStats, normCols, fileStats, schemaJson, partitionSpec));
+            version,
+            parent,
+            createdMs,
+            tStats,
+            normCols,
+            fileStats,
+            schemaJson,
+            partitionSpec,
+            0L,
+            null,
+            Map.of(),
+            0,
+            null));
   }
 
   @Override
