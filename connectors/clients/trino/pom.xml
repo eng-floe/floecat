@@ -19,7 +19,7 @@
   <properties>
     <maven.compiler.source>21</maven.compiler.source>
     <maven.compiler.target>21</maven.compiler.target>
-    <trino.version>476</trino.version>
+    <trino.version>478</trino.version>
     <trino.grpc.version>1.54.1</trino.grpc.version>
     <protobuf.version>4.32.1</protobuf.version>
     <proto.source.dir>${project.basedir}/../../../proto/src/main/proto</proto.source.dir>
