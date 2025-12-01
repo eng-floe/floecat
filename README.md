@@ -230,6 +230,7 @@ query begin [--ttl <seconds>] [--as-of-default <timestamp>]
 query renew <query_id> [--ttl <seconds>]
 query end <query_id> [--commit|--abort]
 query get <query_id>
+query fetch-scan <query_id> <table_id>
 
 connectors
 connector list [--kind <KIND>] [--page-size <N>]

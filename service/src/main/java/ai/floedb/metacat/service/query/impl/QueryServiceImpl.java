@@ -1,6 +1,5 @@
 package ai.floedb.metacat.service.query.impl;
 
-import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.GetSchemaRequest;
 import ai.floedb.metacat.catalog.rpc.GetSnapshotRequest;
@@ -8,22 +7,22 @@ import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.metacat.catalog.rpc.SchemaServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
-import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.common.rpc.SpecialSnapshot;
-import ai.floedb.metacat.execution.rpc.ScanFile;
+import ai.floedb.metacat.execution.rpc.ScanBundle;
 import ai.floedb.metacat.query.rpc.BeginQueryRequest;
 import ai.floedb.metacat.query.rpc.BeginQueryResponse;
 import ai.floedb.metacat.query.rpc.EndQueryRequest;
 import ai.floedb.metacat.query.rpc.EndQueryResponse;
 import ai.floedb.metacat.query.rpc.ExpansionMap;
+import ai.floedb.metacat.query.rpc.FetchScanBundleRequest;
+import ai.floedb.metacat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.metacat.query.rpc.GetQueryRequest;
 import ai.floedb.metacat.query.rpc.GetQueryResponse;
-import ai.floedb.metacat.query.rpc.Predicate;
 import ai.floedb.metacat.query.rpc.QueryDescriptor;
 import ai.floedb.metacat.query.rpc.QueryService;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
@@ -34,14 +33,12 @@ import ai.floedb.metacat.query.rpc.SnapshotPin;
 import ai.floedb.metacat.query.rpc.SnapshotSet;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.LogHelper;
+import ai.floedb.metacat.service.common.ScanPruningUtils;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.execution.impl.ScanBundleService;
 import ai.floedb.metacat.service.query.QueryContextStore;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
-import ai.floedb.metacat.types.LogicalCoercions;
-import ai.floedb.metacat.types.LogicalComparators;
-import ai.floedb.metacat.types.LogicalType;
-import ai.floedb.metacat.types.LogicalTypeProtoAdapter;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import io.quarkus.grpc.GrpcClient;
@@ -49,18 +46,30 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
-import java.util.function.BiFunction;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
+/**
+ * gRPC implementation of the {@link QueryService} API.
+ *
+ * <p>This service manages the lifecycle of an analytical query, including:
+ *
+ * <ul>
+ *   <li>creating and renewing a query context,
+ *   <li>snapshot pinning for all referenced tables,
+ *   <li>optional schema resolution at query start,
+ *   <li>exposing a dedicated RPC for retrieving and pruning scan bundles.
+ * </ul>
+ *
+ * <p>Execution is intentionally not performed here; the service focuses on metadata handling and
+ * request coordination.
+ */
 @GrpcService
 public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
+
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
 
@@ -71,15 +80,13 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
 
   @GrpcClient("metacat")
-  TableServiceGrpc.TableServiceBlockingStub tables;
+  SchemaServiceGrpc.SchemaServiceBlockingStub schemas;
 
   @GrpcClient("metacat")
   TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats;
 
-  @GrpcClient("metacat")
-  SchemaServiceGrpc.SchemaServiceBlockingStub schemas;
-
   @Inject QueryContextStore queryStore;
+  @Inject ScanBundleService scanBundles;
 
   @Inject
   @ConfigProperty(name = "metacat.query.default-ttl-ms", defaultValue = "60000")
@@ -87,6 +94,14 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
 
   private static final Logger LOG = Logger.getLogger(QueryServiceGrpc.class);
 
+  /**
+   * -------------------------------------------------------------------- BeginQuery
+   *
+   * <p>Creates a new query context and resolves all referenced inputs. Snapshot selection still
+   * occurs here, as well as optional schema retrieval. The actual file listing (scan bundle) has
+   * been moved to {@code fetchScanBundle}.
+   * -------------------------------------------------------------------
+   */
   @Override
   public Uni<BeginQueryResponse> beginQuery(BeginQueryRequest request) {
     var L = LogHelper.start(LOG, "BeginQuery");
@@ -115,7 +130,8 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           ? Optional.of(request.getAsOfDefault())
                           : Optional.empty();
 
-                  final List<Resolved> resolvedInputs = new ArrayList<>();
+                  // Resolve all referenced tables and views.
+                  var resolved = new ArrayList<Resolved>();
                   for (var in : request.getInputsList()) {
                     switch (in.getTargetCase()) {
                       case NAME -> {
@@ -140,20 +156,19 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                         }
                         long snapId =
                             computeSnapshotPin(in.getSnapshot(), asOfDefault, isTable, rid);
-                        resolvedInputs.add(new Resolved(rid, isTable, snapId));
+                        resolved.add(new Resolved(rid, isTable, snapId));
                       }
                       case TABLE_ID -> {
                         var rid = in.getTableId();
                         ensureKind(rid, ResourceKind.RK_TABLE, "table_id", correlationId);
                         long snapId = computeSnapshotPin(in.getSnapshot(), asOfDefault, true, rid);
-                        resolvedInputs.add(new Resolved(rid, true, snapId));
+                        resolved.add(new Resolved(rid, true, snapId));
                       }
                       case VIEW_ID -> {
                         var rid = in.getViewId();
                         ensureKind(rid, ResourceKind.RK_OVERLAY, "view_id", correlationId);
-                        resolvedInputs.add(new Resolved(rid, false, 0L));
+                        resolved.add(new Resolved(rid, false, 0L));
                       }
-
                       default ->
                           throw GrpcErrors.invalidArgument(
                               correlationId, "query.target.required", Map.of());
@@ -161,19 +176,17 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   }
 
                   var expansion = ExpansionMap.newBuilder().build();
-
                   var snapshots = SnapshotSet.newBuilder();
-                  for (var input : resolvedInputs) {
-                    if (input.isTable && input.snapshotId > 0) {
+
+                  for (var r : resolved) {
+                    if (r.isTable() && r.snapshotId() > 0) {
                       snapshots.addPins(
                           SnapshotPin.newBuilder()
-                              .setTableId(input.rid)
-                              .setSnapshotId(input.snapshotId));
-                    } else if (input.isTable && input.snapshotId == 0 && asOfDefault.isPresent()) {
+                              .setTableId(r.rid())
+                              .setSnapshotId(r.snapshotId()));
+                    } else if (r.isTable() && r.snapshotId() == 0 && asOfDefault.isPresent()) {
                       snapshots.addPins(
-                          SnapshotPin.newBuilder()
-                              .setTableId(input.rid)
-                              .setAsOf(asOfDefault.get()));
+                          SnapshotPin.newBuilder().setTableId(r.rid()).setAsOf(asOfDefault.get()));
                     }
                   }
 
@@ -186,9 +199,9 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           queryId, principalContext, expansionBytes, snapshotBytes, ttlMs, 1L);
                   queryStore.put(queryContext);
 
-                  var scanBundle = queryContext.fetchScanBundle(tables, stats);
-
                   SchemaDescriptor schema = SchemaDescriptor.getDefaultInstance();
+
+                  // Optional schema retrieval for the first pinned table.
                   if (request.getIncludeSchema() && snapshots.getPinsCount() > 0) {
                     var pin = snapshots.getPins(0);
                     var schemaReq =
@@ -215,22 +228,13 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                             .setExpiresAt(ts(queryContext.getExpiresAtMs()))
                             .setSnapshots(SnapshotSet.parseFrom(snapshotBytes))
                             .setExpansion(ExpansionMap.parseFrom(expansionBytes))
-                            .addAllDataFiles(
-                                scanBundle != null ? scanBundle.dataFiles() : List.of())
-                            .addAllDeleteFiles(
-                                scanBundle != null ? scanBundle.deleteFiles() : List.of())
                             .build();
 
-                    QueryDescriptor pruned =
-                        prune(
-                            descriptor,
-                            request.getRequiredColumnsList(),
-                            request.getPredicatesList());
-
                     return BeginQueryResponse.newBuilder()
-                        .setQuery(pruned)
+                        .setQuery(descriptor)
                         .setSchema(schema)
                         .build();
+
                   } catch (InvalidProtocolBufferException e) {
                     throw GrpcErrors.internal(
                         correlationId, "query.expansion.parse_failed", Map.of("query_id", queryId));
@@ -243,6 +247,12 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
         .invoke(L::ok);
   }
 
+  /**
+   * -------------------------------------------------------------------- RenewQuery
+   *
+   * <p>Extends the TTL of an existing active query. Expires the query if renewal occurs after its
+   * TTL has elapsed. -------------------------------------------------------------------
+   */
   @Override
   public Uni<RenewQueryResponse> renewQuery(RenewQueryRequest request) {
     var L = LogHelper.start(LOG, "RenewQuery");
@@ -256,18 +266,21 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   authz.require(principalContext, "catalog.read");
 
                   String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+
                   final long ttlMs =
                       (request.getTtlSeconds() > 0
                               ? request.getTtlSeconds()
                               : (int) (defaultTtlMs / 1000))
                           * 1000L;
-                  final long requestedExp = clock.millis() + ttlMs;
+
+                  long requestedExp = clock.millis() + ttlMs;
 
                   var updated = queryStore.extendLease(queryId, requestedExp);
                   if (updated.isEmpty()) {
                     throw GrpcErrors.notFound(
                         correlationId, "query.not_found", Map.of("query_id", queryId));
                   }
+
                   return RenewQueryResponse.newBuilder()
                       .setQueryId(queryId)
                       .setExpiresAt(ts(updated.get().getExpiresAtMs()))
@@ -280,6 +293,13 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
         .invoke(L::ok);
   }
 
+  /**
+   * -------------------------------------------------------------------- EndQuery
+   *
+   * <p>Marks the query as committed or aborted and applies a grace period before cleanup. No
+   * further renewal is possible after this point.
+   * -------------------------------------------------------------------
+   */
   @Override
   public Uni<EndQueryResponse> endQuery(EndQueryRequest request) {
     var L = LogHelper.start(LOG, "EndQuery");
@@ -293,11 +313,13 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   authz.require(principalContext, "catalog.read");
 
                   String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+
                   var ended = queryStore.end(queryId, request.getCommit());
                   if (ended.isEmpty()) {
                     throw GrpcErrors.notFound(
                         correlationId, "query.not_found", Map.of("query_id", queryId));
                   }
+
                   return EndQueryResponse.newBuilder().setQueryId(queryId).build();
                 }),
             correlationId())
@@ -307,6 +329,12 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
         .invoke(L::ok);
   }
 
+  /**
+   * -------------------------------------------------------------------- GetQuery
+   *
+   * <p>Returns metadata for an existing query context, including TTL, status, snapshot pins, and
+   * expansion map. -------------------------------------------------------------------
+   */
   @Override
   public Uni<GetQueryResponse> getQuery(GetQueryRequest request) {
     var L = LogHelper.start(LOG, "GetQuery");
@@ -316,9 +344,11 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                 () -> {
                   var principalContext = principal.get();
                   var correlationId = principalContext.getCorrelationId();
+
                   authz.require(principalContext, "catalog.read");
 
                   String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+
                   var queryContextOpt = queryStore.get(queryId);
                   if (queryContextOpt.isEmpty()) {
                     throw GrpcErrors.notFound(
@@ -326,7 +356,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   }
                   var queryContext = queryContextOpt.get();
 
-                  var queryDescriptor =
+                  var builder =
                       QueryDescriptor.newBuilder()
                           .setQueryId(queryContext.getQueryId())
                           .setTenantId(principalContext.getTenantId())
@@ -336,8 +366,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
 
                   if (queryContext.getSnapshotSet() != null) {
                     try {
-                      queryDescriptor.setSnapshots(
-                          SnapshotSet.parseFrom(queryContext.getSnapshotSet()));
+                      builder.setSnapshots(SnapshotSet.parseFrom(queryContext.getSnapshotSet()));
                     } catch (InvalidProtocolBufferException e) {
                       throw GrpcErrors.internal(
                           correlationId,
@@ -345,10 +374,10 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           Map.of("query_id", queryId));
                     }
                   }
+
                   if (queryContext.getExpansionMap() != null) {
                     try {
-                      queryDescriptor.setExpansion(
-                          ExpansionMap.parseFrom(queryContext.getExpansionMap()));
+                      builder.setExpansion(ExpansionMap.parseFrom(queryContext.getExpansionMap()));
                     } catch (InvalidProtocolBufferException e) {
                       throw GrpcErrors.internal(
                           correlationId,
@@ -357,7 +386,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                     }
                   }
 
-                  return GetQueryResponse.newBuilder().setQuery(queryDescriptor.build()).build();
+                  return GetQueryResponse.newBuilder().setQuery(builder.build()).build();
                 }),
             correlationId())
         .onFailure()
@@ -366,256 +395,110 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
         .invoke(L::ok);
   }
 
+  /**
+   * -------------------------------------------------------------------- FetchScanBundle
+   *
+   * <p>Retrieves the list of data/delete files for a pinned table and applies pruning based on
+   * projection and predicate information. This replaces file listing previously done during
+   * BeginQuery. -------------------------------------------------------------------
+   */
+  @Override
+  public Uni<FetchScanBundleResponse> fetchScanBundle(FetchScanBundleRequest request) {
+    var L = LogHelper.start(LOG, "FetchScanBundle");
+
+    return mapFailures(
+            run(
+                () -> {
+                  var principalContext = principal.get();
+                  var correlationId = principalContext.getCorrelationId();
+
+                  authz.require(principalContext, "catalog.read");
+
+                  String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+
+                  if (!request.hasTableId()) {
+                    throw GrpcErrors.invalidArgument(
+                        correlationId, "query.table_id.required", Map.of("query_id", queryId));
+                  }
+
+                  var ctxOpt = queryStore.get(queryId);
+                  if (ctxOpt.isEmpty()) {
+                    throw GrpcErrors.notFound(
+                        correlationId, "query.not_found", Map.of("query_id", queryId));
+                  }
+                  var ctx = ctxOpt.get();
+
+                  var pin = ctx.requireSnapshotPin(request.getTableId(), correlationId);
+
+                  try {
+                    var raw = scanBundles.fetch(correlationId, request.getTableId(), pin, stats);
+
+                    ScanBundle pruned =
+                        ScanPruningUtils.pruneBundle(
+                            raw, request.getRequiredColumnsList(), request.getPredicatesList());
+
+                    ctx.markPlanningCompleted();
+
+                    return FetchScanBundleResponse.newBuilder().setBundle(pruned).build();
+
+                  } catch (RuntimeException e) {
+                    ctx.markPlanningFailed();
+                    throw e;
+                  }
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  /** Converts epoch milliseconds into a protobuf {@link Timestamp}. */
   private static Timestamp ts(long millis) {
     long s = Math.floorDiv(millis, 1000);
     int n = (int) ((millis % 1000) * 1_000_000);
     return Timestamp.newBuilder().setSeconds(s).setNanos(n).build();
   }
 
-  private QueryDescriptor prune(
-      QueryDescriptor plan, List<String> requiredColumns, List<Predicate> predicates) {
-    if (requiredColumns == null || requiredColumns.isEmpty()) {
-      return filterByPredicates(plan, predicates);
-    }
-    Set<String> cols = new HashSet<>(requiredColumns);
-    QueryDescriptor.Builder pb = plan.toBuilder().clearDataFiles().clearDeleteFiles();
-    for (ScanFile pf : plan.getDataFilesList()) {
-      pb.addDataFiles(filterColumns(pf, cols));
-    }
-    for (ScanFile pf : plan.getDeleteFilesList()) {
-      pb.addDeleteFiles(filterColumns(pf, cols));
-    }
-    return filterByPredicates(pb.build(), predicates);
-  }
-
-  private ScanFile filterColumns(ScanFile pf, Set<String> cols) {
-    ScanFile.Builder b = pf.toBuilder().clearColumns();
-    for (var c : pf.getColumnsList()) {
-      if (cols.contains(c.getColumnName())) {
-        b.addColumns(c);
-      }
-    }
-    return b.build();
-  }
-
-  private QueryDescriptor filterByPredicates(QueryDescriptor plan, List<Predicate> predicates) {
-    if (predicates == null || predicates.isEmpty()) {
-      return plan;
-    }
-
-    QueryDescriptor.Builder pb = plan.toBuilder().clearDataFiles().clearDeleteFiles();
-
-    for (ScanFile pf : plan.getDataFilesList()) {
-      if (matches(pf, predicates)) {
-        pb.addDataFiles(pf);
-      }
-    }
-
-    for (ScanFile pf : plan.getDeleteFilesList()) {
-      if (matches(pf, predicates)) {
-        pb.addDeleteFiles(pf);
-      }
-    }
-
-    return pb.build();
-  }
-
-  private boolean matches(ScanFile pf, List<Predicate> preds) {
-    if (preds == null || preds.isEmpty()) {
-      return true;
-    }
-
-    for (Predicate p : preds) {
-      if (!fileMayMatchPredicate(pf, p)) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  private boolean fileMayMatchPredicate(ScanFile pf, Predicate p) {
-    String col = p.getColumn();
-    if (col == null || col.isBlank()) {
-      return true;
-    }
-
-    ColumnStats cs = null;
-    for (ColumnStats c : pf.getColumnsList()) {
-      if (col.equalsIgnoreCase(c.getColumnName())) {
-        cs = c;
-        break;
-      }
-    }
-
-    if (cs == null) {
-      return true;
-    }
-
-    LogicalType type = LogicalTypeProtoAdapter.columnLogicalType(cs);
-    Object min = LogicalTypeProtoAdapter.columnMin(cs);
-    Object max = LogicalTypeProtoAdapter.columnMax(cs);
-
-    if (min == null || max == null) {
-      return true;
-    }
-
-    var op = p.getOp();
-
-    BiFunction<Object, Object, Integer> cmp = (a, b) -> LogicalComparators.compare(type, a, b);
-
-    java.util.List<String> values = p.getValuesList();
-
-    switch (op) {
-      case OP_EQ -> {
-        if (values.isEmpty()) {
-          return true;
-        }
-        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
-        if (cmp.apply(v, min) < 0 || cmp.apply(v, max) > 0) {
-          return false;
-        }
-        return true;
-      }
-
-      case OP_IN -> {
-        if (values.isEmpty()) {
-          return true;
-        }
-        for (String s : values) {
-          Object v = LogicalCoercions.coerceStatValue(type, s);
-          if (cmp.apply(v, min) >= 0 && cmp.apply(v, max) <= 0) {
-            return true;
-          }
-        }
-        return false;
-      }
-
-      case OP_BETWEEN -> {
-        if (values.size() < 2) {
-          return true;
-        }
-        Object a = LogicalCoercions.coerceStatValue(type, values.get(0));
-        Object b = LogicalCoercions.coerceStatValue(type, values.get(1));
-
-        if (cmp.apply(a, b) > 0) {
-          Object tmp = a;
-          a = b;
-          b = tmp;
-        }
-
-        if (cmp.apply(b, min) < 0 || cmp.apply(a, max) > 0) {
-          return false;
-        }
-        return true;
-      }
-
-      case OP_LT -> {
-        if (values.isEmpty()) {
-          return true;
-        }
-        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
-        if (cmp.apply(min, v) >= 0) {
-          return false;
-        }
-        return true;
-      }
-
-      case OP_LTE -> {
-        if (values.isEmpty()) {
-          return true;
-        }
-        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
-        if (cmp.apply(min, v) > 0) {
-          return false;
-        }
-        return true;
-      }
-
-      case OP_GT -> {
-        if (values.isEmpty()) {
-          return true;
-        }
-        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
-        if (cmp.apply(max, v) <= 0) {
-          return false;
-        }
-        return true;
-      }
-
-      case OP_GTE -> {
-        if (values.isEmpty()) {
-          return true;
-        }
-        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
-        if (cmp.apply(max, v) < 0) {
-          return false;
-        }
-        return true;
-      }
-
-      case OP_NEQ -> {
-        if (values.isEmpty()) {
-          return true;
-        }
-        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
-        if (cmp.apply(min, max) == 0 && cmp.apply(min, v) == 0) {
-          return false;
-        }
-        return true;
-      }
-
-      case OP_IS_NULL -> {
-        return true;
-      }
-
-      case OP_IS_NOT_NULL -> {
-        return true;
-      }
-
-      default -> {
-        return true;
-      }
-    }
-  }
-
-  private void checkNameRef(NameRef nameRef) {
-    if (nameRef.getCatalog() == null || nameRef.getCatalog().isBlank()) {
+  /** Validates that a {@link NameRef} has all required components. */
+  private void checkNameRef(NameRef nr) {
+    if (nr.getCatalog() == null || nr.getCatalog().isBlank()) {
       throw GrpcErrors.invalidArgument(correlationId(), "catalog.missing", Map.of());
     }
-    for (String pathSegment : nameRef.getPathList()) {
-      if (pathSegment == null || pathSegment.isBlank()) {
+    for (String p : nr.getPathList()) {
+      if (p == null || p.isBlank()) {
         throw GrpcErrors.invalidArgument(correlationId(), "path.segment.blank", Map.of());
       }
     }
   }
 
+  /**
+   * Resolves the correct snapshot ID for a table reference, applying per-input snapshot overrides
+   * or the query-level "as of" default.
+   */
   private long computeSnapshotPin(
-      SnapshotRef snapshotRef,
-      Optional<Timestamp> asOfDefault,
-      boolean isTable,
-      ResourceId tableId) {
+      SnapshotRef ref, Optional<Timestamp> asOfDefault, boolean isTable, ResourceId tableId) {
 
     if (!isTable) {
       return 0L;
     }
 
-    if (snapshotRef == null || snapshotRef.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
+    if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
       var cur =
           snapshot.getSnapshot(
               GetSnapshotRequest.newBuilder()
                   .setTableId(tableId)
-                  .setSnapshot(
-                      SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
+                  .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
                   .build());
       return cur.hasSnapshot() ? cur.getSnapshot().getSnapshotId() : 0L;
     }
 
     return snapshot
-        .getSnapshot(
-            GetSnapshotRequest.newBuilder().setTableId(tableId).setSnapshot(snapshotRef).build())
+        .getSnapshot(GetSnapshotRequest.newBuilder().setTableId(tableId).setSnapshot(ref).build())
         .getSnapshot()
         .getSnapshotId();
   }
 
+  /** Internal structure used during input resolution. */
   private record Resolved(ResourceId rid, boolean isTable, long snapshotId) {}
 }

@@ -99,8 +99,6 @@ message QueryDescriptor {
   SnapshotSet snapshots = 6;
   ExpansionMap expansion = 7;
   repeated TableObligations obligations = 8;
-  repeated ai.floedb.metacat.execution.ScanFile data_files = 9;
-  repeated ai.floedb.metacat.execution.ScanFile delete_files = 10;
 }
 
 message BeginQueryRequest {
@@ -108,8 +106,6 @@ message BeginQueryRequest {
   google.protobuf.Timestamp as_of_default = 2;
   int32 ttl_seconds = 3;
 
-  repeated string required_columns = 10;
-  repeated Predicate predicates = 11;
   bool include_schema = 12;
 }
 
@@ -145,9 +141,21 @@ message GetQueryResponse {
   QueryDescriptor query = 1;
 }
 
+message FetchScanBundleRequest {
+  string query_id = 1;
+  ai.floedb.metacat.common.ResourceId table_id = 2;
+  repeated string required_columns = 3;
+  repeated Predicate predicates = 4;
+}
+
+message FetchScanBundleResponse {
+  ai.floedb.metacat.execution.ScanBundle bundle = 1;
+}
+
 service QueryService {
   rpc BeginQuery(BeginQueryRequest) returns (BeginQueryResponse);
   rpc RenewQuery(RenewQueryRequest) returns (RenewQueryResponse);
   rpc EndQuery(EndQueryRequest) returns (EndQueryResponse);
   rpc GetQuery(GetQueryRequest) returns (GetQueryResponse);
+  rpc FetchScanBundle(FetchScanBundleRequest) returns (FetchScanBundleResponse);
 }

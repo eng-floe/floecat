@@ -25,3 +25,8 @@ message ScanFile {
   int32 partition_spec_id = 8;
   repeated int32 equality_field_ids = 9;
 }
+
+message ScanBundle {
+  repeated ScanFile data_files = 1;
+  repeated ScanFile delete_files = 2;
+}
