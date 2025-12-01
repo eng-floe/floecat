@@ -57,20 +57,24 @@ class MetacatSplitManagerTest {
     private static ManagedChannel channel;
 
     private static LifecycleStub lifecycleStub;
+    private static SchemaStub schemaStub;
     private static ScanStub scanStub;
 
+    private static QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schema;
     private static QueryScanServiceGrpc.QueryScanServiceBlockingStub scans;
     private static QueryServiceGrpc.QueryServiceBlockingStub lifecycle;
 
     @BeforeAll
     static void startServer() throws Exception {
         lifecycleStub = new LifecycleStub();
+        schemaStub = new SchemaStub();
         scanStub = new ScanStub();
 
         String serverName = InProcessServerBuilder.generateName();
         server =
             InProcessServerBuilder.forName(serverName)
                 .addService(lifecycleStub)
+                .addService(schemaStub)
                 .addService(scanStub)
                 .build()
                 .start();
@@ -78,6 +82,7 @@ class MetacatSplitManagerTest {
         channel = InProcessChannelBuilder.forName(serverName).build();
         lifecycle = QueryServiceGrpc.newBlockingStub(channel);
         scans = QueryScanServiceGrpc.newBlockingStub(channel);
+        schema = QuerySchemaServiceGrpc.newBlockingStub(channel);
     }
 
     @AfterAll
@@ -91,12 +96,9 @@ class MetacatSplitManagerTest {
         scanStub.dataFileFormat = "PARQUET";
         scanStub.partitionDataJson = null;
         lifecycleStub.lastBegin = null;
+        schemaStub.lastDescribe = null;
         scanStub.lastFetch = null;
     }
-
-    /* ------------------------------------------------------------------
-     * BeginQuery tests (snapshot/as-of only)
-     * ------------------------------------------------------------------ */
 
     @Test
     void includesSnapshotIdInBeginQuery() {
@@ -104,6 +106,7 @@ class MetacatSplitManagerTest {
           new MetacatSplitManager(
               lifecycle,
               scans,
+              schema,
               new MetacatConfig());
 
         MetacatTableHandle handle =
@@ -134,7 +137,7 @@ class MetacatSplitManagerTest {
             throw t;
         }
 
-        QueryInput input = lifecycleStub.lastBegin.getInputs(0);
+        QueryInput input = schemaStub.lastDescribe.getInputs(0);
         assertTrue(input.hasSnapshot());
         assertEquals(123L, input.getSnapshot().getSnapshotId());
     }
@@ -145,6 +148,7 @@ class MetacatSplitManagerTest {
             new MetacatSplitManager(
                 lifecycle,
                 scans,
+                schema,
                 new MetacatConfig());
 
         long asOf = 1_700_000_000_000L;
@@ -177,18 +181,12 @@ class MetacatSplitManagerTest {
             throw t;
         }
 
-        QueryInput input = lifecycleStub.lastBegin.getInputs(0);
-        assertTrue(input.hasSnapshot());
-
+        QueryInput input = schemaStub.lastDescribe.getInputs(0);
         Timestamp ts = input.getSnapshot().getAsOf();
         long millis = ts.getSeconds() * 1000L + ts.getNanos() / 1_000_000;
 
         assertEquals(asOf, millis);
     }
-
-    /* ------------------------------------------------------------------
-     * FetchScanBundle tests (pruning + projected columns)
-     * ------------------------------------------------------------------ */
 
     @Test
     void buildsPredicatesAndRequiredColumnsFromDomains() throws Exception {
@@ -196,6 +194,7 @@ class MetacatSplitManagerTest {
             new MetacatSplitManager(
                 lifecycle,
                 scans,
+                schema,
                 new MetacatConfig());
 
         IcebergColumnHandle idCol =
@@ -257,7 +256,6 @@ class MetacatSplitManagerTest {
             throw t;
         }
 
-        // Required columns must include enforced, domain-derived, and projected columns
         assertTrue(
             scanStub.lastFetch.getRequiredColumnsList()
                 .containsAll(List.of("id", "bucket", "projected")));
@@ -288,6 +286,7 @@ class MetacatSplitManagerTest {
             new MetacatSplitManager(
                 lifecycle,
                 scans,
+                schema,
                 new MetacatConfig());
 
         MetacatTableHandle handle =
@@ -331,17 +330,9 @@ class MetacatSplitManagerTest {
         assertEquals(IcebergFileFormat.ORC, iceberg.getFileFormat());
     }
 
-    /* ------------------------------------------------------------------
-     * Supporting classes
-     * ------------------------------------------------------------------ */
-
     private static class SimpleSession implements ConnectorSession {
         private final Map<String, Object> props;
-
-        SimpleSession(Map<String, Object> props) {
-            this.props = props;
-        }
-
+        SimpleSession(Map<String, Object> props) { this.props = props; }
         @Override public String getQueryId() { return "query"; }
         @Override public Optional<String> getSource() { return Optional.empty(); }
         @Override public ConnectorIdentity getIdentity() { return ConnectorIdentity.ofUser("user"); }
@@ -349,63 +340,54 @@ class MetacatSplitManagerTest {
         @Override public Locale getLocale() { return Locale.US; }
         @Override public Optional<String> getTraceToken() { return Optional.empty(); }
         @Override public Instant getStart() { return Instant.EPOCH; }
-
         @SuppressWarnings("unchecked")
-        @Override public <T> T getProperty(String name, Class<T> type) {
-            return (T) props.get(name);
-        }
+        @Override public <T> T getProperty(String name, Class<T> type) { return (T) props.get(name); }
     }
-
-    /* ---------------- Lifecycle Stub ---------------- */
 
     private static class LifecycleStub extends QueryServiceGrpc.QueryServiceImplBase {
         volatile BeginQueryRequest lastBegin;
-
         @Override
         public void beginQuery(
             BeginQueryRequest request,
             StreamObserver<BeginQueryResponse> responseObserver) {
-
             this.lastBegin = request;
-
-            QueryDescriptor descriptor = QueryDescriptor.newBuilder().build();
-
-            responseObserver.onNext(
-                BeginQueryResponse.newBuilder()
-                    .setQuery(descriptor)
-                    .build());
+            QueryDescriptor d = QueryDescriptor.newBuilder().setQueryId("q").build();
+            responseObserver.onNext(BeginQueryResponse.newBuilder().setQuery(d).build());
             responseObserver.onCompleted();
         }
     }
 
-    /* ---------------- Scan Stub ---------------- */
+    private static class SchemaStub extends QuerySchemaServiceGrpc.QuerySchemaServiceImplBase {
+        volatile DescribeInputsRequest lastDescribe;
+        @Override
+        public void describeInputs(
+            DescribeInputsRequest request,
+            StreamObserver<DescribeInputsResponse> responseObserver) {
+            this.lastDescribe = request;
+            responseObserver.onNext(DescribeInputsResponse.newBuilder().build());
+            responseObserver.onCompleted();
+        }
+    }
 
     private static class ScanStub extends QueryScanServiceGrpc.QueryScanServiceImplBase {
         volatile FetchScanBundleRequest lastFetch;
-
         volatile String dataFileFormat = "PARQUET";
         volatile String partitionDataJson;
-
         @Override
         public void fetchScanBundle(
             FetchScanBundleRequest request,
             StreamObserver<FetchScanBundleResponse> responseObserver) {
-
             this.lastFetch = request;
-
             ScanFile.Builder f =
                 ScanFile.newBuilder()
                     .setFilePath("/tmp/file")
                     .setFileFormat(dataFileFormat)
                     .setFileSizeInBytes(10)
                     .setRecordCount(1);
-
             if (partitionDataJson != null)
                 f.setPartitionDataJson(partitionDataJson);
-
             ScanBundle bundle =
                 ScanBundle.newBuilder().addDataFiles(f.build()).build();
-
             responseObserver.onNext(
                 FetchScanBundleResponse.newBuilder()
                     .setBundle(bundle)
@@ -420,8 +402,7 @@ class MetacatSplitManagerTest {
             String msg = c.getMessage();
             if (msg != null &&
                 msg.contains("io.smallrye.common.os.Process")) {
-                Assumptions.assumeTrue(false,
-                    "ProcessHandle info not permitted");
+                Assumptions.assumeTrue(false);
             }
             c = c.getCause();
         }

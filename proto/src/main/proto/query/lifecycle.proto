@@ -8,7 +8,6 @@ option java_outer_classname = "QueryLifecycleProto";
 
 import "common/common.proto";
 import "google/protobuf/timestamp.proto";
-import "query/schema.proto";  // TEMPORARY: removed once DescribeInputs() is adopted
 
 /**
  * QUERY LIFECYCLE SERVICE
@@ -121,36 +120,21 @@ message QueryDescriptor {
   repeated TableObligations obligations = 8;
 }
 
-/**
- * BeginQuery performs:
- *   - Input validation
- *   - Snapshot pinning
- *   - Query context creation
- *
- * TODO: include_schema is deprecated once DescribeInputs() is added.
- */
+/** BeginQuery: creates a new query context. */
 message BeginQueryRequest {
-  repeated QueryInput inputs = 1;
+  // TTL for the query context (in seconds).
+  int32 ttl_seconds = 1;
 
+  // Optional timestamp used by downstream RPCs when no snapshot override is provided.
   google.protobuf.Timestamp as_of_default = 2;
-
-  // TTL for the query context.
-  int32 ttl_seconds = 3;
-
-  // TEMPORARY: Remove after DescribeInputs() is implemented.
-  bool include_schema = 12;
 }
 
 /**
  * Response contains:
- *   - QueryDescriptor (always)
- *   - Optionally: Schema for the FIRST input (deprecated)
+ *   QueryDescriptor (always)
  */
 message BeginQueryResponse {
   QueryDescriptor query = 1;
-
-  // Deprecated. Use DescribeInputs() instead.
-  SchemaDescriptor schema = 2;
 }
 
 message RenewQueryRequest {

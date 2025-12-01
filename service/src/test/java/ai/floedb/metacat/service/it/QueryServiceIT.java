@@ -6,11 +6,7 @@ import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
-import ai.floedb.metacat.query.rpc.BeginQueryRequest;
-import ai.floedb.metacat.query.rpc.EndQueryRequest;
-import ai.floedb.metacat.query.rpc.QueryInput;
-import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
-import ai.floedb.metacat.query.rpc.RenewQueryRequest;
+import ai.floedb.metacat.query.rpc.*;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
@@ -24,14 +20,17 @@ import org.junit.jupiter.api.Test;
 /**
  * Integration tests for the QueryService lifecycle (begin/renew/end/get).
  *
- * <p>These tests intentionally exclude FetchScanBundle, which is now validated in
- * QueryScanServiceIT.
+ * <p>After API changes: - BeginQuery no longer accepts inputs - DescribeInputs is now required
+ * before scanning or planning
  */
 @QuarkusTest
 class QueryServiceIT {
 
   @GrpcClient("metacat")
   QueryServiceGrpc.QueryServiceBlockingStub queries;
+
+  @GrpcClient("metacat")
+  QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schema;
 
   @GrpcClient("metacat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
@@ -62,12 +61,13 @@ class QueryServiceIT {
     seeder.seedData();
   }
 
-  /** Verifies BeginQuery, RenewQuery, and EndQuery lifecycle behavior. */
+  /** Verifies BeginQuery, DescribeInputs, RenewQuery, and EndQuery lifecycle behavior. */
   @Test
   void queryBeginRenewEnd() {
     var catName = catalogPrefix + "cat1";
     var cat = TestSupport.createCatalog(catalog, catName, "");
     var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "sch", List.of("db"), "");
+
     var tbl =
         TestSupport.createTable(
             table,
@@ -77,6 +77,7 @@ class QueryServiceIT {
             "s3://bucket/orders",
             "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
             "none");
+
     var snap =
         TestSupport.createSnapshot(
             snapshot, tbl.getResourceId(), 0L, System.currentTimeMillis() - 10_000L);
@@ -89,38 +90,47 @@ class QueryServiceIT {
             .setName("orders")
             .build();
 
-    var req =
-        BeginQueryRequest.newBuilder()
-            .addInputs(
-                QueryInput.newBuilder()
-                    .setName(name)
-                    .setTableId(tbl.getResourceId())
-                    .setSnapshot(
-                        SnapshotRef.newBuilder().setSnapshotId(snap.getSnapshotId()).build())
-                    .build())
-            .setTtlSeconds(2)
-            .build();
+    //
+    // === NEW API: BeginQuery takes no inputs ===
+    //
+    var begin = queries.beginQuery(BeginQueryRequest.newBuilder().setTtlSeconds(2).build());
 
-    var begin = queries.beginQuery(req);
     assertTrue(begin.hasQuery());
-    var beginQuery = begin.getQuery();
-    assertFalse(beginQuery.getQueryId().isBlank());
-    assertTrue(beginQuery.getSnapshots().getPinsCount() >= 0);
+    var query = begin.getQuery();
+    assertFalse(query.getQueryId().isBlank(), "BeginQuery must return a queryId");
 
+    //
+    // === NEW API: DescribeInputs pins tables + snapshots ===
+    //
+    var desc =
+        schema.describeInputs(
+            DescribeInputsRequest.newBuilder()
+                .setQueryId(query.getQueryId())
+                .addInputs(
+                    QueryInput.newBuilder()
+                        .setName(name)
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snap.getSnapshotId())))
+                .build());
+
+    // Should return exactly one schema
+    assertEquals(1, desc.getSchemasCount(), "DescribeInputs must return matching schemas");
+
+    //
+    // === RenewQuery ===
+    //
     var renew =
         queries.renewQuery(
-            RenewQueryRequest.newBuilder()
-                .setQueryId(beginQuery.getQueryId())
-                .setTtlSeconds(2)
-                .build());
-    assertEquals(beginQuery.getQueryId(), renew.getQueryId());
+            RenewQueryRequest.newBuilder().setQueryId(query.getQueryId()).setTtlSeconds(2).build());
 
+    assertEquals(query.getQueryId(), renew.getQueryId());
+
+    //
+    // === EndQuery ===
+    //
     var end =
         queries.endQuery(
-            EndQueryRequest.newBuilder()
-                .setQueryId(beginQuery.getQueryId())
-                .setCommit(true)
-                .build());
-    assertEquals(beginQuery.getQueryId(), end.getQueryId());
+            EndQueryRequest.newBuilder().setQueryId(query.getQueryId()).setCommit(true).build());
+
+    assertEquals(query.getQueryId(), end.getQueryId());
   }
 }

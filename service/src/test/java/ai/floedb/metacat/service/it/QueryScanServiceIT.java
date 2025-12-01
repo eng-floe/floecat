@@ -25,14 +25,17 @@ import org.junit.jupiter.api.Test;
 /**
  * Integration tests for QueryScanService (FetchScanBundle).
  *
- * <p>Validates: - Scan bundles are returned for pinned tables. - FetchScanBundle rejects tables not
- * included in the query lease.
+ * <p>After API changes: - BeginQuery no longer takes inputs. - DescribeInputs establishes pinned
+ * tables + snapshots.
  */
 @QuarkusTest
 class QueryScanServiceIT {
 
   @GrpcClient("metacat")
   QueryServiceGrpc.QueryServiceBlockingStub lifecycle;
+
+  @GrpcClient("metacat")
+  QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schema;
 
   @GrpcClient("metacat")
   QueryScanServiceGrpc.QueryScanServiceBlockingStub scan;
@@ -66,16 +69,15 @@ class QueryScanServiceIT {
     seeder.seedData();
   }
 
-  /**
-   * Ensures FetchScanBundle returns an empty bundle for a pinned table with a dummy connector
-   * backing it.
-   */
+  /** Ensures FetchScanBundle returns empty bundle for a pinned table. */
   @Test
   void fetchScanBundleReturnsBundleForPinnedTable() throws Exception {
+
     var catName = catalogPrefix + "scan_cat";
     var cat = TestSupport.createCatalog(catalog, catName, "");
     var ns =
         TestSupport.createNamespace(namespace, cat.getResourceId(), "scan_ns", List.of("scan"), "");
+
     var tbl =
         TestSupport.createTable(
             table,
@@ -85,9 +87,10 @@ class QueryScanServiceIT {
             "s3://bucket/scan_orders",
             "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
             "scan table");
+
     var snap =
         TestSupport.createSnapshot(
-            snapshot, tbl.getResourceId(), 501L, System.currentTimeMillis() - 1_000L);
+            snapshot, tbl.getResourceId(), 501L, System.currentTimeMillis() - 1000L);
 
     var connector = createDummyConnector(cat.getResourceId(), ns.getResourceId(), "bundle");
     attachConnectorToTable(tbl.getResourceId(), connector);
@@ -95,21 +98,27 @@ class QueryScanServiceIT {
     var name =
         NameRef.newBuilder().setCatalog(catName).addPath("scan").setName("scan_orders").build();
 
-    var begin =
-        lifecycle.beginQuery(
-            BeginQueryRequest.newBuilder()
-                .addInputs(
-                    QueryInput.newBuilder()
-                        .setName(name)
-                        .setTableId(tbl.getResourceId())
-                        .setSnapshot(
-                            SnapshotRef.newBuilder().setSnapshotId(snap.getSnapshotId()).build()))
-                .build());
+    var begin = lifecycle.beginQuery(BeginQueryRequest.newBuilder().build());
+
+    var queryId = begin.getQuery().getQueryId();
+
+    // Pin tables + snapshots
+    schema.describeInputs(
+        DescribeInputsRequest.newBuilder()
+            .setQueryId(queryId)
+            .addInputs(
+                QueryInput.newBuilder()
+                    .setName(name)
+                    .setTableId(tbl.getResourceId())
+                    .setSnapshot(
+                        SnapshotRef.newBuilder().setSnapshotId(snap.getSnapshotId()).build())
+                    .build())
+            .build());
 
     var resp =
         scan.fetchScanBundle(
             FetchScanBundleRequest.newBuilder()
-                .setQueryId(begin.getQuery().getQueryId())
+                .setQueryId(queryId)
                 .setTableId(tbl.getResourceId())
                 .build());
 
@@ -118,16 +127,15 @@ class QueryScanServiceIT {
     assertEquals(0, resp.getBundle().getDeleteFilesCount());
   }
 
-  /**
-   * Ensures FetchScanBundle rejects access to tables that were not included in BeginQuery snapshot
-   * pinning.
-   */
+  /** Ensures FetchScanBundle rejects unpinned tables. */
   @Test
   void fetchScanBundleRejectsUnpinnedTables() throws Exception {
+
     var catName = catalogPrefix + "scan_nf";
     var cat = TestSupport.createCatalog(catalog, catName, "");
     var ns =
         TestSupport.createNamespace(namespace, cat.getResourceId(), "scan_nf", List.of("nf"), "");
+
     var tblA =
         TestSupport.createTable(
             table,
@@ -137,6 +145,7 @@ class QueryScanServiceIT {
             "s3://bucket/nf_orders",
             "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
             "nf table");
+
     var tblB =
         TestSupport.createTable(
             table,
@@ -149,28 +158,36 @@ class QueryScanServiceIT {
 
     var snap =
         TestSupport.createSnapshot(
-            snapshot, tblA.getResourceId(), 777L, System.currentTimeMillis() - 5_000L);
+            snapshot, tblA.getResourceId(), 777L, System.currentTimeMillis() - 5000L);
 
     var connector = createDummyConnector(cat.getResourceId(), ns.getResourceId(), "reject");
     attachConnectorToTable(tblA.getResourceId(), connector);
 
-    var begin =
-        lifecycle.beginQuery(
-            BeginQueryRequest.newBuilder()
-                .addInputs(
-                    QueryInput.newBuilder()
-                        .setTableId(tblA.getResourceId())
-                        .setSnapshot(
-                            SnapshotRef.newBuilder().setSnapshotId(snap.getSnapshotId()).build()))
-                .build());
+    // Start query
+    var begin = lifecycle.beginQuery(BeginQueryRequest.newBuilder().build());
 
+    var queryId = begin.getQuery().getQueryId();
+
+    // Pin ONLY table A
+    schema.describeInputs(
+        DescribeInputsRequest.newBuilder()
+            .setQueryId(queryId)
+            .addInputs(
+                QueryInput.newBuilder()
+                    .setTableId(tblA.getResourceId())
+                    .setSnapshot(
+                        SnapshotRef.newBuilder().setSnapshotId(snap.getSnapshotId()).build())
+                    .build())
+            .build());
+
+    // Try scanning table B → should fail
     StatusRuntimeException ex =
         assertThrows(
             StatusRuntimeException.class,
             () ->
                 scan.fetchScanBundle(
                     FetchScanBundleRequest.newBuilder()
-                        .setQueryId(begin.getQuery().getQueryId())
+                        .setQueryId(queryId)
                         .setTableId(tblB.getResourceId())
                         .build()));
 
@@ -184,13 +201,15 @@ class QueryScanServiceIT {
 
   private Connector createDummyConnector(
       ResourceId catalogId, ResourceId namespaceId, String suffix) {
+
     var source =
         SourceSelector.newBuilder()
-            .setNamespace(
-                NamespacePath.newBuilder().addSegments("analytics").addSegments("sales").build())
+            .setNamespace(NamespacePath.newBuilder().addSegments("analytics").addSegments("sales"))
             .build();
+
     var destination =
         DestinationTarget.newBuilder().setCatalogId(catalogId).setNamespaceId(namespaceId).build();
+
     var spec =
         ConnectorSpec.newBuilder()
             .setDisplayName("qs-" + suffix)
@@ -198,12 +217,14 @@ class QueryScanServiceIT {
             .setUri("dummy://ignored")
             .setSource(source)
             .setDestination(destination)
-            .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+            .setAuth(AuthConfig.newBuilder().setScheme("none"))
             .build();
+
     return TestSupport.createConnector(connectors, spec);
   }
 
   private void attachConnectorToTable(ResourceId tableId, Connector connector) {
+
     var upstream =
         UpstreamRef.newBuilder()
             .setConnectorId(connector.getResourceId())
@@ -213,8 +234,11 @@ class QueryScanServiceIT {
             .addNamespacePath("analytics")
             .addNamespacePath("sales")
             .build();
+
     var spec = TableSpec.newBuilder().setUpstream(upstream).build();
+
     var mask = FieldMask.newBuilder().addPaths("upstream").build();
+
     table.updateTable(
         UpdateTableRequest.newBuilder()
             .setTableId(tableId)

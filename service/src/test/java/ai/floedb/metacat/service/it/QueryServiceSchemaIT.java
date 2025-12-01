@@ -1,13 +1,14 @@
 package ai.floedb.metacat.service.it;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.query.rpc.BeginQueryRequest;
+import ai.floedb.metacat.query.rpc.DescribeInputsRequest;
 import ai.floedb.metacat.query.rpc.QueryInput;
+import ai.floedb.metacat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.util.TestDataResetter;
@@ -23,11 +24,19 @@ import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+/**
+ * Tests schema resolution for specific snapshots using DescribeInputs().
+ *
+ * <p>BeginQuery no longer returns schema; DescribeInputs now does.
+ */
 @QuarkusTest
 class QueryServiceSchemaIT {
 
   @GrpcClient("metacat")
   QueryServiceGrpc.QueryServiceBlockingStub queries;
+
+  @GrpcClient("metacat")
+  QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schemaSvc;
 
   @GrpcClient("metacat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
@@ -53,12 +62,17 @@ class QueryServiceSchemaIT {
   }
 
   @Test
-  void beginQueryReturnsSnapshotSchema() {
+  void describeInputsReturnsSchemaPerSnapshot() {
+
+    // ------------------------------
+    // Create catalog, namespace, table
+    // ------------------------------
     var cat = TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "");
     var ns =
         TestSupport.createNamespace(namespace, cat.getResourceId(), "sch", List.of("db"), "desc");
 
     Schema schemaV1 = new Schema(Types.NestedField.required(1, "id", Types.LongType.get()));
+
     Schema schemaV2 =
         new Schema(
             Types.NestedField.required(1, "id", Types.LongType.get()),
@@ -74,11 +88,12 @@ class QueryServiceSchemaIT {
             SchemaParser.toJson(schemaV1),
             "desc");
 
+    // snapshot 1 → schemaV1
     var snap1 =
         TestSupport.createSnapshot(
             snapshot, tbl.getResourceId(), 1L, System.currentTimeMillis() - 10_000L);
 
-    // update schema to v2 and create snapshot2
+    // update table schema → schemaV2
     table.updateTable(
         UpdateTableRequest.newBuilder()
             .setTableId(tbl.getResourceId())
@@ -89,10 +104,12 @@ class QueryServiceSchemaIT {
             .setUpdateMask(FieldMask.newBuilder().addPaths("schema_json").build())
             .build());
 
+    // snapshot 2 → schemaV2
     var snap2 =
         TestSupport.createSnapshot(
             snapshot, tbl.getResourceId(), 2L, System.currentTimeMillis() - 5_000L);
 
+    // Fully qualified name
     var name =
         NameRef.newBuilder()
             .setCatalog(cat.getDisplayName())
@@ -101,36 +118,51 @@ class QueryServiceSchemaIT {
             .setName("orders")
             .build();
 
-    var beginSnap1 =
-        queries.beginQuery(
-            BeginQueryRequest.newBuilder()
+    // ------------------------------
+    // BeginQuery (no inputs)
+    // ------------------------------
+    var begin = queries.beginQuery(BeginQueryRequest.newBuilder().setTtlSeconds(10).build());
+
+    String qid = begin.getQuery().getQueryId();
+    assertFalse(qid.isBlank(), "BeginQuery must return queryId");
+
+    // ------------------------------
+    // DescribeInputs with snapshot1
+    // ------------------------------
+    var resp1 =
+        schemaSvc.describeInputs(
+            DescribeInputsRequest.newBuilder()
+                .setQueryId(qid)
                 .addInputs(
                     QueryInput.newBuilder()
                         .setName(name)
-                        .setTableId(tbl.getResourceId())
-                        .setSnapshot(
-                            SnapshotRef.newBuilder().setSnapshotId(snap1.getSnapshotId()).build())
-                        .build())
-                .setIncludeSchema(true)
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snap1.getSnapshotId())))
                 .build());
 
-    assertEquals(1, beginSnap1.getSchema().getColumnsCount(), "snapshot1 schema should be v1");
+    assertEquals(1, resp1.getSchemasCount());
+    assertEquals(1, resp1.getSchemas(0).getColumnsCount(), "snapshot1 schema should have 1 column");
 
-    var beginSnap2 =
-        queries.beginQuery(
-            BeginQueryRequest.newBuilder()
+    // ------------------------------
+    // DescribeInputs with snapshot2
+    // ------------------------------
+    var resp2 =
+        schemaSvc.describeInputs(
+            DescribeInputsRequest.newBuilder()
+                .setQueryId(qid)
                 .addInputs(
                     QueryInput.newBuilder()
                         .setName(name)
-                        .setTableId(tbl.getResourceId())
-                        .setSnapshot(
-                            SnapshotRef.newBuilder().setSnapshotId(snap2.getSnapshotId()).build())
-                        .build())
-                .setIncludeSchema(true)
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snap2.getSnapshotId())))
                 .build());
-    assertEquals(2, beginSnap2.getSchema().getColumnsCount(), "snapshot2 schema should be v2");
+
+    assertEquals(1, resp2.getSchemasCount());
+    assertEquals(
+        2,
+        resp2.getSchemas(0).getColumnsCount(),
+        "snapshot2 schema should expose v2 with 2 columns");
+
     assertTrue(
-        beginSnap2.getSchema().getColumnsList().stream().anyMatch(c -> c.getName().equals("qty")),
-        "v2 column should appear in snapshot2 schema");
+        resp2.getSchemas(0).getColumnsList().stream().anyMatch(c -> c.getName().equals("qty")),
+        "schemaV2 must include column 'qty'");
   }
 }

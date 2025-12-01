@@ -80,6 +80,8 @@ import ai.floedb.metacat.connector.rpc.ValidateConnectorRequest;
 import ai.floedb.metacat.execution.rpc.ScanFile;
 import ai.floedb.metacat.query.rpc.BeginQueryRequest;
 import ai.floedb.metacat.query.rpc.BeginQueryResponse;
+import ai.floedb.metacat.query.rpc.DescribeInputsRequest;
+import ai.floedb.metacat.query.rpc.DescribeInputsResponse;
 import ai.floedb.metacat.query.rpc.EndQueryRequest;
 import ai.floedb.metacat.query.rpc.EndQueryResponse;
 import ai.floedb.metacat.query.rpc.ExpansionMap;
@@ -89,9 +91,11 @@ import ai.floedb.metacat.query.rpc.GetQueryResponse;
 import ai.floedb.metacat.query.rpc.QueryDescriptor;
 import ai.floedb.metacat.query.rpc.QueryInput;
 import ai.floedb.metacat.query.rpc.QueryScanServiceGrpc;
+import ai.floedb.metacat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
 import ai.floedb.metacat.query.rpc.RenewQueryRequest;
 import ai.floedb.metacat.query.rpc.RenewQueryResponse;
+import ai.floedb.metacat.query.rpc.SchemaDescriptor;
 import ai.floedb.metacat.query.rpc.SnapshotPin;
 import ai.floedb.metacat.query.rpc.SnapshotSet;
 import ai.floedb.metacat.query.rpc.TableObligations;
@@ -168,6 +172,10 @@ public class Shell implements Runnable {
   @Inject
   @GrpcClient("metacat")
   QueryScanServiceGrpc.QueryScanServiceBlockingStub queryScan;
+
+  @Inject
+  @GrpcClient("metacat")
+  QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchema;
 
   private static final int DEFAULT_PAGE_SIZE = 1000;
 
@@ -1793,7 +1801,8 @@ public class Shell implements Runnable {
       return;
     }
 
-    BeginQueryRequest.Builder req = BeginQueryRequest.newBuilder().addAllInputs(inputs);
+    // Build BeginQuery without inputs (removed from proto)
+    BeginQueryRequest.Builder req = BeginQueryRequest.newBuilder();
     if (ttlSeconds > 0) {
       req.setTtlSeconds(ttlSeconds);
     }
@@ -1801,7 +1810,20 @@ public class Shell implements Runnable {
       req.setAsOfDefault(asOfDefault);
     }
 
+    // First, begin the query context
     BeginQueryResponse resp = queries.beginQuery(req.build());
+
+    String queryId = resp.getQuery().getQueryId();
+
+    // Now resolve inputs using QuerySchemaService
+    DescribeInputsRequest.Builder descReq =
+        DescribeInputsRequest.newBuilder().setQueryId(queryId).addAllInputs(inputs);
+
+    DescribeInputsResponse descResp = querySchema.describeInputs(descReq.build());
+
+    // Print the resolved schemas BEFORE printing query descriptor
+    printDescribeInputs(descResp, inputs);
+
     printQueryBegin(resp);
   }
 
@@ -2636,6 +2658,29 @@ public class Shell implements Runnable {
         out.println("  properties: " + propsStr);
       }
     }
+  }
+
+  private void printDescribeInputs(DescribeInputsResponse resp, List<QueryInput> inputs) {
+    out.println("resolved inputs:");
+    for (int i = 0; i < resp.getSchemasCount(); i++) {
+      SchemaDescriptor schema = resp.getSchemas(i);
+      QueryInput input = inputs.get(i);
+
+      out.println();
+      out.println("input " + (i + 1) + ": " + input.toString());
+      out.println("schema:");
+      for (var col : schema.getColumnsList()) {
+        out.printf(
+            "  - %-20s %-12s field_id=%d nullable=%s physical=%s partition=%s%n",
+            col.getName(),
+            col.getLogicalType(),
+            col.getFieldId(),
+            col.getNullable(),
+            col.getPhysicalPath(),
+            col.getPartitionKey());
+      }
+    }
+    out.println();
   }
 
   private String ts(Timestamp t) {
