@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package ai.floedb.metacat.query;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.query.rpc";
+option java_outer_classname = "QuerySchemaProto";
+
+/**
+ * LOGICAL SCHEMA PROTOCOL
+ * ------------------------
+ * Exposes "planner-facing" schema:
+ *   - logical column names
+ *   - logical type system
+ *   - Iceberg/Delta field IDs
+ *   - physical paths where applicable
+ *   - nullability
+ *   - partition indicators
+ *
+ * This IS NOT:
+ *   - Iceberg schema
+ *   - Delta kernel schema
+ *   - storage layout
+ *
+ * It is a unifying logical view for query planning.
+ */
+
+message SchemaColumn {
+  // The logical name visible to predicates and users.
+  string name = 1;
+
+  // Logical type name (BIGINT, STRING, DECIMAL, TIMESTAMP...).
+  string logical_type = 2;
+
+  // Stable field ID from table format (Iceberg/Delta).
+  int32 field_id = 3;
+
+  // Whether the column may contain NULL values.
+  bool nullable = 4;
+
+  // Structured path into physical format (e.g. struct.subfield).
+  string physical_path = 5;
+
+  // True if this logical column is a partition key.
+  bool partition_key = 6;
+}
+
+/**
+ * A full logical schema for a table or view.
+ */
+message SchemaDescriptor {
+  repeated SchemaColumn columns = 1;
+}

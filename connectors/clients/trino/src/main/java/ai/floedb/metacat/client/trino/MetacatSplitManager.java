@@ -9,6 +9,7 @@ import ai.floedb.metacat.query.rpc.Operator;
 import ai.floedb.metacat.query.rpc.Predicate;
 import ai.floedb.metacat.query.rpc.QueryInput;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
+import ai.floedb.metacat.query.rpc.QueryScanServiceGrpc;
 import com.google.inject.Inject;
 import com.google.protobuf.Timestamp;
 import io.airlift.slice.Slice;
@@ -39,15 +40,20 @@ import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.PartitionSpecParser;
 
+
 public class MetacatSplitManager implements ConnectorSplitManager {
 
   private final QueryServiceGrpc.QueryServiceBlockingStub planning;
+  private final QueryScanServiceGrpc.QueryScanServiceBlockingStub scan;
   private final MetacatConfig config;
 
   @Inject
   public MetacatSplitManager(
-      QueryServiceGrpc.QueryServiceBlockingStub planning, MetacatConfig config) {
+      QueryServiceGrpc.QueryServiceBlockingStub planning,
+      QueryScanServiceGrpc.QueryScanServiceBlockingStub scan,
+      MetacatConfig config) {
     this.planning = planning;
+    this.scan = scan;
     this.config = config;
   }
 
@@ -103,7 +109,7 @@ public class MetacatSplitManager implements ConnectorSplitManager {
             .addAllPredicates(predicates)
             .build();
 
-    var fetchResp = planning.fetchScanBundle(fetchReq);
+    var fetchResp = scan.fetchScanBundle(fetchReq);
 
     List<ScanFile> dataFiles = fetchResp.getBundle().getDataFilesList();
     List<ScanFile> deleteScanFiles = fetchResp.getBundle().getDeleteFilesList();

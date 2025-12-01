@@ -7,14 +7,7 @@ import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.execution.rpc.ScanBundle;
 import ai.floedb.metacat.execution.rpc.ScanFile;
-import ai.floedb.metacat.query.rpc.BeginQueryRequest;
-import ai.floedb.metacat.query.rpc.BeginQueryResponse;
-import ai.floedb.metacat.query.rpc.FetchScanBundleRequest;
-import ai.floedb.metacat.query.rpc.FetchScanBundleResponse;
-import ai.floedb.metacat.query.rpc.Operator;
-import ai.floedb.metacat.query.rpc.QueryDescriptor;
-import ai.floedb.metacat.query.rpc.QueryInput;
-import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
+import ai.floedb.metacat.query.rpc.*;
 
 import com.google.protobuf.Timestamp;
 
@@ -26,6 +19,8 @@ import io.grpc.stub.StreamObserver;
 
 import io.trino.plugin.iceberg.ColumnIdentity;
 import io.trino.plugin.iceberg.IcebergColumnHandle;
+import io.trino.plugin.iceberg.IcebergFileFormat;
+import io.trino.plugin.iceberg.IcebergSplit;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplit;
@@ -60,14 +55,29 @@ class MetacatSplitManagerTest {
 
     private static Server server;
     private static ManagedChannel channel;
-    private static PlanningStub planning;
+
+    private static LifecycleStub lifecycleStub;
+    private static ScanStub scanStub;
+
+    private static QueryScanServiceGrpc.QueryScanServiceBlockingStub scans;
+    private static QueryServiceGrpc.QueryServiceBlockingStub lifecycle;
 
     @BeforeAll
     static void startServer() throws Exception {
-        planning = new PlanningStub();
+        lifecycleStub = new LifecycleStub();
+        scanStub = new ScanStub();
+
         String serverName = InProcessServerBuilder.generateName();
-        server = InProcessServerBuilder.forName(serverName).addService(planning).build().start();
+        server =
+            InProcessServerBuilder.forName(serverName)
+                .addService(lifecycleStub)
+                .addService(scanStub)
+                .build()
+                .start();
+
         channel = InProcessChannelBuilder.forName(serverName).build();
+        lifecycle = QueryServiceGrpc.newBlockingStub(channel);
+        scans = QueryScanServiceGrpc.newBlockingStub(channel);
     }
 
     @AfterAll
@@ -78,10 +88,10 @@ class MetacatSplitManagerTest {
 
     @AfterEach
     void resetStub() {
-        planning.dataFileFormat = "PARQUET";
-        planning.partitionDataJson = null;
-        planning.lastBegin = null;
-        planning.lastFetch = null;
+        scanStub.dataFileFormat = "PARQUET";
+        scanStub.partitionDataJson = null;
+        lifecycleStub.lastBegin = null;
+        scanStub.lastFetch = null;
     }
 
     /* ------------------------------------------------------------------
@@ -91,7 +101,10 @@ class MetacatSplitManagerTest {
     @Test
     void includesSnapshotIdInBeginQuery() {
         MetacatSplitManager splitManager =
-            new MetacatSplitManager(QueryServiceGrpc.newBlockingStub(channel), new MetacatConfig());
+          new MetacatSplitManager(
+              lifecycle,
+              scans,
+              new MetacatConfig());
 
         MetacatTableHandle handle =
             new MetacatTableHandle(
@@ -121,7 +134,7 @@ class MetacatSplitManagerTest {
             throw t;
         }
 
-        QueryInput input = planning.lastBegin.getInputs(0);
+        QueryInput input = lifecycleStub.lastBegin.getInputs(0);
         assertTrue(input.hasSnapshot());
         assertEquals(123L, input.getSnapshot().getSnapshotId());
     }
@@ -129,7 +142,10 @@ class MetacatSplitManagerTest {
     @Test
     void includesAsOfInBeginQuery() {
         MetacatSplitManager splitManager =
-            new MetacatSplitManager(QueryServiceGrpc.newBlockingStub(channel), new MetacatConfig());
+            new MetacatSplitManager(
+                lifecycle,
+                scans,
+                new MetacatConfig());
 
         long asOf = 1_700_000_000_000L;
 
@@ -161,7 +177,7 @@ class MetacatSplitManagerTest {
             throw t;
         }
 
-        QueryInput input = planning.lastBegin.getInputs(0);
+        QueryInput input = lifecycleStub.lastBegin.getInputs(0);
         assertTrue(input.hasSnapshot());
 
         Timestamp ts = input.getSnapshot().getAsOf();
@@ -177,7 +193,10 @@ class MetacatSplitManagerTest {
     @Test
     void buildsPredicatesAndRequiredColumnsFromDomains() throws Exception {
         MetacatSplitManager splitManager =
-            new MetacatSplitManager(QueryServiceGrpc.newBlockingStub(channel), new MetacatConfig());
+            new MetacatSplitManager(
+                lifecycle,
+                scans,
+                new MetacatConfig());
 
         IcebergColumnHandle idCol =
             new IcebergColumnHandle(
@@ -240,18 +259,18 @@ class MetacatSplitManagerTest {
 
         // Required columns must include enforced, domain-derived, and projected columns
         assertTrue(
-            planning.lastFetch.getRequiredColumnsList()
+            scanStub.lastFetch.getRequiredColumnsList()
                 .containsAll(List.of("id", "bucket", "projected")));
 
-        assertEquals(4, planning.lastFetch.getPredicatesCount());
+        assertEquals(4, scanStub.lastFetch.getPredicatesCount());
 
         assertTrue(
-            planning.lastFetch.getPredicatesList().stream()
+            scanStub.lastFetch.getPredicatesList().stream()
                 .anyMatch(p -> p.getColumn().equals("id")
                     && p.getOp() == Operator.OP_EQ));
 
         assertTrue(
-            planning.lastFetch.getPredicatesList().stream()
+            scanStub.lastFetch.getPredicatesList().stream()
                 .anyMatch(p -> p.getColumn().equals("bucket")
                     && (p.getOp() == Operator.OP_GT || p.getOp() == Operator.OP_IS_NOT_NULL)));
 
@@ -262,12 +281,14 @@ class MetacatSplitManagerTest {
 
     @Test
     void defaultsFormatAndPartitionDataWhenMissing() throws Exception {
-        planning.dataFileFormat = "ORC";
-        planning.partitionDataJson = "";
+        scanStub.dataFileFormat = "ORC";
+        scanStub.partitionDataJson = "";
 
         MetacatSplitManager splitManager =
-            new MetacatSplitManager(QueryServiceGrpc
-                .newBlockingStub(channel), new MetacatConfig());
+            new MetacatSplitManager(
+                lifecycle,
+                scans,
+                new MetacatConfig());
 
         MetacatTableHandle handle =
             new MetacatTableHandle(
@@ -307,7 +328,7 @@ class MetacatSplitManagerTest {
             (io.trino.plugin.iceberg.IcebergSplit) split;
 
         assertEquals("{\"partitionValues\":[]}", iceberg.getPartitionDataJson());
-        assertEquals(io.trino.plugin.iceberg.IcebergFileFormat.ORC, iceberg.getFileFormat());
+        assertEquals(IcebergFileFormat.ORC, iceberg.getFileFormat());
     }
 
     /* ------------------------------------------------------------------
@@ -335,12 +356,10 @@ class MetacatSplitManagerTest {
         }
     }
 
-    private static class PlanningStub extends QueryServiceGrpc.QueryServiceImplBase {
-        volatile BeginQueryRequest lastBegin;
-        volatile FetchScanBundleRequest lastFetch;
+    /* ---------------- Lifecycle Stub ---------------- */
 
-        volatile String dataFileFormat = "PARQUET";
-        volatile String partitionDataJson;
+    private static class LifecycleStub extends QueryServiceGrpc.QueryServiceImplBase {
+        volatile BeginQueryRequest lastBegin;
 
         @Override
         public void beginQuery(
@@ -349,8 +368,7 @@ class MetacatSplitManagerTest {
 
             this.lastBegin = request;
 
-            QueryDescriptor descriptor =
-                QueryDescriptor.newBuilder().build();
+            QueryDescriptor descriptor = QueryDescriptor.newBuilder().build();
 
             responseObserver.onNext(
                 BeginQueryResponse.newBuilder()
@@ -358,6 +376,15 @@ class MetacatSplitManagerTest {
                     .build());
             responseObserver.onCompleted();
         }
+    }
+
+    /* ---------------- Scan Stub ---------------- */
+
+    private static class ScanStub extends QueryScanServiceGrpc.QueryScanServiceImplBase {
+        volatile FetchScanBundleRequest lastFetch;
+
+        volatile String dataFileFormat = "PARQUET";
+        volatile String partitionDataJson;
 
         @Override
         public void fetchScanBundle(

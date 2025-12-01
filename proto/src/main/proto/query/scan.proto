@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package ai.floedb.metacat.query;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.query.rpc";
+option java_outer_classname = "QueryScanProto";
+
+import "common/common.proto";     // ResourceId
+import "execution/scan.proto";    // ScanBundle
+
+/**
+ * SCAN PRUNING SERVICE
+ * ---------------------
+ * Responsible for:
+ *   - column projection pruning
+ *   - min/max predicate pruning
+ *   - combining data + delete files
+ *
+ * Does NOT:
+ *   - manage query lifecycle (QueryService)
+ *   - manage schema resolution (QuerySchemaService)
+ */
+
+enum Operator {
+  OP_EQ          = 0;
+  OP_NEQ         = 1;
+  OP_LT          = 2;
+  OP_LTE         = 3;
+  OP_GT          = 4;
+  OP_GTE         = 5;
+  OP_BETWEEN     = 6;
+  OP_IN          = 7;
+  OP_IS_NULL     = 8;
+  OP_IS_NOT_NULL = 9;
+}
+
+/**
+ * A simple min/max predicate applied to a *file's* statistics.
+ *
+ * These MUST NOT be used for row-level filtering.
+ * They only determine whether a file is relevant.
+ */
+message Predicate {
+  string column = 1;
+  Operator op = 2;
+  repeated string values = 3;
+}
+
+/**
+ * Fetch the scan bundle for a pinned query table, then apply:
+ *   - projection pruning (required_columns)
+ *   - predicate pruning (predicates)
+ */
+message FetchScanBundleRequest {
+  string query_id = 1;
+
+  // The table whose bundle is being fetched.
+  ai.floedb.metacat.common.ResourceId table_id = 2;
+
+  // Needed columns; all other column stats are dropped.
+  repeated string required_columns = 3;
+
+  // Min/max predicates for pruning.
+  repeated Predicate predicates = 4;
+}
+
+message FetchScanBundleResponse {
+  ai.floedb.metacat.execution.ScanBundle bundle = 1;
+}
+
+service QueryScanService {
+  rpc FetchScanBundle(FetchScanBundleRequest) returns (FetchScanBundleResponse);
+}

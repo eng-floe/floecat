@@ -88,6 +88,7 @@ import ai.floedb.metacat.query.rpc.GetQueryRequest;
 import ai.floedb.metacat.query.rpc.GetQueryResponse;
 import ai.floedb.metacat.query.rpc.QueryDescriptor;
 import ai.floedb.metacat.query.rpc.QueryInput;
+import ai.floedb.metacat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
 import ai.floedb.metacat.query.rpc.RenewQueryRequest;
 import ai.floedb.metacat.query.rpc.RenewQueryResponse;
@@ -163,6 +164,10 @@ public class Shell implements Runnable {
   @Inject
   @GrpcClient("metacat")
   QueryServiceGrpc.QueryServiceBlockingStub queries;
+
+  @Inject
+  @GrpcClient("metacat")
+  QueryScanServiceGrpc.QueryScanServiceBlockingStub queryScan;
 
   private static final int DEFAULT_PAGE_SIZE = 1000;
 
@@ -1909,7 +1914,7 @@ public class Shell implements Runnable {
     }
 
     var resp =
-        queries.fetchScanBundle(
+        queryScan.fetchScanBundle(
             FetchScanBundleRequest.newBuilder().setQueryId(queryId).setTableId(tableId).build());
 
     if (!resp.hasBundle()) {
