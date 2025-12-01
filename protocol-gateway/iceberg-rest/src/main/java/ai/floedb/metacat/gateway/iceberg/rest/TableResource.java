@@ -17,11 +17,13 @@ import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.common.rpc.SpecialSnapshot;
+import ai.floedb.metacat.execution.rpc.ScanBundle;
 import ai.floedb.metacat.execution.rpc.ScanFile;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.metacat.query.rpc.BeginQueryRequest;
 import ai.floedb.metacat.query.rpc.EndQueryRequest;
+import ai.floedb.metacat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.metacat.query.rpc.GetQueryRequest;
 import ai.floedb.metacat.query.rpc.QueryDescriptor;
 import ai.floedb.metacat.query.rpc.QueryInput;
@@ -261,7 +263,9 @@ public class TableResource {
     QueryServiceGrpc.QueryServiceBlockingStub stub = grpc.withHeaders(grpc.raw().query());
     BeginQueryRequest planReq = buildPlanRequest(tableId, request);
     var resp = stub.beginQuery(planReq);
-    return Response.ok(toPlanResult(resp.getQuery())).build();
+    ScanBundle bundle =
+        fetchScanBundle(stub, tableId, resp.getQuery().getQueryId(), request.select());
+    return Response.ok(toPlanResult(resp.getQuery(), null, bundle)).build();
   }
 
   @Path("/{table}/plan/{planId}")
@@ -272,10 +276,12 @@ public class TableResource {
       @PathParam("table") String table,
       @PathParam("planId") String planId) {
     String catalogName = resolveCatalog(prefix);
-    NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
+    ResourceId tableId =
+        NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
     QueryServiceGrpc.QueryServiceBlockingStub stub = grpc.withHeaders(grpc.raw().query());
     var resp = stub.getQuery(GetQueryRequest.newBuilder().setQueryId(planId).build());
-    return Response.ok(toPlanResult(resp.getQuery(), planId)).build();
+    ScanBundle bundle = fetchScanBundle(stub, tableId, resp.getQuery().getQueryId(), null);
+    return Response.ok(toPlanResult(resp.getQuery(), planId, bundle)).build();
   }
 
   @Path("/{table}/plan/{planId}")
@@ -402,29 +408,40 @@ public class TableResource {
     } else {
       input.setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT));
     }
-    BeginQueryRequest.Builder builder = BeginQueryRequest.newBuilder().addInputs(input);
-    if (request.select() != null && !request.select().isEmpty()) {
-      builder.addAllRequiredColumns(request.select());
-    }
-    builder.setIncludeSchema(false);
-    return builder.build();
+    return BeginQueryRequest.newBuilder().addInputs(input).setIncludeSchema(false).build();
   }
 
-  private PlanResponseDto toPlanResult(QueryDescriptor descriptor) {
-    return toPlanResult(descriptor, descriptor.getQueryId());
-  }
-
-  private PlanResponseDto toPlanResult(QueryDescriptor descriptor, String planIdOverride) {
+  private PlanResponseDto toPlanResult(
+      QueryDescriptor descriptor, String planIdOverride, ScanBundle bundle) {
     List<ContentFileDto> deleteFiles = new ArrayList<>();
-    for (ScanFile delete : descriptor.getDeleteFilesList()) {
-      deleteFiles.add(toContentFile(delete));
-    }
     List<FileScanTaskDto> tasks = new ArrayList<>();
-    for (ScanFile file : descriptor.getDataFilesList()) {
-      tasks.add(new FileScanTaskDto(toContentFile(file), List.of(), null));
+    if (bundle != null) {
+      for (ScanFile delete : bundle.getDeleteFilesList()) {
+        deleteFiles.add(toContentFile(delete));
+      }
+      for (ScanFile file : bundle.getDataFilesList()) {
+        tasks.add(new FileScanTaskDto(toContentFile(file), List.of(), null));
+      }
     }
-    String planId = descriptor.getQueryId().isBlank() ? planIdOverride : descriptor.getQueryId();
+    String queryId = descriptor.getQueryId();
+    String planId =
+        (queryId == null || queryId.isBlank())
+            ? (planIdOverride == null ? "" : planIdOverride)
+            : queryId;
     return new PlanResponseDto("completed", planId, List.of(), tasks, deleteFiles, null);
+  }
+
+  private ScanBundle fetchScanBundle(
+      QueryServiceGrpc.QueryServiceBlockingStub stub,
+      ResourceId tableId,
+      String queryId,
+      List<String> requiredColumns) {
+    FetchScanBundleRequest.Builder builder =
+        FetchScanBundleRequest.newBuilder().setQueryId(queryId).setTableId(tableId);
+    if (requiredColumns != null && !requiredColumns.isEmpty()) {
+      builder.addAllRequiredColumns(requiredColumns);
+    }
+    return stub.fetchScanBundle(builder.build()).getBundle();
   }
 
   private ContentFileDto toContentFile(ScanFile file) {

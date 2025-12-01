@@ -41,11 +41,14 @@ import ai.floedb.metacat.catalog.rpc.View;
 import ai.floedb.metacat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.execution.rpc.ScanBundle;
 import ai.floedb.metacat.execution.rpc.ScanFile;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.metacat.query.rpc.BeginQueryRequest;
 import ai.floedb.metacat.query.rpc.BeginQueryResponse;
+import ai.floedb.metacat.query.rpc.FetchScanBundleRequest;
+import ai.floedb.metacat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.metacat.query.rpc.QueryDescriptor;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
 import com.google.protobuf.Timestamp;
@@ -697,9 +700,12 @@ class RestResourceTest {
             .setRecordCount(5)
             .build();
     QueryDescriptor descriptor =
-        QueryDescriptor.newBuilder().setQueryId("plan-1").addDataFiles(file).build();
+        QueryDescriptor.newBuilder().setQueryId("plan-1").build();
+    ScanBundle bundle = ScanBundle.newBuilder().addDataFiles(file).build();
     when(queryStub.beginQuery(any()))
         .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    when(queryStub.fetchScanBundle(any()))
+        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
 
     given()
         .body("{\"snapshot-id\":7}")
@@ -716,5 +722,12 @@ class RestResourceTest {
     verify(queryStub).beginQuery(req.capture());
     assertEquals(tableId, req.getValue().getInputs(0).getTableId());
     assertEquals(7L, req.getValue().getInputs(0).getSnapshot().getSnapshotId());
+
+    ArgumentCaptor<FetchScanBundleRequest> fetch =
+        ArgumentCaptor.forClass(FetchScanBundleRequest.class);
+    verify(queryStub).fetchScanBundle(fetch.capture());
+    assertEquals("plan-1", fetch.getValue().getQueryId());
+    assertEquals(tableId, fetch.getValue().getTableId());
+    assertEquals(0, fetch.getValue().getRequiredColumnsCount());
   }
 }
