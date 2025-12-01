@@ -44,7 +44,7 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
 | `TenantService` | Tenant CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `TriggerReconcile`, `GetReconcileJob`. |
-| `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`. |
+| `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`, `FetchScanBundle`. |
 | `BuiltinCatalogService` | `GetBuiltinCatalog` | Returns the cached builtin catalog for the engine version carried in the `x-engine-version` header; callers can send `current_version` to short circuit identical catalogs. |
 
 Each RPC requires a populated `tenant_id` within the `ResourceId`s; the Quarkus service checks this
@@ -54,7 +54,9 @@ before hitting repository storage.
 `query/lifecycle.proto` captures everything the planner needs to hold a lease:
 - `QueryInput` resolves tables/views by name or ID and optionally pins snapshots.
 - `QueryDescriptor` mirrors the live query context (IDs, expiry timestamps, snapshot pins, expansion
-  maps, table obligations, and scan files supplied by connectors).
+  maps, and table obligations). Per-table scan manifests are retrieved lazily via
+  `QueryService.FetchScanBundle`, which returns the `execution/scan.proto` records for a specific
+  table.
 
 `execution/scan.proto` describes the scan inputs that executors consume:
 - `ScanFile` entries include the file path, size, record count, format, per-column stats, and whether
@@ -91,7 +93,8 @@ an empty response.
 3. Connectors written against the SPI return `ScanFile` and stats payloads that exactly match the
   protos defined here; the reconciler pipes them back via the catalog/statistics services.
 4. Planners call `QueryService.BeginQuery` to create query leases, optionally extend them via
-  `RenewQuery`, and close them out via `EndQuery` once execution is complete.
+  `RenewQuery`, call `FetchScanBundle` per table when they need manifests, and close leases out via
+  `EndQuery` once execution is complete.
 
 _State diagram for the query lease protocol:_
 

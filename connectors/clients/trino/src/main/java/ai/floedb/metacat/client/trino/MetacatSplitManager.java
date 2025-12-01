@@ -4,6 +4,7 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.execution.rpc.ScanFile;
 import ai.floedb.metacat.query.rpc.BeginQueryRequest;
+import ai.floedb.metacat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.metacat.query.rpc.Operator;
 import ai.floedb.metacat.query.rpc.Predicate;
 import ai.floedb.metacat.query.rpc.QueryInput;
@@ -57,10 +58,10 @@ public class MetacatSplitManager implements ConnectorSplitManager {
       ConnectorTableHandle handle,
       DynamicFilter dynamicFilter,
       Constraint constraint) {
+
     MetacatTableHandle metacatHandle = (MetacatTableHandle) handle;
 
     TupleDomain<IcebergColumnHandle> staticDomain = metacatHandle.getEnforcedConstraint();
-
     TupleDomain<IcebergColumnHandle> constraintDomain =
         constraint.getSummary().transformKeys(ch -> (IcebergColumnHandle) ch);
     TupleDomain<IcebergColumnHandle> dynamicDomain =
@@ -80,34 +81,33 @@ public class MetacatSplitManager implements ConnectorSplitManager {
                   (colHandle, domain) -> {
                     String name = colHandle.getName();
                     requiredColumns.add(name);
-
                     predicates.addAll(domainToPredicates(name, domain));
                   });
             });
+    requiredColumns.addAll(metacatHandle.getProjectedColumns());
 
-    BeginQueryRequest.Builder request =
+    BeginQueryRequest beginReq =
         BeginQueryRequest.newBuilder()
             .addInputs(toQueryInput(metacatHandle.getTableResourceId(), metacatHandle))
-            .setIncludeSchema(true);
-    if (!requiredColumns.isEmpty()) {
-      request.addAllRequiredColumns(requiredColumns);
-    }
-    if (!metacatHandle.getProjectedColumns().isEmpty()) {
-      request.addAllRequiredColumns(metacatHandle.getProjectedColumns());
-    }
-    if (!predicates.isEmpty()) {
-      request.addAllPredicates(predicates);
-    }
+            .setIncludeSchema(true)
+            .build();
 
-    var response = planning.beginQuery(request.build());
+    var beginResp = planning.beginQuery(beginReq);
+    String queryId = beginResp.getQuery().getQueryId();
 
-    List<DeleteFile> deleteFiles = new ArrayList<>();
-    List<ScanFile> deleteScanFiles = response.getQuery().getDeleteFilesList();
-    List<DeleteFile> deletesFromResp = toDeleteFiles(deleteScanFiles);
-    if (!deletesFromResp.isEmpty()) {
-      logDeleteFiles(deleteScanFiles, metacatHandle.getTableResourceId().getId());
-      deleteFiles.addAll(deletesFromResp);
-    }
+    FetchScanBundleRequest fetchReq =
+        FetchScanBundleRequest.newBuilder()
+            .setQueryId(queryId)
+            .setTableId(metacatHandle.getTableResourceId())
+            .addAllRequiredColumns(requiredColumns)
+            .addAllPredicates(predicates)
+            .build();
+
+    var fetchResp = planning.fetchScanBundle(fetchReq);
+
+    List<ScanFile> dataFiles = fetchResp.getBundle().getDataFilesList();
+    List<ScanFile> deleteScanFiles = fetchResp.getBundle().getDeleteFilesList();
+    List<DeleteFile> deleteFiles = toDeleteFiles(deleteScanFiles);
 
     String partitionSpecJson =
         Optional.ofNullable(metacatHandle.getPartitionSpecJson())
@@ -116,7 +116,7 @@ public class MetacatSplitManager implements ConnectorSplitManager {
     Map<String, String> storageProps = buildStorageProperties();
 
     List<IcebergSplit> splits = new ArrayList<>();
-    for (var file : response.getQuery().getDataFilesList()) {
+    for (var file : dataFiles) {
       IcebergFileFormat fileFormat = toIcebergFormat(file.getFileFormat());
       String dataJson = file.getPartitionDataJson();
       if (dataJson == null || dataJson.isBlank()) {

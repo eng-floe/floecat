@@ -83,6 +83,7 @@ import ai.floedb.metacat.query.rpc.BeginQueryResponse;
 import ai.floedb.metacat.query.rpc.EndQueryRequest;
 import ai.floedb.metacat.query.rpc.EndQueryResponse;
 import ai.floedb.metacat.query.rpc.ExpansionMap;
+import ai.floedb.metacat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.metacat.query.rpc.GetQueryRequest;
 import ai.floedb.metacat.query.rpc.GetQueryResponse;
 import ai.floedb.metacat.query.rpc.QueryDescriptor;
@@ -1648,7 +1649,7 @@ public class Shell implements Runnable {
 
   private void cmdQuery(List<String> args) {
     if (args.isEmpty()) {
-      out.println("usage: query <begin|renew|end|get> ...");
+      out.println("usage: query <begin|renew|end|get|fetch-scan> ...");
       return;
     }
     String sub = args.get(0);
@@ -1658,7 +1659,8 @@ public class Shell implements Runnable {
       case "renew" -> queryRenew(tail);
       case "end" -> queryEnd(tail);
       case "get" -> queryGet(tail);
-      default -> out.println("usage: query <begin|renew|end|get> ...");
+      case "fetch-scan" -> queryFetchScan(tail);
+      default -> out.println("usage: query <begin|renew|end|get|fetch-scan> ...");
     }
   }
 
@@ -1891,6 +1893,36 @@ public class Shell implements Runnable {
     printQueryDescriptor(resp.getQuery());
   }
 
+  private void queryFetchScan(List<String> args) {
+    if (args.size() < 2) {
+      out.println("usage: query fetch-scan <query_id> <table_id>");
+      return;
+    }
+
+    String queryId = args.get(0);
+    ResourceId tableId;
+    try {
+      tableId = tableRid(args.get(1));
+    } catch (IllegalArgumentException e) {
+      out.println("query fetch-scan: " + e.getMessage());
+      return;
+    }
+
+    var resp =
+        queries.fetchScanBundle(
+            FetchScanBundleRequest.newBuilder().setQueryId(queryId).setTableId(tableId).build());
+
+    if (!resp.hasBundle()) {
+      out.println("query fetch-scan: no bundle returned");
+      return;
+    }
+
+    out.println("query id: " + queryId);
+    out.println("table id: " + rid(tableId));
+    printQueryFiles("data_files", resp.getBundle().getDataFilesList());
+    printQueryFiles("delete_files", resp.getBundle().getDeleteFilesList());
+  }
+
   private int parseQueryInputOptions(
       List<String> args, int start, QueryInput.Builder input, boolean allowSnapshot) {
     SnapshotRef snapshotRef = null;
@@ -1991,8 +2023,6 @@ public class Shell implements Runnable {
     printQuerySnapshots(query.getSnapshots());
     printQueryExpansion(query.getExpansion());
     printQueryObligations(query.getObligationsList());
-    printQueryFiles("data_files", query.getDataFilesList());
-    printQueryFiles("delete_files", query.getDeleteFilesList());
   }
 
   private void printQuerySnapshots(SnapshotSet snapshots) {
