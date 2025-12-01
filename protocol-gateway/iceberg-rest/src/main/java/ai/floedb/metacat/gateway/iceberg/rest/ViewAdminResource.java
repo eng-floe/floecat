@@ -53,11 +53,7 @@ public class ViewAdminResource {
     FieldMask mask =
         FieldMask.newBuilder().addPaths("namespace_id").addPaths("display_name").build();
     stub.updateView(
-        UpdateViewRequest.newBuilder()
-            .setViewId(viewId)
-            .setSpec(spec)
-            .setUpdateMask(mask)
-            .build());
+        UpdateViewRequest.newBuilder().setViewId(viewId).setSpec(spec).setUpdateMask(mask).build());
     return Response.noContent().build();
   }
 

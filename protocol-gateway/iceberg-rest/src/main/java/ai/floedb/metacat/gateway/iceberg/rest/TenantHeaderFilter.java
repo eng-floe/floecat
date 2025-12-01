@@ -2,17 +2,15 @@ package ai.floedb.metacat.gateway.iceberg.rest;
 
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import jakarta.annotation.Priority;
-import jakarta.inject.Inject;
 import jakarta.enterprise.inject.Instance;
+import jakarta.inject.Inject;
 import jakarta.ws.rs.Priorities;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.container.ContainerRequestFilter;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.ext.Provider;
 
-/**
- * Enforces presence of the tenant header configured for the gateway.
- */
+/** Enforces presence of the tenant header configured for the gateway. */
 @Provider
 @Priority(Priorities.AUTHENTICATION)
 public class TenantHeaderFilter implements ContainerRequestFilter {

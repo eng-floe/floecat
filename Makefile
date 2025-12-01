@@ -85,22 +85,34 @@ $(PROTO_JAR): proto/pom.xml $(shell find proto -type f -name '*.proto' -o -name 
 # Tests
 # ===================================================
 .PHONY: test unit-test integration-test verify
-test: $(PROTO_JAR) cli-test
+
+test: $(PROTO_JAR)
 	@echo "==> [BUILD] installing parent POM to local repo"
 	$(MVN) $(MVN_TESTALL) install -N
-	@echo "==> [TEST] service module"
-	$(MVN) $(MVN_TESTALL) -pl service -am verify
-	@echo "==> [TEST] client-cli module"
-	@cd client-cli && $(MVN) $(MVN_TESTALL) test
+	@echo "==> [TEST] service + REST gateway + client-cli (unit + IT)"
+	$(MVN) $(MVN_TESTALL) \
+	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	  verify
 
 unit-test:
-	$(MVN) $(MVN_TESTALL) -pl service -am -DskipITs=true test
+	@echo "==> [TEST] unit tests (service, REST gateway, client-cli)"
+	$(MVN) $(MVN_TESTALL) \
+	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	  -DskipITs=true \
+	  test
 
 integration-test:
-	$(MVN) $(MVN_TESTALL) -pl service -am -DskipUTs=true -DfailIfNoTests=false verify
+	@echo "==> [TEST] integration tests (service, REST gateway, client-cli)"
+	$(MVN) $(MVN_TESTALL) \
+	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	  -DskipUTs=true -DfailIfNoTests=false \
+	  verify
 
 verify:
-	$(MVN) $(MVN_TESTALL) -pl service,client-cli -am verify
+	@echo "==> [VERIFY] full lifecycle (service, REST gateway, client-cli)"
+	$(MVN) $(MVN_TESTALL) \
+	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	  verify
 
 # ===================================================
 # Trino connector (optional, Java 21/proto recompile)

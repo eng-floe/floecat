@@ -2,9 +2,7 @@ package ai.floedb.metacat.gateway.iceberg.rest;
 
 import java.util.List;
 
-/**
- * Helpers for parsing table identifiers from REST path components.
- */
+/** Helpers for parsing table identifiers from REST path components. */
 public final class TableRoutes {
   private TableRoutes() {}
 

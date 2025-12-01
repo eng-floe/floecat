@@ -2,17 +2,16 @@ package ai.floedb.metacat.gateway.iceberg.rest;
 
 import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.FileContent;
-import ai.floedb.metacat.catalog.rpc.ListColumnStatsRequest;
-import ai.floedb.metacat.catalog.rpc.ListFileColumnStatsRequest;
-import ai.floedb.metacat.catalog.rpc.ListFileColumnStatsResponse;
-import ai.floedb.metacat.catalog.rpc.ListColumnStatsResponse;
-import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
-import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub;
 import ai.floedb.metacat.catalog.rpc.GetTableStatsRequest;
 import ai.floedb.metacat.catalog.rpc.GetTableStatsResponse;
+import ai.floedb.metacat.catalog.rpc.ListColumnStatsRequest;
+import ai.floedb.metacat.catalog.rpc.ListColumnStatsResponse;
+import ai.floedb.metacat.catalog.rpc.ListFileColumnStatsRequest;
+import ai.floedb.metacat.catalog.rpc.ListFileColumnStatsResponse;
+import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub;
 import ai.floedb.metacat.common.rpc.PageRequest;
-import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import jakarta.inject.Inject;
@@ -22,7 +21,6 @@ import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -40,7 +38,8 @@ public class StatsResource {
       @QueryParam("pageToken") String pageToken,
       @QueryParam("pageSize") Integer pageSize) {
     String catalog = resolveCatalog(prefix);
-    ResourceId tableId = NameResolution.resolveTable(grpc, catalog, NamespacePaths.split(namespace), table);
+    ResourceId tableId =
+        NameResolution.resolveTable(grpc, catalog, NamespacePaths.split(namespace), table);
     SnapshotRef ref = SnapshotRef.newBuilder().setSnapshotId(snapshot).build();
     TableStatisticsServiceBlockingStub stub = grpc.withHeaders(grpc.raw().stats());
 
@@ -50,13 +49,25 @@ public class StatsResource {
 
     GetTableStatsResponse tableResp =
         stub.getTableStats(
-            GetTableStatsRequest.newBuilder().setTableId(tableId).setSnapshot(ref).setPage(page).build());
+            GetTableStatsRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(ref)
+                .setPage(page)
+                .build());
     ListColumnStatsResponse colResp =
         stub.listColumnStats(
-            ListColumnStatsRequest.newBuilder().setTableId(tableId).setSnapshot(ref).setPage(page).build());
+            ListColumnStatsRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(ref)
+                .setPage(page)
+                .build());
     ListFileColumnStatsResponse fileResp =
         stub.listFileColumnStats(
-            ListFileColumnStatsRequest.newBuilder().setTableId(tableId).setSnapshot(ref).setPage(page).build());
+            ListFileColumnStatsRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(ref)
+                .setPage(page)
+                .build());
 
     StatsDto stats =
         new StatsDto(
@@ -122,7 +133,10 @@ public class StatsResource {
                 approx.getMethod());
     List<NdvSketchDto> sketches =
         ndv.getSketchesList().stream()
-            .map(s -> new NdvSketchDto(s.getType(), s.getEncoding(), s.getCompression(), s.getVersion()))
+            .map(
+                s ->
+                    new NdvSketchDto(
+                        s.getType(), s.getEncoding(), s.getCompression(), s.getVersion()))
             .collect(Collectors.toList());
     return new NdvDto(ndv.getExact(), approxDto, sketches);
   }

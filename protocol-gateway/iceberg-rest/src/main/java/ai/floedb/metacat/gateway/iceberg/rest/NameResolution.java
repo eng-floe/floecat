@@ -10,9 +10,7 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import java.util.List;
 
-/**
- * Resolves human-readable identifiers into Metacat ResourceIds via DirectoryService.
- */
+/** Resolves human-readable identifiers into Metacat ResourceIds via DirectoryService. */
 public final class NameResolution {
   private NameResolution() {}
 
@@ -20,8 +18,7 @@ public final class NameResolution {
     DirectoryServiceGrpc.DirectoryServiceBlockingStub dir =
         grpc.withHeaders(grpc.raw().directory());
     NameRef ref = NameRef.newBuilder().setCatalog(catalogName).build();
-    return dir
-        .resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(ref).build())
+    return dir.resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(ref).build())
         .getResourceId();
   }
 
@@ -39,11 +36,7 @@ public final class NameResolution {
     DirectoryServiceGrpc.DirectoryServiceBlockingStub dir =
         grpc.withHeaders(grpc.raw().directory());
     NameRef ref =
-        NameRef.newBuilder()
-            .setCatalog(catalogName)
-            .addAllPath(path)
-            .setName(tableName)
-            .build();
+        NameRef.newBuilder().setCatalog(catalogName).addAllPath(path).setName(tableName).build();
     return dir.resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build()).getResourceId();
   }
 

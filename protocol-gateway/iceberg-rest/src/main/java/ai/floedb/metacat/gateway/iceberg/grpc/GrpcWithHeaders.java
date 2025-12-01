@@ -8,9 +8,7 @@ import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.HttpHeaders;
 
-/**
- * Provides blocking stubs decorated with inbound auth/tenant headers.
- */
+/** Provides blocking stubs decorated with inbound auth/tenant headers. */
 @RequestScoped
 public class GrpcWithHeaders {
   private final GrpcClients clients;

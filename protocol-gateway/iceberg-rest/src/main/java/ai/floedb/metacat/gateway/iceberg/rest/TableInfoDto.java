@@ -3,9 +3,7 @@ package ai.floedb.metacat.gateway.iceberg.rest;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Iceberg-friendly table info.
- */
+/** Iceberg-friendly table info. */
 public record TableInfoDto(
     TableIdentifierDto identifier,
     String schemaJson,

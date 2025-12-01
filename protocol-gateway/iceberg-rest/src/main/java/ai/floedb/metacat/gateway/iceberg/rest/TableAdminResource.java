@@ -44,8 +44,7 @@ public class TableAdminResource {
 
     ResourceId tableId =
         NameResolution.resolveTable(grpc, catalogName, sourcePath, request.source().name());
-    ResourceId namespaceId =
-        NameResolution.resolveNamespace(grpc, catalogName, destinationPath);
+    ResourceId namespaceId = NameResolution.resolveNamespace(grpc, catalogName, destinationPath);
 
     TableServiceGrpc.TableServiceBlockingStub stub = grpc.withHeaders(grpc.raw().table());
     TableSpec.Builder spec =
@@ -69,7 +68,8 @@ public class TableAdminResource {
     return Response.status(Response.Status.NOT_IMPLEMENTED)
         .entity(
             new IcebergErrorResponse(
-                new IcebergError("transactions not implemented", "UnsupportedOperationException", 501)))
+                new IcebergError(
+                    "transactions not implemented", "UnsupportedOperationException", 501)))
         .build();
   }
 

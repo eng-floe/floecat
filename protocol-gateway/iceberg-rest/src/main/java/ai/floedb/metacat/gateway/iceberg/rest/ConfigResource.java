@@ -8,7 +8,6 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -62,8 +61,7 @@ public class ConfigResource {
 
     String idempotencyLifetime = null;
 
-    return Response.ok(
-            new CatalogConfigDto(defaults, overrides, endpoints, idempotencyLifetime))
+    return Response.ok(new CatalogConfigDto(defaults, overrides, endpoints, idempotencyLifetime))
         .build();
   }
 

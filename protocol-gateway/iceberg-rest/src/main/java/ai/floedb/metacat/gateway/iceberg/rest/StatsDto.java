@@ -4,9 +4,7 @@ import java.util.List;
 import java.util.Map;
 
 public record StatsDto(
-    TableStatsDto table,
-    List<ColumnStatsDto> columns,
-    List<FileColumnStatsDto> files) {}
+    TableStatsDto table, List<ColumnStatsDto> columns, List<FileColumnStatsDto> files) {}
 
 record TableStatsDto(
     long snapshotId,
@@ -41,11 +39,24 @@ record FileColumnStatsDto(
 
 record NdvDto(long exact, NdvApproxDto approx, List<NdvSketchDto> sketches) {}
 
-record NdvApproxDto(double estimate, double relativeStandardError, double confidenceLower, double confidenceUpper, double confidenceLevel, long rowsSeen, long rowsTotal, String method) {}
+record NdvApproxDto(
+    double estimate,
+    double relativeStandardError,
+    double confidenceLower,
+    double confidenceUpper,
+    double confidenceLevel,
+    long rowsSeen,
+    long rowsTotal,
+    String method) {}
 
 record NdvSketchDto(String type, String encoding, String compression, long version) {}
 
-record UpstreamStampDto(String system, String tableNativeId, String commitRef, String fetchedAt, Map<String, String> properties) {}
+record UpstreamStampDto(
+    String system,
+    String tableNativeId,
+    String commitRef,
+    String fetchedAt,
+    Map<String, String> properties) {}
 
 enum FileContentDto {
   DATA,

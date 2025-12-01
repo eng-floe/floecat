@@ -41,7 +41,13 @@ final class TableResponseMapper {
       formatVersion = 2;
     }
     return new TableMetadataView(
-        formatVersion, tableUuid, location, lastUpdatedMs, props, currentSnapshotId, lastSequenceNumber);
+        formatVersion,
+        tableUuid,
+        location,
+        lastUpdatedMs,
+        props,
+        currentSnapshotId,
+        lastSequenceNumber);
   }
 
   private static Long maybeLong(String value) {

@@ -31,8 +31,7 @@ public record ViewMetadataView(
       @JsonProperty("timestamp-ms") Long timestampMs) {}
 
   @JsonInclude(JsonInclude.Include.NON_NULL)
-  public record ViewRepresentation(
-      String type, String sql, String dialect) {}
+  public record ViewRepresentation(String type, String sql, String dialect) {}
 
   @JsonInclude(JsonInclude.Include.NON_NULL)
   public record SchemaSummary(

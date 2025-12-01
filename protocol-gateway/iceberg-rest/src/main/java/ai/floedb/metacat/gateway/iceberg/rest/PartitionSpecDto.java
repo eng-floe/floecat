@@ -11,7 +11,9 @@ public record PartitionSpecDto(int specId, String specName, List<PartitionFieldD
       return null;
     }
     List<PartitionFieldDto> fields =
-        spec.getFieldsList().stream().map(PartitionFieldDto::fromProto).collect(Collectors.toList());
+        spec.getFieldsList().stream()
+            .map(PartitionFieldDto::fromProto)
+            .collect(Collectors.toList());
     String name = spec.getSpecName();
     return new PartitionSpecDto(spec.getSpecId(), name == null ? "" : name, fields);
   }

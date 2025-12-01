@@ -2,9 +2,7 @@ package ai.floedb.metacat.gateway.iceberg.rest;
 
 import java.util.Map;
 
-/**
- * Minimal DTOs for Iceberg view requests.
- */
+/** Minimal DTOs for Iceberg view requests. */
 public final class ViewRequests {
   private ViewRequests() {}
 

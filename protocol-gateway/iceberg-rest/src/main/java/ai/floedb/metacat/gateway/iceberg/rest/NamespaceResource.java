@@ -4,8 +4,10 @@ import ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.ListNamespacesRequest;
+import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.NamespaceSpec;
+import ai.floedb.metacat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
@@ -28,7 +30,6 @@ import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.UriInfo;
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -58,8 +59,7 @@ public class NamespaceResource {
     String catalogName = resolveCatalog(prefix);
     ResourceId catalogId = resolveCatalogId(prefix);
     ListNamespacesRequest.Builder req = ListNamespacesRequest.newBuilder();
-    String parentNamespace =
-        parent != null && !parent.isBlank() ? parent : namespace;
+    String parentNamespace = parent != null && !parent.isBlank() ? parent : namespace;
     if (parentNamespace != null && !parentNamespace.isBlank()) {
       ResourceId namespaceId =
           NameResolution.resolveNamespace(grpc, catalogName, NamespacePaths.split(parentNamespace));
@@ -119,40 +119,67 @@ public class NamespaceResource {
         grpc.withHeaders(grpc.raw().namespace());
     var resp =
         stub.getNamespace(GetNamespaceRequest.newBuilder().setNamespaceId(namespaceId).build());
-    return Response.ok(toInfo(namespace, resp.getNamespace())).build();
+    return Response.ok(toInfo(resp.getNamespace())).build();
   }
 
   @POST
   public Response create(@PathParam("prefix") String prefix, NamespaceRequests.Create req) {
-    String namespace = req != null ? req.namespace() : null;
+
+    if (req == null || req.namespace() == null || req.namespace().isBlank()) {
+      return Response.status(400)
+          .entity(
+              new IcebergErrorResponse(
+                  new IcebergError("Namespace name must be provided", "ValidationException", 400)))
+          .build();
+    }
+
+    String namespace = req.namespace();
     List<String> path = NamespacePaths.split(namespace);
-    String displayName = path.isEmpty() ? "namespace" : path.get(path.size() - 1);
-    String locationNs =
-        (namespace == null || namespace.isBlank()) ? String.join(".", path) : namespace;
+
+    if (path.isEmpty()) {
+      return Response.status(400)
+          .entity(
+              new IcebergErrorResponse(
+                  new IcebergError("Namespace name must be provided", "ValidationException", 400)))
+          .build();
+    }
+
+    final String displayName = path.get(path.size() - 1);
+    final List<String> parents = path.subList(0, path.size() - 1);
 
     ResourceId catalogId = resolveCatalogId(prefix);
+
     NamespaceSpec.Builder spec =
         NamespaceSpec.newBuilder()
             .setCatalogId(catalogId)
-            .addAllPath(path)
+            .addAllPath(parents)
             .setDisplayName(displayName);
-    if (req != null) {
-      if (req.description() != null) {
-        spec.setDescription(req.description());
-      }
-      if (req.properties() != null) {
-        spec.putAllProperties(req.properties());
-      }
-      if (req.policyRef() != null) {
-        spec.setPolicyRef(req.policyRef());
-      }
+
+    if (req.description() != null) {
+      spec.setDescription(req.description());
+    }
+    if (req.properties() != null) {
+      spec.putAllProperties(req.properties());
+    }
+    if (req.policyRef() != null) {
+      spec.setPolicyRef(req.policyRef());
     }
 
     NamespaceServiceGrpc.NamespaceServiceBlockingStub stub =
         grpc.withHeaders(grpc.raw().namespace());
-    var created = stub.createNamespace(CreateNamespaceRequest.newBuilder().setSpec(spec).build());
+
+    var createdNamespace =
+        stub.createNamespace(CreateNamespaceRequest.newBuilder().setSpec(spec).build())
+            .getNamespace();
+
+    List<String> createdPath =
+        createdNamespace.getParentsList().isEmpty()
+            ? List.of(createdNamespace.getDisplayName())
+            : concat(createdNamespace.getParentsList(), createdNamespace.getDisplayName());
+    String locationNs = String.join(".", createdPath);
+
     return Response.created(uriInfo.getAbsolutePathBuilder().path(locationNs).build())
-        .entity(toInfo(locationNs, created.getNamespace()))
+        .entity(toInfo(createdNamespace))
         .build();
   }
 
@@ -187,12 +214,12 @@ public class NamespaceResource {
         grpc.withHeaders(grpc.raw().namespace());
     var resp =
         stub.updateNamespace(
-            ai.floedb.metacat.catalog.rpc.UpdateNamespaceRequest.newBuilder()
+            UpdateNamespaceRequest.newBuilder()
                 .setNamespaceId(namespaceId)
                 .setSpec(spec)
                 .setUpdateMask(mask)
                 .build());
-    return Response.ok(toInfo(namespace, resp.getNamespace())).build();
+    return Response.ok(toInfo(resp.getNamespace())).build();
   }
 
   @Path("/{namespace}")
@@ -235,9 +262,7 @@ public class NamespaceResource {
           .entity(
               new IcebergErrorResponse(
                   new IcebergError(
-                      "A key cannot be in both removals and updates",
-                      "ValidationException",
-                      422)))
+                      "A key cannot be in both removals and updates", "ValidationException", 422)))
           .build();
     }
 
@@ -296,8 +321,13 @@ public class NamespaceResource {
     out.add(name);
     return out;
   }
-  private NamespaceInfoDto toInfo(
-      String namespacePath, ai.floedb.metacat.catalog.rpc.Namespace ns) {
+
+  private NamespaceInfoDto toInfo(Namespace ns) {
+    List<String> path =
+        ns.getParentsList().isEmpty()
+            ? List.of(ns.getDisplayName())
+            : concat(ns.getParentsList(), ns.getDisplayName());
+
     Map<String, String> props = new LinkedHashMap<>(ns.getPropertiesMap());
     if (ns.hasDescription() && ns.getDescription() != null && !ns.getDescription().isBlank()) {
       props.putIfAbsent("description", ns.getDescription());
@@ -305,7 +335,8 @@ public class NamespaceResource {
     if (ns.hasPolicyRef() && ns.getPolicyRef() != null && !ns.getPolicyRef().isBlank()) {
       props.putIfAbsent("policy_ref", ns.getPolicyRef());
     }
-    return new NamespaceInfoDto(NamespacePaths.split(namespacePath), Map.copyOf(props));
+
+    return new NamespaceInfoDto(path, Map.copyOf(props));
   }
 
   private String flattenPageToken(PageResponse page) {

@@ -25,7 +25,6 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
-import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
@@ -110,10 +109,12 @@ public class ViewResource {
     ViewServiceGrpc.ViewServiceBlockingStub stub = grpc.withHeaders(grpc.raw().view());
     CreateViewRequest.Builder request = CreateViewRequest.newBuilder().setSpec(spec);
     if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-      request.setIdempotency(ai.floedb.metacat.common.rpc.IdempotencyKey.newBuilder().setKey(idempotencyKey));
+      request.setIdempotency(
+          ai.floedb.metacat.common.rpc.IdempotencyKey.newBuilder().setKey(idempotencyKey));
     }
     var created = stub.createView(request.build());
-    return Response.ok(ViewResponseMapper.toLoadResult(namespace, viewName, created.getView())).build();
+    return Response.ok(ViewResponseMapper.toLoadResult(namespace, viewName, created.getView()))
+        .build();
   }
 
   @Path("/{view}")

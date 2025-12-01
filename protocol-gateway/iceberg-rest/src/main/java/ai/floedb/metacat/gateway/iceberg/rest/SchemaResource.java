@@ -12,8 +12,8 @@ import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
-import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import java.time.Instant;
@@ -51,8 +51,7 @@ public class SchemaResource {
       req.setPage(page);
     }
 
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub stub =
-        grpc.withHeaders(grpc.raw().snapshot());
+    SnapshotServiceGrpc.SnapshotServiceBlockingStub stub = grpc.withHeaders(grpc.raw().snapshot());
     var resp = stub.listSnapshots(req.build());
     List<SchemaHistoryDto> schemas =
         resp.getSnapshotsList().stream()

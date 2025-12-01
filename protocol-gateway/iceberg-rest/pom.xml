@@ -60,6 +60,11 @@
     </dependency>
     <dependency>
       <groupId>io.quarkus</groupId>
+      <artifactId>quarkus-test-common</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.quarkus</groupId>
       <artifactId>quarkus-junit5-mockito</artifactId>
       <scope>test</scope>
     </dependency>
@@ -88,6 +93,30 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.2.5</version>
         <configuration>
+          <includes>
+            <include>**/*Test.java</include>
+          </includes>
+          <skipTests>${skipUTs}</skipTests>
+          <argLine>--add-opens java.base/java.lang=ALL-UNNAMED</argLine>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <version>3.5.4</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <includes>
+            <include>**/*IT.java</include>
+          </includes>
+          <skipITs>${skipITs}</skipITs>
           <argLine>--add-opens java.base/java.lang=ALL-UNNAMED</argLine>
         </configuration>
       </plugin>

@@ -55,8 +55,6 @@ import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.RestAssured;
 import io.restassured.builder.RequestSpecBuilder;
-import io.restassured.filter.log.RequestLoggingFilter;
-import io.restassured.filter.log.ResponseLoggingFilter;
 import io.restassured.specification.RequestSpecification;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -110,7 +108,6 @@ class RestResourceTest {
             .addHeader("authorization", "Bearer token")
             .build();
     RestAssured.requestSpecification = defaultSpec;
-    RestAssured.filters(new RequestLoggingFilter(), new ResponseLoggingFilter());
   }
 
   @Test
@@ -209,8 +206,8 @@ class RestResourceTest {
             .setResourceId(nsId)
             .setDisplayName("analytics")
             .setDescription("desc")
-            .addParents("foo")
             .build();
+
     when(namespaceStub.createNamespace(any()))
         .thenReturn(CreateNamespaceResponse.newBuilder().setNamespace(created).build());
 
@@ -650,7 +647,9 @@ class RestResourceTest {
         .then()
         .statusCode(200)
         .body("defaults.'catalog-name'", equalTo("metacat"))
-        .body("endpoints", hasItems("POST /v1/{prefix}/tables/rename", "POST /v1/{prefix}/views/rename"));
+        .body(
+            "endpoints",
+            hasItems("POST /v1/{prefix}/tables/rename", "POST /v1/{prefix}/views/rename"));
   }
 
   @Test
@@ -697,7 +696,8 @@ class RestResourceTest {
             .setFileSizeInBytes(10)
             .setRecordCount(5)
             .build();
-    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-1").addDataFiles(file).build();
+    QueryDescriptor descriptor =
+        QueryDescriptor.newBuilder().setQueryId("plan-1").addDataFiles(file).build();
     when(queryStub.beginQuery(any()))
         .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
 
