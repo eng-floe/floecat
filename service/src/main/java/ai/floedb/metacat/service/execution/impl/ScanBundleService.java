@@ -10,17 +10,11 @@ import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
-import ai.floedb.metacat.connector.rpc.Connector;
-import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
-import ai.floedb.metacat.connector.rpc.GetConnectorRequest;
-import ai.floedb.metacat.connector.spi.ConnectorConfigMapper;
-import ai.floedb.metacat.connector.spi.ConnectorFactory;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
 import ai.floedb.metacat.execution.rpc.ScanFile;
 import ai.floedb.metacat.execution.rpc.ScanFileContent;
 import ai.floedb.metacat.query.rpc.SnapshotPin;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
-import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
@@ -32,41 +26,36 @@ public class ScanBundleService {
   @GrpcClient("metacat")
   TableServiceGrpc.TableServiceBlockingStub tables;
 
-  @GrpcClient("metacat")
-  ConnectorsGrpc.ConnectorsBlockingStub connectors;
-
   public MetacatConnector.ScanBundle fetch(
-      String correlationId, ResourceId tableId, SnapshotPin snapshotPin) {
+      String correlationId,
+      ResourceId tableId,
+      SnapshotPin snapshotPin,
+      TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats) {
+
+    // Load table metadata
     Table table =
         tables.getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
-    if (!table.hasUpstream() || !table.getUpstream().hasConnectorId()) {
-      throw GrpcErrors.preconditionFailed(
-          correlationId, "query.table.connector_missing", Map.of("table_id", tableId.getId()));
+
+    // SnapshotPin: snapshot_id is a proto3 scalar, no hasSnapshotId()
+    long snapshotId = snapshotPin.getSnapshotId();
+    if (snapshotId == 0L) {
+      throw GrpcErrors.invalidArgument(
+          correlationId, "query.snapshot.required", Map.of("table_id", tableId.getId()));
     }
 
-    ResourceId connectorId = table.getUpstream().getConnectorId();
-    Connector stored;
-    try {
-      stored =
-          connectors
-              .getConnector(GetConnectorRequest.newBuilder().setConnectorId(connectorId).build())
-              .getConnector();
-    } catch (StatusRuntimeException e) {
-      throw GrpcErrors.notFound(correlationId, "connector", Map.of("id", connectorId.getId()));
+    // Build bundle based on statistics
+    MetacatConnector.ScanBundle bundle = buildFromStats(table, snapshotId, stats);
+
+    if (bundle == null) {
+      throw GrpcErrors.internal(
+          correlationId,
+          "scanbundle.stats_unavailable",
+          Map.of(
+              "table_id", tableId.getId(),
+              "snapshot_id", Long.toString(snapshotId)));
     }
 
-    var cfg = ConnectorConfigMapper.fromProto(stored);
-    try (MetacatConnector connector = ConnectorFactory.create(cfg)) {
-      String sourceNsFq =
-          table.getUpstream().getNamespacePathList().isEmpty()
-              ? ""
-              : String.join(".", table.getUpstream().getNamespacePathList());
-      String sourceTable = table.getUpstream().getTableDisplayName();
-      long snapshotId = snapshotPin.getSnapshotId();
-      long asOfSeconds = snapshotPin.hasAsOf() ? snapshotPin.getAsOf().getSeconds() : 0L;
-
-      return connector.plan(sourceNsFq, sourceTable, snapshotId, asOfSeconds);
-    }
+    return bundle;
   }
 
   public MetacatConnector.ScanBundle buildFromStats(

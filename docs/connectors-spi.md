@@ -96,9 +96,8 @@ reconciler (long-running); connectors must tolerate repeated instantiation and r
 - **Reconciliation run** – `ReconcilerService` constructs a connector inside a try-with-resources
   block, iterates `listTables`, calls `enumerateSnapshotsWithStats`, and writes the returned
   `SnapshotBundle`s (table stats + column stats) through the service’s gRPC API.
-- **Query lifecycle** – During `QueryService.FetchScanBundle`, if a table has an
-  `UpstreamRef.connector_id`, the server instantiates that connector via the SPI and calls `plan()` to
-  fetch file lists pinned to the requested snapshot.
+- **Query lifecycle** – `QueryService.FetchScanBundle` fetch file lists pinned to the requested snapshot
+directly from table and file statistics stored in the catalog (via TableStatisticsService).
 
 ## Cross-References
 - Service connector management and reconciliation triggers:

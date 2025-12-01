@@ -61,7 +61,6 @@ public class MetacatSplitManager implements ConnectorSplitManager {
 
     MetacatTableHandle metacatHandle = (MetacatTableHandle) handle;
 
-    // 1. Build pruning input
     TupleDomain<IcebergColumnHandle> staticDomain = metacatHandle.getEnforcedConstraint();
     TupleDomain<IcebergColumnHandle> constraintDomain =
         constraint.getSummary().transformKeys(ch -> (IcebergColumnHandle) ch);
@@ -87,7 +86,6 @@ public class MetacatSplitManager implements ConnectorSplitManager {
             });
     requiredColumns.addAll(metacatHandle.getProjectedColumns());
 
-    // 2. Begin query (no pruning here anymore)
     BeginQueryRequest beginReq =
         BeginQueryRequest.newBuilder()
             .addInputs(toQueryInput(metacatHandle.getTableResourceId(), metacatHandle))
@@ -97,7 +95,6 @@ public class MetacatSplitManager implements ConnectorSplitManager {
     var beginResp = planning.beginQuery(beginReq);
     String queryId = beginResp.getQuery().getQueryId();
 
-    // 3. Fetch scan bundle (with pruning)
     FetchScanBundleRequest fetchReq =
         FetchScanBundleRequest.newBuilder()
             .setQueryId(queryId)
@@ -112,7 +109,6 @@ public class MetacatSplitManager implements ConnectorSplitManager {
     List<ScanFile> deleteScanFiles = fetchResp.getBundle().getDeleteFilesList();
     List<DeleteFile> deleteFiles = toDeleteFiles(deleteScanFiles);
 
-    // 4. Build splits (unchanged)
     String partitionSpecJson =
         Optional.ofNullable(metacatHandle.getPartitionSpecJson())
             .orElse(PartitionSpecParser.toJson(PartitionSpec.unpartitioned()));

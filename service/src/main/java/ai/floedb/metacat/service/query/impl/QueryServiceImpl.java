@@ -7,6 +7,7 @@ import ai.floedb.metacat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.metacat.catalog.rpc.SchemaServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
@@ -80,6 +81,9 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
 
   @GrpcClient("metacat")
   SchemaServiceGrpc.SchemaServiceBlockingStub schemas;
+
+  @GrpcClient("metacat")
+  TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats;
 
   @Inject QueryContextStore queryStore;
   @Inject ScanBundleService scanBundles;
@@ -427,7 +431,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   var pin = ctx.requireSnapshotPin(request.getTableId(), correlationId);
 
                   try {
-                    var raw = scanBundles.fetch(correlationId, request.getTableId(), pin);
+                    var raw = scanBundles.fetch(correlationId, request.getTableId(), pin, stats);
 
                     ScanBundle pruned =
                         ScanPruningUtils.pruneBundle(
