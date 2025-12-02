@@ -43,6 +43,8 @@ query lifecycle / scan bundle logic.
 - `catalog/builtin` – Shared builtin catalog data model, validator, and loader helpers.
 - `service/query` – Query lifecycle management (`QueryContext`, `QueryContextStore`,
   `QueryServiceImpl`).
+- `service/query/graph` – MetadataGraph cache + immutable node models shared by planners/executors
+  (see [`docs/metadata-graph.md`](metadata-graph.md)).
 - `service/gc` – Scheduled cleanup of stale idempotency entries.
 - `service/bootstrap` – Optional seeding of demo tenants and catalog data.
 - `service/metrics` – `MeteringInterceptor` + `StorageUsageMetrics` for Micrometer integration.

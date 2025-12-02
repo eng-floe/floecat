@@ -1,13 +1,20 @@
 package ai.floedb.metacat.service.query.resolve;
 
-import ai.floedb.metacat.catalog.rpc.*;
-import ai.floedb.metacat.common.rpc.*;
-import ai.floedb.metacat.query.rpc.*;
+import ai.floedb.metacat.common.rpc.NameRef;
+import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.SnapshotRef;
+import ai.floedb.metacat.query.rpc.QueryInput;
+import ai.floedb.metacat.query.rpc.SnapshotPin;
+import ai.floedb.metacat.query.rpc.SnapshotSet;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.query.graph.MetadataGraph;
 import com.google.protobuf.Timestamp;
-import io.quarkus.grpc.GrpcClient;
 import jakarta.enterprise.context.ApplicationScoped;
-import java.util.*;
+import jakarta.inject.Inject;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * QueryInputResolver
@@ -40,59 +47,7 @@ import java.util.*;
 @ApplicationScoped
 public class QueryInputResolver {
 
-  /** gRPC Directory resolution (tables/views). */
-  @GrpcClient("metacat")
-  DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
-
-  /** gRPC Snapshot resolution API. */
-  @GrpcClient("metacat")
-  SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots;
-
-  /**
-   * Optional test hooks overriding the concrete gRPC APIs. These allow pure unit tests without
-   * starting a server.
-   */
-  interface DirectoryApi {
-    ResolveTableResponse resolveTable(ResolveTableRequest req);
-
-    ResolveViewResponse resolveView(ResolveViewRequest req);
-  }
-
-  interface SnapshotApi {
-    GetSnapshotResponse getSnapshot(GetSnapshotRequest req);
-  }
-
-  DirectoryApi dirApi = null;
-  SnapshotApi snapApi = null;
-
-  /** Test-only injection point for Directory API. */
-  void setDirectoryApi(DirectoryApi api) {
-    this.dirApi = api;
-  }
-
-  /** Test-only injection point for Snapshot API. */
-  void setSnapshotApi(SnapshotApi api) {
-    this.snapApi = api;
-  }
-
-  /** Chooses real gRPC API or test override for directory. */
-  private DirectoryApi dir() {
-    if (dirApi != null) return dirApi;
-    return new DirectoryApi() {
-      public ResolveTableResponse resolveTable(ResolveTableRequest r) {
-        return directory.resolveTable(r);
-      }
-
-      public ResolveViewResponse resolveView(ResolveViewRequest r) {
-        return directory.resolveView(r);
-      }
-    };
-  }
-
-  /** Chooses real gRPC API or test override for snapshots. */
-  private SnapshotApi snaps() {
-    return (snapApi != null) ? snapApi : req -> snapshots.getSnapshot(req);
-  }
+  @Inject MetadataGraph metadataGraph;
 
   // =============================================================================
   // Result container
@@ -144,21 +99,17 @@ public class QueryInputResolver {
 
       switch (in.getTargetCase()) {
         case NAME -> {
-          rid = resolveName(correlationId, in.getName());
+          rid = metadataGraph.resolveName(correlationId, in.getName());
           resolved.add(rid);
 
-          SnapChoice sc = selectSnapshot(correlationId, rid, in.getSnapshot(), asOfDefault);
-
-          pins.add(buildPin(rid, sc));
+          pins.add(metadataGraph.snapshotPinFor(correlationId, rid, in.getSnapshot(), asOfDefault));
         }
 
         case TABLE_ID -> {
           rid = in.getTableId();
           resolved.add(rid);
 
-          SnapChoice sc = selectSnapshot(correlationId, rid, in.getSnapshot(), asOfDefault);
-
-          pins.add(buildPin(rid, sc));
+          pins.add(metadataGraph.snapshotPinFor(correlationId, rid, in.getSnapshot(), asOfDefault));
         }
 
         case VIEW_ID -> {
@@ -177,13 +128,15 @@ public class QueryInputResolver {
 
           // 1. Explicit override.as_of → use it
           if (override != null && override.hasAsOf()) {
-            pins.add(buildPin(rid, new SnapChoice(0L, override.getAsOf())));
+            pins.add(
+                metadataGraph.snapshotPinFor(
+                    correlationId, rid, override, Optional.of(override.getAsOf())));
             break;
           }
 
           // 2. asOfDefault → timestamp pin
           if (asOfDefault.isPresent()) {
-            pins.add(buildPin(rid, new SnapChoice(0L, asOfDefault.get())));
+            pins.add(metadataGraph.snapshotPinFor(correlationId, rid, null, asOfDefault));
             break;
           }
 
@@ -223,75 +176,7 @@ public class QueryInputResolver {
    * </ul>
    */
   private ResourceId resolveName(String cid, NameRef ref) {
-
-    if (ref.hasResourceId()) return ref.getResourceId();
-
-    List<ResourceId> matches = new ArrayList<>(2);
-
-    try {
-      matches.add(
-          dir().resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build()).getResourceId());
-    } catch (Exception ignored) {
-    }
-
-    try {
-      matches.add(
-          dir().resolveView(ResolveViewRequest.newBuilder().setRef(ref).build()).getResourceId());
-    } catch (Exception ignored) {
-    }
-
-    if (matches.isEmpty()) {
-      throw GrpcErrors.invalidArgument(
-          cid, "query.input.unresolved", Map.of("name", ref.toString()));
-    }
-
-    if (matches.size() > 1) {
-      throw GrpcErrors.invalidArgument(
-          cid, "query.input.ambiguous", Map.of("name", ref.toString()));
-    }
-
-    return matches.get(0);
-  }
-
-  // =============================================================================
-  // Snapshot logic
-  // =============================================================================
-
-  /**
-   * Computes which snapshot or timestamp pin should be applied.
-   *
-   * <p>Priority:
-   *
-   * <ol>
-   *   <li>explicit override snapshot_id
-   *   <li>explicit override as_of timestamp
-   *   <li>asOfDefault timestamp
-   *   <li>snapshot(SPECIAL = CURRENT)
-   * </ol>
-   */
-  private SnapChoice selectSnapshot(
-      String cid, ResourceId rid, SnapshotRef override, Optional<Timestamp> asOfDefault) {
-
-    // 1. explicit snapshot override
-    if (override != null && override.hasSnapshotId())
-      return new SnapChoice(override.getSnapshotId(), null);
-
-    // 2. explicit as-of override
-    if (override != null && override.hasAsOf()) return new SnapChoice(0L, override.getAsOf());
-
-    // 3. as-of-default
-    if (asOfDefault.isPresent()) return new SnapChoice(0L, asOfDefault.get());
-
-    // 4. fallback to CURRENT
-    var resp =
-        snaps()
-            .getSnapshot(
-                GetSnapshotRequest.newBuilder()
-                    .setTableId(rid)
-                    .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
-                    .build());
-
-    return new SnapChoice(resp.getSnapshot().getSnapshotId(), null);
+    return metadataGraph.resolveName(cid, ref);
   }
 
   /** Builds a SnapshotPin using the computed SnapChoice. */

@@ -1,11 +1,9 @@
 package ai.floedb.metacat.service.query.impl;
 
 import ai.floedb.metacat.catalog.rpc.GetSnapshotRequest;
-import ai.floedb.metacat.catalog.rpc.GetTableRequest;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
-import ai.floedb.metacat.catalog.rpc.Table;
-import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.query.rpc.DescribeInputsRequest;
 import ai.floedb.metacat.query.rpc.DescribeInputsResponse;
@@ -16,6 +14,8 @@ import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.LogHelper;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.query.QueryContextStore;
+import ai.floedb.metacat.service.query.graph.MetadataGraph;
+import ai.floedb.metacat.service.query.graph.TableNode;
 import ai.floedb.metacat.service.query.resolve.LogicalSchemaMapper;
 import ai.floedb.metacat.service.query.resolve.ObligationsResolver;
 import ai.floedb.metacat.service.query.resolve.QueryInputResolver;
@@ -49,9 +49,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   @Inject ObligationsResolver obligations;
   @Inject ViewExpansionResolver expansions;
   @Inject QueryContextStore queryStore;
-
-  @GrpcClient("metacat")
-  TableServiceGrpc.TableServiceBlockingStub tables;
+  @Inject MetadataGraph metadataGraph;
 
   @GrpcClient("metacat")
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots;
@@ -87,13 +85,24 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
 
                     ResourceId rid = pin.getTableId();
 
-                    // Load table metadata
-                    Table t =
-                        tables
-                            .getTable(GetTableRequest.newBuilder().setTableId(rid).build())
-                            .getTable();
+                    if (rid.getKind() != ResourceKind.RK_TABLE) {
+                      throw GrpcErrors.invalidArgument(
+                          correlationId(),
+                          "query.input.invalid",
+                          java.util.Map.of("resource_id", rid.getId()));
+                    }
 
-                    String schemaJson = t.getSchemaJson();
+                    TableNode tableNode =
+                        metadataGraph
+                            .table(rid)
+                            .orElseThrow(
+                                () ->
+                                    GrpcErrors.notFound(
+                                        correlationId(),
+                                        "table",
+                                        java.util.Map.of("id", rid.getId())));
+
+                    String schemaJson = tableNode.schemaJson();
 
                     // Apply snapshot override if snapshot_id > 0
                     long snapId = pin.getSnapshotId();
@@ -113,7 +122,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                       }
                     }
 
-                    SchemaDescriptor desc = schemaMapper.map(t, schemaJson);
+                    SchemaDescriptor desc = schemaMapper.map(tableNode, schemaJson);
                     out.addSchemas(desc);
                   }
 
