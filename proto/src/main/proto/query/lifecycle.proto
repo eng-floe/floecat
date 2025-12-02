@@ -55,9 +55,11 @@ enum QueryStatus {
  */
 message SnapshotPin {
   ai.floedb.metacat.common.ResourceId table_id = 1;
-  int64 snapshot_id = 2;
-  // If snapshot_id==0, pin uses this "as of" timestamp.
-  google.protobuf.Timestamp as_of = 3;
+
+  oneof which {
+    int64 snapshot_id = 2;
+    google.protobuf.Timestamp as_of = 3;
+  }
 }
 
 /**
