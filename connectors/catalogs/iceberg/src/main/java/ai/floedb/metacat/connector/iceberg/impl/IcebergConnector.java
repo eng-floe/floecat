@@ -606,48 +606,8 @@ public final class IcebergConnector implements MetacatConnector {
 
   private IcebergMetadata buildIcebergMetadata(String namespaceFq, String tableName, Table table) {
     TableMetadata metadata = tableMetadata(table);
-    if (metadata == null && catalog != null) {
-      try {
-        Namespace namespace =
-            (namespaceFq == null || namespaceFq.isBlank())
-                ? Namespace.empty()
-                : Namespace.of(namespaceFq.split("\\."));
-        TableIdentifier identifier =
-            namespace.isEmpty()
-                ? TableIdentifier.of(tableName)
-                : TableIdentifier.of(namespace, tableName);
-        Table restTable = catalog.loadTable(identifier);
-        metadata = tableMetadata(restTable);
-      } catch (Exception e) {
-        System.out.println(
-            "[IcebergConnector] failed to fetch metadata via REST catalog for "
-                + namespaceFq
-                + "."
-                + tableName
-                + ": "
-                + e);
-      }
-    }
     if (metadata == null) {
       String fallbackLocation = tableMetadataLocation(table);
-      if ((fallbackLocation == null || fallbackLocation.isBlank())
-          && glueFilter != null
-          && namespaceFq != null
-          && !namespaceFq.isBlank()
-          && tableName != null
-          && !tableName.isBlank()) {
-        try {
-          fallbackLocation = glueFilter.metadataLocation(namespaceFq, tableName);
-        } catch (Exception e) {
-          System.out.println(
-              "[IcebergConnector] failed to fetch metadata location from Glue for "
-                  + namespaceFq
-                  + "."
-                  + tableName
-                  + ": "
-                  + e);
-        }
-      }
       if (fallbackLocation == null || fallbackLocation.isBlank()) {
         return null;
       }
