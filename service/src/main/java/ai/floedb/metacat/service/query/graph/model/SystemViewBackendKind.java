@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.query.graph;
+package ai.floedb.metacat.service.query.graph.model;
 
 /**
  * Execution backend for a system view.

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import ai.floedb.metacat.common.rpc.ErrorCode;
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.repo.IdempotencyRepository;
@@ -139,7 +140,11 @@ public class IdempotencyGuardTest {
         key,
         OP,
         requestHash,
-        ResourceId.newBuilder().setTenantId(TENANT).setId("rid1").build(),
+        ResourceId.newBuilder()
+            .setTenantId(TENANT)
+            .setId("rid1")
+            .setKind(ResourceKind.RK_UNSPECIFIED)
+            .build(),
         MutationMeta.newBuilder().setPointerVersion(5).build(),
         "payload1".getBytes(StandardCharsets.UTF_8),
         createdAt,
@@ -157,7 +162,11 @@ public class IdempotencyGuardTest {
                     () ->
                         new IdempotencyGuard.CreateResult<>(
                             "R2",
-                            ResourceId.newBuilder().setTenantId(TENANT).setId("rid2").build()),
+                            ResourceId.newBuilder()
+                                .setTenantId(TENANT)
+                                .setId("rid2")
+                                .setKind(ResourceKind.RK_UNSPECIFIED)
+                                .build()),
                     s -> MutationMeta.newBuilder().setPointerVersion(9).build(),
                     s -> s.getBytes(StandardCharsets.UTF_8),
                     b -> new String(b, StandardCharsets.UTF_8),
@@ -388,7 +397,11 @@ public class IdempotencyGuardTest {
   }
 
   private static ResourceId resourceId(String id) {
-    return ResourceId.newBuilder().setTenantId(TENANT).setId(id).build();
+    return ResourceId.newBuilder()
+        .setTenantId(TENANT)
+        .setId(id)
+        .setKind(ResourceKind.RK_UNSPECIFIED)
+        .build();
   }
 
   private static Timestamp ts(Instant i) {

@@ -1,145 +1,111 @@
 package ai.floedb.metacat.service.query.graph;
 
-import ai.floedb.metacat.catalog.rpc.Catalog;
-import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc.DirectoryServiceBlockingStub;
-import ai.floedb.metacat.catalog.rpc.GetSnapshotRequest;
-import ai.floedb.metacat.catalog.rpc.Namespace;
-import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveTableResponse;
-import ai.floedb.metacat.catalog.rpc.ResolveViewRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveViewResponse;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc.SnapshotServiceBlockingStub;
-import ai.floedb.metacat.catalog.rpc.Table;
-import ai.floedb.metacat.catalog.rpc.TableFormat;
-import ai.floedb.metacat.catalog.rpc.UpstreamRef;
-import ai.floedb.metacat.catalog.rpc.View;
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
-import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
-import ai.floedb.metacat.common.rpc.SpecialSnapshot;
-import ai.floedb.metacat.query.rpc.SchemaColumn;
 import ai.floedb.metacat.query.rpc.SnapshotPin;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.query.graph.cache.GraphCacheKey;
+import ai.floedb.metacat.service.query.graph.cache.GraphCacheManager;
+import ai.floedb.metacat.service.query.graph.loader.NodeLoader;
+import ai.floedb.metacat.service.query.graph.model.CatalogNode;
+import ai.floedb.metacat.service.query.graph.model.NamespaceNode;
+import ai.floedb.metacat.service.query.graph.model.RelationNode;
+import ai.floedb.metacat.service.query.graph.model.TableNode;
+import ai.floedb.metacat.service.query.graph.model.ViewNode;
+import ai.floedb.metacat.service.query.graph.resolver.FullyQualifiedResolver;
+import ai.floedb.metacat.service.query.graph.resolver.NameResolver;
+import ai.floedb.metacat.service.query.graph.resolver.NameResolver.ResolvedRelation;
+import ai.floedb.metacat.service.query.graph.snapshot.SnapshotHelper;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
+import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.repo.impl.ViewRepository;
-import ai.floedb.metacat.storage.errors.StorageNotFoundException;
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
+import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.Timestamp;
-import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.quarkus.grpc.GrpcClient;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.time.Duration;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
  * MetadataGraph orchestrates cached access to {@link RelationNode}s.
  *
- * <p>This class encapsulates cache lifecycle, repository lookups, and mutation metadata so that
- * subsequent query/runtime layers can reason about a consistent view of catalogs, namespaces,
- * tables, and views without issuing redundant storage calls. See {@code docs/metadata-graph.md} for
- * an architectural overview and usage guidelines.
+ * <p>This class delegates cache lifecycle, repository lookups, and snapshot semantics to helper
+ * components so higher layers can reason about catalogs/namespaces/tables/views without issuing
+ * redundant storage calls. See {@code docs/metadata-graph.md} for an architectural overview and
+ * usage guidelines.
  */
 @ApplicationScoped
 public class MetadataGraph {
 
   private static final Logger LOG = Logger.getLogger(MetadataGraph.class);
-  private static final Map<EngineKey, EngineHint> NO_ENGINE_HINTS = Map.of();
 
-  private final CatalogRepository catalogRepository;
-  private final NamespaceRepository namespaceRepository;
-  private final TableRepository tableRepository;
-  private final ViewRepository viewRepository;
-  private final Cache<GraphCacheKey, RelationNode> nodeCache;
-  private SnapshotClient snapshotClient;
-  private DirectoryClient directoryClient;
-  private Counter cacheHitCounter;
-  private Counter cacheMissCounter;
+  private final GraphCacheManager cacheManager;
+  private final NodeLoader nodeLoader;
+  private final NameResolver nameResolver;
+  private final FullyQualifiedResolver fqResolver;
+  private final SnapshotHelper snapshotHelper;
+  private PrincipalProvider principalProvider;
+  private final MeterRegistry meterRegistry;
   private Timer loadTimer;
 
-  @Inject
-  @GrpcClient("metacat")
-  SnapshotServiceBlockingStub snapshotStub;
-
-  @Inject
-  @GrpcClient("metacat")
-  DirectoryServiceBlockingStub directoryStub;
-
-  @Inject MeterRegistry meterRegistry;
-
-  interface SnapshotClient {
-    ai.floedb.metacat.catalog.rpc.GetSnapshotResponse getSnapshot(
-        ai.floedb.metacat.catalog.rpc.GetSnapshotRequest request);
-  }
-
-  interface DirectoryClient {
-    ResolveTableResponse resolveTable(ResolveTableRequest request);
-
-    ResolveViewResponse resolveView(ResolveViewRequest request);
+  public MetadataGraph(
+      CatalogRepository catalogRepository,
+      NamespaceRepository namespaceRepository,
+      SnapshotRepository snapshotRepository,
+      TableRepository tableRepository,
+      ViewRepository viewRepository) {
+    this(
+        catalogRepository,
+        namespaceRepository,
+        snapshotRepository,
+        tableRepository,
+        viewRepository,
+        null,
+        null,
+        null,
+        50_000L);
   }
 
   @Inject
   public MetadataGraph(
       CatalogRepository catalogRepository,
       NamespaceRepository namespaceRepository,
+      SnapshotRepository snapshotRepository,
       TableRepository tableRepository,
-      ViewRepository viewRepository) {
-    this.catalogRepository = catalogRepository;
-    this.namespaceRepository = namespaceRepository;
-    this.tableRepository = tableRepository;
-    this.viewRepository = viewRepository;
-    this.nodeCache =
-        Caffeine.newBuilder().maximumSize(50_000).expireAfterAccess(Duration.ofMinutes(15)).build();
+      ViewRepository viewRepository,
+      @GrpcClient("metacat") SnapshotServiceBlockingStub snapshotStub,
+      MeterRegistry meterRegistry,
+      PrincipalProvider principalProvider,
+      @ConfigProperty(name = "metacat.metadata.graph.cache-max-size", defaultValue = "50000")
+          long cacheMaxSize) {
+    this.meterRegistry = meterRegistry;
+    this.cacheManager = new GraphCacheManager(cacheMaxSize > 0, cacheMaxSize, meterRegistry);
+    this.nodeLoader =
+        new NodeLoader(catalogRepository, namespaceRepository, tableRepository, viewRepository);
+    this.nameResolver =
+        new NameResolver(catalogRepository, namespaceRepository, tableRepository, viewRepository);
+    this.fqResolver =
+        new FullyQualifiedResolver(
+            catalogRepository, namespaceRepository, tableRepository, viewRepository);
+    this.snapshotHelper = new SnapshotHelper(snapshotRepository, snapshotStub);
+    this.principalProvider = principalProvider;
   }
 
   @PostConstruct
-  void initSnapshotClient() {
-    this.snapshotClient =
-        snapshotStub != null
-            ? snapshotStub::getSnapshot
-            : req -> {
-              throw new IllegalStateException("Snapshot client not configured");
-            };
-    this.directoryClient =
-        directoryStub != null
-            ? new DirectoryClient() {
-              @Override
-              public ResolveTableResponse resolveTable(ResolveTableRequest request) {
-                return directoryStub.resolveTable(request);
-              }
-
-              @Override
-              public ResolveViewResponse resolveView(ResolveViewRequest request) {
-                return directoryStub.resolveView(request);
-              }
-            }
-            : new DirectoryClient() {
-              @Override
-              public ResolveTableResponse resolveTable(ResolveTableRequest request) {
-                throw new IllegalStateException("Directory client not configured");
-              }
-
-              @Override
-              public ResolveViewResponse resolveView(ResolveViewRequest request) {
-                throw new IllegalStateException("Directory client not configured");
-              }
-            };
+  void initMetrics() {
     if (meterRegistry != null) {
-      this.cacheHitCounter = meterRegistry.counter("metacat.metadata.graph.cache", "result", "hit");
-      this.cacheMissCounter =
-          meterRegistry.counter("metacat.metadata.graph.cache", "result", "miss");
       this.loadTimer = meterRegistry.timer("metacat.metadata.graph.load");
     }
   }
@@ -151,30 +117,24 @@ public class MetadataGraph {
    * @return optional node (empty when resource is missing or not yet supported)
    */
   public Optional<RelationNode> resolve(ResourceId id) {
-    Optional<MutationMeta> metaOpt = mutationMeta(id);
+    Optional<MutationMeta> metaOpt = nodeLoader.mutationMeta(id);
     if (metaOpt.isEmpty()) {
       return Optional.empty();
     }
     MutationMeta meta = metaOpt.get();
     GraphCacheKey key = new GraphCacheKey(id, meta.getPointerVersion());
-    RelationNode cached = nodeCache.getIfPresent(key);
+    RelationNode cached = cacheManager.get(id, key);
     if (cached != null) {
-      if (cacheHitCounter != null) {
-        cacheHitCounter.increment();
-      }
       if (LOG.isTraceEnabled()) {
         LOG.tracef(
             "MetadataGraph cache hit for %s (version=%d)", id.getId(), meta.getPointerVersion());
       }
       return Optional.of(cached);
     }
-    if (cacheMissCounter != null) {
-      cacheMissCounter.increment();
-    }
     Timer.Sample sample =
         loadTimer != null && meterRegistry != null ? Timer.start(meterRegistry) : null;
-    Optional<RelationNode> loaded = loadNode(id, meta);
-    loaded.ifPresent(node -> nodeCache.put(key, node));
+    Optional<RelationNode> loaded = nodeLoader.load(id, meta);
+    loaded.ifPresent(node -> cacheManager.put(id, key, node));
     if (sample != null && loadTimer != null) {
       sample.stop(loadTimer);
     }
@@ -206,225 +166,235 @@ public class MetadataGraph {
     return resolve(id).filter(ViewNode.class::isInstance).map(ViewNode.class::cast);
   }
 
-  /**
-   * Computes a {@link SnapshotPin} for the provided table, honoring overrides and default AS OF
-   * timestamps.
-   *
-   * <p>The helper only calls the snapshot service when it needs to fetch the current snapshot ID.
-   */
+  /** Computes a {@link SnapshotPin} honoring overrides and default AS OF timestamps. */
   public SnapshotPin snapshotPinFor(
       String correlationId,
       ResourceId tableId,
       SnapshotRef override,
       Optional<Timestamp> asOfDefault) {
-
-    // explicit snapshot override wins
-    if (override != null && override.hasSnapshotId()) {
-      return buildSnapshotPin(tableId, override.getSnapshotId(), null);
-    }
-
-    // explicit AS OF override
-    if (override != null && override.hasAsOf()) {
-      return buildSnapshotPin(tableId, 0L, override.getAsOf());
-    }
-
-    // as-of default
-    if (asOfDefault.isPresent()) {
-      return buildSnapshotPin(tableId, 0L, asOfDefault.get());
-    }
-
-    // fall back to CURRENT snapshot id
-    var response =
-        snapshotClient.getSnapshot(
-            GetSnapshotRequest.newBuilder()
-                .setTableId(tableId)
-                .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
-                .build());
-    return buildSnapshotPin(tableId, response.getSnapshot().getSnapshotId(), null);
+    return snapshotHelper.snapshotPinFor(correlationId, tableId, override, asOfDefault);
   }
 
-  /**
-   * Evict every cached version of the provided resource.
-   *
-   * <p>Updaters should call this after successful mutations to avoid serving stale metadata.
-   */
+  /** Evict every cached version of the provided resource. */
   public void invalidate(ResourceId id) {
-    nodeCache.asMap().keySet().removeIf(key -> key.id().equals(id));
+    cacheManager.invalidate(id);
   }
 
   /** Test-only hook for overriding snapshot client. */
-  void setSnapshotClient(SnapshotClient client) {
-    this.snapshotClient = client;
+  void setSnapshotClient(SnapshotHelper.SnapshotClient client) {
+    snapshotHelper.setSnapshotClient(client);
   }
 
-  /** Test-only hook for overriding directory client. */
-  void setDirectoryClient(DirectoryClient client) {
-    this.directoryClient = client;
+  /** Test-only hook for overriding principal provider. */
+  void setPrincipalProvider(PrincipalProvider provider) {
+    this.principalProvider = provider;
   }
 
-  /**
-   * Resolves a {@link NameRef} into a {@link ResourceId}, mirroring the DirectoryService semantics.
-   */
+  /** Resolves a {@link NameRef} into a {@link ResourceId}, mirroring DirectoryService semantics. */
   public ResourceId resolveName(String correlationId, NameRef ref) {
+    validateNameRef(correlationId, ref);
+
     if (ref.hasResourceId()) {
       return ref.getResourceId();
     }
 
-    List<ResourceId> matches = new java.util.ArrayList<>(2);
+    String tenantId = requireTenantId(correlationId);
 
-    try {
-      matches.add(
-          directoryClient
-              .resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build())
-              .getResourceId());
-    } catch (Exception ignored) {
-    }
+    Optional<ResolvedRelation> tableResolved = nameResolver.resolveTableRelation(tenantId, ref);
+    Optional<ResolvedRelation> viewResolved = nameResolver.resolveViewRelation(tenantId, ref);
 
-    try {
-      matches.add(
-          directoryClient
-              .resolveView(ResolveViewRequest.newBuilder().setRef(ref).build())
-              .getResourceId());
-    } catch (Exception ignored) {
-    }
-
-    if (matches.isEmpty()) {
-      throw GrpcErrors.invalidArgument(
-          correlationId, "query.input.unresolved", Map.of("name", ref.toString()));
-    }
-
-    if (matches.size() > 1) {
+    if (tableResolved.isPresent() && viewResolved.isPresent()) {
       throw GrpcErrors.invalidArgument(
           correlationId, "query.input.ambiguous", Map.of("name", ref.toString()));
     }
 
-    return matches.get(0);
+    if (tableResolved.isPresent()) {
+      return tableResolved.get().resourceId();
+    }
+
+    if (viewResolved.isPresent()) {
+      return viewResolved.get().resourceId();
+    }
+
+    throw GrpcErrors.invalidArgument(
+        correlationId, "query.input.unresolved", Map.of("name", ref.toString()));
   }
 
-  private Optional<RelationNode> loadNode(ResourceId id, MutationMeta meta) {
-    return switch (id.getKind()) {
-      case RK_CATALOG -> loadCatalog(id, meta);
-      case RK_NAMESPACE -> loadNamespace(id, meta);
-      case RK_TABLE -> loadTable(id, meta);
-      case RK_VIEW -> loadView(id, meta);
-      default -> Optional.empty();
-    };
+  /** Resolve a catalog display name into its {@link ResourceId}. */
+  public ResourceId resolveCatalog(String correlationId, String catalogName) {
+    String tenantId = requireTenantId(correlationId);
+    return nameResolver.resolveCatalogId(correlationId, tenantId, catalogName);
   }
 
-  private Optional<RelationNode> loadCatalog(ResourceId id, MutationMeta meta) {
-    return catalogRepository.getById(id).map(catalog -> toCatalogNode(catalog, meta));
+  /** Resolve a namespace reference (catalog + path/name) into its {@link ResourceId}. */
+  public ResourceId resolveNamespace(String correlationId, NameRef ref) {
+    validateNameRef(correlationId, ref);
+    String tenantId = requireTenantId(correlationId);
+    return nameResolver.resolveNamespaceId(correlationId, tenantId, ref);
   }
 
-  private Optional<RelationNode> loadNamespace(ResourceId id, MutationMeta meta) {
-    return namespaceRepository.getById(id).map(namespace -> toNamespaceNode(namespace, meta));
+  /** Resolve a table reference into its {@link ResourceId}. */
+  public ResourceId resolveTable(String correlationId, NameRef ref) {
+    validateNameRef(correlationId, ref);
+    validateRelationName(correlationId, ref, "table");
+    String tenantId = requireTenantId(correlationId);
+    return nameResolver.resolveTableId(correlationId, tenantId, ref);
   }
 
-  private Optional<RelationNode> loadTable(ResourceId id, MutationMeta meta) {
-    return tableRepository.getById(id).map(table -> toTableNode(table, meta));
+  /** Resolve a view reference into its {@link ResourceId}. */
+  public ResourceId resolveView(String correlationId, NameRef ref) {
+    validateNameRef(correlationId, ref);
+    validateRelationName(correlationId, ref, "view");
+    String tenantId = requireTenantId(correlationId);
+    return nameResolver.resolveViewId(correlationId, tenantId, ref);
   }
 
-  private Optional<RelationNode> loadView(ResourceId id, MutationMeta meta) {
-    return viewRepository.getById(id).map(view -> toViewNode(view, meta));
+  /** Build a {@link NameRef} for the provided namespace identifier (if present). */
+  public Optional<NameRef> namespaceName(ResourceId namespaceId) {
+    return namespace(namespaceId)
+        .flatMap(
+            ns ->
+                catalog(ns.catalogId())
+                    .map(catalog -> buildNamespaceNameRef(ns, catalog.displayName())));
   }
 
-  private Optional<MutationMeta> mutationMeta(ResourceId id) {
-    try {
-      ResourceKind kind = id.getKind();
-      return switch (kind) {
-        case RK_CATALOG -> Optional.of(catalogRepository.metaForSafe(id));
-        case RK_NAMESPACE -> Optional.of(namespaceRepository.metaForSafe(id));
-        case RK_TABLE -> Optional.of(tableRepository.metaForSafe(id));
-        case RK_VIEW -> Optional.of(viewRepository.metaForSafe(id));
-        default -> Optional.empty();
-      };
-    } catch (StorageNotFoundException snf) {
-      return Optional.empty();
+  /** Build a {@link NameRef} for the provided table identifier (if present). */
+  public Optional<NameRef> tableName(ResourceId tableId) {
+    return table(tableId)
+        .flatMap(
+            tbl ->
+                namespace(tbl.namespaceId())
+                    .flatMap(
+                        ns ->
+                            catalog(ns.catalogId())
+                                .map(
+                                    cat ->
+                                        buildRelationNameRef(
+                                            tbl.displayName(), tbl.id(), ns, cat.displayName()))));
+  }
+
+  /** Build a {@link NameRef} for the provided view identifier (if present). */
+  public Optional<NameRef> viewName(ResourceId viewId) {
+    return view(viewId)
+        .flatMap(
+            vw ->
+                namespace(vw.namespaceId())
+                    .flatMap(
+                        ns ->
+                            catalog(ns.catalogId())
+                                .map(
+                                    cat ->
+                                        buildRelationNameRef(
+                                            vw.displayName(), vw.id(), ns, cat.displayName()))));
+  }
+
+  /** Result container for ResolveFQ helper methods. */
+  public record ResolveResult(
+      List<QualifiedRelation> relations, int totalSize, String nextPageToken) {
+
+    public ResolveResult {
+      relations = List.copyOf(relations);
+      nextPageToken = nextPageToken == null ? "" : nextPageToken;
     }
   }
 
-  private static Instant toInstant(Timestamp ts) {
-    if (ts == null) {
-      return Instant.EPOCH;
+  /** Pairing of a resolved {@link NameRef} with its {@link ResourceId}. */
+  public record QualifiedRelation(NameRef name, ResourceId resourceId) {}
+
+  public ResolveResult resolveTables(
+      String correlationId, List<NameRef> names, int limit, String pageToken) {
+    String tenantId = requireTenantId(correlationId);
+    return fqResolver.resolveTableList(correlationId, tenantId, names, limit, pageToken);
+  }
+
+  public ResolveResult resolveTables(
+      String correlationId, NameRef prefix, int limit, String pageToken) {
+    validateNameRef(correlationId, prefix);
+    String tenantId = requireTenantId(correlationId);
+    return fqResolver.resolveTablesByPrefix(correlationId, tenantId, prefix, limit, pageToken);
+  }
+
+  public ResolveResult resolveViews(
+      String correlationId, List<NameRef> names, int limit, String pageToken) {
+    String tenantId = requireTenantId(correlationId);
+    return fqResolver.resolveViewList(correlationId, tenantId, names, limit, pageToken);
+  }
+
+  public ResolveResult resolveViews(
+      String correlationId, NameRef prefix, int limit, String pageToken) {
+    validateNameRef(correlationId, prefix);
+    String tenantId = requireTenantId(correlationId);
+    return fqResolver.resolveViewsByPrefix(correlationId, tenantId, prefix, limit, pageToken);
+  }
+
+  private NameRef buildNamespaceNameRef(NamespaceNode namespace, String catalogDisplayName) {
+    return NameRef.newBuilder()
+        .setCatalog(catalogDisplayName)
+        .addAllPath(namespace.pathSegments())
+        .setName(namespace.displayName())
+        .setResourceId(namespace.id())
+        .build();
+  }
+
+  private NameRef buildRelationNameRef(
+      String relationDisplayName,
+      ResourceId relationId,
+      NamespaceNode namespace,
+      String catalogDisplayName) {
+    List<String> path = new java.util.ArrayList<>(namespace.pathSegments());
+    if (!namespace.displayName().isBlank()) {
+      path.add(namespace.displayName());
     }
-    return Instant.ofEpochSecond(ts.getSeconds(), ts.getNanos());
+    return NameRef.newBuilder()
+        .setCatalog(catalogDisplayName)
+        .addAllPath(path)
+        .setName(relationDisplayName)
+        .setResourceId(relationId)
+        .build();
   }
 
-  private CatalogNode toCatalogNode(Catalog catalog, MutationMeta meta) {
-    return new CatalogNode(
-        catalog.getResourceId(),
-        meta.getPointerVersion(),
-        toInstant(meta.getUpdatedAt()),
-        catalog.getDisplayName(),
-        catalog.getPropertiesMap(),
-        catalog.hasConnectorRef() ? Optional.of(catalog.getConnectorRef()) : Optional.empty(),
-        catalog.hasPolicyRef() ? Optional.of(catalog.getPolicyRef()) : Optional.empty(),
-        Optional.empty(),
-        NO_ENGINE_HINTS);
-  }
-
-  private NamespaceNode toNamespaceNode(Namespace namespace, MutationMeta meta) {
-    return new NamespaceNode(
-        namespace.getResourceId(),
-        meta.getPointerVersion(),
-        toInstant(meta.getUpdatedAt()),
-        namespace.getCatalogId(),
-        namespace.getParentsList(),
-        namespace.getDisplayName(),
-        namespace.getPropertiesMap(),
-        Optional.empty(),
-        NO_ENGINE_HINTS);
-  }
-
-  private TableNode toTableNode(Table table, MutationMeta meta) {
-    UpstreamRef upstream =
-        table.hasUpstream() ? table.getUpstream() : UpstreamRef.getDefaultInstance();
-    TableFormat format = upstream.getFormat();
-    return new TableNode(
-        table.getResourceId(),
-        meta.getPointerVersion(),
-        toInstant(meta.getUpdatedAt()),
-        table.getCatalogId(),
-        table.getNamespaceId(),
-        table.getDisplayName(),
-        format,
-        table.getSchemaJson(),
-        table.getPropertiesMap(),
-        upstream.getPartitionKeysList(),
-        upstream.getFieldIdByPathMap(),
-        Optional.<SnapshotRef>empty(),
-        Optional.<SnapshotRef>empty(),
-        Optional.empty(),
-        Optional.empty(),
-        List.of(),
-        NO_ENGINE_HINTS);
-  }
-
-  private ViewNode toViewNode(View view, MutationMeta meta) {
-    return new ViewNode(
-        view.getResourceId(),
-        meta.getPointerVersion(),
-        toInstant(meta.getUpdatedAt()),
-        view.getCatalogId(),
-        view.getNamespaceId(),
-        view.getDisplayName(),
-        view.getSql(),
-        "",
-        List.<SchemaColumn>of(),
-        List.<ResourceId>of(),
-        List.of(),
-        view.getPropertiesMap(),
-        Optional.empty(),
-        NO_ENGINE_HINTS);
-  }
-
-  private SnapshotPin buildSnapshotPin(ResourceId tableId, long snapshotId, Timestamp ts) {
-    SnapshotPin.Builder builder = SnapshotPin.newBuilder().setTableId(tableId);
-    if (snapshotId > 0) {
-      builder.setSnapshotId(snapshotId);
+  private void validateNameRef(String correlationId, NameRef ref) {
+    if (ref == null || ref.getCatalog().isBlank()) {
+      throw GrpcErrors.invalidArgument(correlationId, "catalog.missing", Map.of());
     }
-    if (ts != null) {
-      builder.setAsOf(ts);
-    }
-    return builder.build();
   }
+
+  private void validateRelationName(String correlationId, NameRef ref, String type) {
+    if (ref.getName().isBlank()) {
+      throw GrpcErrors.invalidArgument(
+          correlationId, type + ".name.missing", Map.of("name", ref.getName()));
+    }
+  }
+
+  private String requireTenantId(String correlationId) {
+    var principalContext = principalProvider.get();
+    if (principalContext == null || principalContext.getTenantId() == null) {
+      throw new IllegalStateException("MetadataGraph requires tenant context");
+    }
+    return principalContext.getTenantId();
+  }
+
+  /**
+   * Returns the {@link TableNode} and effective schema JSON for the provided table/snapshot
+   * combination.
+   */
+  public SchemaResolution schemaFor(
+      String correlationId, ResourceId tableId, SnapshotRef snapshot) {
+    TableNode node =
+        table(tableId)
+            .orElseThrow(
+                () -> GrpcErrors.notFound(correlationId, "table", Map.of("id", tableId.getId())));
+    return snapshotHelper.schemaFor(correlationId, node, snapshot, node::schemaJson);
+  }
+
+  /**
+   * Computes the effective schema JSON for a {@link TableNode}, honoring optional snapshot
+   * overrides. Falls back to the table-level schema when the snapshot payload is missing/blank.
+   */
+  public String schemaJsonFor(String correlationId, TableNode tableNode, SnapshotRef snapshot) {
+    return snapshotHelper.schemaJsonFor(correlationId, tableNode, snapshot, tableNode::schemaJson);
+  }
+
+  /** Bundles the table node and schema JSON for callers that need both. */
+  public record SchemaResolution(TableNode table, String schemaJson) {}
 }

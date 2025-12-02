@@ -6,6 +6,7 @@ import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.query.rpc.SchemaColumn;
 import ai.floedb.metacat.query.rpc.SchemaDescriptor;
 import org.junit.jupiter.api.Test;
@@ -16,10 +17,10 @@ class LogicalSchemaMapperTest {
 
   private Table baseTable(String schemaJson, UpstreamRef upstream) {
     return Table.newBuilder()
-        .setResourceId(ResourceId.newBuilder().setId("tbl-1"))
+        .setResourceId(ResourceId.newBuilder().setId("tbl-1").setKind(ResourceKind.RK_TABLE))
         .setDisplayName("tbl")
-        .setCatalogId(ResourceId.newBuilder().setId("cat"))
-        .setNamespaceId(ResourceId.newBuilder().setId("ns"))
+        .setCatalogId(ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG))
+        .setNamespaceId(ResourceId.newBuilder().setId("ns").setKind(ResourceKind.RK_NAMESPACE))
         .setSchemaJson(schemaJson)
         .setUpstream(upstream)
         .build();

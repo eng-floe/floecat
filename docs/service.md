@@ -65,7 +65,8 @@ helpers like `deterministicUuid`. Highlights:
 - **TableStatisticsServiceImpl** – Persists per-snapshot table/column/file stats; validates
   NDV/histogram payloads; paginates table, column, and file-level listings; uses client-streaming
   `PutColumnStats`/`PutFileColumnStats` to batch writes per stream.
-- **DirectoryServiceImpl** – Provides fast name↔ID lookup using pointer prefixes.
+- **DirectoryServiceImpl** – Provides fast name↔ID lookup via `MetadataGraph` (Resolve*/Lookup*) and
+  reuses the graph’s ResolveFQ helpers for list/prefix pagination.
 - **TenantServiceImpl** – Administers tenants and enforces conventional permissions.
 - **ConnectorsImpl** – Manages connector lifecycle, validates `ConnectorSpec` via SPI factories,
   wires reconciliation job submission, and exposes `ValidateConnector` + `TriggerReconcile`.

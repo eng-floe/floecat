@@ -80,7 +80,11 @@ class MetacatMetadataTest {
           .build();
 
   private static final ResourceId CATALOG_ID =
-      ResourceId.newBuilder().setId("catalog-id").setTenantId("tenant-1").build();
+      ResourceId.newBuilder()
+          .setId("catalog-id")
+          .setTenantId("tenant-1")
+          .setKind(ResourceKind.RK_CATALOG)
+          .build();
 
   private static final String CURRENT_SCHEMA_JSON =
       SchemaParser.toJson(
@@ -478,7 +482,11 @@ class MetacatMetadataTest {
       var ns =
           Namespace.newBuilder()
               .setDisplayName("default")
-              .setResourceId(ResourceId.newBuilder().setId("ns").build())
+              .setResourceId(
+                  ResourceId.newBuilder()
+                      .setId("ns")
+                      .setKind(ResourceKind.RK_NAMESPACE)
+                      .build())
               .build();
       responseObserver.onNext(ListNamespacesResponse.newBuilder().addNamespaces(ns).build());
       responseObserver.onCompleted();

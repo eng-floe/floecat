@@ -58,21 +58,6 @@ public class QueryInputResolver {
       List<ResourceId> resolved, SnapshotSet snapshotSet, byte[] asOfDefaultBytes) {}
 
   // =============================================================================
-  // Snapshot selection return type
-  // =============================================================================
-
-  /** Represents either: - snapshotId (id > 0), OR - timestamp-based "as-of" (ts != null) */
-  private static final class SnapChoice {
-    final long id;
-    final Timestamp ts;
-
-    SnapChoice(long id, Timestamp ts) {
-      this.id = id;
-      this.ts = ts;
-    }
-  }
-
-  // =============================================================================
   // Main resolution entrypoint
   // =============================================================================
 
@@ -102,46 +87,21 @@ public class QueryInputResolver {
           rid = metadataGraph.resolveName(correlationId, in.getName());
           resolved.add(rid);
 
-          pins.add(metadataGraph.snapshotPinFor(correlationId, rid, in.getSnapshot(), asOfDefault));
+          pins.add(pinForResource(correlationId, rid, in.getSnapshot(), asOfDefault));
         }
 
         case TABLE_ID -> {
           rid = in.getTableId();
           resolved.add(rid);
 
-          pins.add(metadataGraph.snapshotPinFor(correlationId, rid, in.getSnapshot(), asOfDefault));
+          pins.add(pinForResource(correlationId, rid, in.getSnapshot(), asOfDefault));
         }
 
         case VIEW_ID -> {
           rid = in.getViewId();
           resolved.add(rid);
 
-          SnapshotRef override = in.getSnapshot();
-
-          // Views do NOT support snapshot_id
-          if (override != null && override.hasSnapshotId()) {
-            throw GrpcErrors.invalidArgument(
-                correlationId,
-                "query.input.view.cannot_use_snapshot_id",
-                Map.of("id", rid.getId()));
-          }
-
-          // 1. Explicit override.as_of → use it
-          if (override != null && override.hasAsOf()) {
-            pins.add(
-                metadataGraph.snapshotPinFor(
-                    correlationId, rid, override, Optional.of(override.getAsOf())));
-            break;
-          }
-
-          // 2. asOfDefault → timestamp pin
-          if (asOfDefault.isPresent()) {
-            pins.add(metadataGraph.snapshotPinFor(correlationId, rid, null, asOfDefault));
-            break;
-          }
-
-          // 3. No overrides → unpinned view
-          pins.add(buildPin(rid, new SnapChoice(0L, null)));
+          pins.add(pinForResource(correlationId, rid, in.getSnapshot(), asOfDefault));
         }
 
         default -> throw GrpcErrors.invalidArgument(correlationId, "query.input.invalid", Map.of());
@@ -179,14 +139,32 @@ public class QueryInputResolver {
     return metadataGraph.resolveName(cid, ref);
   }
 
-  /** Builds a SnapshotPin using the computed SnapChoice. */
-  private SnapshotPin buildPin(ResourceId rid, SnapChoice sc) {
-    SnapshotPin.Builder b = SnapshotPin.newBuilder().setTableId(rid);
+  private SnapshotPin pinForResource(
+      String correlationId, ResourceId rid, SnapshotRef override, Optional<Timestamp> asOfDefault) {
+    return switch (rid.getKind()) {
+      case RK_TABLE -> metadataGraph.snapshotPinFor(correlationId, rid, override, asOfDefault);
+      case RK_VIEW -> buildViewPin(correlationId, rid, override, asOfDefault);
+      default ->
+          throw GrpcErrors.invalidArgument(
+              correlationId, "query.input.invalid", Map.of("resource_id", rid.getId()));
+    };
+  }
 
-    if (sc.id > 0) b.setSnapshotId(sc.id);
+  private SnapshotPin buildViewPin(
+      String correlationId, ResourceId rid, SnapshotRef override, Optional<Timestamp> asOfDefault) {
+    if (override != null && override.hasSnapshotId()) {
+      throw GrpcErrors.invalidArgument(
+          correlationId, "query.input.view.cannot_use_snapshot_id", Map.of("id", rid.getId()));
+    }
 
-    if (sc.ts != null) b.setAsOf(sc.ts);
+    SnapshotPin.Builder builder = SnapshotPin.newBuilder().setTableId(rid);
 
-    return b.build();
+    if (override != null && override.hasAsOf()) {
+      builder.setAsOf(override.getAsOf());
+      return builder.build();
+    }
+
+    asOfDefault.ifPresent(builder::setAsOf);
+    return builder.build();
   }
 }

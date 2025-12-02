@@ -7,10 +7,6 @@ import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.metacat.catalog.rpc.Namespace;
-import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveTableResponse;
-import ai.floedb.metacat.catalog.rpc.ResolveViewRequest;
-import ai.floedb.metacat.catalog.rpc.ResolveViewResponse;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
@@ -18,22 +14,34 @@ import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.catalog.rpc.View;
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.NameRef;
+import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.common.rpc.SpecialSnapshot;
 import ai.floedb.metacat.query.rpc.SnapshotPin;
+import ai.floedb.metacat.service.query.graph.model.CatalogNode;
+import ai.floedb.metacat.service.query.graph.model.NamespaceNode;
+import ai.floedb.metacat.service.query.graph.model.TableNode;
+import ai.floedb.metacat.service.query.graph.model.ViewNode;
+import ai.floedb.metacat.service.query.graph.snapshot.SnapshotHelper;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
+import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.repo.impl.ViewRepository;
+import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import ai.floedb.metacat.storage.InMemoryBlobStore;
 import ai.floedb.metacat.storage.InMemoryPointerStore;
 import ai.floedb.metacat.storage.errors.StorageNotFoundException;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,24 +51,98 @@ class MetadataGraphTest {
 
   FakeCatalogRepository catalogRepository;
   FakeNamespaceRepository namespaceRepository;
+  FakeSnapshotRepository snapshotRepository;
   FakeTableRepository tableRepository;
   FakeViewRepository viewRepository;
   FakeSnapshotClient snapshotClient;
-  FakeDirectoryClient directoryClient;
+  FakePrincipalProvider principalProvider;
   MetadataGraph graph;
 
   @BeforeEach
   void setUp() {
     catalogRepository = new FakeCatalogRepository();
     namespaceRepository = new FakeNamespaceRepository();
+    snapshotRepository = new FakeSnapshotRepository();
     tableRepository = new FakeTableRepository();
     viewRepository = new FakeViewRepository();
     graph =
-        new MetadataGraph(catalogRepository, namespaceRepository, tableRepository, viewRepository);
+        new MetadataGraph(
+            catalogRepository,
+            namespaceRepository,
+            snapshotRepository,
+            tableRepository,
+            viewRepository);
     snapshotClient = new FakeSnapshotClient();
     graph.setSnapshotClient(snapshotClient);
-    directoryClient = new FakeDirectoryClient();
-    graph.setDirectoryClient(directoryClient);
+    principalProvider = new FakePrincipalProvider("tenant");
+    graph.setPrincipalProvider(principalProvider);
+  }
+
+  @Test
+  void schemaJsonHelperFallsBackToTable() {
+    var ids = seedTable("base-schema", "{}");
+    TableNode node = graph.table(ids.tableId()).orElseThrow();
+
+    String schema = graph.schemaJsonFor("corr", node, null);
+
+    assertThat(schema).isEqualTo("{}");
+  }
+
+  @Test
+  void schemaJsonHelperUsesSnapshotOverrides() {
+    var ids = seedTable("snap-schema", "{\"fields\":[{\"name\":\"id\"}]}");
+    TableNode node = graph.table(ids.tableId()).orElseThrow();
+
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(10L)
+            .setSchemaJson("{\"fields\":[{\"name\":\"snap\"}]}")
+            .setUpstreamCreatedAt(ts(Instant.parse("2024-01-01T00:00:00Z")))
+            .build();
+    snapshotRepository.put(snapshot);
+
+    String schema =
+        graph.schemaJsonFor("corr", node, SnapshotRef.newBuilder().setSnapshotId(10L).build());
+
+    assertThat(schema).contains("snap");
+  }
+
+  @Test
+  void schemaJsonHelperSupportsAsOf() {
+    var ids = seedTable("asof", "{\"type\":\"struct\"}");
+    TableNode node = graph.table(ids.tableId()).orElseThrow();
+
+    Snapshot oldSnapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(11L)
+            .setSchemaJson("{\"old\":true}")
+            .setUpstreamCreatedAt(ts(Instant.parse("2024-02-01T00:00:00Z")))
+            .build();
+    Snapshot newSnapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(12L)
+            .setSchemaJson("{\"new\":true}")
+            .setUpstreamCreatedAt(ts(Instant.parse("2024-03-01T00:00:00Z")))
+            .build();
+    snapshotRepository.put(oldSnapshot);
+    snapshotRepository.put(newSnapshot);
+
+    SnapshotRef ref =
+        SnapshotRef.newBuilder().setAsOf(ts(Instant.parse("2024-02-15T00:00:00Z"))).build();
+
+    String schema = graph.schemaJsonFor("corr", node, ref);
+
+    assertThat(schema).contains("old").doesNotContain("new");
+  }
+
+  @Test
+  void schemaJsonHelperThrowsWhenSnapshotMissing() {
+    var ids = seedTable("missing", "{}");
+    TableNode node = graph.table(ids.tableId()).orElseThrow();
+    SnapshotRef ref = SnapshotRef.newBuilder().setSnapshotId(404L).build();
+
+    assertThatThrownBy(() -> graph.schemaJsonFor("cid", node, ref))
+        .isInstanceOf(StatusRuntimeException.class);
   }
 
   @Test
@@ -97,6 +179,189 @@ class MetadataGraphTest {
     Optional<TableNode> third = graph.table(tableId);
     assertThat(third).isPresent();
     assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(2);
+  }
+
+  @Test
+  void tenantCachesAreIsolated() {
+    var tenantOne = seedTable("cached-one", "{}");
+    var tenantTwo = seedTableForTenant("tenant-b", "catB", "nsB", "cached-two", "{}");
+
+    graph.table(tenantOne.tableId());
+    graph.table(tenantTwo.tableId());
+
+    graph.table(tenantOne.tableId());
+    graph.table(tenantTwo.tableId());
+
+    assertThat(tableRepository.getByIdCount(tenantOne.tableId())).isEqualTo(1);
+    assertThat(tableRepository.getByIdCount(tenantTwo.tableId())).isEqualTo(1);
+  }
+
+  @Test
+  void invalidateRemovesAllCachedPointerVersions() {
+    var ids = seedTable("multi-version", "{}");
+    ResourceId tableId = ids.tableId();
+
+    graph.table(tableId);
+    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(1);
+
+    tableRepository.putMeta(tableId, mutationMeta(2L, Instant.parse("2024-06-01T00:00:00Z")));
+    graph.table(tableId);
+    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(2);
+
+    graph.invalidate(tableId);
+
+    tableRepository.putMeta(tableId, mutationMeta(1L, Instant.parse("2024-06-02T00:00:00Z")));
+    graph.table(tableId);
+    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(3);
+
+    tableRepository.putMeta(tableId, mutationMeta(2L, Instant.parse("2024-06-03T00:00:00Z")));
+    graph.table(tableId);
+    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(4);
+  }
+
+  @Test
+  void registersCacheGaugesWhenEnabled() {
+    var registry = new SimpleMeterRegistry();
+    MetadataGraph instrumentedGraph =
+        new MetadataGraph(
+            catalogRepository,
+            namespaceRepository,
+            snapshotRepository,
+            tableRepository,
+            viewRepository,
+            null,
+            registry,
+            principalProvider,
+            42L);
+    instrumentedGraph.setSnapshotClient(snapshotClient);
+
+    assertThat(registry.get("metacat.metadata.graph.cache.enabled").gauge().value()).isEqualTo(1.0);
+    assertThat(registry.get("metacat.metadata.graph.cache.max_size").gauge().value())
+        .isEqualTo(42.0);
+    registry.close();
+  }
+
+  @Test
+  void registersCacheGaugesWhenDisabled() {
+    var registry = new SimpleMeterRegistry();
+    MetadataGraph instrumentedGraph =
+        new MetadataGraph(
+            catalogRepository,
+            namespaceRepository,
+            snapshotRepository,
+            tableRepository,
+            viewRepository,
+            null,
+            registry,
+            principalProvider,
+            0L);
+    instrumentedGraph.setSnapshotClient(snapshotClient);
+
+    assertThat(registry.get("metacat.metadata.graph.cache.enabled").gauge().value()).isZero();
+    assertThat(registry.get("metacat.metadata.graph.cache.max_size").gauge().value()).isZero();
+    registry.close();
+  }
+
+  @Test
+  void resolveCatalogByNameUsesGraph() {
+    ResourceId catalogId = rid("tenant", "cat", ResourceKind.RK_CATALOG);
+    catalogRepository.put(
+        Catalog.newBuilder().setResourceId(catalogId).setDisplayName("sales").build(),
+        mutationMeta(1L, Instant.now()));
+
+    ResourceId resolved = graph.resolveCatalog("corr", "sales");
+
+    assertThat(resolved).isEqualTo(catalogId);
+  }
+
+  @Test
+  void resolveNamespaceReturnsId() {
+    var nsId =
+        Namespace.newBuilder()
+            .setResourceId(rid("tenant", "ns", ResourceKind.RK_NAMESPACE))
+            .setCatalogId(rid("tenant", "cat", ResourceKind.RK_CATALOG))
+            .setDisplayName("ns")
+            .build();
+    Catalog catalog =
+        Catalog.newBuilder()
+            .setResourceId(rid("tenant", "cat", ResourceKind.RK_CATALOG))
+            .setDisplayName("cat")
+            .build();
+    catalogRepository.put(catalog, mutationMeta(1L, Instant.now()));
+    namespaceRepository.put(nsId, mutationMeta(2L, Instant.now()));
+
+    NameRef ref = NameRef.newBuilder().setCatalog("cat").setName("ns").build();
+
+    ResourceId resolved = graph.resolveNamespace("corr", ref);
+
+    assertThat(resolved).isEqualTo(nsId.getResourceId());
+  }
+
+  @Test
+  void resolveTableUsesGraph() {
+    var ids = seedTable("orders", "{\"fields\":[]}");
+    NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("orders").build();
+
+    ResourceId resolved = graph.resolveTable("corr", ref);
+
+    assertThat(resolved).isEqualTo(ids.tableId());
+  }
+
+  @Test
+  void resolveViewUsesGraph() {
+    var ids = seedView("reports");
+    NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("reports").build();
+
+    ResourceId resolved = graph.resolveView("corr", ref);
+
+    assertThat(resolved).isEqualTo(ids);
+  }
+
+  @Test
+  void resolveNameReturnsTableWhenOnlyTableExists() {
+    var ids = seedTable("only_table", "{}");
+    NameRef ref =
+        NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("only_table").build();
+
+    ResourceId resolved = graph.resolveName("corr", ref);
+
+    assertThat(resolved).isEqualTo(ids.tableId());
+  }
+
+  @Test
+  void resolveNameReturnsViewWhenOnlyViewExists() {
+    ResourceId viewId = seedView("only_view");
+    NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("only_view").build();
+
+    ResourceId resolved = graph.resolveName("corr", ref);
+
+    assertThat(resolved).isEqualTo(viewId);
+  }
+
+  @Test
+  void resolveNameThrowsWhenAmbiguous() {
+    seedTable("ambiguous", "{}");
+    seedView("ambiguous");
+    NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("ambiguous").build();
+
+    assertThatThrownBy(() -> graph.resolveName("corr", ref))
+        .isInstanceOf(StatusRuntimeException.class);
+  }
+
+  @Test
+  void lookupNameRefsFromIds() {
+    var ids = seedTable("acct", "{\"fields\":[]}");
+
+    Optional<NameRef> tableName = graph.tableName(ids.tableId());
+    Optional<NameRef> namespaceName = graph.namespaceName(ids.namespaceId());
+
+    assertThat(tableName).isPresent();
+    assertThat(tableName.get().getName()).isEqualTo("acct");
+    assertThat(tableName.get().getCatalog()).isEqualTo("cat");
+    assertThat(tableName.get().getPathList()).containsExactly("ns");
+
+    assertThat(namespaceName).isPresent();
+    assertThat(namespaceName.get().getName()).isEqualTo("ns");
   }
 
   @Test
@@ -228,34 +493,343 @@ class MetadataGraphTest {
     return ResourceId.newBuilder().setTenantId(tenant).setId(id).setKind(kind).build();
   }
 
+  private static Timestamp ts(Instant instant) {
+    return Timestamp.newBuilder()
+        .setSeconds(instant.getEpochSecond())
+        .setNanos(instant.getNano())
+        .build();
+  }
+
+  private TableIds seedTable(String name, String schemaJson) {
+    return seedTableForTenant("tenant", "cat", "ns", name, schemaJson);
+  }
+
+  private TableIds seedTableForTenant(
+      String tenantId,
+      String catalogName,
+      String namespaceName,
+      String tableName,
+      String schemaJson) {
+    ResourceId catalogId = rid(tenantId, catalogName, ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid(tenantId, namespaceName, ResourceKind.RK_NAMESPACE);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setTenantId(tenantId)
+            .setId("table-" + tableName)
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    catalogRepository.put(
+        Catalog.newBuilder().setResourceId(catalogId).setDisplayName(catalogName).build(),
+        mutationMeta(1L, Instant.now()));
+    namespaceRepository.put(
+        Namespace.newBuilder()
+            .setResourceId(namespaceId)
+            .setCatalogId(catalogId)
+            .setDisplayName(namespaceName)
+            .build(),
+        mutationMeta(1L, Instant.now()));
+    tableRepository.put(
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName(tableName)
+            .setSchemaJson(schemaJson)
+            .setUpstream(
+                UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).setUri("s3://x").build())
+            .build(),
+        mutationMeta(1L, Instant.now()));
+    return new TableIds(catalogId, namespaceId, tableId);
+  }
+
+  private ResourceId seedView(String name) {
+    ResourceId catalogId = rid("tenant", "cat", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid("tenant", "ns", ResourceKind.RK_NAMESPACE);
+    ResourceId viewId = rid("tenant", "view-" + name, ResourceKind.RK_VIEW);
+
+    catalogRepository.put(
+        Catalog.newBuilder().setResourceId(catalogId).setDisplayName("cat").build(),
+        mutationMeta(1L, Instant.now()));
+    namespaceRepository.put(
+        Namespace.newBuilder()
+            .setResourceId(namespaceId)
+            .setCatalogId(catalogId)
+            .setDisplayName("ns")
+            .build(),
+        mutationMeta(1L, Instant.now()));
+    viewRepository.put(
+        View.newBuilder()
+            .setResourceId(viewId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName(name)
+            .setSql("select 1")
+            .build(),
+        mutationMeta(1L, Instant.now()));
+
+    return viewId;
+  }
+
   @Test
   void resolveNamePrefersTablesWhenOnlyTableExists() {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("tbl").build();
-    directoryClient.tables.put(ref, rid("tenant", "tbl-id", ResourceKind.RK_TABLE));
+    Catalog catalog =
+        Catalog.newBuilder()
+            .setResourceId(rid("tenant", "cat-id", ResourceKind.RK_CATALOG))
+            .setDisplayName("cat")
+            .build();
+    catalogRepository.put(catalog, mutationMeta(1L, Instant.now()));
+    Namespace namespace =
+        Namespace.newBuilder()
+            .setResourceId(rid("tenant", "ns-id", ResourceKind.RK_NAMESPACE))
+            .setCatalogId(catalog.getResourceId())
+            .addAllParents(List.of())
+            .setDisplayName("ns")
+            .build();
+    namespaceRepository.put(namespace, mutationMeta(1L, Instant.now()));
+    Table table =
+        Table.newBuilder()
+            .setResourceId(rid("tenant", "TBL", ResourceKind.RK_TABLE))
+            .setCatalogId(catalog.getResourceId())
+            .setNamespaceId(namespace.getResourceId())
+            .setDisplayName("tbl")
+            .setSchemaJson("{}")
+            .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).build())
+            .build();
+    tableRepository.put(table, mutationMeta(1L, Instant.now()));
 
     ResourceId resolved = graph.resolveName("corr", ref);
 
-    assertThat(resolved.getId()).isEqualTo("tbl-id");
+    assertThat(resolved).isEqualTo(table.getResourceId());
   }
 
   @Test
   void resolveNameReturnsViewsWhenOnlyViewExists() {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("view").build();
-    directoryClient.views.put(ref, rid("tenant", "view-id", ResourceKind.RK_VIEW));
+    Catalog catalog =
+        Catalog.newBuilder()
+            .setResourceId(rid("tenant", "cat-id", ResourceKind.RK_CATALOG))
+            .setDisplayName("cat")
+            .build();
+    catalogRepository.put(catalog, mutationMeta(1L, Instant.now()));
+    Namespace namespace =
+        Namespace.newBuilder()
+            .setResourceId(rid("tenant", "ns-id", ResourceKind.RK_NAMESPACE))
+            .setCatalogId(catalog.getResourceId())
+            .addAllParents(List.of())
+            .setDisplayName("ns")
+            .build();
+    namespaceRepository.put(namespace, mutationMeta(1L, Instant.now()));
+    View view =
+        View.newBuilder()
+            .setResourceId(rid("tenant", "VIEW", ResourceKind.RK_VIEW))
+            .setCatalogId(catalog.getResourceId())
+            .setNamespaceId(namespace.getResourceId())
+            .setDisplayName("view")
+            .setSql("select 1")
+            .build();
+    viewRepository.put(view, mutationMeta(1L, Instant.now()));
 
     ResourceId resolved = graph.resolveName("corr", ref);
 
-    assertThat(resolved.getId()).isEqualTo("view-id");
+    assertThat(resolved).isEqualTo(view.getResourceId());
   }
 
   @Test
   void resolveNameFailsWhenAmbiguous() {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("obj").build();
-    directoryClient.tables.put(ref, rid("tenant", "tbl-id", ResourceKind.RK_TABLE));
-    directoryClient.views.put(ref, rid("tenant", "view-id", ResourceKind.RK_VIEW));
+    Catalog catalog =
+        Catalog.newBuilder()
+            .setResourceId(rid("tenant", "cat-id", ResourceKind.RK_CATALOG))
+            .setDisplayName("cat")
+            .build();
+    catalogRepository.put(catalog, mutationMeta(1L, Instant.now()));
+    Namespace namespace =
+        Namespace.newBuilder()
+            .setResourceId(rid("tenant", "ns-id", ResourceKind.RK_NAMESPACE))
+            .setCatalogId(catalog.getResourceId())
+            .addAllParents(List.of())
+            .setDisplayName("ns")
+            .build();
+    namespaceRepository.put(namespace, mutationMeta(1L, Instant.now()));
+    Table table =
+        Table.newBuilder()
+            .setResourceId(rid("tenant", "tbl-id", ResourceKind.RK_TABLE))
+            .setCatalogId(catalog.getResourceId())
+            .setNamespaceId(namespace.getResourceId())
+            .setDisplayName("obj")
+            .setSchemaJson("{}")
+            .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).build())
+            .build();
+    tableRepository.put(table, mutationMeta(1L, Instant.now()));
+    View view =
+        View.newBuilder()
+            .setResourceId(rid("tenant", "view-id", ResourceKind.RK_VIEW))
+            .setCatalogId(catalog.getResourceId())
+            .setNamespaceId(namespace.getResourceId())
+            .setDisplayName("obj")
+            .setSql("select 1")
+            .build();
+    viewRepository.put(view, mutationMeta(1L, Instant.now()));
 
     assertThatThrownBy(() -> graph.resolveName("corr", ref))
         .isInstanceOf(StatusRuntimeException.class);
+  }
+
+  @Test
+  void resolveTablesListReturnsCanonicalNames() {
+    var ids = seedTable("orders_list", "{\"fields\":[]}");
+    List<NameRef> inputs =
+        List.of(
+            NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("orders_list").build(),
+            NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("missing").build());
+
+    MetadataGraph.ResolveResult result = graph.resolveTables("corr", inputs, 10, "");
+
+    assertThat(result.totalSize()).isEqualTo(inputs.size());
+    assertThat(result.nextPageToken()).isEmpty();
+    assertThat(result.relations()).hasSize(2);
+    MetadataGraph.QualifiedRelation first = result.relations().get(0);
+    assertThat(first.resourceId()).isEqualTo(ids.tableId());
+    assertThat(first.name().getResourceId()).isEqualTo(ids.tableId());
+    MetadataGraph.QualifiedRelation second = result.relations().get(1);
+    assertThat(second.resourceId()).isEqualTo(ResourceId.getDefaultInstance());
+  }
+
+  @Test
+  void resolveTablesPrefixSupportsPaging() {
+    seedTable("orders_a", "{}");
+    seedTable("orders_b", "{}");
+    seedTable("orders_c", "{}");
+
+    NameRef prefix = NameRef.newBuilder().setCatalog("cat").addPath("ns").build();
+
+    MetadataGraph.ResolveResult first = graph.resolveTables("corr", prefix, 2, "");
+    assertThat(first.relations()).hasSize(2);
+    assertThat(first.totalSize()).isEqualTo(3);
+    assertThat(first.nextPageToken()).isNotBlank();
+
+    MetadataGraph.ResolveResult second =
+        graph.resolveTables("corr", prefix, 2, first.nextPageToken());
+    assertThat(second.relations()).hasSize(1);
+    assertThat(second.totalSize()).isEqualTo(3);
+    assertThat(second.nextPageToken()).isBlank();
+
+    assertThatThrownBy(() -> graph.resolveTables("corr", prefix, 2, "bad-token"))
+        .isInstanceOf(StatusRuntimeException.class);
+  }
+
+  @Test
+  void resolveTablesPrefixAcceptsNamespaceNameInRef() {
+    ResourceId catalogId = rid("tenant", "cat-nested", ResourceKind.RK_CATALOG);
+    catalogRepository.put(
+        Catalog.newBuilder().setResourceId(catalogId).setDisplayName("cat_nested").build(),
+        mutationMeta(1L, Instant.now()));
+
+    Namespace namespace =
+        Namespace.newBuilder()
+            .setResourceId(rid("tenant", "ns-nested", ResourceKind.RK_NAMESPACE))
+            .setCatalogId(catalogId)
+            .addAllParents(List.of("finance"))
+            .setDisplayName("sales")
+            .build();
+    namespaceRepository.put(namespace, mutationMeta(1L, Instant.now()));
+
+    ResourceId tableId = rid("tenant", "tbl-nested", ResourceKind.RK_TABLE);
+    tableRepository.put(
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespace.getResourceId())
+            .setDisplayName("orders_nested")
+            .setSchemaJson("{}")
+            .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).build())
+            .build(),
+        mutationMeta(1L, Instant.now()));
+
+    NameRef prefix =
+        NameRef.newBuilder().setCatalog("cat_nested").addPath("finance").setName("sales").build();
+
+    MetadataGraph.ResolveResult result = graph.resolveTables("corr", prefix, 5, "");
+
+    assertThat(result.totalSize()).isEqualTo(1);
+    assertThat(result.relations()).hasSize(1);
+    MetadataGraph.QualifiedRelation relation = result.relations().get(0);
+    assertThat(relation.resourceId()).isEqualTo(tableId);
+    assertThat(relation.name().getPathList()).containsExactly("finance", "sales");
+    assertThat(relation.name().getName()).isEqualTo("orders_nested");
+  }
+
+  @Test
+  void resolveViewsListHandlesMissingEntries() {
+    ResourceId viewId = seedView("reports_list");
+    List<NameRef> inputs =
+        List.of(
+            NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("reports_list").build(),
+            NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("missing_view").build());
+
+    MetadataGraph.ResolveResult result = graph.resolveViews("corr", inputs, 50, "");
+
+    assertThat(result.totalSize()).isEqualTo(inputs.size());
+    assertThat(result.relations()).hasSize(2);
+    assertThat(result.relations().get(0).resourceId()).isEqualTo(viewId);
+    assertThat(result.relations().get(1).resourceId()).isEqualTo(ResourceId.getDefaultInstance());
+  }
+
+  @Test
+  void resolveViewsPrefixRejectsBadToken() {
+    seedView("reports_prefix");
+    NameRef prefix = NameRef.newBuilder().setCatalog("cat").addPath("ns").build();
+
+    MetadataGraph.ResolveResult page = graph.resolveViews("corr", prefix, 1, "");
+    assertThat(page.relations()).hasSize(1);
+
+    assertThatThrownBy(() -> graph.resolveViews("corr", prefix, 1, "unknown-token"))
+        .isInstanceOf(StatusRuntimeException.class);
+  }
+
+  @Test
+  void resolveViewsPrefixAcceptsNamespaceNameInRef() {
+    ResourceId catalogId = rid("tenant", "cat-view-nested", ResourceKind.RK_CATALOG);
+    catalogRepository.put(
+        Catalog.newBuilder().setResourceId(catalogId).setDisplayName("cat_view_nested").build(),
+        mutationMeta(1L, Instant.now()));
+
+    Namespace namespace =
+        Namespace.newBuilder()
+            .setResourceId(rid("tenant", "ns-view-nested", ResourceKind.RK_NAMESPACE))
+            .setCatalogId(catalogId)
+            .addAllParents(List.of("finance"))
+            .setDisplayName("sales")
+            .build();
+    namespaceRepository.put(namespace, mutationMeta(1L, Instant.now()));
+
+    ResourceId viewId = rid("tenant", "view-nested", ResourceKind.RK_VIEW);
+    viewRepository.put(
+        View.newBuilder()
+            .setResourceId(viewId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespace.getResourceId())
+            .setDisplayName("reports_nested")
+            .setSql("select 1")
+            .build(),
+        mutationMeta(1L, Instant.now()));
+
+    NameRef prefix =
+        NameRef.newBuilder()
+            .setCatalog("cat_view_nested")
+            .addPath("finance")
+            .setName("sales")
+            .build();
+
+    MetadataGraph.ResolveResult result = graph.resolveViews("corr", prefix, 5, "");
+
+    assertThat(result.totalSize()).isEqualTo(1);
+    assertThat(result.relations()).hasSize(1);
+    MetadataGraph.QualifiedRelation relation = result.relations().get(0);
+    assertThat(relation.resourceId()).isEqualTo(viewId);
+    assertThat(relation.name().getPathList()).containsExactly("finance", "sales");
+    assertThat(relation.name().getName()).isEqualTo("reports_nested");
   }
 
   // ----------------------------------------------------------------------
@@ -284,6 +858,16 @@ class MetadataGraphTest {
     public Optional<Catalog> getById(ResourceId id) {
       gets.merge(id, 1, Integer::sum);
       return Optional.ofNullable(entries.get(id));
+    }
+
+    @Override
+    public Optional<Catalog> getByName(String tenantId, String displayName) {
+      return entries.values().stream()
+          .filter(
+              c ->
+                  tenantId.equals(c.getResourceId().getTenantId())
+                      && displayName.equals(c.getDisplayName()))
+          .findFirst();
     }
 
     @Override
@@ -319,6 +903,17 @@ class MetadataGraphTest {
     }
 
     @Override
+    public Optional<Namespace> getByPath(String tenantId, String catalogId, List<String> path) {
+      return entries.values().stream()
+          .filter(
+              ns ->
+                  tenantId.equals(ns.getResourceId().getTenantId())
+                      && catalogId.equals(ns.getCatalogId().getId())
+                      && matchesPath(ns, path))
+          .findFirst();
+    }
+
+    @Override
     public MutationMeta metaForSafe(ResourceId id) {
       MutationMeta meta = metas.get(id);
       if (meta == null) {
@@ -326,7 +921,53 @@ class MetadataGraphTest {
       }
       return meta;
     }
+
+    private boolean matchesPath(Namespace namespace, List<String> path) {
+      if (path.isEmpty()) {
+        return namespace.getDisplayName().isBlank() && namespace.getParentsCount() == 0;
+      }
+      List<String> parents = path.subList(0, path.size() - 1);
+      String name = path.get(path.size() - 1);
+      return parents.equals(namespace.getParentsList()) && name.equals(namespace.getDisplayName());
+    }
   }
+
+  static final class FakeSnapshotRepository extends SnapshotRepository {
+    private final Map<Long, Snapshot> byId = new HashMap<>();
+
+    FakeSnapshotRepository() {
+      super(new InMemoryPointerStore(), new InMemoryBlobStore());
+    }
+
+    void put(Snapshot snapshot) {
+      byId.put(snapshot.getSnapshotId(), snapshot);
+    }
+
+    @Override
+    public Optional<Snapshot> getById(ResourceId tableId, long snapshotId) {
+      return Optional.ofNullable(byId.get(snapshotId));
+    }
+
+    @Override
+    public Optional<Snapshot> getCurrentSnapshot(ResourceId tableId) {
+      return byId.values().stream().max(Comparator.comparingLong(this::createdMillis));
+    }
+
+    @Override
+    public Optional<Snapshot> getAsOf(ResourceId tableId, Timestamp asOf) {
+      long target = asOf.getSeconds() * 1000L + asOf.getNanos() / 1_000_000L;
+      return byId.values().stream()
+          .filter(s -> createdMillis(s) <= target)
+          .max(Comparator.comparingLong(this::createdMillis));
+    }
+
+    private long createdMillis(Snapshot snapshot) {
+      Timestamp ts = snapshot.getUpstreamCreatedAt();
+      return ts.getSeconds() * 1000L + ts.getNanos() / 1_000_000L;
+    }
+  }
+
+  record TableIds(ResourceId catalogId, ResourceId namespaceId, ResourceId tableId) {}
 
   static final class FakeTableRepository extends TableRepository {
     private final Map<ResourceId, Table> entries = new HashMap<>();
@@ -353,6 +994,44 @@ class MetadataGraphTest {
     }
 
     @Override
+    public Optional<Table> getByName(
+        String tenantId, String catalogId, String namespaceId, String displayName) {
+      return entries.values().stream()
+          .filter(
+              t ->
+                  tenantId.equals(t.getResourceId().getTenantId())
+                      && catalogId.equals(t.getCatalogId().getId())
+                      && namespaceId.equals(t.getNamespaceId().getId())
+                      && displayName.equals(t.getDisplayName()))
+          .findFirst();
+    }
+
+    @Override
+    public List<Table> list(
+        String tenantId,
+        String catalogId,
+        String namespaceId,
+        int limit,
+        String pageToken,
+        StringBuilder nextOut) {
+      List<Table> sorted = matchingTables(tenantId, catalogId, namespaceId);
+      int start = startIndexForToken(sorted, pageToken);
+      int want = Math.max(1, limit);
+      int end = Math.min(sorted.size(), start + want);
+      List<Table> slice = new ArrayList<>(sorted.subList(start, end));
+      nextOut.setLength(0);
+      if (end < sorted.size()) {
+        nextOut.append(sorted.get(end - 1).getDisplayName());
+      }
+      return slice;
+    }
+
+    @Override
+    public int count(String tenantId, String catalogId, String namespaceId) {
+      return matchingTables(tenantId, catalogId, namespaceId).size();
+    }
+
+    @Override
     public MutationMeta metaForSafe(ResourceId id) {
       MutationMeta meta = metas.get(id);
       if (meta == null) {
@@ -363,6 +1042,29 @@ class MetadataGraphTest {
 
     int getByIdCount(ResourceId id) {
       return gets.getOrDefault(id, 0);
+    }
+
+    private List<Table> matchingTables(String tenantId, String catalogId, String namespaceId) {
+      return entries.values().stream()
+          .filter(
+              t ->
+                  tenantId.equals(t.getResourceId().getTenantId())
+                      && catalogId.equals(t.getCatalogId().getId())
+                      && namespaceId.equals(t.getNamespaceId().getId()))
+          .sorted(Comparator.comparing(Table::getDisplayName))
+          .toList();
+    }
+
+    private int startIndexForToken(List<Table> sorted, String token) {
+      if (token == null || token.isBlank()) {
+        return 0;
+      }
+      for (int i = 0; i < sorted.size(); i++) {
+        if (sorted.get(i).getDisplayName().equals(token)) {
+          return i + 1;
+        }
+      }
+      throw new IllegalArgumentException("bad token");
     }
   }
 
@@ -389,6 +1091,44 @@ class MetadataGraphTest {
     }
 
     @Override
+    public Optional<View> getByName(
+        String tenantId, String catalogId, String namespaceId, String displayName) {
+      return entries.values().stream()
+          .filter(
+              v ->
+                  tenantId.equals(v.getResourceId().getTenantId())
+                      && catalogId.equals(v.getCatalogId().getId())
+                      && namespaceId.equals(v.getNamespaceId().getId())
+                      && displayName.equals(v.getDisplayName()))
+          .findFirst();
+    }
+
+    @Override
+    public List<View> list(
+        String tenantId,
+        String catalogId,
+        String namespaceId,
+        int limit,
+        String pageToken,
+        StringBuilder nextOut) {
+      List<View> sorted = matchingViews(tenantId, catalogId, namespaceId);
+      int start = startIndexForToken(sorted, pageToken);
+      int want = Math.max(1, limit);
+      int end = Math.min(sorted.size(), start + want);
+      List<View> slice = new ArrayList<>(sorted.subList(start, end));
+      nextOut.setLength(0);
+      if (end < sorted.size()) {
+        nextOut.append(sorted.get(end - 1).getDisplayName());
+      }
+      return slice;
+    }
+
+    @Override
+    public int count(String tenantId, String catalogId, String namespaceId) {
+      return matchingViews(tenantId, catalogId, namespaceId).size();
+    }
+
+    @Override
     public MutationMeta metaForSafe(ResourceId id) {
       MutationMeta meta = metas.get(id);
       if (meta == null) {
@@ -396,9 +1136,32 @@ class MetadataGraphTest {
       }
       return meta;
     }
+
+    private List<View> matchingViews(String tenantId, String catalogId, String namespaceId) {
+      return entries.values().stream()
+          .filter(
+              v ->
+                  tenantId.equals(v.getResourceId().getTenantId())
+                      && catalogId.equals(v.getCatalogId().getId())
+                      && namespaceId.equals(v.getNamespaceId().getId()))
+          .sorted(Comparator.comparing(View::getDisplayName))
+          .toList();
+    }
+
+    private int startIndexForToken(List<View> sorted, String token) {
+      if (token == null || token.isBlank()) {
+        return 0;
+      }
+      for (int i = 0; i < sorted.size(); i++) {
+        if (sorted.get(i).getDisplayName().equals(token)) {
+          return i + 1;
+        }
+      }
+      throw new IllegalArgumentException("bad token");
+    }
   }
 
-  static final class FakeSnapshotClient implements MetadataGraph.SnapshotClient {
+  static final class FakeSnapshotClient implements SnapshotHelper.SnapshotClient {
     GetSnapshotResponse nextResponse;
     GetSnapshotRequest lastRequest;
 
@@ -412,26 +1175,20 @@ class MetadataGraphTest {
     }
   }
 
-  static final class FakeDirectoryClient implements MetadataGraph.DirectoryClient {
-    final Map<NameRef, ResourceId> tables = new HashMap<>();
-    final Map<NameRef, ResourceId> views = new HashMap<>();
+  static final class FakePrincipalProvider extends PrincipalProvider {
+    private PrincipalContext ctx;
 
-    @Override
-    public ResolveTableResponse resolveTable(ResolveTableRequest request) {
-      ResourceId rid = tables.get(request.getRef());
-      if (rid == null) {
-        throw new RuntimeException("table not found");
-      }
-      return ResolveTableResponse.newBuilder().setResourceId(rid).build();
+    FakePrincipalProvider(String tenantId) {
+      ctx = PrincipalContext.newBuilder().setTenantId(tenantId).build();
+    }
+
+    void setTenant(String tenantId) {
+      ctx = PrincipalContext.newBuilder().setTenantId(tenantId).build();
     }
 
     @Override
-    public ResolveViewResponse resolveView(ResolveViewRequest request) {
-      ResourceId rid = views.get(request.getRef());
-      if (rid == null) {
-        throw new RuntimeException("view not found");
-      }
-      return ResolveViewResponse.newBuilder().setResourceId(rid).build();
+    public PrincipalContext get() {
+      return ctx;
     }
   }
 }

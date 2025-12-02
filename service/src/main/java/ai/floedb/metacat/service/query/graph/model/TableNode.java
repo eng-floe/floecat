@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.query.graph;
+package ai.floedb.metacat.service.query.graph.model;
 
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;

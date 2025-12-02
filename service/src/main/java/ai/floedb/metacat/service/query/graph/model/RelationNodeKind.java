@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.query.graph;
+package ai.floedb.metacat.service.query.graph.model;
 
 /**
  * Local classification of relation nodes.

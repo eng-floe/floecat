@@ -44,7 +44,11 @@ public class QueryInputResolverTest {
   }
 
   ResourceId rid(String id) {
-    return ResourceId.newBuilder().setId(id).build();
+    return ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_TABLE).build();
+  }
+
+  ResourceId viewRid(String id) {
+    return ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_VIEW).build();
   }
 
   /** Resolving a name that maps only to a table should return the table id. */
@@ -222,7 +226,7 @@ public class QueryInputResolverTest {
   /** Views never have snapshots. A viewId must always produce a pin with snapshotId=0. */
   @Test
   void direct_view_id() {
-    ResourceId rid = rid("VIEWX");
+    ResourceId rid = viewRid("VIEWX");
 
     SnapshotPin p =
         resolver
@@ -390,7 +394,7 @@ public class QueryInputResolverTest {
    */
   @Test
   void view_with_asof_override_uses_timestamp() {
-    ResourceId rid = rid("V1");
+    ResourceId rid = viewRid("V1");
     Timestamp ts = Timestamp.newBuilder().setSeconds(202).build();
 
     QueryInput qi =
@@ -419,7 +423,7 @@ public class QueryInputResolverTest {
     private final List<PinCall> pinCalls = new ArrayList<>();
 
     FakeGraph() {
-      super(null, null, null, null);
+      super(null, null, null, null, null);
     }
 
     void bind(NameRef ref, ResourceId id) {

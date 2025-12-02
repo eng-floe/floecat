@@ -4,7 +4,7 @@ import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.query.rpc.SchemaColumn;
 import ai.floedb.metacat.query.rpc.SchemaDescriptor;
-import ai.floedb.metacat.service.query.graph.TableNode;
+import ai.floedb.metacat.service.query.graph.model.TableNode;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;

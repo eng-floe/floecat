@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.query.graph;
+package ai.floedb.metacat.service.query.graph.cache;
 
 import ai.floedb.metacat.common.rpc.ResourceId;
 import java.util.Objects;
@@ -9,9 +9,9 @@ import java.util.Objects;
  * <p>Pointer versions are monotonically increasing, so this key automatically invalidates cached
  * nodes when underlying metadata changes.
  */
-record GraphCacheKey(ResourceId id, long version) {
+public record GraphCacheKey(ResourceId id, long version) {
 
-  GraphCacheKey {
+  public GraphCacheKey {
     Objects.requireNonNull(id, "id");
   }
 }
