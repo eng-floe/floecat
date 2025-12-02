@@ -33,6 +33,7 @@ import ai.floedb.metacat.connector.spi.ConnectorConfig;
 import ai.floedb.metacat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.metacat.connector.spi.ConnectorFactory;
 import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.metacat.reconciler.jobs.ReconcileScope;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.Canonicalizer;
 import ai.floedb.metacat.service.common.IdempotencyGuard;
@@ -563,7 +564,10 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   var jobId =
                       jobs.enqueue(
-                          connectorId.getTenantId(), connectorId.getId(), request.getFullRescan());
+                          connectorId.getTenantId(),
+                          connectorId.getId(),
+                          request.getFullRescan(),
+                          scopeFromRequest(request));
 
                   return TriggerReconcileResponse.newBuilder().setJobId(jobId).build();
                 }),
@@ -613,6 +617,21 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private static ReconcileScope scopeFromRequest(TriggerReconcileRequest request) {
+    if (request == null) {
+      return ReconcileScope.empty();
+    }
+    var namespaces =
+        request.getDestinationNamespacePathsList().stream()
+            .map(NamespacePath::getSegmentsList)
+            .map(List::copyOf)
+            .toList();
+    return ReconcileScope.of(
+        namespaces,
+        request.getDestinationTableDisplayName(),
+        request.getDestinationTableColumnsList());
   }
 
   private static JobState toProtoState(String state) {

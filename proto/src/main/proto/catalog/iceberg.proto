@@ -35,6 +35,34 @@ message IcebergMetadataLogEntry {
   string file = 2;
 }
 
+message IcebergBlobMetadata {
+  string type = 1;
+  int64 snapshot_id = 2;
+  int64 sequence_number = 3;
+  repeated int32 fields = 4;
+  map<string,string> properties = 99;
+}
+
+message IcebergStatisticsFile {
+  int64 snapshot_id = 1;
+  string statistics_path = 2;
+  int64 file_size_in_bytes = 3;
+  int64 file_footer_size_in_bytes = 4;
+  repeated IcebergBlobMetadata blob_metadata = 5;
+}
+
+message IcebergPartitionStatisticsFile {
+  int64 snapshot_id = 1;
+  string statistics_path = 2;
+  int64 file_size_in_bytes = 3;
+}
+
+message IcebergEncryptedKey {
+  string key_id = 1;
+  bytes encrypted_key_metadata = 2;
+  string encrypted_by_id = 3;
+}
+
 message IcebergRef {
   int64 snapshot_id = 1;
   string type = 2;
@@ -61,4 +89,7 @@ message IcebergMetadata {
   repeated IcebergSnapshotLogEntry snapshot_log = 15;
   repeated IcebergMetadataLogEntry metadata_log = 16;
   map<string, IcebergRef> refs = 17;
+  repeated IcebergStatisticsFile statistics = 18;
+  repeated IcebergPartitionStatisticsFile partition_statistics = 19;
+  repeated IcebergEncryptedKey encryption_keys = 20;
 }

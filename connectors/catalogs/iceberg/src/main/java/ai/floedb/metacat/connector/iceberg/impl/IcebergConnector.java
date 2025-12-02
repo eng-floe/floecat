@@ -40,6 +40,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
@@ -59,6 +60,7 @@ import org.apache.iceberg.TableMetadata.MetadataLogEntry;
 import org.apache.iceberg.TableScan;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.hadoop.HadoopTables;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.rest.RESTCatalog;
 import org.apache.iceberg.types.Type;
@@ -70,6 +72,9 @@ public final class IcebergConnector implements MetacatConnector {
   private final String connectorId;
   private final RESTCatalog catalog;
   private final GlueIcebergFilter glueFilter;
+  private final Table singleTable;
+  private final String singleNamespaceFq;
+  private final String singleTableName;
   private final boolean ndvEnabled;
   private final double ndvSampleFraction;
   private final long ndvMaxFiles;
@@ -78,12 +83,18 @@ public final class IcebergConnector implements MetacatConnector {
       String connectorId,
       RESTCatalog catalog,
       GlueIcebergFilter filter,
+      Table singleTable,
+      String singleNamespaceFq,
+      String singleTableName,
       boolean ndvEnabled,
       double ndvSampleFraction,
       long ndvMaxFiles) {
     this.connectorId = connectorId;
     this.catalog = catalog;
     this.glueFilter = filter;
+    this.singleTable = singleTable;
+    this.singleNamespaceFq = singleNamespaceFq;
+    this.singleTableName = singleTableName;
     this.ndvEnabled = ndvEnabled;
     this.ndvSampleFraction = ndvSampleFraction;
     this.ndvMaxFiles = ndvMaxFiles;
@@ -98,11 +109,45 @@ public final class IcebergConnector implements MetacatConnector {
 
     Objects.requireNonNull(uri, "uri");
 
+    Map<String, String> opts = (options == null) ? Collections.emptyMap() : options;
+    boolean ndvEnabled = parseNdvEnabled(options);
+    double ndvSampleFraction = parseNdvSampleFraction(options);
+
+    long ndvMaxFiles = 0L;
+    if (options != null) {
+      try {
+        ndvMaxFiles = Long.parseLong(options.getOrDefault("stats.ndv.max_files", "0"));
+        if (ndvMaxFiles < 0) {
+          ndvMaxFiles = 0;
+        }
+      } catch (NumberFormatException ignore) {
+      }
+    }
+
+    String externalMetadata = opts.get("external.metadata-location");
+    if (externalMetadata != null && !externalMetadata.isBlank()) {
+      Table table = loadExternalTable(externalMetadata, opts);
+      String namespaceFq = opts.getOrDefault("external.namespace", "");
+      String detectedName =
+          (table.name() == null || table.name().isBlank())
+              ? deriveTableName(externalMetadata)
+              : table.name();
+      String tableName = opts.getOrDefault("external.table-name", detectedName);
+      return new IcebergConnector(
+          "iceberg-filesystem",
+          null,
+          null,
+          table,
+          namespaceFq,
+          tableName,
+          ndvEnabled,
+          ndvSampleFraction,
+          ndvMaxFiles);
+    }
+
     Map<String, String> props = new HashMap<>();
     props.put("type", "rest");
     props.put("uri", uri);
-
-    Map<String, String> opts = (options == null) ? Collections.emptyMap() : options;
     if (!opts.isEmpty()) {
       for (var e : opts.entrySet()) {
         String k = e.getKey();
@@ -154,24 +199,13 @@ public final class IcebergConnector implements MetacatConnector {
     RESTCatalog cat = new RESTCatalog();
     cat.initialize("metacat-iceberg", Collections.unmodifiableMap(props));
 
-    boolean ndvEnabled = parseNdvEnabled(options);
-    double ndvSampleFraction = parseNdvSampleFraction(options);
-
-    long ndvMaxFiles = 0L;
-    if (options != null) {
-      try {
-        ndvMaxFiles = Long.parseLong(options.getOrDefault("stats.ndv.max_files", "0"));
-        if (ndvMaxFiles < 0) {
-          ndvMaxFiles = 0;
-        }
-      } catch (NumberFormatException ignore) {
-      }
-    }
-
     return new IcebergConnector(
         "iceberg-rest",
         cat,
         new GlueIcebergFilter(glue),
+        null,
+        null,
+        null,
         ndvEnabled,
         ndvSampleFraction,
         ndvMaxFiles);
@@ -189,6 +223,11 @@ public final class IcebergConnector implements MetacatConnector {
 
   @Override
   public List<String> listNamespaces() {
+    if (isSingleTableMode()) {
+      return (singleNamespaceFq == null || singleNamespaceFq.isBlank())
+          ? List.of()
+          : List.of(singleNamespaceFq);
+    }
     return catalog.listNamespaces().stream()
         .map(Namespace::toString)
         .filter(glueFilter::databaseHasIceberg)
@@ -198,14 +237,18 @@ public final class IcebergConnector implements MetacatConnector {
 
   @Override
   public List<String> listTables(String namespaceFq) {
+    if (isSingleTableMode()) {
+      if (namespaceMatches(namespaceFq)) {
+        return List.of(singleTableName);
+      }
+      return List.of();
+    }
     return glueFilter.icebergTables(namespaceFq);
   }
 
   @Override
   public TableDescriptor describe(String namespaceFq, String tableName) {
-    Namespace namespace = Namespace.of(namespaceFq.split("\\."));
-    TableIdentifier tableId = TableIdentifier.of(namespace, tableName);
-    Table table = catalog.loadTable(tableId);
+    Table table = loadTable(namespaceFq, tableName);
     Schema schema = table.schema();
     String schemaJson = SchemaParser.toJson(schema);
     List<String> partitionKeys = table.spec().fields().stream().map(f -> f.name()).toList();
@@ -220,9 +263,7 @@ public final class IcebergConnector implements MetacatConnector {
       String tableName,
       ResourceId destinationTableId,
       Set<String> includeColumns) {
-    Namespace ns = Namespace.of(namespaceFq.split("\\."));
-    TableIdentifier tid = TableIdentifier.of(ns, tableName);
-    Table table = catalog.loadTable(tid);
+    Table table = loadTable(namespaceFq, tableName);
 
     final Set<Integer> includeIds =
         (includeColumns == null || includeColumns.isEmpty())
@@ -342,9 +383,7 @@ public final class IcebergConnector implements MetacatConnector {
 
   @Override
   public ScanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime) {
-    Namespace ns = Namespace.of(namespaceFq.split("\\."));
-    TableIdentifier tid = TableIdentifier.of(ns, tableName);
-    Table table = catalog.loadTable(tid);
+    Table table = loadTable(namespaceFq, tableName);
 
     TableScan scan = table.newScan().includeColumnStats();
     if (snapshotId > 0) {
@@ -396,6 +435,63 @@ public final class IcebergConnector implements MetacatConnector {
     }
 
     return result;
+  }
+
+  private boolean isSingleTableMode() {
+    return singleTable != null;
+  }
+
+  private boolean namespaceMatches(String namespaceFq) {
+    String stored = singleNamespaceFq == null ? "" : singleNamespaceFq;
+    String incoming = namespaceFq == null ? "" : namespaceFq;
+    return stored.equals(incoming);
+  }
+
+  private Table loadTable(String namespaceFq, String tableName) {
+    if (isSingleTableMode()) {
+      return singleTable;
+    }
+    Namespace namespace =
+        (namespaceFq == null || namespaceFq.isBlank())
+            ? Namespace.empty()
+            : Namespace.of(namespaceFq.split("\\."));
+    TableIdentifier tableId =
+        namespace.isEmpty()
+            ? TableIdentifier.of(tableName)
+            : TableIdentifier.of(namespace, tableName);
+    return catalog.loadTable(tableId);
+  }
+
+  private static Table loadExternalTable(String metadataLocation, Map<String, String> options) {
+    Configuration conf = new Configuration();
+    if (options != null) {
+      options.forEach(
+          (k, v) -> {
+            if (k.startsWith("fs.") || k.startsWith("hadoop.") || k.startsWith("s3.")) {
+              conf.set(k, v);
+            }
+          });
+    }
+    HadoopTables tables = new HadoopTables(conf);
+    return tables.load(metadataLocation);
+  }
+
+  private static String deriveTableName(String metadataLocation) {
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return "table";
+    }
+    String path = metadataLocation;
+    if (path.endsWith("/")) {
+      path = path.substring(0, path.length() - 1);
+    }
+    int slash = path.lastIndexOf('/');
+    if (slash >= 0 && slash + 1 < path.length()) {
+      path = path.substring(slash + 1);
+    }
+    if (path.endsWith(".json")) {
+      path = path.substring(0, path.length() - 5);
+    }
+    return path.isBlank() ? "table" : path;
   }
 
   private String partitionJson(Table table, ContentFile<?> file) {

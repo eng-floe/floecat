@@ -3,7 +3,7 @@ package ai.floedb.metacat.reconciler.jobs;
 import java.util.Optional;
 
 public interface ReconcileJobStore {
-  String enqueue(String tenantId, String connectorId, boolean fullRescan);
+  String enqueue(String tenantId, String connectorId, boolean fullRescan, ReconcileScope scope);
 
   Optional<ReconcileJob> get(String jobId);
 
@@ -30,6 +30,7 @@ public interface ReconcileJobStore {
     public final long tablesChanged;
     public final long errors;
     public final boolean fullRescan;
+    public final ReconcileScope scope;
 
     public ReconcileJob(
         String jobId,
@@ -42,7 +43,8 @@ public interface ReconcileJobStore {
         long tablesScanned,
         long tablesChanged,
         long errors,
-        boolean fullRescan) {
+        boolean fullRescan,
+        ReconcileScope scope) {
       this.jobId = jobId;
       this.tenantId = tenantId;
       this.connectorId = connectorId;
@@ -54,6 +56,7 @@ public interface ReconcileJobStore {
       this.tablesChanged = tablesChanged;
       this.errors = errors;
       this.fullRescan = fullRescan;
+      this.scope = scope == null ? ReconcileScope.empty() : scope;
     }
   }
 
@@ -62,12 +65,19 @@ public interface ReconcileJobStore {
     public final String tenantId;
     public final String connectorId;
     public final boolean fullRescan;
+    public final ReconcileScope scope;
 
-    public LeasedJob(String jobId, String tenantId, String connectorId, boolean fullRescan) {
+    public LeasedJob(
+        String jobId,
+        String tenantId,
+        String connectorId,
+        boolean fullRescan,
+        ReconcileScope scope) {
       this.jobId = jobId;
       this.tenantId = tenantId;
       this.connectorId = connectorId;
       this.fullRescan = fullRescan;
+      this.scope = scope == null ? ReconcileScope.empty() : scope;
     }
   }
 }

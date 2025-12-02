@@ -8,10 +8,16 @@ import java.util.List;
 public record PlanResponseDto(
     String status,
     @JsonProperty("plan-id") String planId,
-    @JsonProperty("plan-tasks") List<Object> planTasks,
+    @JsonProperty("plan-tasks") List<String> planTasks,
     @JsonProperty("file-scan-tasks") List<FileScanTaskDto> fileScanTasks,
     @JsonProperty("delete-files") List<ContentFileDto> deleteFiles,
     @JsonProperty("storage-credentials") List<Object> storageCredentials) {}
+
+@JsonInclude(JsonInclude.Include.NON_NULL)
+record ScanTasksResponseDto(
+    @JsonProperty("plan-tasks") List<String> planTasks,
+    @JsonProperty("file-scan-tasks") List<FileScanTaskDto> fileScanTasks,
+    @JsonProperty("delete-files") List<ContentFileDto> deleteFiles) {}
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 record FileScanTaskDto(

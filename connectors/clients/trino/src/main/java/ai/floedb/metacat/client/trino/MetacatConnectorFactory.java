@@ -4,7 +4,6 @@ import static java.util.Objects.requireNonNull;
 
 import com.google.inject.Injector;
 import io.airlift.bootstrap.Bootstrap;
-import io.airlift.bootstrap.LifeCycleManager;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorContext;
 import io.trino.spi.connector.ConnectorFactory;
@@ -39,8 +38,6 @@ public class MetacatConnectorFactory implements ConnectorFactory {
 
     Injector injector =
         app.doNotInitializeLogging().setRequiredConfigurationProperties(config).initialize();
-
-    LifeCycleManager lifeCycleManager = injector.getInstance(LifeCycleManager.class);
     MetacatConnector connector = injector.getInstance(MetacatConnector.class);
 
     return connector;

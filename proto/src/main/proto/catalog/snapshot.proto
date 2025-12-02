@@ -8,6 +8,7 @@ import "common/common.proto";
 import "google/protobuf/timestamp.proto";
 import "catalog/partition.proto";
 import "catalog/iceberg.proto";
+import "google/protobuf/field_mask.proto";
 
 // ----- Snapshot -----
 
@@ -76,6 +77,16 @@ message DeleteSnapshotResponse {
   ai.floedb.metacat.common.MutationMeta meta = 1;
 }
 
+message UpdateSnapshotRequest {
+  SnapshotSpec spec = 1;
+  ai.floedb.metacat.common.Precondition precondition = 2;
+  google.protobuf.FieldMask update_mask = 3;
+}
+message UpdateSnapshotResponse {
+  Snapshot snapshot = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
+}
+
 // ----- Services -----
 
 service SnapshotService {
@@ -83,4 +94,5 @@ service SnapshotService {
   rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
   rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
   rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
+  rpc UpdateSnapshot(UpdateSnapshotRequest) returns (UpdateSnapshotResponse);
 }

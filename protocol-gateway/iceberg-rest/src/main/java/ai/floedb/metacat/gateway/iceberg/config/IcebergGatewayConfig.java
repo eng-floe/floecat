@@ -3,6 +3,7 @@ package ai.floedb.metacat.gateway.iceberg.config;
 import io.smallrye.config.ConfigMapping;
 import io.smallrye.config.WithDefault;
 import java.util.Map;
+import java.util.Optional;
 
 @ConfigMapping(prefix = "metacat.gateway")
 public interface IcebergGatewayConfig {
@@ -20,4 +21,29 @@ public interface IcebergGatewayConfig {
 
   @WithDefault("")
   Map<String, String> catalogMapping();
+
+  Map<String, RegisterConnectorTemplate> registerConnectors();
+
+  interface RegisterConnectorTemplate {
+    String uri();
+
+    Optional<String> displayName();
+
+    Optional<String> description();
+
+    Map<String, String> properties();
+
+    Optional<AuthTemplate> auth();
+  }
+
+  interface AuthTemplate {
+    @WithDefault("none")
+    String scheme();
+
+    Map<String, String> properties();
+
+    Map<String, String> headerHints();
+
+    Optional<String> secretRef();
+  }
 }

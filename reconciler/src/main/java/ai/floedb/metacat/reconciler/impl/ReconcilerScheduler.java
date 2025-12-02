@@ -39,7 +39,7 @@ public class ReconcilerScheduler {
                 .setKind(ResourceKind.RK_CONNECTOR)
                 .build();
 
-        var result = reconcilerService.reconcile(connectorId, lease.fullRescan);
+        var result = reconcilerService.reconcile(connectorId, lease.fullRescan, lease.scope);
 
         long finished = System.currentTimeMillis();
         if (result.ok()) {

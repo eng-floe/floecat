@@ -16,6 +16,7 @@ import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.metacat.catalog.rpc.SnapshotSpec;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.TableSpec;
+import ai.floedb.metacat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.common.rpc.NameRef;
@@ -31,6 +32,7 @@ import ai.floedb.metacat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.metacat.connector.spi.ConnectorFactory;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
+import ai.floedb.metacat.reconciler.jobs.ReconcileScope;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
@@ -49,7 +51,8 @@ import java.util.Set;
 public class ReconcilerService {
   @Inject GrpcClients clients;
 
-  public Result reconcile(ResourceId connectorId, boolean fullRescan) {
+  public Result reconcile(ResourceId connectorId, boolean fullRescan, ReconcileScope scopeIn) {
+    ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
     long scanned = 0;
     long changed = 0;
     long errors = 0;
@@ -113,6 +116,18 @@ public class ReconcilerService {
         destNamespaceId = ensureNamespace(destCatalogId, destNsFq);
       }
 
+      String scopeNamespaceFq = destNsFq != null ? destNsFq : sourceNsFq;
+      if (!scope.matchesNamespace(scopeNamespaceFq)) {
+        return new Result(
+            0,
+            0,
+            1,
+            new IllegalArgumentException(
+                "Connector destination namespace "
+                    + scopeNamespaceFq
+                    + " does not match requested scope"));
+      }
+
       if (!destB.hasNamespaceId()) {
         destB.setNamespaceId(destNamespaceId);
         destB.clearNamespace();
@@ -140,13 +155,20 @@ public class ReconcilerService {
               ? dest.getTableDisplayName()
               : null;
 
+      boolean matchedScope = false;
       for (String srcTable : tables) {
-        scanned++;
         try {
           var upstream = connector.describe(sourceNsFq, srcTable);
 
           final String destTableDisplay =
               (tableDisplayHint != null) ? tableDisplayHint : upstream.tableName();
+
+          if (!scope.acceptsTable(scopeNamespaceFq, destTableDisplay)) {
+            continue;
+          }
+
+          matchedScope = true;
+          scanned++;
 
           var effective = overrideDisplay(upstream, destNsFq, destTableDisplay);
 
@@ -178,7 +200,7 @@ public class ReconcilerService {
           e.printStackTrace();
           errSummaries.add(
               "ns="
-                  + destNsFq
+                  + scopeNamespaceFq
                   + " table="
                   + sourceNsFq
                   + "."
@@ -186,6 +208,15 @@ public class ReconcilerService {
                   + " : "
                   + rootCauseMessage(e));
         }
+      }
+
+      if (!matchedScope && scope.hasTableFilter()) {
+        return new Result(
+            0,
+            0,
+            1,
+            new IllegalArgumentException(
+                "No tables matched scope: " + scope.destinationTableDisplayName()));
       }
 
       DestinationTarget updated = destB.build();
@@ -374,32 +405,53 @@ public class ReconcilerService {
             .setParentSnapshotId(snapshotBundle.parentId())
             .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamTsMs))
             .setIngestedAt(Timestamps.fromMillis(System.currentTimeMillis()));
+    FieldMask.Builder mask = FieldMask.newBuilder().addPaths("upstream_created_at");
+    if (snapshotBundle.parentId() > 0) {
+      mask.addPaths("parent_snapshot_id");
+    }
     if (snapshotBundle.schemaJson() != null && !snapshotBundle.schemaJson().isBlank()) {
       spec.setSchemaJson(snapshotBundle.schemaJson());
+      mask.addPaths("schema_json");
     }
     if (snapshotBundle.partitionSpec() != null) {
       spec.setPartitionSpec(snapshotBundle.partitionSpec());
+      mask.addPaths("partition_spec");
     }
     if (snapshotBundle.sequenceNumber() > 0) {
       spec.setSequenceNumber(snapshotBundle.sequenceNumber());
+      mask.addPaths("sequence_number");
     }
     if (snapshotBundle.manifestList() != null && !snapshotBundle.manifestList().isBlank()) {
       spec.setManifestList(snapshotBundle.manifestList());
+      mask.addPaths("manifest_list");
     }
     if (snapshotBundle.summary() != null && !snapshotBundle.summary().isEmpty()) {
       spec.putAllSummary(snapshotBundle.summary());
+      mask.addPaths("summary");
     }
     if (snapshotBundle.schemaId() > 0) {
       spec.setSchemaId(snapshotBundle.schemaId());
+      mask.addPaths("schema_id");
     }
     if (snapshotBundle.icebergMetadata() != null) {
       spec.setIceberg(snapshotBundle.icebergMetadata());
+      mask.addPaths("iceberg");
     }
-    var request = CreateSnapshotRequest.newBuilder().setSpec(spec).build();
+    SnapshotSpec snapshotSpec = spec.build();
+    var request = CreateSnapshotRequest.newBuilder().setSpec(snapshotSpec).build();
     try {
       clients.snapshot().createSnapshot(request);
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.ALREADY_EXISTS) {
+        var updateMask = mask.build();
+        if (updateMask.getPathsCount() > 0) {
+          var updateReq =
+              UpdateSnapshotRequest.newBuilder()
+                  .setSpec(snapshotSpec)
+                  .setUpdateMask(updateMask)
+                  .build();
+          clients.snapshot().updateSnapshot(updateReq);
+        }
         return;
       }
       throw e;

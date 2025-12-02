@@ -10,6 +10,9 @@ import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.metacat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.SnapshotService;
+import ai.floedb.metacat.catalog.rpc.SnapshotSpec;
+import ai.floedb.metacat.catalog.rpc.UpdateSnapshotRequest;
+import ai.floedb.metacat.catalog.rpc.UpdateSnapshotResponse;
 import ai.floedb.metacat.common.rpc.MutationMeta;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
@@ -26,11 +29,13 @@ import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.repo.util.BaseResourceRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
+import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -337,5 +342,172 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  @Override
+  public Uni<UpdateSnapshotResponse> updateSnapshot(UpdateSnapshotRequest request) {
+    var L = LogHelper.start(LOG, "UpdateSnapshot");
+
+    return mapFailures(
+            runWithRetry(
+                () -> {
+                  var pc = principal.get();
+                  var corr = pc.getCorrelationId();
+
+                  authz.require(pc, "table.write");
+
+                  if (!request.hasSpec()) {
+                    throw GrpcErrors.invalidArgument(corr, "spec.required", Map.of());
+                  }
+
+                  var spec = request.getSpec();
+                  if (!spec.hasTableId()
+                      || spec.getTableId().getId().isBlank()
+                      || spec.getSnapshotId() == 0L) {
+                    throw GrpcErrors.invalidArgument(corr, "spec.missing_ids", Map.of());
+                  }
+
+                  var tableId = spec.getTableId();
+                  long snapshotId = spec.getSnapshotId();
+                  ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
+
+                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
+                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                  }
+
+                  var existing =
+                      snapshotRepo
+                          .getById(tableId, snapshotId)
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      corr,
+                                      "snapshot",
+                                      Map.of(
+                                          "table_id", tableId.getId(),
+                                          "snapshot_id", Long.toString(snapshotId))));
+
+                  var desired =
+                      applySnapshotSpecPatch(existing, spec, request.getUpdateMask(), corr);
+
+                  if (desired.equals(existing)) {
+                    var noopMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
+                    enforcePreconditions(corr, noopMeta, request.getPrecondition());
+                    return UpdateSnapshotResponse.newBuilder()
+                        .setSnapshot(existing)
+                        .setMeta(noopMeta)
+                        .build();
+                  }
+
+                  var conflictInfo =
+                      Map.of(
+                          "table_id", tableId.getId(),
+                          "snapshot_id", Long.toString(snapshotId));
+
+                  MutationOps.updateWithPreconditions(
+                      () -> snapshotRepo.metaFor(tableId, snapshotId),
+                      request.getPrecondition(),
+                      expected -> snapshotRepo.update(desired, expected),
+                      () -> snapshotRepo.metaForSafe(tableId, snapshotId),
+                      corr,
+                      "snapshot",
+                      conflictInfo);
+
+                  var outMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
+
+                  return UpdateSnapshotResponse.newBuilder()
+                      .setSnapshot(desired)
+                      .setMeta(outMeta)
+                      .build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  private static final Set<String> SNAPSHOT_MUTABLE_PATHS =
+      Set.of(
+          "upstream_created_at",
+          "parent_snapshot_id",
+          "schema_json",
+          "partition_spec",
+          "sequence_number",
+          "manifest_list",
+          "summary",
+          "schema_id",
+          "iceberg");
+
+  private Snapshot applySnapshotSpecPatch(
+      Snapshot current, SnapshotSpec spec, FieldMask mask, String corr) {
+    var paths = normalizedMaskPaths(mask);
+    if (paths.isEmpty()) {
+      throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+    }
+
+    for (var path : paths) {
+      if (!SNAPSHOT_MUTABLE_PATHS.contains(path)) {
+        throw GrpcErrors.invalidArgument(corr, "update_mask.path.invalid", Map.of("path", path));
+      }
+    }
+
+    var builder = current.toBuilder();
+    for (String path : paths) {
+      switch (path) {
+        case "upstream_created_at" -> {
+          if (!spec.hasUpstreamCreatedAt()) {
+            throw GrpcErrors.invalidArgument(
+                corr, "snapshot.upstream_created_at.required", Map.of());
+          }
+          builder.setUpstreamCreatedAt(spec.getUpstreamCreatedAt());
+        }
+        case "parent_snapshot_id" -> builder.setParentSnapshotId(spec.getParentSnapshotId());
+        case "schema_json" -> {
+          if (!spec.hasSchemaJson()) {
+            throw GrpcErrors.invalidArgument(corr, "snapshot.schema_json.required", Map.of());
+          }
+          builder.setSchemaJson(spec.getSchemaJson());
+        }
+        case "partition_spec" -> {
+          if (!spec.hasPartitionSpec()) {
+            throw GrpcErrors.invalidArgument(corr, "snapshot.partition_spec.required", Map.of());
+          }
+          builder.setPartitionSpec(spec.getPartitionSpec());
+        }
+        case "sequence_number" -> {
+          if (!spec.hasSequenceNumber()) {
+            throw GrpcErrors.invalidArgument(corr, "snapshot.sequence_number.required", Map.of());
+          }
+          builder.setSequenceNumber(spec.getSequenceNumber());
+        }
+        case "manifest_list" -> {
+          if (!spec.hasManifestList()) {
+            throw GrpcErrors.invalidArgument(corr, "snapshot.manifest_list.required", Map.of());
+          }
+          builder.setManifestList(spec.getManifestList());
+        }
+        case "summary" -> {
+          builder.clearSummary();
+          builder.putAllSummary(spec.getSummaryMap());
+        }
+        case "schema_id" -> {
+          if (!spec.hasSchemaId()) {
+            throw GrpcErrors.invalidArgument(corr, "snapshot.schema_id.required", Map.of());
+          }
+          builder.setSchemaId(spec.getSchemaId());
+        }
+        case "iceberg" -> {
+          if (!spec.hasIceberg()) {
+            throw GrpcErrors.invalidArgument(corr, "snapshot.iceberg.required", Map.of());
+          }
+          builder.setIceberg(spec.getIceberg());
+        }
+        default ->
+            throw GrpcErrors.invalidArgument(
+                corr, "update_mask.path.invalid", Map.of("path", path));
+      }
+    }
+    return builder.build();
   }
 }
