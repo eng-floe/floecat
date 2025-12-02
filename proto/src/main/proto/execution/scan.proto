@@ -8,24 +8,65 @@ option java_outer_classname = "ExecutionScanProto";
 
 import "catalog/stats.proto";
 
+/**
+ * EXECUTION SCAN PROTOCOL
+ * ------------------------
+ * Defines the *physical file-level* scan output returned by connectors.
+ *
+ * IMPORTANT STABILITY CONTRACT:
+ *   - This file is consumed by connectors and by all execution engines.
+ *   - It must remain *structurally stable*.
+ *   - Do NOT put:
+ *       - pruning predicates
+ *       - logical schemas
+ *       - lifecycle metadata
+ *     in this file.
+ *
+ * This describes only raw connector output.
+ */
+
 enum ScanFileContent {
   SCAN_FILE_CONTENT_DATA = 0;
   SCAN_FILE_CONTENT_POSITION_DELETES = 1;
   SCAN_FILE_CONTENT_EQUALITY_DELETES = 2;
 }
 
+/**
+ * Represents a single data or delete file.
+ * Min/max statistics are optional.
+ */
 message ScanFile {
+  // Fully qualified storage path.
   string file_path = 1;
+
+  // Underlying format (Parquet/ORC/Avro...). For delete files may contain a placeholder.
   string file_format = 2;
+
+  // Size on disk in bytes.
   uint64 file_size_in_bytes = 3;
+
+  // Number of records in the file.
   uint64 record_count = 4;
+
+  // DATA / DELETE (equality or positional)
   ScanFileContent file_content = 5;
+
+  // Optional per-column min/max stats for pruning.
   repeated ai.floedb.metacat.catalog.ColumnStats columns = 6;
+
+  // JSON-encoded structured representation of Iceberg partition values.
   string partition_data_json = 7;
+
+  // Iceberg partition spec ID.
   int32 partition_spec_id = 8;
+
+  // For equality delete files: IDs of equality columns.
   repeated int32 equality_field_ids = 9;
 }
 
+/**
+ * A list of files to be processed for a given table scan.
+ */
 message ScanBundle {
   repeated ScanFile data_files = 1;
   repeated ScanFile delete_files = 2;

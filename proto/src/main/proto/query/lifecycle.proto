@@ -4,50 +4,43 @@ package ai.floedb.metacat.query;
 
 option java_multiple_files = true;
 option java_package = "ai.floedb.metacat.query.rpc";
-option java_outer_classname = "QueryServiceProto";
+option java_outer_classname = "QueryLifecycleProto";
 
 import "common/common.proto";
 import "google/protobuf/timestamp.proto";
-import "execution/scan.proto";
 
-enum Operator {
-  OP_EQ         = 0;
-  OP_NEQ        = 1;
-  OP_LT         = 2;
-  OP_LTE        = 3;
-  OP_GT         = 4;
-  OP_GTE        = 5;
-  OP_BETWEEN    = 6;
-  OP_IN         = 7;
-  OP_IS_NULL    = 8;
-  OP_IS_NOT_NULL = 9;
-}
-
-message Predicate {
-  string column = 1;
-  Operator op = 2;
-  repeated string values = 3;
-}
-
-message SchemaColumn {
-  string name = 1;
-  string logical_type = 2;
-  int32 field_id = 3;
-  bool nullable = 4;
-  string physical_path = 5;
-  bool partition_key = 6;
-}
-
-message SchemaDescriptor {
-  repeated SchemaColumn columns = 1;
-}
+/**
+ * QUERY LIFECYCLE SERVICE
+ * ------------------------
+ * Goal: Provide O(1) query creation and TTL management.
+ *
+ * This service manages ONLY:
+ *   - Input references (tables/views)
+ *   - Snapshot pinning
+ *   - View expansion
+ *   - Row/column obligations
+ *   - Query lifecycle (creation, renewal, completion)
+ *
+ * This service explicitly does NOT:
+ *   - resolve schemas (temporary exception)
+ *   - plan scans
+ *   - perform pruning
+ *   - fetch physical metadata
+ *
+ * All metadata work must move to:
+ *   - QuerySchemaService
+ *   - QueryScanService
+ */
 
 message QueryInput {
+  // A referenced table or view.
   oneof target {
     ai.floedb.metacat.common.NameRef name = 1;
     ai.floedb.metacat.common.ResourceId table_id = 2;
     ai.floedb.metacat.common.ResourceId view_id = 3;
   }
+
+  // Optional: per-input snapshot override.
   ai.floedb.metacat.common.SnapshotRef snapshot = 10;
 }
 
@@ -57,28 +50,28 @@ enum QueryStatus {
   FAILED = 2;
 }
 
+/**
+ * A single pinned snapshot resulting from BeginQuery().
+ */
 message SnapshotPin {
   ai.floedb.metacat.common.ResourceId table_id = 1;
-  int64 snapshot_id = 2;
-  google.protobuf.Timestamp as_of = 3;
+
+  oneof which {
+    int64 snapshot_id = 2;
+    google.protobuf.Timestamp as_of = 3;
+  }
 }
 
+/**
+ * All pinned snapshots for a query.
+ */
 message SnapshotSet {
   repeated SnapshotPin pins = 1;
 }
 
-message TableObligations {
-  ai.floedb.metacat.common.ResourceId table_id = 1;
-
-  message ColumnMask {
-    string column = 1;
-    string expression = 2;
-  }
-
-  repeated ColumnMask masks = 2;
-  string row_filter_expression = 3;
-}
-
+/**
+ * Derived view expansion information.
+ */
 message ExpansionMap {
   message ExpandedView {
     ai.floedb.metacat.common.ResourceId view_id = 1;
@@ -87,31 +80,63 @@ message ExpansionMap {
   }
 
   repeated ExpandedView views = 1;
+
+  // Tables actually read but referenced via a view.
   repeated ai.floedb.metacat.common.ResourceId read_via_view_tables = 2;
 }
 
+/**
+ * Governance obligations applied to tables.
+ */
+message TableObligations {
+  ai.floedb.metacat.common.ResourceId table_id = 1;
+
+  message ColumnMask {
+    string column = 1;          // logical column name
+    string expression = 2;      // SQL replacement
+  }
+
+  repeated ColumnMask masks = 2;
+
+  // Optional SQL expression restricting returned rows.
+  string row_filter_expression = 3;
+}
+
+/**
+ * Summary describing the lifecycle state and pinned metadata of a query.
+ *
+ * NOTE:
+ *   This intentionally excludes schemas and scan bundles.
+ *   These belong in dedicated services for performance and clarity.
+ */
 message QueryDescriptor {
   string query_id = 1;
   string tenant_id = 2;
+
   QueryStatus query_status = 3;
   google.protobuf.Timestamp created_at = 4;
   google.protobuf.Timestamp expires_at = 5;
+
   SnapshotSet snapshots = 6;
   ExpansionMap expansion = 7;
   repeated TableObligations obligations = 8;
 }
 
+/** BeginQuery: creates a new query context. */
 message BeginQueryRequest {
-  repeated QueryInput inputs = 1;
-  google.protobuf.Timestamp as_of_default = 2;
-  int32 ttl_seconds = 3;
+  // TTL for the query context (in seconds).
+  int32 ttl_seconds = 1;
 
-  bool include_schema = 12;
+  // Optional timestamp used by downstream RPCs when no snapshot override is provided.
+  google.protobuf.Timestamp as_of_default = 2;
 }
 
+/**
+ * Response contains:
+ *   QueryDescriptor (always)
+ */
 message BeginQueryResponse {
   QueryDescriptor query = 1;
-  SchemaDescriptor schema = 2;
 }
 
 message RenewQueryRequest {
@@ -141,21 +166,9 @@ message GetQueryResponse {
   QueryDescriptor query = 1;
 }
 
-message FetchScanBundleRequest {
-  string query_id = 1;
-  ai.floedb.metacat.common.ResourceId table_id = 2;
-  repeated string required_columns = 3;
-  repeated Predicate predicates = 4;
-}
-
-message FetchScanBundleResponse {
-  ai.floedb.metacat.execution.ScanBundle bundle = 1;
-}
-
 service QueryService {
   rpc BeginQuery(BeginQueryRequest) returns (BeginQueryResponse);
   rpc RenewQuery(RenewQueryRequest) returns (RenewQueryResponse);
   rpc EndQuery(EndQueryRequest) returns (EndQueryResponse);
   rpc GetQuery(GetQueryRequest) returns (GetQueryResponse);
-  rpc FetchScanBundle(FetchScanBundleRequest) returns (FetchScanBundleResponse);
 }

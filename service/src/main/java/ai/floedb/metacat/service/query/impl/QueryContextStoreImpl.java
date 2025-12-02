@@ -12,8 +12,15 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+/**
+ * Caffeine-backed in-memory implementation of QueryContextStore.
+ *
+ * <p>Notes: - put() inserts only when absent — does NOT overwrite. - replace() overwrites existing
+ * contexts, required for DescribeInputs(). - expiration logic is applied eagerly under get().
+ */
 @ApplicationScoped
 public class QueryContextStoreImpl implements QueryContextStore {
+
   @ConfigProperty(name = "metacat.query.default-ttl-ms", defaultValue = "60000")
   long defaultTtlMs;
 
@@ -43,69 +50,67 @@ public class QueryContextStoreImpl implements QueryContextStore {
 
   @Override
   public Optional<QueryContext> get(String queryId) {
-    QueryContext queryContext = cache.getIfPresent(queryId);
-
-    if (queryContext == null) {
+    QueryContext ctx = cache.getIfPresent(queryId);
+    if (ctx == null) {
       return Optional.empty();
     }
 
     long now = clock.millis();
-    if (now > queryContext.getExpiresAtMs()
-        && queryContext.getState() == QueryContext.State.ACTIVE) {
+    if (now > ctx.getExpiresAtMs() && ctx.getState() == QueryContext.State.ACTIVE) {
       long ver = versionGen.incrementAndGet();
-      QueryContext expired = queryContext.asExpired(ver);
+      QueryContext expired = ctx.asExpired(ver);
       cache.put(queryId, expired);
       return Optional.of(expired);
     }
-    return Optional.of(queryContext);
+
+    return Optional.of(ctx);
   }
 
   @Override
-  public void put(QueryContext queryContext) {
-    cache
-        .asMap()
-        .compute(
-            queryContext.getQueryId(), (k, existing) -> existing != null ? existing : queryContext);
+  public void put(QueryContext ctx) {
+    // Insert only if absent
+    cache.asMap().compute(ctx.getQueryId(), (k, existing) -> existing != null ? existing : ctx);
   }
 
   @Override
   public Optional<QueryContext> extendLease(String queryId, long requestedExpiresAtMs) {
     final long now = clock.millis();
+
     return Optional.ofNullable(
         cache
             .asMap()
             .computeIfPresent(
                 queryId,
-                (k, queryContext) -> {
-                  if (queryContext.getState() != QueryContext.State.ACTIVE) {
-                    return queryContext;
+                (k, ctx) -> {
+                  if (ctx.getState() != QueryContext.State.ACTIVE) {
+                    return ctx;
                   }
 
-                  long newExp =
-                      Math.max(queryContext.getExpiresAtMs(), Math.max(now, requestedExpiresAtMs));
-                  if (newExp == queryContext.getExpiresAtMs()) {
-                    return queryContext;
+                  long newExp = Math.max(ctx.getExpiresAtMs(), Math.max(now, requestedExpiresAtMs));
+                  if (newExp == ctx.getExpiresAtMs()) {
+                    return ctx;
                   }
 
-                  return queryContext.extendLease(newExp, versionGen.incrementAndGet());
+                  return ctx.extendLease(newExp, versionGen.incrementAndGet());
                 }));
   }
 
   @Override
   public Optional<QueryContext> end(String queryId, boolean commit) {
     final long newExp = clock.millis() + endedGraceMs;
+
     return Optional.ofNullable(
         cache
             .asMap()
             .computeIfPresent(
                 queryId,
-                (k, queryContext) -> {
-                  if (queryContext.getState() == QueryContext.State.ENDED_ABORT
-                      || queryContext.getState() == QueryContext.State.ENDED_COMMIT) {
-                    return queryContext;
+                (k, ctx) -> {
+                  if (ctx.getState() == QueryContext.State.ENDED_ABORT
+                      || ctx.getState() == QueryContext.State.ENDED_COMMIT) {
+                    return ctx;
                   }
 
-                  return queryContext.end(commit, newExp, versionGen.incrementAndGet());
+                  return ctx.end(commit, newExp, versionGen.incrementAndGet());
                 }));
   }
 
@@ -117,6 +122,17 @@ public class QueryContextStoreImpl implements QueryContextStore {
   @Override
   public long size() {
     return cache.estimatedSize();
+  }
+
+  /**
+   * Overwrite an existing QueryContext with a new version.
+   *
+   * <p>This is used by DescribeInputs(), GetCatalogBundle(), etc., to store metadata filled later
+   * in the query lifecycle.
+   */
+  @Override
+  public void replace(QueryContext ctx) {
+    cache.asMap().put(ctx.getQueryId(), ctx);
   }
 
   @PreDestroy

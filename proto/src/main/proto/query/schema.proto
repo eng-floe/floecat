@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package ai.floedb.metacat.query;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.query.rpc";
+option java_outer_classname = "QuerySchemaProto";
+
+import "query/lifecycle.proto";
+
+/**
+ * LOGICAL SCHEMA MODEL
+ * ---------------------
+ * Defines the unified logical schema exposed to query planners.
+ *
+ * This schema describes:
+ *   - logical column names
+ *   - logical type names
+ *   - stable field IDs (Iceberg / Delta)
+ *   - physical column paths when available
+ *   - nullability
+ *   - partition indicators
+ *
+ * It intentionally omits storage-level layout or engine-specific details.
+ */
+message SchemaColumn {
+  string name = 1;              // Logical column name.
+  string logical_type = 2;      // e.g. BIGINT, STRING, DECIMAL, TIMESTAMP.
+  int32 field_id = 3;           // Stable format-level field ID.
+  bool nullable = 4;            // True if column may contain NULLs.
+  string physical_path = 5;     // Optional nested path in the physical layout.
+  bool partition_key = 6;       // True if this is a partition column.
+}
+
+/**
+ * A complete logical schema for a table or view.
+ */
+message SchemaDescriptor {
+  repeated SchemaColumn columns = 1;
+}
+
+/**
+ * DESCRIBE INPUTS
+ * ----------------
+ * Resolves planner-facing metadata for a list of query inputs.
+ *
+ * Behavior:
+ *   - Uses query_id to access pinned snapshots.
+ *   - Accepts QueryInput[]
+ *   - Returns SchemaDescriptor[] in matching order.
+ *   - Populates metadata in the internal QueryContext (expansion, obligations, etc.).
+ *
+ * No lifecycle state is modified.
+ */
+message DescribeInputsRequest {
+  string query_id = 1;                 // Must reference an active query.
+  repeated QueryInput inputs = 2;      // Inputs to resolve (tables or views).
+}
+
+message DescribeInputsResponse {
+  repeated SchemaDescriptor schemas = 1; // One schema per input, preserving order.
+}
+
+/**
+ * Schema resolution service used by query planning components.
+ */
+service QuerySchemaService {
+  rpc DescribeInputs(DescribeInputsRequest)
+      returns (DescribeInputsResponse);
+}
