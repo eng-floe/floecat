@@ -10,6 +10,7 @@ import ai.floedb.metacat.service.repo.model.FileColumnStatsKey;
 import ai.floedb.metacat.service.repo.model.Keys;
 import ai.floedb.metacat.service.repo.model.Schemas;
 import ai.floedb.metacat.service.repo.model.TableStatsKey;
+import ai.floedb.metacat.service.repo.util.ColumnStatsNormalizer;
 import ai.floedb.metacat.service.repo.util.GenericResourceRepository;
 import ai.floedb.metacat.storage.BlobStore;
 import ai.floedb.metacat.storage.PointerStore;
@@ -163,13 +164,14 @@ public class StatsRepository {
     do {
       List<ColumnStats> page = columnStatsRepo.listByPrefix(colPrefix, 200, token, next);
       for (ColumnStats cs : page) {
+        String sha = ColumnStatsNormalizer.sha256Hex(cs.toByteArray());
         ColumnStatsKey key =
             new ColumnStatsKey(
                 cs.getTableId().getTenantId(),
                 cs.getTableId().getId(),
                 cs.getSnapshotId(),
                 cs.getColumnId(),
-                "");
+                sha);
         columnStatsRepo.delete(key);
       }
       token = next.toString();
@@ -184,13 +186,14 @@ public class StatsRepository {
     do {
       List<FileColumnStats> page = fileStatsRepo.listByPrefix(filePrefix, 200, token, next);
       for (FileColumnStats fs : page) {
+        String sha = ColumnStatsNormalizer.sha256Hex(fs.toByteArray());
         FileColumnStatsKey key =
             new FileColumnStatsKey(
                 fs.getTableId().getTenantId(),
                 fs.getTableId().getId(),
                 fs.getSnapshotId(),
                 fs.getFilePath(),
-                "");
+                sha);
         fileStatsRepo.delete(key);
       }
       token = next.toString();

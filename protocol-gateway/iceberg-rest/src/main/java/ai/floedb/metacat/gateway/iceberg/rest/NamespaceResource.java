@@ -124,8 +124,7 @@ public class NamespaceResource {
 
   @POST
   public Response create(@PathParam("prefix") String prefix, NamespaceRequests.Create req) {
-
-    if (req == null || req.namespace() == null || req.namespace().isBlank()) {
+    if (req == null || req.namespace() == null || req.namespace().isEmpty()) {
       return Response.status(400)
           .entity(
               new IcebergErrorResponse(
@@ -133,10 +132,8 @@ public class NamespaceResource {
           .build();
     }
 
-    String namespace = req.namespace();
-    List<String> path = NamespacePaths.split(namespace);
-
-    if (path.isEmpty()) {
+    List<String> path = req.namespace();
+    if (path.isEmpty() || path.stream().anyMatch(part -> part == null || part.isBlank())) {
       return Response.status(400)
           .entity(
               new IcebergErrorResponse(
@@ -176,7 +173,7 @@ public class NamespaceResource {
         createdNamespace.getParentsList().isEmpty()
             ? List.of(createdNamespace.getDisplayName())
             : concat(createdNamespace.getParentsList(), createdNamespace.getDisplayName());
-    String locationNs = String.join(".", createdPath);
+    String locationNs = NamespacePaths.encode(createdPath);
 
     return Response.created(uriInfo.getAbsolutePathBuilder().path(locationNs).build())
         .entity(toInfo(createdNamespace))

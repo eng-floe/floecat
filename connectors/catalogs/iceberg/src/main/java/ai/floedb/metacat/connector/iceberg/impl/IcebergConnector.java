@@ -1,5 +1,6 @@
 package ai.floedb.metacat.connector.iceberg.impl;
 
+import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.FileContent;
 import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
@@ -11,6 +12,7 @@ import ai.floedb.metacat.catalog.rpc.IcebergSortField;
 import ai.floedb.metacat.catalog.rpc.IcebergSortOrder;
 import ai.floedb.metacat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
+import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.common.GenericStatsEngine;
 import ai.floedb.metacat.connector.common.ProtoStatsBuilder;
@@ -78,6 +80,9 @@ public final class IcebergConnector implements MetacatConnector {
   private final boolean ndvEnabled;
   private final double ndvSampleFraction;
   private final long ndvMaxFiles;
+
+  private static final org.slf4j.Logger LOG =
+      org.slf4j.LoggerFactory.getLogger(IcebergConnector.class);
 
   private IcebergConnector(
       String connectorId,
@@ -263,16 +268,32 @@ public final class IcebergConnector implements MetacatConnector {
       String tableName,
       ResourceId destinationTableId,
       Set<String> includeColumns) {
+    return enumerateSnapshotsWithStats(
+        namespaceFq, tableName, destinationTableId, includeColumns, true);
+  }
+
+  @Override
+  public List<SnapshotBundle> enumerateSnapshotsWithStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      Set<String> includeColumns,
+      boolean includeStatistics) {
     Table table = loadTable(namespaceFq, tableName);
 
-    final Set<Integer> includeIds =
-        (includeColumns == null || includeColumns.isEmpty())
-            ? table.schema().columns().stream()
-                .map(Types.NestedField::fieldId)
-                .collect(Collectors.toCollection(LinkedHashSet::new))
-            : resolveFieldIdsNested(table.schema(), includeColumns);
+    final Set<Integer> includeIds;
+    if (!includeStatistics) {
+      includeIds = Set.of();
+    } else if (includeColumns == null || includeColumns.isEmpty()) {
+      includeIds =
+          table.schema().columns().stream()
+              .map(Types.NestedField::fieldId)
+              .collect(Collectors.toCollection(LinkedHashSet::new));
+    } else {
+      includeIds = resolveFieldIdsNested(table.schema(), includeColumns);
+    }
 
-    IcebergMetadata icebergMetadata = buildIcebergMetadata(table);
+    IcebergMetadata icebergMetadata = buildIcebergMetadata(namespaceFq, tableName, table);
 
     List<SnapshotBundle> out = new ArrayList<>();
     for (Snapshot snapshot : table.snapshots()) {
@@ -284,78 +305,84 @@ public final class IcebergConnector implements MetacatConnector {
       Schema schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
       String schemaJson = SchemaParser.toJson(schema);
 
-      EngineOut engineOutput = runEngine(table, snapshotId, includeIds);
+      TableStats tStats = null;
+      List<ColumnStats> cStats = List.of();
+      List<FileColumnStats> fileStats = List.of();
+      if (includeStatistics) {
+        EngineOut engineOutput = runEngine(table, snapshotId, includeIds);
 
-      var tStats =
-          ProtoStatsBuilder.toTableStats(
-              destinationTableId,
-              snapshotId,
-              createdMs,
-              TableFormat.TF_ICEBERG,
-              engineOutput.result());
-      var cStats =
-          ProtoStatsBuilder.toColumnStats(
-              destinationTableId,
-              snapshotId,
-              TableFormat.TF_ICEBERG,
-              engineOutput.result().columns(),
-              id -> {
-                var f = table.schema().findField((Integer) id);
-                return f == null ? "" : f.name();
-              },
-              id -> {
-                var f = table.schema().findField((Integer) id);
-                return f == null ? null : IcebergTypeMapper.toLogical(f.type());
-              },
-              createdMs,
-              engineOutput.result().totalRowCount());
-      var fileStats =
-          ProtoStatsBuilder.toFileColumnStats(
-              destinationTableId,
-              snapshotId,
-              TableFormat.TF_ICEBERG,
-              engineOutput.result().files(),
-              id -> {
-                var f = table.schema().findField((Integer) id);
-                return f == null ? "" : f.name();
-              },
-              id -> {
-                var f = table.schema().findField((Integer) id);
-                return f == null ? null : IcebergTypeMapper.toLogical(f.type());
-              },
-              createdMs);
+        tStats =
+            ProtoStatsBuilder.toTableStats(
+                destinationTableId,
+                snapshotId,
+                createdMs,
+                TableFormat.TF_ICEBERG,
+                engineOutput.result());
+        cStats =
+            ProtoStatsBuilder.toColumnStats(
+                destinationTableId,
+                snapshotId,
+                TableFormat.TF_ICEBERG,
+                engineOutput.result().columns(),
+                id -> {
+                  var f = table.schema().findField((Integer) id);
+                  return f == null ? "" : f.name();
+                },
+                id -> {
+                  var f = table.schema().findField((Integer) id);
+                  return f == null ? null : IcebergTypeMapper.toLogical(f.type());
+                },
+                createdMs,
+                engineOutput.result().totalRowCount());
+        var baseFiles =
+            ProtoStatsBuilder.toFileColumnStats(
+                destinationTableId,
+                snapshotId,
+                TableFormat.TF_ICEBERG,
+                engineOutput.result().files(),
+                id -> {
+                  var f = table.schema().findField((Integer) id);
+                  return f == null ? "" : f.name();
+                },
+                id -> {
+                  var f = table.schema().findField((Integer) id);
+                  return f == null ? null : IcebergTypeMapper.toLogical(f.type());
+                },
+                createdMs);
 
-      List<FileColumnStats> deleteStats = new ArrayList<>();
-      TableScan scan = table.newScan().useSnapshot(snapshotId);
-      try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
-        for (FileScanTask task : tasks) {
-          for (var df : task.deletes()) {
-            List<Integer> eqIds =
-                df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
-                    ? df.equalityFieldIds()
-                    : List.of();
-            deleteStats.add(
-                FileColumnStats.newBuilder()
-                    .setTableId(destinationTableId)
-                    .setSnapshotId(snapshotId)
-                    .setFilePath(df.location())
-                    .setRowCount(df.recordCount())
-                    .setSizeBytes(df.fileSizeInBytes())
-                    .addAllEqualityFieldIds(eqIds)
-                    .setFileContent(
-                        df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
-                            ? FileContent.FC_EQUALITY_DELETES
-                            : FileContent.FC_POSITION_DELETES)
-                    .build());
+        List<FileColumnStats> deleteStats = new ArrayList<>();
+        TableScan scan = table.newScan().useSnapshot(snapshotId);
+        try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
+          for (FileScanTask task : tasks) {
+            for (var df : task.deletes()) {
+              List<Integer> eqIds =
+                  df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
+                      ? df.equalityFieldIds()
+                      : List.of();
+              deleteStats.add(
+                  FileColumnStats.newBuilder()
+                      .setTableId(destinationTableId)
+                      .setSnapshotId(snapshotId)
+                      .setFilePath(df.location())
+                      .setRowCount(df.recordCount())
+                      .setSizeBytes(df.fileSizeInBytes())
+                      .addAllEqualityFieldIds(eqIds)
+                      .setFileContent(
+                          df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
+                              ? FileContent.FC_EQUALITY_DELETES
+                              : FileContent.FC_POSITION_DELETES)
+                      .build());
+            }
           }
+        } catch (Exception e) {
+          throw new RuntimeException(
+              "Failed to enumerate delete files for snapshot " + snapshotId, e);
         }
-      } catch (Exception e) {
-        throw new RuntimeException(
-            "Failed to enumerate delete files for snapshot " + snapshotId, e);
-      }
 
-      List<FileColumnStats> allFiles = new ArrayList<>(fileStats);
-      allFiles.addAll(deleteStats);
+        List<FileColumnStats> allFiles = new ArrayList<>(baseFiles);
+        allFiles.addAll(deleteStats);
+        fileStats = allFiles;
+      }
 
       Map<String, String> summary =
           snapshot.summary() == null ? Map.of() : Map.copyOf(snapshot.summary());
@@ -369,7 +396,7 @@ public final class IcebergConnector implements MetacatConnector {
               createdMs,
               tStats,
               cStats,
-              allFiles,
+              fileStats,
               schemaJson,
               toPartitionSpecInfo(table, snapshot),
               sequenceNumber,
@@ -460,6 +487,17 @@ public final class IcebergConnector implements MetacatConnector {
             ? TableIdentifier.of(tableName)
             : TableIdentifier.of(namespace, tableName);
     return catalog.loadTable(tableId);
+  }
+
+  private Long safeLong(String value) {
+    if (value == null || value.isBlank()) {
+      return null;
+    }
+    try {
+      return Long.parseLong(value);
+    } catch (NumberFormatException ignored) {
+      return null;
+    }
   }
 
   private static Table loadExternalTable(String metadataLocation, Map<String, String> options) {
@@ -566,15 +604,89 @@ public final class IcebergConnector implements MetacatConnector {
     return builder.build();
   }
 
-  private IcebergMetadata buildIcebergMetadata(Table table) {
+  private IcebergMetadata buildIcebergMetadata(String namespaceFq, String tableName, Table table) {
+    TableMetadata metadata = tableMetadata(table);
+    if (metadata == null && catalog != null) {
+      try {
+        Namespace namespace =
+            (namespaceFq == null || namespaceFq.isBlank())
+                ? Namespace.empty()
+                : Namespace.of(namespaceFq.split("\\."));
+        TableIdentifier identifier =
+            namespace.isEmpty()
+                ? TableIdentifier.of(tableName)
+                : TableIdentifier.of(namespace, tableName);
+        Table restTable = catalog.loadTable(identifier);
+        metadata = tableMetadata(restTable);
+      } catch (Exception e) {
+        System.out.println(
+            "[IcebergConnector] failed to fetch metadata via REST catalog for "
+                + namespaceFq
+                + "."
+                + tableName
+                + ": "
+                + e);
+      }
+    }
+    if (metadata == null) {
+      String fallbackLocation = tableMetadataLocation(table);
+      if ((fallbackLocation == null || fallbackLocation.isBlank())
+          && glueFilter != null
+          && namespaceFq != null
+          && !namespaceFq.isBlank()
+          && tableName != null
+          && !tableName.isBlank()) {
+        try {
+          fallbackLocation = glueFilter.metadataLocation(namespaceFq, tableName);
+        } catch (Exception e) {
+          System.out.println(
+              "[IcebergConnector] failed to fetch metadata location from Glue for "
+                  + namespaceFq
+                  + "."
+                  + tableName
+                  + ": "
+                  + e);
+        }
+      }
+      if (fallbackLocation == null || fallbackLocation.isBlank()) {
+        return null;
+      }
+      IcebergMetadata.Builder minimal =
+          IcebergMetadata.newBuilder()
+              .setMetadataLocation(fallbackLocation)
+              .setFormatVersion(2)
+              .setTableUuid(
+                  table
+                      .properties()
+                      .getOrDefault("table-uuid", tableName == null ? "" : tableName));
+      Optional.ofNullable(table.properties().get("current-snapshot-id"))
+          .map(this::safeLong)
+          .ifPresent(minimal::setCurrentSnapshotId);
+      return minimal.build();
+    }
+    return toIcebergMetadata(metadata);
+  }
+
+  private TableMetadata tableMetadata(Table table) {
     if (!(table instanceof HasTableOperations hasOps)) {
       return null;
     }
-    TableMetadata metadata = hasOps.operations().current();
-    if (metadata == null) {
+    return hasOps.operations().current();
+  }
+
+  private String tableMetadataLocation(Table table) {
+    Map<String, String> props = table.properties();
+    if (props == null || props.isEmpty()) {
       return null;
     }
+    String loc = props.get("metadata-location");
+    if (loc == null || loc.isBlank()) {
+      loc = props.get("metadata_location");
+    }
+    return loc;
+  }
 
+  private IcebergMetadata toIcebergMetadata(TableMetadata metadata) {
     IcebergMetadata.Builder builder =
         IcebergMetadata.newBuilder()
             .setTableUuid(metadata.uuid())

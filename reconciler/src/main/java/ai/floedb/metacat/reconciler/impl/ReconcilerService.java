@@ -49,9 +49,22 @@ import java.util.Set;
 
 @ApplicationScoped
 public class ReconcilerService {
+  public enum CaptureMode {
+    METADATA_ONLY,
+    METADATA_AND_STATS
+  }
+
   @Inject GrpcClients clients;
 
   public Result reconcile(ResourceId connectorId, boolean fullRescan, ReconcileScope scopeIn) {
+    return reconcile(connectorId, fullRescan, scopeIn, CaptureMode.METADATA_AND_STATS);
+  }
+
+  public Result reconcile(
+      ResourceId connectorId,
+      boolean fullRescan,
+      ReconcileScope scopeIn,
+      CaptureMode captureMode) {
     ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
     long scanned = 0;
     long changed = 0;
@@ -189,11 +202,13 @@ public class ReconcilerService {
             dmaskB.addAllPaths(List.of("destination.table_id", "destination.table_display_name"));
           }
 
+          boolean includeStats = captureMode == CaptureMode.METADATA_AND_STATS;
           var bundles =
               connector.enumerateSnapshotsWithStats(
-                  sourceNsFq, srcTable, destTableId, includeSelectors);
+                  sourceNsFq, srcTable, destTableId, includeSelectors, includeStats);
 
-          ingestAllSnapshotsAndStatsFiltered(destTableId, bundles, includeSelectors);
+          ingestAllSnapshotsAndStatsFiltered(
+              destTableId, bundles, includeSelectors, includeStats);
           changed++;
         } catch (Exception e) {
           errors++;
@@ -461,7 +476,8 @@ public class ReconcilerService {
   private void ingestAllSnapshotsAndStatsFiltered(
       ResourceId tableId,
       List<MetacatConnector.SnapshotBundle> bundles,
-      Set<String> includeSelectors) {
+      Set<String> includeSelectors,
+      boolean includeStats) {
 
     var seen = new HashSet<Long>();
     for (var snapshotBundle : bundles) {
@@ -476,60 +492,64 @@ public class ReconcilerService {
 
       ensureSnapshot(tableId, snapshotBundle);
 
-      var tsIn = snapshotBundle.tableStats();
-      if (tsIn != null) {
-        var tStats = tsIn.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
-        clients
-            .statistics()
-            .putTableStats(
-                PutTableStatsRequest.newBuilder()
+      if (includeStats) {
+        var tsIn = snapshotBundle.tableStats();
+        if (tsIn != null) {
+          var tStats = tsIn.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
+          clients
+              .statistics()
+              .putTableStats(
+                  PutTableStatsRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setSnapshotId(snapshotId)
+                      .setStats(tStats)
+                      .build());
+        }
+
+        var cols = snapshotBundle.columnStats();
+        if (cols != null && !cols.isEmpty()) {
+          List<ColumnStats> filtered =
+              (includeSelectors == null || includeSelectors.isEmpty())
+                  ? cols
+                  : cols.stream().filter(c -> matchesSelector(c, includeSelectors)).toList();
+
+          if (!filtered.isEmpty()) {
+            List<PutColumnStatsRequest> columnRequests = new ArrayList<>();
+            for (var c : filtered) {
+              columnRequests.add(
+                  PutColumnStatsRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setSnapshotId(snapshotId)
+                      .addColumns(
+                          c.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
+                      .build());
+            }
+            clients
+                .statisticsMutiny()
+                .putColumnStats(Multi.createFrom().iterable(columnRequests))
+                .await()
+                .atMost(Duration.ofMinutes(1));
+          }
+        }
+
+        var fileCols = snapshotBundle.fileStats();
+        if (fileCols != null && !fileCols.isEmpty()) {
+          List<PutFileColumnStatsRequest> fileRequests = new ArrayList<>();
+          for (var f : fileCols) {
+            fileRequests.add(
+                PutFileColumnStatsRequest.newBuilder()
                     .setTableId(tableId)
                     .setSnapshotId(snapshotId)
-                    .setStats(tStats)
-                    .build());
-      }
-
-      var cols = snapshotBundle.columnStats();
-      if (cols != null && !cols.isEmpty()) {
-        List<ColumnStats> filtered =
-            (includeSelectors == null || includeSelectors.isEmpty())
-                ? cols
-                : cols.stream().filter(c -> matchesSelector(c, includeSelectors)).toList();
-
-        if (!filtered.isEmpty()) {
-          List<PutColumnStatsRequest> columnRequests = new ArrayList<>();
-          for (var c : filtered) {
-            columnRequests.add(
-                PutColumnStatsRequest.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(snapshotId)
-                    .addColumns(c.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
+                    .addFiles(
+                        f.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
                     .build());
           }
           clients
               .statisticsMutiny()
-              .putColumnStats(Multi.createFrom().iterable(columnRequests))
+              .putFileColumnStats(Multi.createFrom().iterable(fileRequests))
               .await()
               .atMost(Duration.ofMinutes(1));
         }
-      }
-
-      var fileCols = snapshotBundle.fileStats();
-      if (fileCols != null && !fileCols.isEmpty()) {
-        List<PutFileColumnStatsRequest> fileRequests = new ArrayList<>();
-        for (var f : fileCols) {
-          fileRequests.add(
-              PutFileColumnStatsRequest.newBuilder()
-                  .setTableId(tableId)
-                  .setSnapshotId(snapshotId)
-                  .addFiles(f.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
-                  .build());
-        }
-        clients
-            .statisticsMutiny()
-            .putFileColumnStats(Multi.createFrom().iterable(fileRequests))
-            .await()
-            .atMost(Duration.ofMinutes(1));
       }
     }
   }

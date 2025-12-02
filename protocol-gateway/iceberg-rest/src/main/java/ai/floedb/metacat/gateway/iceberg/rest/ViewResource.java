@@ -161,10 +161,9 @@ public class ViewResource {
         spec.setDisplayName(req.name());
         mask.addPaths("display_name");
       }
-      if (req.namespace() != null) {
+      if (req.namespace() != null && !req.namespace().isEmpty()) {
         var targetNs =
-            NameResolution.resolveNamespace(
-                grpc, catalogName, NamespacePaths.split(req.namespace()));
+            NameResolution.resolveNamespace(grpc, catalogName, new java.util.ArrayList<>(req.namespace()));
         spec.setNamespaceId(targetNs);
         mask.addPaths("namespace_id");
       }
@@ -217,10 +216,9 @@ public class ViewResource {
     ViewSpec.Builder spec = ViewSpec.newBuilder();
     FieldMask.Builder mask = FieldMask.newBuilder();
     if (req != null) {
-      if (req.namespace() != null) {
+      if (req.namespace() != null && !req.namespace().isEmpty()) {
         var targetNs =
-            NameResolution.resolveNamespace(
-                grpc, catalogName, NamespacePaths.split(req.namespace()));
+            NameResolution.resolveNamespace(grpc, catalogName, new java.util.ArrayList<>(req.namespace()));
         spec.setNamespaceId(targetNs);
         mask.addPaths("namespace_id");
       }

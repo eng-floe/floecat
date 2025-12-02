@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import software.amazon.awssdk.services.glue.GlueClient;
+import software.amazon.awssdk.services.glue.model.GetTableRequest;
 import software.amazon.awssdk.services.glue.model.GetTablesRequest;
 
 final class GlueIcebergFilter {
@@ -67,5 +68,21 @@ final class GlueIcebergFilter {
     } while (token != null && !token.isEmpty());
 
     return false;
+  }
+
+  String metadataLocation(String database, String table) {
+    var req = GetTableRequest.builder().databaseName(database).name(table).build();
+    var response = glue.getTable(req);
+    if (response == null
+        || response.table() == null
+        || response.table().parameters() == null) {
+      return null;
+    }
+    var params = response.table().parameters();
+    var loc = params.get("metadata_location");
+    if (loc == null) {
+      loc = params.get("metadata-location");
+    }
+    return (loc == null || loc.isBlank()) ? null : loc;
   }
 }

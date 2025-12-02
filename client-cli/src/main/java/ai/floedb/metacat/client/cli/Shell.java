@@ -101,7 +101,11 @@ import ai.floedb.metacat.query.rpc.SnapshotSet;
 import ai.floedb.metacat.query.rpc.TableObligations;
 import com.google.protobuf.Duration;
 import com.google.protobuf.FieldMask;
+import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.JsonFormat;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.picocli.runtime.annotations.TopCommand;
 import jakarta.inject.Inject;
@@ -516,13 +520,16 @@ public class Shell implements Runnable {
           mask.add("properties");
         }
 
-        var req =
+        var updateCatalogBuilder =
             UpdateCatalogRequest.newBuilder()
                 .setCatalogId(resolveCatalogId(id))
                 .setSpec(sb.build())
-                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build())
-                .setPrecondition(preconditionFromEtag(args))
-                .build();
+                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build());
+        var catalogPrecondition = preconditionFromEtag(args);
+        if (catalogPrecondition != null) {
+          updateCatalogBuilder.setPrecondition(catalogPrecondition);
+        }
+        var req = updateCatalogBuilder.build();
 
         var resp = catalogs.updateCatalog(req);
         printCatalogs(List.of(resp.getCatalog()));
@@ -533,12 +540,15 @@ public class Shell implements Runnable {
           return;
         }
         boolean requireEmpty = args.contains("--require-empty");
-        var req =
+        var deleteCatalogBuilder =
             DeleteCatalogRequest.newBuilder()
                 .setCatalogId(resolveCatalogId(Quotes.unquote(args.get(1))))
-                .setRequireEmpty(requireEmpty)
-                .setPrecondition(preconditionFromEtag(args))
-                .build();
+                .setRequireEmpty(requireEmpty);
+        var deleteCatalogPrecondition = preconditionFromEtag(args);
+        if (deleteCatalogPrecondition != null) {
+          deleteCatalogBuilder.setPrecondition(deleteCatalogPrecondition);
+        }
+        var req = deleteCatalogBuilder.build();
         catalogs.deleteCatalog(req);
         out.println("ok");
       }
@@ -746,13 +756,16 @@ public class Shell implements Runnable {
           return;
         }
 
-        var req =
+        var updateNamespaceBuilder =
             UpdateNamespaceRequest.newBuilder()
                 .setNamespaceId(namespaceId)
                 .setSpec(sb.build())
-                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build())
-                .setPrecondition(preconditionFromEtag(args))
-                .build();
+                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build());
+        var nsPrecondition = preconditionFromEtag(args);
+        if (nsPrecondition != null) {
+          updateNamespaceBuilder.setPrecondition(nsPrecondition);
+        }
+        var req = updateNamespaceBuilder.build();
 
         var resp = namespaces.updateNamespace(req);
         printNamespaces(List.of(resp.getNamespace()));
@@ -766,12 +779,13 @@ public class Shell implements Runnable {
 
         ResourceId nsId = resolveNamespaceIdFlexible(args.get(1));
 
-        var req =
-            DeleteNamespaceRequest.newBuilder()
-                .setNamespaceId(nsId)
-                .setRequireEmpty(requireEmpty)
-                .setPrecondition(preconditionFromEtag(args))
-                .build();
+        var deleteNamespaceBuilder =
+            DeleteNamespaceRequest.newBuilder().setNamespaceId(nsId).setRequireEmpty(requireEmpty);
+        var deleteNamespacePrecondition = preconditionFromEtag(args);
+        if (deleteNamespacePrecondition != null) {
+          deleteNamespaceBuilder.setPrecondition(deleteNamespacePrecondition);
+        }
+        var req = deleteNamespaceBuilder.build();
         namespaces.deleteNamespace(req);
         out.println("ok");
       }
@@ -1003,13 +1017,16 @@ public class Shell implements Runnable {
 
         FieldMask mask = FieldMask.newBuilder().addAllPaths(maskPaths).build();
 
-        var req =
+        var updateTableBuilder =
             UpdateTableRequest.newBuilder()
                 .setTableId(tableId)
                 .setSpec(sb.build())
-                .setPrecondition(preconditionFromEtag(args))
-                .setUpdateMask(mask)
-                .build();
+                .setUpdateMask(mask);
+        var tablePrecondition = preconditionFromEtag(args);
+        if (tablePrecondition != null) {
+          updateTableBuilder.setPrecondition(tablePrecondition);
+        }
+        var req = updateTableBuilder.build();
 
         var resp = tables.updateTable(req);
         printTable(resp.getTable());
@@ -1022,13 +1039,16 @@ public class Shell implements Runnable {
           return;
         }
         ResourceId tableId = resolveTableIdFlexible(args.get(1));
-        var req =
+        var deleteTableBuilder =
             DeleteTableRequest.newBuilder()
                 .setTableId(tableId)
                 .setPurgeStats(args.contains("--purge-stats"))
-                .setPurgeSnapshots(args.contains("--purge-snaps"))
-                .setPrecondition(preconditionFromEtag(args))
-                .build();
+                .setPurgeSnapshots(args.contains("--purge-snaps"));
+        var deleteTablePrecondition = preconditionFromEtag(args);
+        if (deleteTablePrecondition != null) {
+          deleteTableBuilder.setPrecondition(deleteTablePrecondition);
+        }
+        var req = deleteTableBuilder.build();
         tables.deleteTable(req);
         out.println("ok");
       }
@@ -1262,13 +1282,16 @@ public class Shell implements Runnable {
           return;
         }
 
-        var req =
+        var updateConnectorBuilder =
             UpdateConnectorRequest.newBuilder()
                 .setConnectorId(connectorId)
                 .setSpec(spec.build())
-                .setPrecondition(preconditionFromEtag(args))
-                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build())
-                .build();
+                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build());
+        var connectorPrecondition = preconditionFromEtag(args);
+        if (connectorPrecondition != null) {
+          updateConnectorBuilder.setPrecondition(connectorPrecondition);
+        }
+        var req = updateConnectorBuilder.build();
 
         var resp = connectors.updateConnector(req);
         printConnectors(List.of(resp.getConnector()));
@@ -1278,11 +1301,14 @@ public class Shell implements Runnable {
           out.println("usage: connector delete <display_name|id> [--etag <etag>]");
           return;
         }
-        var req =
+        var deleteConnectorBuilder =
             DeleteConnectorRequest.newBuilder()
-                .setConnectorId(resolveConnectorId(Quotes.unquote(args.get(1))))
-                .setPrecondition(preconditionFromEtag(args))
-                .build();
+                .setConnectorId(resolveConnectorId(Quotes.unquote(args.get(1))));
+        var deleteConnectorPrecondition = preconditionFromEtag(args);
+        if (deleteConnectorPrecondition != null) {
+          deleteConnectorBuilder.setPrecondition(deleteConnectorPrecondition);
+        }
+        var req = deleteConnectorBuilder.build();
         connectors.deleteConnector(req);
         out.println("ok");
       }
@@ -1539,7 +1565,7 @@ public class Shell implements Runnable {
                     .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
                     .build());
         Snapshot snapshot = resp.getSnapshot();
-        printSnapshots(List.of(snapshot));
+        printSnapshotDetail(snapshot);
       }
       case "delete" -> {
         if (args.size() < 3) {
@@ -1548,14 +1574,25 @@ public class Shell implements Runnable {
         }
         ResourceId tableId = resolveTableIdFlexible(args.get(1));
         long snapshotId = Long.parseLong(args.get(2));
-        var req =
-            DeleteSnapshotRequest.newBuilder()
-                .setTableId(tableId)
-                .setSnapshotId(snapshotId)
-                .setPrecondition(preconditionFromEtag(args))
-                .build();
-        snapshots.deleteSnapshot(req);
-        out.println("ok");
+        var deleteSnapshotBuilder =
+            DeleteSnapshotRequest.newBuilder().setTableId(tableId).setSnapshotId(snapshotId);
+        var snapshotPrecondition = preconditionFromEtag(args);
+        if (snapshotPrecondition != null) {
+          deleteSnapshotBuilder.setPrecondition(snapshotPrecondition);
+        }
+        var req = deleteSnapshotBuilder.build();
+        try {
+          snapshots.deleteSnapshot(req);
+          out.println("ok");
+        } catch (StatusRuntimeException e) {
+          if (e.getStatus().getCode() == Status.Code.FAILED_PRECONDITION) {
+            out.println(
+                "! Precondition failed (etag/version mismatch). Retry with --etag from "
+                    + "`snapshot get`.");
+          } else {
+            throw e;
+          }
+        }
       }
       default -> out.println("unknown subcommand");
     }
@@ -2437,6 +2474,14 @@ public class Shell implements Runnable {
     }
   }
 
+  private void printSnapshotDetail(Snapshot snapshot) {
+    try {
+      out.println(JsonFormat.printer().includingDefaultValueFields().print(snapshot));
+    } catch (InvalidProtocolBufferException e) {
+      out.println(snapshot.toString());
+    }
+  }
+
   private void printTableStats(TableStats s) {
     out.println("Table Stats:");
     out.printf("  table_id:        %s%n", rid(s.getTableId()));
@@ -2805,7 +2850,7 @@ public class Shell implements Runnable {
   private Precondition preconditionFromEtag(List<String> args) {
     String etag = parseStringFlag(args, "--etag", "");
     if (etag == null || etag.isBlank()) {
-      return Precondition.getDefaultInstance();
+      return null;
     }
     return Precondition.newBuilder().setExpectedEtag(etag).build();
   }

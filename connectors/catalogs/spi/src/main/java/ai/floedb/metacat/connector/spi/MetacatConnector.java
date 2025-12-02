@@ -28,6 +28,15 @@ public interface MetacatConnector extends Closeable {
       ResourceId destinationTableId,
       Set<String> includeColumns);
 
+  default List<SnapshotBundle> enumerateSnapshotsWithStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      Set<String> includeColumns,
+      boolean includeStatistics) {
+    return enumerateSnapshotsWithStats(namespaceFq, tableName, destinationTableId, includeColumns);
+  }
+
   ScanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime);
 
   @Override

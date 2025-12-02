@@ -11,7 +11,7 @@ public record PlanResponseDto(
     @JsonProperty("plan-tasks") List<String> planTasks,
     @JsonProperty("file-scan-tasks") List<FileScanTaskDto> fileScanTasks,
     @JsonProperty("delete-files") List<ContentFileDto> deleteFiles,
-    @JsonProperty("storage-credentials") List<Object> storageCredentials) {}
+    @JsonProperty("storage-credentials") List<StorageCredentialDto> storageCredentials) {}
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 record ScanTasksResponseDto(

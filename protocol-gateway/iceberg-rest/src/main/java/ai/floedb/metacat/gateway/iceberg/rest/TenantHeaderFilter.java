@@ -36,6 +36,12 @@ public class TenantHeaderFilter implements ContainerRequestFilter {
         return;
       }
       String tenant = requestContext.getHeaderString(headerName);
+      if ((tenant == null || tenant.isBlank()) && !config.isUnsatisfied()) {
+        String fallback = safeValue(config.get().defaultTenantId());
+        if (!fallback.isBlank()) {
+          tenant = fallback;
+        }
+      }
       if (tenant == null || tenant.isBlank()) {
         requestContext.abortWith(
             Response.status(Response.Status.UNAUTHORIZED)
@@ -51,6 +57,12 @@ public class TenantHeaderFilter implements ContainerRequestFilter {
         authHeader = DEFAULT_AUTH_HEADER;
       }
       String auth = requestContext.getHeaderString(authHeader);
+      if ((auth == null || auth.isBlank()) && !config.isUnsatisfied()) {
+        String fallback = safeValue(config.get().defaultAuthorization());
+        if (!fallback.isBlank()) {
+          auth = fallback;
+        }
+      }
       if (auth == null || auth.isBlank()) {
         requestContext.abortWith(
             Response.status(Response.Status.UNAUTHORIZED)
@@ -68,5 +80,9 @@ public class TenantHeaderFilter implements ContainerRequestFilter {
                       new IcebergError("missing tenant header", "UnauthorizedException", 401)))
               .build());
     }
+  }
+
+  private String safeValue(String value) {
+    return value == null ? "" : value;
   }
 }

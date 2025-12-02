@@ -16,10 +16,12 @@ import ai.floedb.metacat.catalog.rpc.IcebergSortField;
 import ai.floedb.metacat.catalog.rpc.IcebergSortOrder;
 import ai.floedb.metacat.catalog.rpc.IcebergStatisticsFile;
 import ai.floedb.metacat.catalog.rpc.ListTablesRequest;
+import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.metacat.catalog.rpc.PartitionField;
 import ai.floedb.metacat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.SnapshotSpec;
+import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
@@ -43,6 +45,7 @@ import ai.floedb.metacat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.metacat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.metacat.connector.rpc.NamespacePath;
 import ai.floedb.metacat.connector.rpc.SourceSelector;
+import ai.floedb.metacat.connector.rpc.SyncCaptureRequest;
 import ai.floedb.metacat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.metacat.execution.rpc.ScanBundle;
 import ai.floedb.metacat.execution.rpc.ScanFile;
@@ -58,6 +61,8 @@ import ai.floedb.metacat.query.rpc.QueryInput;
 import ai.floedb.metacat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.metacat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
+import ai.floedb.metacat.query.rpc.Operator;
+import ai.floedb.metacat.query.rpc.Predicate;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -85,19 +90,36 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
-@Path("/v1/{prefix}/namespaces/{namespace}/tables")
+import io.grpc.StatusRuntimeException;
+import org.eclipse.microprofile.config.Config;
+import org.jboss.logging.Logger;
+
+@Path("/v1/{prefix}/namespaces/{namespace}")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
 public class TableResource {
+  private static final Logger LOG = Logger.getLogger(TableResource.class);
+  private final ConcurrentMap<String, PlanContext> planContexts = new ConcurrentHashMap<>();
+  private static final List<StorageCredentialDto> STATIC_STORAGE_CREDENTIALS =
+      List.of(new StorageCredentialDto("*", Map.of("type", "static")));
+  private volatile Map<String, String> tableConfigCache;
+  private volatile List<StorageCredentialDto> storageCredentialCache;
+
   @Inject GrpcWithHeaders grpc;
   @Inject IcebergGatewayConfig config;
   @Inject ObjectMapper mapper;
+  @Inject Config mpConfig;
 
   @GET
+  @Path("/tables")
   public Response list(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
@@ -136,6 +158,7 @@ public class TableResource {
   }
 
   @POST
+  @Path("/tables")
   public Response create(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
@@ -147,34 +170,91 @@ public class TableResource {
         NameResolution.resolveNamespace(grpc, catalogName, NamespacePaths.split(namespace));
 
     String tableName = req != null && req.name() != null ? req.name() : "table";
+    if (req != null) {
+      if (Boolean.TRUE.equals(req.stageCreate())) {
+        return specNotImplemented("stage-create");
+      }
+      if (req.partitionSpec() != null && !req.partitionSpec().isNull()) {
+        // Partition specs are ingested asynchronously by the reconciler/connector pipeline.
+        return specNotImplemented("create partition-spec");
+      }
+      if (req.writeOrder() != null && !req.writeOrder().isNull()) {
+        return specNotImplemented("create write-order");
+      }
+    }
 
-    TableSpec.Builder spec = buildCreateSpec(catalogId, namespaceId, tableName, req);
+    TableSpec.Builder spec;
+    try {
+      spec = buildCreateSpec(catalogId, namespaceId, tableName, req);
+    } catch (IllegalArgumentException | JsonProcessingException e) {
+      return validationError(e.getMessage());
+    }
 
     TableServiceGrpc.TableServiceBlockingStub stub = grpc.withHeaders(grpc.raw().table());
     CreateTableRequest.Builder request = CreateTableRequest.newBuilder().setSpec(spec);
     if (idempotencyKey != null && !idempotencyKey.isBlank()) {
       request.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey));
     }
-    var created = stub.createTable(request.build());
-    return Response.ok(TableResponseMapper.toLoadResult(tableName, created.getTable())).build();
+    var created = stub.createTable(request.build()).getTable();
+    IcebergMetadata metadata = loadCurrentMetadata(created);
+    Response.ResponseBuilder builder =
+        Response.ok(
+            TableResponseMapper.toLoadResult(
+                tableName,
+                created,
+                metadata,
+                List.of(),
+                defaultTableConfig(),
+                defaultCredentials()));
+    String etagValue = metadataLocation(created, metadata);
+    if (etagValue != null) {
+      builder.tag(etagValue);
+    }
+    return builder.build();
   }
 
-  @Path("/{table}")
+  @Path("/tables/{table}")
   @GET
   public Response get(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
-      @QueryParam("snapshots") String snapshots) {
+      @QueryParam("snapshots") String snapshots,
+      @HeaderParam("If-None-Match") String ifNoneMatch) {
     String catalogName = resolveCatalog(prefix);
     ResourceId tableId =
         NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
     TableServiceGrpc.TableServiceBlockingStub stub = grpc.withHeaders(grpc.raw().table());
     var resp = stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build());
-    return Response.ok(TableResponseMapper.toLoadResult(table, resp.getTable())).build();
+    Table tableRecord = resp.getTable();
+    SnapshotMode snapshotMode;
+    try {
+      snapshotMode = parseSnapshotMode(snapshots);
+    } catch (IllegalArgumentException e) {
+      return validationError(e.getMessage());
+    }
+    IcebergMetadata metadata = loadCurrentMetadata(tableRecord);
+    List<Snapshot> snapshotList = fetchSnapshots(tableId, snapshotMode, metadata);
+    String etagValue = metadataLocation(tableRecord, metadata);
+    if (etagMatches(etagValue, ifNoneMatch)) {
+      return Response.status(Response.Status.NOT_MODIFIED).tag(etagValue).build();
+    }
+    Response.ResponseBuilder builder =
+        Response.ok(
+            TableResponseMapper.toLoadResult(
+                table,
+                tableRecord,
+                metadata,
+                snapshotList,
+                defaultTableConfig(),
+                defaultCredentials()));
+    if (etagValue != null) {
+      builder.tag(etagValue);
+    }
+    return builder.build();
   }
 
-  @Path("/{table}")
+  @Path("/tables/{table}")
   @HEAD
   public Response exists(
       @PathParam("prefix") String prefix,
@@ -185,7 +265,7 @@ public class TableResource {
     return Response.noContent().build();
   }
 
-  @Path("/{table}")
+  @Path("/tables/{table}")
   @PUT
   public Response update(
       @PathParam("prefix") String prefix,
@@ -206,7 +286,7 @@ public class TableResource {
                 req.name(), req.namespace(), req.schemaJson(), req.properties(), null, null));
   }
 
-  @Path("/{table}")
+  @Path("/tables/{table}")
   @DELETE
   public Response delete(
       @PathParam("prefix") String prefix,
@@ -220,7 +300,7 @@ public class TableResource {
     return Response.noContent().build();
   }
 
-  @Path("/{table}")
+  @Path("/tables/{table}")
   @POST
   public Response commit(
       @PathParam("prefix") String prefix,
@@ -259,10 +339,9 @@ public class TableResource {
         spec.setDisplayName(req.name());
         mask.addPaths("display_name");
       }
-      if (req.namespace() != null) {
+      if (req.namespace() != null && !req.namespace().isEmpty()) {
         var targetNs =
-            NameResolution.resolveNamespace(
-                grpc, catalogName, NamespacePaths.split(req.namespace()));
+            NameResolution.resolveNamespace(grpc, catalogName, new ArrayList<>(req.namespace()));
         spec.setNamespaceId(targetNs);
         mask.addPaths("namespace_id");
       }
@@ -295,24 +374,30 @@ public class TableResource {
       }
       String unsupported = unsupportedUpdateAction(req);
       if (unsupported != null) {
-        return specNotImplemented("commit update action " + unsupported);
+        return validationError("unsupported commit update action: " + unsupported);
       }
       if (mergedProps != null) {
         spec.clearProperties().putAllProperties(mergedProps);
         mask.addPaths("properties");
       }
     }
-    var resp =
-        stub.updateTable(
-            UpdateTableRequest.newBuilder()
-                .setTableId(tableId)
-                .setSpec(spec)
-                .setUpdateMask(mask)
-                .build());
-    return Response.ok(TableResponseMapper.toCommitResponse(table, resp.getTable())).build();
+    UpdateTableRequest.Builder updateRequest =
+        UpdateTableRequest.newBuilder().setTableId(tableId).setSpec(spec).setUpdateMask(mask);
+    var resp = stub.updateTable(updateRequest.build());
+    Table updated = resp.getTable();
+    IcebergMetadata metadata = loadCurrentMetadata(updated);
+    Response.ResponseBuilder builder =
+        Response.ok(
+            TableResponseMapper.toCommitResponse(
+                table, updated, metadata, List.of()));
+    String etagValue = metadataLocation(updated, metadata);
+    if (etagValue != null) {
+      builder.tag(etagValue);
+    }
+    return builder.build();
   }
 
-  @Path("/{table}/plan")
+  @Path("/tables/{table}/plan")
   @POST
   public Response planTable(
       @PathParam("prefix") String prefix,
@@ -320,26 +405,48 @@ public class TableResource {
       @PathParam("table") String table,
       PlanRequests.Plan rawRequest) {
     PlanRequests.Plan request = rawRequest == null ? PlanRequests.Plan.empty() : rawRequest;
-    if (request.startSnapshotId() != null || request.endSnapshotId() != null) {
-      return validationError("Incremental scans are not supported yet");
-    }
-    if (request.filter() != null && !request.filter().isEmpty()) {
-      return validationError("Filter expressions are not supported yet");
-    }
     String catalogName = resolveCatalog(prefix);
     ResourceId tableId =
         NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
+    Long startSnapshotId = request.startSnapshotId();
+    Long endSnapshotId = request.endSnapshotId();
+    Long snapshotId = request.snapshotId();
+    if (startSnapshotId != null && endSnapshotId != null && startSnapshotId >= endSnapshotId) {
+      return validationError("start-snapshot-id must be less than end-snapshot-id");
+    }
+    Long resolvedSnapshotId = endSnapshotId != null ? endSnapshotId : snapshotId;
+    if (startSnapshotId != null && resolvedSnapshotId == null) {
+      return validationError("start-snapshot-id requires snapshot-id or end-snapshot-id");
+    }
+    List<Predicate> predicates;
+    try {
+      predicates = buildPredicates(request.filter(), request.caseSensitive());
+    } catch (IllegalArgumentException ex) {
+      return validationError(ex.getMessage());
+    }
     QueryServiceGrpc.QueryServiceBlockingStub queryStub = grpc.withHeaders(grpc.raw().query());
     var begin = queryStub.beginQuery(BeginQueryRequest.newBuilder().build());
     String queryId = begin.getQuery().getQueryId();
-    registerPlanInput(queryId, tableId, request);
-    QueryScanServiceGrpc.QueryScanServiceBlockingStub scanStub =
-        grpc.withHeaders(grpc.raw().queryScan());
-    ScanBundle bundle = fetchScanBundle(scanStub, tableId, queryId, request.select());
-    return Response.ok(toPlanResult(begin.getQuery(), null, bundle)).build();
+    registerPlanInput(queryId, tableId, resolvedSnapshotId);
+    planContexts.put(
+        queryId,
+        new PlanContext(
+            tableId,
+            copyOfOrNull(request.select()),
+            startSnapshotId,
+            resolvedSnapshotId,
+            predicates,
+            copyOfOrNull(request.statsFields()),
+            request.useSnapshotSchema(),
+            request.caseSensitive(),
+            request.minRowsRequested()));
+    return Response.ok(
+            new PlanResponseDto(
+                "in-progress", queryId, List.of(queryId), null, null, defaultCredentials()))
+        .build();
   }
 
-  @Path("/{table}/plan/{planId}")
+  @Path("/tables/{table}/plan/{planId}")
   @GET
   public Response fetchPlan(
       @PathParam("prefix") String prefix,
@@ -349,15 +456,20 @@ public class TableResource {
     String catalogName = resolveCatalog(prefix);
     ResourceId tableId =
         NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
+    PlanContext ctx =
+        planContexts.getOrDefault(
+            planId,
+            new PlanContext(
+                tableId, null, null, null, List.of(), null, null, null, null));
     QueryServiceGrpc.QueryServiceBlockingStub queryStub = grpc.withHeaders(grpc.raw().query());
     var resp = queryStub.getQuery(GetQueryRequest.newBuilder().setQueryId(planId).build());
     QueryScanServiceGrpc.QueryScanServiceBlockingStub scanStub =
         grpc.withHeaders(grpc.raw().queryScan());
-    ScanBundle bundle = fetchScanBundle(scanStub, tableId, resp.getQuery().getQueryId(), null);
-    return Response.ok(toPlanResult(resp.getQuery(), planId, bundle)).build();
+    ScanBundle bundle = fetchScanBundle(scanStub, ctx, resp.getQuery().getQueryId());
+    return Response.ok(toCompletedPlanResult(resp.getQuery(), planId, bundle)).build();
   }
 
-  @Path("/{table}/plan/{planId}")
+  @Path("/tables/{table}/plan/{planId}")
   @DELETE
   public Response cancelPlan(
       @PathParam("prefix") String prefix,
@@ -368,10 +480,11 @@ public class TableResource {
     NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
     QueryServiceGrpc.QueryServiceBlockingStub queryStub = grpc.withHeaders(grpc.raw().query());
     queryStub.endQuery(EndQueryRequest.newBuilder().setQueryId(planId).setCommit(false).build());
+    planContexts.remove(planId);
     return Response.noContent().build();
   }
 
-  @Path("/{table}/tasks")
+  @Path("/tables/{table}/tasks")
   @POST
   public Response scanTasks(
       @PathParam("prefix") String prefix,
@@ -384,14 +497,20 @@ public class TableResource {
     String catalogName = resolveCatalog(prefix);
     ResourceId tableId =
         NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
+    String planTask = request.planTask().trim();
+    PlanContext ctx =
+        planContexts.getOrDefault(
+            planTask,
+            new PlanContext(
+                tableId, null, null, null, List.of(), null, null, null, null));
     QueryScanServiceGrpc.QueryScanServiceBlockingStub scanStub =
         grpc.withHeaders(grpc.raw().queryScan());
-    ScanBundle bundle =
-        fetchScanBundle(scanStub, tableId, request.planTask().trim(), /*requiredColumns*/ null);
+    ScanBundle bundle = fetchScanBundle(scanStub, ctx, planTask);
+    planContexts.remove(planTask);
     return Response.ok(toScanTasksDto(bundle)).build();
   }
 
-  @Path("/{table}/credentials")
+  @Path("/tables/{table}/credentials")
   @GET
   public Response loadCredentials(
       @PathParam("prefix") String prefix,
@@ -400,10 +519,10 @@ public class TableResource {
       @QueryParam("planId") String planId) {
     String catalogName = resolveCatalog(prefix);
     NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
-    return Response.ok(new CredentialsResponseDto(List.of())).build();
+    return Response.ok(new CredentialsResponseDto(defaultCredentials())).build();
   }
 
-  @Path("/{table}/metrics")
+  @Path("/tables/{table}/metrics")
   @POST
   public Response publishMetrics(
       @PathParam("prefix") String prefix,
@@ -495,7 +614,7 @@ public class TableResource {
     if (idempotencyKey != null && !idempotencyKey.isBlank()) {
       request.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey));
     }
-    var created = tableStub.createTable(request.build());
+    var created = tableStub.createTable(request.build()).getTable();
 
     var connectorTemplate = connectorTemplateFor(prefix);
     ResourceId connectorId;
@@ -506,11 +625,7 @@ public class TableResource {
               prefix,
               namespacePath,
               namespaceId,
-              catalogId,
-              tableName,
-              created.getTable().getResourceId(),
-              connectorTemplate,
-              idempotencyKey);
+              catalogId, tableName, created.getResourceId(), connectorTemplate, idempotencyKey);
       upstreamUri = connectorTemplate.uri();
     } else {
       connectorId =
@@ -518,32 +633,57 @@ public class TableResource {
               prefix,
               namespacePath,
               namespaceId,
-              catalogId,
-              tableName,
-              created.getTable().getResourceId(),
-              req.metadataLocation(),
-              idempotencyKey);
+              catalogId, tableName, created.getResourceId(), req.metadataLocation(), idempotencyKey);
       upstreamUri = req.metadataLocation();
     }
 
     updateTableUpstream(
-        created.getTable().getResourceId(), namespacePath, tableName, connectorId, upstreamUri);
+        created.getResourceId(), namespacePath, tableName, connectorId, upstreamUri);
 
+    runSyncMetadataCapture(connectorId, namespacePath, tableName);
     triggerScopedReconcile(connectorId, namespacePath, tableName);
 
-    return Response.ok(TableResponseMapper.toLoadResult(tableName, created.getTable())).build();
+    IcebergMetadata metadata = loadCurrentMetadata(created);
+    Response.ResponseBuilder builder =
+        Response.ok(
+            TableResponseMapper.toLoadResult(
+                tableName,
+                created,
+                metadata,
+                List.of(),
+                defaultTableConfig(),
+                defaultCredentials()));
+    String etagValue = metadataLocation(created, metadata);
+    if (etagValue != null) {
+      builder.tag(etagValue);
+    }
+    return builder.build();
   }
 
   private TableSpec.Builder buildCreateSpec(
-      ResourceId catalogId, ResourceId namespaceId, String tableName, TableRequests.Create req) {
+      ResourceId catalogId, ResourceId namespaceId, String tableName, TableRequests.Create req)
+      throws JsonProcessingException {
     TableSpec.Builder spec = baseTableSpec(catalogId, namespaceId, tableName);
-    if (req != null) {
-      if (req.schemaJson() != null) {
-        spec.setSchemaJson(req.schemaJson());
-      }
-      if (req.properties() != null) {
-        spec.putAllProperties(req.properties());
-      }
+    if (req == null) {
+      return spec;
+    }
+    String schemaJson = req.schemaJson();
+    if ((schemaJson == null || schemaJson.isBlank())
+        && req.schema() != null
+        && !req.schema().isNull()) {
+      schemaJson = mapper.writeValueAsString(req.schema());
+    }
+    if (schemaJson != null && !schemaJson.isBlank()) {
+      spec.setSchemaJson(schemaJson);
+    }
+    if (req.location() != null && !req.location().isBlank()) {
+      spec.putProperties("location", req.location());
+      UpstreamRef.Builder upstream =
+          spec.getUpstream().toBuilder().setFormat(TableFormat.TF_ICEBERG).setUri(req.location());
+      spec.setUpstream(upstream.build());
+    }
+    if (req.properties() != null && !req.properties().isEmpty()) {
+      spec.putAllProperties(req.properties());
     }
     return spec;
   }
@@ -565,6 +705,32 @@ public class TableResource {
     spec.putProperties("metadata_location", metadataLocation);
   }
 
+  private void runSyncMetadataCapture(
+      ResourceId connectorId, List<String> namespacePath, String tableName) {
+    if (connectorId == null || tableName == null || tableName.isBlank()) {
+      return;
+    }
+    try {
+      ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
+      SyncCaptureRequest.Builder request =
+          SyncCaptureRequest.newBuilder()
+              .setConnectorId(connectorId)
+              .setDestinationTableDisplayName(tableName)
+              .setIncludeStatistics(false);
+      if (namespacePath != null && !namespacePath.isEmpty()) {
+        request.addDestinationNamespacePaths(
+            NamespacePath.newBuilder().addAllSegments(namespacePath).build());
+      }
+      stub.syncCapture(request.build());
+    } catch (StatusRuntimeException e) {
+      LOG.warnf(
+          e,
+          "Sync metadata capture failed for connector %s table %s",
+          connectorId.getId(),
+          tableName);
+    }
+  }
+
   private void triggerScopedReconcile(
       ResourceId connectorId, List<String> namespacePath, String tableName) {
     ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
@@ -578,6 +744,100 @@ public class TableResource {
           NamespacePath.newBuilder().addAllSegments(namespacePath).build());
     }
     stub.triggerReconcile(request.build());
+  }
+
+  private SnapshotMode parseSnapshotMode(String raw) {
+    if (raw == null || raw.isBlank() || raw.equalsIgnoreCase("all")) {
+      return SnapshotMode.ALL;
+    }
+    if ("refs".equalsIgnoreCase(raw)) {
+      return SnapshotMode.REFS;
+    }
+    throw new IllegalArgumentException("snapshots must be one of [all, refs]");
+  }
+
+  private List<Snapshot> fetchSnapshots(
+      ResourceId tableId, SnapshotMode mode, IcebergMetadata metadata) {
+    SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub =
+        grpc.withHeaders(grpc.raw().snapshot());
+    try {
+      var resp =
+          snapshotStub.listSnapshots(ListSnapshotsRequest.newBuilder().setTableId(tableId).build());
+      List<Snapshot> snapshots = resp.getSnapshotsList();
+      if (mode == SnapshotMode.REFS) {
+        if (metadata == null || metadata.getRefsCount() == 0) {
+          return List.of();
+        }
+        Set<Long> refIds =
+            metadata.getRefsMap().values().stream()
+                .map(IcebergRef::getSnapshotId)
+                .collect(Collectors.toSet());
+        return snapshots.stream()
+            .filter(s -> refIds.contains(s.getSnapshotId()))
+            .collect(Collectors.toList());
+      }
+      return snapshots;
+    } catch (StatusRuntimeException e) {
+      return List.of();
+    }
+  }
+
+  private boolean etagMatches(String etagValue, String ifNoneMatch) {
+    if (etagValue == null || ifNoneMatch == null) {
+      return false;
+    }
+    String token = ifNoneMatch.trim();
+    if (token.startsWith("\"") && token.endsWith("\"") && token.length() >= 2) {
+      token = token.substring(1, token.length() - 1);
+    }
+    return token.equals(etagValue);
+  }
+
+  private String metadataLocation(Table table, IcebergMetadata metadata) {
+    if (metadata != null && metadata.getMetadataLocation() != null && !metadata.getMetadataLocation().isBlank()) {
+      return metadata.getMetadataLocation();
+    }
+    Map<String, String> props = table.getPropertiesMap();
+    String location = props.getOrDefault("metadata-location", props.get("metadata_location"));
+    if (location != null && !location.isBlank()) {
+      return location;
+    }
+    return table.hasResourceId() ? table.getResourceId().getId() : null;
+  }
+
+  private enum SnapshotMode {
+    ALL,
+    REFS
+  }
+
+  private IcebergMetadata loadCurrentMetadata(Table table) {
+    if (table == null || !table.hasResourceId()) {
+      return null;
+    }
+    Long snapshotId = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
+    SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub =
+        grpc.withHeaders(grpc.raw().snapshot());
+    try {
+      SnapshotRef.Builder ref = SnapshotRef.newBuilder();
+      if (snapshotId != null && snapshotId > 0) {
+        ref.setSnapshotId(snapshotId);
+      } else {
+        ref.setSpecial(SpecialSnapshot.SS_CURRENT);
+      }
+      var response =
+          snapshotStub.getSnapshot(
+              GetSnapshotRequest.newBuilder()
+                  .setTableId(table.getResourceId())
+                  .setSnapshot(ref)
+                  .build());
+      if (response == null || !response.hasSnapshot()) {
+        return null;
+      }
+      var snapshot = response.getSnapshot();
+      return snapshot.hasIceberg() ? snapshot.getIceberg() : null;
+    } catch (StatusRuntimeException ignored) {
+      return null;
+    }
   }
 
   private String resolveCatalog(String prefix) {
@@ -594,27 +854,27 @@ public class TableResource {
     return NameResolution.resolveCatalog(grpc, resolveCatalog(prefix));
   }
 
-  private QueryInput buildPlanInput(ResourceId tableId, PlanRequests.Plan request) {
+  private QueryInput buildPlanInput(ResourceId tableId, Long snapshotId) {
     QueryInput.Builder input = QueryInput.newBuilder().setTableId(tableId);
-    if (request.snapshotId() != null) {
-      input.setSnapshot(SnapshotRef.newBuilder().setSnapshotId(request.snapshotId()));
+    if (snapshotId != null) {
+      input.setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId));
     } else {
       input.setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT));
     }
     return input.build();
   }
 
-  private void registerPlanInput(String queryId, ResourceId tableId, PlanRequests.Plan request) {
+  private void registerPlanInput(String queryId, ResourceId tableId, Long snapshotId) {
     QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schemaStub =
         grpc.withHeaders(grpc.raw().querySchema());
     schemaStub.describeInputs(
         DescribeInputsRequest.newBuilder()
             .setQueryId(queryId)
-            .addInputs(buildPlanInput(tableId, request))
+            .addInputs(buildPlanInput(tableId, snapshotId))
             .build());
   }
 
-  private PlanResponseDto toPlanResult(
+  private PlanResponseDto toCompletedPlanResult(
       QueryDescriptor descriptor, String planIdOverride, ScanBundle bundle) {
     ScanTasksResponseDto scanTasks = toScanTasksDto(bundle);
     String queryId = descriptor.getQueryId();
@@ -622,24 +882,28 @@ public class TableResource {
         (queryId == null || queryId.isBlank())
             ? (planIdOverride == null ? "" : planIdOverride)
             : queryId;
+    List<String> planTasks =
+        (scanTasks.fileScanTasks() == null || scanTasks.fileScanTasks().isEmpty())
+            ? List.of()
+            : List.of(planId);
     return new PlanResponseDto(
         "completed",
         planId,
-        scanTasks.planTasks(),
+        planTasks,
         scanTasks.fileScanTasks(),
         scanTasks.deleteFiles(),
-        null);
+        defaultCredentials());
   }
 
   private ScanBundle fetchScanBundle(
-      QueryScanServiceGrpc.QueryScanServiceBlockingStub stub,
-      ResourceId tableId,
-      String queryId,
-      List<String> requiredColumns) {
+      QueryScanServiceGrpc.QueryScanServiceBlockingStub stub, PlanContext ctx, String queryId) {
     FetchScanBundleRequest.Builder builder =
-        FetchScanBundleRequest.newBuilder().setQueryId(queryId).setTableId(tableId);
-    if (requiredColumns != null && !requiredColumns.isEmpty()) {
-      builder.addAllRequiredColumns(requiredColumns);
+        FetchScanBundleRequest.newBuilder().setQueryId(queryId).setTableId(ctx.tableId());
+    if (ctx.requiredColumns() != null && !ctx.requiredColumns().isEmpty()) {
+      builder.addAllRequiredColumns(ctx.requiredColumns());
+    }
+    if (ctx.predicates() != null && !ctx.predicates().isEmpty()) {
+      builder.addAllPredicates(ctx.predicates());
     }
     return stub.fetchScanBundle(builder.build()).getBundle();
   }
@@ -764,6 +1028,14 @@ public class TableResource {
     }
     Table table = tableSupplier.get();
     Map<String, String> props = table.getPropertiesMap();
+    IcebergMetadata[] metadataHolder = new IcebergMetadata[1];
+    Supplier<IcebergMetadata> metadataSupplier =
+        () -> {
+          if (metadataHolder[0] == null) {
+            metadataHolder[0] = loadCurrentMetadata(table);
+          }
+          return metadataHolder[0];
+        };
     for (Map<String, Object> requirement : requirements) {
       if (requirement == null) {
         return validationError("commit requirement entry cannot be null");
@@ -773,6 +1045,10 @@ public class TableResource {
         return validationError("commit requirement missing type");
       }
       switch (type) {
+        case "assert-create" -> {
+          // Spec requirement for staged create operations. We don't currently stage create tables,
+          // so treat this as satisfied when the table exists.
+        }
         case "assert-table-uuid" -> {
           String expected = asString(requirement.get("uuid"));
           if (expected == null || expected.isBlank()) {
@@ -836,8 +1112,28 @@ public class TableResource {
             return conflictError("assert-default-sort-order-id failed");
           }
         }
+        case "assert-ref-snapshot-id" -> {
+          String refName = asString(requirement.get("ref"));
+          Long expected = asLong(requirement.get("snapshot-id"));
+          if (refName == null || refName.isBlank()) {
+            return validationError("assert-ref-snapshot-id requires ref");
+          }
+          if (expected == null) {
+            return validationError("assert-ref-snapshot-id requires snapshot-id");
+          }
+          Long actual = null;
+          IcebergMetadata metadata = metadataSupplier.get();
+          if (metadata != null && metadata.getRefsMap().containsKey(refName)) {
+            actual = metadata.getRefsMap().get(refName).getSnapshotId();
+          } else if ("main".equals(refName)) {
+            actual = propertyLong(props, "current-snapshot-id");
+          }
+          if (!Objects.equals(actual, expected)) {
+            return conflictError("assert-ref-snapshot-id failed for ref " + refName);
+          }
+        }
         default -> {
-          return specNotImplemented("commit requirement " + type);
+          return validationError("unsupported commit requirement: " + type);
         }
       }
     }
@@ -1203,6 +1499,314 @@ public class TableResource {
 
   private static String asString(Object value) {
     return value == null ? null : String.valueOf(value);
+  }
+
+  private static List<String> copyOfOrNull(List<String> values) {
+    if (values == null || values.isEmpty()) {
+      return null;
+    }
+    return List.copyOf(values);
+  }
+
+  private List<Predicate> buildPredicates(
+      Map<String, Object> filter, Boolean caseSensitiveFlag) {
+    if (filter == null || filter.isEmpty()) {
+      return List.of();
+    }
+    boolean caseSensitive = caseSensitiveFlag == null || caseSensitiveFlag;
+    List<Predicate> out = new ArrayList<>();
+    parseFilterExpression(filter, caseSensitive, out);
+    return List.copyOf(out);
+  }
+
+  private void parseFilterExpression(
+      Object expression, boolean caseSensitive, List<Predicate> out) {
+    Map<String, Object> expr = asObjectMap(expression);
+    if (expr == null || expr.isEmpty()) {
+      throw new IllegalArgumentException("filter expression must be an object");
+    }
+    String type = normalizeExpressionType(asString(expr.get("type")));
+    if (type == null || type.isBlank()) {
+      throw new IllegalArgumentException("filter expression missing type");
+    }
+    switch (type) {
+      case "and" -> {
+        List<Map<String, Object>> children = expressionChildren(expr);
+        if (children.isEmpty()) {
+          throw new IllegalArgumentException("and expression requires child expressions");
+        }
+        for (Map<String, Object> child : children) {
+          parseFilterExpression(child, caseSensitive, out);
+        }
+      }
+      case "always_true" -> {
+        // No-op
+      }
+      case "always_false", "or", "not" -> {
+        throw new IllegalArgumentException("filter type " + type + " is not supported");
+      }
+      default -> out.add(buildLeafPredicate(type, expr, caseSensitive));
+    }
+  }
+
+  private Predicate buildLeafPredicate(
+      String type, Map<String, Object> expr, boolean caseSensitive) {
+    String column = resolveColumn(expr.get("term"), caseSensitive);
+    if (column == null || column.isBlank()) {
+      throw new IllegalArgumentException("filter expression requires a term reference");
+    }
+    Operator op;
+    List<String> values = List.of();
+    switch (type) {
+      case "eq", "equal", "equals", "==" -> {
+        values = literalValues(expr, "literal", "value");
+        op = Operator.OP_EQ;
+      }
+      case "neq", "not_equal", "!=" -> {
+        values = literalValues(expr, "literal", "value");
+        op = Operator.OP_NEQ;
+      }
+      case "lt", "less_than", "<" -> {
+        values = literalValues(expr, "literal", "value");
+        op = Operator.OP_LT;
+      }
+      case "lte", "less_than_or_equal", "<=" -> {
+        values = literalValues(expr, "literal", "value");
+        op = Operator.OP_LTE;
+      }
+      case "gt", "greater_than", ">" -> {
+        values = literalValues(expr, "literal", "value");
+        op = Operator.OP_GT;
+      }
+      case "gte", "greater_than_or_equal", ">=" -> {
+        values = literalValues(expr, "literal", "value");
+        op = Operator.OP_GTE;
+      }
+      case "between" -> {
+        values = literalValues(expr, "literals", "values", "literal");
+        if (values.size() < 2) {
+          List<String> bounds = new ArrayList<>();
+          String lower = literalValue(expr.get("lower"));
+          String upper = literalValue(expr.get("upper"));
+          if (lower != null) {
+            bounds.add(lower);
+          }
+          if (upper != null) {
+            bounds.add(upper);
+          }
+          values = bounds;
+        }
+        if (values.size() < 2) {
+          throw new IllegalArgumentException("between expression requires two bounds");
+        }
+        values = List.of(values.get(0), values.get(1));
+        op = Operator.OP_BETWEEN;
+      }
+      case "is_null", "is-null" -> {
+        op = Operator.OP_IS_NULL;
+        values = List.of();
+      }
+      case "is_not_null", "not_null", "not-null" -> {
+        op = Operator.OP_IS_NOT_NULL;
+        values = List.of();
+      }
+      case "in" -> {
+        values = literalValues(expr, "literals", "values");
+        op = Operator.OP_IN;
+      }
+      default -> throw new IllegalArgumentException("filter type " + type + " is not supported");
+    }
+    if (requiresLiteral(op) && values.isEmpty()) {
+      throw new IllegalArgumentException(type + " filter requires a literal value");
+    }
+    Predicate.Builder builder = Predicate.newBuilder().setColumn(column).setOp(op);
+    if (!values.isEmpty()) {
+      builder.addAllValues(values);
+    }
+    return builder.build();
+  }
+
+  private boolean requiresLiteral(Operator op) {
+    return switch (op) {
+      case OP_EQ,
+          OP_NEQ,
+          OP_LT,
+          OP_LTE,
+          OP_GT,
+          OP_GTE,
+          OP_BETWEEN,
+          OP_IN -> true;
+      default -> false;
+    };
+  }
+
+  private List<Map<String, Object>> expressionChildren(Map<String, Object> expr) {
+    List<Map<String, Object>> expressions = asMapList(expr.get("expressions"));
+    if (!expressions.isEmpty()) {
+      return expressions;
+    }
+    List<Map<String, Object>> out = new ArrayList<>();
+    Map<String, Object> left = asObjectMap(expr.get("left"));
+    if (left != null && !left.isEmpty()) {
+      out.add(left);
+    }
+    Map<String, Object> right = asObjectMap(expr.get("right"));
+    if (right != null && !right.isEmpty()) {
+      out.add(right);
+    }
+    return out;
+  }
+
+  private String normalizeExpressionType(String raw) {
+    if (raw == null) {
+      return null;
+    }
+    return raw.trim().toLowerCase(Locale.ROOT).replace('-', '_');
+  }
+
+  private String resolveColumn(Object termNode, boolean caseSensitive) {
+    String column = null;
+    if (termNode instanceof String str) {
+      column = str;
+    } else {
+      Map<String, Object> term = asObjectMap(termNode);
+      if (term != null) {
+        column = asString(term.get("ref"));
+        if (column == null || column.isBlank()) {
+          column = asString(term.get("name"));
+        }
+        if (column == null || column.isBlank()) {
+          column = asString(term.get("column"));
+        }
+      }
+    }
+    if (column == null || column.isBlank()) {
+      return null;
+    }
+    return caseSensitive ? column : column.toLowerCase(Locale.ROOT);
+  }
+
+  private List<String> literalValues(Map<String, Object> expr, String... keys) {
+    for (String key : keys) {
+      if (expr.containsKey(key)) {
+        List<String> values = literalList(expr.get(key));
+        if (!values.isEmpty()) {
+          return values;
+        }
+      }
+    }
+    return List.of();
+  }
+
+  private List<String> literalList(Object node) {
+    if (node == null) {
+      return List.of();
+    }
+    if (node instanceof List<?> list) {
+      List<String> out = new ArrayList<>();
+      for (Object item : list) {
+        String value = literalValue(item);
+        if (value != null) {
+          out.add(value);
+        }
+      }
+      return out;
+    }
+    Map<String, Object> map = asObjectMap(node);
+    if (map != null && !map.isEmpty()) {
+      if (map.containsKey("values")) {
+        return literalList(map.get("values"));
+      }
+      if (map.containsKey("literals")) {
+        return literalList(map.get("literals"));
+      }
+      if (map.containsKey("literal")) {
+        return literalList(map.get("literal"));
+      }
+      if (map.containsKey("value")) {
+        return literalList(map.get("value"));
+      }
+    }
+    String single = literalValue(node);
+    return single == null ? List.of() : List.of(single);
+  }
+
+  private String literalValue(Object node) {
+    if (node == null) {
+      return null;
+    }
+    Map<String, Object> map = asObjectMap(node);
+    if (map != null && !map.isEmpty()) {
+      Object value =
+          firstPresent(
+              map.get("value"),
+              map.get("literal"),
+              map.get("string"),
+              map.get("long"),
+              map.get("int"),
+              map.get("double"),
+              map.get("float"),
+              map.get("boolean"));
+      return value == null ? null : value.toString();
+    }
+    return node.toString();
+  }
+
+  private Object firstPresent(Object... values) {
+    for (Object value : values) {
+      if (value != null) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  private List<StorageCredentialDto> defaultCredentials() {
+    List<StorageCredentialDto> cached = storageCredentialCache;
+    if (cached != null) {
+      return cached;
+    }
+    Map<String, String> props =
+        readPrefixedConfig("metacat.gateway.storage-credential.properties.");
+    if (props.isEmpty()) {
+      storageCredentialCache = STATIC_STORAGE_CREDENTIALS;
+      return STATIC_STORAGE_CREDENTIALS;
+    }
+    String scope =
+        mpConfig
+            .getOptionalValue("metacat.gateway.storage-credential.scope", String.class)
+            .orElse("*");
+    List<StorageCredentialDto> computed =
+        List.of(new StorageCredentialDto(scope, Map.copyOf(props)));
+    storageCredentialCache = computed;
+    return computed;
+  }
+
+  private Map<String, String> defaultTableConfig() {
+    Map<String, String> cached = tableConfigCache;
+    if (cached != null) {
+      return cached;
+    }
+    Map<String, String> computed = readPrefixedConfig("metacat.gateway.table-config.");
+    if (computed.isEmpty()) {
+      computed = Map.of();
+    } else {
+      computed = Map.copyOf(computed);
+    }
+    tableConfigCache = computed;
+    return computed;
+  }
+
+  private Map<String, String> readPrefixedConfig(String prefix) {
+    Map<String, String> out = new LinkedHashMap<>();
+    for (String name : mpConfig.getPropertyNames()) {
+      if (name.startsWith(prefix)) {
+        mpConfig
+            .getOptionalValue(name, String.class)
+            .ifPresent(value -> out.put(name.substring(prefix.length()), value));
+      }
+    }
+    return out;
   }
 
   private static Integer asInteger(Object value) {
@@ -1646,7 +2250,9 @@ public class TableResource {
     if (table == null || !table.hasUpstream() || !table.getUpstream().hasConnectorId()) {
       return;
     }
-    triggerScopedReconcile(table.getUpstream().getConnectorId(), namespacePath, tableName);
+    ResourceId connectorId = table.getUpstream().getConnectorId();
+    runSyncMetadataCapture(connectorId, namespacePath, tableName);
+    triggerScopedReconcile(connectorId, namespacePath, tableName);
   }
 
   private static Long asLong(Object value) {
@@ -2038,4 +2644,15 @@ public class TableResource {
             .build();
     tableStub.updateTable(request);
   }
+
+  private record PlanContext(
+      ResourceId tableId,
+      List<String> requiredColumns,
+      Long startSnapshotId,
+      Long snapshotId,
+      List<Predicate> predicates,
+      List<String> statsFields,
+      Boolean useSnapshotSchema,
+      Boolean caseSensitive,
+      Long minRowsRequested) {}
 }

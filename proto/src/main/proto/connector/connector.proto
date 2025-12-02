@@ -146,6 +146,20 @@ message ValidateConnectorResponse {
   map<string,string> capabilities = 3;
 }
 
+message SyncCaptureRequest {
+  ai.floedb.metacat.common.ResourceId connector_id = 1;
+  repeated NamespacePath destination_namespace_paths = 2;
+  string destination_table_display_name = 3;
+  repeated string destination_table_columns = 4;
+  bool include_statistics = 5;
+}
+
+message SyncCaptureResponse {
+  uint64 tables_scanned = 1;
+  uint64 tables_changed = 2;
+  uint64 errors = 3;
+}
+
 message TriggerReconcileRequest {
   ai.floedb.metacat.common.ResourceId connector_id = 1;
   bool full_rescan = 2;
@@ -189,6 +203,7 @@ service Connectors {
 
   rpc ValidateConnector(ValidateConnectorRequest) returns (ValidateConnectorResponse);
 
+  rpc SyncCapture(SyncCaptureRequest) returns (SyncCaptureResponse);
   rpc TriggerReconcile(TriggerReconcileRequest) returns (TriggerReconcileResponse);
   rpc GetReconcileJob(GetReconcileJobRequest) returns (GetReconcileJobResponse);
 }

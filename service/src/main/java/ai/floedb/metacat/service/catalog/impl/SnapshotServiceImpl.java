@@ -229,6 +229,21 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   if (spec.hasPartitionSpec()) {
                     snapBuilder.setPartitionSpec(spec.getPartitionSpec());
                   }
+                  if (spec.hasSequenceNumber()) {
+                    snapBuilder.setSequenceNumber(spec.getSequenceNumber());
+                  }
+                  if (spec.hasManifestList()) {
+                    snapBuilder.setManifestList(spec.getManifestList());
+                  }
+                  if (!spec.getSummaryMap().isEmpty()) {
+                    snapBuilder.putAllSummary(spec.getSummaryMap());
+                  }
+                  if (spec.hasSchemaId()) {
+                    snapBuilder.setSchemaId(spec.getSchemaId());
+                  }
+                  if (spec.hasIceberg()) {
+                    snapBuilder.setIceberg(spec.getIceberg());
+                  }
                   var snap = snapBuilder.build();
 
                   if (idempotencyKey == null) {

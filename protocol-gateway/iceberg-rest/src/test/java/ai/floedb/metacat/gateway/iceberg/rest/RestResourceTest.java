@@ -3,6 +3,8 @@ package ai.floedb.metacat.gateway.iceberg.rest;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItems;
+import static org.hamcrest.Matchers.hasKey;
+import static org.hamcrest.Matchers.not;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
@@ -35,6 +37,7 @@ import ai.floedb.metacat.catalog.rpc.IcebergSortOrder;
 import ai.floedb.metacat.catalog.rpc.IcebergStatisticsFile;
 import ai.floedb.metacat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.metacat.catalog.rpc.ListNamespacesResponse;
+import ai.floedb.metacat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.metacat.catalog.rpc.ListTablesRequest;
 import ai.floedb.metacat.catalog.rpc.ListTablesResponse;
 import ai.floedb.metacat.catalog.rpc.ListViewsResponse;
@@ -68,6 +71,8 @@ import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.metacat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.metacat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.metacat.connector.rpc.DestinationTarget;
+import ai.floedb.metacat.connector.rpc.SyncCaptureRequest;
+import ai.floedb.metacat.connector.rpc.SyncCaptureResponse;
 import ai.floedb.metacat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.metacat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.metacat.execution.rpc.ScanBundle;
@@ -79,6 +84,8 @@ import ai.floedb.metacat.query.rpc.BeginQueryResponse;
 import ai.floedb.metacat.query.rpc.DescribeInputsRequest;
 import ai.floedb.metacat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.metacat.query.rpc.FetchScanBundleResponse;
+import ai.floedb.metacat.query.rpc.GetQueryResponse;
+import ai.floedb.metacat.query.rpc.Operator;
 import ai.floedb.metacat.query.rpc.QueryDescriptor;
 import ai.floedb.metacat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.metacat.query.rpc.QuerySchemaServiceGrpc;
@@ -154,8 +161,11 @@ class RestResourceTest {
         .thenReturn(CreateSnapshotResponse.newBuilder().build());
     when(snapshotStub.deleteSnapshot(any()))
         .thenReturn(DeleteSnapshotResponse.newBuilder().build());
+    when(snapshotStub.listSnapshots(any())).thenReturn(ListSnapshotsResponse.getDefaultInstance());
+    when(snapshotStub.getSnapshot(any())).thenReturn(GetSnapshotResponse.getDefaultInstance());
     when(connectorsStub.triggerReconcile(any()))
         .thenReturn(TriggerReconcileResponse.newBuilder().setJobId("job").build());
+    when(connectorsStub.syncCapture(any())).thenReturn(SyncCaptureResponse.newBuilder().build());
     ResourceId catalogId = ResourceId.newBuilder().setId("cat:default").build();
     when(directoryStub.resolveCatalog(any()))
         .thenReturn(ResolveCatalogResponse.newBuilder().setResourceId(catalogId).build());
@@ -219,6 +229,79 @@ class RestResourceTest {
   }
 
   @Test
+  void getTableHonorsEtagAndSnapshotsParameter() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(ResourceId.newBuilder().setId("cat").build())
+            .setNamespaceId(ResourceId.newBuilder().setId("cat:db").build())
+            .setDisplayName("orders")
+            .putProperties("metadata-location", "s3://bucket/path/metadata.json")
+            .putProperties("current-snapshot-id", "5")
+            .build();
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
+
+    IcebergMetadata metadata =
+        IcebergMetadata.newBuilder()
+            .setMetadataLocation("s3://bucket/path/metadata.json")
+            .putRefs("main", IcebergRef.newBuilder().setSnapshotId(5).setType("branch").build())
+            .build();
+    Snapshot metaSnapshot =
+        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(5).setIceberg(metadata).build();
+    when(snapshotStub.getSnapshot(any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(metaSnapshot).build());
+
+    Snapshot snapshot1 =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(5)
+            .setManifestList("manifest1")
+            .putSummary("operation", "append")
+            .build();
+    Snapshot snapshot2 =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(6)
+            .setManifestList("manifest2")
+            .putSummary("operation", "overwrite")
+            .build();
+    when(snapshotStub.listSnapshots(any()))
+        .thenReturn(
+            ListSnapshotsResponse.newBuilder()
+                .addSnapshots(snapshot1)
+                .addSnapshots(snapshot2)
+                .build());
+
+    given()
+        .when()
+        .get("/v1/foo/namespaces/db/tables/orders")
+        .then()
+        .statusCode(200)
+        .header("ETag", equalTo("\"s3://bucket/path/metadata.json\""))
+        .body("metadata.snapshots.size()", equalTo(2));
+
+    given()
+        .header("If-None-Match", "\"s3://bucket/path/metadata.json\"")
+        .when()
+        .get("/v1/foo/namespaces/db/tables/orders")
+        .then()
+        .statusCode(304);
+
+    given()
+        .queryParam("snapshots", "refs")
+        .when()
+        .get("/v1/foo/namespaces/db/tables/orders")
+        .then()
+        .statusCode(200)
+        .body("metadata.snapshots.size()", equalTo(1))
+        .body("metadata.snapshots[0].'snapshot-id'", equalTo(5));
+  }
+
+  @Test
   void registerTableCreatesAndEnqueuesReconcile() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     when(directoryStub.resolveNamespace(any()))
@@ -262,7 +345,7 @@ class RestResourceTest {
         .body(
             "{\"name\":\"new_table\",\"metadata-location\":\"s3://b/db/new_table/metadata.json\"}")
         .when()
-        .post("/v1/foo/namespaces/db/tables/register")
+        .post("/v1/foo/namespaces/db/register")
         .then()
         .statusCode(200)
         .body("metadata-location", equalTo("s3://b/db/new_table/metadata.json"));
@@ -284,6 +367,13 @@ class RestResourceTest {
     assertEquals(connectorId, trigger.getValue().getConnectorId());
     assertEquals(1, trigger.getValue().getDestinationNamespacePathsCount());
     assertEquals("new_table", trigger.getValue().getDestinationTableDisplayName());
+
+    ArgumentCaptor<SyncCaptureRequest> captureReq =
+        ArgumentCaptor.forClass(SyncCaptureRequest.class);
+    verify(connectorsStub).syncCapture(captureReq.capture());
+    assertEquals(connectorId, captureReq.getValue().getConnectorId());
+    assertEquals("new_table", captureReq.getValue().getDestinationTableDisplayName());
+    assertFalse(captureReq.getValue().getIncludeStatistics());
   }
 
   @Test
@@ -800,6 +890,7 @@ class RestResourceTest {
     verify(snapshotStub).createSnapshot(snapReq.capture());
     assertEquals(5, snapReq.getValue().getSpec().getSnapshotId());
     verify(connectorsStub).triggerReconcile(any());
+    verify(connectorsStub).syncCapture(any());
   }
 
   @Test
@@ -834,6 +925,7 @@ class RestResourceTest {
     assertEquals(7L, delReq.getAllValues().get(0).getSnapshotId());
     assertEquals(8L, delReq.getAllValues().get(1).getSnapshotId());
     verify(connectorsStub, never()).triggerReconcile(any());
+    verify(connectorsStub, never()).syncCapture(any());
   }
 
   @Test
@@ -1161,6 +1253,115 @@ class RestResourceTest {
   }
 
   @Test
+  void commitRequirementAssertRefSnapshotIdMismatchReturns409() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+
+    Table current =
+        Table.newBuilder().setResourceId(tableId).putProperties("current-snapshot-id", "5").build();
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(current).build());
+
+    IcebergMetadata metadata =
+        IcebergMetadata.newBuilder()
+            .putRefs("main", IcebergRef.newBuilder().setSnapshotId(5).setType("branch").build())
+            .build();
+    Snapshot metaSnapshot =
+        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(5).setIceberg(metadata).build();
+    when(snapshotStub.getSnapshot(any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(metaSnapshot).build());
+
+    given()
+        .body(
+            "{\"requirements\":[{\"type\":\"assert-ref-snapshot-id\",\"ref\":\"main\",\"snapshot-id\":7}]}")
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables/orders")
+        .then()
+        .statusCode(409)
+        .body("error.type", equalTo("CommitFailedException"));
+
+    verify(tableStub, never()).updateTable(any());
+  }
+
+  @Test
+  void commitRequirementAssertRefSnapshotIdAllowsUpdate() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+
+    Table current =
+        Table.newBuilder().setResourceId(tableId).putProperties("current-snapshot-id", "5").build();
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(current).build());
+    when(tableStub.updateTable(any()))
+        .thenReturn(UpdateTableResponse.newBuilder().setTable(current).build());
+
+    IcebergMetadata metadata =
+        IcebergMetadata.newBuilder()
+            .putRefs("main", IcebergRef.newBuilder().setSnapshotId(5).setType("branch").build())
+            .build();
+    Snapshot metaSnapshot =
+        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(5).setIceberg(metadata).build();
+    when(snapshotStub.getSnapshot(any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(metaSnapshot).build());
+
+    given()
+        .body(
+            "{\"requirements\":[{\"type\":\"assert-ref-snapshot-id\",\"ref\":\"main\",\"snapshot-id\":5}]}")
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables/orders")
+        .then()
+        .statusCode(200);
+
+    verify(tableStub).updateTable(any());
+  }
+
+  @Test
+  void commitUnknownRequirementReturns400() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    Table current = Table.newBuilder().setResourceId(tableId).build();
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(current).build());
+
+    given()
+        .body("{\"requirements\":[{\"type\":\"unknown-requirement\"}]}")
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables/orders")
+        .then()
+        .statusCode(400)
+        .body("error.type", equalTo("ValidationException"));
+
+    verify(tableStub, never()).updateTable(any());
+  }
+
+  @Test
+  void commitUnknownUpdateReturns400() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    Table current = Table.newBuilder().setResourceId(tableId).build();
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(current).build());
+
+    given()
+        .body("{\"updates\":[{\"action\":\"unknown-update\"}]}")
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables/orders")
+        .then()
+        .statusCode(400)
+        .body("error.type", equalTo("ValidationException"));
+
+    verify(tableStub, never()).updateTable(any());
+  }
+
+  @Test
   void mapsGrpcErrorToIcebergError() {
     StatusRuntimeException ex =
         Status.PERMISSION_DENIED.withDescription("nope").asRuntimeException();
@@ -1271,8 +1472,6 @@ class RestResourceTest {
     ScanBundle bundle = ScanBundle.newBuilder().addDataFiles(file).build();
     when(queryStub.beginQuery(any()))
         .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
-    when(queryScanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
 
     given()
         .body("{\"snapshot-id\":7}")
@@ -1281,9 +1480,11 @@ class RestResourceTest {
         .post("/v1/foo/namespaces/db/tables/orders/plan")
         .then()
         .statusCode(200)
-        .body("status", equalTo("completed"))
+        .body("status", equalTo("in-progress"))
         .body("'plan-id'", equalTo("plan-1"))
-        .body("'file-scan-tasks'[0].'data-file'.'file-path'", equalTo("s3://bucket/file.parquet"));
+        .body("'plan-tasks'.size()", equalTo(1))
+        .body("'plan-tasks'[0]", equalTo("plan-1"))
+        .body("$", not(hasKey("file-scan-tasks")));
 
     ArgumentCaptor<BeginQueryRequest> req = ArgumentCaptor.forClass(BeginQueryRequest.class);
     verify(queryStub).beginQuery(req.capture());
@@ -1294,12 +1495,116 @@ class RestResourceTest {
     assertEquals(tableId, describe.getValue().getInputs(0).getTableId());
     assertEquals(7L, describe.getValue().getInputs(0).getSnapshot().getSnapshotId());
 
+    verify(queryScanStub, never()).fetchScanBundle(any());
+  }
+
+  @Test
+  void fetchPlanReturnsCompletedPlan() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-1").build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    when(queryStub.getQuery(any()))
+        .thenReturn(GetQueryResponse.newBuilder().setQuery(descriptor).build());
+
+    ScanFile file =
+        ScanFile.newBuilder()
+            .setFilePath("s3://bucket/file.parquet")
+            .setFileFormat("PARQUET")
+            .setFileSizeInBytes(20)
+            .setRecordCount(10)
+            .build();
+    ScanBundle bundle = ScanBundle.newBuilder().addDataFiles(file).build();
+    when(queryScanStub.fetchScanBundle(any()))
+        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+
+    given()
+        .body("{\"snapshot-id\":7}")
+        .header("Content-Type", "application/json")
+        .post("/v1/foo/namespaces/db/tables/orders/plan")
+        .then()
+        .statusCode(200);
+
+    given()
+        .when()
+        .get("/v1/foo/namespaces/db/tables/orders/plan/plan-1")
+        .then()
+        .statusCode(200)
+        .body("status", equalTo("completed"))
+        .body("'plan-tasks'.size()", equalTo(1))
+        .body("'plan-tasks'[0]", equalTo("plan-1"))
+        .body("'file-scan-tasks'[0].'data-file'.'file-path'", equalTo("s3://bucket/file.parquet"));
+
     ArgumentCaptor<FetchScanBundleRequest> fetch =
         ArgumentCaptor.forClass(FetchScanBundleRequest.class);
     verify(queryScanStub).fetchScanBundle(fetch.capture());
     assertEquals("plan-1", fetch.getValue().getQueryId());
     assertEquals(tableId, fetch.getValue().getTableId());
-    assertEquals(0, fetch.getValue().getRequiredColumnsCount());
+  }
+
+  @Test
+  void fetchPlanAppliesFilterPredicates() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-1").build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    when(queryStub.getQuery(any()))
+        .thenReturn(GetQueryResponse.newBuilder().setQuery(descriptor).build());
+
+    ScanBundle bundle = ScanBundle.newBuilder().build();
+    when(queryScanStub.fetchScanBundle(any()))
+        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+
+    String body =
+        """
+        {
+          "snapshot-id":7,
+          "case-sensitive":false,
+          "filter":{
+            "type":"and",
+            "expressions":[
+              {
+                "type":"equal",
+                "term":{"type":"reference","name":"CustomerID"},
+                "literal":{"type":"long","value":5}
+              },
+              {
+                "type":"is-null",
+                "term":"DeletedFlag"
+              }
+            ]
+          }
+        }
+        """;
+
+    given()
+        .body(body)
+        .header("Content-Type", "application/json")
+        .post("/v1/foo/namespaces/db/tables/orders/plan")
+        .then()
+        .statusCode(200);
+
+    given()
+        .when()
+        .get("/v1/foo/namespaces/db/tables/orders/plan/plan-1")
+        .then()
+        .statusCode(200);
+
+    ArgumentCaptor<FetchScanBundleRequest> fetch =
+        ArgumentCaptor.forClass(FetchScanBundleRequest.class);
+    verify(queryScanStub).fetchScanBundle(fetch.capture());
+    assertEquals(2, fetch.getValue().getPredicatesCount());
+    var first = fetch.getValue().getPredicates(0);
+    assertEquals("customerid", first.getColumn());
+    assertEquals(Operator.OP_EQ, first.getOp());
+    assertEquals("5", first.getValues(0));
+    var second = fetch.getValue().getPredicates(1);
+    assertEquals(Operator.OP_IS_NULL, second.getOp());
+    assertEquals("deletedflag", second.getColumn());
   }
 
   @Test
@@ -1307,6 +1612,9 @@ class RestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-1").build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
 
     ScanFile file =
         ScanFile.newBuilder()
@@ -1318,6 +1626,13 @@ class RestResourceTest {
     ScanBundle bundle = ScanBundle.newBuilder().addDataFiles(file).build();
     when(queryScanStub.fetchScanBundle(any()))
         .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+
+    given()
+        .body("{}")
+        .header("Content-Type", "application/json")
+        .post("/v1/foo/namespaces/db/tables/orders/plan")
+        .then()
+        .statusCode(200);
 
     given()
         .body("{\"plan-task\":\"plan-1\"}")
@@ -1348,7 +1663,7 @@ class RestResourceTest {
   }
 
   @Test
-  void loadCredentialsReturnsEmptyList() {
+  void loadCredentialsReturnsStaticCredentials() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
@@ -1358,6 +1673,8 @@ class RestResourceTest {
         .get("/v1/foo/namespaces/db/tables/orders/credentials")
         .then()
         .statusCode(200)
-        .body("'storage-credentials'.size()", equalTo(0));
+        .body("'storage-credentials'.size()", equalTo(1))
+        .body("'storage-credentials'[0].prefix", equalTo("*"))
+        .body("'storage-credentials'[0].config.type", equalTo("static"));
   }
 }
