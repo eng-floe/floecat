@@ -4,11 +4,15 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.execution.rpc.ScanFile;
 import ai.floedb.metacat.query.rpc.BeginQueryRequest;
+import ai.floedb.metacat.query.rpc.DescribeInputsRequest;
 import ai.floedb.metacat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.metacat.query.rpc.Operator;
 import ai.floedb.metacat.query.rpc.Predicate;
 import ai.floedb.metacat.query.rpc.QueryInput;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
+import ai.floedb.metacat.query.rpc.QueryScanServiceGrpc;
+import ai.floedb.metacat.query.rpc.QuerySchemaServiceGrpc;
+
 import com.google.inject.Inject;
 import com.google.protobuf.Timestamp;
 import io.airlift.slice.Slice;
@@ -39,15 +43,23 @@ import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.PartitionSpecParser;
 
+
 public class MetacatSplitManager implements ConnectorSplitManager {
 
   private final QueryServiceGrpc.QueryServiceBlockingStub planning;
+  private final QueryScanServiceGrpc.QueryScanServiceBlockingStub scan;
   private final MetacatConfig config;
+  private final QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schema;
 
   @Inject
   public MetacatSplitManager(
-      QueryServiceGrpc.QueryServiceBlockingStub planning, MetacatConfig config) {
+      QueryServiceGrpc.QueryServiceBlockingStub planning,
+      QueryScanServiceGrpc.QueryScanServiceBlockingStub scan,
+      QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schema,
+      MetacatConfig config) {
     this.planning = planning;
+    this.scan = scan;
+    this.schema = schema;
     this.config = config;
   }
 
@@ -86,14 +98,18 @@ public class MetacatSplitManager implements ConnectorSplitManager {
             });
     requiredColumns.addAll(metacatHandle.getProjectedColumns());
 
-    BeginQueryRequest beginReq =
-        BeginQueryRequest.newBuilder()
-            .addInputs(toQueryInput(metacatHandle.getTableResourceId(), metacatHandle))
-            .setIncludeSchema(true)
-            .build();
+    
+    BeginQueryRequest beginReq = BeginQueryRequest.newBuilder().build();
 
     var beginResp = planning.beginQuery(beginReq);
     String queryId = beginResp.getQuery().getQueryId();
+    
+    var describeReq = DescribeInputsRequest.newBuilder()
+        .setQueryId(queryId)
+        .addInputs(toQueryInput(metacatHandle.getTableResourceId(), metacatHandle))
+        .build();
+
+    schema.describeInputs(describeReq);
 
     FetchScanBundleRequest fetchReq =
         FetchScanBundleRequest.newBuilder()
@@ -103,7 +119,7 @@ public class MetacatSplitManager implements ConnectorSplitManager {
             .addAllPredicates(predicates)
             .build();
 
-    var fetchResp = planning.fetchScanBundle(fetchReq);
+    var fetchResp = scan.fetchScanBundle(fetchReq);
 
     List<ScanFile> dataFiles = fetchResp.getBundle().getDataFilesList();
     List<ScanFile> deleteScanFiles = fetchResp.getBundle().getDeleteFilesList();

@@ -33,7 +33,7 @@ class QueryContextTest {
   void newActive_valid() {
     ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     var pc = pc(tenantId, "alice", "query-123");
-    var ctx = QueryContext.newActive("query-123", pc, null, null, 1_000, 1);
+    var ctx = QueryContext.newActive("query-123", pc, null, null, null, null, 1_000, 1);
 
     assertEquals("query-123", ctx.getQueryId());
     assertEquals(pc, ctx.getPrincipal());
@@ -63,7 +63,7 @@ class QueryContextTest {
   void extendLease_isMonotonic() {
     ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     var pc = pc(tenantId, "alice", "p1");
-    var ctx = QueryContext.newActive("p1", pc, null, null, 200, 1);
+    var ctx = QueryContext.newActive("p1", pc, null, null, null, null, 200, 1);
     long originalExp = ctx.getExpiresAtMs();
 
     var same = ctx.extendLease(originalExp - 50, 2);
@@ -79,7 +79,7 @@ class QueryContextTest {
   void end_commit_setsStateAndGrace() {
     ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     var pc = pc(tenantId, "alice", "p1");
-    var ctx = QueryContext.newActive("p1", pc, null, null, 100, 1);
+    var ctx = QueryContext.newActive("p1", pc, null, null, null, null, 100, 1);
     long targetGrace = clock.millis() + 500;
     var ended = ctx.end(true, targetGrace, 2);
 
@@ -92,7 +92,7 @@ class QueryContextTest {
   void asExpired_onlyIfActive() {
     ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
     var pc = pc(tenantId, "alice", "p1");
-    var ctx = QueryContext.newActive("p1", pc, null, null, 100, 1);
+    var ctx = QueryContext.newActive("p1", pc, null, null, null, null, 100, 1);
 
     var expired = ctx.asExpired(2);
     assertEquals(QueryContext.State.EXPIRED, expired.getState());
@@ -112,7 +112,8 @@ class QueryContextTest {
         SnapshotSet.newBuilder()
             .addPins(SnapshotPin.newBuilder().setTableId(tableId).setSnapshotId(77).build())
             .build();
-    var ctx = QueryContext.newActive("p-lookup", pc, null, snapshots.toByteArray(), 500, 1);
+    var ctx =
+        QueryContext.newActive("p-lookup", pc, null, snapshots.toByteArray(), null, null, 500, 1);
 
     var pin = ctx.requireSnapshotPin(tableId, "corr-123");
     assertEquals(77, pin.getSnapshotId());
@@ -132,7 +133,8 @@ class QueryContextTest {
             .addPins(SnapshotPin.newBuilder().setTableId(pinned).setSnapshotId(900).build())
             .build();
 
-    var ctx = QueryContext.newActive("p-missing", pc, null, snapshots.toByteArray(), 500, 1);
+    var ctx =
+        QueryContext.newActive("p-missing", pc, null, snapshots.toByteArray(), null, null, 500, 1);
 
     StatusRuntimeException err =
         assertThrows(

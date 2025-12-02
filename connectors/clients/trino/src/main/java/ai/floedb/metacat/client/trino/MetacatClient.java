@@ -7,6 +7,7 @@ import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
+import ai.floedb.metacat.query.rpc.QueryScanServiceGrpc;
 import io.grpc.ManagedChannel;
 import jakarta.inject.Inject;
 import java.io.Closeable;
@@ -21,6 +22,7 @@ public final class MetacatClient implements Closeable {
   private final NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaces;
   private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
   private final QueryServiceGrpc.QueryServiceBlockingStub queries;
+  private final QueryScanServiceGrpc.QueryScanServiceBlockingStub scans;
   private final SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots;
 
   @Inject
@@ -33,6 +35,7 @@ public final class MetacatClient implements Closeable {
     this.namespaces = NamespaceServiceGrpc.newBlockingStub(channel);
     this.directory = DirectoryServiceGrpc.newBlockingStub(channel);
     this.queries = QueryServiceGrpc.newBlockingStub(channel);
+    this.scans = QueryScanServiceGrpc.newBlockingStub(channel);
     this.snapshots = SnapshotServiceGrpc.newBlockingStub(channel);
   }
 
@@ -58,6 +61,10 @@ public final class MetacatClient implements Closeable {
 
   public QueryServiceGrpc.QueryServiceBlockingStub queries() {
     return queries;
+  }
+
+  public QueryScanServiceGrpc.QueryScanServiceBlockingStub scans() {
+    return scans;
   }
 
   public SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots() {
