@@ -18,7 +18,7 @@ MAKEFLAGS  += --no-builtin-rules
 .DEFAULT_GOAL := build
 
 MVN ?= mvn
-MVN_FLAGS   := -q -T 1C --no-transfer-progress -DskipTests
+MVN_FLAGS   := -q -T 1C --no-transfer-progress -DskipTests -DskipUTs=true -DskipITs=true
 MVN_TESTALL := --no-transfer-progress
 
 # ---------- Quarkus dev settings ----------

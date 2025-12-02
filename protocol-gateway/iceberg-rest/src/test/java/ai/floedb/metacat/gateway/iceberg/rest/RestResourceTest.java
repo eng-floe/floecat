@@ -76,9 +76,12 @@ import ai.floedb.metacat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.metacat.query.rpc.BeginQueryRequest;
 import ai.floedb.metacat.query.rpc.BeginQueryResponse;
+import ai.floedb.metacat.query.rpc.DescribeInputsRequest;
 import ai.floedb.metacat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.metacat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.metacat.query.rpc.QueryDescriptor;
+import ai.floedb.metacat.query.rpc.QueryScanServiceGrpc;
+import ai.floedb.metacat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
@@ -106,6 +109,8 @@ class RestResourceTest {
   private SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub;
   private TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statsStub;
   private QueryServiceGrpc.QueryServiceBlockingStub queryStub;
+  private QueryScanServiceGrpc.QueryScanServiceBlockingStub queryScanStub;
+  private QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchemaStub;
   private ConnectorsGrpc.ConnectorsBlockingStub connectorsStub;
   private RequestSpecification defaultSpec;
 
@@ -118,6 +123,8 @@ class RestResourceTest {
     snapshotStub = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
     statsStub = mock(TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub.class);
     queryStub = mock(QueryServiceGrpc.QueryServiceBlockingStub.class);
+    queryScanStub = mock(QueryScanServiceGrpc.QueryScanServiceBlockingStub.class);
+    querySchemaStub = mock(QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub.class);
     connectorsStub = mock(ConnectorsGrpc.ConnectorsBlockingStub.class);
 
     when(clients.table()).thenReturn(tableStub);
@@ -127,6 +134,8 @@ class RestResourceTest {
     when(clients.snapshot()).thenReturn(snapshotStub);
     when(clients.stats()).thenReturn(statsStub);
     when(clients.query()).thenReturn(queryStub);
+    when(clients.queryScan()).thenReturn(queryScanStub);
+    when(clients.querySchema()).thenReturn(querySchemaStub);
     when(clients.connectors()).thenReturn(connectorsStub);
     when(grpc.raw()).thenReturn(clients);
     when(grpc.withHeaders(tableStub)).thenReturn(tableStub);
@@ -136,7 +145,11 @@ class RestResourceTest {
     when(grpc.withHeaders(snapshotStub)).thenReturn(snapshotStub);
     when(grpc.withHeaders(statsStub)).thenReturn(statsStub);
     when(grpc.withHeaders(queryStub)).thenReturn(queryStub);
+    when(grpc.withHeaders(queryScanStub)).thenReturn(queryScanStub);
+    when(grpc.withHeaders(querySchemaStub)).thenReturn(querySchemaStub);
     when(grpc.withHeaders(connectorsStub)).thenReturn(connectorsStub);
+    when(querySchemaStub.describeInputs(any()))
+        .thenReturn(ai.floedb.metacat.query.rpc.DescribeInputsResponse.getDefaultInstance());
     when(snapshotStub.createSnapshot(any()))
         .thenReturn(CreateSnapshotResponse.newBuilder().build());
     when(snapshotStub.deleteSnapshot(any()))
@@ -1258,7 +1271,7 @@ class RestResourceTest {
     ScanBundle bundle = ScanBundle.newBuilder().addDataFiles(file).build();
     when(queryStub.beginQuery(any()))
         .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
-    when(queryStub.fetchScanBundle(any()))
+    when(queryScanStub.fetchScanBundle(any()))
         .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
 
     given()
@@ -1274,12 +1287,16 @@ class RestResourceTest {
 
     ArgumentCaptor<BeginQueryRequest> req = ArgumentCaptor.forClass(BeginQueryRequest.class);
     verify(queryStub).beginQuery(req.capture());
-    assertEquals(tableId, req.getValue().getInputs(0).getTableId());
-    assertEquals(7L, req.getValue().getInputs(0).getSnapshot().getSnapshotId());
+
+    ArgumentCaptor<DescribeInputsRequest> describe =
+        ArgumentCaptor.forClass(DescribeInputsRequest.class);
+    verify(querySchemaStub).describeInputs(describe.capture());
+    assertEquals(tableId, describe.getValue().getInputs(0).getTableId());
+    assertEquals(7L, describe.getValue().getInputs(0).getSnapshot().getSnapshotId());
 
     ArgumentCaptor<FetchScanBundleRequest> fetch =
         ArgumentCaptor.forClass(FetchScanBundleRequest.class);
-    verify(queryStub).fetchScanBundle(fetch.capture());
+    verify(queryScanStub).fetchScanBundle(fetch.capture());
     assertEquals("plan-1", fetch.getValue().getQueryId());
     assertEquals(tableId, fetch.getValue().getTableId());
     assertEquals(0, fetch.getValue().getRequiredColumnsCount());
@@ -1299,7 +1316,7 @@ class RestResourceTest {
             .setRecordCount(10)
             .build();
     ScanBundle bundle = ScanBundle.newBuilder().addDataFiles(file).build();
-    when(queryStub.fetchScanBundle(any()))
+    when(queryScanStub.fetchScanBundle(any()))
         .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
 
     given()
@@ -1313,7 +1330,7 @@ class RestResourceTest {
 
     ArgumentCaptor<FetchScanBundleRequest> fetch =
         ArgumentCaptor.forClass(FetchScanBundleRequest.class);
-    verify(queryStub).fetchScanBundle(fetch.capture());
+    verify(queryScanStub).fetchScanBundle(fetch.capture());
     assertEquals("plan-1", fetch.getValue().getQueryId());
     assertEquals(tableId, fetch.getValue().getTableId());
   }

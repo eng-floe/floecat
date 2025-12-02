@@ -10,7 +10,7 @@ import ai.floedb.metacat.query.rpc.SchemaDescriptor;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.LogHelper;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
-import ai.floedb.metacat.service.query.resolve.LogicalSchemaMapper;
+import ai.floedb.metacat.service.query.resolver.LogicalSchemaMapper;
 import ai.floedb.metacat.service.repo.impl.SnapshotRepository;
 import ai.floedb.metacat.service.repo.impl.TableRepository;
 import ai.floedb.metacat.service.security.impl.Authorizer;

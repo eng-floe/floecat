@@ -10,6 +10,8 @@ import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
+import ai.floedb.metacat.query.rpc.QueryScanServiceGrpc;
+import ai.floedb.metacat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -28,6 +30,8 @@ public class GrpcClients implements AutoCloseable {
   private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
   private final TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats;
   private final QueryServiceGrpc.QueryServiceBlockingStub query;
+  private final QueryScanServiceGrpc.QueryScanServiceBlockingStub queryScan;
+  private final QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchema;
   private final ConnectorsGrpc.ConnectorsBlockingStub connectors;
 
   public GrpcClients(IcebergGatewayConfig config) {
@@ -45,6 +49,8 @@ public class GrpcClients implements AutoCloseable {
     this.directory = DirectoryServiceGrpc.newBlockingStub(channel);
     this.stats = TableStatisticsServiceGrpc.newBlockingStub(channel);
     this.query = QueryServiceGrpc.newBlockingStub(channel);
+    this.queryScan = QueryScanServiceGrpc.newBlockingStub(channel);
+    this.querySchema = QuerySchemaServiceGrpc.newBlockingStub(channel);
     this.connectors = ConnectorsGrpc.newBlockingStub(channel);
   }
 
@@ -82,6 +88,14 @@ public class GrpcClients implements AutoCloseable {
 
   public QueryServiceGrpc.QueryServiceBlockingStub query() {
     return query;
+  }
+
+  public QueryScanServiceGrpc.QueryScanServiceBlockingStub queryScan() {
+    return queryScan;
+  }
+
+  public QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchema() {
+    return querySchema;
   }
 
   public ConnectorsGrpc.ConnectorsBlockingStub connectors() {

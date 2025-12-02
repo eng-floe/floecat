@@ -49,11 +49,14 @@ import ai.floedb.metacat.execution.rpc.ScanFile;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.metacat.query.rpc.BeginQueryRequest;
+import ai.floedb.metacat.query.rpc.DescribeInputsRequest;
 import ai.floedb.metacat.query.rpc.EndQueryRequest;
 import ai.floedb.metacat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.metacat.query.rpc.GetQueryRequest;
 import ai.floedb.metacat.query.rpc.QueryDescriptor;
 import ai.floedb.metacat.query.rpc.QueryInput;
+import ai.floedb.metacat.query.rpc.QueryScanServiceGrpc;
+import ai.floedb.metacat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -326,12 +329,14 @@ public class TableResource {
     String catalogName = resolveCatalog(prefix);
     ResourceId tableId =
         NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
-    QueryServiceGrpc.QueryServiceBlockingStub stub = grpc.withHeaders(grpc.raw().query());
-    BeginQueryRequest planReq = buildPlanRequest(tableId, request);
-    var resp = stub.beginQuery(planReq);
-    ScanBundle bundle =
-        fetchScanBundle(stub, tableId, resp.getQuery().getQueryId(), request.select());
-    return Response.ok(toPlanResult(resp.getQuery(), null, bundle)).build();
+    QueryServiceGrpc.QueryServiceBlockingStub queryStub = grpc.withHeaders(grpc.raw().query());
+    var begin = queryStub.beginQuery(BeginQueryRequest.newBuilder().build());
+    String queryId = begin.getQuery().getQueryId();
+    registerPlanInput(queryId, tableId, request);
+    QueryScanServiceGrpc.QueryScanServiceBlockingStub scanStub =
+        grpc.withHeaders(grpc.raw().queryScan());
+    ScanBundle bundle = fetchScanBundle(scanStub, tableId, queryId, request.select());
+    return Response.ok(toPlanResult(begin.getQuery(), null, bundle)).build();
   }
 
   @Path("/{table}/plan/{planId}")
@@ -344,9 +349,11 @@ public class TableResource {
     String catalogName = resolveCatalog(prefix);
     ResourceId tableId =
         NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
-    QueryServiceGrpc.QueryServiceBlockingStub stub = grpc.withHeaders(grpc.raw().query());
-    var resp = stub.getQuery(GetQueryRequest.newBuilder().setQueryId(planId).build());
-    ScanBundle bundle = fetchScanBundle(stub, tableId, resp.getQuery().getQueryId(), null);
+    QueryServiceGrpc.QueryServiceBlockingStub queryStub = grpc.withHeaders(grpc.raw().query());
+    var resp = queryStub.getQuery(GetQueryRequest.newBuilder().setQueryId(planId).build());
+    QueryScanServiceGrpc.QueryScanServiceBlockingStub scanStub =
+        grpc.withHeaders(grpc.raw().queryScan());
+    ScanBundle bundle = fetchScanBundle(scanStub, tableId, resp.getQuery().getQueryId(), null);
     return Response.ok(toPlanResult(resp.getQuery(), planId, bundle)).build();
   }
 
@@ -359,8 +366,8 @@ public class TableResource {
       @PathParam("planId") String planId) {
     String catalogName = resolveCatalog(prefix);
     NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
-    QueryServiceGrpc.QueryServiceBlockingStub stub = grpc.withHeaders(grpc.raw().query());
-    stub.endQuery(EndQueryRequest.newBuilder().setQueryId(planId).setCommit(false).build());
+    QueryServiceGrpc.QueryServiceBlockingStub queryStub = grpc.withHeaders(grpc.raw().query());
+    queryStub.endQuery(EndQueryRequest.newBuilder().setQueryId(planId).setCommit(false).build());
     return Response.noContent().build();
   }
 
@@ -377,9 +384,10 @@ public class TableResource {
     String catalogName = resolveCatalog(prefix);
     ResourceId tableId =
         NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
-    QueryServiceGrpc.QueryServiceBlockingStub stub = grpc.withHeaders(grpc.raw().query());
+    QueryScanServiceGrpc.QueryScanServiceBlockingStub scanStub =
+        grpc.withHeaders(grpc.raw().queryScan());
     ScanBundle bundle =
-        fetchScanBundle(stub, tableId, request.planTask().trim(), /*requiredColumns*/ null);
+        fetchScanBundle(scanStub, tableId, request.planTask().trim(), /*requiredColumns*/ null);
     return Response.ok(toScanTasksDto(bundle)).build();
   }
 
@@ -586,14 +594,24 @@ public class TableResource {
     return NameResolution.resolveCatalog(grpc, resolveCatalog(prefix));
   }
 
-  private BeginQueryRequest buildPlanRequest(ResourceId tableId, PlanRequests.Plan request) {
+  private QueryInput buildPlanInput(ResourceId tableId, PlanRequests.Plan request) {
     QueryInput.Builder input = QueryInput.newBuilder().setTableId(tableId);
     if (request.snapshotId() != null) {
       input.setSnapshot(SnapshotRef.newBuilder().setSnapshotId(request.snapshotId()));
     } else {
       input.setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT));
     }
-    return BeginQueryRequest.newBuilder().addInputs(input).setIncludeSchema(false).build();
+    return input.build();
+  }
+
+  private void registerPlanInput(String queryId, ResourceId tableId, PlanRequests.Plan request) {
+    QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schemaStub =
+        grpc.withHeaders(grpc.raw().querySchema());
+    schemaStub.describeInputs(
+        DescribeInputsRequest.newBuilder()
+            .setQueryId(queryId)
+            .addInputs(buildPlanInput(tableId, request))
+            .build());
   }
 
   private PlanResponseDto toPlanResult(
@@ -614,7 +632,7 @@ public class TableResource {
   }
 
   private ScanBundle fetchScanBundle(
-      QueryServiceGrpc.QueryServiceBlockingStub stub,
+      QueryScanServiceGrpc.QueryScanServiceBlockingStub stub,
       ResourceId tableId,
       String queryId,
       List<String> requiredColumns) {
@@ -1378,7 +1396,8 @@ public class TableResource {
         || footerSize == null
         || blobMaps.isEmpty()) {
       throw new IllegalArgumentException(
-          "set-statistics requires snapshot-id, statistics-path, file-size-in-bytes, file-footer-size-in-bytes, and blob-metadata");
+          "set-statistics requires snapshot-id, statistics-path, file-size-in-bytes,"
+              + " file-footer-size-in-bytes, and blob-metadata");
     }
     IcebergStatisticsFile.Builder builder =
         IcebergStatisticsFile.newBuilder()
