@@ -6,6 +6,12 @@ functions {
   return_type: "pg_catalog.int4"
   is_strict: true
   is_immutable: true
+  engine_specific {
+    engine_kind: "postgres"
+    min_version: "16.0"
+    properties { key: "oid" value: "1250" }
+    properties { key: "language" value: "internal" }
+  }
 }
 functions {
   name: "pg_catalog.text_length"
@@ -13,6 +19,9 @@ functions {
   return_type: "pg_catalog.int4"
   is_strict: true
   is_immutable: true
+  engine_specific {
+    engine_kind: "postgres"
+  }
 }
 functions {
   name: "pg_catalog.text_upper"
@@ -20,6 +29,11 @@ functions {
   return_type: "pg_catalog.text"
   is_strict: true
   is_immutable: false
+  engine_specific {
+    engine_kind: "postgres"
+    min_version: "16.0"
+    properties { key: "oid" value: "1251" }
+  }
 }
 functions {
   name: "pg_catalog.int4_add"
@@ -45,6 +59,10 @@ functions {
   is_strict: true
   is_aggregate: true
   is_immutable: true
+  engine_specific {
+    engine_kind: "postgres"
+    min_version: "16.0"
+  }
 }
 functions {
   name: "pg_catalog.sum_int4_final"
@@ -53,6 +71,21 @@ functions {
   is_strict: true
   is_aggregate: true
   is_immutable: true
+  engine_specific {
+    engine_kind: "postgres"
+    min_version: "16.0"
+  }
+}
+functions {
+  name: "pg_catalog.floedb_secret"
+  argument_types: "pg_catalog.text"
+  return_type: "pg_catalog.text"
+  is_strict: true
+  is_immutable: true
+  engine_specific {
+    engine_kind: "floedb"
+    properties { key: "oid" value: "99000" }
+  }
 }
 
 operators {
@@ -60,23 +93,35 @@ operators {
   left_type: "pg_catalog.int4"
   right_type: "pg_catalog.int4"
   function_name: "pg_catalog.int4_add"
+  engine_specific {
+    engine_kind: "postgres"
+  }
 }
 operators {
   name: "||"
   left_type: "pg_catalog.text"
   right_type: "pg_catalog.text"
   function_name: "pg_catalog.text_concat"
+  engine_specific {
+    engine_kind: "postgres"
+  }
 }
 
 types {
   name: "pg_catalog.int4"
   oid: 23
   category: "N"
+  engine_specific {
+    engine_kind: "postgres"
+  }
 }
 types {
   name: "pg_catalog.int8"
   oid: 20
   category: "N"
+  engine_specific {
+    engine_kind: "postgres"
+  }
 }
 types {
   name: "pg_catalog.text"
@@ -89,12 +134,18 @@ types {
   category: "A"
   is_array: true
   element_type: "pg_catalog.int4"
+  engine_specific {
+    engine_kind: "postgres"
+  }
 }
 
 casts {
   source_type: "pg_catalog.text"
   target_type: "pg_catalog.int4"
   method: "explicit"
+  engine_specific {
+    engine_kind: "postgres"
+  }
 }
 casts {
   source_type: "pg_catalog.int4"
@@ -110,6 +161,9 @@ casts {
 collations {
   name: "pg_catalog.default"
   locale: "en_US"
+  engine_specific {
+    engine_kind: "postgres"
+  }
 }
 
 aggregates {
@@ -119,4 +173,8 @@ aggregates {
   return_type: "pg_catalog.int8"
   state_fn: "pg_catalog.sum_int4_state"
   final_fn: "pg_catalog.sum_int4_final"
+  engine_specific {
+    engine_kind: "postgres"
+    min_version: "16.0"
+  }
 }

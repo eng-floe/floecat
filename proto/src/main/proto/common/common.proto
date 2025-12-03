@@ -20,6 +20,12 @@ enum ResourceKind {
   RK_STATS = 6;
   RK_CONNECTOR = 7;
   RK_VIEW = 8;
+  RK_FUNCTION = 9;
+  RK_OPERATOR = 10;
+  RK_TYPE = 11;
+  RK_CAST = 12;
+  RK_COLLATION = 13;
+  RK_AGGREGATE = 14;
 }
 
 message ResourceId {

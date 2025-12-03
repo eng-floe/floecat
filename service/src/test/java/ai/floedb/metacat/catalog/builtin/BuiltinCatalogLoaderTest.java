@@ -31,7 +31,13 @@ class BuiltinCatalogLoaderTest {
             "pg_catalog.int4_add",
             "pg_catalog.text_concat",
             "pg_catalog.sum_int4_state",
-            "pg_catalog.sum_int4_final");
+            "pg_catalog.sum_int4_final",
+            "pg_catalog.floedb_secret");
+    assertThat(catalog.functions().get(0).engineSpecific().get(0).properties())
+        .containsEntry("oid", "1250");
+    assertThat(catalog.functions().get(0).engineSpecific())
+        .extracting(EngineSpecificRule::engineKind)
+        .contains("postgres");
     assertThat(catalog.operators())
         .extracting(BuiltinOperatorDef::functionName)
         .contains("pg_catalog.int4_add", "pg_catalog.text_concat");

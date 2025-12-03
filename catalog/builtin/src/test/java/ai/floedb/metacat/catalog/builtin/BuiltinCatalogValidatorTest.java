@@ -42,7 +42,7 @@ class BuiltinCatalogValidatorTest {
   void duplicateTypeNamesAreDetected() {
     BuiltinCatalogData base = validCatalog();
     var types = new ArrayList<>(base.types());
-    types.add(new BuiltinTypeDef("pg_catalog.int4", 24, "N", false, null));
+    types.add(new BuiltinTypeDef("pg_catalog.int4", 24, "N", false, null, List.of()));
 
     var catalog =
         new BuiltinCatalogData(
@@ -70,7 +70,8 @@ class BuiltinCatalogValidatorTest {
                 false,
                 false,
                 true,
-                true));
+                true,
+                List.of()));
     var catalog =
         new BuiltinCatalogData(
             base.version(),
@@ -91,7 +92,11 @@ class BuiltinCatalogValidatorTest {
     var operators =
         List.of(
             new BuiltinOperatorDef(
-                "pg_catalog.plus", "pg_catalog.int4", "pg_catalog.int4", "pg_catalog.missing"));
+                "pg_catalog.plus",
+                "pg_catalog.int4",
+                "pg_catalog.int4",
+                "pg_catalog.missing",
+                List.of()));
     var catalog =
         new BuiltinCatalogData(
             base.version(),
@@ -111,7 +116,8 @@ class BuiltinCatalogValidatorTest {
     BuiltinCatalogData base = validCatalog();
     var casts = new ArrayList<>(base.casts());
     casts.add(
-        new BuiltinCastDef("pg_catalog.int4", "pg_catalog.int4", BuiltinCastMethod.ASSIGNMENT));
+        new BuiltinCastDef(
+            "pg_catalog.int4", "pg_catalog.int4", BuiltinCastMethod.ASSIGNMENT, List.of()));
 
     var catalog =
         new BuiltinCatalogData(
@@ -132,7 +138,7 @@ class BuiltinCatalogValidatorTest {
   void duplicateCollationsAreRejected() {
     BuiltinCatalogData base = validCatalog();
     var collations = new ArrayList<>(base.collations());
-    collations.add(new BuiltinCollationDef("pg_catalog.default", "en_US"));
+    collations.add(new BuiltinCollationDef("pg_catalog.default", "en_US", List.of()));
 
     var catalog =
         new BuiltinCatalogData(
@@ -160,7 +166,8 @@ class BuiltinCatalogValidatorTest {
                 "pg_catalog.int4",
                 "pg_catalog.int4",
                 "pg_catalog.missing",
-                "pg_catalog.missing"));
+                "pg_catalog.missing",
+                List.of()));
     var catalog =
         new BuiltinCatalogData(
             base.version(),
@@ -177,7 +184,7 @@ class BuiltinCatalogValidatorTest {
   }
 
   private static BuiltinCatalogData validCatalog() {
-    var type = new BuiltinTypeDef("pg_catalog.int4", 23, "N", false, null);
+    var type = new BuiltinTypeDef("pg_catalog.int4", 23, "N", false, null, List.of());
     var fn =
         new BuiltinFunctionDef(
             "pg_catalog.identity",
@@ -186,13 +193,19 @@ class BuiltinCatalogValidatorTest {
             false,
             false,
             true,
-            true);
+            true,
+            List.of());
     var op =
         new BuiltinOperatorDef(
-            "pg_catalog.plus", "pg_catalog.int4", "pg_catalog.int4", "pg_catalog.identity");
+            "pg_catalog.plus",
+            "pg_catalog.int4",
+            "pg_catalog.int4",
+            "pg_catalog.identity",
+            List.of());
     var cast =
-        new BuiltinCastDef("pg_catalog.int4", "pg_catalog.int4", BuiltinCastMethod.ASSIGNMENT);
-    var coll = new BuiltinCollationDef("pg_catalog.default", "en_US");
+        new BuiltinCastDef(
+            "pg_catalog.int4", "pg_catalog.int4", BuiltinCastMethod.ASSIGNMENT, List.of());
+    var coll = new BuiltinCollationDef("pg_catalog.default", "en_US", List.of());
     var agg =
         new BuiltinAggregateDef(
             "pg_catalog.sum",
@@ -200,7 +213,8 @@ class BuiltinCatalogValidatorTest {
             "pg_catalog.int4",
             "pg_catalog.int4",
             "pg_catalog.identity",
-            "pg_catalog.identity");
+            "pg_catalog.identity",
+            List.of());
 
     return new BuiltinCatalogData(
         "demo",

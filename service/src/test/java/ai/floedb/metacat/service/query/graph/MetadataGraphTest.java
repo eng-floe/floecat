@@ -233,6 +233,7 @@ class MetadataGraphTest {
             registry,
             principalProvider,
             42L,
+            null,
             null);
     instrumentedGraph.setSnapshotClient(snapshotClient);
 
@@ -256,6 +257,7 @@ class MetadataGraphTest {
             registry,
             principalProvider,
             0L,
+            null,
             null);
     instrumentedGraph.setSnapshotClient(snapshotClient);
 

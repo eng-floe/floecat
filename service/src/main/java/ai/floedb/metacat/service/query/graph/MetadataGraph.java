@@ -7,6 +7,7 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.query.rpc.SnapshotPin;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.query.graph.builtin.BuiltinNodeRegistry;
 import ai.floedb.metacat.service.query.graph.cache.GraphCacheKey;
 import ai.floedb.metacat.service.query.graph.cache.GraphCacheManager;
 import ai.floedb.metacat.service.query.graph.hint.EngineHintManager;
@@ -60,6 +61,7 @@ public class MetadataGraph {
   private final FullyQualifiedResolver fqResolver;
   private final SnapshotHelper snapshotHelper;
   private final EngineHintManager engineHintManager;
+  private final BuiltinNodeRegistry builtinNodeRegistry;
   private PrincipalProvider principalProvider;
   private final MeterRegistry meterRegistry;
   private Timer loadTimer;
@@ -80,6 +82,7 @@ public class MetadataGraph {
         null,
         null,
         50_000L,
+        null,
         null);
   }
 
@@ -95,7 +98,8 @@ public class MetadataGraph {
       PrincipalProvider principalProvider,
       @ConfigProperty(name = "metacat.metadata.graph.cache-max-size", defaultValue = "50000")
           long cacheMaxSize,
-      EngineHintManager engineHintManager) {
+      EngineHintManager engineHintManager,
+      BuiltinNodeRegistry builtinNodeRegistry) {
     this.meterRegistry = meterRegistry;
     this.cacheManager = new GraphCacheManager(cacheMaxSize > 0, cacheMaxSize, meterRegistry);
     this.nodeLoader =
@@ -107,6 +111,7 @@ public class MetadataGraph {
             catalogRepository, namespaceRepository, tableRepository, viewRepository);
     this.snapshotHelper = new SnapshotHelper(snapshotRepository, snapshotStub);
     this.engineHintManager = engineHintManager;
+    this.builtinNodeRegistry = builtinNodeRegistry;
     this.principalProvider = principalProvider;
   }
 
@@ -197,6 +202,13 @@ public class MetadataGraph {
       return Optional.empty();
     }
     return engineHintManager.get(node, engineKey, hintType, correlationId);
+  }
+
+  public BuiltinNodeRegistry.BuiltinNodes builtinNodes(String engineKind, String engineVersion) {
+    if (builtinNodeRegistry == null) {
+      throw new IllegalStateException("BuiltinNodeRegistry not configured");
+    }
+    return builtinNodeRegistry.nodesFor(engineKind, engineVersion);
   }
 
   /** Test-only hook for overriding snapshot client. */

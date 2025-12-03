@@ -14,7 +14,17 @@ import java.util.Optional;
  * extensions without mutating the core structure.
  */
 public sealed interface RelationNode
-    permits CatalogNode, NamespaceNode, SystemViewNode, TableNode, ViewNode {
+    permits CatalogNode,
+        NamespaceNode,
+        SystemViewNode,
+        TableNode,
+        ViewNode,
+        BuiltinFunctionNode,
+        BuiltinOperatorNode,
+        BuiltinTypeNode,
+        BuiltinCastNode,
+        BuiltinCollationNode,
+        BuiltinAggregateNode {
 
   /** Stable identifier (tenant + kind + UUID) for the node. */
   ResourceId id();

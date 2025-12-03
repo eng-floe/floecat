@@ -35,6 +35,8 @@ message BuiltinFunction {
 
   bool is_strict = 10;
   bool is_immutable = 11;
+
+  repeated BuiltinEngineSpecific engine_specific = 99;
 }
 
 message BuiltinOperator {
@@ -42,6 +44,8 @@ message BuiltinOperator {
   string left_type = 2;
   string right_type = 3;
   string function_name = 4;
+
+  repeated BuiltinEngineSpecific engine_specific = 99;
 }
 
 message BuiltinType {
@@ -50,17 +54,23 @@ message BuiltinType {
   string category = 3;
   bool is_array = 4;
   string element_type = 5;
+
+  repeated BuiltinEngineSpecific engine_specific = 99;
 }
 
 message BuiltinCast {
   string source_type = 1;
   string target_type = 2;
   string method = 3; // implicit, assignment, explicit
+
+  repeated BuiltinEngineSpecific engine_specific = 99;
 }
 
 message BuiltinCollation {
   string name = 1;
   string locale = 2;
+
+  repeated BuiltinEngineSpecific engine_specific = 99;
 }
 
 message BuiltinAggregate {
@@ -71,6 +81,15 @@ message BuiltinAggregate {
 
   string state_fn = 5;
   string final_fn = 6;
+
+  repeated BuiltinEngineSpecific engine_specific = 99;
+}
+
+message BuiltinEngineSpecific {
+  string engine_kind = 1;
+  string min_version = 2;
+  string max_version = 3;
+  map<string, string> properties = 4;
 }
 
 service BuiltinCatalogService {

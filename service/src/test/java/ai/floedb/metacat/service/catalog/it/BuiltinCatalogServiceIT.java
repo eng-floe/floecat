@@ -16,8 +16,10 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 class BuiltinCatalogServiceIT {
 
-  private static final Metadata.Key<String> ENGINE_HEADER =
+  private static final Metadata.Key<String> ENGINE_VERSION_HEADER =
       Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ENGINE_KIND_HEADER =
+      Metadata.Key.of("x-engine-kind", Metadata.ASCII_STRING_MARSHALLER);
 
   @GrpcClient("metacat")
   BuiltinCatalogServiceGrpc.BuiltinCatalogServiceBlockingStub builtins;
@@ -25,7 +27,7 @@ class BuiltinCatalogServiceIT {
   /** Full RPC fetch should return the builtin catalog and all expected entries. */
   @Test
   void returnsCatalogWhenVersionProvided() {
-    var stub = withEngineVersion("demo-pg-builtins");
+    var stub = withEngineHeaders("demo-pg-builtins", "postgres");
     var resp = stub.getBuiltinCatalog(GetBuiltinCatalogRequest.newBuilder().build());
     assertThat(resp.hasCatalog()).isTrue();
     var catalog = resp.getCatalog();
@@ -48,7 +50,7 @@ class BuiltinCatalogServiceIT {
   /** If the caller already has the latest version, the RPC should return an empty payload. */
   @Test
   void currentVersionShortCircuits() {
-    var stub = withEngineVersion("demo-pg-builtins");
+    var stub = withEngineHeaders("demo-pg-builtins", "postgres");
     var resp =
         stub.getBuiltinCatalog(
             GetBuiltinCatalogRequest.newBuilder().setCurrentVersion("demo-pg-builtins").build());
@@ -68,17 +70,30 @@ class BuiltinCatalogServiceIT {
   /** Unknown engine versions map to NOT_FOUND to keep behavior deterministic. */
   @Test
   void notFoundEngineVersion() {
-    var stub = withEngineVersion("does-not-exist");
+    var stub = withEngineHeaders("does-not-exist", "postgres");
     assertThatThrownBy(() -> stub.getBuiltinCatalog(GetBuiltinCatalogRequest.newBuilder().build()))
         .isInstanceOfSatisfying(
             StatusRuntimeException.class,
             e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.NOT_FOUND));
   }
 
-  private BuiltinCatalogServiceGrpc.BuiltinCatalogServiceBlockingStub withEngineVersion(
-      String engineVersion) {
+  /** Missing engine kind header should fail like missing version. */
+  @Test
+  void missingEngineKindFails() {
     var metadata = new Metadata();
-    metadata.put(ENGINE_HEADER, engineVersion);
+    metadata.put(ENGINE_VERSION_HEADER, "demo-pg-builtins");
+    var stub = builtins.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
+    assertThatThrownBy(() -> stub.getBuiltinCatalog(GetBuiltinCatalogRequest.newBuilder().build()))
+        .isInstanceOfSatisfying(
+            StatusRuntimeException.class,
+            e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT));
+  }
+
+  private BuiltinCatalogServiceGrpc.BuiltinCatalogServiceBlockingStub withEngineHeaders(
+      String engineVersion, String engineKind) {
+    var metadata = new Metadata();
+    metadata.put(ENGINE_VERSION_HEADER, engineVersion);
+    metadata.put(ENGINE_KIND_HEADER, engineKind);
     return builtins.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
   }
 }

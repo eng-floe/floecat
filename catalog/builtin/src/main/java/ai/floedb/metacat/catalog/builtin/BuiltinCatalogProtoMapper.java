@@ -4,6 +4,7 @@ import ai.floedb.metacat.catalog.rpc.BuiltinAggregate;
 import ai.floedb.metacat.catalog.rpc.BuiltinCast;
 import ai.floedb.metacat.catalog.rpc.BuiltinCatalog;
 import ai.floedb.metacat.catalog.rpc.BuiltinCollation;
+import ai.floedb.metacat.catalog.rpc.BuiltinEngineSpecific;
 import ai.floedb.metacat.catalog.rpc.BuiltinFunction;
 import ai.floedb.metacat.catalog.rpc.BuiltinOperator;
 import ai.floedb.metacat.catalog.rpc.BuiltinType;
@@ -48,15 +49,17 @@ public final class BuiltinCatalogProtoMapper {
   }
 
   private static BuiltinFunction toProto(BuiltinFunctionDef def) {
-    return BuiltinFunction.newBuilder()
-        .setName(def.name())
-        .addAllArgumentTypes(def.argumentTypes())
-        .setReturnType(def.returnType())
-        .setIsAggregate(def.aggregate())
-        .setIsWindow(def.window())
-        .setIsStrict(def.strict())
-        .setIsImmutable(def.immutable())
-        .build();
+    var builder =
+        BuiltinFunction.newBuilder()
+            .setName(def.name())
+            .addAllArgumentTypes(def.argumentTypes())
+            .setReturnType(def.returnType())
+            .setIsAggregate(def.aggregate())
+            .setIsWindow(def.window())
+            .setIsStrict(def.strict())
+            .setIsImmutable(def.immutable());
+    def.engineSpecific().forEach(rule -> builder.addEngineSpecific(toProto(rule)));
+    return builder.build();
   }
 
   private static BuiltinFunctionDef fromProtoFunction(BuiltinFunction proto) {
@@ -67,21 +70,32 @@ public final class BuiltinCatalogProtoMapper {
         proto.getIsAggregate(),
         proto.getIsWindow(),
         proto.getIsStrict(),
-        proto.getIsImmutable());
+        proto.getIsImmutable(),
+        proto.getEngineSpecificList().stream()
+            .map(BuiltinCatalogProtoMapper::fromProtoRule)
+            .toList());
   }
 
   private static BuiltinOperator toProto(BuiltinOperatorDef def) {
-    return BuiltinOperator.newBuilder()
-        .setName(def.name())
-        .setLeftType(def.leftType())
-        .setRightType(def.rightType())
-        .setFunctionName(def.functionName())
-        .build();
+    var builder =
+        BuiltinOperator.newBuilder()
+            .setName(def.name())
+            .setLeftType(def.leftType())
+            .setRightType(def.rightType())
+            .setFunctionName(def.functionName());
+    def.engineSpecific().forEach(rule -> builder.addEngineSpecific(toProto(rule)));
+    return builder.build();
   }
 
   private static BuiltinOperatorDef fromProtoOperator(BuiltinOperator proto) {
     return new BuiltinOperatorDef(
-        proto.getName(), proto.getLeftType(), proto.getRightType(), proto.getFunctionName());
+        proto.getName(),
+        proto.getLeftType(),
+        proto.getRightType(),
+        proto.getFunctionName(),
+        proto.getEngineSpecificList().stream()
+            .map(BuiltinCatalogProtoMapper::fromProtoRule)
+            .toList());
   }
 
   private static BuiltinType toProto(BuiltinTypeDef def) {
@@ -96,6 +110,7 @@ public final class BuiltinCatalogProtoMapper {
     if (def.array() && def.elementType() != null && !def.elementType().isBlank()) {
       builder.setElementType(def.elementType());
     }
+    def.engineSpecific().forEach(rule -> builder.addEngineSpecific(toProto(rule)));
     return builder.build();
   }
 
@@ -104,30 +119,49 @@ public final class BuiltinCatalogProtoMapper {
     String elementType =
         proto.getIsArray() && !proto.getElementType().isBlank() ? proto.getElementType() : null;
     return new BuiltinTypeDef(
-        proto.getName(), oid, proto.getCategory(), proto.getIsArray(), elementType);
+        proto.getName(),
+        oid,
+        proto.getCategory(),
+        proto.getIsArray(),
+        elementType,
+        proto.getEngineSpecificList().stream()
+            .map(BuiltinCatalogProtoMapper::fromProtoRule)
+            .toList());
   }
 
   private static BuiltinCast toProto(BuiltinCastDef def) {
-    return BuiltinCast.newBuilder()
-        .setSourceType(def.sourceType())
-        .setTargetType(def.targetType())
-        .setMethod(def.method().wireValue())
-        .build();
+    var builder =
+        BuiltinCast.newBuilder()
+            .setSourceType(def.sourceType())
+            .setTargetType(def.targetType())
+            .setMethod(def.method().wireValue());
+    def.engineSpecific().forEach(rule -> builder.addEngineSpecific(toProto(rule)));
+    return builder.build();
   }
 
   private static BuiltinCastDef fromProtoCast(BuiltinCast proto) {
     return new BuiltinCastDef(
         proto.getSourceType(),
         proto.getTargetType(),
-        BuiltinCastMethod.fromWireValue(proto.getMethod()));
+        BuiltinCastMethod.fromWireValue(proto.getMethod()),
+        proto.getEngineSpecificList().stream()
+            .map(BuiltinCatalogProtoMapper::fromProtoRule)
+            .toList());
   }
 
   private static BuiltinCollation toProto(BuiltinCollationDef def) {
-    return BuiltinCollation.newBuilder().setName(def.name()).setLocale(def.locale()).build();
+    var builder = BuiltinCollation.newBuilder().setName(def.name()).setLocale(def.locale());
+    def.engineSpecific().forEach(rule -> builder.addEngineSpecific(toProto(rule)));
+    return builder.build();
   }
 
   private static BuiltinCollationDef fromProtoCollation(BuiltinCollation proto) {
-    return new BuiltinCollationDef(proto.getName(), proto.getLocale());
+    return new BuiltinCollationDef(
+        proto.getName(),
+        proto.getLocale(),
+        proto.getEngineSpecificList().stream()
+            .map(BuiltinCatalogProtoMapper::fromProtoRule)
+            .toList());
   }
 
   private static BuiltinAggregate toProto(BuiltinAggregateDef def) {
@@ -143,6 +177,7 @@ public final class BuiltinCatalogProtoMapper {
     if (def.finalFunction() != null && !def.finalFunction().isBlank()) {
       builder.setFinalFn(def.finalFunction());
     }
+    def.engineSpecific().forEach(rule -> builder.addEngineSpecific(toProto(rule)));
     return builder.build();
   }
 
@@ -155,6 +190,32 @@ public final class BuiltinCatalogProtoMapper {
         proto.getStateType(),
         proto.getReturnType(),
         stateFn,
-        finalFn);
+        finalFn,
+        proto.getEngineSpecificList().stream()
+            .map(BuiltinCatalogProtoMapper::fromProtoRule)
+            .toList());
+  }
+
+  private static BuiltinEngineSpecific toProto(EngineSpecificRule def) {
+    var builder = BuiltinEngineSpecific.newBuilder();
+    if (!def.engineKind().isBlank()) {
+      builder.setEngineKind(def.engineKind());
+    }
+    if (!def.minVersion().isBlank()) {
+      builder.setMinVersion(def.minVersion());
+    }
+    if (!def.maxVersion().isBlank()) {
+      builder.setMaxVersion(def.maxVersion());
+    }
+    builder.putAllProperties(def.properties());
+    return builder.build();
+  }
+
+  private static EngineSpecificRule fromProtoRule(BuiltinEngineSpecific proto) {
+    return new EngineSpecificRule(
+        proto.getEngineKind(),
+        proto.getMinVersion(),
+        proto.getMaxVersion(),
+        proto.getPropertiesMap());
   }
 }

@@ -20,8 +20,10 @@ import org.junit.jupiter.api.Test;
 @TestProfile(BuiltinCatalogServiceFileConfigIT.FileProfile.class)
 class BuiltinCatalogServiceFileConfigIT {
 
-  private static final Metadata.Key<String> ENGINE_HEADER =
+  private static final Metadata.Key<String> ENGINE_VERSION_HEADER =
       Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ENGINE_KIND_HEADER =
+      Metadata.Key.of("x-engine-kind", Metadata.ASCII_STRING_MARSHALLER);
 
   @GrpcClient("metacat")
   BuiltinCatalogServiceGrpc.BuiltinCatalogServiceBlockingStub builtins;
@@ -30,16 +32,18 @@ class BuiltinCatalogServiceFileConfigIT {
   @Test
   void loadsCatalogFromFileSystem() {
     var stub =
-        builtins.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata("filetest")));
+        builtins.withInterceptors(
+            MetadataUtils.newAttachHeadersInterceptor(metadata("filetest", "postgres")));
     var resp = stub.getBuiltinCatalog(GetBuiltinCatalogRequest.getDefaultInstance());
     assertThat(resp.hasCatalog()).isTrue();
     assertThat(resp.getCatalog().getVersion()).isEqualTo("filetest");
     assertThat(resp.getCatalog().getFunctions(0).getName()).isEqualTo("pg_catalog.identity");
   }
 
-  private static Metadata metadata(String engineVersion) {
+  private static Metadata metadata(String engineVersion, String engineKind) {
     Metadata m = new Metadata();
-    m.put(ENGINE_HEADER, engineVersion);
+    m.put(ENGINE_VERSION_HEADER, engineVersion);
+    m.put(ENGINE_KIND_HEADER, engineKind);
     return m;
   }
 

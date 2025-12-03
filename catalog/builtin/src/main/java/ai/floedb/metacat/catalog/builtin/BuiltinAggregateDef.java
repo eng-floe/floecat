@@ -9,12 +9,14 @@ public record BuiltinAggregateDef(
     String stateType,
     String returnType,
     String stateFunction,
-    String finalFunction) {
+    String finalFunction,
+    List<EngineSpecificRule> engineSpecific) {
 
   public BuiltinAggregateDef {
     name = Objects.requireNonNull(name, "name");
     argumentTypes = List.copyOf(argumentTypes == null ? List.of() : argumentTypes);
     stateType = Objects.requireNonNull(stateType, "stateType");
     returnType = Objects.requireNonNull(returnType, "returnType");
+    engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
   }
 }
