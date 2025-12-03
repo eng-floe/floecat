@@ -32,6 +32,7 @@ public final class TableRequests {
       @JsonDeserialize(using = NamespaceListDeserializer.class) List<String> namespace,
       String schemaJson,
       Map<String, String> properties,
+      @JsonProperty("stage-id") String stageId,
       @JsonProperty("requirements") List<Map<String, Object>> requirements,
       @JsonProperty("updates") List<Map<String, Object>> updates) {}
 

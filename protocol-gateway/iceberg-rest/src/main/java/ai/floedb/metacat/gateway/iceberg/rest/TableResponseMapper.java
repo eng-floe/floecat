@@ -14,6 +14,8 @@ import ai.floedb.metacat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -21,9 +23,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 final class TableResponseMapper {
   private static final ObjectMapper JSON = new ObjectMapper();
+
   private TableResponseMapper() {}
 
   static LoadTableResultDto toLoadResult(
@@ -50,12 +55,418 @@ final class TableResponseMapper {
         toMetadata(tableName, table, props, metadata, snapshots, metadataLocation));
   }
 
+  static LoadTableResultDto toLoadResultFromCreate(
+      String tableName,
+      Table table,
+      TableRequests.Create request,
+      Map<String, String> configOverrides,
+      List<StorageCredentialDto> storageCredentials) {
+    if (request == null) {
+      throw new IllegalArgumentException("create request is required");
+    }
+    TableMetadataView metadataView = initialMetadata(tableName, table, request);
+    return new LoadTableResultDto(
+        metadataView.metadataLocation(), metadataView, configOverrides, storageCredentials);
+  }
+
+  private static TableMetadataView initialMetadata(
+      String tableName, Table table, TableRequests.Create request) {
+    Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
+    if (request.properties() != null) {
+      request
+          .properties()
+          .forEach(
+              (k, v) -> {
+                if (k != null && v != null) {
+                  props.put(k, v);
+                }
+              });
+    }
+    String metadataLoc = resolveMetadataLocation(props, null);
+    if (metadataLoc == null || metadataLoc.isBlank()) {
+      metadataLoc = defaultMetadataLocation(table, tableName);
+      props.put("metadata-location", metadataLoc);
+      props.put("metadata_location", metadataLoc);
+    }
+    final String metadataLocation = metadataLoc;
+    String location =
+        Optional.ofNullable(request.location())
+            .filter(s -> !s.isBlank())
+            .orElseGet(() -> defaultLocation(props.get("location"), metadataLocation));
+    if (location == null || location.isBlank()) {
+      throw new IllegalArgumentException("location is required");
+    }
+    long lastUpdatedMs =
+        table.hasCreatedAt()
+            ? table.getCreatedAt().getSeconds() * 1000 + table.getCreatedAt().getNanos() / 1_000_000
+            : Instant.now().toEpochMilli();
+    Map<String, Object> schema = schemaMap(request);
+    Integer schemaId = asInteger(schema.get("schema-id"));
+    Integer lastColumnId = asInteger(schema.get("last-column-id"));
+    if (schemaId == null || lastColumnId == null) {
+      throw new IllegalArgumentException("schema requires schema-id and last-column-id");
+    }
+    Map<String, Object> partitionSpec = partitionSpecMap(request);
+    Integer defaultSpecId = asInteger(partitionSpec.get("spec-id"));
+    if (defaultSpecId == null) {
+      defaultSpecId = 0;
+      partitionSpec.put("spec-id", defaultSpecId);
+    }
+    Integer lastPartitionId = maxPartitionFieldId(partitionSpec);
+    Map<String, Object> sortOrder = sortOrderMap(request);
+    Integer defaultSortOrderId =
+        asInteger(firstNonNull(sortOrder.get("sort-order-id"), sortOrder.get("order-id")));
+    if (defaultSortOrderId == null) {
+      defaultSortOrderId = 0;
+      sortOrder.put("sort-order-id", defaultSortOrderId);
+    }
+    props.putIfAbsent("format-version", "2");
+    props.putIfAbsent("current-schema-id", schemaId.toString());
+    props.putIfAbsent("last-column-id", lastColumnId.toString());
+    props.putIfAbsent("default-spec-id", defaultSpecId.toString());
+    props.putIfAbsent("last-partition-id", lastPartitionId.toString());
+    props.putIfAbsent("default-sort-order-id", defaultSortOrderId.toString());
+    props.putIfAbsent("current-snapshot-id", "0");
+    props.putIfAbsent("last-sequence-number", "0");
+    return new TableMetadataView(
+        formatVersion(props),
+        table.hasResourceId() ? table.getResourceId().getId() : tableName,
+        resolveTableLocation(location, metadataLocation),
+        metadataLocation,
+        lastUpdatedMs,
+        props,
+        lastColumnId,
+        schemaId,
+        defaultSpecId,
+        lastPartitionId,
+        defaultSortOrderId,
+        null,
+        0L,
+        List.of(schema),
+        List.of(partitionSpec),
+        List.of(sortOrder),
+        Map.of(),
+        List.of(),
+        List.of(),
+        List.of(),
+        List.of(),
+        List.of());
+  }
+
+  private static Map<String, Object> schemaMap(TableRequests.Create request) {
+    JsonNode node = request.schema();
+    if (node == null || node.isNull()) {
+      String schemaJson = request.schemaJson();
+      if (schemaJson != null && !schemaJson.isBlank()) {
+        try {
+          node = JSON.readTree(schemaJson);
+        } catch (JsonProcessingException e) {
+          throw new IllegalArgumentException("schemaJson is invalid", e);
+        }
+      }
+    }
+    if (node == null || node.isNull()) {
+      throw new IllegalArgumentException("schema is required");
+    }
+    if (!node.isObject()) {
+      throw new IllegalArgumentException("schema must be an object");
+    }
+    Map<String, Object> schema =
+        new LinkedHashMap<>(JSON.convertValue(node, new TypeReference<Map<String, Object>>() {}));
+    normalizeSchema(schema);
+    return schema;
+  }
+
+  private static TableMetadataView synthesizeMetadataFromTable(
+      String tableName, Table table, Map<String, String> props, String metadataLocation) {
+    String resolvedMetadata =
+        (metadataLocation == null || metadataLocation.isBlank())
+            ? defaultMetadataLocation(table, tableName)
+            : metadataLocation;
+    props.put("metadata-location", resolvedMetadata);
+    props.put("metadata_location", resolvedMetadata);
+    Map<String, Object> schema = schemaFromTable(table);
+    Integer schemaId = asInteger(schema.get("schema-id"));
+    Integer lastColumnId = asInteger(schema.get("last-column-id"));
+    Map<String, Object> partitionSpec = defaultPartitionSpec();
+    Integer defaultSpecId = asInteger(partitionSpec.get("spec-id"));
+    Integer lastPartitionId = 0;
+    Map<String, Object> sortOrder = defaultSortOrder();
+    Integer defaultSortOrderId = asInteger(sortOrder.get("sort-order-id"));
+    String location =
+        defaultLocation(
+            table.hasUpstream() ? table.getUpstream().getUri() : props.get("location"),
+            resolvedMetadata);
+    long lastUpdatedMs =
+        table.hasCreatedAt()
+            ? table.getCreatedAt().getSeconds() * 1000 + table.getCreatedAt().getNanos() / 1_000_000
+            : Instant.now().toEpochMilli();
+    props.putIfAbsent("format-version", "2");
+    props.putIfAbsent("current-schema-id", schemaId.toString());
+    props.putIfAbsent("last-column-id", lastColumnId.toString());
+    props.putIfAbsent("default-spec-id", defaultSpecId.toString());
+    props.putIfAbsent("last-partition-id", Integer.toString(lastPartitionId));
+    props.putIfAbsent("default-sort-order-id", defaultSortOrderId.toString());
+    props.putIfAbsent("current-snapshot-id", "0");
+    props.putIfAbsent("last-sequence-number", "0");
+    return new TableMetadataView(
+        formatVersion(props),
+        table.hasResourceId() ? table.getResourceId().getId() : tableName,
+        location,
+        resolvedMetadata,
+        lastUpdatedMs,
+        props,
+        lastColumnId,
+        schemaId,
+        defaultSpecId,
+        lastPartitionId,
+        defaultSortOrderId,
+        null,
+        0L,
+        List.of(schema),
+        List.of(partitionSpec),
+        List.of(sortOrder),
+        Map.of(),
+        List.of(),
+        List.of(),
+        List.of(),
+        List.of(),
+        List.of());
+  }
+
+  private static Map<String, Object> schemaFromTable(Table table) {
+    String schemaJson = table.getSchemaJson();
+    if (schemaJson == null || schemaJson.isBlank()) {
+      return defaultTableSchema();
+    }
+    JsonNode node;
+    try {
+      node = JSON.readTree(schemaJson);
+    } catch (JsonProcessingException e) {
+      throw new IllegalArgumentException("schemaJson is invalid", e);
+    }
+    if (node == null || !node.isObject()) {
+      throw new IllegalArgumentException("schemaJson must be an object");
+    }
+    Map<String, Object> schema =
+        new LinkedHashMap<>(JSON.convertValue(node, new TypeReference<Map<String, Object>>() {}));
+    normalizeSchema(schema);
+    return schema;
+  }
+
+  private static Map<String, Object> defaultTableSchema() {
+    Map<String, Object> schema = new LinkedHashMap<>();
+    schema.put("schema-id", 0);
+    schema.put("last-column-id", 1);
+    schema.put("type", "struct");
+    Map<String, Object> field = new LinkedHashMap<>();
+    field.put("id", 1);
+    field.put("name", "placeholder");
+    field.put("type", "string");
+    field.put("required", false);
+    schema.put("fields", new ArrayList<>(List.of(field)));
+    normalizeSchema(schema);
+    return schema;
+  }
+
+  private static Map<String, Object> defaultPartitionSpec() {
+    Map<String, Object> spec = new LinkedHashMap<>();
+    spec.put("spec-id", 0);
+    spec.put("fields", List.of());
+    return spec;
+  }
+
+  private static Map<String, Object> defaultSortOrder() {
+    Map<String, Object> order = new LinkedHashMap<>();
+    order.put("sort-order-id", 0);
+    order.put("order-id", 0);
+    order.put("fields", List.of());
+    normalizeSortOrder(order);
+    return order;
+  }
+
+  private static Map<String, Object> asObjectMap(Object value) {
+    if (!(value instanceof Map<?, ?> map)) {
+      return null;
+    }
+    Map<String, Object> out = new LinkedHashMap<>();
+    for (Map.Entry<?, ?> entry : map.entrySet()) {
+      if (entry.getKey() == null) {
+        continue;
+      }
+      out.put(entry.getKey().toString(), entry.getValue());
+    }
+    return out;
+  }
+
+  private static Long asLong(Object value) {
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof Number number) {
+      return number.longValue();
+    }
+    String text = value.toString();
+    if (text.isBlank()) {
+      return null;
+    }
+    try {
+      return Long.parseLong(text);
+    } catch (NumberFormatException e) {
+      return null;
+    }
+  }
+
+  private static void normalizeSchema(Map<String, Object> schema) {
+    List<Map<String, Object>> fields = normalizeSchemaFields(schema);
+    if (fields.isEmpty()) {
+      throw new IllegalArgumentException("schema.fields is required");
+    }
+    int nextFieldId = 1;
+    int maxFieldId = 0;
+    for (Map<String, Object> field : fields) {
+      Object fieldIdSource =
+          firstNonNull(
+              field.get("id"), firstNonNull(field.get("field-id"), field.get("source-id")));
+      Integer fieldId = asInteger(fieldIdSource);
+      if (fieldId == null || fieldId <= 0) {
+        fieldId = nextFieldId++;
+      } else if (fieldId >= nextFieldId) {
+        nextFieldId = fieldId + 1;
+      }
+      maxFieldId = Math.max(maxFieldId, fieldId);
+      field.put("id", fieldId);
+    }
+    Integer schemaId = asInteger(schema.get("schema-id"));
+    if (schemaId == null || schemaId < 0) {
+      schemaId = 0;
+      schema.put("schema-id", schemaId);
+    }
+    Integer lastColumnId = asInteger(schema.get("last-column-id"));
+    if (lastColumnId == null || lastColumnId < maxFieldId) {
+      lastColumnId = maxFieldId;
+      schema.put("last-column-id", lastColumnId);
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static List<Map<String, Object>> normalizeSchemaFields(Map<String, Object> schema) {
+    Object rawFields = schema.get("fields");
+    if (!(rawFields instanceof List<?> list)) {
+      throw new IllegalArgumentException("schema.fields is required");
+    }
+    List<Map<String, Object>> normalized = new ArrayList<>();
+    for (Object entry : list) {
+      if (!(entry instanceof Map<?, ?> fieldMap)) {
+        throw new IllegalArgumentException("schema.fields entries must be objects");
+      }
+      Map<String, Object> mutable = new LinkedHashMap<>();
+      for (Map.Entry<?, ?> e : fieldMap.entrySet()) {
+        if (e.getKey() != null) {
+          mutable.put(e.getKey().toString(), e.getValue());
+        }
+      }
+      normalized.add(mutable);
+    }
+    schema.put("fields", normalized);
+    return normalized;
+  }
+
+  private static Map<String, Object> partitionSpecMap(TableRequests.Create request) {
+    JsonNode node = request.partitionSpec();
+    if (node == null || node.isNull()) {
+      Map<String, Object> defaults = new LinkedHashMap<>();
+      defaults.put("spec-id", 0);
+      defaults.put("fields", List.of());
+      return defaults;
+    }
+    if (!node.isObject()) {
+      throw new IllegalArgumentException("partition-spec must be an object");
+    }
+    return new LinkedHashMap<>(
+        JSON.convertValue(node, new TypeReference<Map<String, Object>>() {}));
+  }
+
+  private static Map<String, Object> sortOrderMap(TableRequests.Create request) {
+    JsonNode node = request.writeOrder();
+    if (node == null || node.isNull()) {
+      Map<String, Object> defaults = new LinkedHashMap<>();
+      defaults.put("sort-order-id", 0);
+      defaults.put("fields", List.of());
+      return defaults;
+    }
+    if (!node.isObject()) {
+      throw new IllegalArgumentException("write-order must be an object");
+    }
+    Map<String, Object> order =
+        new LinkedHashMap<>(JSON.convertValue(node, new TypeReference<Map<String, Object>>() {}));
+    normalizeSortOrder(order);
+    return order;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Integer maxPartitionFieldId(Map<String, Object> spec) {
+    Object fields = spec.get("fields");
+    if (!(fields instanceof List<?> list)) {
+      return 0;
+    }
+    int max = 0;
+    for (Object entry : list) {
+      if (entry instanceof Map<?, ?> map) {
+        Integer fieldId = asInteger(map.get("field-id"));
+        if (fieldId == null) {
+          fieldId = asInteger(map.get("source-id"));
+        }
+        if (fieldId != null && fieldId > max) {
+          max = fieldId;
+        }
+      }
+    }
+    return max;
+  }
+
+  private static Integer formatVersion(Map<String, String> props) {
+    Integer version = maybeInt(props.get("format-version"));
+    if (version == null || version < 1) {
+      version = 2;
+    }
+    return version;
+  }
+
   private static String resolveMetadataLocation(
       Map<String, String> props, IcebergMetadata metadata) {
     if (metadata != null && !metadata.getMetadataLocation().isBlank()) {
       return metadata.getMetadataLocation();
     }
     return props.getOrDefault("metadata-location", props.get("metadata_location"));
+  }
+
+  private static String defaultMetadataLocation(Table table, String tableName) {
+    String suffix;
+    if (table != null && table.hasResourceId() && table.getResourceId().getId() != null) {
+      suffix = table.getResourceId().getId();
+    } else {
+      suffix = tableName;
+    }
+    return "metacat:///tables/" + suffix;
+  }
+
+  private static String defaultLocation(String current, String metadataLocation) {
+    if (current != null && !current.isBlank()) {
+      return current;
+    }
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return null;
+    }
+    int idx = metadataLocation.indexOf("/metadata/");
+    if (idx > 0) {
+      return metadataLocation.substring(0, idx);
+    }
+    int slash = metadataLocation.lastIndexOf('/');
+    if (slash > 0) {
+      return metadataLocation.substring(0, slash);
+    }
+    return metadataLocation;
   }
 
   private static TableMetadataView toMetadata(
@@ -65,6 +476,9 @@ final class TableResponseMapper {
       IcebergMetadata metadata,
       List<Snapshot> snapshots,
       String metadataLocation) {
+    if (metadata == null) {
+      return synthesizeMetadataFromTable(tableName, table, props, metadataLocation);
+    }
     String location = table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
     location = resolveTableLocation(location, metadataLocation);
     Long lastUpdatedMs =
@@ -102,9 +516,83 @@ final class TableResponseMapper {
     String tableUuid =
         Optional.ofNullable(props.get("table-uuid"))
             .orElseGet(() -> table.hasResourceId() ? table.getResourceId().getId() : tableName);
-    Integer formatVersion = maybeInt(props.get("format-version"));
-    if (formatVersion == null) {
-      formatVersion = 2;
+    if (lastColumnId == null) {
+      lastColumnId = 0;
+    }
+    if (currentSchemaId == null) {
+      currentSchemaId = 0;
+    }
+    if (defaultSpecId == null) {
+      defaultSpecId = 0;
+    }
+    if (lastPartitionId == null) {
+      lastPartitionId = 0;
+    }
+    if (defaultSortOrderId == null) {
+      defaultSortOrderId = 0;
+    }
+    if (lastSequenceNumber == null) {
+      lastSequenceNumber = 0L;
+    }
+    Integer formatVersion = formatVersion(props);
+    List<Map<String, Object>> schemaList = schemas(metadata);
+    if (schemaList.isEmpty()) {
+      Map<String, Object> fallback = schemaFromTable(table);
+      schemaList = List.of(fallback);
+      Integer fallbackId = asInteger(fallback.get("schema-id"));
+      if (fallbackId != null && fallbackId >= 0) {
+        currentSchemaId = fallbackId;
+      }
+    }
+    List<Map<String, Object>> specList = specs(metadata);
+    if (specList.isEmpty()) {
+      Map<String, Object> fallbackSpec = defaultPartitionSpec();
+      specList = List.of(fallbackSpec);
+      Integer fallbackSpecId = asInteger(fallbackSpec.get("spec-id"));
+      if (fallbackSpecId != null && fallbackSpecId >= 0) {
+        defaultSpecId = fallbackSpecId;
+      }
+    }
+    List<Map<String, Object>> sortOrderList = sortOrders(metadata);
+    if (sortOrderList.isEmpty()) {
+      Map<String, Object> fallbackOrder = defaultSortOrder();
+      sortOrderList = List.of(fallbackOrder);
+      Integer fallbackOrderId = asInteger(fallbackOrder.get("sort-order-id"));
+      if (fallbackOrderId != null && fallbackOrderId >= 0) {
+        defaultSortOrderId = fallbackOrderId;
+      }
+    }
+    if (snapshots != null && !snapshots.isEmpty()) {
+      long maxSequence =
+          snapshots.stream().mapToLong(Snapshot::getSequenceNumber).max().orElse(0L);
+      if (maxSequence > lastSequenceNumber) {
+        lastSequenceNumber = maxSequence;
+      }
+    }
+    var refs = refs(metadata);
+    if (metadata != null && !refs.isEmpty()) {
+      Set<Long> snapshotIds =
+          snapshots.stream().map(Snapshot::getSnapshotId).collect(Collectors.toSet());
+      refs.entrySet()
+          .removeIf(
+              entry -> {
+                Map<String, Object> refMap = asObjectMap(entry.getValue());
+                if (refMap == null) {
+                  return true;
+                }
+                Long refSnapshot = asLong(refMap.get("snapshot-id"));
+                return refSnapshot == null || !snapshotIds.contains(refSnapshot);
+              });
+      Map<String, Object> mainRef = asObjectMap(refs.get("main"));
+      if (mainRef != null) {
+        Long mainSnapshot = asLong(mainRef.get("snapshot-id"));
+        if (mainSnapshot != null && mainSnapshot > 0) {
+          currentSnapshotId = mainSnapshot;
+        }
+      }
+    }
+    if ((currentSnapshotId == null || currentSnapshotId <= 0) && snapshots != null && !snapshots.isEmpty()) {
+      currentSnapshotId = snapshots.get(0).getSnapshotId();
     }
     return new TableMetadataView(
         formatVersion,
@@ -120,10 +608,10 @@ final class TableResponseMapper {
         defaultSortOrderId,
         currentSnapshotId,
         lastSequenceNumber,
-        schemas(metadata),
-        specs(metadata),
-        sortOrders(metadata),
-        refs(metadata),
+        schemaList,
+        specList,
+        sortOrderList,
+        refs,
         snapshotLog(metadata),
         metadataLog(metadata),
         statistics(metadata),
@@ -386,5 +874,67 @@ final class TableResponseMapper {
     } catch (NumberFormatException ignored) {
       return null;
     }
+  }
+
+  private static Integer asInteger(Object value) {
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof Number number) {
+      return number.intValue();
+    }
+    String text = value.toString();
+    if (text.isBlank()) {
+      return null;
+    }
+    try {
+      return Integer.parseInt(text);
+    } catch (NumberFormatException e) {
+      return null;
+    }
+  }
+
+  private static Object firstNonNull(Object first, Object second) {
+    return first != null ? first : second;
+  }
+
+  private static void normalizeSortOrder(Map<String, Object> order) {
+    Integer orderId = asInteger(firstNonNull(order.get("sort-order-id"), order.get("order-id")));
+    if (orderId == null || orderId < 0) {
+      orderId = 0;
+    }
+    order.put("sort-order-id", orderId);
+    order.put("order-id", orderId);
+    Object fieldsObj = order.get("fields");
+    if (!(fieldsObj instanceof List<?> list)) {
+      order.put("fields", List.of());
+      return;
+    }
+    List<Map<String, Object>> normalized = new ArrayList<>();
+    for (Object entry : list) {
+      if (!(entry instanceof Map<?, ?> mapEntry)) {
+        continue;
+      }
+      Map<String, Object> field = new LinkedHashMap<>();
+      for (Map.Entry<?, ?> e : mapEntry.entrySet()) {
+        if (e.getKey() != null) {
+          field.put(e.getKey().toString(), e.getValue());
+        }
+      }
+      if (!field.containsKey("source-id") && field.containsKey("source")) {
+        field.put("source-id", field.get("source"));
+      }
+      if (!field.containsKey("transform")) {
+        field.put("transform", "identity");
+      }
+      if (!field.containsKey("direction")) {
+        field.put("direction", "ASC");
+      }
+      if (!field.containsKey("null-order")) {
+        field.put("null-order", "NULLS_FIRST");
+      }
+      normalized.add(field);
+    }
+    order.put("fields", normalized);
   }
 }

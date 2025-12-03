@@ -15,13 +15,13 @@ import ai.floedb.metacat.catalog.rpc.IcebergSchema;
 import ai.floedb.metacat.catalog.rpc.IcebergSortField;
 import ai.floedb.metacat.catalog.rpc.IcebergSortOrder;
 import ai.floedb.metacat.catalog.rpc.IcebergStatisticsFile;
-import ai.floedb.metacat.catalog.rpc.ListTablesRequest;
 import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
+import ai.floedb.metacat.catalog.rpc.ListTablesRequest;
 import ai.floedb.metacat.catalog.rpc.PartitionField;
 import ai.floedb.metacat.catalog.rpc.PartitionSpecInfo;
+import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.SnapshotSpec;
-import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
@@ -37,38 +37,34 @@ import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.common.rpc.SpecialSnapshot;
-import ai.floedb.metacat.connector.rpc.AuthConfig;
-import ai.floedb.metacat.connector.rpc.ConnectorKind;
-import ai.floedb.metacat.connector.rpc.ConnectorSpec;
-import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
-import ai.floedb.metacat.connector.rpc.CreateConnectorRequest;
-import ai.floedb.metacat.connector.rpc.CreateConnectorResponse;
-import ai.floedb.metacat.connector.rpc.NamespacePath;
-import ai.floedb.metacat.connector.rpc.SourceSelector;
-import ai.floedb.metacat.connector.rpc.SyncCaptureRequest;
-import ai.floedb.metacat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.metacat.execution.rpc.ScanBundle;
 import ai.floedb.metacat.execution.rpc.ScanFile;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
+import ai.floedb.metacat.gateway.iceberg.rest.StageCommitException;
+import ai.floedb.metacat.gateway.iceberg.rest.StageCommitProcessor;
+import ai.floedb.metacat.gateway.iceberg.rest.StageCommitProcessor.StageCommitResult;
 import ai.floedb.metacat.query.rpc.BeginQueryRequest;
 import ai.floedb.metacat.query.rpc.DescribeInputsRequest;
 import ai.floedb.metacat.query.rpc.EndQueryRequest;
 import ai.floedb.metacat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.metacat.query.rpc.GetQueryRequest;
+import ai.floedb.metacat.query.rpc.Operator;
+import ai.floedb.metacat.query.rpc.Predicate;
 import ai.floedb.metacat.query.rpc.QueryDescriptor;
 import ai.floedb.metacat.query.rpc.QueryInput;
 import ai.floedb.metacat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.metacat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
-import ai.floedb.metacat.query.rpc.Operator;
-import ai.floedb.metacat.query.rpc.Predicate;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
+import jakarta.annotation.PostConstruct;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
@@ -88,17 +84,16 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
-
-import io.grpc.StatusRuntimeException;
 import org.eclipse.microprofile.config.Config;
 import org.jboss.logging.Logger;
 
@@ -107,16 +102,25 @@ import org.jboss.logging.Logger;
 @Produces(MediaType.APPLICATION_JSON)
 public class TableResource {
   private static final Logger LOG = Logger.getLogger(TableResource.class);
+  private static final List<Map<String, Object>> STAGE_CREATE_REQUIREMENTS =
+      List.of(Map.of("type", "assert-create"));
+
   private final ConcurrentMap<String, PlanContext> planContexts = new ConcurrentHashMap<>();
-  private static final List<StorageCredentialDto> STATIC_STORAGE_CREDENTIALS =
-      List.of(new StorageCredentialDto("*", Map.of("type", "static")));
-  private volatile Map<String, String> tableConfigCache;
-  private volatile List<StorageCredentialDto> storageCredentialCache;
 
   @Inject GrpcWithHeaders grpc;
   @Inject IcebergGatewayConfig config;
   @Inject ObjectMapper mapper;
   @Inject Config mpConfig;
+  @Inject StagedTableService stagedTableService;
+  @Inject TenantContext tenantContext;
+  @Inject StageCommitProcessor stageCommitProcessor;
+
+  private TableGatewaySupport tableSupport;
+
+  @PostConstruct
+  void initSupport() {
+    this.tableSupport = new TableGatewaySupport(grpc, config, mapper, mpConfig);
+  }
 
   @GET
   @Path("/tables")
@@ -163,29 +167,40 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @HeaderParam("Idempotency-Key") String idempotencyKey,
+      @HeaderParam("Iceberg-Transaction-Id") String transactionId,
       TableRequests.Create req) {
     String catalogName = resolveCatalog(prefix);
     ResourceId catalogId = resolveCatalogId(prefix);
-    ResourceId namespaceId =
-        NameResolution.resolveNamespace(grpc, catalogName, NamespacePaths.split(namespace));
+    List<String> namespacePath = NamespacePaths.split(namespace);
+    ResourceId namespaceId = NameResolution.resolveNamespace(grpc, catalogName, namespacePath);
 
     String tableName = req != null && req.name() != null ? req.name() : "table";
     if (req != null) {
+      try {
+        System.out.println("CreateTable request payload: " + mapper.writeValueAsString(req));
+      } catch (JsonProcessingException ignored) {
+        System.out.println("CreateTable request payload: " + req);
+      }
       if (Boolean.TRUE.equals(req.stageCreate())) {
-        return specNotImplemented("stage-create");
+        return handleStageCreate(
+            prefix,
+            catalogName,
+            catalogId,
+            namespaceId,
+            namespacePath,
+            tableName,
+            req,
+            transactionId,
+            idempotencyKey);
       }
-      if (req.partitionSpec() != null && !req.partitionSpec().isNull()) {
-        // Partition specs are ingested asynchronously by the reconciler/connector pipeline.
-        return specNotImplemented("create partition-spec");
-      }
-      if (req.writeOrder() != null && !req.writeOrder().isNull()) {
-        return specNotImplemented("create write-order");
+      if (req.location() == null || req.location().isBlank()) {
+        return validationError("location is required");
       }
     }
 
     TableSpec.Builder spec;
     try {
-      spec = buildCreateSpec(catalogId, namespaceId, tableName, req);
+      spec = tableSupport.buildCreateSpec(catalogId, namespaceId, tableName, req);
     } catch (IllegalArgumentException | JsonProcessingException e) {
       return validationError(e.getMessage());
     }
@@ -196,21 +211,144 @@ public class TableResource {
       request.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey));
     }
     var created = stub.createTable(request.build()).getTable();
-    IcebergMetadata metadata = loadCurrentMetadata(created);
-    Response.ResponseBuilder builder =
-        Response.ok(
-            TableResponseMapper.toLoadResult(
+    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
+    Map<String, String> tableConfig = tableSupport.defaultTableConfig();
+    List<StorageCredentialDto> credentials = tableSupport.defaultCredentials();
+    LoadTableResultDto loadResult;
+    if (metadata == null && req != null) {
+      try {
+        loadResult =
+            TableResponseMapper.toLoadResultFromCreate(
+                tableName, created, req, tableConfig, credentials);
+      } catch (IllegalArgumentException e) {
+        return validationError(e.getMessage());
+      }
+    } else {
+      loadResult =
+          TableResponseMapper.toLoadResult(
+              tableName, created, metadata, List.of(), tableConfig, credentials);
+    }
+
+    var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
+    ResourceId connectorId = null;
+    String upstreamUri = null;
+    if (connectorTemplate != null && connectorTemplate.uri() != null) {
+      connectorId =
+          tableSupport.createTemplateConnector(
+              prefix,
+              namespacePath,
+              namespaceId,
+              catalogId,
+              tableName,
+              created.getResourceId(),
+              connectorTemplate,
+              idempotencyKey);
+      upstreamUri = connectorTemplate.uri();
+    } else {
+      String metadataLocation = tableSupport.metadataLocationFromCreate(req);
+      if (metadataLocation != null && !metadataLocation.isBlank()) {
+        connectorId =
+            tableSupport.createExternalConnector(
+                prefix,
+                namespacePath,
+                namespaceId,
+                catalogId,
                 tableName,
-                created,
-                metadata,
-                List.of(),
-                defaultTableConfig(),
-                defaultCredentials()));
+                created.getResourceId(),
+                metadataLocation,
+                idempotencyKey);
+        upstreamUri = metadataLocation;
+      }
+    }
+
+    if (connectorId != null) {
+      tableSupport.updateTableUpstream(
+          created.getResourceId(), namespacePath, tableName, connectorId, upstreamUri);
+      tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
+      tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
+    }
+
+    Response.ResponseBuilder builder = Response.ok(loadResult);
     String etagValue = metadataLocation(created, metadata);
     if (etagValue != null) {
       builder.tag(etagValue);
     }
     return builder.build();
+  }
+
+  private Response handleStageCreate(
+      String prefix,
+      String catalogName,
+      ResourceId catalogId,
+      ResourceId namespaceId,
+      List<String> namespacePath,
+      String tableName,
+      TableRequests.Create req,
+      String transactionId,
+      String idempotencyKey) {
+    if (req == null) {
+      return validationError("stage-create requires a request body");
+    }
+    if (req.location() == null || req.location().isBlank()) {
+      return validationError("location is required");
+    }
+    String tenantId = tenantContext.getTenantId();
+    if (tenantId == null || tenantId.isBlank()) {
+      return validationError("tenant context is required");
+    }
+    String stageId =
+        (transactionId == null || transactionId.isBlank())
+            ? UUID.randomUUID().toString()
+            : transactionId.trim();
+    try {
+      TableSpec.Builder spec = tableSupport.buildCreateSpec(catalogId, namespaceId, tableName, req);
+      StagedTableEntry entry =
+          new StagedTableEntry(
+              new StagedTableKey(tenantId, catalogName, namespacePath, tableName, stageId),
+              catalogId,
+              namespaceId,
+              req,
+              spec.build(),
+              STAGE_CREATE_REQUIREMENTS,
+              StageState.STAGED,
+              null,
+              null,
+              idempotencyKey);
+      StagedTableEntry stored = stagedTableService.saveStage(entry);
+      LOG.infof(
+          "Stored stage-create payload tenant=%s catalog=%s namespace=%s table=%s stageId=%s"
+              + " txnHeader=%s",
+          tenantContext.getTenantId(),
+          catalogName,
+          namespacePath,
+          tableName,
+          stored.key().stageId(),
+          transactionId);
+      Table stubTable =
+          Table.newBuilder()
+              .setCatalogId(catalogId)
+              .setNamespaceId(namespaceId)
+              .setDisplayName(tableName)
+              .build();
+      LoadTableResultDto loadResult =
+          TableResponseMapper.toLoadResultFromCreate(
+              tableName,
+              stubTable,
+              req,
+              tableSupport.defaultTableConfig(),
+              tableSupport.defaultCredentials());
+      return Response.ok(
+              new StageCreateResponseDto(
+                  loadResult.metadataLocation(),
+                  loadResult.metadata(),
+                  loadResult.config(),
+                  loadResult.storageCredentials(),
+                  stored.requirements(),
+                  stored.key().stageId()))
+          .build();
+    } catch (IllegalArgumentException | JsonProcessingException e) {
+      return validationError(e.getMessage());
+    }
   }
 
   @Path("/tables/{table}")
@@ -233,7 +371,7 @@ public class TableResource {
     } catch (IllegalArgumentException e) {
       return validationError(e.getMessage());
     }
-    IcebergMetadata metadata = loadCurrentMetadata(tableRecord);
+    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(tableRecord);
     List<Snapshot> snapshotList = fetchSnapshots(tableId, snapshotMode, metadata);
     String etagValue = metadataLocation(tableRecord, metadata);
     if (etagMatches(etagValue, ifNoneMatch)) {
@@ -246,8 +384,8 @@ public class TableResource {
                 tableRecord,
                 metadata,
                 snapshotList,
-                defaultTableConfig(),
-                defaultCredentials()));
+                tableSupport.defaultTableConfig(),
+                tableSupport.defaultCredentials()));
     if (etagValue != null) {
       builder.tag(etagValue);
     }
@@ -280,10 +418,11 @@ public class TableResource {
         namespace,
         table,
         null,
+        null,
         req == null
             ? null
             : new TableRequests.Commit(
-                req.name(), req.namespace(), req.schemaJson(), req.properties(), null, null));
+                req.name(), req.namespace(), req.schemaJson(), req.properties(), null, null, null));
   }
 
   @Path("/tables/{table}")
@@ -307,14 +446,72 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       @HeaderParam("Idempotency-Key") String idempotencyKey,
+      @HeaderParam("Iceberg-Transaction-Id") String transactionId,
       TableRequests.Commit req) {
     String catalogName = resolveCatalog(prefix);
-    ResourceId tableId =
-        NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
+    List<String> namespacePath = NamespacePaths.split(namespace);
     TableServiceGrpc.TableServiceBlockingStub stub = grpc.withHeaders(grpc.raw().table());
+    final Table[] stagedTableHolder = new Table[1];
+    StageCommitResult stageMaterialization = null;
+    String bodyStageId = req == null ? null : req.stageId();
+    String effectiveStageId = resolveStageId(req, transactionId);
+    if (effectiveStageId != null) {
+      LOG.infof(
+          "Commit request referenced stage payload namespace=%s table=%s stageId=%s (body=%s"
+              + " header=%s)",
+          namespace, table, effectiveStageId, bodyStageId, transactionId);
+    }
+    ResourceId resolvedTableId = null;
+    try {
+      resolvedTableId = NameResolution.resolveTable(grpc, catalogName, namespacePath, table);
+    } catch (StatusRuntimeException e) {
+      String stageIdToUse = effectiveStageId;
+      if (stageIdToUse == null && tenantContext.getTenantId() != null) {
+        Optional<StagedTableEntry> latest =
+            stagedTableService.findLatestStage(
+                tenantContext.getTenantId(), catalogName, namespacePath, table);
+        if (latest.isPresent()) {
+          stageIdToUse = latest.get().key().stageId();
+          LOG.infof(
+              "Found staged payload without explicit stage id namespace=%s table=%s stageId=%s",
+              namespace, table, stageIdToUse);
+        }
+      }
+      if (stageIdToUse != null && e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        LOG.infof(
+            "Table not found for commit, attempting staged materialization namespace=%s table=%s stageId=%s",
+            namespace, table, stageIdToUse);
+        try {
+          stageMaterialization =
+              stageCommitProcessor.commitStage(
+                  prefix,
+                  catalogName,
+                  tenantContext.getTenantId(),
+                  namespacePath,
+                  table,
+                  stageIdToUse);
+          stagedTableHolder[0] = stageMaterialization.table();
+          resolvedTableId = stagedTableHolder[0].getResourceId();
+        } catch (StageCommitException sce) {
+          return sce.toResponse();
+        }
+      } else {
+        if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+          LOG.warnf(
+              "Commit request table not found and no stage id supplied namespace=%s table=%s"
+                  + " bodyStageId=%s headerStageId=%s",
+              namespace, table, bodyStageId, transactionId);
+        }
+        throw e;
+      }
+    }
+    if (resolvedTableId == null) {
+      throw new IllegalStateException("table resolution failed");
+    }
+    final ResourceId tableId = resolvedTableId;
     Supplier<Table> tableSupplier =
         new Supplier<>() {
-          private Table cached;
+          private Table cached = stagedTableHolder[0];
 
           @Override
           public Table get() {
@@ -327,10 +524,31 @@ public class TableResource {
           }
         };
 
+    if (stageMaterialization != null) {
+      LoadTableResultDto loadResult = stageMaterialization.loadResult();
+      CommitTableResponseDto responseDto =
+          new CommitTableResponseDto(loadResult.metadataLocation(), loadResult.metadata());
+      Response.ResponseBuilder builder = Response.ok(responseDto);
+      if (loadResult.metadataLocation() != null) {
+        builder.tag(loadResult.metadataLocation());
+      }
+      TableMetadataView meta = loadResult.metadata();
+      LOG.infof(
+          "Stage commit satisfied for %s.%s tableId=%s stageId=%s currentSnapshot=%s snapshotCount=%d",
+          namespace,
+          table,
+          stageMaterialization.table().hasResourceId()
+              ? stageMaterialization.table().getResourceId().getId()
+              : "<missing>",
+          resolveStageId(req, transactionId),
+          meta == null ? "<null>" : meta.currentSnapshotId(),
+          meta == null || meta.snapshots() == null ? 0 : meta.snapshots().size());
+      return builder.build();
+    }
+
     TableSpec.Builder spec = TableSpec.newBuilder();
     FieldMask.Builder mask = FieldMask.newBuilder();
     if (req != null) {
-      List<String> namespacePath = NamespacePaths.split(namespace);
       Response requirementError = validateRequirements(req.requirements(), tableSupplier);
       if (requirementError != null) {
         return requirementError;
@@ -381,20 +599,58 @@ public class TableResource {
         mask.addPaths("properties");
       }
     }
+    if (mask.getPathsCount() == 0) {
+      Table current = tableSupplier.get();
+      IcebergMetadata metadata = tableSupport.loadCurrentMetadata(current);
+      List<Snapshot> snapshotList = fetchSnapshots(tableId, SnapshotMode.ALL, metadata);
+      Response.ResponseBuilder builder =
+          Response.ok(
+              TableResponseMapper.toCommitResponse(table, current, metadata, snapshotList));
+      LOG.infof(
+          "Commit response for %s.%s tableId=%s currentSnapshot=%s snapshotCount=%d",
+          namespace,
+          table,
+          current.hasResourceId() ? current.getResourceId().getId() : "<missing>",
+          metadata != null ? metadata.getCurrentSnapshotId() : "<null>",
+          snapshotList == null ? 0 : snapshotList.size());
+      String etagValue = metadataLocation(current, metadata);
+      if (etagValue != null) {
+        builder.tag(etagValue);
+      }
+      return builder.build();
+    }
+
     UpdateTableRequest.Builder updateRequest =
         UpdateTableRequest.newBuilder().setTableId(tableId).setSpec(spec).setUpdateMask(mask);
     var resp = stub.updateTable(updateRequest.build());
     Table updated = resp.getTable();
-    IcebergMetadata metadata = loadCurrentMetadata(updated);
+    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(updated);
+    List<Snapshot> snapshotList = fetchSnapshots(tableId, SnapshotMode.ALL, metadata);
     Response.ResponseBuilder builder =
         Response.ok(
-            TableResponseMapper.toCommitResponse(
-                table, updated, metadata, List.of()));
+            TableResponseMapper.toCommitResponse(table, updated, metadata, snapshotList));
+    LOG.infof(
+        "Commit response for %s.%s tableId=%s currentSnapshot=%s snapshotCount=%d",
+        namespace,
+        table,
+        updated.hasResourceId() ? updated.getResourceId().getId() : "<missing>",
+        metadata != null ? metadata.getCurrentSnapshotId() : "<null>",
+        snapshotList == null ? 0 : snapshotList.size());
     String etagValue = metadataLocation(updated, metadata);
     if (etagValue != null) {
       builder.tag(etagValue);
     }
     return builder.build();
+  }
+
+  private String resolveStageId(TableRequests.Commit req, String headerStageId) {
+    if (req != null && req.stageId() != null && !req.stageId().isBlank()) {
+      return req.stageId();
+    }
+    if (headerStageId != null && !headerStageId.isBlank()) {
+      return headerStageId;
+    }
+    return null;
   }
 
   @Path("/tables/{table}/plan")
@@ -442,7 +698,12 @@ public class TableResource {
             request.minRowsRequested()));
     return Response.ok(
             new PlanResponseDto(
-                "in-progress", queryId, List.of(queryId), null, null, defaultCredentials()))
+                "in-progress",
+                queryId,
+                List.of(queryId),
+                null,
+                null,
+                tableSupport.defaultCredentials()))
         .build();
   }
 
@@ -458,9 +719,7 @@ public class TableResource {
         NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
     PlanContext ctx =
         planContexts.getOrDefault(
-            planId,
-            new PlanContext(
-                tableId, null, null, null, List.of(), null, null, null, null));
+            planId, new PlanContext(tableId, null, null, null, List.of(), null, null, null, null));
     QueryServiceGrpc.QueryServiceBlockingStub queryStub = grpc.withHeaders(grpc.raw().query());
     var resp = queryStub.getQuery(GetQueryRequest.newBuilder().setQueryId(planId).build());
     QueryScanServiceGrpc.QueryScanServiceBlockingStub scanStub =
@@ -501,8 +760,7 @@ public class TableResource {
     PlanContext ctx =
         planContexts.getOrDefault(
             planTask,
-            new PlanContext(
-                tableId, null, null, null, List.of(), null, null, null, null));
+            new PlanContext(tableId, null, null, null, List.of(), null, null, null, null));
     QueryScanServiceGrpc.QueryScanServiceBlockingStub scanStub =
         grpc.withHeaders(grpc.raw().queryScan());
     ScanBundle bundle = fetchScanBundle(scanStub, ctx, planTask);
@@ -519,7 +777,7 @@ public class TableResource {
       @QueryParam("planId") String planId) {
     String catalogName = resolveCatalog(prefix);
     NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
-    return Response.ok(new CredentialsResponseDto(defaultCredentials())).build();
+    return Response.ok(new CredentialsResponseDto(tableSupport.defaultCredentials())).build();
   }
 
   @Path("/tables/{table}/metrics")
@@ -606,8 +864,8 @@ public class TableResource {
     }
     String tableName = req.name().trim();
 
-    TableSpec.Builder spec = baseTableSpec(catalogId, namespaceId, tableName);
-    addMetadataLocationProperties(spec, req.metadataLocation());
+    TableSpec.Builder spec = tableSupport.baseTableSpec(catalogId, namespaceId, tableName);
+    tableSupport.addMetadataLocationProperties(spec, req.metadataLocation());
 
     TableServiceGrpc.TableServiceBlockingStub tableStub = grpc.withHeaders(grpc.raw().table());
     CreateTableRequest.Builder request = CreateTableRequest.newBuilder().setSpec(spec);
@@ -616,34 +874,42 @@ public class TableResource {
     }
     var created = tableStub.createTable(request.build()).getTable();
 
-    var connectorTemplate = connectorTemplateFor(prefix);
+    var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
     ResourceId connectorId;
     String upstreamUri;
     if (connectorTemplate != null && connectorTemplate.uri() != null) {
       connectorId =
-          createTemplateConnector(
+          tableSupport.createTemplateConnector(
               prefix,
               namespacePath,
               namespaceId,
-              catalogId, tableName, created.getResourceId(), connectorTemplate, idempotencyKey);
+              catalogId,
+              tableName,
+              created.getResourceId(),
+              connectorTemplate,
+              idempotencyKey);
       upstreamUri = connectorTemplate.uri();
     } else {
       connectorId =
-          createExternalConnector(
+          tableSupport.createExternalConnector(
               prefix,
               namespacePath,
               namespaceId,
-              catalogId, tableName, created.getResourceId(), req.metadataLocation(), idempotencyKey);
+              catalogId,
+              tableName,
+              created.getResourceId(),
+              req.metadataLocation(),
+              idempotencyKey);
       upstreamUri = req.metadataLocation();
     }
 
-    updateTableUpstream(
+    tableSupport.updateTableUpstream(
         created.getResourceId(), namespacePath, tableName, connectorId, upstreamUri);
 
-    runSyncMetadataCapture(connectorId, namespacePath, tableName);
-    triggerScopedReconcile(connectorId, namespacePath, tableName);
+    tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
+    tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
 
-    IcebergMetadata metadata = loadCurrentMetadata(created);
+    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
     Response.ResponseBuilder builder =
         Response.ok(
             TableResponseMapper.toLoadResult(
@@ -651,99 +917,13 @@ public class TableResource {
                 created,
                 metadata,
                 List.of(),
-                defaultTableConfig(),
-                defaultCredentials()));
+                tableSupport.defaultTableConfig(),
+                tableSupport.defaultCredentials()));
     String etagValue = metadataLocation(created, metadata);
     if (etagValue != null) {
       builder.tag(etagValue);
     }
     return builder.build();
-  }
-
-  private TableSpec.Builder buildCreateSpec(
-      ResourceId catalogId, ResourceId namespaceId, String tableName, TableRequests.Create req)
-      throws JsonProcessingException {
-    TableSpec.Builder spec = baseTableSpec(catalogId, namespaceId, tableName);
-    if (req == null) {
-      return spec;
-    }
-    String schemaJson = req.schemaJson();
-    if ((schemaJson == null || schemaJson.isBlank())
-        && req.schema() != null
-        && !req.schema().isNull()) {
-      schemaJson = mapper.writeValueAsString(req.schema());
-    }
-    if (schemaJson != null && !schemaJson.isBlank()) {
-      spec.setSchemaJson(schemaJson);
-    }
-    if (req.location() != null && !req.location().isBlank()) {
-      spec.putProperties("location", req.location());
-      UpstreamRef.Builder upstream =
-          spec.getUpstream().toBuilder().setFormat(TableFormat.TF_ICEBERG).setUri(req.location());
-      spec.setUpstream(upstream.build());
-    }
-    if (req.properties() != null && !req.properties().isEmpty()) {
-      spec.putAllProperties(req.properties());
-    }
-    return spec;
-  }
-
-  private TableSpec.Builder baseTableSpec(
-      ResourceId catalogId, ResourceId namespaceId, String tableName) {
-    return TableSpec.newBuilder()
-        .setCatalogId(catalogId)
-        .setNamespaceId(namespaceId)
-        .setDisplayName(tableName)
-        .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).build());
-  }
-
-  private void addMetadataLocationProperties(TableSpec.Builder spec, String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return;
-    }
-    spec.putProperties("metadata-location", metadataLocation);
-    spec.putProperties("metadata_location", metadataLocation);
-  }
-
-  private void runSyncMetadataCapture(
-      ResourceId connectorId, List<String> namespacePath, String tableName) {
-    if (connectorId == null || tableName == null || tableName.isBlank()) {
-      return;
-    }
-    try {
-      ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
-      SyncCaptureRequest.Builder request =
-          SyncCaptureRequest.newBuilder()
-              .setConnectorId(connectorId)
-              .setDestinationTableDisplayName(tableName)
-              .setIncludeStatistics(false);
-      if (namespacePath != null && !namespacePath.isEmpty()) {
-        request.addDestinationNamespacePaths(
-            NamespacePath.newBuilder().addAllSegments(namespacePath).build());
-      }
-      stub.syncCapture(request.build());
-    } catch (StatusRuntimeException e) {
-      LOG.warnf(
-          e,
-          "Sync metadata capture failed for connector %s table %s",
-          connectorId.getId(),
-          tableName);
-    }
-  }
-
-  private void triggerScopedReconcile(
-      ResourceId connectorId, List<String> namespacePath, String tableName) {
-    ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
-    TriggerReconcileRequest.Builder request =
-        TriggerReconcileRequest.newBuilder()
-            .setConnectorId(connectorId)
-            .setFullRescan(false)
-            .setDestinationTableDisplayName(tableName);
-    if (namespacePath != null && !namespacePath.isEmpty()) {
-      request.addDestinationNamespacePaths(
-          NamespacePath.newBuilder().addAllSegments(namespacePath).build());
-    }
-    stub.triggerReconcile(request.build());
   }
 
   private SnapshotMode parseSnapshotMode(String raw) {
@@ -794,7 +974,9 @@ public class TableResource {
   }
 
   private String metadataLocation(Table table, IcebergMetadata metadata) {
-    if (metadata != null && metadata.getMetadataLocation() != null && !metadata.getMetadataLocation().isBlank()) {
+    if (metadata != null
+        && metadata.getMetadataLocation() != null
+        && !metadata.getMetadataLocation().isBlank()) {
       return metadata.getMetadataLocation();
     }
     Map<String, String> props = table.getPropertiesMap();
@@ -808,36 +990,6 @@ public class TableResource {
   private enum SnapshotMode {
     ALL,
     REFS
-  }
-
-  private IcebergMetadata loadCurrentMetadata(Table table) {
-    if (table == null || !table.hasResourceId()) {
-      return null;
-    }
-    Long snapshotId = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub =
-        grpc.withHeaders(grpc.raw().snapshot());
-    try {
-      SnapshotRef.Builder ref = SnapshotRef.newBuilder();
-      if (snapshotId != null && snapshotId > 0) {
-        ref.setSnapshotId(snapshotId);
-      } else {
-        ref.setSpecial(SpecialSnapshot.SS_CURRENT);
-      }
-      var response =
-          snapshotStub.getSnapshot(
-              GetSnapshotRequest.newBuilder()
-                  .setTableId(table.getResourceId())
-                  .setSnapshot(ref)
-                  .build());
-      if (response == null || !response.hasSnapshot()) {
-        return null;
-      }
-      var snapshot = response.getSnapshot();
-      return snapshot.hasIceberg() ? snapshot.getIceberg() : null;
-    } catch (StatusRuntimeException ignored) {
-      return null;
-    }
   }
 
   private String resolveCatalog(String prefix) {
@@ -892,7 +1044,7 @@ public class TableResource {
         planTasks,
         scanTasks.fileScanTasks(),
         scanTasks.deleteFiles(),
-        defaultCredentials());
+        tableSupport.defaultCredentials());
   }
 
   private ScanBundle fetchScanBundle(
@@ -1032,7 +1184,7 @@ public class TableResource {
     Supplier<IcebergMetadata> metadataSupplier =
         () -> {
           if (metadataHolder[0] == null) {
-            metadataHolder[0] = loadCurrentMetadata(table);
+            metadataHolder[0] = tableSupport.loadCurrentMetadata(table);
           }
           return metadataHolder[0];
         };
@@ -1119,7 +1271,10 @@ public class TableResource {
             return validationError("assert-ref-snapshot-id requires ref");
           }
           if (expected == null) {
-            return validationError("assert-ref-snapshot-id requires snapshot-id");
+            LOG.debugf(
+                "Skipping assert-ref-snapshot-id requirement for table %s ref %s because snapshot-id was not provided",
+                table.hasResourceId() ? table.getResourceId().getId() : "<unknown>", refName);
+            continue;
           }
           Long actual = null;
           IcebergMetadata metadata = metadataSupplier.get();
@@ -1508,8 +1663,7 @@ public class TableResource {
     return List.copyOf(values);
   }
 
-  private List<Predicate> buildPredicates(
-      Map<String, Object> filter, Boolean caseSensitiveFlag) {
+  private List<Predicate> buildPredicates(Map<String, Object> filter, Boolean caseSensitiveFlag) {
     if (filter == null || filter.isEmpty()) {
       return List.of();
     }
@@ -1628,14 +1782,7 @@ public class TableResource {
 
   private boolean requiresLiteral(Operator op) {
     return switch (op) {
-      case OP_EQ,
-          OP_NEQ,
-          OP_LT,
-          OP_LTE,
-          OP_GT,
-          OP_GTE,
-          OP_BETWEEN,
-          OP_IN -> true;
+      case OP_EQ, OP_NEQ, OP_LT, OP_LTE, OP_GT, OP_GTE, OP_BETWEEN, OP_IN -> true;
       default -> false;
     };
   }
@@ -1759,54 +1906,6 @@ public class TableResource {
       }
     }
     return null;
-  }
-
-  private List<StorageCredentialDto> defaultCredentials() {
-    List<StorageCredentialDto> cached = storageCredentialCache;
-    if (cached != null) {
-      return cached;
-    }
-    Map<String, String> props =
-        readPrefixedConfig("metacat.gateway.storage-credential.properties.");
-    if (props.isEmpty()) {
-      storageCredentialCache = STATIC_STORAGE_CREDENTIALS;
-      return STATIC_STORAGE_CREDENTIALS;
-    }
-    String scope =
-        mpConfig
-            .getOptionalValue("metacat.gateway.storage-credential.scope", String.class)
-            .orElse("*");
-    List<StorageCredentialDto> computed =
-        List.of(new StorageCredentialDto(scope, Map.copyOf(props)));
-    storageCredentialCache = computed;
-    return computed;
-  }
-
-  private Map<String, String> defaultTableConfig() {
-    Map<String, String> cached = tableConfigCache;
-    if (cached != null) {
-      return cached;
-    }
-    Map<String, String> computed = readPrefixedConfig("metacat.gateway.table-config.");
-    if (computed.isEmpty()) {
-      computed = Map.of();
-    } else {
-      computed = Map.copyOf(computed);
-    }
-    tableConfigCache = computed;
-    return computed;
-  }
-
-  private Map<String, String> readPrefixedConfig(String prefix) {
-    Map<String, String> out = new LinkedHashMap<>();
-    for (String name : mpConfig.getPropertyNames()) {
-      if (name.startsWith(prefix)) {
-        mpConfig
-            .getOptionalValue(name, String.class)
-            .ifPresent(value -> out.put(name.substring(prefix.length()), value));
-      }
-    }
-    return out;
   }
 
   private static Integer asInteger(Object value) {
@@ -2251,8 +2350,8 @@ public class TableResource {
       return;
     }
     ResourceId connectorId = table.getUpstream().getConnectorId();
-    runSyncMetadataCapture(connectorId, namespacePath, tableName);
-    triggerScopedReconcile(connectorId, namespacePath, tableName);
+    tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
+    tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
   }
 
   private static Long asLong(Object value) {
@@ -2492,157 +2591,6 @@ public class TableResource {
     stub.updateSnapshot(
         UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build());
     return null;
-  }
-
-  private IcebergGatewayConfig.RegisterConnectorTemplate connectorTemplateFor(String prefix) {
-    Map<String, IcebergGatewayConfig.RegisterConnectorTemplate> templates =
-        config.registerConnectors();
-    if (templates == null || templates.isEmpty()) {
-      return null;
-    }
-    IcebergGatewayConfig.RegisterConnectorTemplate direct = templates.get(prefix);
-    if (direct != null) {
-      return direct;
-    }
-    String resolved = resolveCatalog(prefix);
-    return templates.get(resolved);
-  }
-
-  private ResourceId createTemplateConnector(
-      String prefix,
-      List<String> namespacePath,
-      ResourceId namespaceId,
-      ResourceId catalogId,
-      String tableName,
-      ResourceId tableId,
-      IcebergGatewayConfig.RegisterConnectorTemplate template,
-      String idempotencyKey) {
-    ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
-    NamespacePath nsPath = NamespacePath.newBuilder().addAllSegments(namespacePath).build();
-    SourceSelector source =
-        SourceSelector.newBuilder().setNamespace(nsPath).setTable(tableName).build();
-    var dest =
-        ai.floedb.metacat.connector.rpc.DestinationTarget.newBuilder()
-            .setCatalogId(catalogId)
-            .setNamespaceId(namespaceId)
-            .setTableId(tableId)
-            .setTableDisplayName(tableName)
-            .build();
-
-    String displayName = template.displayName().orElse(null);
-    if (displayName == null || displayName.isBlank()) {
-      displayName = prefix + ":" + String.join(".", namespacePath) + "." + tableName;
-    }
-
-    ConnectorSpec.Builder spec =
-        ConnectorSpec.newBuilder()
-            .setDisplayName(displayName)
-            .setKind(ConnectorKind.CK_ICEBERG)
-            .setUri(template.uri())
-            .setSource(source)
-            .setDestination(dest);
-    spec.setAuth(
-        template
-            .auth()
-            .map(this::toAuthConfig)
-            .orElse(AuthConfig.newBuilder().setScheme("none").build()));
-    if (template.properties() != null && !template.properties().isEmpty()) {
-      spec.putAllProperties(template.properties());
-    }
-    template.description().ifPresent(spec::setDescription);
-
-    CreateConnectorRequest.Builder request =
-        CreateConnectorRequest.newBuilder().setSpec(spec.build());
-    if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-      request.setIdempotency(
-          IdempotencyKey.newBuilder().setKey(idempotencyKey + ":connector").build());
-    }
-    CreateConnectorResponse response = stub.createConnector(request.build());
-    return response.getConnector().getResourceId();
-  }
-
-  private ResourceId createExternalConnector(
-      String prefix,
-      List<String> namespacePath,
-      ResourceId namespaceId,
-      ResourceId catalogId,
-      String tableName,
-      ResourceId tableId,
-      String metadataLocation,
-      String idempotencyKey) {
-    ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
-    NamespacePath nsPath = NamespacePath.newBuilder().addAllSegments(namespacePath).build();
-    SourceSelector source =
-        SourceSelector.newBuilder().setNamespace(nsPath).setTable(tableName).build();
-    var dest =
-        ai.floedb.metacat.connector.rpc.DestinationTarget.newBuilder()
-            .setCatalogId(catalogId)
-            .setNamespaceId(namespaceId)
-            .setTableId(tableId)
-            .setTableDisplayName(tableName)
-            .build();
-
-    String namespaceFq = String.join(".", namespacePath);
-    String displayName =
-        "register:" + prefix + (namespaceFq.isBlank() ? "" : ":" + namespaceFq) + "." + tableName;
-
-    ConnectorSpec.Builder spec =
-        ConnectorSpec.newBuilder()
-            .setDisplayName(displayName)
-            .setKind(ConnectorKind.CK_ICEBERG)
-            .setUri(metadataLocation)
-            .setSource(source)
-            .setDestination(dest)
-            .setAuth(AuthConfig.newBuilder().setScheme("none").build())
-            .putProperties("external.metadata-location", metadataLocation)
-            .putProperties("external.table-name", tableName)
-            .putProperties("external.namespace", namespaceFq);
-
-    CreateConnectorRequest.Builder request =
-        CreateConnectorRequest.newBuilder().setSpec(spec.build());
-    if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-      request.setIdempotency(
-          IdempotencyKey.newBuilder().setKey(idempotencyKey + ":connector").build());
-    }
-    return stub.createConnector(request.build()).getConnector().getResourceId();
-  }
-
-  private AuthConfig toAuthConfig(IcebergGatewayConfig.AuthTemplate template) {
-    AuthConfig.Builder builder =
-        AuthConfig.newBuilder()
-            .setScheme(
-                template.scheme() == null || template.scheme().isBlank()
-                    ? "none"
-                    : template.scheme())
-            .putAllProperties(template.properties())
-            .putAllHeaderHints(template.headerHints());
-    template.secretRef().ifPresent(builder::setSecretRef);
-    return builder.build();
-  }
-
-  private void updateTableUpstream(
-      ResourceId tableId,
-      List<String> namespacePath,
-      String tableName,
-      ResourceId connectorId,
-      String connectorUri) {
-    TableServiceGrpc.TableServiceBlockingStub tableStub = grpc.withHeaders(grpc.raw().table());
-    UpstreamRef.Builder upstream =
-        UpstreamRef.newBuilder()
-            .setFormat(TableFormat.TF_ICEBERG)
-            .setConnectorId(connectorId)
-            .addAllNamespacePath(namespacePath)
-            .setTableDisplayName(tableName);
-    if (connectorUri != null && !connectorUri.isBlank()) {
-      upstream.setUri(connectorUri);
-    }
-    UpdateTableRequest request =
-        UpdateTableRequest.newBuilder()
-            .setTableId(tableId)
-            .setSpec(TableSpec.newBuilder().setUpstream(upstream).build())
-            .setUpdateMask(FieldMask.newBuilder().addPaths("upstream").build())
-            .build();
-    tableStub.updateTable(request);
   }
 
   private record PlanContext(

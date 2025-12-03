@@ -7,6 +7,7 @@ import static org.hamcrest.Matchers.hasKey;
 import static org.hamcrest.Matchers.not;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -99,7 +100,9 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.RestAssured;
 import io.restassured.builder.RequestSpecBuilder;
 import io.restassured.specification.RequestSpecification;
+import jakarta.inject.Inject;
 import jakarta.ws.rs.core.MediaType;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -108,6 +111,7 @@ import org.mockito.ArgumentCaptor;
 class RestResourceTest {
   @InjectMock GrpcWithHeaders grpc;
   @InjectMock GrpcClients clients;
+  @Inject StagedTableRepository stageRepository;
 
   private TableServiceGrpc.TableServiceBlockingStub tableStub;
   private DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryStub;
@@ -175,6 +179,7 @@ class RestResourceTest {
             .addHeader("authorization", "Bearer token")
             .build();
     RestAssured.requestSpecification = defaultSpec;
+    stageRepository.clear();
   }
 
   @Test
@@ -770,7 +775,19 @@ class RestResourceTest {
         .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
 
     given()
-        .body("{\"name\":\"orders\"}")
+        .body(
+            """
+            {
+              "name":"orders",
+              "location":"s3://warehouse/db/orders",
+              "schema":{
+                "schema-id":1,
+                "last-column-id":1,
+                "type":"struct",
+                "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
+              }
+            }
+            """)
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables")
@@ -802,6 +819,238 @@ class RestResourceTest {
     given().when().delete("/v1/foo/namespaces/db/tables/orders").then().statusCode(204);
 
     verify(tableStub).deleteTable(any(DeleteTableRequest.class));
+  }
+
+  @Test
+  void stageCreatePersistsMetadataWithoutRpc() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    given()
+        .body(stageCreateRequest("orders"))
+        .header("Iceberg-Transaction-Id", "stage-1")
+        .contentType(MediaType.APPLICATION_JSON)
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(200)
+        .body("stage-id", equalTo("stage-1"))
+        .body("requirements[0].type", equalTo("assert-create"));
+
+    verify(tableStub, never()).createTable(any());
+    StagedTableKey key =
+        new StagedTableKey("tenant1", "foo", List.of("db"), "orders", "stage-1");
+    assertTrue(stageRepository.get(key).isPresent());
+  }
+
+  @Test
+  void transactionCommitCreatesStagedTable() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    when(directoryStub.resolveTable(any()))
+        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+
+    Table created =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .setDisplayName("orders")
+            .setCatalogId(ResourceId.newBuilder().setId("cat"))
+            .setNamespaceId(nsId)
+            .putProperties("metadata-location", "s3://bucket/orders/metadata.json")
+            .build();
+    when(tableStub.createTable(any()))
+        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+    when(tableStub.updateTable(any()))
+        .thenReturn(UpdateTableResponse.newBuilder().setTable(created).build());
+
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("conn-1").setKind(ResourceKind.RK_CONNECTOR).build();
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(ResourceId.newBuilder().setId("cat").build())
+                    .setNamespaceId(nsId)
+                    .setTableId(created.getResourceId())
+                    .build())
+            .build();
+    when(connectorsStub.createConnector(any()))
+        .thenReturn(CreateConnectorResponse.newBuilder().setConnector(connector).build());
+
+    // Stage the table metadata.
+    given()
+        .body(stageCreateRequest("orders"))
+        .header("Iceberg-Transaction-Id", "stage-commit")
+        .contentType(MediaType.APPLICATION_JSON)
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(200);
+
+    given()
+        .body(
+            """
+            {
+              "staged-ref-updates": [
+                {
+                  "table": {"namespace":["db"], "name":"orders"},
+                  "stage-id": "stage-commit"
+                }
+              ]
+            }
+            """)
+        .contentType(MediaType.APPLICATION_JSON)
+        .when()
+        .post("/v1/foo/tables/transactions/commit")
+        .then()
+        .statusCode(200)
+        .body("results[0].table.name", equalTo("orders"))
+        .body("results[0].stage-id", equalTo("stage-commit"))
+        .body("results[0].metadata-location", equalTo("s3://bucket/orders/metadata.json"));
+
+    StagedTableKey key =
+        new StagedTableKey("tenant1", "foo", List.of("db"), "orders", "stage-commit");
+    assertTrue(stageRepository.get(key).isEmpty());
+    verify(tableStub, times(1)).createTable(any());
+    verify(connectorsStub, times(1)).createConnector(any());
+  }
+
+  @Test
+  void stageCommitViaTableEndpointCreatesTable() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    when(directoryStub.resolveTable(any()))
+        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+
+    Table created =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .setDisplayName("orders")
+            .setNamespaceId(nsId)
+            .putProperties("metadata-location", "s3://bucket/orders/metadata.json")
+            .build();
+    when(tableStub.createTable(any()))
+        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+    when(tableStub.updateTable(any()))
+        .thenReturn(UpdateTableResponse.newBuilder().setTable(created).build());
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(created).build());
+
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setId("conn-2")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setTenantId("tenant1")
+            .build();
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(ResourceId.newBuilder().setId("cat:default").build())
+                    .setNamespaceId(nsId)
+                    .setTableId(created.getResourceId())
+                    .build())
+            .build();
+    when(connectorsStub.createConnector(any()))
+        .thenReturn(CreateConnectorResponse.newBuilder().setConnector(connector).build());
+
+    given()
+        .body(stageCreateRequest("orders"))
+        .header("Iceberg-Transaction-Id", "stage-table")
+        .contentType(MediaType.APPLICATION_JSON)
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(200);
+
+    given()
+        .body(
+            """
+            {
+              "stage-id": "stage-table",
+              "requirements": [{"type":"assert-create"}],
+              "updates": []
+            }
+            """)
+        .contentType(MediaType.APPLICATION_JSON)
+        .when()
+        .post("/v1/foo/namespaces/db/tables/orders")
+        .then()
+        .statusCode(200);
+
+    StagedTableKey key =
+        new StagedTableKey("tenant1", "foo", List.of("db"), "orders", "stage-table");
+    assertTrue(stageRepository.get(key).isEmpty());
+    verify(tableStub, times(1)).createTable(any());
+    verify(connectorsStub, times(1)).createConnector(any());
+  }
+
+  @Test
+  void createTableWithMetadataLocationCreatesConnector() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    Table created =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setDisplayName("orders")
+            .setCatalogId(ResourceId.newBuilder().setId("cat"))
+            .setNamespaceId(nsId)
+            .putProperties("metadata-location", "s3://bucket/path/metadata.json")
+            .build();
+    when(tableStub.createTable(any()))
+        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setId("conn-1")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setTenantId("tenant1")
+            .build();
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(ResourceId.newBuilder().setId("cat:default").build())
+                    .setNamespaceId(nsId)
+                    .setTableId(tableId)
+                    .build())
+            .build();
+    when(connectorsStub.createConnector(any()))
+        .thenReturn(CreateConnectorResponse.newBuilder().setConnector(connector).build());
+
+    given()
+        .body(
+            """
+            {
+              "name":"orders",
+              "location":"s3://warehouse/db/orders",
+              "schema":{
+                "schema-id":1,
+                "last-column-id":1,
+                "type":"struct",
+                "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
+              },
+              "properties":{"metadata-location":"s3://bucket/path/metadata.json"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(200);
+
+    verify(connectorsStub).createConnector(any(CreateConnectorRequest.class));
+    verify(connectorsStub).syncCapture(any(SyncCaptureRequest.class));
+    verify(connectorsStub).triggerReconcile(any(TriggerReconcileRequest.class));
   }
 
   @Test
@@ -1676,5 +1925,51 @@ class RestResourceTest {
         .body("'storage-credentials'.size()", equalTo(1))
         .body("'storage-credentials'[0].prefix", equalTo("*"))
         .body("'storage-credentials'[0].config.type", equalTo("static"));
+  }
+
+  private String stageCreateRequest(String tableName) {
+    return """
+        {
+          "name": "%s",
+          "schema": {
+            "schema-id": 1,
+            "last-column-id": 1,
+            "type": "struct",
+            "fields": [
+              {
+                "id": 1,
+                "name": "id",
+                "required": true,
+                "type": "int"
+              }
+            ]
+          },
+          "partition-spec": {
+            "spec-id": 0,
+            "fields": [
+              {
+                "name": "id",
+                "field-id": 1,
+                "source-id": 1,
+                "transform": "identity"
+              }
+            ]
+          },
+          "write-order": {
+            "sort-order-id": 0,
+            "fields": [
+              {
+                "source-id": 1
+              }
+            ]
+          },
+          "properties": {
+            "metadata-location": "s3://bucket/%s/metadata.json"
+          },
+          "location": "s3://bucket/%s",
+          "stage-create": true
+        }
+        """
+        .formatted(tableName, tableName, tableName);
   }
 }

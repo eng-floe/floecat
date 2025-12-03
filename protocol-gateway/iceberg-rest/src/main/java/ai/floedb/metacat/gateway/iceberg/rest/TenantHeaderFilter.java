@@ -81,7 +81,6 @@ public class TenantHeaderFilter implements ContainerRequestFilter {
               .build());
     }
   }
-
   private String safeValue(String value) {
     return value == null ? "" : value;
   }
