@@ -9,8 +9,11 @@ import ai.floedb.metacat.query.rpc.SnapshotPin;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.query.graph.cache.GraphCacheKey;
 import ai.floedb.metacat.service.query.graph.cache.GraphCacheManager;
+import ai.floedb.metacat.service.query.graph.hint.EngineHintManager;
 import ai.floedb.metacat.service.query.graph.loader.NodeLoader;
 import ai.floedb.metacat.service.query.graph.model.CatalogNode;
+import ai.floedb.metacat.service.query.graph.model.EngineHint;
+import ai.floedb.metacat.service.query.graph.model.EngineKey;
 import ai.floedb.metacat.service.query.graph.model.NamespaceNode;
 import ai.floedb.metacat.service.query.graph.model.RelationNode;
 import ai.floedb.metacat.service.query.graph.model.TableNode;
@@ -56,6 +59,7 @@ public class MetadataGraph {
   private final NameResolver nameResolver;
   private final FullyQualifiedResolver fqResolver;
   private final SnapshotHelper snapshotHelper;
+  private final EngineHintManager engineHintManager;
   private PrincipalProvider principalProvider;
   private final MeterRegistry meterRegistry;
   private Timer loadTimer;
@@ -75,7 +79,8 @@ public class MetadataGraph {
         null,
         null,
         null,
-        50_000L);
+        50_000L,
+        null);
   }
 
   @Inject
@@ -89,7 +94,8 @@ public class MetadataGraph {
       MeterRegistry meterRegistry,
       PrincipalProvider principalProvider,
       @ConfigProperty(name = "metacat.metadata.graph.cache-max-size", defaultValue = "50000")
-          long cacheMaxSize) {
+          long cacheMaxSize,
+      EngineHintManager engineHintManager) {
     this.meterRegistry = meterRegistry;
     this.cacheManager = new GraphCacheManager(cacheMaxSize > 0, cacheMaxSize, meterRegistry);
     this.nodeLoader =
@@ -100,6 +106,7 @@ public class MetadataGraph {
         new FullyQualifiedResolver(
             catalogRepository, namespaceRepository, tableRepository, viewRepository);
     this.snapshotHelper = new SnapshotHelper(snapshotRepository, snapshotStub);
+    this.engineHintManager = engineHintManager;
     this.principalProvider = principalProvider;
   }
 
@@ -178,6 +185,18 @@ public class MetadataGraph {
   /** Evict every cached version of the provided resource. */
   public void invalidate(ResourceId id) {
     cacheManager.invalidate(id);
+    if (engineHintManager != null) {
+      engineHintManager.invalidate(id);
+    }
+  }
+
+  /** Fetches an engine-specific hint for the provided relation node, when available. */
+  public Optional<EngineHint> engineHint(
+      RelationNode node, EngineKey engineKey, String hintType, String correlationId) {
+    if (engineHintManager == null) {
+      return Optional.empty();
+    }
+    return engineHintManager.get(node, engineKey, hintType, correlationId);
   }
 
   /** Test-only hook for overriding snapshot client. */
