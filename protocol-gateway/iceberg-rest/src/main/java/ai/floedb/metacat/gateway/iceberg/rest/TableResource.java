@@ -564,9 +564,16 @@ public class TableResource {
       List<Map<String, Object>> snapshotAdds =
           addSnapshotUpdates(req == null ? null : req.updates());
       if (!snapshotAdds.isEmpty()) {
+        SnapshotUpdateContext stageSnapshotContext = new SnapshotUpdateContext();
         Response snapshotError =
             applySnapshotUpdates(
-                tableId, namespacePath, table, tableSupplier, snapshotAdds, idempotencyKey);
+                tableId,
+                namespacePath,
+                table,
+                tableSupplier,
+                snapshotAdds,
+                idempotencyKey,
+                stageSnapshotContext);
         if (snapshotError != null) {
           return snapshotError;
         }
@@ -616,6 +623,7 @@ public class TableResource {
 
     TableSpec.Builder spec = TableSpec.newBuilder();
     FieldMask.Builder mask = FieldMask.newBuilder();
+    SnapshotUpdateContext snapshotContext = new SnapshotUpdateContext();
     if (req != null) {
       Response requirementError = validateRequirements(req.requirements(), tableSupplier);
       if (requirementError != null) {
@@ -654,13 +662,47 @@ public class TableResource {
       }
       Response snapshotError =
           applySnapshotUpdates(
-              tableId, namespacePath, table, tableSupplier, req.updates(), idempotencyKey);
+              tableId,
+              namespacePath,
+              table,
+              tableSupplier,
+              req.updates(),
+              idempotencyKey,
+              snapshotContext);
       if (snapshotError != null) {
         return snapshotError;
       }
       Response locationError = applyLocationUpdate(spec, mask, tableSupplier, req.updates());
       if (locationError != null) {
         return locationError;
+      }
+      if (snapshotContext.lastSnapshotId != null) {
+        Map<String, String> propsForMirror = ensurePropertyMap(tableSupplier, mergedProps);
+        MirrorMetadataResult pendingMirror =
+            mirrorPendingSnapshotMetadata(
+                namespace,
+                table,
+                tableId,
+                tableSupplier,
+                propsForMirror,
+                snapshotContext.lastSnapshotId);
+        if (pendingMirror != null) {
+          TableMetadataView pendingMetadata =
+              pendingMirror.metadata() != null ? pendingMirror.metadata() : null;
+          String resolvedLocation =
+              nonBlank(
+                  pendingMirror.metadataLocation(),
+                  pendingMetadata != null ? pendingMetadata.metadataLocation() : null);
+          mergedProps =
+              pendingMetadata != null && pendingMetadata.properties() != null
+                  ? new LinkedHashMap<>(pendingMetadata.properties())
+                  : propsForMirror;
+          if (mergedProps != null && resolvedLocation != null && !resolvedLocation.isBlank()) {
+            mergedProps.put("metadata-location", resolvedLocation);
+            mergedProps.put("metadata_location", resolvedLocation);
+            snapshotContext.mirroredMetadataLocation = resolvedLocation;
+          }
+        }
       }
       String unsupported = unsupportedUpdateAction(req);
       if (unsupported != null) {
@@ -718,13 +760,23 @@ public class TableResource {
     List<Snapshot> snapshotList = fetchSnapshots(tableId, SnapshotMode.ALL, metadata);
     CommitTableResponseDto responseDto =
         TableResponseMapper.toCommitResponse(table, updated, metadata, snapshotList);
-    MirrorMetadataResult mirrorResult =
-        mirrorMetadata(
-            namespace, tableId, table, responseDto.metadata(), responseDto.metadataLocation());
-    if (mirrorResult.error() != null) {
-      return mirrorResult.error();
+    if (snapshotContext.hasMirroredMetadata()) {
+      String location = snapshotContext.mirroredMetadataLocation;
+      responseDto =
+          new CommitTableResponseDto(
+              location,
+              responseDto.metadata() == null
+                  ? null
+                  : responseDto.metadata().withMetadataLocation(location));
+    } else {
+      MirrorMetadataResult mirrorResult =
+          mirrorMetadata(
+              namespace, tableId, table, responseDto.metadata(), responseDto.metadataLocation());
+      if (mirrorResult.error() != null) {
+        return mirrorResult.error();
+      }
+      responseDto = applyMirrorResult(responseDto, mirrorResult);
     }
-    responseDto = applyMirrorResult(responseDto, mirrorResult);
     ResourceId connectorId =
         synchronizeConnector(
             prefix,
@@ -1213,6 +1265,70 @@ public class TableResource {
         .build();
   }
 
+  private MirrorMetadataResult mirrorPendingSnapshotMetadata(
+      String namespace,
+      String tableName,
+      ResourceId tableId,
+      Supplier<Table> tableSupplier,
+      Map<String, String> mergedProps,
+      Long snapshotIdForMirror) {
+    if (snapshotIdForMirror == null) {
+      return null;
+    }
+    IcebergMetadata snapshotMetadata = loadSnapshotMetadata(tableId, snapshotIdForMirror);
+    if (snapshotMetadata == null) {
+      return null;
+    }
+    Table tableForMetadata = tableWithPropertyOverrides(tableSupplier, mergedProps);
+    List<Snapshot> snapshotList = fetchSnapshots(tableId, SnapshotMode.ALL, snapshotMetadata);
+    CommitTableResponseDto pendingResponse =
+        TableResponseMapper.toCommitResponse(
+            tableName, tableForMetadata, snapshotMetadata, snapshotList);
+    return mirrorMetadata(
+        namespace, null, tableName, pendingResponse.metadata(), pendingResponse.metadataLocation());
+  }
+
+  private Table tableWithPropertyOverrides(
+      Supplier<Table> tableSupplier, Map<String, String> propertyOverrides) {
+    Table table = tableSupplier.get();
+    if (propertyOverrides == null || propertyOverrides.isEmpty() || table == null) {
+      return table;
+    }
+    return table.toBuilder().clearProperties().putAllProperties(propertyOverrides).build();
+  }
+
+  private Map<String, String> ensurePropertyMap(
+      Supplier<Table> tableSupplier, Map<String, String> current) {
+    if (current != null) {
+      return current;
+    }
+    Table table = tableSupplier.get();
+    if (table == null || table.getPropertiesMap().isEmpty()) {
+      return new LinkedHashMap<>();
+    }
+    return new LinkedHashMap<>(table.getPropertiesMap());
+  }
+
+  private IcebergMetadata loadSnapshotMetadata(ResourceId tableId, long snapshotId) {
+    SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub =
+        grpc.withHeaders(grpc.raw().snapshot());
+    try {
+      var resp =
+          snapshotStub.getSnapshot(
+              GetSnapshotRequest.newBuilder()
+                  .setTableId(tableId)
+                  .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
+                  .build());
+      if (resp == null || !resp.hasSnapshot()) {
+        return null;
+      }
+      Snapshot snapshot = resp.getSnapshot();
+      return snapshot.hasIceberg() ? snapshot.getIceberg() : null;
+    } catch (StatusRuntimeException e) {
+      return null;
+    }
+  }
+
   private MirrorMetadataResult mirrorMetadata(
       String namespace,
       ResourceId tableId,
@@ -1629,7 +1745,8 @@ public class TableResource {
       String tableName,
       Supplier<Table> tableSupplier,
       List<Map<String, Object>> updates,
-      String idempotencyKey) {
+      String idempotencyKey,
+      SnapshotUpdateContext snapshotContext) {
     if (updates == null || updates.isEmpty()) {
       return null;
     }
@@ -1660,6 +1777,9 @@ public class TableResource {
         Long snapshotId = asLong(snapshot.get("snapshot-id"));
         if (snapshotId != null) {
           lastSnapshotId = snapshotId;
+          if (snapshotContext != null) {
+            snapshotContext.lastSnapshotId = snapshotId;
+          }
         }
       } else if ("remove-snapshots".equals(action)) {
         List<Long> ids = asLongList(update.get("snapshot-ids"));
@@ -2496,6 +2616,15 @@ public class TableResource {
       return null;
     }
     return builder.getSortOrders(count - 1).getSortOrderId();
+  }
+
+  private static final class SnapshotUpdateContext {
+    Long lastSnapshotId;
+    String mirroredMetadataLocation;
+
+    boolean hasMirroredMetadata() {
+      return mirroredMetadataLocation != null && !mirroredMetadataLocation.isBlank();
+    }
   }
 
   private static final class SnapshotMetadataChanges {
