@@ -193,11 +193,6 @@ final class TableResponseMapper {
   }
 
   private static TableMetadataView synthesizeMetadataFromTable(
-      String tableName, Table table, Map<String, String> props, String metadataLocation) {
-    return synthesizeMetadataFromTable(tableName, table, props, metadataLocation, List.of());
-  }
-
-  private static TableMetadataView synthesizeMetadataFromTable(
       String tableName,
       Table table,
       Map<String, String> props,

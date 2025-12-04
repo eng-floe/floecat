@@ -1259,12 +1259,6 @@ public class TableResource {
         .build();
   }
 
-  private Response serverError(String message) {
-    return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-        .entity(new IcebergErrorResponse(new IcebergError(message, "CommitFailedException", 500)))
-        .build();
-  }
-
   private MirrorMetadataResult mirrorPendingSnapshotMetadata(
       String namespace,
       String tableName,
@@ -1510,17 +1504,6 @@ public class TableResource {
     }
   }
 
-  private String toJson(Object value) {
-    if (value == null) {
-      return null;
-    }
-    try {
-      return mapper.writeValueAsString(value);
-    } catch (JsonProcessingException e) {
-      return null;
-    }
-  }
-
   private String schemaJsonFromMetadata(IcebergMetadata metadata, Integer schemaId) {
     if (metadata == null || metadata.getSchemasCount() == 0) {
       return null;
@@ -1548,15 +1531,6 @@ public class TableResource {
       }
     }
     return out;
-  }
-
-  private Response specNotImplemented(String operation) {
-    return Response.status(Response.Status.NOT_IMPLEMENTED)
-        .entity(
-            new IcebergErrorResponse(
-                new IcebergError(
-                    operation + " not implemented", "UnsupportedOperationException", 501)))
-        .build();
   }
 
   private Response conflictError(String message) {

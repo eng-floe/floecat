@@ -15,7 +15,7 @@ REST facade over Metacat gRPC for Iceberg clients.
 
 ## Responses (DTOs)
 - Table list: `TableIdentifiersResponse` (identifier + paging)
-- Table get/create/update: `TableInfoDto` (identifier, schemaJson, partitionKeys, properties, metadataLocation)
+- Table get/create/update: `LoadTableResultDto` / `CommitTableResponseDto` (metadata + storage config)
 - Namespace list: `NamespaceListResponse` (namespace path parts + paging)
 - Namespace get/create/update: `NamespaceInfoDto` (namespace parts, description, properties)
 - Views: `ViewDto` and `ViewsResponse`
