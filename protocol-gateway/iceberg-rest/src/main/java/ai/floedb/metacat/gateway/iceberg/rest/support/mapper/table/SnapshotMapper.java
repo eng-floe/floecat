@@ -1,6 +1,5 @@
 package ai.floedb.metacat.gateway.iceberg.rest.support.mapper.table;
 
-
 import ai.floedb.metacat.catalog.rpc.IcebergBlobMetadata;
 import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
 import ai.floedb.metacat.catalog.rpc.IcebergMetadataLogEntry;

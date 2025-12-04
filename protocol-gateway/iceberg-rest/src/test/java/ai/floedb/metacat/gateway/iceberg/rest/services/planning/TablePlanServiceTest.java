@@ -26,8 +26,8 @@ import ai.floedb.metacat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.metacat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.metacat.query.rpc.GetQueryResponse;
 import ai.floedb.metacat.query.rpc.QueryDescriptor;
-import ai.floedb.metacat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.metacat.query.rpc.QueryScanServiceGrpc;
+import ai.floedb.metacat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
@@ -116,17 +116,7 @@ class TablePlanServiceTest {
                 Map.of("type", "is-null", "term", "DeletedFlag")));
 
     service.startPlan(
-        "cat",
-        tableId,
-        List.of("id"),
-        null,
-        null,
-        3L,
-        null,
-        filter,
-        false,
-        true,
-        10L);
+        "cat", tableId, List.of("id"), null, null, 3L, null, filter, false, true, 10L);
 
     ScanFile data =
         ScanFile.newBuilder()
@@ -220,17 +210,7 @@ class TablePlanServiceTest {
         IllegalArgumentException.class,
         () ->
             service.startPlan(
-                "cat",
-                tableId,
-                null,
-                null,
-                null,
-                null,
-                null,
-                filter,
-                false,
-                false,
-                null));
+                "cat", tableId, null, null, null, null, null, filter, false, false, null));
     verify(queryStub, times(0)).beginQuery(any());
   }
 }

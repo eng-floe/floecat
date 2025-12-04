@@ -35,8 +35,7 @@ public class TableLifecycleService {
     List<String> namespacePath = NamespacePaths.split(namespace);
     ResourceId namespaceId = resolveNamespaceId(catalogName, namespacePath);
 
-    ListTablesRequest.Builder request =
-        ListTablesRequest.newBuilder().setNamespaceId(namespaceId);
+    ListTablesRequest.Builder request = ListTablesRequest.newBuilder().setNamespaceId(namespaceId);
     if (pageToken != null || pageSize != null) {
       PageRequest.Builder page = PageRequest.newBuilder();
       if (pageToken != null) {

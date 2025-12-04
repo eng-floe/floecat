@@ -5,6 +5,7 @@ import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.common.rpc.SpecialSnapshot;
 import ai.floedb.metacat.execution.rpc.ScanBundle;
 import ai.floedb.metacat.execution.rpc.ScanFile;
+import ai.floedb.metacat.execution.rpc.ScanFileContent;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.ContentFileDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.FileScanTaskDto;
@@ -91,9 +92,7 @@ public class TablePlanService {
     ScanBundle bundle = fetchScanBundle(scanStub, ctx, query.getQueryId());
     ScanTasksResponseDto scanTasks = toScanTasksDto(bundle);
     String resolvedPlanId =
-        (query.getQueryId() == null || query.getQueryId().isBlank())
-            ? planId
-            : query.getQueryId();
+        (query.getQueryId() == null || query.getQueryId().isBlank()) ? planId : query.getQueryId();
     List<String> planTasks =
         (scanTasks.fileScanTasks() == null || scanTasks.fileScanTasks().isEmpty())
             ? List.of()
@@ -153,12 +152,14 @@ public class TablePlanService {
   }
 
   private ContentFileDto toContentFile(ScanFile file) {
-    String content =
-        switch (file.getFileContent()) {
-          case SCAN_FILE_CONTENT_EQUALITY_DELETES -> "equality-deletes";
-          case SCAN_FILE_CONTENT_POSITION_DELETES -> "position-deletes";
-          default -> "data";
-        };
+    String content;
+    if (file.getFileContent() == ScanFileContent.SCAN_FILE_CONTENT_EQUALITY_DELETES) {
+      content = "equality-deletes";
+    } else if (file.getFileContent() == ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES) {
+      content = "position-deletes";
+    } else {
+      content = "data";
+    }
     List<Object> partition = parsePartition(file.getPartitionDataJson());
     List<Integer> equality =
         file.getEqualityFieldIdsList().isEmpty() ? null : file.getEqualityFieldIdsList();
@@ -178,7 +179,7 @@ public class TablePlanService {
 
   private void registerPlanInput(String queryId, ResourceId tableId, Long snapshotId) {
     QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schemaStub =
-      grpc.withHeaders(grpc.raw().querySchema());
+        grpc.withHeaders(grpc.raw().querySchema());
     schemaStub.describeInputs(
         DescribeInputsRequest.newBuilder()
             .setQueryId(queryId)
@@ -214,8 +215,7 @@ public class TablePlanService {
     }
   }
 
-  private List<Predicate> buildPredicates(
-      Map<String, Object> filter, Boolean caseSensitiveFlag) {
+  private List<Predicate> buildPredicates(Map<String, Object> filter, Boolean caseSensitiveFlag) {
     if (filter == null || filter.isEmpty()) {
       return List.of();
     }
@@ -331,10 +331,14 @@ public class TablePlanService {
   }
 
   private boolean requiresLiteral(Operator op) {
-    return switch (op) {
-      case OP_EQ, OP_NEQ, OP_LT, OP_LTE, OP_GT, OP_GTE, OP_BETWEEN, OP_IN -> true;
-      default -> false;
-    };
+    return op == Operator.OP_EQ
+        || op == Operator.OP_NEQ
+        || op == Operator.OP_LT
+        || op == Operator.OP_LTE
+        || op == Operator.OP_GT
+        || op == Operator.OP_GTE
+        || op == Operator.OP_BETWEEN
+        || op == Operator.OP_IN;
   }
 
   private List<Map<String, Object>> expressionChildren(Map<String, Object> expr) {
@@ -502,12 +506,28 @@ public class TablePlanService {
       Long minRowsRequested) {
     PlanContext withSnapshot(Long snapshot) {
       return new PlanContext(
-          tableId, requiredColumns, startSnapshotId, snapshot, predicates, statsFields, useSnapshotSchema, caseSensitive, minRowsRequested);
+          tableId,
+          requiredColumns,
+          startSnapshotId,
+          snapshot,
+          predicates,
+          statsFields,
+          useSnapshotSchema,
+          caseSensitive,
+          minRowsRequested);
     }
 
     PlanContext withTableId(ResourceId id) {
       return new PlanContext(
-          id, requiredColumns, startSnapshotId, snapshotId, predicates, statsFields, useSnapshotSchema, caseSensitive, minRowsRequested);
+          id,
+          requiredColumns,
+          startSnapshotId,
+          snapshotId,
+          predicates,
+          statsFields,
+          useSnapshotSchema,
+          caseSensitive,
+          minRowsRequested);
     }
   }
 
