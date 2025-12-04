@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.query.resolve;
+package ai.floedb.metacat.service.query.resolver;
 
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;

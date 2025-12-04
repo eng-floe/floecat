@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.query.resolve;
+package ai.floedb.metacat.service.query.resolver;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;

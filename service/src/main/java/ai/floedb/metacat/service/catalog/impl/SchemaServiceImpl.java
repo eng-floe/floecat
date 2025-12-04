@@ -8,7 +8,7 @@ import ai.floedb.metacat.query.rpc.SchemaDescriptor;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.LogHelper;
 import ai.floedb.metacat.service.query.graph.MetadataGraph;
-import ai.floedb.metacat.service.query.resolve.LogicalSchemaMapper;
+import ai.floedb.metacat.service.query.resolver.LogicalSchemaMapper;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcService;
