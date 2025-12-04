@@ -25,12 +25,15 @@ class BuiltinDefinitionRegistryTest {
     assertThat(catalog.engineKind()).isEqualTo("floe-demo");
     assertThat(catalog.fingerprint()).isNotBlank();
     assertThat(catalog.functions())
-        .extracting(BuiltinFunctionDef::name)
+        .extracting(
+            f ->
+                ai.floedb.metacat.service.query.graph.builtin.BuiltinNodeRegistry.safeName(
+                    f.name()))
         .contains("pg_catalog.int4_add");
     assertThat(catalog.functions("pg_catalog.int4_add")).isNotEmpty();
     assertThat(catalog.operator("+")).isPresent();
     assertThat(catalog.type("pg_catalog.int4")).isPresent();
-    assertThat(catalog.cast("pg_catalog.text", "pg_catalog.int4")).isPresent();
+    assertThat(catalog.cast("pg_catalog.text2int4")).isPresent();
     assertThat(catalog.collation("pg_catalog.default")).isPresent();
     assertThat(catalog.aggregate("pg_catalog.sum")).isPresent();
 

@@ -9,17 +9,7 @@ import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-/**
- * Immutable view of all builtin SQL objects for a specific engine kind.
- *
- * <p>The registry loads {@link BuiltinCatalogData} once per engine version, then materialises this
- * structure with convenient lookups (by name/signature) and a deterministic fingerprint so higher
- * layers can cache derived payloads safely.
- *
- * <p>This class uses the *engine-neutral* SQL definitions aggregated by BuiltinCatalogData, not the
- * raw proto model. Engine-specific metadata for Floe or other engines is preserved inside the
- * Builtin*Def classes.
- */
+/** Immutable view of all builtin SQL objects for a specific engine kind. */
 public final class BuiltinEngineCatalog {
 
   private final String engineKind;
@@ -35,7 +25,7 @@ public final class BuiltinEngineCatalog {
   private final Map<String, BuiltinTypeDef> typesByName;
 
   private final List<BuiltinCastDef> casts;
-  private final Map<String, BuiltinCastDef> castsByKey;
+  private final Map<String, BuiltinCastDef> castsByName;
 
   private final List<BuiltinCollationDef> collations;
   private final Map<String, BuiltinCollationDef> collationsByName;
@@ -53,7 +43,7 @@ public final class BuiltinEngineCatalog {
       List<BuiltinTypeDef> types,
       Map<String, BuiltinTypeDef> typesByName,
       List<BuiltinCastDef> casts,
-      Map<String, BuiltinCastDef> castsByKey,
+      Map<String, BuiltinCastDef> castsByName,
       List<BuiltinCollationDef> collations,
       Map<String, BuiltinCollationDef> collationsByName,
       List<BuiltinAggregateDef> aggregates,
@@ -68,7 +58,7 @@ public final class BuiltinEngineCatalog {
     this.types = types;
     this.typesByName = typesByName;
     this.casts = casts;
-    this.castsByKey = castsByKey;
+    this.castsByName = castsByName;
     this.collations = collations;
     this.collationsByName = collationsByName;
     this.aggregates = aggregates;
@@ -91,17 +81,17 @@ public final class BuiltinEngineCatalog {
         engineKind,
         fingerprint,
         functions,
-        indexMulti(functions, BuiltinFunctionDef::name),
+        indexMulti(functions, f -> BuiltinNameUtil.canonical(f.name())),
         operators,
-        indexUnique(operators, BuiltinOperatorDef::name),
+        indexUnique(operators, o -> BuiltinNameUtil.canonical(o.name())),
         types,
-        indexUnique(types, BuiltinTypeDef::name),
+        indexUnique(types, t -> BuiltinNameUtil.canonical(t.name())),
         casts,
-        indexUnique(casts, cast -> cast.sourceType() + "->" + cast.targetType()),
+        indexUnique(casts, c -> BuiltinNameUtil.canonical(c.name())),
         collations,
-        indexUnique(collations, BuiltinCollationDef::name),
+        indexUnique(collations, c -> BuiltinNameUtil.canonical(c.name())),
         aggregates,
-        indexUnique(aggregates, BuiltinAggregateDef::name));
+        indexUnique(aggregates, a -> BuiltinNameUtil.canonical(a.name())));
   }
 
   public String engineKind() {
@@ -140,8 +130,8 @@ public final class BuiltinEngineCatalog {
     return casts;
   }
 
-  public Optional<BuiltinCastDef> cast(String sourceType, String targetType) {
-    return Optional.ofNullable(castsByKey.get(sourceType + "->" + targetType));
+  public Optional<BuiltinCastDef> cast(String name) {
+    return Optional.ofNullable(castsByName.get(name));
   }
 
   public List<BuiltinCollationDef> collations() {

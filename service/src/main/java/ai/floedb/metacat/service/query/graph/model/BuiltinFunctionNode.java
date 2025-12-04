@@ -11,9 +11,9 @@ public record BuiltinFunctionNode(
     long version,
     Instant metadataUpdatedAt,
     String engineVersion,
-    String name,
-    List<String> argumentTypes,
-    String returnType,
+    String displayName,
+    List<ResourceId> argumentTypes,
+    ResourceId returnType,
     boolean aggregate,
     boolean window,
     Map<EngineKey, EngineHint> engineHints)

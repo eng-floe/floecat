@@ -10,7 +10,7 @@ public record BuiltinCollationNode(
     long version,
     Instant metadataUpdatedAt,
     String engineVersion,
-    String name,
+    String displayName,
     String locale,
     Map<EngineKey, EngineHint> engineHints)
     implements RelationNode {

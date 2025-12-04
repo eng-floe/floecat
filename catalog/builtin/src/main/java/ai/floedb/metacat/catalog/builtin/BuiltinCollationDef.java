@@ -1,10 +1,11 @@
 package ai.floedb.metacat.catalog.builtin;
 
+import ai.floedb.metacat.common.rpc.NameRef;
 import java.util.List;
 import java.util.Objects;
 
 public record BuiltinCollationDef(
-    String name, String locale, List<EngineSpecificRule> engineSpecific) {
+    NameRef name, String locale, List<EngineSpecificRule> engineSpecific) {
 
   public BuiltinCollationDef {
     name = Objects.requireNonNull(name, "name");

@@ -1,13 +1,14 @@
 package ai.floedb.metacat.catalog.builtin;
 
+import ai.floedb.metacat.common.rpc.NameRef;
 import java.util.List;
 import java.util.Objects;
 
 public record BuiltinAggregateDef(
-    String name,
-    List<String> argumentTypes,
-    String stateType,
-    String returnType,
+    NameRef name,
+    List<NameRef> argumentTypes,
+    NameRef stateType,
+    NameRef returnType,
     List<EngineSpecificRule> engineSpecific) {
 
   public BuiltinAggregateDef {

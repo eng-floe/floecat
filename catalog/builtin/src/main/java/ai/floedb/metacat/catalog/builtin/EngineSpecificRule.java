@@ -2,6 +2,7 @@ package ai.floedb.metacat.catalog.builtin;
 
 import ai.floedb.metacat.query.rpc.FloeAggregateSpecific;
 import ai.floedb.metacat.query.rpc.FloeCastSpecific;
+import ai.floedb.metacat.query.rpc.FloeCollationSpecific;
 import ai.floedb.metacat.query.rpc.FloeFunctionSpecific;
 import ai.floedb.metacat.query.rpc.FloeOperatorSpecific;
 import ai.floedb.metacat.query.rpc.FloeTypeSpecific;
@@ -17,6 +18,7 @@ public record EngineSpecificRule(
     FloeCastSpecific floeCast,
     FloeTypeSpecific floeType,
     FloeAggregateSpecific floeAggregate,
+    FloeCollationSpecific floeCollation,
     Map<String, String> properties) {
 
   public EngineSpecificRule {

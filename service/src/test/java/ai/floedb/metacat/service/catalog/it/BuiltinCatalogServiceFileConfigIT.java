@@ -2,6 +2,7 @@ package ai.floedb.metacat.service.catalog.it;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.query.rpc.BuiltinCatalogServiceGrpc;
 import ai.floedb.metacat.query.rpc.GetBuiltinCatalogRequest;
 import io.grpc.Metadata;
@@ -38,7 +39,11 @@ class BuiltinCatalogServiceFileConfigIT {
     var resp = stub.getBuiltinCatalog(GetBuiltinCatalogRequest.getDefaultInstance());
 
     assertThat(resp.hasRegistry()).isTrue();
-    assertThat(resp.getRegistry().getFunctions(0).getName()).isEqualTo("pg_catalog.identity");
+
+    // Validate full NameRef path / name
+    NameRef f = resp.getRegistry().getFunctions(0).getName();
+    assertThat(f.getPathList()).containsExactly("pg_catalog");
+    assertThat(f.getName()).isEqualTo("identity");
   }
 
   private static Metadata metadata(String engineKind, String engineVersion) {
@@ -57,13 +62,14 @@ class BuiltinCatalogServiceFileConfigIT {
       try {
         DIR = Files.createTempDirectory("builtins-file");
         FILE = DIR.resolve("postgres.pbtxt");
+
         Files.writeString(
             FILE,
             """
             functions {
-              name: "pg_catalog.identity"
-              argument_types: "pg_catalog.int4"
-              return_type: "pg_catalog.int4"
+              name { name: "identity" path: "pg_catalog" }
+              argument_types { name: "int4" path: "pg_catalog" }
+              return_type { name: "int4" path: "pg_catalog" }
             }
             """);
       } catch (IOException e) {

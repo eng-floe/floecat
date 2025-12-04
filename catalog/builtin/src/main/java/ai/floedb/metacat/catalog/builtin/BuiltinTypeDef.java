@@ -1,13 +1,14 @@
 package ai.floedb.metacat.catalog.builtin;
 
+import ai.floedb.metacat.common.rpc.NameRef;
 import java.util.List;
 import java.util.Objects;
 
 public record BuiltinTypeDef(
-    String name,
+    NameRef name,
     String category,
     boolean array,
-    String elementType,
+    NameRef elementType,
     List<EngineSpecificRule> engineSpecific) {
 
   public BuiltinTypeDef {
@@ -15,7 +16,7 @@ public record BuiltinTypeDef(
     category = category == null ? "" : category.trim();
 
     // Normalize elementType
-    if (!array || elementType == null || elementType.isBlank()) {
+    if (!array || elementType == null || elementType.getName().isBlank()) {
       elementType = null;
     }
 

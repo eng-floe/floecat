@@ -21,6 +21,8 @@ message EngineSpecific {
     FloeCastSpecific       floe_cast       = 3;
     FloeTypeSpecific       floe_type       = 4;
     FloeAggregateSpecific  floe_aggregate  = 5;
+    FloeCollationSpecific  floe_collation  = 6;
+
   }
 
   // -------- Generic key/value metadata (Spark, Trino, etc.) --------

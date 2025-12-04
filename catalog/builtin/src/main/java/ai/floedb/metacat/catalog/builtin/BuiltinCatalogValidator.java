@@ -1,15 +1,11 @@
 package ai.floedb.metacat.catalog.builtin;
 
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import ai.floedb.metacat.common.rpc.NameRef;
+import java.util.*;
 
 /**
- * Performs structural validation of builtin catalogs before they are exposed to planners. This
- * version is engine-neutral and does NOT enforce PostgreSQL-specific metadata like backing
- * functions for operators or state/final functions for aggregates.
+ * Performs structural validation of builtin catalogs before they are exposed to planners. Uses
+ * NameRef everywhere.
  */
 public final class BuiltinCatalogValidator {
 
@@ -23,12 +19,12 @@ public final class BuiltinCatalogValidator {
       return errors;
     }
 
-    Set<String> typeNames = validateTypes(catalog.types(), errors);
-    Set<String> functionNames = validateFunctions(catalog.functions(), typeNames, errors);
-    validateOperators(catalog.operators(), typeNames, errors); // simplified
+    Set<NameRef> typeNames = validateTypes(catalog.types(), errors);
+    validateFunctions(catalog.functions(), typeNames, errors);
+    validateOperators(catalog.operators(), typeNames, errors);
     validateCasts(catalog.casts(), typeNames, errors);
     validateCollations(catalog.collations(), errors);
-    validateAggregates(catalog.aggregates(), typeNames, errors); // simplified
+    validateAggregates(catalog.aggregates(), typeNames, errors);
 
     return errors;
   }
@@ -37,20 +33,20 @@ public final class BuiltinCatalogValidator {
   // Types
   // ------------------------------------------------------------
 
-  private static Set<String> validateTypes(List<BuiltinTypeDef> types, List<String> errors) {
+  private static Set<NameRef> validateTypes(List<BuiltinTypeDef> types, List<String> errors) {
     if (types.isEmpty()) {
       errors.add("types.empty");
     }
 
-    Set<String> typeNames = new HashSet<>();
+    Set<NameRef> typeNames = new HashSet<>();
     for (BuiltinTypeDef type : types) {
-      String name = safeName(type.name());
-      if (name.isBlank()) {
+      NameRef name = type.name();
+      if (name == null || name.getName().isBlank()) {
         errors.add("type.name.required");
         continue;
       }
       if (!typeNames.add(name)) {
-        errors.add("type.duplicate:" + name);
+        errors.add("type.duplicate:" + formatName(name));
       }
     }
     return typeNames;
@@ -60,49 +56,46 @@ public final class BuiltinCatalogValidator {
   // Functions
   // ------------------------------------------------------------
 
-  private static Set<String> validateFunctions(
-      List<BuiltinFunctionDef> functions, Set<String> typeNames, List<String> errors) {
+  private static Set<NameRef> validateFunctions(
+      List<BuiltinFunctionDef> functions, Set<NameRef> typeNames, List<String> errors) {
 
     if (functions.isEmpty()) {
       errors.add("functions.empty");
     }
 
-    Set<String> names = new HashSet<>();
+    Set<NameRef> names = new HashSet<>();
     for (BuiltinFunctionDef fn : functions) {
-      String name = safeName(fn.name());
-      if (name.isBlank()) {
+      NameRef name = fn.name();
+      if (name == null || name.getName().isBlank()) {
         errors.add("function.name.required");
         continue;
       }
       names.add(name);
 
       // return type must exist
-      requireTypeExists(fn.returnType(), typeNames, errors, "function.return:" + name);
+      requireTypeExists(fn.returnType(), typeNames, errors, "function.return:" + formatName(name));
 
-      // all arg types must exist
-      for (String arg : fn.argumentTypes()) {
-        requireTypeExists(arg, typeNames, errors, "function.arg:" + name);
+      // argument types must exist
+      for (NameRef arg : fn.argumentTypes()) {
+        requireTypeExists(arg, typeNames, errors, "function.arg:" + formatName(name));
       }
     }
     return names;
   }
 
   // ------------------------------------------------------------
-  // Operators (engine-neutral)
+  // Operators
   // ------------------------------------------------------------
 
   private static void validateOperators(
-      List<BuiltinOperatorDef> operators, Set<String> typeNames, List<String> errors) {
+      List<BuiltinOperatorDef> operators, Set<NameRef> typeNames, List<String> errors) {
 
     for (BuiltinOperatorDef op : operators) {
-      String name = safeName(op.name());
+      NameRef name = op.name();
 
-      // Validate operand/return type existence
-      requireTypeExists(op.leftType(), typeNames, errors, "operator.left:" + name);
-      requireTypeExists(op.rightType(), typeNames, errors, "operator.right:" + name);
-      requireTypeExists(op.returnType(), typeNames, errors, "operator.return:" + name);
-
-      // No function-name checks anymore (proto no longer includes it)
+      requireTypeExists(op.leftType(), typeNames, errors, "operator.left:" + formatName(name));
+      requireTypeExists(op.rightType(), typeNames, errors, "operator.right:" + formatName(name));
+      requireTypeExists(op.returnType(), typeNames, errors, "operator.return:" + formatName(name));
     }
   }
 
@@ -111,17 +104,25 @@ public final class BuiltinCatalogValidator {
   // ------------------------------------------------------------
 
   private static void validateCasts(
-      List<BuiltinCastDef> casts, Set<String> typeNames, List<String> errors) {
-    Set<Map.Entry<String, String>> seen = new HashSet<>();
+      List<BuiltinCastDef> casts, Set<NameRef> typeNames, List<String> errors) {
+
+    Set<NameRef> names = new HashSet<>();
 
     for (BuiltinCastDef cast : casts) {
-      var key = Map.entry(safeName(cast.sourceType()), safeName(cast.targetType()));
-      if (!seen.add(key)) {
-        errors.add("cast.duplicate:" + key);
+      NameRef name = cast.name();
+      if (name == null || name.getName().isBlank()) {
+        errors.add("cast.name.required");
+        continue;
+      }
+      if (!names.add(name)) {
+        errors.add("cast.duplicate:" + formatName(name));
       }
 
-      requireTypeExists(key.getKey(), typeNames, errors, "cast.source");
-      requireTypeExists(key.getValue(), typeNames, errors, "cast.target");
+      NameRef src = cast.sourceType();
+      NameRef tgt = cast.targetType();
+
+      requireTypeExists(src, typeNames, errors, "cast.source");
+      requireTypeExists(tgt, typeNames, errors, "cast.target");
     }
   }
 
@@ -132,42 +133,36 @@ public final class BuiltinCatalogValidator {
   private static void validateCollations(
       List<BuiltinCollationDef> collations, List<String> errors) {
 
-    Set<String> names = new HashSet<>();
+    Set<NameRef> names = new HashSet<>();
 
     for (BuiltinCollationDef coll : collations) {
-      String name = safeName(coll.name());
-      if (name.isBlank()) {
+      NameRef name = coll.name();
+      if (name == null || name.getName().isBlank()) {
         errors.add("collation.name.required");
         continue;
       }
       if (!names.add(name)) {
-        errors.add("collation.duplicate:" + name);
+        errors.add("collation.duplicate:" + formatName(name));
       }
     }
   }
 
   // ------------------------------------------------------------
-  // Aggregates (engine-neutral)
+  // Aggregates
   // ------------------------------------------------------------
 
   private static void validateAggregates(
-      List<BuiltinAggregateDef> aggregates, Set<String> typeNames, List<String> errors) {
+      List<BuiltinAggregateDef> aggregates, Set<NameRef> typeNames, List<String> errors) {
 
     for (BuiltinAggregateDef agg : aggregates) {
-      String name = safeName(agg.name());
+      NameRef name = agg.name();
 
-      // state type must exist
-      requireTypeExists(agg.stateType(), typeNames, errors, "agg.state:" + name);
+      requireTypeExists(agg.stateType(), typeNames, errors, "agg.state:" + formatName(name));
+      requireTypeExists(agg.returnType(), typeNames, errors, "agg.return:" + formatName(name));
 
-      // return type must exist
-      requireTypeExists(agg.returnType(), typeNames, errors, "agg.return:" + name);
-
-      // argument types must exist
-      for (String arg : agg.argumentTypes()) {
-        requireTypeExists(arg, typeNames, errors, "agg.arg:" + name);
+      for (NameRef arg : agg.argumentTypes()) {
+        requireTypeExists(arg, typeNames, errors, "agg.arg:" + formatName(name));
       }
-
-      // No stateFn/finalFn validation anymore (proto removed it)
     }
   }
 
@@ -176,18 +171,18 @@ public final class BuiltinCatalogValidator {
   // ------------------------------------------------------------
 
   private static void requireTypeExists(
-      String typeName, Set<String> knownTypes, List<String> errors, String context) {
+      NameRef ref, Set<NameRef> known, List<String> errors, String ctx) {
 
-    String name = safeName(typeName);
-
-    if (name.isBlank()) {
-      errors.add(context + ".type.required");
-    } else if (!knownTypes.contains(name)) {
-      errors.add(context + ".type.unknown:" + name);
+    if (ref == null || ref.getName().isBlank()) {
+      errors.add(ctx + ".type.required");
+    } else if (!known.contains(ref)) {
+      errors.add(ctx + ".type.unknown:" + formatName(ref));
     }
   }
 
-  private static String safeName(String value) {
-    return value == null ? "" : value.trim();
+  private static String formatName(NameRef ref) {
+    if (ref == null) return "<null>";
+    if (ref.getPathList().isEmpty()) return ref.getName();
+    return String.join(".", ref.getPathList()) + "." + ref.getName();
   }
 }

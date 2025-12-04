@@ -1,13 +1,14 @@
 package ai.floedb.metacat.catalog.builtin;
 
+import ai.floedb.metacat.common.rpc.NameRef;
 import java.util.List;
 import java.util.Objects;
 
 public record BuiltinOperatorDef(
-    String name,
-    String leftType,
-    String rightType,
-    String returnType,
+    NameRef name,
+    NameRef leftType,
+    NameRef rightType,
+    NameRef returnType,
     boolean isCommutative,
     boolean isAssociative,
     List<EngineSpecificRule> engineSpecific) {

@@ -162,3 +162,16 @@ message FloeAggregateSpecific {
   string agginitval = 16;
   string aggminitval = 17;
 }
+
+//
+// ------------------------------------------------------
+// pg_collation
+// ------------------------------------------------------
+message FloeCollationSpecific {
+  int32 oid = 1;
+  string collname = 2;
+  int32 collnamespace = 3;  // matches pg_namespace OID
+  int32 collencoding = 4;   // -1 = "all"
+  string collcollate = 5;   // "en_US"
+  string collctype = 6;     // same
+}

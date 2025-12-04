@@ -1,6 +1,10 @@
 package ai.floedb.metacat.service.query.graph.hint;
 
 import ai.floedb.metacat.catalog.builtin.*;
+import ai.floedb.metacat.common.rpc.NameRef;
+import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.service.query.graph.builtin.BuiltinNodeRegistry;
 import ai.floedb.metacat.service.query.graph.builtin.EngineSpecificMatcher;
 import ai.floedb.metacat.service.query.graph.model.*;
 import com.google.protobuf.Descriptors.FieldDescriptor;
@@ -121,7 +125,7 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
   private Optional<EngineSpecificRule> ruleForFunction(
       BuiltinFunctionNode node, BuiltinEngineCatalog catalog, EngineKey engineKey) {
     return catalog.functions().stream()
-        .filter(def -> functionMatches(node, def))
+        .filter(def -> functionMatches(node, def, engineKey.engineKind()))
         .findFirst()
         .flatMap(def -> selectRule(def.engineSpecific(), engineKey));
   }
@@ -129,7 +133,7 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
   private Optional<EngineSpecificRule> ruleForOperator(
       BuiltinOperatorNode node, BuiltinEngineCatalog catalog, EngineKey engineKey) {
     return catalog.operators().stream()
-        .filter(def -> operatorMatches(node, def))
+        .filter(def -> operatorMatches(node, def, engineKey.engineKind()))
         .findFirst()
         .flatMap(def -> selectRule(def.engineSpecific(), engineKey));
   }
@@ -137,7 +141,7 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
   private Optional<EngineSpecificRule> ruleForType(
       BuiltinTypeNode node, BuiltinEngineCatalog catalog, EngineKey engineKey) {
     return catalog.types().stream()
-        .filter(def -> typeMatches(node, def))
+        .filter(def -> typeMatches(node, def, engineKey.engineKind()))
         .findFirst()
         .flatMap(def -> selectRule(def.engineSpecific(), engineKey));
   }
@@ -145,7 +149,7 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
   private Optional<EngineSpecificRule> ruleForCast(
       BuiltinCastNode node, BuiltinEngineCatalog catalog, EngineKey engineKey) {
     return catalog.casts().stream()
-        .filter(def -> castMatches(node, def))
+        .filter(def -> castMatches(node, def, engineKey.engineKind()))
         .findFirst()
         .flatMap(def -> selectRule(def.engineSpecific(), engineKey));
   }
@@ -153,7 +157,7 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
   private Optional<EngineSpecificRule> ruleForCollation(
       BuiltinCollationNode node, BuiltinEngineCatalog catalog, EngineKey engineKey) {
     return catalog.collations().stream()
-        .filter(def -> collationMatches(node, def.name()))
+        .filter(def -> collationMatches(node, def, engineKey.engineKind()))
         .findFirst()
         .flatMap(def -> selectRule(def.engineSpecific(), engineKey));
   }
@@ -161,7 +165,7 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
   private Optional<EngineSpecificRule> ruleForAggregate(
       BuiltinAggregateNode node, BuiltinEngineCatalog catalog, EngineKey engineKey) {
     return catalog.aggregates().stream()
-        .filter(def -> aggregateMatches(node, def))
+        .filter(def -> aggregateMatches(node, def, engineKey.engineKind()))
         .findFirst()
         .flatMap(def -> selectRule(def.engineSpecific(), engineKey));
   }
@@ -172,47 +176,63 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
         rules, engineKey.engineKind(), engineKey.engineVersion());
   }
 
-  private static boolean functionMatches(BuiltinFunctionNode node, BuiltinFunctionDef def) {
-    return def.name().equals(node.name())
-        && def.argumentTypes().equals(node.argumentTypes())
-        && def.returnType().equals(node.returnType())
+  private static boolean functionMatches(
+      BuiltinFunctionNode node, BuiltinFunctionDef def, String engineKind) {
+    return node.id().equals(rid(engineKind, ResourceKind.RK_FUNCTION, def.name()))
+        && node.argumentTypes()
+            .equals(
+                def.argumentTypes().stream()
+                    .map(n -> rid(engineKind, ResourceKind.RK_TYPE, n))
+                    .toList())
+        && node.returnType().equals(rid(engineKind, ResourceKind.RK_TYPE, def.returnType()))
         && def.isAggregate() == node.aggregate()
         && def.isWindow() == node.window();
   }
 
-  private static boolean operatorMatches(BuiltinOperatorNode node, BuiltinOperatorDef def) {
-    return def.name().equals(node.name())
-        && equals(def.leftType(), node.leftType())
-        && equals(def.rightType(), node.rightType())
-        && equals(def.returnType(), node.returnType())
+  private static boolean operatorMatches(
+      BuiltinOperatorNode node, BuiltinOperatorDef def, String engineKind) {
+    return node.id().equals(rid(engineKind, ResourceKind.RK_OPERATOR, def.name()))
+        && node.leftType().equals(rid(engineKind, ResourceKind.RK_TYPE, def.leftType()))
+        && node.rightType().equals(rid(engineKind, ResourceKind.RK_TYPE, def.rightType()))
+        && node.returnType().equals(rid(engineKind, ResourceKind.RK_TYPE, def.returnType()))
         && def.isCommutative() == node.commutative()
         && def.isAssociative() == node.associative();
   }
 
-  private static boolean typeMatches(BuiltinTypeNode node, BuiltinTypeDef def) {
-    return def.name().equals(node.name())
-        && equals(def.category(), node.category())
-        && equals(def.elementType(), node.elementType());
+  private static boolean typeMatches(BuiltinTypeNode node, BuiltinTypeDef def, String engineKind) {
+    ResourceId elemRid =
+        def.elementType() == null ? null : rid(engineKind, ResourceKind.RK_TYPE, def.elementType());
+
+    return node.id().equals(rid(engineKind, ResourceKind.RK_TYPE, def.name()))
+        && safeEquals(def.category(), node.category())
+        && Objects.equals(elemRid, node.elementType());
   }
 
-  private static boolean castMatches(BuiltinCastNode node, BuiltinCastDef def) {
-    return equals(def.sourceType(), node.sourceType())
-        && equals(def.targetType(), node.targetType())
+  private static boolean castMatches(BuiltinCastNode node, BuiltinCastDef def, String engineKind) {
+    return node.id().equals(rid(engineKind, ResourceKind.RK_CAST, def.name()))
+        && node.sourceType().equals(rid(engineKind, ResourceKind.RK_TYPE, def.sourceType()))
+        && node.targetType().equals(rid(engineKind, ResourceKind.RK_TYPE, def.targetType()))
         && (def.method() == null
-            || equals(def.method().name().toLowerCase(), node.method().toLowerCase()));
+            || def.method().name().toLowerCase().equals(node.method().toLowerCase()));
   }
 
-  private static boolean collationMatches(BuiltinCollationNode node, String name) {
-    return equals(name, node.name());
+  private static boolean collationMatches(
+      BuiltinCollationNode node, BuiltinCollationDef def, String engineKind) {
+    return node.id().equals(rid(engineKind, ResourceKind.RK_COLLATION, def.name()));
   }
 
-  private static boolean aggregateMatches(BuiltinAggregateNode node, BuiltinAggregateDef def) {
-    return def.name().equals(node.name())
-        && def.argumentTypes().equals(node.argumentTypes())
-        && equals(def.returnType(), node.returnType());
+  private static boolean aggregateMatches(
+      BuiltinAggregateNode node, BuiltinAggregateDef def, String engineKind) {
+    return node.id().equals(rid(engineKind, ResourceKind.RK_AGGREGATE, def.name()))
+        && node.argumentTypes()
+            .equals(
+                def.argumentTypes().stream()
+                    .map(n -> rid(engineKind, ResourceKind.RK_TYPE, n))
+                    .toList())
+        && node.returnType().equals(rid(engineKind, ResourceKind.RK_TYPE, def.returnType()));
   }
 
-  private static boolean equals(String left, String right) {
+  private static boolean safeEquals(String left, String right) {
     if (left == null) return right == null;
     return left.equals(right);
   }
@@ -259,6 +279,9 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
     if (rule.floeAggregate() != null) {
       props.putAll(extractProtoFields(rule.floeAggregate()));
     }
+    if (rule.floeCollation() != null) {
+      props.putAll(extractProtoFields(rule.floeCollation()));
+    }
 
     return props.isEmpty() ? Map.of() : Map.copyOf(props);
   }
@@ -277,5 +300,9 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
 
   private static String escape(String value) {
     return value.replace("\\", "\\\\").replace("\"", "\\\"");
+  }
+
+  private static ResourceId rid(String engineKind, ResourceKind kind, NameRef ref) {
+    return BuiltinNodeRegistry.resourceId(engineKind, kind, ref);
   }
 }

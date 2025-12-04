@@ -3,6 +3,7 @@ package ai.floedb.metacat.service.query.graph.builtin;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.metacat.catalog.builtin.*;
+import ai.floedb.metacat.common.rpc.NameRef;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,18 @@ class BuiltinNodeRegistryTest {
 
   private static final String FLOE_KIND = "floe-demo"; // main engine under test
   private static final String PG_KIND = "pg"; // alternate engine
+
+  // helper to build NameRef the same way pbtxt does
+  private static NameRef nr(String full) {
+    int idx = full.indexOf('.');
+    if (idx < 0) {
+      return NameRef.newBuilder().setName(full).build();
+    }
+    return NameRef.newBuilder()
+        .setName(full.substring(idx + 1))
+        .addPath(full.substring(0, idx))
+        .build();
+  }
 
   @Test
   void filtersByEngineKindAndVersion() {
@@ -22,10 +35,12 @@ class BuiltinNodeRegistryTest {
     // ---------------------------------
     var floe16 = nodeRegistry.nodesFor(FLOE_KIND, "16.0");
 
-    assertThat(floe16.functions()).extracting(fn -> fn.name()).contains("pg_catalog.pg_only");
+    assertThat(floe16.functions())
+        .extracting(fn -> fn.displayName())
+        .contains("pg_catalog.pg_only");
 
     assertThat(floe16.functions())
-        .extracting(fn -> fn.name())
+        .extracting(fn -> fn.displayName())
         .contains("pg_catalog.shared_fn")
         .doesNotContain("pg_catalog.pg_fn", "pg_catalog.pg_legacy");
 
@@ -34,10 +49,12 @@ class BuiltinNodeRegistryTest {
     // ---------------------------------
     var floe17 = nodeRegistry.nodesFor(FLOE_KIND, "17.0");
 
-    assertThat(floe17.functions()).extracting(fn -> fn.name()).contains("pg_catalog.pg_only");
+    assertThat(floe17.functions())
+        .extracting(fn -> fn.displayName())
+        .contains("pg_catalog.pg_only");
 
     assertThat(floe17.functions())
-        .extracting(fn -> fn.name())
+        .extracting(fn -> fn.displayName())
         .doesNotContain("pg_catalog.pg_legacy");
 
     // ---------------------------------
@@ -45,9 +62,11 @@ class BuiltinNodeRegistryTest {
     // ---------------------------------
     var pg16 = nodeRegistry.nodesFor(PG_KIND, "16.0");
 
-    assertThat(pg16.functions()).extracting(fn -> fn.name()).contains("pg_catalog.pg_fn");
+    assertThat(pg16.functions()).extracting(fn -> fn.displayName()).contains("pg_catalog.pg_fn");
 
-    assertThat(pg16.functions()).extracting(fn -> fn.name()).doesNotContain("pg_catalog.pg_only");
+    assertThat(pg16.functions())
+        .extracting(fn -> fn.displayName())
+        .doesNotContain("pg_catalog.pg_only");
 
     // ---------------------------------
     // Extract persisted rules in catalog
@@ -56,7 +75,7 @@ class BuiltinNodeRegistryTest {
 
     assertThat(
             catalog.functions().stream()
-                .filter(def -> def.name().equals("pg_catalog.pg_only"))
+                .filter(def -> def.name().equals(nr("pg_catalog.pg_only")))
                 .findFirst()
                 .orElseThrow()
                 .engineSpecific())
@@ -66,7 +85,7 @@ class BuiltinNodeRegistryTest {
 
     assertThat(
             catalog.functions().stream()
-                .filter(def -> def.name().equals("pg_catalog.shared_fn"))
+                .filter(def -> def.name().equals(nr("pg_catalog.shared_fn")))
                 .findFirst()
                 .orElseThrow()
                 .engineSpecific())
@@ -94,50 +113,38 @@ class BuiltinNodeRegistryTest {
   // -----------------------------------------------------
   private static BuiltinDefinitionRegistry registryWithCatalogs() {
 
-    var sharedRule = new EngineSpecificRule("", "", "", null, null, null, null, null, Map.of());
+    var sharedRule =
+        new EngineSpecificRule("", "", "", null, null, null, null, null, null, Map.of());
 
     var floeRule =
-        new EngineSpecificRule(FLOE_KIND, "16.0", "", null, null, null, null, null, Map.of());
+        new EngineSpecificRule(FLOE_KIND, "16.0", "", null, null, null, null, null, null, Map.of());
 
     var floeLegacyRule =
-        new EngineSpecificRule(FLOE_KIND, "", "15.0", null, null, null, null, null, Map.of());
+        new EngineSpecificRule(FLOE_KIND, "", "15.0", null, null, null, null, null, null, Map.of());
 
-    var pgRule = new EngineSpecificRule(PG_KIND, "", "", null, null, null, null, null, Map.of());
+    var pgRule =
+        new EngineSpecificRule(PG_KIND, "", "", null, null, null, null, null, null, Map.of());
 
-    // TYPE: (name, category, isArray, elementType, rules)
-    var int4 = new BuiltinTypeDef("pg_catalog.int4", "N", false, null, List.of(sharedRule));
+    // TYPE
+    var int4Name = nr("pg_catalog.int4");
+    var int4 = new BuiltinTypeDef(int4Name, "N", false, null, List.of(sharedRule));
 
-    // FUNCTION: (name, args, returnType, isAggregate, isWindow, rules)
+    // FUNCTIONS
+    var sharedFnName = nr("pg_catalog.shared_fn");
+    var pgOnlyName = nr("pg_catalog.pg_only");
+    var pgLegacyName = nr("pg_catalog.pg_legacy");
+    var pgFnName = nr("pg_catalog.pg_fn");
+
     var functions =
         List.of(
             new BuiltinFunctionDef(
-                "pg_catalog.shared_fn",
-                List.of("pg_catalog.int4"),
-                "pg_catalog.int4",
-                false,
-                false,
-                List.of()),
+                sharedFnName, List.of(int4Name), int4Name, false, false, List.of()),
             new BuiltinFunctionDef(
-                "pg_catalog.pg_only",
-                List.of("pg_catalog.int4"),
-                "pg_catalog.int4",
-                false,
-                false,
-                List.of(floeRule)),
+                pgOnlyName, List.of(int4Name), int4Name, false, false, List.of(floeRule)),
             new BuiltinFunctionDef(
-                "pg_catalog.pg_legacy",
-                List.of("pg_catalog.int4"),
-                "pg_catalog.int4",
-                false,
-                false,
-                List.of(floeLegacyRule)),
+                pgLegacyName, List.of(int4Name), int4Name, false, false, List.of(floeLegacyRule)),
             new BuiltinFunctionDef(
-                "pg_catalog.pg_fn",
-                List.of("pg_catalog.int4"),
-                "pg_catalog.int4",
-                false,
-                false,
-                List.of(pgRule)));
+                pgFnName, List.of(int4Name), int4Name, false, false, List.of(pgRule)));
 
     var catalog =
         new BuiltinCatalogData(

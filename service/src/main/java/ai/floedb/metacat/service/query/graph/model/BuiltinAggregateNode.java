@@ -11,10 +11,10 @@ public record BuiltinAggregateNode(
     long version,
     Instant metadataUpdatedAt,
     String engineVersion,
-    String name,
-    List<String> argumentTypes,
-    String stateType,
-    String returnType,
+    String displayName,
+    List<ResourceId> argumentTypes,
+    ResourceId stateType,
+    ResourceId returnType,
     Map<EngineKey, EngineHint> engineHints)
     implements RelationNode {
 

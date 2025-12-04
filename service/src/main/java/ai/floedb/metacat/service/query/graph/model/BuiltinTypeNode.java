@@ -10,10 +10,10 @@ public record BuiltinTypeNode(
     long version,
     Instant metadataUpdatedAt,
     String engineVersion,
-    String name,
+    String displayName,
     String category,
     boolean array,
-    String elementType,
+    ResourceId elementType,
     Map<EngineKey, EngineHint> engineHints)
     implements RelationNode {
 

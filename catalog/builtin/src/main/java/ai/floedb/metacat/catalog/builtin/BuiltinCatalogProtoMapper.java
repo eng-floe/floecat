@@ -1,8 +1,13 @@
 package ai.floedb.metacat.catalog.builtin;
 
+import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.query.rpc.*;
 import java.util.Objects;
 
+/**
+ * Maps between engine-neutral builtin definitions (Builtin*Def using NameRef) and the wire protocol
+ * (SqlFunction, SqlOperator, etc.) which also uses NameRef.
+ */
 public final class BuiltinCatalogProtoMapper {
 
   private BuiltinCatalogProtoMapper() {}
@@ -124,8 +129,10 @@ public final class BuiltinCatalogProtoMapper {
   }
 
   private static BuiltinTypeDef fromProtoType(SqlType proto, String defaultEngine) {
-    String elem =
-        proto.getIsArray() && !proto.getElementType().isBlank() ? proto.getElementType() : null;
+    NameRef elem =
+        proto.getIsArray() && proto.hasElementType() && !proto.getElementType().getName().isBlank()
+            ? proto.getElementType()
+            : null;
 
     return new BuiltinTypeDef(
         proto.getName(),
@@ -144,6 +151,7 @@ public final class BuiltinCatalogProtoMapper {
   private static SqlCast toProtoCast(BuiltinCastDef def) {
     var builder =
         SqlCast.newBuilder()
+            .setName(def.name())
             .setSourceType(def.sourceType())
             .setTargetType(def.targetType())
             .setMethod(def.method().wireValue())
@@ -155,6 +163,7 @@ public final class BuiltinCatalogProtoMapper {
 
   private static BuiltinCastDef fromProtoCast(SqlCast proto, String defaultEngine) {
     return new BuiltinCastDef(
+        proto.getName(),
         proto.getSourceType(),
         proto.getTargetType(),
         BuiltinCastMethod.fromWireValue(proto.getMethod()),
@@ -227,6 +236,7 @@ public final class BuiltinCatalogProtoMapper {
     if (rule.floeCast() != null) builder.setFloeCast(rule.floeCast());
     if (rule.floeType() != null) builder.setFloeType(rule.floeType());
     if (rule.floeAggregate() != null) builder.setFloeAggregate(rule.floeAggregate());
+    if (rule.floeCollation() != null) builder.setFloeCollation(rule.floeCollation());
 
     builder.putAllProperties(rule.properties());
     return builder.build();
@@ -242,6 +252,7 @@ public final class BuiltinCatalogProtoMapper {
         proto.hasFloeCast() ? proto.getFloeCast() : null,
         proto.hasFloeType() ? proto.getFloeType() : null,
         proto.hasFloeAggregate() ? proto.getFloeAggregate() : null,
+        proto.hasFloeCollation() ? proto.getFloeCollation() : null,
         proto.getPropertiesMap());
   }
 }

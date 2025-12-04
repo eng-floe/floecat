@@ -1,12 +1,13 @@
 package ai.floedb.metacat.catalog.builtin;
 
+import ai.floedb.metacat.common.rpc.NameRef;
 import java.util.List;
 import java.util.Objects;
 
 public record BuiltinFunctionDef(
-    String name,
-    List<String> argumentTypes,
-    String returnType,
+    NameRef name,
+    List<NameRef> argumentTypes,
+    NameRef returnType,
     boolean isAggregate,
     boolean isWindow,
     List<EngineSpecificRule> engineSpecific) {

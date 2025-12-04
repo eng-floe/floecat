@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
 
+import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.query.rpc.BuiltinRegistry;
 import ai.floedb.metacat.query.rpc.SqlFunction;
 import java.io.IOException;
@@ -13,7 +14,6 @@ import org.junit.jupiter.api.Test;
 
 class BuiltinCatalogLoaderTest {
 
-  /** Ensures the sample pbtxt file loads and every entity matches the expected metadata. */
   @Test
   void loadsCatalogFromClasspath() {
     BuiltinCatalogLoader loader = new BuiltinCatalogLoader();
@@ -26,46 +26,48 @@ class BuiltinCatalogLoaderTest {
     assertThat(catalog.functions())
         .extracting(BuiltinFunctionDef::name)
         .containsExactlyInAnyOrder(
-            "pg_catalog.int4_abs",
-            "pg_catalog.text_length",
-            "pg_catalog.text_upper",
-            "pg_catalog.int4_add",
-            "pg_catalog.text_concat",
-            "pg_catalog.sum_int4_state",
-            "pg_catalog.sum_int4_final");
+            nameRef("pg_catalog", "int4_abs"),
+            nameRef("pg_catalog", "text_length"),
+            nameRef("pg_catalog", "text_upper"),
+            nameRef("pg_catalog", "int4_add"),
+            nameRef("pg_catalog", "text_concat"),
+            nameRef("pg_catalog", "sum_int4_state"),
+            nameRef("pg_catalog", "sum_int4_final"));
 
-    // ENGINE SPECIFIC RULE: floe_function present
+    // ENGINE SPECIFIC RULE exists
     assertThat(catalog.functions().get(0).engineSpecific().get(0).floeFunction()).isNotNull();
 
-    // ENGINE KIND comes from EngineSpecificRule.engineKind (still part of the rule)
+    // ENGINE KIND preserved
     assertThat(catalog.functions().get(0).engineSpecific())
         .extracting(EngineSpecificRule::engineKind)
         .contains("floe-demo");
 
-    // OPERATORS – no more functionName field in new model → removed test
-    assertThat(catalog.operators()).extracting(BuiltinOperatorDef::name).contains("+", "||");
+    // OPERATORS
+    assertThat(catalog.operators())
+        .extracting(BuiltinOperatorDef::name)
+        .contains(nameRef("", "+"), nameRef("", "||"));
 
     // TYPES
     assertThat(catalog.types())
         .extracting(BuiltinTypeDef::name)
-        .contains("pg_catalog.int4", "pg_catalog.int8");
+        .contains(nameRef("pg_catalog", "int4"), nameRef("pg_catalog", "int8"));
 
     // CASTS
     assertThat(catalog.casts())
-        .extracting(BuiltinCastDef::sourceType, BuiltinCastDef::targetType)
-        .contains(tuple("pg_catalog.text", "pg_catalog.int4"));
+        .extracting(c -> c.sourceType(), c -> c.targetType())
+        .contains(tuple(nameRef("pg_catalog", "text"), nameRef("pg_catalog", "int4")));
 
     // COLLATIONS
     assertThat(catalog.collations())
         .extracting(BuiltinCollationDef::name)
-        .contains("pg_catalog.default");
+        .contains(nameRef("pg_catalog", "default"));
 
     // AGGREGATES
     assertThat(catalog.aggregates())
         .extracting(BuiltinAggregateDef::name)
-        .contains("pg_catalog.sum");
+        .contains(nameRef("pg_catalog", "sum"));
 
-    // Caching: loader returns same instance
+    // cached instance
     assertThat(loader.getCatalog("floe-demo")).isSameAs(catalog);
   }
 
@@ -79,7 +81,6 @@ class BuiltinCatalogLoaderTest {
         .isInstanceOf(BuiltinCatalogNotFoundException.class);
   }
 
-  /** Verifies corrupted files raise a dedicated load exception. */
   @Test
   void corruptFileRaisesLoadException() throws IOException {
     Path dir = Files.createTempDirectory("builtins-test");
@@ -94,7 +95,6 @@ class BuiltinCatalogLoaderTest {
         .isInstanceOf(BuiltinCatalogLoadException.class);
   }
 
-  /** Confirms the loader can parse binary .pb files in addition to pbtxt fixtures. */
   @Test
   void binaryFileLoads() throws IOException {
     Path dir = Files.createTempDirectory("builtins-bin-test");
@@ -104,9 +104,9 @@ class BuiltinCatalogLoaderTest {
         BuiltinRegistry.newBuilder()
             .addFunctions(
                 SqlFunction.newBuilder()
-                    .setName("pg_catalog.identity")
-                    .addArgumentTypes("pg_catalog.int4")
-                    .setReturnType("pg_catalog.int4"))
+                    .setName(nameRef("pg_catalog", "identity"))
+                    .addArgumentTypes(nameRef("pg_catalog", "int4"))
+                    .setReturnType(nameRef("pg_catalog", "int4")))
             .build();
 
     Files.write(file, proto.toByteArray());
@@ -119,6 +119,15 @@ class BuiltinCatalogLoaderTest {
 
     assertThat(catalog.functions())
         .extracting(BuiltinFunctionDef::name)
-        .contains("pg_catalog.identity");
+        .contains(nameRef("pg_catalog", "identity"));
+  }
+
+  // helper for constructing NameRef
+  private static NameRef nameRef(String schema, String name) {
+    NameRef.Builder b = NameRef.newBuilder().setName(name);
+    if (!schema.isBlank()) {
+      b.addPath(schema);
+    }
+    return b.build();
   }
 }

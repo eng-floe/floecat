@@ -3,6 +3,7 @@ package ai.floedb.metacat.service.catalog.it;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.query.rpc.BuiltinCatalogServiceGrpc;
 import ai.floedb.metacat.query.rpc.GetBuiltinCatalogRequest;
 import io.grpc.Metadata;
@@ -36,21 +37,33 @@ class BuiltinCatalogServiceIT {
     var reg = resp.getRegistry();
     assertThat(reg.getFunctionsCount()).isEqualTo(7);
 
+    // FUNCTION NAMES
     assertThat(reg.getFunctionsList())
-        .extracting(f -> f.getName())
+        .extracting(f -> fullName(f.getName()))
         .contains("pg_catalog.int4_add", "pg_catalog.text_upper");
 
+    // OPERATORS – operator name is just the symbol
     assertThat(reg.getOperatorsList())
-        .extracting(op -> op.getName())
+        .extracting(op -> fullName(op.getName()))
         .containsExactlyInAnyOrder("+", "||");
 
-    assertThat(reg.getTypesList()).extracting(t -> t.getName()).contains("pg_catalog._int4");
+    // TYPES
+    assertThat(reg.getTypesList())
+        .extracting(t -> fullName(t.getName()))
+        .contains("pg_catalog._int4");
 
-    assertThat(reg.getCastsList()).extracting(c -> c.getSourceType()).contains("pg_catalog.text");
+    // CASTS
+    assertThat(reg.getCastsList())
+        .extracting(c -> fullName(c.getSourceType()))
+        .contains("pg_catalog.text");
 
+    // COLLATIONS
     assertThat(reg.getCollationsList()).hasSize(1);
 
-    assertThat(reg.getAggregatesList()).extracting(a -> a.getName()).contains("pg_catalog.sum");
+    // AGGREGATES
+    assertThat(reg.getAggregatesList())
+        .extracting(a -> fullName(a.getName()))
+        .contains("pg_catalog.sum");
   }
 
   @Test
@@ -69,7 +82,8 @@ class BuiltinCatalogServiceIT {
     var resp = stub.getBuiltinCatalog(GetBuiltinCatalogRequest.getDefaultInstance());
     assertThat(resp.hasRegistry()).isTrue();
 
-    var names = resp.getRegistry().getFunctionsList().stream().map(f -> f.getName()).toList();
+    var names =
+        resp.getRegistry().getFunctionsList().stream().map(f -> fullName(f.getName())).toList();
 
     assertThat(names)
         .containsExactlyInAnyOrder(
@@ -101,5 +115,17 @@ class BuiltinCatalogServiceIT {
     metadata.put(ENGINE_VERSION_HEADER, engineVersion);
 
     return builtins.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
+  }
+
+  /** Build a fully qualified name from NameRef.path + NameRef.name (ignores catalog). */
+  private static String fullName(NameRef ref) {
+    if (ref == null) {
+      return "";
+    }
+    var path = String.join(".", ref.getPathList());
+    if (path.isEmpty()) {
+      return ref.getName();
+    }
+    return path + "." + ref.getName();
   }
 }

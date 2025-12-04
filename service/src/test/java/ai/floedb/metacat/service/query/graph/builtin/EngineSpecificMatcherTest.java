@@ -12,7 +12,7 @@ class EngineSpecificMatcherTest {
   @Test
   void numericSegmentsCompareNaturally() {
     EngineSpecificRule rule =
-        new EngineSpecificRule("", "10", "", null, null, null, null, null, Map.of());
+        new EngineSpecificRule("", "10", "", null, null, null, null, null, null, Map.of());
     assertThat(EngineSpecificMatcher.matches(List.of(rule), "", "2")).isFalse();
     assertThat(EngineSpecificMatcher.matches(List.of(rule), "", "10")).isTrue();
     assertThat(EngineSpecificMatcher.matches(List.of(rule), "", "11")).isTrue();
@@ -21,7 +21,7 @@ class EngineSpecificMatcherTest {
   @Test
   void alphanumericVersionsHandledConsistently() {
     EngineSpecificRule rule =
-        new EngineSpecificRule("", "", "16.1", null, null, null, null, null, Map.of());
+        new EngineSpecificRule("", "", "16.1", null, null, null, null, null, null, Map.of());
     assertThat(EngineSpecificMatcher.matches(List.of(rule), "", "16.1beta")).isFalse();
     assertThat(EngineSpecificMatcher.matches(List.of(rule), "", "16.0beta2")).isTrue();
   }

@@ -7,11 +7,12 @@ import ai.floedb.metacat.catalog.builtin.BuiltinCatalogLoader;
 import ai.floedb.metacat.catalog.builtin.BuiltinDefinitionRegistry;
 import ai.floedb.metacat.catalog.builtin.BuiltinFunctionDef;
 import ai.floedb.metacat.catalog.builtin.EngineSpecificRule;
+import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.query.rpc.FloeFunctionSpecific;
+import ai.floedb.metacat.service.query.graph.builtin.BuiltinNodeRegistry;
 import ai.floedb.metacat.service.query.graph.model.BuiltinFunctionNode;
-import ai.floedb.metacat.service.query.graph.model.EngineHint;
 import ai.floedb.metacat.service.query.graph.model.EngineKey;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -23,6 +24,10 @@ class BuiltinCatalogHintProviderTest {
 
   private static final String ENGINE_KIND = "floe-demo";
 
+  private static NameRef n(String name) {
+    return NameRef.newBuilder().setName(name).build();
+  }
+
   @Test
   void emitsJsonPayloadForMatchingRule() {
 
@@ -32,6 +37,7 @@ class BuiltinCatalogHintProviderTest {
             "16.0",
             "",
             FloeFunctionSpecific.newBuilder().setPronamespace(11).setProisstrict(true).build(),
+            null,
             null,
             null,
             null,
@@ -48,22 +54,23 @@ class BuiltinCatalogHintProviderTest {
             null,
             null,
             null,
+            null,
             Map.of("oid", "1251"));
 
     var catalog =
         new BuiltinCatalogData(
             List.of(
                 new BuiltinFunctionDef(
-                    "pg_catalog.int4_abs",
-                    List.of("pg_catalog.int4"),
-                    "pg_catalog.int4",
+                    n("pg_catalog.int4_abs"),
+                    List.of(n("pg_catalog.int4")),
+                    n("pg_catalog.int4"),
                     false,
                     false,
                     List.of(int4Rule)),
                 new BuiltinFunctionDef(
-                    "pg_catalog.int4_abs",
-                    List.of("pg_catalog.int8"),
-                    "pg_catalog.int8",
+                    n("pg_catalog.int4_abs"),
+                    List.of(n("pg_catalog.int8")),
+                    n("pg_catalog.int8"),
                     false,
                     false,
                     List.of(int8Rule))),
@@ -96,9 +103,9 @@ class BuiltinCatalogHintProviderTest {
         new BuiltinCatalogData(
             List.of(
                 new BuiltinFunctionDef(
-                    "pg_catalog.int4_abs",
-                    List.of("pg_catalog.int4"),
-                    "pg_catalog.int4",
+                    n("pg_catalog.int4_abs"),
+                    List.of(n("pg_catalog.int4")),
+                    n("pg_catalog.int4"),
                     false,
                     false,
                     List.of())),
@@ -124,21 +131,35 @@ class BuiltinCatalogHintProviderTest {
   }
 
   private static BuiltinFunctionNode functionNode(List<String> args, String returnType) {
+    List<ResourceId> argIds =
+        args.stream()
+            .map(
+                a ->
+                    BuiltinNodeRegistry.resourceId(
+                        ENGINE_KIND, ResourceKind.RK_TYPE, NameRef.newBuilder().setName(a).build()))
+            .toList();
+
+    ResourceId retId =
+        BuiltinNodeRegistry.resourceId(
+            ENGINE_KIND, ResourceKind.RK_TYPE, NameRef.newBuilder().setName(returnType).build());
+
+    ResourceId fnId =
+        BuiltinNodeRegistry.resourceId(
+            ENGINE_KIND,
+            ResourceKind.RK_FUNCTION,
+            NameRef.newBuilder().setName("int4_abs").addPath("pg_catalog").build());
+
     return new BuiltinFunctionNode(
-        ResourceId.newBuilder()
-            .setTenantId("_builtin")
-            .setKindValue(ResourceKind.RK_FUNCTION_VALUE)
-            .setId("demo:pg_catalog.int4_abs")
-            .build(),
+        fnId,
         1L,
         Instant.EPOCH,
         "16.0",
         "pg_catalog.int4_abs",
-        args,
-        returnType,
+        argIds,
+        retId,
         false,
         false,
-        Map.<EngineKey, EngineHint>of());
+        Map.of());
   }
 
   private static final class StaticLoader extends BuiltinCatalogLoader {

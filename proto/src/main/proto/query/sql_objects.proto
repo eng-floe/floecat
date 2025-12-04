@@ -2,6 +2,7 @@ syntax = "proto3";
 package ai.floedb.metacat.query;
 
 import "query/engine_specific.proto";
+import "common/common.proto";
 
 option java_multiple_files = true;
 option java_package = "ai.floedb.metacat.query.rpc";
@@ -20,9 +21,9 @@ enum Origin {
  * FUNCTION  (scalar, aggregate, window)
  */ 
 message SqlFunction {
-  string name = 1;
-  repeated string argument_types = 2;  // fully resolved type names
-  string return_type = 3;
+  ai.floedb.metacat.common.NameRef name = 1;
+  repeated ai.floedb.metacat.common.NameRef argument_types = 2;  // fully resolved type names
+  ai.floedb.metacat.common.NameRef return_type = 3;
 
   bool is_aggregate = 4;   // functional category
   bool is_window = 5;
@@ -36,10 +37,10 @@ message SqlFunction {
  * OPERATOR
  */ 
 message SqlOperator {
-  string name = 1;       // e.g. "+", "=", "||"
-  string left_type = 2;
-  string right_type = 3;
-  string return_type = 4;
+  ai.floedb.metacat.common.NameRef name = 1;       // e.g. "+", "=", "||"
+  ai.floedb.metacat.common.NameRef left_type = 2;
+  ai.floedb.metacat.common.NameRef right_type = 3;
+  ai.floedb.metacat.common.NameRef return_type = 4;
 
   bool is_commutative = 5;  // optional, universal property
   bool is_associative = 6;  // optional, universal property
@@ -53,10 +54,10 @@ message SqlOperator {
  * TYPE
  */
 message SqlType {
-  string name = 1;
+  ai.floedb.metacat.common.NameRef name = 1;
   string category = 2;      // numeric, string, bool, date, etc.
   bool is_array = 3;
-  string element_type = 4;  // if array
+  ai.floedb.metacat.common.NameRef element_type = 4;  // if array
 
   Origin origin = 10;
 
@@ -67,11 +68,12 @@ message SqlType {
  * CAST
  */
 message SqlCast {
-  string source_type = 1;
-  string target_type = 2;
+  ai.floedb.metacat.common.NameRef name = 1;
+  ai.floedb.metacat.common.NameRef source_type = 2;
+  ai.floedb.metacat.common.NameRef target_type = 3;
 
   // implicit, assignment, explicit
-  string method = 3;
+  string method = 4;
 
   Origin origin = 10;
 
@@ -82,7 +84,7 @@ message SqlCast {
  * COLLATION
  */
 message SqlCollation {
-  string name = 1;
+  ai.floedb.metacat.common.NameRef name = 1;
   string locale = 2;
 
   Origin origin = 10;
@@ -94,12 +96,12 @@ message SqlCollation {
  * AGGREGATE
  */
 message SqlAggregate {
-  string name = 1;
-  repeated string argument_types = 2;
-  string return_type = 3;
+  ai.floedb.metacat.common.NameRef name = 1;
+  repeated ai.floedb.metacat.common.NameRef argument_types = 2;
+  ai.floedb.metacat.common.NameRef return_type = 3;
 
   // minimal engine-neutral requirement
-  string state_type = 4;  // needed for type-checking only
+  ai.floedb.metacat.common.NameRef state_type = 4;  // needed for type-checking only
 
   Origin origin = 10;
 

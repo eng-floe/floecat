@@ -3,6 +3,7 @@ package io.floecat.tools.validator;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.query.rpc.BuiltinRegistry;
 import ai.floedb.metacat.query.rpc.SqlAggregate;
 import ai.floedb.metacat.query.rpc.SqlCast;
@@ -16,7 +17,6 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /** Unit tests for the standalone builtin catalog validator CLI. */
@@ -99,70 +99,90 @@ class BuiltinCatalogValidatorCliTest {
 
     SqlFunction identity =
         SqlFunction.newBuilder()
-            .setName("pg_catalog.int4_identity")
-            .addAllArgumentTypes(List.of("pg_catalog.int4"))
-            .setReturnType("pg_catalog.int4")
+            .setName(NameRef.newBuilder().addPath("pg_catalog").setName("int4_identity"))
+            .addArgumentTypes(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
+            .setReturnType(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
             .build();
 
     SqlFunction sumState =
         SqlFunction.newBuilder()
-            .setName("pg_catalog.sum_int4_state")
-            .addAllArgumentTypes(List.of("pg_catalog.int4", "pg_catalog.int4"))
-            .setReturnType("pg_catalog.int4")
+            .setName(NameRef.newBuilder().addPath("pg_catalog").setName("sum_int4_state"))
+            .addArgumentTypes(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
+            .addArgumentTypes(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
+            .setReturnType(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
             .build();
 
     SqlFunction sumFinal =
         SqlFunction.newBuilder()
-            .setName("pg_catalog.sum_int4_final")
-            .addAllArgumentTypes(List.of("pg_catalog.int4"))
-            .setReturnType("pg_catalog.int4")
+            .setName(NameRef.newBuilder().addPath("pg_catalog").setName("sum_int4_final"))
+            .addArgumentTypes(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
+            .setReturnType(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
             .build();
 
     SqlAggregate sumAgg =
         SqlAggregate.newBuilder()
-            .setName("pg_catalog.sum")
-            .addAllArgumentTypes(List.of("pg_catalog.int4"))
-            .setStateType("pg_catalog.int4")
-            .setReturnType("pg_catalog.int4")
+            .setName(NameRef.newBuilder().addPath("pg_catalog").setName("sum"))
+            .addArgumentTypes(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
+            .setStateType(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
+            .setReturnType(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
             .build();
 
     return BuiltinRegistry.newBuilder()
         .addTypes(
             SqlType.newBuilder()
-                .setName("pg_catalog.int4")
+                .setName(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
                 .setCategory("N")
                 .setIsArray(false)
                 .build())
         .addTypes(
             SqlType.newBuilder()
-                .setName("pg_catalog._int4")
+                .setName(NameRef.newBuilder().addPath("pg_catalog").setName("_int4"))
                 .setCategory("A")
                 .setIsArray(true)
-                .setElementType("pg_catalog.int4")
+                .setElementType(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
                 .build())
         .addFunctions(identity)
         .addFunctions(sumState)
         .addFunctions(sumFinal)
         .addOperators(
             SqlOperator.newBuilder()
-                .setName("pg_catalog.plus")
-                .setLeftType("pg_catalog.int4")
-                .setRightType("pg_catalog.int4")
-                .setReturnType("pg_catalog.int4")
+                .setName(NameRef.newBuilder().addPath("pg_catalog").setName("plus"))
+                .setLeftType(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
+                .setRightType(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
+                .setReturnType(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
                 .build())
         .addCasts(
             SqlCast.newBuilder()
-                .setSourceType("pg_catalog.int4")
-                .setTargetType("pg_catalog.int4")
+                .setName(NameRef.newBuilder().addPath("pg_catalog").setName("int42int4"))
+                .setSourceType(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
+                .setTargetType(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
                 .setMethod("assignment")
                 .build())
         .addCollations(
-            SqlCollation.newBuilder().setName("pg_catalog.default").setLocale("en_US").build())
+            SqlCollation.newBuilder()
+                .setName(NameRef.newBuilder().addPath("pg_catalog").setName("default"))
+                .setLocale("en_US")
+                .build())
         .addAggregates(sumAgg)
         .build();
   }
 
   private static SqlFunction simpleFunction(String name) {
-    return SqlFunction.newBuilder().setName(name).setReturnType("pg_catalog.missing").build();
+    int lastDot = name.lastIndexOf('.');
+    NameRef.Builder nameRefBuilder = NameRef.newBuilder();
+    if (lastDot >= 0) {
+      String path = name.substring(0, lastDot);
+      String simpleName = name.substring(lastDot + 1);
+      for (String p : path.split("\\.")) {
+        nameRefBuilder.addPath(p);
+      }
+      nameRefBuilder.setName(simpleName);
+    } else {
+      nameRefBuilder.setName(name);
+    }
+    return SqlFunction.newBuilder()
+        .setName(nameRefBuilder)
+        .setReturnType(NameRef.newBuilder().addPath("pg_catalog").setName("missing"))
+        .build();
   }
 }

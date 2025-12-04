@@ -10,8 +10,8 @@ public record BuiltinCastNode(
     long version,
     Instant metadataUpdatedAt,
     String engineVersion,
-    String sourceType,
-    String targetType,
+    ResourceId sourceType,
+    ResourceId targetType,
     String method,
     Map<EngineKey, EngineHint> engineHints)
     implements RelationNode {
