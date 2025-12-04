@@ -68,5 +68,4 @@ final class GlueIcebergFilter {
 
     return false;
   }
-
 }

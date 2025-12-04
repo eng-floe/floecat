@@ -28,16 +28,15 @@ import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.grpc.StatusRuntimeException;
 import com.google.protobuf.FieldMask;
-import org.eclipse.microprofile.config.Config;
-import org.jboss.logging.Logger;
-
+import io.grpc.StatusRuntimeException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import org.eclipse.microprofile.config.Config;
+import org.jboss.logging.Logger;
 
 /** Shared helpers for translating Iceberg REST requests into Metacat RPCs. */
 public class TableGatewaySupport {
@@ -54,10 +53,7 @@ public class TableGatewaySupport {
   private volatile List<StorageCredentialDto> storageCredentialCache;
 
   public TableGatewaySupport(
-      GrpcWithHeaders grpc,
-      IcebergGatewayConfig config,
-      ObjectMapper mapper,
-      Config mpConfig) {
+      GrpcWithHeaders grpc, IcebergGatewayConfig config, ObjectMapper mapper, Config mpConfig) {
     this.grpc = grpc;
     this.config = config;
     this.mapper = mapper;
@@ -65,10 +61,7 @@ public class TableGatewaySupport {
   }
 
   public TableSpec.Builder buildCreateSpec(
-      ResourceId catalogId,
-      ResourceId namespaceId,
-      String tableName,
-      TableRequests.Create req)
+      ResourceId catalogId, ResourceId namespaceId, String tableName, TableRequests.Create req)
       throws JsonProcessingException {
     TableSpec.Builder spec = baseTableSpec(catalogId, namespaceId, tableName);
     if (req == null) {
@@ -129,10 +122,6 @@ public class TableGatewaySupport {
     }
     if (location == null || location.isBlank()) {
       return null;
-    }
-    if (looksLikePointer(location)) {
-      String derived = metadataLocationFromTableLocation(req.location());
-      return derived != null ? derived : null;
     }
     return location;
   }
@@ -195,10 +184,13 @@ public class TableGatewaySupport {
     }
     try {
       ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
-      Connector existing =
-          stub.getConnector(
-                  GetConnectorRequest.newBuilder().setConnectorId(connectorId).build())
-              .getConnector();
+      var response =
+          stub.getConnector(GetConnectorRequest.newBuilder().setConnectorId(connectorId).build());
+      if (response == null || !response.hasConnector()) {
+        LOG.warnf("Connector lookup returned empty response for %s", connectorId.getId());
+        return;
+      }
+      Connector existing = response.getConnector();
       Map<String, String> props = new LinkedHashMap<>(existing.getPropertiesMap());
       props.put("external.metadata-location", metadataLocation);
       ConnectorSpec spec = ConnectorSpec.newBuilder().putAllProperties(props).build();
@@ -371,6 +363,12 @@ public class TableGatewaySupport {
           IdempotencyKey.newBuilder().setKey(idempotencyKey + ":connector").build());
     }
     CreateConnectorResponse response = stub.createConnector(request.build());
+    if (response == null || !response.hasConnector()) {
+      LOG.warnf(
+          "Connector service returned empty response for template register %s.%s",
+          prefix, tableName);
+      return null;
+    }
     return response.getConnector().getResourceId();
   }
 
@@ -400,11 +398,15 @@ public class TableGatewaySupport {
     String displayName =
         "register:" + prefix + (namespaceFq.isBlank() ? "" : ":" + namespaceFq) + "." + tableName;
 
+    String connectorUri =
+        (metadataLocation != null && !metadataLocation.isBlank())
+            ? metadataLocation
+            : tableLocation;
     ConnectorSpec.Builder spec =
         ConnectorSpec.newBuilder()
             .setDisplayName(displayName)
             .setKind(ConnectorKind.CK_ICEBERG)
-            .setUri(nonBlank(tableLocation, metadataLocation))
+            .setUri(connectorUri)
             .setSource(source)
             .setDestination(dest)
             .setAuth(AuthConfig.newBuilder().setScheme("none").build())
@@ -418,7 +420,14 @@ public class TableGatewaySupport {
       request.setIdempotency(
           IdempotencyKey.newBuilder().setKey(idempotencyKey + ":connector").build());
     }
-    return stub.createConnector(request.build()).getConnector().getResourceId();
+    CreateConnectorResponse response = stub.createConnector(request.build());
+    if (response == null || !response.hasConnector()) {
+      LOG.warnf(
+          "Connector service returned empty response for external connector %s.%s",
+          prefix, tableName);
+      return null;
+    }
+    return response.getConnector().getResourceId();
   }
 
   public void updateTableUpstream(
@@ -446,7 +455,8 @@ public class TableGatewaySupport {
     tableStub.updateTable(request);
   }
 
-  public void runSyncMetadataCapture(ResourceId connectorId, List<String> namespacePath, String tableName) {
+  public void runSyncMetadataCapture(
+      ResourceId connectorId, List<String> namespacePath, String tableName) {
     if (connectorId == null || tableName == null || tableName.isBlank()) {
       return;
     }
@@ -457,7 +467,12 @@ public class TableGatewaySupport {
       SyncCaptureRequest.Builder request =
           SyncCaptureRequest.newBuilder()
               .setConnectorId(connectorId)
+              .setDestinationTableDisplayName(tableName)
               .setIncludeStatistics(false);
+      if (namespacePath != null && !namespacePath.isEmpty()) {
+        request.addDestinationNamespacePaths(
+            NamespacePath.newBuilder().addAllSegments(namespacePath).build());
+      }
       var response = stub.syncCapture(request.build());
       LOG.infof(
           "Triggered sync metadata capture connector=%s namespace=%s table=%s scanned=%d changed=%d errors=%d",
@@ -540,5 +555,4 @@ public class TableGatewaySupport {
       return null;
     }
   }
-
 }

@@ -163,7 +163,8 @@ public class ViewResource {
       }
       if (req.namespace() != null && !req.namespace().isEmpty()) {
         var targetNs =
-            NameResolution.resolveNamespace(grpc, catalogName, new java.util.ArrayList<>(req.namespace()));
+            NameResolution.resolveNamespace(
+                grpc, catalogName, new java.util.ArrayList<>(req.namespace()));
         spec.setNamespaceId(targetNs);
         mask.addPaths("namespace_id");
       }
@@ -218,7 +219,8 @@ public class ViewResource {
     if (req != null) {
       if (req.namespace() != null && !req.namespace().isEmpty()) {
         var targetNs =
-            NameResolution.resolveNamespace(grpc, catalogName, new java.util.ArrayList<>(req.namespace()));
+            NameResolution.resolveNamespace(
+                grpc, catalogName, new java.util.ArrayList<>(req.namespace()));
         spec.setNamespaceId(targetNs);
         mask.addPaths("namespace_id");
       }

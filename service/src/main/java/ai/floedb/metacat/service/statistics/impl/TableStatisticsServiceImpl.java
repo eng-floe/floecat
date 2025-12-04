@@ -289,8 +289,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                     LOG.debugf(
                         "Received metrics for unknown snapshot tableId=%s snapshotId=%d; storing"
                             + " stats anyway",
-                        request.getTableId().getId(),
-                        request.getSnapshotId());
+                        request.getTableId().getId(), request.getSnapshotId());
                   }
 
                   var fingerprint = request.getStats().toByteArray();

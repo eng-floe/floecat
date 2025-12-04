@@ -1,8 +1,7 @@
 package ai.floedb.metacat.gateway.iceberg.rest;
 
-import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.catalog.rpc.TableSpec;
-
+import ai.floedb.metacat.common.rpc.ResourceId;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -34,7 +33,16 @@ public record StagedTableEntry(
   public StagedTableEntry initializeTimestamps(Instant now) {
     Instant created = createdAt == null ? now : createdAt;
     return new StagedTableEntry(
-        key, catalogId, namespaceId, request, spec, requirements, state, created, now, idempotencyKey);
+        key,
+        catalogId,
+        namespaceId,
+        request,
+        spec,
+        requirements,
+        state,
+        created,
+        now,
+        idempotencyKey);
   }
 
   public StagedTableEntry withState(StageState newState) {

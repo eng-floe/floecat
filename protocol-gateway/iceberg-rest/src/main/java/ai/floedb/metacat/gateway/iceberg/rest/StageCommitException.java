@@ -26,7 +26,9 @@ final class StageCommitException extends RuntimeException {
 
   Response toResponse() {
     return Response.status(status)
-        .entity(new IcebergErrorResponse(new IcebergError(getMessage(), errorType, status.getStatusCode())))
+        .entity(
+            new IcebergErrorResponse(
+                new IcebergError(getMessage(), errorType, status.getStatusCode())))
         .build();
   }
 }

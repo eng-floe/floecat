@@ -1,7 +1,6 @@
 package ai.floedb.metacat.gateway.iceberg.rest;
 
 import jakarta.enterprise.context.ApplicationScoped;
-
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;

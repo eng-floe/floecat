@@ -55,9 +55,7 @@ final class IcebergPlanner implements Planner<Integer> {
     Snapshot snap = table.snapshot(snapshotId);
     Integer snapSchemaId = snap != null ? snap.schemaId() : null;
     int schemaId =
-        snapSchemaId != null && snapSchemaId > 0
-            ? snapSchemaId
-            : table.schema().schemaId();
+        snapSchemaId != null && snapSchemaId > 0 ? snapSchemaId : table.schema().schemaId();
     this.schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
     this.specsById = table.specs();
     this.defaultSpec = table.spec();

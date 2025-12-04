@@ -96,6 +96,7 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.TestProfile;
 import io.restassured.RestAssured;
 import io.restassured.builder.RequestSpecBuilder;
 import io.restassured.specification.RequestSpecification;
@@ -107,6 +108,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 @QuarkusTest
+@TestProfile(RestResourceTestProfile.class)
 class RestResourceTest {
   @InjectMock GrpcWithHeaders grpc;
   @InjectMock GrpcClients clients;
@@ -849,8 +851,7 @@ class RestResourceTest {
         .body("requirements[0].type", equalTo("assert-create"));
 
     verify(tableStub, never()).createTable(any());
-    StagedTableKey key =
-        new StagedTableKey("tenant1", "foo", List.of("db"), "orders", "stage-1");
+    StagedTableKey key = new StagedTableKey("tenant1", "foo", List.of("db"), "orders", "stage-1");
     assertTrue(stageRepository.get(key).isPresent());
   }
 
@@ -859,8 +860,7 @@ class RestResourceTest {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
-    when(directoryStub.resolveTable(any()))
-        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+    when(directoryStub.resolveTable(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
 
     Table created =
         Table.newBuilder()
@@ -934,8 +934,7 @@ class RestResourceTest {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
-    when(directoryStub.resolveTable(any()))
-        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+    when(directoryStub.resolveTable(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
 
     Table created =
         Table.newBuilder()
@@ -1654,15 +1653,30 @@ class RestResourceTest {
   }
 
   @Test
-  void missingTenantHeaderReturns401() {
+  void missingTenantHeaderUsesDefaultTenant() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .setDisplayName("orders")
+            .build();
+    when(tableStub.listTables(any()))
+        .thenReturn(
+            ListTablesResponse.newBuilder()
+                .addTables(table)
+                .setPage(PageResponse.newBuilder().build())
+                .build());
+
     RestAssured.requestSpecification = null;
     given()
+        .header("authorization", "Bearer token")
         .when()
         .get("/v1/foo/namespaces/db/tables")
         .then()
-        .statusCode(401)
-        .body("error.message", equalTo("missing tenant header"))
-        .body("error.code", equalTo(401));
+        .statusCode(200)
+        .body("identifiers[0].name", equalTo("orders"));
     RestAssured.requestSpecification = defaultSpec;
   }
 
@@ -1852,11 +1866,7 @@ class RestResourceTest {
         .then()
         .statusCode(200);
 
-    given()
-        .when()
-        .get("/v1/foo/namespaces/db/tables/orders/plan/plan-1")
-        .then()
-        .statusCode(200);
+    given().when().get("/v1/foo/namespaces/db/tables/orders/plan/plan-1").then().statusCode(200);
 
     ArgumentCaptor<FetchScanBundleRequest> fetch =
         ArgumentCaptor.forClass(FetchScanBundleRequest.class);

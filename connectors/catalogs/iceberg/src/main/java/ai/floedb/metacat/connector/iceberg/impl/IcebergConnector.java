@@ -55,6 +55,7 @@ import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.SortField;
 import org.apache.iceberg.SortOrder;
+import org.apache.iceberg.StaticTableOperations;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
@@ -64,7 +65,6 @@ import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
-import org.apache.iceberg.StaticTableOperations;
 import org.apache.iceberg.rest.RESTCatalog;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
@@ -510,13 +510,15 @@ public final class IcebergConnector implements MetacatConnector {
       throw new IllegalArgumentException("metadataLocation is required");
     }
     Map<String, String> opts = options == null ? Map.of() : options;
-    String ioImpl =
-        opts.getOrDefault("io-impl", "org.apache.iceberg.aws.s3.S3FileIO").trim();
+    String ioImpl = opts.getOrDefault("io-impl", "org.apache.iceberg.aws.s3.S3FileIO").trim();
     FileIO fileIO = instantiateFileIO(ioImpl);
     Map<String, String> ioProps = new HashMap<>();
     opts.forEach(
         (k, v) -> {
-          if (k.startsWith("s3.") || k.startsWith("fs.") || k.startsWith("client.") || k.startsWith("aws.")) {
+          if (k.startsWith("s3.")
+              || k.startsWith("fs.")
+              || k.startsWith("client.")
+              || k.startsWith("aws.")) {
             ioProps.put(k, v);
           }
         });

@@ -61,10 +61,7 @@ public class ReconcilerService {
   }
 
   public Result reconcile(
-      ResourceId connectorId,
-      boolean fullRescan,
-      ReconcileScope scopeIn,
-      CaptureMode captureMode) {
+      ResourceId connectorId, boolean fullRescan, ReconcileScope scopeIn, CaptureMode captureMode) {
     ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
     long scanned = 0;
     long changed = 0;
@@ -207,8 +204,7 @@ public class ReconcilerService {
               connector.enumerateSnapshotsWithStats(
                   sourceNsFq, srcTable, destTableId, includeSelectors, includeStats);
 
-          ingestAllSnapshotsAndStatsFiltered(
-              destTableId, bundles, includeSelectors, includeStats);
+          ingestAllSnapshotsAndStatsFiltered(destTableId, bundles, includeSelectors, includeStats);
           changed++;
         } catch (Exception e) {
           errors++;
@@ -540,8 +536,7 @@ public class ReconcilerService {
                 PutFileColumnStatsRequest.newBuilder()
                     .setTableId(tableId)
                     .setSnapshotId(snapshotId)
-                    .addFiles(
-                        f.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
+                    .addFiles(f.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
                     .build());
           }
           clients

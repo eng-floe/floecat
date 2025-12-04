@@ -9,6 +9,7 @@ import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.container.ContainerRequestFilter;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.ext.Provider;
+import java.util.Optional;
 
 /** Enforces presence of the tenant header configured for the gateway. */
 @Provider
@@ -22,66 +23,104 @@ public class TenantHeaderFilter implements ContainerRequestFilter {
 
   @Override
   public void filter(ContainerRequestContext requestContext) {
-    try {
-      String headerName = DEFAULT_TENANT_HEADER;
-      if (!config.isUnsatisfied()) {
-        try {
-          headerName = config.get().tenantHeader();
-        } catch (Exception ignored) {
-          // fallback to default
-        }
+    // Allow config endpoint without tenant header.
+    if (requestContext.getUriInfo().getPath().equals("v1/config")) {
+      return;
+    }
+    String tenantHeader = resolveTenantHeaderName();
+    String tenant = headerValue(requestContext, tenantHeader);
+    if (tenant == null || tenant.isBlank()) {
+      tenant = defaultTenant().orElse(null);
+      if (tenant != null) {
+        requestContext.getHeaders().putSingle(tenantHeader, tenant);
       }
-      // Allow config endpoint without tenant header.
-      if (requestContext.getUriInfo().getPath().equals("v1/config")) {
-        return;
+    }
+    if (tenant == null || tenant.isBlank()) {
+      requestContext.abortWith(unauthorized("missing tenant header"));
+      return;
+    }
+    tenantContext.setTenantId(tenant.trim());
+
+    String authHeader = resolveAuthHeaderName();
+    String auth = headerValue(requestContext, authHeader);
+    if (auth == null || auth.isBlank()) {
+      auth = defaultAuthorization().orElse(null);
+      if (auth != null) {
+        requestContext.getHeaders().putSingle(authHeader, auth);
       }
-      String tenant = requestContext.getHeaderString(headerName);
-      if ((tenant == null || tenant.isBlank()) && !config.isUnsatisfied()) {
-        String fallback = safeValue(config.get().defaultTenantId());
-        if (!fallback.isBlank()) {
-          tenant = fallback;
-        }
-      }
-      if (tenant == null || tenant.isBlank()) {
-        requestContext.abortWith(
-            Response.status(Response.Status.UNAUTHORIZED)
-                .entity(
-                    new IcebergErrorResponse(
-                        new IcebergError("missing tenant header", "UnauthorizedException", 401)))
-                .build());
-        return;
-      }
-      tenantContext.setTenantId(tenant);
-      String authHeader = config.isUnsatisfied() ? DEFAULT_AUTH_HEADER : config.get().authHeader();
-      if (authHeader == null || authHeader.isBlank()) {
-        authHeader = DEFAULT_AUTH_HEADER;
-      }
-      String auth = requestContext.getHeaderString(authHeader);
-      if ((auth == null || auth.isBlank()) && !config.isUnsatisfied()) {
-        String fallback = safeValue(config.get().defaultAuthorization());
-        if (!fallback.isBlank()) {
-          auth = fallback;
-        }
-      }
-      if (auth == null || auth.isBlank()) {
-        requestContext.abortWith(
-            Response.status(Response.Status.UNAUTHORIZED)
-                .entity(
-                    new IcebergErrorResponse(
-                        new IcebergError(
-                            "missing authorization header", "UnauthorizedException", 401)))
-                .build());
-      }
-    } catch (Exception e) {
-      requestContext.abortWith(
-          Response.status(Response.Status.UNAUTHORIZED)
-              .entity(
-                  new IcebergErrorResponse(
-                      new IcebergError("missing tenant header", "UnauthorizedException", 401)))
-              .build());
+    }
+    if (auth == null || auth.isBlank()) {
+      requestContext.abortWith(unauthorized("missing authorization header"));
     }
   }
-  private String safeValue(String value) {
-    return value == null ? "" : value;
+
+  private String resolveTenantHeaderName() {
+    if (config.isUnsatisfied()) {
+      return DEFAULT_TENANT_HEADER;
+    }
+    try {
+      String header = config.get().tenantHeader();
+      return header == null || header.isBlank() ? DEFAULT_TENANT_HEADER : header;
+    } catch (Exception ignored) {
+      return DEFAULT_TENANT_HEADER;
+    }
+  }
+
+  private String resolveAuthHeaderName() {
+    if (config.isUnsatisfied()) {
+      return DEFAULT_AUTH_HEADER;
+    }
+    try {
+      String header = config.get().authHeader();
+      return header == null || header.isBlank() ? DEFAULT_AUTH_HEADER : header;
+    } catch (Exception ignored) {
+      return DEFAULT_AUTH_HEADER;
+    }
+  }
+
+  private Response unauthorized(String message) {
+    return Response.status(Response.Status.UNAUTHORIZED)
+        .entity(new IcebergErrorResponse(new IcebergError(message, "UnauthorizedException", 401)))
+        .build();
+  }
+
+  private Optional<String> defaultTenant() {
+    if (config.isUnsatisfied()) {
+      return Optional.empty();
+    }
+    try {
+      String value = config.get().defaultTenantId();
+      if (value == null || value.isBlank()) {
+        return Optional.empty();
+      }
+      return Optional.of(value.trim());
+    } catch (Exception ignored) {
+      return Optional.empty();
+    }
+  }
+
+  private Optional<String> defaultAuthorization() {
+    if (config.isUnsatisfied()) {
+      return Optional.empty();
+    }
+    try {
+      String value = config.get().defaultAuthorization();
+      if (value == null || value.isBlank() || isPlaceholder(value)) {
+        return Optional.empty();
+      }
+      return Optional.of(value.trim());
+    } catch (Exception ignored) {
+      return Optional.empty();
+    }
+  }
+
+  private boolean isPlaceholder(String value) {
+    String normalized = value.trim();
+    return normalized.equalsIgnoreCase("undefined") || normalized.equalsIgnoreCase("null");
+  }
+
+  private String headerValue(ContainerRequestContext context, String headerName) {
+    String value = context.getHeaderString(headerName);
+    return value == null ? null : value.trim();
   }
 }

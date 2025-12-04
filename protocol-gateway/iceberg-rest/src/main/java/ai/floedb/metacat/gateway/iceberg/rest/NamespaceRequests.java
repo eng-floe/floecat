@@ -10,8 +10,7 @@ public final class NamespaceRequests {
   private NamespaceRequests() {}
 
   public record Create(
-      @JsonProperty("namespace")
-          @JsonDeserialize(using = NamespaceListDeserializer.class)
+      @JsonProperty("namespace") @JsonDeserialize(using = NamespaceListDeserializer.class)
           List<String> namespace,
       String description,
       Map<String, String> properties,

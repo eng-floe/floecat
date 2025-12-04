@@ -1,7 +1,6 @@
 package ai.floedb.metacat.gateway.iceberg.rest;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import java.util.List;
@@ -37,7 +36,5 @@ public final class TableRequests {
       @JsonProperty("updates") List<Map<String, Object>> updates) {}
 
   public record Register(
-      String name,
-      @JsonProperty("metadata-location") String metadataLocation,
-      Boolean overwrite) {}
+      String name, @JsonProperty("metadata-location") String metadataLocation, Boolean overwrite) {}
 }

@@ -90,7 +90,10 @@ final class TableResponseMapper {
         Optional.ofNullable(request.location())
             .filter(s -> !s.isBlank())
             .orElseGet(() -> props.get("location"));
-    String metadataLoc = metadataLocationFromTableLocation(locationOverride);
+    String metadataLoc = metadataLocationFromRequest(request);
+    if (metadataLoc == null || metadataLoc.isBlank()) {
+      metadataLoc = metadataLocationFromTableLocation(locationOverride);
+    }
     if (metadataLoc == null || metadataLoc.isBlank()) {
       metadataLoc = defaultMetadataLocation(table, tableName);
     }
@@ -181,14 +184,17 @@ final class TableResponseMapper {
     }
     Map<String, Object> schema =
         new LinkedHashMap<>(JSON.convertValue(node, new TypeReference<Map<String, Object>>() {}));
-    normalizeSchema(schema);
-    return schema;
+    try {
+      normalizeSchema(schema);
+      return schema;
+    } catch (IllegalArgumentException e) {
+      return defaultTableSchema();
+    }
   }
 
   private static TableMetadataView synthesizeMetadataFromTable(
       String tableName, Table table, Map<String, String> props, String metadataLocation) {
-    return synthesizeMetadataFromTable(
-        tableName, table, props, metadataLocation, List.of());
+    return synthesizeMetadataFromTable(tableName, table, props, metadataLocation, List.of());
   }
 
   private static TableMetadataView synthesizeMetadataFromTable(
@@ -261,7 +267,8 @@ final class TableResponseMapper {
     if (metadataLocation != null && !metadataLocation.isBlank()) {
       return metadataLocation;
     }
-    String tableLocation = table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
+    String tableLocation =
+        table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
     if (tableLocation != null && !tableLocation.isBlank()) {
       String base =
           tableLocation.endsWith("/")
@@ -288,8 +295,12 @@ final class TableResponseMapper {
     }
     Map<String, Object> schema =
         new LinkedHashMap<>(JSON.convertValue(node, new TypeReference<Map<String, Object>>() {}));
-    normalizeSchema(schema);
-    return schema;
+    try {
+      normalizeSchema(schema);
+      return schema;
+    } catch (IllegalArgumentException e) {
+      return defaultTableSchema();
+    }
   }
 
   private static Map<String, Object> defaultTableSchema() {
@@ -448,6 +459,7 @@ final class TableResponseMapper {
       Map<String, Object> defaults = new LinkedHashMap<>();
       defaults.put("sort-order-id", 0);
       defaults.put("fields", List.of());
+      normalizeSortOrder(defaults);
       return defaults;
     }
     if (!node.isObject()) {
@@ -528,7 +540,10 @@ final class TableResponseMapper {
     if (tableLocation == null || tableLocation.isBlank()) {
       return null;
     }
-    String base = tableLocation.endsWith("/") ? tableLocation.substring(0, tableLocation.length() - 1) : tableLocation;
+    String base =
+        tableLocation.endsWith("/")
+            ? tableLocation.substring(0, tableLocation.length() - 1)
+            : tableLocation;
     String dir = base + "/metadata/";
     return dir + nextMetadataFileName();
   }
@@ -555,29 +570,31 @@ final class TableResponseMapper {
             : Instant.now().toEpochMilli();
     Long currentSnapshotId =
         metadata != null && metadata.getCurrentSnapshotId() > 0
-            ? metadata.getCurrentSnapshotId()
+            ? Long.valueOf(metadata.getCurrentSnapshotId())
             : maybeLong(props.get("current-snapshot-id"));
     Long lastSequenceNumber =
-        metadata != null ? metadata.getLastSequenceNumber() : maybeLong(props.get("last-sequence-number"));
+        metadata != null
+            ? Long.valueOf(metadata.getLastSequenceNumber())
+            : maybeLong(props.get("last-sequence-number"));
     Integer lastColumnId =
         metadata != null && metadata.getLastColumnId() >= 0
-            ? metadata.getLastColumnId()
+            ? Integer.valueOf(metadata.getLastColumnId())
             : maybeInt(props.get("last-column-id"));
     Integer currentSchemaId =
         metadata != null && metadata.getCurrentSchemaId() >= 0
-            ? metadata.getCurrentSchemaId()
+            ? Integer.valueOf(metadata.getCurrentSchemaId())
             : maybeInt(props.get("current-schema-id"));
     Integer defaultSpecId =
         metadata != null && metadata.getDefaultSpecId() >= 0
-            ? metadata.getDefaultSpecId()
+            ? Integer.valueOf(metadata.getDefaultSpecId())
             : maybeInt(props.get("default-spec-id"));
     Integer lastPartitionId =
         metadata != null && metadata.getLastPartitionId() >= 0
-            ? metadata.getLastPartitionId()
+            ? Integer.valueOf(metadata.getLastPartitionId())
             : maybeInt(props.get("last-partition-id"));
     Integer defaultSortOrderId =
         metadata != null && metadata.getDefaultSortOrderId() >= 0
-            ? metadata.getDefaultSortOrderId()
+            ? Integer.valueOf(metadata.getDefaultSortOrderId())
             : maybeInt(props.get("default-sort-order-id"));
     String tableUuid =
         Optional.ofNullable(props.get("table-uuid"))
@@ -628,9 +645,11 @@ final class TableResponseMapper {
         defaultSortOrderId = fallbackOrderId;
       }
     }
+    List<Map<String, Object>> statisticsList = sanitizeStatistics(statistics(metadata));
+    List<Map<String, Object>> partitionStatisticsList =
+        nonNullMapList(partitionStatistics(metadata));
     if (snapshots != null && !snapshots.isEmpty()) {
-      long maxSequence =
-          snapshots.stream().mapToLong(Snapshot::getSequenceNumber).max().orElse(0L);
+      long maxSequence = snapshots.stream().mapToLong(Snapshot::getSequenceNumber).max().orElse(0L);
       if (maxSequence > lastSequenceNumber) {
         lastSequenceNumber = maxSequence;
       }
@@ -691,8 +710,8 @@ final class TableResponseMapper {
         refs,
         snapshotLog(metadata),
         metadataLog(metadata),
-        statistics(metadata),
-        partitionStatistics(metadata),
+        statisticsList,
+        partitionStatisticsList,
         snapshots(snapshots));
   }
 
@@ -881,6 +900,34 @@ final class TableResponseMapper {
     return out;
   }
 
+  private static List<Map<String, Object>> sanitizeStatistics(
+      List<Map<String, Object>> statistics) {
+    if (statistics == null || statistics.isEmpty()) {
+      return List.of();
+    }
+    List<Map<String, Object>> sanitized = new ArrayList<>(statistics.size());
+    for (Map<String, Object> entry : statistics) {
+      Map<String, Object> copy = entry == null ? new LinkedHashMap<>() : new LinkedHashMap<>(entry);
+      Object blobs = copy.get("blob-metadata");
+      if (!(blobs instanceof List<?>)) {
+        copy.put("blob-metadata", List.of());
+      }
+      sanitized.add(copy);
+    }
+    return sanitized;
+  }
+
+  private static List<Map<String, Object>> nonNullMapList(List<Map<String, Object>> value) {
+    if (value == null || value.isEmpty()) {
+      return List.of();
+    }
+    List<Map<String, Object>> copy = new ArrayList<>(value.size());
+    for (Map<String, Object> entry : value) {
+      copy.add(entry == null ? Map.of() : new LinkedHashMap<>(entry));
+    }
+    return copy;
+  }
+
   private static List<Map<String, Object>> partitionStatistics(IcebergMetadata metadata) {
     if (metadata == null) {
       return List.of();
@@ -973,6 +1020,17 @@ final class TableResponseMapper {
 
   private static Object firstNonNull(Object first, Object second) {
     return first != null ? first : second;
+  }
+
+  private static String metadataLocationFromRequest(TableRequests.Create request) {
+    if (request == null || request.properties() == null || request.properties().isEmpty()) {
+      return null;
+    }
+    String location = request.properties().get("metadata-location");
+    if (location == null || location.isBlank()) {
+      location = request.properties().get("metadata_location");
+    }
+    return (location == null || location.isBlank()) ? null : location;
   }
 
   private static void normalizeSortOrder(Map<String, Object> order) {

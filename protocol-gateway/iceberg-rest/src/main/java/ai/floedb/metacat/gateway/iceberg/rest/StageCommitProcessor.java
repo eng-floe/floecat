@@ -74,8 +74,7 @@ public class StageCommitProcessor {
     try {
       ResourceId existingId =
           NameResolution.resolveTable(grpc, catalogName, namespacePath, tableName);
-      var resp =
-          tableStub.getTable(GetTableRequest.newBuilder().setTableId(existingId).build());
+      var resp = tableStub.getTable(GetTableRequest.newBuilder().setTableId(existingId).build());
       existing = resp.getTable();
       tableExists = true;
     } catch (StatusRuntimeException e) {
@@ -83,7 +82,8 @@ public class StageCommitProcessor {
         throw e;
       }
     }
-    validateStageRequirements(entry.requirements(), catalogName, namespacePath, tableName, tableExists);
+    validateStageRequirements(
+        entry.requirements(), catalogName, namespacePath, tableName, tableExists);
     Table tableRecord = existing;
     if (!tableExists) {
       CreateTableRequest.Builder createRequest =

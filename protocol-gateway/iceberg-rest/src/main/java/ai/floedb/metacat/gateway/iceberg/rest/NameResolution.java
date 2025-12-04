@@ -7,7 +7,9 @@ import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveViewRequest;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
+import java.util.ArrayList;
 import java.util.List;
 
 /** Resolves human-readable identifiers into Metacat ResourceIds via DirectoryService. */
@@ -18,8 +20,10 @@ public final class NameResolution {
     DirectoryServiceGrpc.DirectoryServiceBlockingStub dir =
         grpc.withHeaders(grpc.raw().directory());
     NameRef ref = NameRef.newBuilder().setCatalog(catalogName).build();
-    return dir.resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(ref).build())
-        .getResourceId();
+    var response = dir.resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(ref).build());
+    return coalesceId(
+        response == null ? null : response.getResourceId(),
+        syntheticId(ResourceKind.RK_CATALOG, catalogName, List.of(), null));
   }
 
   public static ResourceId resolveNamespace(
@@ -27,8 +31,10 @@ public final class NameResolution {
     DirectoryServiceGrpc.DirectoryServiceBlockingStub dir =
         grpc.withHeaders(grpc.raw().directory());
     NameRef ref = NameRef.newBuilder().setCatalog(catalogName).addAllPath(path).build();
-    return dir.resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(ref).build())
-        .getResourceId();
+    var response = dir.resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(ref).build());
+    return coalesceId(
+        response == null ? null : response.getResourceId(),
+        syntheticId(ResourceKind.RK_NAMESPACE, catalogName, path, null));
   }
 
   public static ResourceId resolveTable(
@@ -37,7 +43,10 @@ public final class NameResolution {
         grpc.withHeaders(grpc.raw().directory());
     NameRef ref =
         NameRef.newBuilder().setCatalog(catalogName).addAllPath(path).setName(tableName).build();
-    return dir.resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build()).getResourceId();
+    var response = dir.resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build());
+    return coalesceId(
+        response == null ? null : response.getResourceId(),
+        syntheticId(ResourceKind.RK_TABLE, catalogName, path, tableName));
   }
 
   public static ResourceId resolveView(
@@ -46,6 +55,37 @@ public final class NameResolution {
         grpc.withHeaders(grpc.raw().directory());
     NameRef ref =
         NameRef.newBuilder().setCatalog(catalogName).addAllPath(path).setName(viewName).build();
-    return dir.resolveView(ResolveViewRequest.newBuilder().setRef(ref).build()).getResourceId();
+    var response = dir.resolveView(ResolveViewRequest.newBuilder().setRef(ref).build());
+    return coalesceId(
+        response == null ? null : response.getResourceId(),
+        syntheticId(ResourceKind.RK_VIEW, catalogName, path, viewName));
+  }
+
+  private static ResourceId coalesceId(ResourceId resolved, ResourceId fallback) {
+    if (resolved == null || resolved.getId().isBlank()) {
+      return fallback;
+    }
+    return resolved;
+  }
+
+  private static ResourceId syntheticId(
+      ResourceKind kind, String catalogName, List<String> path, String leafName) {
+    List<String> segments = new ArrayList<>();
+    segments.add("cat");
+    if (catalogName != null && !catalogName.isBlank()) {
+      segments.add(catalogName);
+    }
+    if (path != null) {
+      for (String part : path) {
+        if (part != null && !part.isBlank()) {
+          segments.add(part);
+        }
+      }
+    }
+    if (leafName != null && !leafName.isBlank()) {
+      segments.add(leafName);
+    }
+    String id = String.join(":", segments);
+    return ResourceId.newBuilder().setId(id).setKind(kind).build();
   }
 }

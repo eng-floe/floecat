@@ -144,6 +144,9 @@ public class TableResource {
 
     TableServiceGrpc.TableServiceBlockingStub stub = grpc.withHeaders(grpc.raw().table());
     var resp = stub.listTables(req.build());
+    if (resp == null) {
+      resp = ai.floedb.metacat.catalog.rpc.ListTablesResponse.getDefaultInstance();
+    }
     List<TableIdentifierDto> identifiers =
         resp.getTablesList().stream()
             .map(t -> new TableIdentifierDto(NamespacePaths.split(namespace), t.getDisplayName()))
@@ -190,9 +193,6 @@ public class TableResource {
             transactionId,
             idempotencyKey);
       }
-      if (req.location() == null || req.location().isBlank()) {
-        return validationError("location is required");
-      }
     }
 
     TableSpec.Builder spec;
@@ -236,10 +236,25 @@ public class TableResource {
     if (mirrorResult.error() != null) {
       return mirrorResult.error();
     }
+    TableMetadataView responseMetadata =
+        mirrorResult.metadata() != null ? mirrorResult.metadata() : loadResult.metadata();
+    String responseMetadataLocation =
+        nonBlank(mirrorResult.metadataLocation(), loadResult.metadataLocation());
+    String preferredMetadataLocation =
+        req != null && tableSupport.metadataLocationFromCreate(req) != null
+            ? tableSupport.metadataLocationFromCreate(req)
+            : metadataLocation(created, metadata);
+    if (preferredMetadataLocation != null && !preferredMetadataLocation.isBlank()) {
+      responseMetadata =
+          responseMetadata != null
+              ? responseMetadata.withMetadataLocation(preferredMetadataLocation)
+              : null;
+      responseMetadataLocation = preferredMetadataLocation;
+    }
     loadResult =
         new LoadTableResultDto(
-            mirrorResult.metadataLocation(),
-            mirrorResult.metadata() != null ? mirrorResult.metadata() : loadResult.metadata(),
+            responseMetadataLocation,
+            responseMetadata,
             loadResult.config(),
             loadResult.storageCredentials());
 
@@ -283,6 +298,7 @@ public class TableResource {
     if (connectorId != null) {
       tableSupport.updateTableUpstream(
           created.getResourceId(), namespacePath, tableName, connectorId, upstreamUri);
+      runConnectorSyncIfPossible(connectorId, namespacePath, tableName);
     }
 
     Response.ResponseBuilder builder = Response.ok(loadResult);
@@ -575,6 +591,7 @@ public class TableResource {
               catalogId,
               table,
               current,
+              responseDto.metadata(),
               responseDto.metadataLocation(),
               idempotencyKey);
       Response.ResponseBuilder builder = Response.ok(responseDto);
@@ -675,6 +692,7 @@ public class TableResource {
               catalogId,
               table,
               current,
+              responseDto.metadata(),
               responseDto.metadataLocation(),
               idempotencyKey);
       Response.ResponseBuilder builder = Response.ok(responseDto);
@@ -715,6 +733,7 @@ public class TableResource {
             catalogId,
             table,
             updated,
+            responseDto.metadata(),
             responseDto.metadataLocation(),
             idempotencyKey);
     Response.ResponseBuilder builder = Response.ok(responseDto);
@@ -948,6 +967,7 @@ public class TableResource {
 
     tableSupport.updateTableUpstream(
         created.getResourceId(), namespacePath, tableName, connectorId, upstreamUri);
+    runConnectorSyncIfPossible(connectorId, namespacePath, tableName);
 
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
     Response.ResponseBuilder builder =
@@ -1213,13 +1233,13 @@ public class TableResource {
       }
       return MirrorMetadataResult.success(resolvedMetadata, resolvedLocation);
     } catch (MetadataMirrorException e) {
-      LOG.errorf(
+      LOG.warnf(
           e,
-          "Failed to mirror Iceberg metadata for %s.%s to %s",
+          "Failed to mirror Iceberg metadata for %s.%s to %s (serving original metadata)",
           namespace,
           table,
           metadataLocation);
-      return MirrorMetadataResult.failure(serverError("Failed to persist Iceberg metadata files"));
+      return MirrorMetadataResult.success(metadata, metadataLocation);
     }
   }
 
@@ -1260,9 +1280,21 @@ public class TableResource {
       ResourceId catalogId,
       String table,
       Table tableRecord,
+      TableMetadataView metadataView,
       String metadataLocation,
       String idempotencyKey) {
-    if (tableRecord == null || metadataLocation == null || metadataLocation.isBlank()) {
+    if (tableRecord == null) {
+      return null;
+    }
+    String effectiveMetadata = metadataLocation;
+    if ((effectiveMetadata == null || effectiveMetadata.isBlank()) && metadataView != null) {
+      effectiveMetadata = metadataView.metadataLocation();
+    }
+    if (effectiveMetadata == null || effectiveMetadata.isBlank()) {
+      Map<String, String> props = tableRecord.getPropertiesMap();
+      effectiveMetadata = props.getOrDefault("metadata-location", props.get("metadata_location"));
+    }
+    if (effectiveMetadata == null || effectiveMetadata.isBlank()) {
       return resolveConnectorId(tableRecord);
     }
     ResourceId connectorId = resolveConnectorId(tableRecord);
@@ -1279,16 +1311,18 @@ public class TableResource {
                 tableRecord.getResourceId(),
                 connectorTemplate,
                 idempotencyKey);
-        tableSupport.updateTableUpstream(
-            tableRecord.getResourceId(),
-            namespacePath,
-            table,
-            connectorId,
-            connectorTemplate.uri());
+        if (connectorId != null) {
+          tableSupport.updateTableUpstream(
+              tableRecord.getResourceId(),
+              namespacePath,
+              table,
+              connectorId,
+              connectorTemplate.uri());
+        }
       } else {
         String baseLocation = tableLocation(tableRecord);
         String resolvedLocation =
-            tableSupport.resolveTableLocation(baseLocation, metadataLocation);
+            tableSupport.resolveTableLocation(baseLocation, effectiveMetadata);
         connectorId =
             tableSupport.createExternalConnector(
                 prefix,
@@ -1297,18 +1331,16 @@ public class TableResource {
                 catalogId,
                 table,
                 tableRecord.getResourceId(),
-                metadataLocation,
+                effectiveMetadata,
                 resolvedLocation,
                 idempotencyKey);
-        tableSupport.updateTableUpstream(
-            tableRecord.getResourceId(),
-            namespacePath,
-            table,
-            connectorId,
-            resolvedLocation);
+        if (connectorId != null) {
+          tableSupport.updateTableUpstream(
+              tableRecord.getResourceId(), namespacePath, table, connectorId, resolvedLocation);
+        }
       }
     } else {
-      tableSupport.updateConnectorMetadata(connectorId, metadataLocation);
+      tableSupport.updateConnectorMetadata(connectorId, effectiveMetadata);
     }
     return connectorId;
   }
@@ -2641,6 +2673,7 @@ public class TableResource {
     if (connectorId == null || connectorId.getId().isBlank()) {
       return;
     }
+    tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
     tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
   }
 

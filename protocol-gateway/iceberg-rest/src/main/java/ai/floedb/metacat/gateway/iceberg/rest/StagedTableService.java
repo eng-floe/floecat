@@ -2,12 +2,11 @@ package ai.floedb.metacat.gateway.iceberg.rest;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import org.eclipse.microprofile.config.Config;
-
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import org.eclipse.microprofile.config.Config;
 
 /** Service facade for staged table persistence. */
 @ApplicationScoped
@@ -21,9 +20,7 @@ public class StagedTableService {
   public StagedTableService(StagedTableRepository repository, Config config) {
     this.repository = repository;
     long seconds =
-        config
-            .getOptionalValue("metacat.gateway.stage-ttl-seconds", Long.class)
-            .orElse(900L);
+        config.getOptionalValue("metacat.gateway.stage-ttl-seconds", Long.class).orElse(900L);
     if (seconds < MIN_TTL_SECONDS) {
       seconds = MIN_TTL_SECONDS;
     }

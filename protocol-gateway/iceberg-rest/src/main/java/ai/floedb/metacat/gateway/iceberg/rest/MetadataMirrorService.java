@@ -1,6 +1,5 @@
 package ai.floedb.metacat.gateway.iceberg.rest;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -17,6 +16,7 @@ import java.util.Set;
 import java.util.UUID;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
+import org.apache.iceberg.exceptions.NotFoundException;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;
@@ -46,8 +46,7 @@ public class MetadataMirrorService {
           namespaceFq, tableName);
       return new MirrorResult(metadataLocationOverride, null);
     }
-    String requestedLocation =
-        firstNonBlank(metadataLocationOverride, metadata.metadataLocation());
+    String requestedLocation = firstNonBlank(metadataLocationOverride, metadata.metadataLocation());
     if (requestedLocation != null && !shouldMirror(requestedLocation)) {
       LOG.debugf(
           "Skipping metadata mirror for %s.%s because metadata-location was %s",
@@ -55,9 +54,10 @@ public class MetadataMirrorService {
       return new MirrorResult(requestedLocation, metadata);
     }
     String resolvedLocation = null;
+    FileIO fileIO = null;
     try {
       Map<String, String> props = sanitizeProperties(metadata.properties());
-      FileIO fileIO = instantiateFileIO(props);
+      fileIO = instantiateFileIO(props);
       resolvedLocation = resolveVersionedLocation(fileIO, requestedLocation, metadata);
       if (resolvedLocation == null || resolvedLocation.isBlank()) {
         LOG.debugf(
@@ -77,11 +77,16 @@ public class MetadataMirrorService {
     } catch (Exception e) {
       throw new MetadataMirrorException(
           "Failed to mirror Iceberg metadata files to " + resolvedLocation, e);
+    } finally {
+      closeQuietly(fileIO);
     }
   }
 
   private boolean shouldMirror(String metadataLocation) {
     if (metadataLocation == null || metadataLocation.isBlank()) {
+      return false;
+    }
+    if (isPointerLocation(metadataLocation)) {
       return false;
     }
     try {
@@ -158,6 +163,16 @@ public class MetadataMirrorService {
       stream.write(data);
     } catch (IOException e) {
       throw new MetadataMirrorException("Failed to write metadata file " + location, e);
+    }
+  }
+
+  private void closeQuietly(FileIO fileIO) {
+    if (fileIO instanceof AutoCloseable closable) {
+      try {
+        closable.close();
+      } catch (Exception e) {
+        LOG.debugf(e, "Failed to close FileIO %s", fileIO.getClass().getName());
+      }
     }
   }
 
@@ -284,7 +299,9 @@ public class MetadataMirrorService {
     }
     try {
       return fileIO.newInputFile(location).exists();
-    } catch (UnsupportedOperationException e) {
+    } catch (UnsupportedOperationException | NotFoundException e) {
+      return false;
+    } catch (RuntimeException e) {
       return false;
     }
   }

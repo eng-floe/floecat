@@ -10,4 +10,3 @@ public class MetadataMirrorException extends RuntimeException {
     super(message, cause);
   }
 }
-

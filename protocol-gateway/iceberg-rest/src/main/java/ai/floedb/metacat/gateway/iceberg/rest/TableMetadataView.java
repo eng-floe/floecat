@@ -35,7 +35,9 @@ public record TableMetadataView(
       return this;
     }
     Map<String, String> updatedProps =
-        properties == null ? new java.util.LinkedHashMap<>() : new java.util.LinkedHashMap<>(properties);
+        properties == null
+            ? new java.util.LinkedHashMap<>()
+            : new java.util.LinkedHashMap<>(properties);
     updatedProps.put("metadata-location", newLocation);
     updatedProps.put("metadata_location", newLocation);
     return new TableMetadataView(
