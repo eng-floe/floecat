@@ -12,20 +12,24 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.common.rpc.SpecialSnapshot;
 import ai.floedb.metacat.connector.rpc.AuthConfig;
+import ai.floedb.metacat.connector.rpc.Connector;
 import ai.floedb.metacat.connector.rpc.ConnectorKind;
 import ai.floedb.metacat.connector.rpc.ConnectorSpec;
 import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.metacat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.metacat.connector.rpc.CreateConnectorResponse;
+import ai.floedb.metacat.connector.rpc.GetConnectorRequest;
 import ai.floedb.metacat.connector.rpc.NamespacePath;
 import ai.floedb.metacat.connector.rpc.SourceSelector;
 import ai.floedb.metacat.connector.rpc.SyncCaptureRequest;
 import ai.floedb.metacat.connector.rpc.TriggerReconcileRequest;
+import ai.floedb.metacat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.StatusRuntimeException;
+import com.google.protobuf.FieldMask;
 import org.eclipse.microprofile.config.Config;
 import org.jboss.logging.Logger;
 
@@ -33,6 +37,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 /** Shared helpers for translating Iceberg REST requests into Metacat RPCs. */
 public class TableGatewaySupport {
@@ -85,8 +90,15 @@ public class TableGatewaySupport {
       spec.setUpstream(upstream.build());
     }
     if (req.properties() != null && !req.properties().isEmpty()) {
-      spec.putAllProperties(req.properties());
+      spec.putAllProperties(sanitizeCreateProperties(req.properties()));
     }
+    String metadataLocation = metadataLocationFromCreate(req);
+    if ((metadataLocation == null || metadataLocation.isBlank())
+        && req.location() != null
+        && !req.location().isBlank()) {
+      metadataLocation = metadataLocationFromTableLocation(req.location());
+    }
+    addMetadataLocationProperties(spec, metadataLocation);
     return spec;
   }
 
@@ -115,7 +127,99 @@ public class TableGatewaySupport {
     if (location == null || location.isBlank()) {
       location = req.properties().get("metadata_location");
     }
-    return (location == null || location.isBlank()) ? null : location;
+    if (location == null || location.isBlank()) {
+      return null;
+    }
+    if (looksLikePointer(location)) {
+      String derived = metadataLocationFromTableLocation(req.location());
+      return derived != null ? derived : null;
+    }
+    return location;
+  }
+
+  private Map<String, String> sanitizeCreateProperties(Map<String, String> props) {
+    if (props.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, String> sanitized = new LinkedHashMap<>();
+    props.forEach(
+        (key, value) -> {
+          if (key == null || value == null) {
+            return;
+          }
+          if ("metadata-location".equals(key) || "metadata_location".equals(key)) {
+            return;
+          }
+          sanitized.put(key, value);
+        });
+    return sanitized;
+  }
+
+  public String resolveTableLocation(String requestedLocation, String metadataLocation) {
+    if (requestedLocation != null && !requestedLocation.isBlank()) {
+      return requestedLocation;
+    }
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return null;
+    }
+    int idx = metadataLocation.indexOf("/metadata/");
+    if (idx > 0) {
+      return metadataLocation.substring(0, idx);
+    }
+    int slash = metadataLocation.lastIndexOf('/');
+    if (slash > 0) {
+      return metadataLocation.substring(0, slash);
+    }
+    return metadataLocation;
+  }
+
+  private String metadataLocationFromTableLocation(String tableLocation) {
+    if (tableLocation == null || tableLocation.isBlank()) {
+      return null;
+    }
+    String base =
+        tableLocation.endsWith("/")
+            ? tableLocation.substring(0, tableLocation.length() - 1)
+            : tableLocation;
+    String dir = base + "/metadata/";
+    return dir + String.format("%05d-%s.metadata.json", 0, UUID.randomUUID());
+  }
+
+  private static String nonBlank(String primary, String fallback) {
+    return primary != null && !primary.isBlank() ? primary : fallback;
+  }
+
+  public void updateConnectorMetadata(ResourceId connectorId, String metadataLocation) {
+    if (connectorId == null || metadataLocation == null || metadataLocation.isBlank()) {
+      return;
+    }
+    try {
+      ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
+      Connector existing =
+          stub.getConnector(
+                  GetConnectorRequest.newBuilder().setConnectorId(connectorId).build())
+              .getConnector();
+      Map<String, String> props = new LinkedHashMap<>(existing.getPropertiesMap());
+      props.put("external.metadata-location", metadataLocation);
+      ConnectorSpec spec = ConnectorSpec.newBuilder().putAllProperties(props).build();
+      stub.updateConnector(
+          UpdateConnectorRequest.newBuilder()
+              .setConnectorId(connectorId)
+              .setSpec(spec)
+              .setUpdateMask(FieldMask.newBuilder().addPaths("properties").build())
+              .build());
+    } catch (StatusRuntimeException e) {
+      LOG.warnf(e, "Failed to update connector metadata for %s", connectorId.getId());
+    }
+  }
+
+  private static boolean looksLikePointer(String location) {
+    if (location == null || location.isBlank()) {
+      return false;
+    }
+    int slash = location.lastIndexOf('/');
+    String file = slash >= 0 ? location.substring(slash + 1) : location;
+    return "metadata.json".equalsIgnoreCase(file);
   }
 
   public Map<String, String> defaultTableConfig() {
@@ -158,29 +262,41 @@ public class TableGatewaySupport {
     if (table == null || !table.hasResourceId()) {
       return null;
     }
-    Long snapshotId = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
     SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub =
         grpc.withHeaders(grpc.raw().snapshot());
     try {
-      SnapshotRef.Builder ref = SnapshotRef.newBuilder();
-      if (snapshotId != null && snapshotId > 0) {
-        ref.setSnapshotId(snapshotId);
-      } else {
-        ref.setSpecial(SpecialSnapshot.SS_CURRENT);
-      }
-      var response =
-          snapshotStub.getSnapshot(
-              ai.floedb.metacat.catalog.rpc.GetSnapshotRequest.newBuilder()
-                  .setTableId(table.getResourceId())
-                  .setSnapshot(ref)
-                  .build());
+      SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT);
+      var requestBuilder =
+          ai.floedb.metacat.catalog.rpc.GetSnapshotRequest.newBuilder()
+              .setTableId(table.getResourceId())
+              .setSnapshot(ref);
+      var response = snapshotStub.getSnapshot(requestBuilder.build());
       if (response == null || !response.hasSnapshot()) {
         return null;
       }
       var snapshot = response.getSnapshot();
       return snapshot.hasIceberg() ? snapshot.getIceberg() : null;
-    } catch (StatusRuntimeException ignored) {
-      return null;
+    } catch (StatusRuntimeException primaryFailure) {
+      Long snapshotId = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
+      if (snapshotId == null || snapshotId <= 0) {
+        return null;
+      }
+      try {
+        SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSnapshotId(snapshotId);
+        var response =
+            snapshotStub.getSnapshot(
+                ai.floedb.metacat.catalog.rpc.GetSnapshotRequest.newBuilder()
+                    .setTableId(table.getResourceId())
+                    .setSnapshot(ref)
+                    .build());
+        if (response == null || !response.hasSnapshot()) {
+          return null;
+        }
+        var snapshot = response.getSnapshot();
+        return snapshot.hasIceberg() ? snapshot.getIceberg() : null;
+      } catch (StatusRuntimeException ignored) {
+        return null;
+      }
     }
   }
 
@@ -266,6 +382,7 @@ public class TableGatewaySupport {
       String tableName,
       ResourceId tableId,
       String metadataLocation,
+      String tableLocation,
       String idempotencyKey) {
     ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
     NamespacePath nsPath = NamespacePath.newBuilder().addAllSegments(namespacePath).build();
@@ -287,7 +404,7 @@ public class TableGatewaySupport {
         ConnectorSpec.newBuilder()
             .setDisplayName(displayName)
             .setKind(ConnectorKind.CK_ICEBERG)
-            .setUri(metadataLocation)
+            .setUri(nonBlank(tableLocation, metadataLocation))
             .setSource(source)
             .setDestination(dest)
             .setAuth(AuthConfig.newBuilder().setScheme("none").build())
@@ -333,18 +450,23 @@ public class TableGatewaySupport {
     if (connectorId == null || tableName == null || tableName.isBlank()) {
       return;
     }
+    String namespaceFq =
+        namespacePath == null || namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
     try {
       ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
       SyncCaptureRequest.Builder request =
           SyncCaptureRequest.newBuilder()
               .setConnectorId(connectorId)
-              .setDestinationTableDisplayName(tableName)
               .setIncludeStatistics(false);
-      if (namespacePath != null && !namespacePath.isEmpty()) {
-        request.addDestinationNamespacePaths(
-            NamespacePath.newBuilder().addAllSegments(namespacePath).build());
-      }
-      stub.syncCapture(request.build());
+      var response = stub.syncCapture(request.build());
+      LOG.infof(
+          "Triggered sync metadata capture connector=%s namespace=%s table=%s scanned=%d changed=%d errors=%d",
+          connectorId.getId(),
+          namespaceFq,
+          tableName,
+          response.getTablesScanned(),
+          response.getTablesChanged(),
+          response.getErrors());
     } catch (StatusRuntimeException e) {
       LOG.warnf(
           e,
@@ -356,6 +478,8 @@ public class TableGatewaySupport {
 
   public void triggerScopedReconcile(
       ResourceId connectorId, List<String> namespacePath, String tableName) {
+    String namespaceFq =
+        namespacePath == null || namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
     ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
     TriggerReconcileRequest.Builder request =
         TriggerReconcileRequest.newBuilder()
@@ -366,7 +490,13 @@ public class TableGatewaySupport {
       request.addDestinationNamespacePaths(
           NamespacePath.newBuilder().addAllSegments(namespacePath).build());
     }
-    stub.triggerReconcile(request.build());
+    var response = stub.triggerReconcile(request.build());
+    LOG.infof(
+        "Triggered reconcile job connector=%s namespace=%s table=%s jobId=%s",
+        connectorId == null ? "<missing>" : connectorId.getId(),
+        namespaceFq,
+        tableName,
+        response.getJobId());
   }
 
   private AuthConfig toAuthConfig(IcebergGatewayConfig.AuthTemplate template) {
@@ -410,4 +540,5 @@ public class TableGatewaySupport {
       return null;
     }
   }
+
 }

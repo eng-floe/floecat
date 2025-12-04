@@ -42,7 +42,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
-import org.apache.hadoop.conf.Configuration;
+import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
@@ -62,8 +62,9 @@ import org.apache.iceberg.TableMetadata.MetadataLogEntry;
 import org.apache.iceberg.TableScan;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
-import org.apache.iceberg.hadoop.HadoopTables;
 import org.apache.iceberg.io.CloseableIterable;
+import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.StaticTableOperations;
 import org.apache.iceberg.rest.RESTCatalog;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
@@ -301,7 +302,11 @@ public final class IcebergConnector implements MetacatConnector {
       long parentId = snapshot.parentId() != null ? snapshot.parentId().longValue() : 0;
       long createdMs = snapshot.timestampMillis();
 
-      int schemaId = (snapshot != null) ? snapshot.schemaId() : table.schema().schemaId();
+      Integer snapshotSchemaId = snapshot != null ? snapshot.schemaId() : null;
+      int schemaId =
+          snapshotSchemaId != null && snapshotSchemaId > 0
+              ? snapshotSchemaId
+              : table.schema().schemaId();
       Schema schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
       String schemaJson = SchemaParser.toJson(schema);
 
@@ -501,17 +506,24 @@ public final class IcebergConnector implements MetacatConnector {
   }
 
   private static Table loadExternalTable(String metadataLocation, Map<String, String> options) {
-    Configuration conf = new Configuration();
-    if (options != null) {
-      options.forEach(
-          (k, v) -> {
-            if (k.startsWith("fs.") || k.startsWith("hadoop.") || k.startsWith("s3.")) {
-              conf.set(k, v);
-            }
-          });
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      throw new IllegalArgumentException("metadataLocation is required");
     }
-    HadoopTables tables = new HadoopTables(conf);
-    return tables.load(metadataLocation);
+    Map<String, String> opts = options == null ? Map.of() : options;
+    String ioImpl =
+        opts.getOrDefault("io-impl", "org.apache.iceberg.aws.s3.S3FileIO").trim();
+    FileIO fileIO = instantiateFileIO(ioImpl);
+    Map<String, String> ioProps = new HashMap<>();
+    opts.forEach(
+        (k, v) -> {
+          if (k.startsWith("s3.") || k.startsWith("fs.") || k.startsWith("client.") || k.startsWith("aws.")) {
+            ioProps.put(k, v);
+          }
+        });
+    fileIO.initialize(ioProps);
+    String resolvedMetadataLocation = resolveMetadataLocation(metadataLocation);
+    StaticTableOperations ops = new StaticTableOperations(resolvedMetadataLocation, fileIO);
+    return new BaseTable(ops, deriveTableName(metadataLocation));
   }
 
   private static String deriveTableName(String metadataLocation) {
@@ -530,6 +542,28 @@ public final class IcebergConnector implements MetacatConnector {
       path = path.substring(0, path.length() - 5);
     }
     return path.isBlank() ? "table" : path;
+  }
+
+  private static FileIO instantiateFileIO(String className) {
+    try {
+      Class<?> clazz = Class.forName(className);
+      Object instance = clazz.getDeclaredConstructor().newInstance();
+      if (instance instanceof FileIO fileIO) {
+        return fileIO;
+      }
+      throw new IllegalArgumentException(className + " does not implement FileIO");
+    } catch (Exception e) {
+      throw new IllegalStateException("Unable to instantiate FileIO " + className, e);
+    }
+  }
+
+  private static String resolveMetadataLocation(String input) {
+    String trimmed = input.trim();
+    if (trimmed.endsWith(".json")) {
+      return trimmed;
+    }
+    String base = trimmed.endsWith("/") ? trimmed.substring(0, trimmed.length() - 1) : trimmed;
+    return base + "/metadata/metadata.json";
   }
 
   private String partitionJson(Table table, ContentFile<?> file) {

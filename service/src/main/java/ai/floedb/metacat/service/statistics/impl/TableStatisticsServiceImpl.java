@@ -285,14 +285,13 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                                   "table",
                                   Map.of("id", request.getTableId().getId())));
 
-                  snapshots
-                      .getById(request.getTableId(), request.getSnapshotId())
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId(),
-                                  "snapshot",
-                                  Map.of("id", Long.toString(request.getSnapshotId()))));
+                  if (snapshots.getById(request.getTableId(), request.getSnapshotId()).isEmpty()) {
+                    LOG.debugf(
+                        "Received metrics for unknown snapshot tableId=%s snapshotId=%d; storing"
+                            + " stats anyway",
+                        request.getTableId().getId(),
+                        request.getSnapshotId());
+                  }
 
                   var fingerprint = request.getStats().toByteArray();
                   var explicitKey =

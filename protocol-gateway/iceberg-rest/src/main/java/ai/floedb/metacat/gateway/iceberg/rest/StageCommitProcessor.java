@@ -92,7 +92,6 @@ public class StageCommitProcessor {
         createRequest.setIdempotency(IdempotencyKey.newBuilder().setKey(entry.idempotencyKey()));
       }
       tableRecord = tableStub.createTable(createRequest.build()).getTable();
-      wireUpConnectors(prefix, namespacePath, tableName, entry, tableRecord.getResourceId());
     }
     LoadTableResultDto loadResult = toLoadResult(tableName, entry, tableRecord);
     stagedTableService.deleteStage(key);
@@ -122,50 +121,6 @@ public class StageCommitProcessor {
           .getSnapshotsList();
     } catch (StatusRuntimeException e) {
       return List.of();
-    }
-  }
-
-  private void wireUpConnectors(
-      String prefix,
-      List<String> namespacePath,
-      String tableName,
-      StagedTableEntry entry,
-      ResourceId tableId) {
-    var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
-    ResourceId connectorId = null;
-    String upstreamUri = null;
-    if (connectorTemplate != null && connectorTemplate.uri() != null) {
-      connectorId =
-          tableSupport.createTemplateConnector(
-              prefix,
-              namespacePath,
-              entry.namespaceId(),
-              entry.catalogId(),
-              tableName,
-              tableId,
-              connectorTemplate,
-              entry.idempotencyKey());
-      upstreamUri = connectorTemplate.uri();
-    } else {
-      String metadataLocation = tableSupport.metadataLocationFromCreate(entry.request());
-      if (metadataLocation != null && !metadataLocation.isBlank()) {
-        connectorId =
-            tableSupport.createExternalConnector(
-                prefix,
-                namespacePath,
-                entry.namespaceId(),
-                entry.catalogId(),
-                tableName,
-                tableId,
-                metadataLocation,
-                entry.idempotencyKey());
-        upstreamUri = metadataLocation;
-      }
-    }
-    if (connectorId != null) {
-      tableSupport.updateTableUpstream(tableId, namespacePath, tableName, connectorId, upstreamUri);
-      tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
-      tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
     }
   }
 

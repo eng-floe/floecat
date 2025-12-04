@@ -46,7 +46,6 @@ import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.PartitionField;
 import ai.floedb.metacat.catalog.rpc.PartitionSpecInfo;
-import ai.floedb.metacat.catalog.rpc.PutTableStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.ResolveNamespaceResponse;
 import ai.floedb.metacat.catalog.rpc.ResolveTableResponse;
@@ -245,6 +244,7 @@ class RestResourceTest {
             .setNamespaceId(ResourceId.newBuilder().setId("cat:db").build())
             .setDisplayName("orders")
             .putProperties("metadata-location", "s3://bucket/path/metadata.json")
+            .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .putProperties("current-snapshot-id", "5")
             .build();
     when(tableStub.getTable(any()))
@@ -317,6 +317,7 @@ class RestResourceTest {
             .setResourceId(ResourceId.newBuilder().setId("cat:db:new_table"))
             .setDisplayName("new_table")
             .putProperties("metadata-location", "s3://b/db/new_table/metadata.json")
+            .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
     when(tableStub.createTable(any()))
         .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
@@ -348,7 +349,13 @@ class RestResourceTest {
         .header("x-tenant-id", "tenant1")
         .contentType(MediaType.APPLICATION_JSON)
         .body(
-            "{\"name\":\"new_table\",\"metadata-location\":\"s3://b/db/new_table/metadata.json\"}")
+            """
+            {
+              "name":"new_table",
+              "metadata-location":"s3://b/db/new_table/metadata.json",
+              "properties":{"io-impl":"org.apache.iceberg.inmemory.InMemoryFileIO"}
+            }
+            """)
         .when()
         .post("/v1/foo/namespaces/db/register")
         .then()
@@ -770,6 +777,7 @@ class RestResourceTest {
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
             .putProperties("metadata-location", "s3://bucket/path/metadata.json")
+            .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
     when(tableStub.createTable(any()))
         .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
@@ -785,7 +793,8 @@ class RestResourceTest {
                 "last-column-id":1,
                 "type":"struct",
                 "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
-              }
+              },
+              "properties":{"io-impl":"org.apache.iceberg.inmemory.InMemoryFileIO"}
             }
             """)
         .header("Content-Type", "application/json")
@@ -803,6 +812,7 @@ class RestResourceTest {
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
             .putProperties("metadata-location", "s3://bucket/path/metadata2.json")
+            .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
     when(tableStub.updateTable(any()))
         .thenReturn(UpdateTableResponse.newBuilder().setTable(updated).build());
@@ -859,6 +869,7 @@ class RestResourceTest {
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
             .putProperties("metadata-location", "s3://bucket/orders/metadata.json")
+            .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
     when(tableStub.createTable(any()))
         .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
@@ -932,6 +943,7 @@ class RestResourceTest {
             .setDisplayName("orders")
             .setNamespaceId(nsId)
             .putProperties("metadata-location", "s3://bucket/orders/metadata.json")
+            .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
     when(tableStub.createTable(any()))
         .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
@@ -1004,6 +1016,7 @@ class RestResourceTest {
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
             .putProperties("metadata-location", "s3://bucket/path/metadata.json")
+            .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
     when(tableStub.createTable(any()))
         .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
@@ -1039,7 +1052,10 @@ class RestResourceTest {
                 "type":"struct",
                 "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
               },
-              "properties":{"metadata-location":"s3://bucket/path/metadata.json"}
+              "properties":{
+                "metadata-location":"s3://bucket/path/metadata.json",
+                "io-impl":"org.apache.iceberg.inmemory.InMemoryFileIO"
+              }
             }
             """)
         .header("Content-Type", "application/json")
@@ -1112,6 +1128,8 @@ class RestResourceTest {
             .setResourceId(tableId)
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
+            .putProperties("metadata-location", "s3://bucket/orders/metadata.json")
+            .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .setUpstream(upstream)
             .build();
     when(tableStub.getTable(any()))
@@ -1195,6 +1213,8 @@ class RestResourceTest {
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
             .setUpstream(upstream)
+            .putProperties("metadata-location", "s3://bucket/orders/metadata.json")
+            .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .putProperties("current-snapshot-id", "4")
             .build();
     when(tableStub.getTable(any()))
@@ -1678,8 +1698,6 @@ class RestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-    when(statsStub.putTableStats(any()))
-        .thenReturn(ai.floedb.metacat.catalog.rpc.PutTableStatsResponse.getDefaultInstance());
 
     given()
         .body(
@@ -1697,12 +1715,9 @@ class RestResourceTest {
         .when()
         .post("/v1/foo/namespaces/db/tables/orders/metrics")
         .then()
-        .statusCode(204);
+        .statusCode(202);
 
-    ArgumentCaptor<PutTableStatsRequest> req = ArgumentCaptor.forClass(PutTableStatsRequest.class);
-    verify(statsStub).putTableStats(req.capture());
-    assertEquals(5L, req.getValue().getSnapshotId());
-    assertEquals("scan", req.getValue().getStats().getPropertiesMap().get("report-type"));
+    verify(statsStub, never()).putTableStats(any());
   }
 
   @Test
@@ -1964,7 +1979,8 @@ class RestResourceTest {
             ]
           },
           "properties": {
-            "metadata-location": "s3://bucket/%s/metadata.json"
+            "metadata-location": "s3://bucket/%s/metadata.json",
+            "io-impl": "org.apache.iceberg.inmemory.InMemoryFileIO"
           },
           "location": "s3://bucket/%s",
           "stage-create": true

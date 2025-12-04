@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 final class TableResponseMapper {
@@ -77,17 +78,24 @@ final class TableResponseMapper {
           .properties()
           .forEach(
               (k, v) -> {
-                if (k != null && v != null) {
+                if (k != null
+                    && v != null
+                    && !"metadata-location".equals(k)
+                    && !"metadata_location".equals(k)) {
                   props.put(k, v);
                 }
               });
     }
-    String metadataLoc = resolveMetadataLocation(props, null);
+    String locationOverride =
+        Optional.ofNullable(request.location())
+            .filter(s -> !s.isBlank())
+            .orElseGet(() -> props.get("location"));
+    String metadataLoc = metadataLocationFromTableLocation(locationOverride);
     if (metadataLoc == null || metadataLoc.isBlank()) {
       metadataLoc = defaultMetadataLocation(table, tableName);
-      props.put("metadata-location", metadataLoc);
-      props.put("metadata_location", metadataLoc);
     }
+    props.put("metadata-location", metadataLoc);
+    props.put("metadata_location", metadataLoc);
     final String metadataLocation = metadataLoc;
     String location =
         Optional.ofNullable(request.location())
@@ -179,10 +187,18 @@ final class TableResponseMapper {
 
   private static TableMetadataView synthesizeMetadataFromTable(
       String tableName, Table table, Map<String, String> props, String metadataLocation) {
+    return synthesizeMetadataFromTable(
+        tableName, table, props, metadataLocation, List.of());
+  }
+
+  private static TableMetadataView synthesizeMetadataFromTable(
+      String tableName,
+      Table table,
+      Map<String, String> props,
+      String metadataLocation,
+      List<Snapshot> snapshots) {
     String resolvedMetadata =
-        (metadataLocation == null || metadataLocation.isBlank())
-            ? defaultMetadataLocation(table, tableName)
-            : metadataLocation;
+        resolveInitialMetadataLocation(tableName, table, props, metadataLocation);
     props.put("metadata-location", resolvedMetadata);
     props.put("metadata_location", resolvedMetadata);
     Map<String, Object> schema = schemaFromTable(table);
@@ -207,8 +223,14 @@ final class TableResponseMapper {
     props.putIfAbsent("default-spec-id", defaultSpecId.toString());
     props.putIfAbsent("last-partition-id", Integer.toString(lastPartitionId));
     props.putIfAbsent("default-sort-order-id", defaultSortOrderId.toString());
-    props.putIfAbsent("current-snapshot-id", "0");
-    props.putIfAbsent("last-sequence-number", "0");
+    long maxSequence =
+        snapshots == null || snapshots.isEmpty()
+            ? 0L
+            : snapshots.stream().mapToLong(Snapshot::getSequenceNumber).max().orElse(0L);
+    long currentSnapshotId =
+        snapshots == null || snapshots.isEmpty() ? -1L : snapshots.get(0).getSnapshotId();
+    props.put("current-snapshot-id", Long.toString(currentSnapshotId < 0 ? 0 : currentSnapshotId));
+    props.put("last-sequence-number", Long.toString(maxSequence));
     return new TableMetadataView(
         formatVersion(props),
         table.hasResourceId() ? table.getResourceId().getId() : tableName,
@@ -221,8 +243,8 @@ final class TableResponseMapper {
         defaultSpecId,
         lastPartitionId,
         defaultSortOrderId,
-        null,
-        0L,
+        currentSnapshotId,
+        maxSequence,
         List.of(schema),
         List.of(partitionSpec),
         List.of(sortOrder),
@@ -231,7 +253,23 @@ final class TableResponseMapper {
         List.of(),
         List.of(),
         List.of(),
-        List.of());
+        snapshots(snapshots));
+  }
+
+  private static String resolveInitialMetadataLocation(
+      String tableName, Table table, Map<String, String> props, String metadataLocation) {
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      return metadataLocation;
+    }
+    String tableLocation = table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
+    if (tableLocation != null && !tableLocation.isBlank()) {
+      String base =
+          tableLocation.endsWith("/")
+              ? tableLocation.substring(0, tableLocation.length() - 1)
+              : tableLocation;
+      return base + "/metadata/" + String.format("%05d-%s.metadata.json", 0, UUID.randomUUID());
+    }
+    return defaultMetadataLocation(table, tableName);
   }
 
   private static Map<String, Object> schemaFromTable(Table table) {
@@ -315,6 +353,23 @@ final class TableResponseMapper {
     } catch (NumberFormatException e) {
       return null;
     }
+  }
+
+  private static void syncDualProperty(Map<String, String> props, String key, Object value) {
+    if (key == null) {
+      return;
+    }
+    syncProperty(props, key, value);
+    if (key.indexOf('-') >= 0) {
+      syncProperty(props, key.replace('-', '_'), value);
+    }
+  }
+
+  private static void syncProperty(Map<String, String> props, String key, Object value) {
+    if (props == null || key == null || value == null) {
+      return;
+    }
+    props.put(key, value.toString());
   }
 
   private static void normalizeSchema(Map<String, Object> schema) {
@@ -448,7 +503,7 @@ final class TableResponseMapper {
     } else {
       suffix = tableName;
     }
-    return "metacat:///tables/" + suffix;
+    return "metacat:///tables/" + suffix + "/metadata/" + nextMetadataFileName();
   }
 
   private static String defaultLocation(String current, String metadataLocation) {
@@ -469,6 +524,19 @@ final class TableResponseMapper {
     return metadataLocation;
   }
 
+  private static String metadataLocationFromTableLocation(String tableLocation) {
+    if (tableLocation == null || tableLocation.isBlank()) {
+      return null;
+    }
+    String base = tableLocation.endsWith("/") ? tableLocation.substring(0, tableLocation.length() - 1) : tableLocation;
+    String dir = base + "/metadata/";
+    return dir + nextMetadataFileName();
+  }
+
+  private static String nextMetadataFileName() {
+    return String.format("%05d-%s.metadata.json", 0, UUID.randomUUID());
+  }
+
   private static TableMetadataView toMetadata(
       String tableName,
       Table table,
@@ -477,7 +545,7 @@ final class TableResponseMapper {
       List<Snapshot> snapshots,
       String metadataLocation) {
     if (metadata == null) {
-      return synthesizeMetadataFromTable(tableName, table, props, metadataLocation);
+      return synthesizeMetadataFromTable(tableName, table, props, metadataLocation, snapshots);
     }
     String location = table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
     location = resolveTableLocation(location, metadataLocation);
@@ -485,34 +553,32 @@ final class TableResponseMapper {
         table.hasCreatedAt()
             ? table.getCreatedAt().getSeconds() * 1000 + table.getCreatedAt().getNanos() / 1_000_000
             : Instant.now().toEpochMilli();
-    Long currentSnapshotId = maybeLong(props.get("current-snapshot-id"));
-    if ((currentSnapshotId == null || currentSnapshotId <= 0) && metadata != null) {
-      currentSnapshotId = metadata.getCurrentSnapshotId();
-    }
-    Long lastSequenceNumber = maybeLong(props.get("last-sequence-number"));
-    if ((lastSequenceNumber == null || lastSequenceNumber <= 0) && metadata != null) {
-      lastSequenceNumber = metadata.getLastSequenceNumber();
-    }
-    Integer lastColumnId = maybeInt(props.get("last-column-id"));
-    if ((lastColumnId == null || lastColumnId <= 0) && metadata != null) {
-      lastColumnId = metadata.getLastColumnId();
-    }
-    Integer currentSchemaId = maybeInt(props.get("current-schema-id"));
-    if ((currentSchemaId == null || currentSchemaId <= 0) && metadata != null) {
-      currentSchemaId = metadata.getCurrentSchemaId();
-    }
-    Integer defaultSpecId = maybeInt(props.get("default-spec-id"));
-    if ((defaultSpecId == null || defaultSpecId <= 0) && metadata != null) {
-      defaultSpecId = metadata.getDefaultSpecId();
-    }
-    Integer lastPartitionId = maybeInt(props.get("last-partition-id"));
-    if ((lastPartitionId == null || lastPartitionId <= 0) && metadata != null) {
-      lastPartitionId = metadata.getLastPartitionId();
-    }
-    Integer defaultSortOrderId = maybeInt(props.get("default-sort-order-id"));
-    if ((defaultSortOrderId == null || defaultSortOrderId <= 0) && metadata != null) {
-      defaultSortOrderId = metadata.getDefaultSortOrderId();
-    }
+    Long currentSnapshotId =
+        metadata != null && metadata.getCurrentSnapshotId() > 0
+            ? metadata.getCurrentSnapshotId()
+            : maybeLong(props.get("current-snapshot-id"));
+    Long lastSequenceNumber =
+        metadata != null ? metadata.getLastSequenceNumber() : maybeLong(props.get("last-sequence-number"));
+    Integer lastColumnId =
+        metadata != null && metadata.getLastColumnId() >= 0
+            ? metadata.getLastColumnId()
+            : maybeInt(props.get("last-column-id"));
+    Integer currentSchemaId =
+        metadata != null && metadata.getCurrentSchemaId() >= 0
+            ? metadata.getCurrentSchemaId()
+            : maybeInt(props.get("current-schema-id"));
+    Integer defaultSpecId =
+        metadata != null && metadata.getDefaultSpecId() >= 0
+            ? metadata.getDefaultSpecId()
+            : maybeInt(props.get("default-spec-id"));
+    Integer lastPartitionId =
+        metadata != null && metadata.getLastPartitionId() >= 0
+            ? metadata.getLastPartitionId()
+            : maybeInt(props.get("last-partition-id"));
+    Integer defaultSortOrderId =
+        metadata != null && metadata.getDefaultSortOrderId() >= 0
+            ? metadata.getDefaultSortOrderId()
+            : maybeInt(props.get("default-sort-order-id"));
     String tableUuid =
         Optional.ofNullable(props.get("table-uuid"))
             .orElseGet(() -> table.hasResourceId() ? table.getResourceId().getId() : tableName);
@@ -591,9 +657,20 @@ final class TableResponseMapper {
         }
       }
     }
-    if ((currentSnapshotId == null || currentSnapshotId <= 0) && snapshots != null && !snapshots.isEmpty()) {
+    if ((currentSnapshotId == null || currentSnapshotId <= 0)
+        && snapshots != null
+        && !snapshots.isEmpty()) {
       currentSnapshotId = snapshots.get(0).getSnapshotId();
     }
+    syncProperty(props, "table-uuid", tableUuid);
+    syncDualProperty(props, "metadata-location", metadataLocation);
+    syncProperty(props, "current-snapshot-id", currentSnapshotId);
+    syncProperty(props, "last-sequence-number", lastSequenceNumber);
+    syncProperty(props, "current-schema-id", currentSchemaId);
+    syncProperty(props, "last-column-id", lastColumnId);
+    syncProperty(props, "default-spec-id", defaultSpecId);
+    syncProperty(props, "last-partition-id", lastPartitionId);
+    syncProperty(props, "default-sort-order-id", defaultSortOrderId);
     return new TableMetadataView(
         formatVersion,
         tableUuid,
@@ -843,7 +920,7 @@ final class TableResponseMapper {
         entry.put("manifest-list", snapshot.getManifestList());
       }
       int schemaId = snapshot.getSchemaId();
-      if (schemaId > 0) {
+      if (schemaId >= 0) {
         entry.put("schema-id", schemaId);
       }
       if (!snapshot.getSummaryMap().isEmpty()) {

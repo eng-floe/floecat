@@ -28,4 +28,38 @@ public record TableMetadataView(
     @JsonProperty("metadata-log") List<Map<String, Object>> metadataLog,
     @JsonProperty("statistics") List<Map<String, Object>> statistics,
     @JsonProperty("partition-statistics") List<Map<String, Object>> partitionStatistics,
-    @JsonProperty("snapshots") List<Map<String, Object>> snapshots) {}
+    @JsonProperty("snapshots") List<Map<String, Object>> snapshots) {
+
+  public TableMetadataView withMetadataLocation(String newLocation) {
+    if (newLocation == null || newLocation.isBlank()) {
+      return this;
+    }
+    Map<String, String> updatedProps =
+        properties == null ? new java.util.LinkedHashMap<>() : new java.util.LinkedHashMap<>(properties);
+    updatedProps.put("metadata-location", newLocation);
+    updatedProps.put("metadata_location", newLocation);
+    return new TableMetadataView(
+        formatVersion,
+        tableUuid,
+        location,
+        newLocation,
+        lastUpdatedMs,
+        updatedProps,
+        lastColumnId,
+        currentSchemaId,
+        defaultSpecId,
+        lastPartitionId,
+        defaultSortOrderId,
+        currentSnapshotId,
+        lastSequenceNumber,
+        schemas,
+        partitionSpecs,
+        sortOrders,
+        refs,
+        snapshotLog,
+        metadataLog,
+        statistics,
+        partitionStatistics,
+        snapshots);
+  }
+}

@@ -26,8 +26,6 @@ import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableSpec;
-import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
-import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.metacat.catalog.rpc.UpstreamRef;
@@ -41,8 +39,6 @@ import ai.floedb.metacat.execution.rpc.ScanBundle;
 import ai.floedb.metacat.execution.rpc.ScanFile;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
-import ai.floedb.metacat.gateway.iceberg.rest.StageCommitException;
-import ai.floedb.metacat.gateway.iceberg.rest.StageCommitProcessor;
 import ai.floedb.metacat.gateway.iceberg.rest.StageCommitProcessor.StageCommitResult;
 import ai.floedb.metacat.query.rpc.BeginQueryRequest;
 import ai.floedb.metacat.query.rpc.DescribeInputsRequest;
@@ -114,6 +110,7 @@ public class TableResource {
   @Inject StagedTableService stagedTableService;
   @Inject TenantContext tenantContext;
   @Inject StageCommitProcessor stageCommitProcessor;
+  @Inject MetadataMirrorService metadataMirrorService;
 
   private TableGatewaySupport tableSupport;
 
@@ -229,9 +226,31 @@ public class TableResource {
               tableName, created, metadata, List.of(), tableConfig, credentials);
     }
 
+    MirrorMetadataResult mirrorResult =
+        mirrorMetadata(
+            namespace,
+            created.getResourceId(),
+            tableName,
+            loadResult.metadata(),
+            loadResult.metadataLocation());
+    if (mirrorResult.error() != null) {
+      return mirrorResult.error();
+    }
+    loadResult =
+        new LoadTableResultDto(
+            mirrorResult.metadataLocation(),
+            mirrorResult.metadata() != null ? mirrorResult.metadata() : loadResult.metadata(),
+            loadResult.config(),
+            loadResult.storageCredentials());
+
     var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
     ResourceId connectorId = null;
     String upstreamUri = null;
+    String requestedLocation = req != null ? req.location() : null;
+    String metadataForLocation =
+        nonBlank(loadResult.metadataLocation(), tableSupport.metadataLocationFromCreate(req));
+    String externalUri = tableSupport.resolveTableLocation(requestedLocation, metadataForLocation);
+
     if (connectorTemplate != null && connectorTemplate.uri() != null) {
       connectorId =
           tableSupport.createTemplateConnector(
@@ -245,8 +264,7 @@ public class TableResource {
               idempotencyKey);
       upstreamUri = connectorTemplate.uri();
     } else {
-      String metadataLocation = tableSupport.metadataLocationFromCreate(req);
-      if (metadataLocation != null && !metadataLocation.isBlank()) {
+      if (externalUri != null && !externalUri.isBlank()) {
         connectorId =
             tableSupport.createExternalConnector(
                 prefix,
@@ -255,17 +273,16 @@ public class TableResource {
                 catalogId,
                 tableName,
                 created.getResourceId(),
-                metadataLocation,
+                loadResult.metadataLocation(),
+                externalUri,
                 idempotencyKey);
-        upstreamUri = metadataLocation;
+        upstreamUri = externalUri;
       }
     }
 
     if (connectorId != null) {
       tableSupport.updateTableUpstream(
           created.getResourceId(), namespacePath, tableName, connectorId, upstreamUri);
-      tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
-      tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
     }
 
     Response.ResponseBuilder builder = Response.ok(loadResult);
@@ -449,7 +466,9 @@ public class TableResource {
       @HeaderParam("Iceberg-Transaction-Id") String transactionId,
       TableRequests.Commit req) {
     String catalogName = resolveCatalog(prefix);
+    ResourceId catalogId = resolveCatalogId(prefix);
     List<String> namespacePath = NamespacePaths.split(namespace);
+    ResourceId namespaceId = NameResolution.resolveNamespace(grpc, catalogName, namespacePath);
     TableServiceGrpc.TableServiceBlockingStub stub = grpc.withHeaders(grpc.raw().table());
     final Table[] stagedTableHolder = new Table[1];
     StageCommitResult stageMaterialization = null;
@@ -479,7 +498,8 @@ public class TableResource {
       }
       if (stageIdToUse != null && e.getStatus().getCode() == Status.Code.NOT_FOUND) {
         LOG.infof(
-            "Table not found for commit, attempting staged materialization namespace=%s table=%s stageId=%s",
+            "Table not found for commit, attempting staged materialization namespace=%s table=%s"
+                + " stageId=%s",
             namespace, table, stageIdToUse);
         try {
           stageMaterialization =
@@ -525,16 +545,46 @@ public class TableResource {
         };
 
     if (stageMaterialization != null) {
-      LoadTableResultDto loadResult = stageMaterialization.loadResult();
-      CommitTableResponseDto responseDto =
-          new CommitTableResponseDto(loadResult.metadataLocation(), loadResult.metadata());
-      Response.ResponseBuilder builder = Response.ok(responseDto);
-      if (loadResult.metadataLocation() != null) {
-        builder.tag(loadResult.metadataLocation());
+      List<Map<String, Object>> snapshotAdds =
+          addSnapshotUpdates(req == null ? null : req.updates());
+      if (!snapshotAdds.isEmpty()) {
+        Response snapshotError =
+            applySnapshotUpdates(
+                tableId, namespacePath, table, tableSupplier, snapshotAdds, idempotencyKey);
+        if (snapshotError != null) {
+          return snapshotError;
+        }
       }
-      TableMetadataView meta = loadResult.metadata();
+      Table current = tableSupplier.get();
+      IcebergMetadata metadata = tableSupport.loadCurrentMetadata(current);
+      List<Snapshot> snapshotList = fetchSnapshots(tableId, SnapshotMode.ALL, metadata);
+      CommitTableResponseDto responseDto =
+          TableResponseMapper.toCommitResponse(table, current, metadata, snapshotList);
+      MirrorMetadataResult mirrorResult =
+          mirrorMetadata(
+              namespace, tableId, table, responseDto.metadata(), responseDto.metadataLocation());
+      if (mirrorResult.error() != null) {
+        return mirrorResult.error();
+      }
+      responseDto = applyMirrorResult(responseDto, mirrorResult);
+      ResourceId connectorId =
+          synchronizeConnector(
+              prefix,
+              namespacePath,
+              namespaceId,
+              catalogId,
+              table,
+              current,
+              responseDto.metadataLocation(),
+              idempotencyKey);
+      Response.ResponseBuilder builder = Response.ok(responseDto);
+      if (responseDto.metadataLocation() != null) {
+        builder.tag(responseDto.metadataLocation());
+      }
+      TableMetadataView meta = responseDto.metadata();
       LOG.infof(
-          "Stage commit satisfied for %s.%s tableId=%s stageId=%s currentSnapshot=%s snapshotCount=%d",
+          "Stage commit satisfied for %s.%s tableId=%s stageId=%s currentSnapshot=%s"
+              + " snapshotCount=%d",
           namespace,
           table,
           stageMaterialization.table().hasResourceId()
@@ -543,6 +593,7 @@ public class TableResource {
           resolveStageId(req, transactionId),
           meta == null ? "<null>" : meta.currentSnapshotId(),
           meta == null || meta.snapshots() == null ? 0 : meta.snapshots().size());
+      runConnectorSyncIfPossible(connectorId, namespacePath, table);
       return builder.build();
     }
 
@@ -570,6 +621,10 @@ public class TableResource {
       Map<String, String> mergedProps = null;
       if (req.properties() != null && !req.properties().isEmpty()) {
         mergedProps = new LinkedHashMap<>(req.properties());
+        stripMetadataLocation(mergedProps);
+        if (mergedProps.isEmpty()) {
+          mergedProps = null;
+        }
       }
       if (hasPropertyUpdates(req)) {
         if (mergedProps == null) {
@@ -603,9 +658,26 @@ public class TableResource {
       Table current = tableSupplier.get();
       IcebergMetadata metadata = tableSupport.loadCurrentMetadata(current);
       List<Snapshot> snapshotList = fetchSnapshots(tableId, SnapshotMode.ALL, metadata);
-      Response.ResponseBuilder builder =
-          Response.ok(
-              TableResponseMapper.toCommitResponse(table, current, metadata, snapshotList));
+      CommitTableResponseDto responseDto =
+          TableResponseMapper.toCommitResponse(table, current, metadata, snapshotList);
+      MirrorMetadataResult mirrorResult =
+          mirrorMetadata(
+              namespace, tableId, table, responseDto.metadata(), responseDto.metadataLocation());
+      if (mirrorResult.error() != null) {
+        return mirrorResult.error();
+      }
+      responseDto = applyMirrorResult(responseDto, mirrorResult);
+      ResourceId connectorId =
+          synchronizeConnector(
+              prefix,
+              namespacePath,
+              namespaceId,
+              catalogId,
+              table,
+              current,
+              responseDto.metadataLocation(),
+              idempotencyKey);
+      Response.ResponseBuilder builder = Response.ok(responseDto);
       LOG.infof(
           "Commit response for %s.%s tableId=%s currentSnapshot=%s snapshotCount=%d",
           namespace,
@@ -613,10 +685,10 @@ public class TableResource {
           current.hasResourceId() ? current.getResourceId().getId() : "<missing>",
           metadata != null ? metadata.getCurrentSnapshotId() : "<null>",
           snapshotList == null ? 0 : snapshotList.size());
-      String etagValue = metadataLocation(current, metadata);
-      if (etagValue != null) {
-        builder.tag(etagValue);
+      if (responseDto.metadataLocation() != null) {
+        builder.tag(responseDto.metadataLocation());
       }
+      runConnectorSyncIfPossible(connectorId, namespacePath, table);
       return builder.build();
     }
 
@@ -626,9 +698,26 @@ public class TableResource {
     Table updated = resp.getTable();
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(updated);
     List<Snapshot> snapshotList = fetchSnapshots(tableId, SnapshotMode.ALL, metadata);
-    Response.ResponseBuilder builder =
-        Response.ok(
-            TableResponseMapper.toCommitResponse(table, updated, metadata, snapshotList));
+    CommitTableResponseDto responseDto =
+        TableResponseMapper.toCommitResponse(table, updated, metadata, snapshotList);
+    MirrorMetadataResult mirrorResult =
+        mirrorMetadata(
+            namespace, tableId, table, responseDto.metadata(), responseDto.metadataLocation());
+    if (mirrorResult.error() != null) {
+      return mirrorResult.error();
+    }
+    responseDto = applyMirrorResult(responseDto, mirrorResult);
+    ResourceId connectorId =
+        synchronizeConnector(
+            prefix,
+            namespacePath,
+            namespaceId,
+            catalogId,
+            table,
+            updated,
+            responseDto.metadataLocation(),
+            idempotencyKey);
+    Response.ResponseBuilder builder = Response.ok(responseDto);
     LOG.infof(
         "Commit response for %s.%s tableId=%s currentSnapshot=%s snapshotCount=%d",
         namespace,
@@ -636,10 +725,10 @@ public class TableResource {
         updated.hasResourceId() ? updated.getResourceId().getId() : "<missing>",
         metadata != null ? metadata.getCurrentSnapshotId() : "<null>",
         snapshotList == null ? 0 : snapshotList.size());
-    String etagValue = metadataLocation(updated, metadata);
-    if (etagValue != null) {
-      builder.tag(etagValue);
+    if (responseDto.metadataLocation() != null) {
+      builder.tag(responseDto.metadataLocation());
     }
+    runConnectorSyncIfPossible(connectorId, namespacePath, table);
     return builder.build();
   }
 
@@ -791,57 +880,10 @@ public class TableResource {
     if (request == null || request.snapshotId() == null) {
       return validationError("snapshot-id is required");
     }
-    String catalogName = resolveCatalog(prefix);
-    ResourceId tableId =
-        NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
-    TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stub =
-        grpc.withHeaders(grpc.raw().stats());
-
-    TableStats.Builder stats =
-        TableStats.newBuilder().setTableId(tableId).setSnapshotId(request.snapshotId());
-    if (request.metadata() != null) {
-      stats.putAllProperties(request.metadata());
-    }
-    if (request.reportType() != null && !request.reportType().isBlank()) {
-      stats.putProperties("report-type", request.reportType());
-    }
-    if (request.operation() != null && !request.operation().isBlank()) {
-      stats.putProperties("operation", request.operation());
-    }
-    if (request.sequenceNumber() != null) {
-      stats.putProperties("sequence-number", request.sequenceNumber().toString());
-    }
-    if (request.schemaId() != null) {
-      stats.putProperties("schema-id", request.schemaId().toString());
-    }
-    if (request.projectedFieldIds() != null && !request.projectedFieldIds().isEmpty()) {
-      stats.putProperties(
-          "projected-field-ids",
-          request.projectedFieldIds().stream()
-              .map(String::valueOf)
-              .collect(Collectors.joining(",")));
-    }
-    if (request.projectedFieldNames() != null && !request.projectedFieldNames().isEmpty()) {
-      stats.putProperties("projected-field-names", String.join(",", request.projectedFieldNames()));
-    }
-    if (request.metrics() != null && !request.metrics().isEmpty()) {
-      String metricsJson = toJson(request.metrics());
-      if (metricsJson == null) {
-        return validationError("invalid metrics payload");
-      }
-      stats.putProperties("metrics", metricsJson);
-    }
-
-    var put =
-        ai.floedb.metacat.catalog.rpc.PutTableStatsRequest.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(request.snapshotId())
-            .setStats(stats);
-    if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-      put.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey));
-    }
-    stub.putTableStats(put.build());
-    return Response.noContent().build();
+    LOG.infof(
+        "Received metrics report for %s.%s snapshot=%d (deferred)",
+        namespace, table, request.snapshotId());
+    return Response.status(Response.Status.ACCEPTED).build();
   }
 
   @Path("/register")
@@ -899,15 +941,13 @@ public class TableResource {
               tableName,
               created.getResourceId(),
               req.metadataLocation(),
+              tableSupport.resolveTableLocation(null, req.metadataLocation()),
               idempotencyKey);
-      upstreamUri = req.metadataLocation();
+      upstreamUri = tableSupport.resolveTableLocation(null, req.metadataLocation());
     }
 
     tableSupport.updateTableUpstream(
         created.getResourceId(), namespacePath, tableName, connectorId, upstreamUri);
-
-    tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
-    tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
 
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
     Response.ResponseBuilder builder =
@@ -1147,6 +1187,181 @@ public class TableResource {
         .build();
   }
 
+  private Response serverError(String message) {
+    return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+        .entity(new IcebergErrorResponse(new IcebergError(message, "CommitFailedException", 500)))
+        .build();
+  }
+
+  private MirrorMetadataResult mirrorMetadata(
+      String namespace,
+      ResourceId tableId,
+      String table,
+      TableMetadataView metadata,
+      String metadataLocation) {
+    if (metadata == null) {
+      return MirrorMetadataResult.success(null, metadataLocation);
+    }
+    try {
+      MetadataMirrorService.MirrorResult mirrorResult =
+          metadataMirrorService.mirror(namespace, table, metadata, metadataLocation);
+      String resolvedLocation = nonBlank(mirrorResult.metadataLocation(), metadataLocation);
+      TableMetadataView resolvedMetadata =
+          mirrorResult.metadata() != null ? mirrorResult.metadata() : metadata;
+      if (tableId != null) {
+        updateTableMetadataProperties(tableId, resolvedMetadata, resolvedLocation);
+      }
+      return MirrorMetadataResult.success(resolvedMetadata, resolvedLocation);
+    } catch (MetadataMirrorException e) {
+      LOG.errorf(
+          e,
+          "Failed to mirror Iceberg metadata for %s.%s to %s",
+          namespace,
+          table,
+          metadataLocation);
+      return MirrorMetadataResult.failure(serverError("Failed to persist Iceberg metadata files"));
+    }
+  }
+
+  private void updateTableMetadataProperties(
+      ResourceId tableId, TableMetadataView metadata, String resolvedLocation) {
+    if (tableId == null || metadata == null) {
+      return;
+    }
+    Map<String, String> props =
+        metadata.properties() != null
+            ? new LinkedHashMap<>(metadata.properties())
+            : new LinkedHashMap<>();
+    if (resolvedLocation != null && !resolvedLocation.isBlank()) {
+      props.put("metadata-location", resolvedLocation);
+      props.put("metadata_location", resolvedLocation);
+    }
+    if (props.isEmpty()) {
+      return;
+    }
+    TableSpec spec = TableSpec.newBuilder().putAllProperties(props).build();
+    UpdateTableRequest request =
+        UpdateTableRequest.newBuilder()
+            .setTableId(tableId)
+            .setSpec(spec)
+            .setUpdateMask(FieldMask.newBuilder().addPaths("properties").build())
+            .build();
+    try {
+      grpc.withHeaders(grpc.raw().table()).updateTable(request);
+    } catch (Exception e) {
+      LOG.warnf(e, "Failed to update metadata properties for tableId=%s", tableId.getId());
+    }
+  }
+
+  private ResourceId synchronizeConnector(
+      String prefix,
+      List<String> namespacePath,
+      ResourceId namespaceId,
+      ResourceId catalogId,
+      String table,
+      Table tableRecord,
+      String metadataLocation,
+      String idempotencyKey) {
+    if (tableRecord == null || metadataLocation == null || metadataLocation.isBlank()) {
+      return resolveConnectorId(tableRecord);
+    }
+    ResourceId connectorId = resolveConnectorId(tableRecord);
+    if (connectorId == null) {
+      var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
+      if (connectorTemplate != null && connectorTemplate.uri() != null) {
+        connectorId =
+            tableSupport.createTemplateConnector(
+                prefix,
+                namespacePath,
+                namespaceId,
+                catalogId,
+                table,
+                tableRecord.getResourceId(),
+                connectorTemplate,
+                idempotencyKey);
+        tableSupport.updateTableUpstream(
+            tableRecord.getResourceId(),
+            namespacePath,
+            table,
+            connectorId,
+            connectorTemplate.uri());
+      } else {
+        String baseLocation = tableLocation(tableRecord);
+        String resolvedLocation =
+            tableSupport.resolveTableLocation(baseLocation, metadataLocation);
+        connectorId =
+            tableSupport.createExternalConnector(
+                prefix,
+                namespacePath,
+                namespaceId,
+                catalogId,
+                table,
+                tableRecord.getResourceId(),
+                metadataLocation,
+                resolvedLocation,
+                idempotencyKey);
+        tableSupport.updateTableUpstream(
+            tableRecord.getResourceId(),
+            namespacePath,
+            table,
+            connectorId,
+            resolvedLocation);
+      }
+    } else {
+      tableSupport.updateConnectorMetadata(connectorId, metadataLocation);
+    }
+    return connectorId;
+  }
+
+  private String tableLocation(Table tableRecord) {
+    if (tableRecord == null) {
+      return null;
+    }
+    if (tableRecord.hasUpstream()) {
+      String uri = tableRecord.getUpstream().getUri();
+      if (uri != null && !uri.isBlank()) {
+        return uri;
+      }
+    }
+    Map<String, String> props = tableRecord.getPropertiesMap();
+    String location = props.get("location");
+    if (location != null && !location.isBlank()) {
+      return location;
+    }
+    return null;
+  }
+
+  private CommitTableResponseDto applyMirrorResult(
+      CommitTableResponseDto responseDto, MirrorMetadataResult mirrorResult) {
+    if (responseDto == null || mirrorResult == null) {
+      return responseDto;
+    }
+    TableMetadataView updatedMetadata =
+        mirrorResult.metadata() != null ? mirrorResult.metadata() : responseDto.metadata();
+    String updatedLocation =
+        nonBlank(mirrorResult.metadataLocation(), responseDto.metadataLocation());
+    if (updatedMetadata == responseDto.metadata()
+        && Objects.equals(updatedLocation, responseDto.metadataLocation())) {
+      return responseDto;
+    }
+    return new CommitTableResponseDto(updatedLocation, updatedMetadata);
+  }
+
+  private static String nonBlank(String primary, String fallback) {
+    return primary != null && !primary.isBlank() ? primary : fallback;
+  }
+
+  private record MirrorMetadataResult(
+      Response error, TableMetadataView metadata, String metadataLocation) {
+    static MirrorMetadataResult success(TableMetadataView metadata, String location) {
+      return new MirrorMetadataResult(null, metadata, location);
+    }
+
+    static MirrorMetadataResult failure(Response error) {
+      return new MirrorMetadataResult(error, null, null);
+    }
+  }
+
   private String toJson(Object value) {
     if (value == null) {
       return null;
@@ -1156,6 +1371,35 @@ public class TableResource {
     } catch (JsonProcessingException e) {
       return null;
     }
+  }
+
+  private String schemaJsonFromMetadata(IcebergMetadata metadata, Integer schemaId) {
+    if (metadata == null || metadata.getSchemasCount() == 0) {
+      return null;
+    }
+    Integer targetId = schemaId != null ? schemaId : metadata.getCurrentSchemaId();
+    if (targetId != null && targetId > 0) {
+      for (IcebergSchema schema : metadata.getSchemasList()) {
+        if (schema.getSchemaId() == targetId) {
+          return schema.getSchemaJson();
+        }
+      }
+    }
+    return metadata.getSchemasList().get(0).getSchemaJson();
+  }
+
+  private List<Map<String, Object>> addSnapshotUpdates(List<Map<String, Object>> updates) {
+    if (updates == null || updates.isEmpty()) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new ArrayList<>();
+    for (Map<String, Object> update : updates) {
+      String action = asString(update == null ? null : update.get("action"));
+      if ("add-snapshot".equals(action)) {
+        out.add(update);
+      }
+    }
+    return out;
   }
 
   private Response specNotImplemented(String operation) {
@@ -1272,7 +1516,8 @@ public class TableResource {
           }
           if (expected == null) {
             LOG.debugf(
-                "Skipping assert-ref-snapshot-id requirement for table %s ref %s because snapshot-id was not provided",
+                "Skipping assert-ref-snapshot-id requirement for table %s ref %s because"
+                    + " snapshot-id was not provided",
                 table.hasResourceId() ? table.getResourceId().getId() : "<unknown>", refName);
             continue;
           }
@@ -1631,11 +1876,14 @@ public class TableResource {
       }
       switch (action) {
         case "set-properties" -> {
-          Map<String, String> toSet = asStringMap(update.get("updates"));
+          Map<String, String> toSet = new LinkedHashMap<>(asStringMap(update.get("updates")));
           if (toSet.isEmpty()) {
             return validationError("set-properties requires updates");
           }
-          properties.putAll(toSet);
+          stripMetadataLocation(toSet);
+          if (!toSet.isEmpty()) {
+            properties.putAll(toSet);
+          }
         }
         case "remove-properties" -> {
           List<String> removals = asStringList(update.get("removals"));
@@ -1654,6 +1902,22 @@ public class TableResource {
 
   private static String asString(Object value) {
     return value == null ? null : String.valueOf(value);
+  }
+
+  private static void stripMetadataLocation(Map<String, String> props) {
+    if (props == null || props.isEmpty()) {
+      return;
+    }
+    boolean removed = false;
+    if (props.remove("metadata-location") != null) {
+      removed = true;
+    }
+    if (props.remove("metadata_location") != null) {
+      removed = true;
+    }
+    if (removed) {
+      LOG.debug("Ignored commit metadata-location property override");
+    }
   }
 
   private static List<String> copyOfOrNull(List<String> values) {
@@ -2092,24 +2356,22 @@ public class TableResource {
     Long size = asLong(statsMap.get("file-size-in-bytes"));
     Long footerSize = asLong(statsMap.get("file-footer-size-in-bytes"));
     List<Map<String, Object>> blobMaps = asMapList(statsMap.get("blob-metadata"));
-    if (snapshotId == null
-        || path == null
-        || path.isBlank()
-        || size == null
-        || footerSize == null
-        || blobMaps.isEmpty()) {
+    if (snapshotId == null || path == null || path.isBlank() || size == null) {
       throw new IllegalArgumentException(
-          "set-statistics requires snapshot-id, statistics-path, file-size-in-bytes,"
-              + " file-footer-size-in-bytes, and blob-metadata");
+          "set-statistics requires snapshot-id, statistics-path, and file-size-in-bytes");
     }
     IcebergStatisticsFile.Builder builder =
         IcebergStatisticsFile.newBuilder()
             .setSnapshotId(snapshotId)
             .setStatisticsPath(path)
-            .setFileSizeInBytes(size)
-            .setFileFooterSizeInBytes(footerSize);
-    for (Map<String, Object> blobMap : blobMaps) {
-      builder.addBlobMetadata(buildBlobMetadata(blobMap));
+            .setFileSizeInBytes(size);
+    if (footerSize != null) {
+      builder.setFileFooterSizeInBytes(footerSize);
+    }
+    if (!blobMaps.isEmpty()) {
+      for (Map<String, Object> blobMap : blobMaps) {
+        builder.addBlobMetadata(buildBlobMetadata(blobMap));
+      }
     }
     return builder.build();
   }
@@ -2314,14 +2576,31 @@ public class TableResource {
       spec.putAllSummary(summary);
     }
     Integer schemaId = asInteger(snapshot.get("schema-id"));
-    if (schemaId != null) {
-      spec.setSchemaId(schemaId);
+    IcebergMetadata metadata = null;
+    if (schemaId == null) {
+      schemaId = propertyInt(existing.getPropertiesMap(), "current-schema-id");
     }
-    if (snapshot.containsKey("schema-json")) {
-      String schemaJson = asString(snapshot.get("schema-json"));
-      if (schemaJson != null && !schemaJson.isBlank()) {
-        spec.setSchemaJson(schemaJson);
+    if (schemaId == null) {
+      metadata = tableSupport.loadCurrentMetadata(existing);
+      if (metadata != null && metadata.getCurrentSchemaId() > 0) {
+        schemaId = metadata.getCurrentSchemaId();
       }
+    } else {
+      metadata = tableSupport.loadCurrentMetadata(existing);
+    }
+    if (schemaId == null) {
+      schemaId = 0;
+    }
+    spec.setSchemaId(schemaId);
+    String schemaJson = asString(snapshot.get("schema-json"));
+    if (schemaJson == null || schemaJson.isBlank()) {
+      schemaJson = existing.getSchemaJson();
+    }
+    if ((schemaJson == null || schemaJson.isBlank()) && metadata != null) {
+      schemaJson = schemaJsonFromMetadata(metadata, schemaId);
+    }
+    if (schemaJson != null && !schemaJson.isBlank()) {
+      spec.setSchemaJson(schemaJson);
     }
     CreateSnapshotRequest.Builder request =
         CreateSnapshotRequest.newBuilder().setSpec(spec.build());
@@ -2330,7 +2609,6 @@ public class TableResource {
           IdempotencyKey.newBuilder().setKey(idempotencyKey + ":snapshot:" + snapshotId).build());
     }
     stub.createSnapshot(request.build());
-    triggerSnapshotReconcile(existing, namespacePath, tableName);
     return null;
   }
 
@@ -2345,12 +2623,24 @@ public class TableResource {
     }
   }
 
-  private void triggerSnapshotReconcile(Table table, List<String> namespacePath, String tableName) {
-    if (table == null || !table.hasUpstream() || !table.getUpstream().hasConnectorId()) {
+  private ResourceId resolveConnectorId(Table tableRecord) {
+    if (tableRecord == null
+        || !tableRecord.hasUpstream()
+        || !tableRecord.getUpstream().hasConnectorId()) {
+      return null;
+    }
+    ResourceId connectorId = tableRecord.getUpstream().getConnectorId();
+    if (connectorId == null || connectorId.getId().isBlank()) {
+      return null;
+    }
+    return connectorId;
+  }
+
+  private void runConnectorSyncIfPossible(
+      ResourceId connectorId, List<String> namespacePath, String tableName) {
+    if (connectorId == null || connectorId.getId().isBlank()) {
       return;
     }
-    ResourceId connectorId = table.getUpstream().getConnectorId();
-    tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
     tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
   }
 
@@ -2396,22 +2686,42 @@ public class TableResource {
       return null;
     }
     Table table = existingTable != null ? existingTable : tableSupplier.get();
-    Long targetSnapshotId =
-        preferredSnapshotId != null
-            ? preferredSnapshotId
-            : propertyLong(table.getPropertiesMap(), "current-snapshot-id");
+    SnapshotServiceGrpc.SnapshotServiceBlockingStub stub = grpc.withHeaders(grpc.raw().snapshot());
+    Snapshot snapshot;
+    Long targetSnapshotId = preferredSnapshotId;
+    if (targetSnapshotId == null) {
+      try {
+        snapshot =
+            stub.getSnapshot(
+                    GetSnapshotRequest.newBuilder()
+                        .setTableId(tableId)
+                        .setSnapshot(
+                            SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
+                        .build())
+                .getSnapshot();
+        targetSnapshotId = snapshot.getSnapshotId();
+      } catch (StatusRuntimeException e) {
+        Long propertySnapshot = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
+        targetSnapshotId = propertySnapshot;
+        snapshot = null;
+      }
+    } else {
+      snapshot = null;
+    }
+
     if (targetSnapshotId == null || targetSnapshotId <= 0) {
       return validationError("snapshot metadata updates require current snapshot id");
     }
 
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub stub = grpc.withHeaders(grpc.raw().snapshot());
-    var snapshot =
-        stub.getSnapshot(
-                GetSnapshotRequest.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(targetSnapshotId))
-                    .build())
-            .getSnapshot();
+    if (snapshot == null) {
+      snapshot =
+          stub.getSnapshot(
+                  GetSnapshotRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(targetSnapshotId))
+                      .build())
+              .getSnapshot();
+    }
 
     IcebergMetadata.Builder iceberg =
         snapshot.hasIceberg() ? snapshot.getIceberg().toBuilder() : IcebergMetadata.newBuilder();

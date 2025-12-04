@@ -22,10 +22,21 @@
         <type>pom</type>
         <scope>import</scope>
       </dependency>
+
+      <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>bom</artifactId>
+        <version>${aws.sdk.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
     </dependencies>
   </dependencyManagement>
+
   <properties>
     <quarkus-plugin.version>${quarkus.platform.version}</quarkus-plugin.version>
+    <iceberg.version>1.10.0</iceberg.version>
+    <aws.sdk.version>2.39.5</aws.sdk.version>
   </properties>
 
   <dependencies>
@@ -51,6 +62,38 @@
       <groupId>ai.floedb.metacat</groupId>
       <artifactId>metacat-proto</artifactId>
       <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.iceberg</groupId>
+      <artifactId>iceberg-core</artifactId>
+      <version>${iceberg.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.iceberg</groupId>
+      <artifactId>iceberg-aws</artifactId>
+      <version>${iceberg.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>s3</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>kms</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>sso</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>ssooidc</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>sts</artifactId>
     </dependency>
 
     <dependency>
