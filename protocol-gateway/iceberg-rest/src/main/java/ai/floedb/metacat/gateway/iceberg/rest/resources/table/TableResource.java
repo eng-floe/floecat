@@ -15,6 +15,7 @@ import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.metacat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.*;
+import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.MirrorMetadataResult;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.TableCommitService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
@@ -161,7 +162,7 @@ public class TableResource {
               tableName, created, metadata, List.of(), tableConfig, credentials);
     }
 
-    TableCommitService.MirrorMetadataResult mirrorResult =
+    MirrorMetadataResult mirrorResult =
         tableCommitService.mirrorMetadata(
             namespace,
             created.getResourceId(),
@@ -233,7 +234,7 @@ public class TableResource {
     if (connectorId != null) {
       tableSupport.updateTableUpstream(
           created.getResourceId(), namespacePath, tableName, connectorId, upstreamUri);
-      tableCommitService.runConnectorSyncIfPossible(
+      tableCommitService.runConnectorSync(
           tableSupport, connectorId, namespacePath, tableName);
     }
 
@@ -610,8 +611,7 @@ public class TableResource {
 
     tableSupport.updateTableUpstream(
         created.getResourceId(), namespacePath, tableName, connectorId, upstreamUri);
-    tableCommitService.runConnectorSyncIfPossible(
-        tableSupport, connectorId, namespacePath, tableName);
+    tableCommitService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
 
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
     Response.ResponseBuilder builder =

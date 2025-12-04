@@ -22,8 +22,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-class TableCommitServiceTest {
-  private final TableCommitService service = new TableCommitService();
+class TableCommitSideEffectServiceTest {
+  private final TableCommitSideEffectService service = new TableCommitSideEffectService();
   private final MetadataMirrorService metadataMirrorService = mock(MetadataMirrorService.class);
   private final TableLifecycleService tableLifecycleService = mock(TableLifecycleService.class);
   private final ObjectMapper mapper = new ObjectMapper();
@@ -43,7 +43,7 @@ class TableCommitServiceTest {
         .thenReturn(new MirrorResult("s3://mirror/orders/v2.json", mirrored));
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
 
-    TableCommitService.MirrorMetadataResult result =
+    MirrorMetadataResult result =
         service.mirrorMetadata(
             "cat.db", tableId, "orders", metadata, "s3://warehouse/tables/orders/metadata.json");
 
@@ -65,7 +65,7 @@ class TableCommitServiceTest {
     when(metadataMirrorService.mirror(any(), any(), any(), any()))
         .thenThrow(new MetadataMirrorException("mirror failed", new RuntimeException()));
 
-    TableCommitService.MirrorMetadataResult result =
+    MirrorMetadataResult result =
         service.mirrorMetadata(
             "cat.db",
             ResourceId.getDefaultInstance(),
@@ -85,7 +85,7 @@ class TableCommitServiceTest {
     ResourceId connectorId = ResourceId.newBuilder().setId("connector-1").build();
     List<String> namespacePath = List.of("db1", "nested");
 
-    service.runConnectorSyncIfPossible(tableSupport, connectorId, namespacePath, "orders");
+    service.runConnectorSync(tableSupport, connectorId, namespacePath, "orders");
 
     verify(tableSupport).runSyncMetadataCapture(connectorId, namespacePath, "orders");
     verify(tableSupport).triggerScopedReconcile(connectorId, namespacePath, "orders");
@@ -96,7 +96,7 @@ class TableCommitServiceTest {
     TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
     ResourceId emptyId = ResourceId.newBuilder().setId("").build();
 
-    service.runConnectorSyncIfPossible(tableSupport, emptyId, List.of("db"), "orders");
+    service.runConnectorSync(tableSupport, emptyId, List.of("db"), "orders");
 
     verify(tableSupport, never()).runSyncMetadataCapture(any(), any(), any());
     verify(tableSupport, never()).triggerScopedReconcile(any(), any(), any());

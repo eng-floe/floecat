@@ -19,11 +19,9 @@ import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.SnapshotSpec;
 import ai.floedb.metacat.catalog.rpc.Table;
-import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.TableSpec;
 import ai.floedb.metacat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
-import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
@@ -32,9 +30,8 @@ import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.MirrorMetadataResult;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.StageCommitProcessor.StageCommitResult;
-import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MetadataMirrorException;
-import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MetadataMirrorService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.tenant.TenantContext;
@@ -69,8 +66,10 @@ public class TableCommitService {
   @Inject StageCommitProcessor stageCommitProcessor;
   @Inject StagedTableService stagedTableService;
   @Inject TenantContext tenantContext;
-  @Inject MetadataMirrorService metadataMirrorService;
   @Inject ObjectMapper mapper;
+  @Inject SnapshotMetadataService snapshotMetadataService;
+  @Inject TablePropertyService tablePropertyService;
+  @Inject TableCommitSideEffectService sideEffectService;
 
   public Response commit(CommitCommand command) {
     String prefix = command.prefix();
@@ -161,11 +160,11 @@ public class TableCommitService {
 
     if (stageMaterialization != null) {
       List<Map<String, Object>> snapshotAdds =
-          addSnapshotUpdates(req == null ? null : req.updates());
+          snapshotMetadataService.snapshotAdditions(req == null ? null : req.updates());
       if (!snapshotAdds.isEmpty()) {
         SnapshotUpdateContext stageSnapshotContext = new SnapshotUpdateContext();
         Response snapshotError =
-            applySnapshotUpdates(
+            snapshotMetadataService.applySnapshotUpdates(
                 tableSupport,
                 tableId,
                 namespacePath,
@@ -184,14 +183,14 @@ public class TableCommitService {
       CommitTableResponseDto responseDto =
           TableResponseMapper.toCommitResponse(table, current, metadata, snapshotList);
       MirrorMetadataResult mirrorResult =
-          mirrorMetadata(
+          sideEffectService.mirrorMetadata(
               namespace, tableId, table, responseDto.metadata(), responseDto.metadataLocation());
       if (mirrorResult.error() != null) {
         return mirrorResult.error();
       }
-      responseDto = applyMirrorResult(responseDto, mirrorResult);
+      responseDto = sideEffectService.applyMirrorResult(responseDto, mirrorResult);
       ResourceId connectorId =
-          synchronizeConnector(
+          sideEffectService.synchronizeConnector(
               tableSupport,
               prefix,
               namespacePath,
@@ -218,7 +217,7 @@ public class TableCommitService {
           resolveStageId(req, transactionId),
           meta == null ? "<null>" : meta.currentSnapshotId(),
           meta == null || meta.snapshots() == null ? 0 : meta.snapshots().size());
-      runConnectorSyncIfPossible(tableSupport, connectorId, namespacePath, table);
+      sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, table);
       return builder.build();
     }
 
@@ -248,22 +247,22 @@ public class TableCommitService {
       Map<String, String> mergedProps = null;
       if (req.properties() != null && !req.properties().isEmpty()) {
         mergedProps = new LinkedHashMap<>(req.properties());
-        stripMetadataLocation(mergedProps);
+        tablePropertyService.stripMetadataLocation(mergedProps);
         if (mergedProps.isEmpty()) {
           mergedProps = null;
         }
       }
-      if (hasPropertyUpdates(req)) {
+      if (tablePropertyService.hasPropertyUpdates(req)) {
         if (mergedProps == null) {
           mergedProps = new LinkedHashMap<>(tableSupplier.get().getPropertiesMap());
         }
-        Response updateError = applyPropertyUpdates(mergedProps, req.updates());
+        Response updateError = tablePropertyService.applyPropertyUpdates(mergedProps, req.updates());
         if (updateError != null) {
           return updateError;
         }
       }
       Response snapshotError =
-          applySnapshotUpdates(
+          snapshotMetadataService.applySnapshotUpdates(
               tableSupport,
               tableId,
               namespacePath,
@@ -275,12 +274,14 @@ public class TableCommitService {
       if (snapshotError != null) {
         return snapshotError;
       }
-      Response locationError = applyLocationUpdate(spec, mask, tableSupplier, req.updates());
+      Response locationError =
+          tablePropertyService.applyLocationUpdate(spec, mask, tableSupplier, req.updates());
       if (locationError != null) {
         return locationError;
       }
       if (snapshotContext.lastSnapshotId != null) {
-        Map<String, String> propsForMirror = ensurePropertyMap(tableSupplier, mergedProps);
+        Map<String, String> propsForMirror =
+            tablePropertyService.ensurePropertyMap(tableSupplier, mergedProps);
         MirrorMetadataResult pendingMirror =
             mirrorPendingSnapshotMetadata(
                 namespace,
@@ -324,14 +325,14 @@ public class TableCommitService {
       CommitTableResponseDto responseDto =
           TableResponseMapper.toCommitResponse(table, current, metadata, snapshotList);
       MirrorMetadataResult mirrorResult =
-          mirrorMetadata(
+          sideEffectService.mirrorMetadata(
               namespace, tableId, table, responseDto.metadata(), responseDto.metadataLocation());
       if (mirrorResult.error() != null) {
         return mirrorResult.error();
       }
-      responseDto = applyMirrorResult(responseDto, mirrorResult);
+      responseDto = sideEffectService.applyMirrorResult(responseDto, mirrorResult);
       ResourceId connectorId =
-          synchronizeConnector(
+          sideEffectService.synchronizeConnector(
               tableSupport,
               prefix,
               namespacePath,
@@ -353,7 +354,7 @@ public class TableCommitService {
       if (responseDto.metadataLocation() != null) {
         builder.tag(responseDto.metadataLocation());
       }
-      runConnectorSyncIfPossible(tableSupport, connectorId, namespacePath, table);
+    sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, table);
       return builder.build();
     }
 
@@ -374,15 +375,15 @@ public class TableCommitService {
                   : responseDto.metadata().withMetadataLocation(location));
     } else {
       MirrorMetadataResult mirrorResult =
-          mirrorMetadata(
+          sideEffectService.mirrorMetadata(
               namespace, tableId, table, responseDto.metadata(), responseDto.metadataLocation());
       if (mirrorResult.error() != null) {
         return mirrorResult.error();
       }
-      responseDto = applyMirrorResult(responseDto, mirrorResult);
+      responseDto = sideEffectService.applyMirrorResult(responseDto, mirrorResult);
     }
     ResourceId connectorId =
-        synchronizeConnector(
+        sideEffectService.synchronizeConnector(
             tableSupport,
             prefix,
             namespacePath,
@@ -404,7 +405,7 @@ public class TableCommitService {
     if (responseDto.metadataLocation() != null) {
       builder.tag(responseDto.metadataLocation());
     }
-    runConnectorSyncIfPossible(tableSupport, connectorId, namespacePath, table);
+    sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, table);
     return builder.build();
   }
 
@@ -418,25 +419,9 @@ public class TableCommitService {
     return null;
   }
 
-  private Map<String, String> ensurePropertyMap(
-      Supplier<Table> tableSupplier, Map<String, String> current) {
-    if (current != null) {
-      return current;
-    }
-    Table table = tableSupplier.get();
-    if (table == null || table.getPropertiesMap().isEmpty()) {
-      return new LinkedHashMap<>();
-    }
-    return new LinkedHashMap<>(table.getPropertiesMap());
-  }
-
   private Table tableWithPropertyOverrides(
       Supplier<Table> tableSupplier, Map<String, String> propertyOverrides) {
-    Table table = tableSupplier.get();
-    if (propertyOverrides == null || propertyOverrides.isEmpty() || table == null) {
-      return table;
-    }
-    return table.toBuilder().clearProperties().putAllProperties(propertyOverrides).build();
+    return tablePropertyService.tableWithPropertyOverrides(tableSupplier, propertyOverrides);
   }
 
   private IcebergMetadata loadSnapshotMetadata(ResourceId tableId, long snapshotId) {
@@ -1021,15 +1006,6 @@ public class TableCommitService {
     return builder.getSortOrders(count - 1).getSortOrderId();
   }
 
-  private static final class SnapshotUpdateContext {
-    Long lastSnapshotId;
-    String mirroredMetadataLocation;
-
-    boolean hasMirroredMetadata() {
-      return mirroredMetadataLocation != null && !mirroredMetadataLocation.isBlank();
-    }
-  }
-
   private static final class SnapshotMetadataChanges {
     String tableUuid;
     Integer formatVersion;
@@ -1267,78 +1243,6 @@ public class TableCommitService {
     return null;
   }
 
-  private Response applyPropertyUpdates(
-      Map<String, String> properties, List<Map<String, Object>> updates) {
-    if (updates == null) {
-      return null;
-    }
-    for (Map<String, Object> update : updates) {
-      if (update == null) {
-        return validationError("commit update entry cannot be null");
-      }
-      String action = asString(update.get("action"));
-      if (action == null) {
-        return validationError("commit update missing action");
-      }
-      switch (action) {
-        case "set-properties" -> {
-          Map<String, String> toSet = new LinkedHashMap<>(asStringMap(update.get("updates")));
-          if (toSet.isEmpty()) {
-            return validationError("set-properties requires updates");
-          }
-          stripMetadataLocation(toSet);
-          if (!toSet.isEmpty()) {
-            properties.putAll(toSet);
-          }
-        }
-        case "remove-properties" -> {
-          List<String> removals = asStringList(update.get("removals"));
-          if (removals.isEmpty()) {
-            return validationError("remove-properties requires removals");
-          }
-          removals.forEach(properties::remove);
-        }
-        default -> {
-          // ignore
-        }
-      }
-    }
-    return null;
-  }
-
-  private static void stripMetadataLocation(Map<String, String> props) {
-    if (props == null || props.isEmpty()) {
-      return;
-    }
-    boolean removed = false;
-    if (props.remove("metadata-location") != null) {
-      removed = true;
-    }
-    if (props.remove("metadata_location") != null) {
-      removed = true;
-    }
-    if (removed) {
-      LOG.debug("Ignored commit metadata-location property override");
-    }
-  }
-
-  private List<Map<String, Object>> addSnapshotUpdates(List<Map<String, Object>> updates) {
-    if (updates == null || updates.isEmpty()) {
-      return List.of();
-    }
-    List<Map<String, Object>> additions = new ArrayList<>();
-    for (Map<String, Object> update : updates) {
-      if (update == null) {
-        continue;
-      }
-      String action = asString(update.get("action"));
-      if ("add-snapshot".equals(action)) {
-        additions.add(update);
-      }
-    }
-    return additions;
-  }
-
   private Response validationError(String message) {
     return Response.status(Response.Status.BAD_REQUEST)
         .entity(
@@ -1481,301 +1385,6 @@ public class TableCommitService {
     return null;
   }
 
-  private boolean hasPropertyUpdates(TableRequests.Commit req) {
-    if (req == null || req.updates() == null || req.updates().isEmpty()) {
-      return false;
-    }
-    for (Map<String, Object> update : req.updates()) {
-      String action = asString(update == null ? null : update.get("action"));
-      if ("set-properties".equals(action) || "remove-properties".equals(action)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private Response applyLocationUpdate(
-      TableSpec.Builder spec,
-      FieldMask.Builder mask,
-      Supplier<Table> tableSupplier,
-      List<Map<String, Object>> updates) {
-    if (updates == null || updates.isEmpty()) {
-      return null;
-    }
-    String location = null;
-    for (Map<String, Object> update : updates) {
-      String action = asString(update == null ? null : update.get("action"));
-      if (!"set-location".equals(action)) {
-        continue;
-      }
-      if (location != null) {
-        return validationError("set-location may only be specified once");
-      }
-      String value = asString(update.get("location"));
-      if (value == null || value.isBlank()) {
-        return validationError("set-location requires location");
-      }
-      location = value;
-    }
-    if (location == null) {
-      return null;
-    }
-    Table existing = tableSupplier.get();
-    TableFormat upstreamFormat =
-        existing.hasUpstream() ? existing.getUpstream().getFormat() : TableFormat.TF_ICEBERG;
-    UpstreamRef.Builder builder =
-        existing.hasUpstream()
-            ? existing.getUpstream().toBuilder()
-            : UpstreamRef.newBuilder().setFormat(upstreamFormat);
-    builder.setUri(location);
-    spec.setUpstream(builder.build());
-    mask.addPaths("upstream");
-    return null;
-  }
-
-  private Response applySnapshotUpdates(
-      TableGatewaySupport tableSupport,
-      ResourceId tableId,
-      List<String> namespacePath,
-      String tableName,
-      Supplier<Table> tableSupplier,
-      List<Map<String, Object>> updates,
-      String idempotencyKey,
-      SnapshotUpdateContext snapshotContext) {
-    if (updates == null || updates.isEmpty()) {
-      return null;
-    }
-    Table existing = null;
-    Long lastSnapshotId = null;
-    SnapshotMetadataChanges metadataChanges = new SnapshotMetadataChanges();
-    for (Map<String, Object> update : updates) {
-      if (update == null) {
-        continue;
-      }
-      String action = asString(update.get("action"));
-      if ("add-snapshot".equals(action)) {
-        @SuppressWarnings("unchecked")
-        Map<String, Object> snapshot =
-            update.get("snapshot") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
-        if (snapshot == null || snapshot.isEmpty()) {
-          return validationError("add-snapshot requires snapshot");
-        }
-        if (existing == null) {
-          existing = tableSupplier.get();
-        }
-        Response error =
-            createSnapshotPlaceholder(
-                tableId,
-                namespacePath,
-                tableName,
-                existing,
-                snapshot,
-                idempotencyKey,
-                tableSupport);
-        if (error != null) {
-          return error;
-        }
-        Long snapshotId = asLong(snapshot.get("snapshot-id"));
-        if (snapshotId != null) {
-          lastSnapshotId = snapshotId;
-          if (snapshotContext != null) {
-            snapshotContext.lastSnapshotId = snapshotId;
-          }
-        }
-      } else if ("remove-snapshots".equals(action)) {
-        List<Long> ids = asLongList(update.get("snapshot-ids"));
-        if (ids.isEmpty()) {
-          return validationError("remove-snapshots requires snapshot-ids");
-        }
-        deleteSnapshots(tableId, ids);
-      } else if ("set-snapshot-ref".equals(action)) {
-        String refName = asString(update.get("ref-name"));
-        if (refName == null || refName.isBlank()) {
-          return validationError("set-snapshot-ref requires ref-name");
-        }
-        String type = asString(update.get("type"));
-        if (type == null || type.isBlank()) {
-          return validationError("set-snapshot-ref requires type");
-        }
-        Long pointedSnapshot = asLong(update.get("snapshot-id"));
-        if (pointedSnapshot == null) {
-          return validationError("set-snapshot-ref requires snapshot-id");
-        }
-        IcebergRef.Builder refBuilder =
-            IcebergRef.newBuilder().setSnapshotId(pointedSnapshot).setType(type);
-        Long maxRefAge =
-            asLong(firstNonNull(update.get("max-ref-age-ms"), update.get("max_ref_age_ms")));
-        if (maxRefAge != null) {
-          refBuilder.setMaxReferenceAgeMs(maxRefAge);
-        }
-        Long maxSnapshotAge =
-            asLong(
-                firstNonNull(update.get("max-snapshot-age-ms"), update.get("max_snapshot_age_ms")));
-        if (maxSnapshotAge != null) {
-          refBuilder.setMaxSnapshotAgeMs(maxSnapshotAge);
-        }
-        Integer minSnapshots =
-            asInteger(
-                firstNonNull(
-                    update.get("min-snapshots-to-keep"), update.get("min_snapshots_to_keep")));
-        if (minSnapshots != null) {
-          refBuilder.setMinSnapshotsToKeep(minSnapshots);
-        }
-        metadataChanges.refsToSet.put(refName, refBuilder.build());
-      } else if ("remove-snapshot-ref".equals(action)) {
-        String ref = asString(update.get("ref-name"));
-        if (ref == null || ref.isBlank()) {
-          return validationError("remove-snapshot-ref requires ref-name");
-        }
-        metadataChanges.refsToRemove.add(ref);
-      } else if ("assign-uuid".equals(action)) {
-        String uuid = asString(update.get("uuid"));
-        if (uuid == null || uuid.isBlank()) {
-          return validationError("assign-uuid requires uuid");
-        }
-        metadataChanges.tableUuid = uuid;
-      } else if ("upgrade-format-version".equals(action)) {
-        Integer version = asInteger(update.get("format-version"));
-        if (version == null) {
-          return validationError("upgrade-format-version requires format-version");
-        }
-        metadataChanges.formatVersion = version;
-      } else if ("add-schema".equals(action)) {
-        Map<String, Object> schemaMap = asObjectMap(update.get("schema"));
-        if (schemaMap == null || schemaMap.isEmpty()) {
-          return validationError("add-schema requires schema");
-        }
-        try {
-          metadataChanges.schemasToAdd.add(buildIcebergSchema(schemaMap, update));
-        } catch (IllegalArgumentException | JsonProcessingException e) {
-          return validationError(e.getMessage());
-        }
-      } else if ("set-current-schema".equals(action)) {
-        Integer schemaId = asInteger(update.get("schema-id"));
-        if (schemaId == null) {
-          return validationError("set-current-schema requires schema-id");
-        }
-        if (schemaId == -1) {
-          metadataChanges.setCurrentSchemaLast = true;
-        } else {
-          metadataChanges.currentSchemaId = schemaId;
-        }
-      } else if ("add-spec".equals(action)) {
-        Map<String, Object> specMap = asObjectMap(update.get("spec"));
-        if (specMap == null || specMap.isEmpty()) {
-          return validationError("add-spec requires spec");
-        }
-        try {
-          metadataChanges.partitionSpecsToAdd.add(buildPartitionSpec(specMap));
-        } catch (IllegalArgumentException e) {
-          return validationError(e.getMessage());
-        }
-      } else if ("set-default-spec".equals(action)) {
-        Integer specId = asInteger(update.get("spec-id"));
-        if (specId == null) {
-          return validationError("set-default-spec requires spec-id");
-        }
-        if (specId == -1) {
-          metadataChanges.setDefaultSpecLast = true;
-        } else {
-          metadataChanges.defaultSpecId = specId;
-        }
-      } else if ("remove-partition-specs".equals(action)) {
-        List<Integer> specIds = asIntegerList(update.get("spec-ids"));
-        if (specIds.isEmpty()) {
-          return validationError("remove-partition-specs requires spec-ids");
-        }
-        metadataChanges.partitionSpecIdsToRemove.addAll(specIds);
-      } else if ("add-sort-order".equals(action)) {
-        Map<String, Object> orderMap = asObjectMap(update.get("sort-order"));
-        if (orderMap == null || orderMap.isEmpty()) {
-          return validationError("add-sort-order requires sort-order");
-        }
-        try {
-          metadataChanges.sortOrdersToAdd.add(buildSortOrder(orderMap));
-        } catch (IllegalArgumentException e) {
-          return validationError(e.getMessage());
-        }
-      } else if ("set-default-sort-order".equals(action)) {
-        Integer orderId = asInteger(update.get("sort-order-id"));
-        if (orderId == null) {
-          return validationError("set-default-sort-order requires sort-order-id");
-        }
-        if (orderId == -1) {
-          metadataChanges.setDefaultSortOrderLast = true;
-        } else {
-          metadataChanges.defaultSortOrderId = orderId;
-        }
-      } else if ("set-statistics".equals(action)) {
-        Map<String, Object> statsMap = asObjectMap(update.get("statistics"));
-        if (statsMap == null || statsMap.isEmpty()) {
-          return validationError("set-statistics requires statistics");
-        }
-        try {
-          metadataChanges.statisticsToAdd.add(buildStatisticsFile(statsMap));
-        } catch (IllegalArgumentException e) {
-          return validationError(e.getMessage());
-        }
-      } else if ("remove-statistics".equals(action)) {
-        Long snapId = asLong(update.get("snapshot-id"));
-        if (snapId == null) {
-          return validationError("remove-statistics requires snapshot-id");
-        }
-        metadataChanges.statisticsSnapshotsToRemove.add(snapId);
-      } else if ("set-partition-statistics".equals(action)) {
-        Map<String, Object> statsMap = asObjectMap(update.get("partition-statistics"));
-        if (statsMap == null || statsMap.isEmpty()) {
-          return validationError("set-partition-statistics requires partition-statistics");
-        }
-        try {
-          metadataChanges.partitionStatisticsToAdd.add(buildPartitionStatisticsFile(statsMap));
-        } catch (IllegalArgumentException e) {
-          return validationError(e.getMessage());
-        }
-      } else if ("remove-partition-statistics".equals(action)) {
-        Long snapId = asLong(update.get("snapshot-id"));
-        if (snapId == null) {
-          return validationError("remove-partition-statistics requires snapshot-id");
-        }
-        metadataChanges.partitionStatisticsSnapshotsToRemove.add(snapId);
-      } else if ("add-encryption-key".equals(action)) {
-        Map<String, Object> keyMap = asObjectMap(update.get("encryption-key"));
-        if (keyMap == null || keyMap.isEmpty()) {
-          return validationError("add-encryption-key requires encryption-key");
-        }
-        try {
-          metadataChanges.encryptionKeysToAdd.add(buildEncryptionKey(keyMap));
-        } catch (IllegalArgumentException e) {
-          return validationError(e.getMessage());
-        }
-      } else if ("remove-encryption-key".equals(action)) {
-        String keyId = asString(update.get("key-id"));
-        if (keyId == null || keyId.isBlank()) {
-          return validationError("remove-encryption-key requires key-id");
-        }
-        metadataChanges.encryptionKeysToRemove.add(keyId);
-      } else if ("remove-schemas".equals(action)) {
-        List<Integer> schemaIds = asIntegerList(update.get("schema-ids"));
-        if (schemaIds.isEmpty()) {
-          return validationError("remove-schemas requires schema-ids");
-        }
-        metadataChanges.schemaIdsToRemove.addAll(schemaIds);
-      }
-    }
-    if (metadataChanges.hasChanges()) {
-      if (existing == null) {
-        existing = tableSupplier.get();
-      }
-      Response error =
-          applySnapshotMetadataUpdates(
-              tableId, tableSupplier, existing, lastSnapshotId, metadataChanges);
-      if (error != null) {
-        return error;
-      }
-    }
-    return null;
-  }
-
   private MirrorMetadataResult mirrorPendingSnapshotMetadata(
       String namespace,
       String tableName,
@@ -1795,200 +1404,27 @@ public class TableCommitService {
     CommitTableResponseDto pendingResponse =
         TableResponseMapper.toCommitResponse(
             tableName, tableForMetadata, snapshotMetadata, snapshotList);
-    return mirrorMetadata(
+    return sideEffectService.mirrorMetadata(
         namespace, null, tableName, pendingResponse.metadata(), pendingResponse.metadataLocation());
   }
 
+  /** Exposes mirroring for legacy call sites such as {@link TableResource}. */
   public MirrorMetadataResult mirrorMetadata(
       String namespace,
       ResourceId tableId,
       String table,
       TableMetadataView metadata,
       String metadataLocation) {
-    if (metadata == null) {
-      return MirrorMetadataResult.success(null, metadataLocation);
-    }
-    try {
-      MetadataMirrorService.MirrorResult mirrorResult =
-          metadataMirrorService.mirror(namespace, table, metadata, metadataLocation);
-      String resolvedLocation = nonBlank(mirrorResult.metadataLocation(), metadataLocation);
-      TableMetadataView resolvedMetadata =
-          mirrorResult.metadata() != null ? mirrorResult.metadata() : metadata;
-      if (tableId != null) {
-        updateTableMetadataProperties(tableId, resolvedMetadata, resolvedLocation);
-      }
-      return MirrorMetadataResult.success(resolvedMetadata, resolvedLocation);
-    } catch (MetadataMirrorException e) {
-      LOG.warnf(
-          e,
-          "Failed to mirror Iceberg metadata for %s.%s to %s (serving original metadata)",
-          namespace,
-          table,
-          metadataLocation);
-      return MirrorMetadataResult.success(metadata, metadataLocation);
-    }
+    return sideEffectService.mirrorMetadata(namespace, tableId, table, metadata, metadataLocation);
   }
 
-  private CommitTableResponseDto applyMirrorResult(
-      CommitTableResponseDto responseDto, MirrorMetadataResult mirrorResult) {
-    if (responseDto == null || mirrorResult == null) {
-      return responseDto;
-    }
-    TableMetadataView updatedMetadata =
-        mirrorResult.metadata() != null ? mirrorResult.metadata() : responseDto.metadata();
-    String updatedLocation =
-        nonBlank(mirrorResult.metadataLocation(), responseDto.metadataLocation());
-    if (updatedMetadata == responseDto.metadata()
-        && Objects.equals(updatedLocation, responseDto.metadataLocation())) {
-      return responseDto;
-    }
-    return new CommitTableResponseDto(updatedLocation, updatedMetadata);
-  }
-
-  private void updateTableMetadataProperties(
-      ResourceId tableId, TableMetadataView metadata, String resolvedLocation) {
-    if (tableId == null || metadata == null) {
-      return;
-    }
-    Map<String, String> props =
-        metadata.properties() != null
-            ? new LinkedHashMap<>(metadata.properties())
-            : new LinkedHashMap<>();
-    if (resolvedLocation != null && !resolvedLocation.isBlank()) {
-      props.put("metadata-location", resolvedLocation);
-      props.put("metadata_location", resolvedLocation);
-    }
-    if (props.isEmpty()) {
-      return;
-    }
-    TableSpec spec = TableSpec.newBuilder().putAllProperties(props).build();
-    UpdateTableRequest request =
-        UpdateTableRequest.newBuilder()
-            .setTableId(tableId)
-            .setSpec(spec)
-            .setUpdateMask(FieldMask.newBuilder().addPaths("properties").build())
-            .build();
-    try {
-      tableLifecycleService.updateTable(request);
-    } catch (Exception e) {
-      LOG.warnf(e, "Failed to update metadata properties for tableId=%s", tableId.getId());
-    }
-  }
-
-  public void runConnectorSyncIfPossible(
+  /** Exposes connector sync orchestration for legacy call sites. */
+  public void runConnectorSync(
       TableGatewaySupport tableSupport,
       ResourceId connectorId,
       List<String> namespacePath,
       String tableName) {
-    if (connectorId == null || connectorId.getId().isBlank()) {
-      return;
-    }
-    tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
-    tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
-  }
-
-  private String tableLocation(Table tableRecord) {
-    if (tableRecord == null) {
-      return null;
-    }
-    if (tableRecord.hasUpstream()) {
-      String uri = tableRecord.getUpstream().getUri();
-      if (uri != null && !uri.isBlank()) {
-        return uri;
-      }
-    }
-    Map<String, String> props = tableRecord.getPropertiesMap();
-    String location = props.get("location");
-    if (location != null && !location.isBlank()) {
-      return location;
-    }
-    return null;
-  }
-
-  private ResourceId resolveConnectorId(Table tableRecord) {
-    if (tableRecord == null
-        || !tableRecord.hasUpstream()
-        || !tableRecord.getUpstream().hasConnectorId()) {
-      return null;
-    }
-    ResourceId connectorId = tableRecord.getUpstream().getConnectorId();
-    if (connectorId == null || connectorId.getId().isBlank()) {
-      return null;
-    }
-    return connectorId;
-  }
-
-  private ResourceId synchronizeConnector(
-      TableGatewaySupport tableSupport,
-      String prefix,
-      List<String> namespacePath,
-      ResourceId namespaceId,
-      ResourceId catalogId,
-      String table,
-      Table tableRecord,
-      TableMetadataView metadataView,
-      String metadataLocation,
-      String idempotencyKey) {
-    if (tableRecord == null) {
-      return null;
-    }
-    String effectiveMetadata = metadataLocation;
-    if ((effectiveMetadata == null || effectiveMetadata.isBlank()) && metadataView != null) {
-      effectiveMetadata = metadataView.metadataLocation();
-    }
-    if (effectiveMetadata == null || effectiveMetadata.isBlank()) {
-      Map<String, String> props = tableRecord.getPropertiesMap();
-      effectiveMetadata = props.getOrDefault("metadata-location", props.get("metadata_location"));
-    }
-    if (effectiveMetadata == null || effectiveMetadata.isBlank()) {
-      return resolveConnectorId(tableRecord);
-    }
-    ResourceId connectorId = resolveConnectorId(tableRecord);
-    if (connectorId == null) {
-      var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
-      if (connectorTemplate != null && connectorTemplate.uri() != null) {
-        connectorId =
-            tableSupport.createTemplateConnector(
-                prefix,
-                namespacePath,
-                namespaceId,
-                catalogId,
-                table,
-                tableRecord.getResourceId(),
-                connectorTemplate,
-                idempotencyKey);
-        if (connectorId != null) {
-          tableSupport.updateTableUpstream(
-              tableRecord.getResourceId(),
-              namespacePath,
-              table,
-              connectorId,
-              connectorTemplate.uri());
-        }
-      } else {
-        String baseLocation = tableLocation(tableRecord);
-        String resolvedLocation =
-            tableSupport.resolveTableLocation(baseLocation, effectiveMetadata);
-        connectorId =
-            tableSupport.createExternalConnector(
-                prefix,
-                namespacePath,
-                namespaceId,
-                catalogId,
-                table,
-                tableRecord.getResourceId(),
-                effectiveMetadata,
-                resolvedLocation,
-                idempotencyKey);
-        if (connectorId != null) {
-          tableSupport.updateTableUpstream(
-              tableRecord.getResourceId(), namespacePath, table, connectorId, resolvedLocation);
-        }
-      }
-    } else {
-      tableSupport.updateConnectorMetadata(connectorId, effectiveMetadata);
-    }
-    return connectorId;
+    sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
   }
 
   public record CommitCommand(
@@ -2003,17 +1439,6 @@ public class TableCommitService {
       String transactionId,
       TableRequests.Commit request,
       TableGatewaySupport tableSupport) {}
-
-  public record MirrorMetadataResult(
-      Response error, TableMetadataView metadata, String metadataLocation) {
-    public static MirrorMetadataResult success(TableMetadataView metadata, String location) {
-      return new MirrorMetadataResult(null, metadata, location);
-    }
-
-    public static MirrorMetadataResult failure(Response error) {
-      return new MirrorMetadataResult(error, null, null);
-    }
-  }
 
   private static String nonBlank(String primary, String fallback) {
     return primary != null && !primary.isBlank() ? primary : fallback;

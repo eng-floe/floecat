@@ -32,6 +32,7 @@ import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -174,6 +175,7 @@ public class StatsResource {
   }
 
   private String resolveCatalog(String prefix) {
-    return Optional.ofNullable(config.catalogMapping().get(prefix)).orElse(prefix);
+    Map<String, String> mapping = config.catalogMapping();
+    return Optional.ofNullable(mapping == null ? null : mapping.get(prefix)).orElse(prefix);
   }
 }
