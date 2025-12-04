@@ -68,8 +68,9 @@ payload as immutable and versioned.
 ### Builtin Nodes & Engine Filtering
 Builtin SQL objects (types, functions, operators, casts, collations, aggregates) never hit the
 pointer/blob repositories. Instead, the graph delegates to `BuiltinNodeRegistry`, which loads the
-pb/pbtxt catalogs once per engine version, materialises immutable relation nodes, and caches the
-result per `(engine_kind, engine_version)`. Each builtin definition can declare one or more
+pb/pbtxt catalogs once per engine kind, materialises immutable relation nodes, and caches the
+result per `(engine_kind, engine_version)`. Catalog files live under `resources/builtins` and follow
+the `<engine_kind>.pb[pbtxt]` naming convention. Each builtin definition can declare one or more
 `engine_specific` rules (engine kind + min/max versions + optional properties). The registry filters
 definitions using those rules so a planner calling with `x-engine-kind=postgres,
 x-engine-version=16.0` only sees builtin nodes that actually exist in that engine release. Callers
@@ -77,11 +78,14 @@ that omit either header simply receive an empty builtin bundle; the catalog file
 Only `GetBuiltinCatalog` enforces the headers strictly so planners cannot accidentally rely on
 partial data.
 
-Each `engine_specific` block may also attach arbitrary key/value `properties`. These properties stay
-alongside the definitions in the pbtxt files but are not stored on the relation nodes themselves.
-Instead, the `BuiltinCatalogHintProvider` exposes them through the `builtin.catalog.properties`
-engine hint (JSON payload) so planners can fetch per-object OIDs, `prosrc`, or any other
-engine-specific metadata without inflating the base node model.
+Each `engine_specific` block may also attach arbitrary key/value `properties`. When the registry
+materialises a `(engine_kind, engine_version)` bundle it drops every rule that does not match that
+engine/version, so the filtered catalog (and `GetBuiltinCatalog` response) only contains the rules
+that apply to the caller. Pbtxt authors rarely need to repeat the engine kind in each rule; any
+`engine_specific` entry without an explicit `engine_kind` automatically inherits the file’s engine
+kind. Builtin nodes intentionally stay rule-free; the `BuiltinCatalogHintProvider` reuses the cached
+definitions and `EngineSpecificMatcher` to expose the matching rule’s properties through the
+`builtin.catalog.properties` engine hint (JSON payload).
 
 `MetadataGraph.builtinNodes(engineKind, engineVersion)` exposes the filtered bundle. `GetBuiltinCatalog`
 is currently the only caller, but the same bundle will eventually back `GetCatalogBundle` and system

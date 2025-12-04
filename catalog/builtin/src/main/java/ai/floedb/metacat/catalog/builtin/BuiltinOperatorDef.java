@@ -7,14 +7,16 @@ public record BuiltinOperatorDef(
     String name,
     String leftType,
     String rightType,
-    String functionName,
+    String returnType,
+    boolean isCommutative,
+    boolean isAssociative,
     List<EngineSpecificRule> engineSpecific) {
 
   public BuiltinOperatorDef {
     name = Objects.requireNonNull(name, "name");
     leftType = Objects.requireNonNull(leftType, "leftType");
     rightType = Objects.requireNonNull(rightType, "rightType");
-    functionName = Objects.requireNonNull(functionName, "functionName");
+    returnType = Objects.requireNonNull(returnType, "returnType");
     engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
   }
 }

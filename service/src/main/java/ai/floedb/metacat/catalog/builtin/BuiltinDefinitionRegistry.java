@@ -7,7 +7,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * Loads builtin catalog bundles per engine version and exposes indexed {@link BuiltinEngineCatalog}
+ * Loads builtin catalog bundles per engine kind and exposes indexed {@link BuiltinEngineCatalog}
  * snapshots. The data is cached in memory because builtin objects are immutable for a given engine
  * release.
  */
@@ -22,12 +22,12 @@ public class BuiltinDefinitionRegistry {
     this.loader = Objects.requireNonNull(loader, "loader");
   }
 
-  /** Returns the builtin catalog for the provided engine version, loading it once if necessary. */
-  public BuiltinEngineCatalog catalog(String engineVersion) {
-    if (engineVersion == null || engineVersion.isBlank()) {
-      throw new IllegalArgumentException("engine_version must be provided");
+  /** Returns the builtin catalog for the provided engine kind, loading it once if necessary. */
+  public BuiltinEngineCatalog catalog(String engineKind) {
+    if (engineKind == null || engineKind.isBlank()) {
+      throw new IllegalArgumentException("engine_kind must be provided");
     }
-    return cache.computeIfAbsent(engineVersion, this::loadCatalog);
+    return cache.computeIfAbsent(engineKind, this::loadCatalog);
   }
 
   /** Test-only hook to drop cached catalogs so subsequent calls reload from disk. */
@@ -35,8 +35,8 @@ public class BuiltinDefinitionRegistry {
     cache.clear();
   }
 
-  private BuiltinEngineCatalog loadCatalog(String engineVersion) {
-    var data = loader.getCatalog(engineVersion);
-    return BuiltinEngineCatalog.from(engineVersion, data);
+  private BuiltinEngineCatalog loadCatalog(String engineKind) {
+    var data = loader.getCatalog(engineKind);
+    return BuiltinEngineCatalog.from(engineKind, data);
   }
 }

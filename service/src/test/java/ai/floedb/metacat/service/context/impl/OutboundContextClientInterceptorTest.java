@@ -63,8 +63,7 @@ class OutboundContextClientInterceptorTest {
         };
 
     var ctx =
-        io.grpc.Context.current()
-            .withValue(InboundContextInterceptor.ENGINE_VERSION_KEY, "demo-pg-builtins");
+        io.grpc.Context.current().withValue(InboundContextInterceptor.ENGINE_VERSION_KEY, "16.0");
 
     Channel intercepted =
         ClientInterceptors.intercept(
@@ -79,6 +78,6 @@ class OutboundContextClientInterceptorTest {
     assertThat(captured.get()).isNotNull();
     Metadata.Key<String> key =
         Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
-    assertThat(captured.get().get(key)).isEqualTo("demo-pg-builtins");
+    assertThat(captured.get().get(key)).isEqualTo("16.0");
   }
 }

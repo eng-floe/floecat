@@ -140,7 +140,7 @@ Validate bundled or bespoke builtin catalog protobufs without running the servic
 ```bash
 mvn -pl tools/builtin-validator package
 java -jar tools/builtin-validator/target/builtin-validator.jar \
-  service/src/main/resources/builtins/builtin_catalog_demo-pg-builtins.pbtxt
+  service/src/main/resources/builtins/floe-demo.pbtxt
 ```
 
 Flags:

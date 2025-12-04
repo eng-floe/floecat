@@ -16,8 +16,6 @@ public record BuiltinFunctionNode(
     String returnType,
     boolean aggregate,
     boolean window,
-    boolean strict,
-    boolean immutable,
     Map<EngineKey, EngineHint> engineHints)
     implements RelationNode {
 

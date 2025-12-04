@@ -8,8 +8,6 @@ public record BuiltinAggregateDef(
     List<String> argumentTypes,
     String stateType,
     String returnType,
-    String stateFunction,
-    String finalFunction,
     List<EngineSpecificRule> engineSpecific) {
 
   public BuiltinAggregateDef {

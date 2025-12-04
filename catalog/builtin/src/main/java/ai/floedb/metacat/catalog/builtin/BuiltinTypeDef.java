@@ -5,7 +5,6 @@ import java.util.Objects;
 
 public record BuiltinTypeDef(
     String name,
-    Integer oid,
     String category,
     boolean array,
     String elementType,
@@ -13,10 +12,13 @@ public record BuiltinTypeDef(
 
   public BuiltinTypeDef {
     name = Objects.requireNonNull(name, "name");
-    category = category == null ? "" : category;
-    if (!array) {
+    category = category == null ? "" : category.trim();
+
+    // Normalize elementType
+    if (!array || elementType == null || elementType.isBlank()) {
       elementType = null;
     }
+
     engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
   }
 }

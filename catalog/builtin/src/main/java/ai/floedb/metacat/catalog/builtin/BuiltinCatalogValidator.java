@@ -7,17 +7,15 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Performs structural validation of builtin catalogs before they are exposed to planners. The goal
- * is to catch malformed or incomplete catalog data during build/verify time.
+ * Performs structural validation of builtin catalogs before they are exposed to planners. This
+ * version is engine-neutral and does NOT enforce PostgreSQL-specific metadata like backing
+ * functions for operators or state/final functions for aggregates.
  */
 public final class BuiltinCatalogValidator {
 
   private BuiltinCatalogValidator() {}
 
-  /**
-   * Runs validation and returns the list of human-readable errors. An empty list indicates a valid
-   * catalog.
-   */
+  /** Runs validation and returns a list of human-readable errors. */
   public static List<String> validate(BuiltinCatalogData catalog) {
     List<String> errors = new ArrayList<>();
     if (catalog == null) {
@@ -25,19 +23,19 @@ public final class BuiltinCatalogValidator {
       return errors;
     }
 
-    if (catalog.version() == null || catalog.version().isBlank()) {
-      errors.add("catalog.version.required");
-    }
-
     Set<String> typeNames = validateTypes(catalog.types(), errors);
     Set<String> functionNames = validateFunctions(catalog.functions(), typeNames, errors);
-    validateOperators(catalog.operators(), typeNames, functionNames, errors);
+    validateOperators(catalog.operators(), typeNames, errors); // simplified
     validateCasts(catalog.casts(), typeNames, errors);
     validateCollations(catalog.collations(), errors);
-    validateAggregates(catalog.aggregates(), typeNames, functionNames, errors);
+    validateAggregates(catalog.aggregates(), typeNames, errors); // simplified
 
     return errors;
   }
+
+  // ------------------------------------------------------------
+  // Types
+  // ------------------------------------------------------------
 
   private static Set<String> validateTypes(List<BuiltinTypeDef> types, List<String> errors) {
     if (types.isEmpty()) {
@@ -58,8 +56,13 @@ public final class BuiltinCatalogValidator {
     return typeNames;
   }
 
+  // ------------------------------------------------------------
+  // Functions
+  // ------------------------------------------------------------
+
   private static Set<String> validateFunctions(
       List<BuiltinFunctionDef> functions, Set<String> typeNames, List<String> errors) {
+
     if (functions.isEmpty()) {
       errors.add("functions.empty");
     }
@@ -71,11 +74,12 @@ public final class BuiltinCatalogValidator {
         errors.add("function.name.required");
         continue;
       }
-      if (!names.add(name)) {
-        errors.add("function.duplicate:" + name);
-      }
+      names.add(name);
 
+      // return type must exist
       requireTypeExists(fn.returnType(), typeNames, errors, "function.return:" + name);
+
+      // all arg types must exist
       for (String arg : fn.argumentTypes()) {
         requireTypeExists(arg, typeNames, errors, "function.arg:" + name);
       }
@@ -83,37 +87,53 @@ public final class BuiltinCatalogValidator {
     return names;
   }
 
+  // ------------------------------------------------------------
+  // Operators (engine-neutral)
+  // ------------------------------------------------------------
+
   private static void validateOperators(
-      List<BuiltinOperatorDef> operators,
-      Set<String> typeNames,
-      Set<String> functionNames,
-      List<String> errors) {
+      List<BuiltinOperatorDef> operators, Set<String> typeNames, List<String> errors) {
+
     for (BuiltinOperatorDef op : operators) {
-      String fn = safeName(op.functionName());
-      if (fn.isBlank() || !functionNames.contains(fn)) {
-        errors.add("operator.function.missing:" + op.name());
-      }
-      requireTypeExists(op.leftType(), typeNames, errors, "operator.left:" + op.name());
-      requireTypeExists(op.rightType(), typeNames, errors, "operator.right:" + op.name());
+      String name = safeName(op.name());
+
+      // Validate operand/return type existence
+      requireTypeExists(op.leftType(), typeNames, errors, "operator.left:" + name);
+      requireTypeExists(op.rightType(), typeNames, errors, "operator.right:" + name);
+      requireTypeExists(op.returnType(), typeNames, errors, "operator.return:" + name);
+
+      // No function-name checks anymore (proto no longer includes it)
     }
   }
+
+  // ------------------------------------------------------------
+  // Casts
+  // ------------------------------------------------------------
 
   private static void validateCasts(
       List<BuiltinCastDef> casts, Set<String> typeNames, List<String> errors) {
     Set<Map.Entry<String, String>> seen = new HashSet<>();
+
     for (BuiltinCastDef cast : casts) {
       var key = Map.entry(safeName(cast.sourceType()), safeName(cast.targetType()));
       if (!seen.add(key)) {
         errors.add("cast.duplicate:" + key);
       }
+
       requireTypeExists(key.getKey(), typeNames, errors, "cast.source");
       requireTypeExists(key.getValue(), typeNames, errors, "cast.target");
     }
   }
 
+  // ------------------------------------------------------------
+  // Collations
+  // ------------------------------------------------------------
+
   private static void validateCollations(
       List<BuiltinCollationDef> collations, List<String> errors) {
+
     Set<String> names = new HashSet<>();
+
     for (BuiltinCollationDef coll : collations) {
       String name = safeName(coll.name());
       if (name.isBlank()) {
@@ -126,40 +146,44 @@ public final class BuiltinCatalogValidator {
     }
   }
 
+  // ------------------------------------------------------------
+  // Aggregates (engine-neutral)
+  // ------------------------------------------------------------
+
   private static void validateAggregates(
-      List<BuiltinAggregateDef> aggregates,
-      Set<String> typeNames,
-      Set<String> functionNames,
-      List<String> errors) {
+      List<BuiltinAggregateDef> aggregates, Set<String> typeNames, List<String> errors) {
+
     for (BuiltinAggregateDef agg : aggregates) {
       String name = safeName(agg.name());
+
+      // state type must exist
       requireTypeExists(agg.stateType(), typeNames, errors, "agg.state:" + name);
+
+      // return type must exist
       requireTypeExists(agg.returnType(), typeNames, errors, "agg.return:" + name);
+
+      // argument types must exist
       for (String arg : agg.argumentTypes()) {
         requireTypeExists(arg, typeNames, errors, "agg.arg:" + name);
       }
-      requireFunctionExists(agg.stateFunction(), functionNames, errors, "agg.stateFn:" + name);
-      requireFunctionExists(agg.finalFunction(), functionNames, errors, "agg.finalFn:" + name);
+
+      // No stateFn/finalFn validation anymore (proto removed it)
     }
   }
 
+  // ------------------------------------------------------------
+  // Helpers
+  // ------------------------------------------------------------
+
   private static void requireTypeExists(
       String typeName, Set<String> knownTypes, List<String> errors, String context) {
+
     String name = safeName(typeName);
+
     if (name.isBlank()) {
       errors.add(context + ".type.required");
     } else if (!knownTypes.contains(name)) {
       errors.add(context + ".type.unknown:" + name);
-    }
-  }
-
-  private static void requireFunctionExists(
-      String fnName, Set<String> knownFunctions, List<String> errors, String context) {
-    String name = safeName(fnName);
-    if (name.isBlank()) {
-      errors.add(context + ".function.required");
-    } else if (!knownFunctions.contains(name)) {
-      errors.add(context + ".function.unknown:" + name);
     }
   }
 

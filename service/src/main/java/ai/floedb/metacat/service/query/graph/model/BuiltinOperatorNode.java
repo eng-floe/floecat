@@ -13,7 +13,9 @@ public record BuiltinOperatorNode(
     String name,
     String leftType,
     String rightType,
-    String functionName,
+    String returnType,
+    boolean commutative,
+    boolean associative,
     Map<EngineKey, EngineHint> engineHints)
     implements RelationNode {
 

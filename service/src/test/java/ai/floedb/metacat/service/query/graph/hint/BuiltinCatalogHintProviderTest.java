@@ -9,7 +9,9 @@ import ai.floedb.metacat.catalog.builtin.BuiltinFunctionDef;
 import ai.floedb.metacat.catalog.builtin.EngineSpecificRule;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.query.rpc.FloeFunctionSpecific;
 import ai.floedb.metacat.service.query.graph.model.BuiltinFunctionNode;
+import ai.floedb.metacat.service.query.graph.model.EngineHint;
 import ai.floedb.metacat.service.query.graph.model.EngineKey;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -19,13 +21,37 @@ import org.junit.jupiter.api.Test;
 
 class BuiltinCatalogHintProviderTest {
 
+  private static final String ENGINE_KIND = "floe-demo";
+
   @Test
   void emitsJsonPayloadForMatchingRule() {
-    var int4Rule = new EngineSpecificRule("postgres", "16.0", "", Map.of("oid", "1250"));
-    var int8Rule = new EngineSpecificRule("postgres", "16.0", "", Map.of("oid", "1251"));
+
+    var int4Rule =
+        new EngineSpecificRule(
+            ENGINE_KIND,
+            "16.0",
+            "",
+            FloeFunctionSpecific.newBuilder().setPronamespace(11).setProisstrict(true).build(),
+            null,
+            null,
+            null,
+            null,
+            Map.of("oid", "1250"));
+
+    var int8Rule =
+        new EngineSpecificRule(
+            ENGINE_KIND,
+            "16.0",
+            "",
+            FloeFunctionSpecific.newBuilder().setPronamespace(11).setProisstrict(true).build(),
+            null,
+            null,
+            null,
+            null,
+            Map.of("oid", "1251"));
+
     var catalog =
         new BuiltinCatalogData(
-            "demo",
             List.of(
                 new BuiltinFunctionDef(
                     "pg_catalog.int4_abs",
@@ -33,8 +59,6 @@ class BuiltinCatalogHintProviderTest {
                     "pg_catalog.int4",
                     false,
                     false,
-                    true,
-                    true,
                     List.of(int4Rule)),
                 new BuiltinFunctionDef(
                     "pg_catalog.int4_abs",
@@ -42,18 +66,18 @@ class BuiltinCatalogHintProviderTest {
                     "pg_catalog.int8",
                     false,
                     false,
-                    true,
-                    true,
                     List.of(int8Rule))),
             List.of(),
             List.of(),
             List.of(),
             List.of(),
             List.of());
-    var registry = new BuiltinDefinitionRegistry(new StaticLoader(Map.of("demo", catalog)));
+
+    var registry = new BuiltinDefinitionRegistry(new StaticLoader(Map.of(ENGINE_KIND, catalog)));
     var provider = new BuiltinCatalogHintProvider(registry);
 
-    var engineKey = new EngineKey("postgres", "16.0");
+    var engineKey = new EngineKey(ENGINE_KIND, "16.0");
+
     var nodeInt4 = functionNode(List.of("pg_catalog.int4"), "pg_catalog.int4");
     var hint =
         provider.compute(nodeInt4, engineKey, BuiltinCatalogHintProvider.HINT_TYPE, "correlation");
@@ -67,9 +91,9 @@ class BuiltinCatalogHintProviderTest {
 
   @Test
   void missingPropertiesReturnEmptyJson() {
+
     var catalog =
         new BuiltinCatalogData(
-            "demo",
             List.of(
                 new BuiltinFunctionDef(
                     "pg_catalog.int4_abs",
@@ -77,23 +101,25 @@ class BuiltinCatalogHintProviderTest {
                     "pg_catalog.int4",
                     false,
                     false,
-                    true,
-                    true,
                     List.of())),
             List.of(),
             List.of(),
             List.of(),
             List.of(),
             List.of());
-    var registry = new BuiltinDefinitionRegistry(new StaticLoader(Map.of("demo", catalog)));
+
+    var registry = new BuiltinDefinitionRegistry(new StaticLoader(Map.of(ENGINE_KIND, catalog)));
     var provider = new BuiltinCatalogHintProvider(registry);
-    var engineKey = new EngineKey("postgres", "16.0");
+
+    var engineKey = new EngineKey(ENGINE_KIND, "16.0");
+
     var hint =
         provider.compute(
             functionNode(List.of("pg_catalog.int4"), "pg_catalog.int4"),
             engineKey,
             BuiltinCatalogHintProvider.HINT_TYPE,
             "correlation");
+
     assertThat(new String(hint.payload(), StandardCharsets.UTF_8)).isEqualTo("{}");
   }
 
@@ -106,18 +132,17 @@ class BuiltinCatalogHintProviderTest {
             .build(),
         1L,
         Instant.EPOCH,
-        "demo",
+        "16.0",
         "pg_catalog.int4_abs",
         args,
         returnType,
         false,
         false,
-        true,
-        true,
-        Map.of());
+        Map.<EngineKey, EngineHint>of());
   }
 
   private static final class StaticLoader extends BuiltinCatalogLoader {
+
     private final Map<String, BuiltinCatalogData> catalogs;
 
     private StaticLoader(Map<String, BuiltinCatalogData> catalogs) {
@@ -125,8 +150,8 @@ class BuiltinCatalogHintProviderTest {
     }
 
     @Override
-    public BuiltinCatalogData getCatalog(String engineVersion) {
-      BuiltinCatalogData data = catalogs.get(engineVersion);
+    public BuiltinCatalogData getCatalog(String engineKind) {
+      BuiltinCatalogData data = catalogs.get(engineKind);
       if (data == null) {
         throw new IllegalArgumentException("missing catalog");
       }

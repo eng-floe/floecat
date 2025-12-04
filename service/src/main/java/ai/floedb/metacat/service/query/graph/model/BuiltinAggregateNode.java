@@ -15,8 +15,6 @@ public record BuiltinAggregateNode(
     List<String> argumentTypes,
     String stateType,
     String returnType,
-    String stateFunction,
-    String finalFunction,
     Map<EngineKey, EngineHint> engineHints)
     implements RelationNode {
 

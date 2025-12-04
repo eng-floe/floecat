@@ -11,7 +11,6 @@ public record BuiltinTypeNode(
     Instant metadataUpdatedAt,
     String engineVersion,
     String name,
-    Integer oid,
     String category,
     boolean array,
     String elementType,

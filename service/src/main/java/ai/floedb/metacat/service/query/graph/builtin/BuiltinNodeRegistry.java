@@ -1,23 +1,9 @@
 package ai.floedb.metacat.service.query.graph.builtin;
 
-import ai.floedb.metacat.catalog.builtin.BuiltinAggregateDef;
-import ai.floedb.metacat.catalog.builtin.BuiltinCastDef;
-import ai.floedb.metacat.catalog.builtin.BuiltinCatalogData;
-import ai.floedb.metacat.catalog.builtin.BuiltinCollationDef;
-import ai.floedb.metacat.catalog.builtin.BuiltinDefinitionRegistry;
-import ai.floedb.metacat.catalog.builtin.BuiltinEngineCatalog;
-import ai.floedb.metacat.catalog.builtin.BuiltinFunctionDef;
-import ai.floedb.metacat.catalog.builtin.BuiltinOperatorDef;
-import ai.floedb.metacat.catalog.builtin.BuiltinTypeDef;
-import ai.floedb.metacat.catalog.builtin.EngineSpecificRule;
+import ai.floedb.metacat.catalog.builtin.*;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
-import ai.floedb.metacat.service.query.graph.model.BuiltinAggregateNode;
-import ai.floedb.metacat.service.query.graph.model.BuiltinCastNode;
-import ai.floedb.metacat.service.query.graph.model.BuiltinCollationNode;
-import ai.floedb.metacat.service.query.graph.model.BuiltinFunctionNode;
-import ai.floedb.metacat.service.query.graph.model.BuiltinOperatorNode;
-import ai.floedb.metacat.service.query.graph.model.BuiltinTypeNode;
+import ai.floedb.metacat.service.query.graph.model.*;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
@@ -27,7 +13,6 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
-/** Materializes builtin relation nodes from the parsed builtin catalog definitions. */
 @ApplicationScoped
 public class BuiltinNodeRegistry {
 
@@ -36,11 +21,11 @@ public class BuiltinNodeRegistry {
 
   @Inject
   public BuiltinNodeRegistry(BuiltinDefinitionRegistry definitionRegistry) {
-    this.definitionRegistry = Objects.requireNonNull(definitionRegistry, "definitionRegistry");
+    this.definitionRegistry = Objects.requireNonNull(definitionRegistry);
   }
 
   private static final BuiltinCatalogData EMPTY_CATALOG =
-      new BuiltinCatalogData("", List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+      new BuiltinCatalogData(List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
 
   private static final BuiltinNodes EMPTY_NODES =
       new BuiltinNodes(
@@ -55,77 +40,88 @@ public class BuiltinNodeRegistry {
           List.of(),
           EMPTY_CATALOG);
 
-  /** Returns the cached builtin nodes for the provided engine version. */
   public BuiltinNodes nodesFor(String engineKind, String engineVersion) {
-    if (engineVersion == null || engineVersion.isBlank()) {
-      return EMPTY_NODES;
-    }
-    if (engineKind == null || engineKind.isBlank()) {
-      return EMPTY_NODES;
-    }
+    if (engineKind == null || engineKind.isBlank()) return EMPTY_NODES;
+    if (engineVersion == null || engineVersion.isBlank()) return EMPTY_NODES;
     VersionKey key = new VersionKey(engineKind, engineVersion);
     return cache.computeIfAbsent(key, k -> buildNodes(k.engineKind(), k.engineVersion()));
   }
 
   private BuiltinNodes buildNodes(String engineKind, String engineVersion) {
-    BuiltinEngineCatalog catalog = definitionRegistry.catalog(engineVersion);
+    BuiltinEngineCatalog catalog = definitionRegistry.catalog(engineKind);
     long version = versionFromFingerprint(catalog.fingerprint());
-    var functionDefs =
+
+    // --- Functions ---
+    List<BuiltinFunctionDef> functionDefs =
         catalog.functions().stream()
             .filter(def -> matches(def.engineSpecific(), engineKind, engineVersion))
+            .map(def -> withFunctionRules(def, engineKind, engineVersion))
             .toList();
-    var functions =
+    List<BuiltinFunctionNode> functionNodes =
         functionDefs.stream().map(def -> toFunctionNode(engineVersion, version, def)).toList();
-    var operatorDefs =
+
+    // --- Operators ---
+    List<BuiltinOperatorDef> operatorDefs =
         catalog.operators().stream()
             .filter(def -> matches(def.engineSpecific(), engineKind, engineVersion))
+            .map(def -> withOperatorRules(def, engineKind, engineVersion))
             .toList();
-    var operators =
+    List<BuiltinOperatorNode> operatorNodes =
         operatorDefs.stream().map(def -> toOperatorNode(engineVersion, version, def)).toList();
-    var typeDefs =
+
+    // --- Types ---
+    List<BuiltinTypeDef> typeDefs =
         catalog.types().stream()
             .filter(def -> matches(def.engineSpecific(), engineKind, engineVersion))
+            .map(def -> withTypeRules(def, engineKind, engineVersion))
             .toList();
-    var types = typeDefs.stream().map(def -> toTypeNode(engineVersion, version, def)).toList();
-    var castDefs =
+    List<BuiltinTypeNode> typeNodes =
+        typeDefs.stream().map(def -> toTypeNode(engineVersion, version, def)).toList();
+
+    // --- Casts ---
+    List<BuiltinCastDef> castDefs =
         catalog.casts().stream()
             .filter(def -> matches(def.engineSpecific(), engineKind, engineVersion))
+            .map(def -> withCastRules(def, engineKind, engineVersion))
             .toList();
-    var casts = castDefs.stream().map(def -> toCastNode(engineVersion, version, def)).toList();
-    var collationDefs =
+    List<BuiltinCastNode> castNodes =
+        castDefs.stream().map(def -> toCastNode(engineVersion, version, def)).toList();
+
+    // --- Collations ---
+    List<BuiltinCollationDef> collationDefs =
         catalog.collations().stream()
             .filter(def -> matches(def.engineSpecific(), engineKind, engineVersion))
+            .map(def -> withCollationRules(def, engineKind, engineVersion))
             .toList();
-    var collations =
+    List<BuiltinCollationNode> collationNodes =
         collationDefs.stream().map(def -> toCollationNode(engineVersion, version, def)).toList();
-    var aggregateDefs =
+
+    // --- Aggregates ---
+    List<BuiltinAggregateDef> aggregateDefs =
         catalog.aggregates().stream()
             .filter(def -> matches(def.engineSpecific(), engineKind, engineVersion))
+            .map(def -> withAggregateRules(def, engineKind, engineVersion))
             .toList();
-    var aggregates =
+    List<BuiltinAggregateNode> aggregateNodes =
         aggregateDefs.stream().map(def -> toAggregateNode(engineVersion, version, def)).toList();
 
-    var catalogData =
-        new BuiltinCatalogData(
-            engineVersion,
-            functionDefs,
-            operatorDefs,
-            typeDefs,
-            castDefs,
-            collationDefs,
-            aggregateDefs);
     return new BuiltinNodes(
         engineKind,
         engineVersion,
         catalog.fingerprint(),
-        functions,
-        operators,
-        types,
-        casts,
-        collations,
-        aggregates,
-        catalogData);
+        functionNodes,
+        operatorNodes,
+        typeNodes,
+        castNodes,
+        collationNodes,
+        aggregateNodes,
+        new BuiltinCatalogData(
+            functionDefs, operatorDefs, typeDefs, castDefs, collationDefs, aggregateDefs));
   }
+
+  // =======================================================================
+  // Node Builders (ALL UPDATED!)
+  // =======================================================================
 
   private BuiltinFunctionNode toFunctionNode(
       String engineVersion, long version, BuiltinFunctionDef def) {
@@ -137,10 +133,8 @@ public class BuiltinNodeRegistry {
         def.name(),
         def.argumentTypes(),
         def.returnType(),
-        def.aggregate(),
-        def.window(),
-        def.strict(),
-        def.immutable(),
+        def.isAggregate(),
+        def.isWindow(),
         Map.of());
   }
 
@@ -154,7 +148,9 @@ public class BuiltinNodeRegistry {
         def.name(),
         def.leftType(),
         def.rightType(),
-        def.functionName(),
+        def.returnType(),
+        def.isCommutative(),
+        def.isAssociative(),
         Map.of());
   }
 
@@ -165,7 +161,6 @@ public class BuiltinNodeRegistry {
         Instant.EPOCH,
         engineVersion,
         def.name(),
-        def.oid(),
         def.category(),
         def.array(),
         def.elementType(),
@@ -181,7 +176,7 @@ public class BuiltinNodeRegistry {
         engineVersion,
         def.sourceType(),
         def.targetType(),
-        def.method().name().toLowerCase(),
+        def.method().wireValue(),
         Map.of());
   }
 
@@ -208,10 +203,73 @@ public class BuiltinNodeRegistry {
         def.argumentTypes(),
         def.stateType(),
         def.returnType(),
-        def.stateFunction(),
-        def.finalFunction(),
         Map.of());
   }
+
+  // =======================================================================
+  // Rule applications
+  // =======================================================================
+
+  private BuiltinFunctionDef withFunctionRules(
+      BuiltinFunctionDef def, String engineKind, String engineVersion) {
+    List<EngineSpecificRule> matched =
+        matchingRules(def.engineSpecific(), engineKind, engineVersion);
+    return new BuiltinFunctionDef(
+        def.name(),
+        def.argumentTypes(),
+        def.returnType(),
+        def.isAggregate(),
+        def.isWindow(),
+        matched);
+  }
+
+  private BuiltinOperatorDef withOperatorRules(
+      BuiltinOperatorDef def, String engineKind, String engineVersion) {
+    List<EngineSpecificRule> matched =
+        matchingRules(def.engineSpecific(), engineKind, engineVersion);
+    return new BuiltinOperatorDef(
+        def.name(),
+        def.leftType(),
+        def.rightType(),
+        def.returnType(),
+        def.isCommutative(),
+        def.isAssociative(),
+        matched);
+  }
+
+  private BuiltinTypeDef withTypeRules(
+      BuiltinTypeDef def, String engineKind, String engineVersion) {
+    List<EngineSpecificRule> matched =
+        matchingRules(def.engineSpecific(), engineKind, engineVersion);
+    return new BuiltinTypeDef(def.name(), def.category(), def.array(), def.elementType(), matched);
+  }
+
+  private BuiltinCastDef withCastRules(
+      BuiltinCastDef def, String engineKind, String engineVersion) {
+    return new BuiltinCastDef(
+        def.sourceType(),
+        def.targetType(),
+        def.method(),
+        matchingRules(def.engineSpecific(), engineKind, engineVersion));
+  }
+
+  private BuiltinCollationDef withCollationRules(
+      BuiltinCollationDef def, String engineKind, String engineVersion) {
+    return new BuiltinCollationDef(
+        def.name(), def.locale(), matchingRules(def.engineSpecific(), engineKind, engineVersion));
+  }
+
+  private BuiltinAggregateDef withAggregateRules(
+      BuiltinAggregateDef def, String engineKind, String engineVersion) {
+    return new BuiltinAggregateDef(
+        def.name(),
+        def.argumentTypes(),
+        def.stateType(),
+        def.returnType(),
+        matchingRules(def.engineSpecific(), engineKind, engineVersion));
+  }
+
+  // =======================================================================
 
   private ResourceId resourceId(String engineVersion, int kindValue, String name) {
     return ResourceId.newBuilder()
@@ -221,74 +279,27 @@ public class BuiltinNodeRegistry {
         .build();
   }
 
-  private static long versionFromFingerprint(String fingerprint) {
-    if (fingerprint == null || fingerprint.isBlank()) {
-      return 0L;
-    }
-    String prefix = fingerprint.length() >= 16 ? fingerprint.substring(0, 16) : fingerprint;
-    try {
-      return Long.parseUnsignedLong(prefix, 16);
-    } catch (NumberFormatException ex) {
-      return prefix.hashCode();
-    }
+  private static List<EngineSpecificRule> matchingRules(
+      List<EngineSpecificRule> rules, String engineKind, String engineVersion) {
+    if (rules == null || rules.isEmpty()) return List.of();
+    return EngineSpecificMatcher.matchedRules(rules, engineKind, engineVersion);
   }
 
   private static boolean matches(
       List<EngineSpecificRule> rules, String engineKind, String engineVersion) {
-    if (rules == null || rules.isEmpty()) {
-      return true;
-    }
-    for (EngineSpecificRule rule : rules) {
-      if (rule == null) {
-        continue;
-      }
-      if (rule.hasEngineKind()
-          && !rule.engineKind().equalsIgnoreCase(engineKind == null ? "" : engineKind)) {
-        continue;
-      }
-      if (rule.hasMinVersion() && compareVersions(engineVersion, rule.minVersion()) < 0) {
-        continue;
-      }
-      if (rule.hasMaxVersion() && compareVersions(engineVersion, rule.maxVersion()) > 0) {
-        continue;
-      }
-      return true;
-    }
-    return false;
+    return EngineSpecificMatcher.matches(rules, engineKind, engineVersion);
   }
 
-  private static int compareVersions(String left, String right) {
-    if (left == null || left.isBlank()) {
-      left = "0";
+  private static long versionFromFingerprint(String fingerprint) {
+    if (fingerprint == null || fingerprint.isBlank()) return 0L;
+    String prefix = fingerprint.length() >= 16 ? fingerprint.substring(0, 16) : fingerprint;
+    try {
+      return Long.parseUnsignedLong(prefix, 16);
+    } catch (NumberFormatException e) {
+      return prefix.hashCode();
     }
-    if (right == null || right.isBlank()) {
-      right = "0";
-    }
-    if (isSemantic(left) && isSemantic(right)) {
-      return compareSemantic(left, right);
-    }
-    return left.compareToIgnoreCase(right);
   }
 
-  private static boolean isSemantic(String value) {
-    return value.matches("[0-9]+(\\.[0-9]+)*");
-  }
-
-  private static int compareSemantic(String left, String right) {
-    String[] leftParts = left.split("\\.");
-    String[] rightParts = right.split("\\.");
-    int length = Math.max(leftParts.length, rightParts.length);
-    for (int i = 0; i < length; i++) {
-      int leftVal = i < leftParts.length ? Integer.parseInt(leftParts[i]) : 0;
-      int rightVal = i < rightParts.length ? Integer.parseInt(rightParts[i]) : 0;
-      if (leftVal != rightVal) {
-        return Integer.compare(leftVal, rightVal);
-      }
-    }
-    return 0;
-  }
-
-  /** Immutable bundle of builtin relation nodes for an engine version. */
   public record BuiltinNodes(
       String engineKind,
       String engineVersion,
@@ -308,7 +319,7 @@ public class BuiltinNodeRegistry {
       casts = List.copyOf(casts);
       collations = List.copyOf(collations);
       aggregates = List.copyOf(aggregates);
-      catalogData = Objects.requireNonNull(catalogData, "catalogData");
+      catalogData = Objects.requireNonNull(catalogData);
     }
 
     public BuiltinCatalogData toCatalogData() {

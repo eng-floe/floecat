@@ -3,8 +3,8 @@ package ai.floedb.metacat.service.catalog.it;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import ai.floedb.metacat.catalog.rpc.BuiltinCatalogServiceGrpc;
-import ai.floedb.metacat.catalog.rpc.GetBuiltinCatalogRequest;
+import ai.floedb.metacat.query.rpc.BuiltinCatalogServiceGrpc;
+import ai.floedb.metacat.query.rpc.GetBuiltinCatalogRequest;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -18,46 +18,41 @@ class BuiltinCatalogServiceIT {
 
   private static final Metadata.Key<String> ENGINE_VERSION_HEADER =
       Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
+
   private static final Metadata.Key<String> ENGINE_KIND_HEADER =
       Metadata.Key.of("x-engine-kind", Metadata.ASCII_STRING_MARSHALLER);
 
   @GrpcClient("metacat")
   BuiltinCatalogServiceGrpc.BuiltinCatalogServiceBlockingStub builtins;
 
-  /** Full RPC fetch should return the builtin catalog and all expected entries. */
   @Test
   void returnsCatalogWhenVersionProvided() {
-    var stub = withEngineHeaders("demo-pg-builtins", "postgres");
-    var resp = stub.getBuiltinCatalog(GetBuiltinCatalogRequest.newBuilder().build());
-    assertThat(resp.hasCatalog()).isTrue();
-    var catalog = resp.getCatalog();
-    assertThat(catalog.getVersion()).isEqualTo("demo-pg-builtins");
-    assertThat(catalog.getFunctionsCount()).isEqualTo(7);
-    assertThat(catalog.getFunctionsList())
+    var stub = withEngineHeaders("floe-demo", "16.0");
+
+    var resp = stub.getBuiltinCatalog(GetBuiltinCatalogRequest.getDefaultInstance());
+
+    assertThat(resp.hasRegistry()).isTrue();
+
+    var reg = resp.getRegistry();
+    assertThat(reg.getFunctionsCount()).isEqualTo(7);
+
+    assertThat(reg.getFunctionsList())
         .extracting(f -> f.getName())
         .contains("pg_catalog.int4_add", "pg_catalog.text_upper");
-    assertThat(catalog.getOperatorsList())
-        .extracting(op -> op.getFunctionName())
-        .contains("pg_catalog.int4_add");
-    assertThat(catalog.getTypesList()).extracting(t -> t.getName()).contains("pg_catalog._int4");
-    assertThat(catalog.getCastsList())
-        .extracting(c -> c.getSourceType())
-        .contains("pg_catalog.text");
-    assertThat(catalog.getCollationsList()).hasSize(1);
-    assertThat(catalog.getAggregatesList()).extracting(a -> a.getName()).contains("pg_catalog.sum");
+
+    assertThat(reg.getOperatorsList())
+        .extracting(op -> op.getName())
+        .containsExactlyInAnyOrder("+", "||");
+
+    assertThat(reg.getTypesList()).extracting(t -> t.getName()).contains("pg_catalog._int4");
+
+    assertThat(reg.getCastsList()).extracting(c -> c.getSourceType()).contains("pg_catalog.text");
+
+    assertThat(reg.getCollationsList()).hasSize(1);
+
+    assertThat(reg.getAggregatesList()).extracting(a -> a.getName()).contains("pg_catalog.sum");
   }
 
-  /** If the caller already has the latest version, the RPC should return an empty payload. */
-  @Test
-  void currentVersionShortCircuits() {
-    var stub = withEngineHeaders("demo-pg-builtins", "postgres");
-    var resp =
-        stub.getBuiltinCatalog(
-            GetBuiltinCatalogRequest.newBuilder().setCurrentVersion("demo-pg-builtins").build());
-    assertThat(resp.hasCatalog()).isFalse();
-  }
-
-  /** Requests must include x-engine-version; missing headers should fail fast. */
   @Test
   void missingHeaderFails() {
     assertThatThrownBy(
@@ -67,33 +62,44 @@ class BuiltinCatalogServiceIT {
             e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT));
   }
 
-  /** Unknown engine versions map to NOT_FOUND to keep behavior deterministic. */
   @Test
-  void notFoundEngineVersion() {
-    var stub = withEngineHeaders("does-not-exist", "postgres");
-    assertThatThrownBy(() -> stub.getBuiltinCatalog(GetBuiltinCatalogRequest.newBuilder().build()))
-        .isInstanceOfSatisfying(
-            StatusRuntimeException.class,
-            e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.NOT_FOUND));
+  void unknownEngineVersionReturnsOnlyRuleFreeObjects() {
+    var stub = withEngineHeaders("floe-demo", "does-not-exist");
+
+    var resp = stub.getBuiltinCatalog(GetBuiltinCatalogRequest.getDefaultInstance());
+    assertThat(resp.hasRegistry()).isTrue();
+
+    var names = resp.getRegistry().getFunctionsList().stream().map(f -> f.getName()).toList();
+
+    assertThat(names)
+        .containsExactlyInAnyOrder(
+            "pg_catalog.text_length", "pg_catalog.int4_add", "pg_catalog.text_concat");
+
+    assertThat(names)
+        .doesNotContain(
+            "pg_catalog.int4_abs", "pg_catalog.sum_int4_state", "pg_catalog.sum_int4_final");
   }
 
-  /** Missing engine kind header should fail like missing version. */
   @Test
   void missingEngineKindFails() {
     var metadata = new Metadata();
-    metadata.put(ENGINE_VERSION_HEADER, "demo-pg-builtins");
+    metadata.put(ENGINE_VERSION_HEADER, "16.0");
+
     var stub = builtins.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
-    assertThatThrownBy(() -> stub.getBuiltinCatalog(GetBuiltinCatalogRequest.newBuilder().build()))
+
+    assertThatThrownBy(() -> stub.getBuiltinCatalog(GetBuiltinCatalogRequest.getDefaultInstance()))
         .isInstanceOfSatisfying(
             StatusRuntimeException.class,
             e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT));
   }
 
   private BuiltinCatalogServiceGrpc.BuiltinCatalogServiceBlockingStub withEngineHeaders(
-      String engineVersion, String engineKind) {
+      String engineKind, String engineVersion) {
+
     var metadata = new Metadata();
-    metadata.put(ENGINE_VERSION_HEADER, engineVersion);
     metadata.put(ENGINE_KIND_HEADER, engineKind);
+    metadata.put(ENGINE_VERSION_HEADER, engineVersion);
+
     return builtins.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
   }
 }

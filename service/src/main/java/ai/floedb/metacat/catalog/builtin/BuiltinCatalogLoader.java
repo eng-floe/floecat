@@ -1,6 +1,6 @@
 package ai.floedb.metacat.catalog.builtin;
 
-import ai.floedb.metacat.catalog.rpc.BuiltinCatalog;
+import ai.floedb.metacat.query.rpc.BuiltinRegistry;
 import com.google.protobuf.TextFormat;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -14,16 +14,18 @@ import java.nio.file.Paths;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
- * Loads immutable builtin catalog files (`builtin_catalog_<engine>.pb|pbtxt`) from the configured
- * location, caches them by engine version, and exposes them to service callers.
+ * Loads immutable builtin catalog files (`<engine_kind>.pb|pbtxt`) from the configured location and
+ * caches them by engine kind.
  */
 @ApplicationScoped
 public class BuiltinCatalogLoader {
 
   static final String DEFAULT_LOCATION = "classpath:builtins";
+  private static final Pattern SAFE_ENGINE_KIND = Pattern.compile("^[A-Za-z0-9._-]+$");
 
   @ConfigProperty(name = "metacat.builtins.location", defaultValue = DEFAULT_LOCATION)
   String configuredLocation;
@@ -40,43 +42,62 @@ public class BuiltinCatalogLoader {
     }
   }
 
-  public BuiltinCatalogData getCatalog(String engineVersion) {
-    if (engineVersion == null || engineVersion.isBlank()) {
-      throw new IllegalArgumentException("engine_version must be provided");
-    }
-    return cache.computeIfAbsent(engineVersion, this::loadCatalog);
+  public BuiltinCatalogData getCatalog(String engineKind) {
+    String sanitized = sanitizeEngineKind(engineKind);
+    return cache.computeIfAbsent(sanitized, this::loadCatalog);
   }
 
-  private BuiltinCatalogData loadCatalog(String engineVersion) {
-    String base = "builtin_catalog_" + engineVersion;
+  private BuiltinCatalogData loadCatalog(String engineKind) {
+    BuiltinCatalogData data = loadFromBase(engineKind, engineKind);
+    if (data != null) {
+      return data;
+    }
+    throw new BuiltinCatalogNotFoundException(engineKind);
+  }
 
-    try (InputStream binary = openStream(base + ".pb")) {
+  private BuiltinCatalogData loadFromBase(String baseName, String engineKind) {
+    try (InputStream binary = openStream(baseName + ".pb")) {
       if (binary != null) {
-        return BuiltinCatalogProtoMapper.fromProto(BuiltinCatalog.parseFrom(binary));
+        return BuiltinCatalogProtoMapper.fromProto(BuiltinRegistry.parseFrom(binary), engineKind);
       }
     } catch (IOException e) {
-      throw new BuiltinCatalogLoadException(engineVersion, e);
+      throw new BuiltinCatalogLoadException(engineKind, e);
     }
 
-    try (InputStream text = openStream(base + ".pbtxt")) {
+    try (InputStream text = openStream(baseName + ".pbtxt")) {
       if (text != null) {
-        var builder = BuiltinCatalog.newBuilder();
+        var builder = BuiltinRegistry.newBuilder();
         try (var reader = new InputStreamReader(text, StandardCharsets.UTF_8)) {
           TextFormat.getParser().merge(reader, builder);
         }
-        return BuiltinCatalogProtoMapper.fromProto(builder.build());
+        return BuiltinCatalogProtoMapper.fromProto(builder.build(), engineKind);
       }
     } catch (IOException e) {
-      throw new BuiltinCatalogLoadException(engineVersion, e);
+      throw new BuiltinCatalogLoadException(engineKind, e);
     }
 
-    throw new BuiltinCatalogNotFoundException(engineVersion);
+    return null;
+  }
+
+  private static String sanitizeEngineKind(String engineKind) {
+    if (engineKind == null) {
+      throw new IllegalArgumentException("engine_kind must be provided");
+    }
+    String trimmed = engineKind.trim();
+    if (trimmed.isEmpty()) {
+      throw new IllegalArgumentException("engine_kind must be provided");
+    }
+    if (!SAFE_ENGINE_KIND.matcher(trimmed).matches()) {
+      throw new IllegalArgumentException(
+          "engine_kind may only contain letters, digits, '.', '_', or '-'");
+    }
+    return trimmed;
   }
 
   private InputStream openStream(String fileName) throws IOException {
     Objects.requireNonNull(fileName, "fileName");
 
-    // Treat `classpath:` specially so we can bundle sample catalogs in the jar.
+    // Classpath mode
     if (location.startsWith("classpath:")) {
       String base = location.substring("classpath:".length());
       if (base.startsWith("/")) {
@@ -88,7 +109,7 @@ public class BuiltinCatalogLoader {
       return cl.getResourceAsStream(resource);
     }
 
-    // Otherwise resolve against a filesystem path (explicit `file:` or bare directory).
+    // Filesystem mode
     String basePath = location.startsWith("file:") ? location.substring(5) : location;
     Path dir = Paths.get(basePath);
     Path resolved = dir.resolve(fileName);

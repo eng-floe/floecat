@@ -1,0 +1,237 @@
+# ============================================================
+# FUNCTIONS
+# ============================================================
+functions {
+  name: "pg_catalog.int4_abs"
+  argument_types: "pg_catalog.int4"
+  return_type: "pg_catalog.int4"
+  engine_specific {
+    min_version: "9.5"
+    floe_function {
+      oid: 1250
+      proname: "int4_abs"
+      prolang: 12          # INTERNAL language OID (demo placeholder)
+      proisstrict: true
+      proleakproof: false
+      proisagg: false
+      proiswindow: false
+      provolatile: "i"     # immutable
+      prosrc: "int4_abs"
+    }
+  }
+}
+
+functions {
+  name: "pg_catalog.text_length"
+  argument_types: "pg_catalog.text"
+  return_type: "pg_catalog.int4"
+}
+
+functions {
+  name: "pg_catalog.text_upper"
+  argument_types: "pg_catalog.text"
+  return_type: "pg_catalog.text"
+  engine_specific {
+    min_version: "9.5"
+    floe_function {
+      oid: 1251
+      proname: "text_upper"
+      prolang: 12
+      proisstrict: true
+      proiswindow: false
+      proisagg: false
+      provolatile: "v"     # volatile
+      prosrc: "text_upper"
+    }
+  }
+}
+
+functions {
+  name: "pg_catalog.int4_add"
+  argument_types: "pg_catalog.int4"
+  argument_types: "pg_catalog.int4"
+  return_type: "pg_catalog.int4"
+}
+
+functions {
+  name: "pg_catalog.text_concat"
+  argument_types: "pg_catalog.text"
+  argument_types: "pg_catalog.text"
+  return_type: "pg_catalog.text"
+}
+
+functions {
+  name: "pg_catalog.sum_int4_state"
+  argument_types: "pg_catalog.int8"
+  argument_types: "pg_catalog.int4"
+  return_type: "pg_catalog.int8"
+  is_aggregate: true
+  engine_specific {
+    min_version: "9.5"
+    floe_function {
+      proname: "sum_int4_state"
+      prolang: 12
+      proisstrict: true
+      proisagg: true
+      provolatile: "i"
+      prosrc: "sum_int4_state"
+    }
+  }
+}
+
+functions {
+  name: "pg_catalog.sum_int4_final"
+  argument_types: "pg_catalog.int8"
+  return_type: "pg_catalog.int8"
+  is_aggregate: true
+  engine_specific {
+    min_version: "9.5"
+    floe_function {
+      proname: "sum_int4_final"
+      prolang: 12
+      proisstrict: true
+      proisagg: true
+      provolatile: "i"
+      prosrc: "sum_int4_final"
+    }
+  }
+}
+
+# ============================================================
+# OPERATORS
+# ============================================================
+operators {
+  name: "+"
+  left_type: "pg_catalog.int4"
+  right_type: "pg_catalog.int4"
+  return_type: "pg_catalog.int4"
+  is_commutative: true
+  is_associative: true
+}
+
+operators {
+  name: "||"
+  left_type: "pg_catalog.text"
+  right_type: "pg_catalog.text"
+  return_type: "pg_catalog.text"
+  is_commutative: false
+  is_associative: false
+}
+
+# ============================================================
+# TYPES
+# ============================================================
+types {
+  name: "pg_catalog.int4"
+  category: "N"
+  engine_specific {
+    floe_type {
+      oid: 23
+      typname: "int4"
+      typnamespace: 11
+      typcategory: "N"
+      typlen: 4
+      typbyval: true
+      typtype: "b"
+    }
+  }
+}
+
+types {
+  name: "pg_catalog.int8"
+  category: "N"
+  engine_specific {
+    floe_type {
+      oid: 20
+      typname: "int8"
+      typnamespace: 11
+      typcategory: "N"
+      typlen: 8
+      typbyval: true
+      typtype: "b"
+    }
+  }
+}
+
+types {
+  name: "pg_catalog.text"
+  category: "S"
+  engine_specific {
+    floe_type {
+      oid: 25
+      typname: "text"
+      typnamespace: 11
+      typcategory: "S"
+      typlen: -1
+      typbyval: false
+      typtype: "b"
+    }
+  }
+}
+
+types {
+  name: "pg_catalog._int4"
+  category: "A"
+  is_array: true
+  element_type: "pg_catalog.int4"
+  engine_specific {
+    floe_type {
+      oid: 1007
+      typname: "_int4"
+      typnamespace: 11
+      typcategory: "A"
+      typlen: -1
+      typbyval: false
+      typtype: "b"
+      typelem: 23
+    }
+  }
+}
+
+# ============================================================
+# CASTS
+# ============================================================
+casts {
+  source_type: "pg_catalog.text"
+  target_type: "pg_catalog.int4"
+  method: "explicit"
+}
+
+casts {
+  source_type: "pg_catalog.int4"
+  target_type: "pg_catalog.text"
+  method: "assignment"
+}
+
+casts {
+  source_type: "pg_catalog.int4"
+  target_type: "pg_catalog._int4"
+  method: "implicit"
+}
+
+# ============================================================
+# COLLATIONS
+# ============================================================
+collations {
+  name: "pg_catalog.default"
+  locale: "en_US"
+}
+
+# ============================================================
+# AGGREGATES
+# ============================================================
+aggregates {
+  name: "pg_catalog.sum"
+  argument_types: "pg_catalog.int4"
+  state_type: "pg_catalog.int8"
+  return_type: "pg_catalog.int8"
+  engine_specific {
+    floe_aggregate {
+      aggfnoid: 0                    # demo placeholder
+      aggtransfn: 0                  # uids of sum_int4_state, placeholder
+      aggfinalfn: 0                  # uid of sum_int4_final
+      aggmtransfn: 0
+      aggmfinalfn: 0
+    }
+  }
+}

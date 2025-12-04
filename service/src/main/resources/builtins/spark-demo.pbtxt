@@ -1,0 +1,147 @@
+# ================================================
+# FUNCTIONS
+# ================================================
+functions {
+  name: "spark.abs_int"
+  argument_types: "int"
+  return_type: "int"
+  engine_specific {
+    properties {
+      key: "builtin_id"
+      value: "abs_int_v1"
+    }
+    properties {
+      key: "is_deterministic"
+      value: "true"
+    }
+    properties {
+      key: "is_foldable"
+      value: "true"
+    }
+    properties {
+      key: "spark_version"
+      value: "4.0"
+    }
+  }
+}
+
+functions {
+  name: "spark.length"
+  argument_types: "string"
+  return_type: "int"
+  engine_specific {
+    properties {
+      key: "builtin_id"
+      value: "len_str_v1"
+    }
+  }
+}
+
+functions {
+  name: "spark.concat"
+  argument_types: "string"
+  argument_types: "string"
+  return_type: "string"
+  engine_specific {
+    properties {
+      key: "builtin_id"
+      value: "concat_v1"
+    }
+    properties {
+      key: "supports_utf8"
+      value: "true"
+    }
+  }
+}
+
+# ================================================
+# OPERATORS
+# ================================================
+operators {
+  name: "+"
+  left_type: "int"
+  right_type: "int"
+  return_type: "int"
+  is_commutative: true
+  is_associative: true
+  engine_specific {
+    properties {
+      key: "spark_codegen"
+      value: "AddInt"
+    }
+  }
+}
+
+# ================================================
+# TYPES
+# ================================================
+types {
+  name: "int"
+  category: "N"
+  engine_specific {
+    properties {
+      key: "internal_type"
+      value: "int32"
+    }
+  }
+}
+
+types {
+  name: "string"
+  category: "S"
+  engine_specific {
+    properties {
+      key: "internal_type"
+      value: "utf8"
+    }
+  }
+}
+
+# ================================================
+# CASTS
+# ================================================
+casts {
+  source_type: "int"
+  target_type: "string"
+  method: "explicit"
+  engine_specific {
+    properties {
+      key: "spark_builtin"
+      value: "cast_int_to_string"
+    }
+  }
+}
+
+# ================================================
+# COLLATIONS
+# ================================================
+collations {
+  name: "spark.default"
+  locale: "en"
+  engine_specific {
+    properties {
+      key: "supports_unicode"
+      value: "true"
+    }
+  }
+}
+
+# ================================================
+# AGGREGATES
+# ================================================
+aggregates {
+  name: "spark.sum"
+  argument_types: "int"
+  state_type: "int"
+  return_type: "int"
+  engine_specific {
+    properties {
+      key: "spark_impl"
+      value: "SumInt"
+    }
+    properties {
+      key: "nullable"
+      value: "false"
+    }
+  }
+}

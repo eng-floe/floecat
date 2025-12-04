@@ -1,31 +1,14 @@
 package ai.floedb.metacat.service.query.graph.hint;
 
-import ai.floedb.metacat.catalog.builtin.BuiltinAggregateDef;
-import ai.floedb.metacat.catalog.builtin.BuiltinCastDef;
-import ai.floedb.metacat.catalog.builtin.BuiltinDefinitionRegistry;
-import ai.floedb.metacat.catalog.builtin.BuiltinEngineCatalog;
-import ai.floedb.metacat.catalog.builtin.BuiltinFunctionDef;
-import ai.floedb.metacat.catalog.builtin.BuiltinOperatorDef;
-import ai.floedb.metacat.catalog.builtin.BuiltinTypeDef;
-import ai.floedb.metacat.catalog.builtin.EngineSpecificRule;
-import ai.floedb.metacat.service.query.graph.model.BuiltinAggregateNode;
-import ai.floedb.metacat.service.query.graph.model.BuiltinCastNode;
-import ai.floedb.metacat.service.query.graph.model.BuiltinCollationNode;
-import ai.floedb.metacat.service.query.graph.model.BuiltinFunctionNode;
-import ai.floedb.metacat.service.query.graph.model.BuiltinOperatorNode;
-import ai.floedb.metacat.service.query.graph.model.BuiltinTypeNode;
-import ai.floedb.metacat.service.query.graph.model.EngineHint;
-import ai.floedb.metacat.service.query.graph.model.EngineKey;
-import ai.floedb.metacat.service.query.graph.model.RelationNode;
-import ai.floedb.metacat.service.query.graph.model.RelationNodeKind;
+import ai.floedb.metacat.catalog.builtin.*;
+import ai.floedb.metacat.service.query.graph.builtin.EngineSpecificMatcher;
+import ai.floedb.metacat.service.query.graph.model.*;
+import com.google.protobuf.Descriptors.FieldDescriptor;
+import com.google.protobuf.Message;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
-import java.util.EnumSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /** Publishes per-object builtin metadata as engine hints. */
@@ -99,14 +82,9 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
       return Map.of();
     }
 
-    String nodeEngineVersion = engineVersionFor(node);
-    if (nodeEngineVersion == null || nodeEngineVersion.isBlank()) {
-      return Map.of();
-    }
-
     BuiltinEngineCatalog catalog;
     try {
-      catalog = definitionRegistry.catalog(nodeEngineVersion);
+      catalog = definitionRegistry.catalog(engineKey.engineKind());
     } catch (RuntimeException ex) {
       return Map.of();
     }
@@ -114,52 +92,30 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
     return switch (node.kind()) {
       case BUILTIN_FUNCTION ->
           ruleForFunction((BuiltinFunctionNode) node, catalog, engineKey)
-              .map(EngineSpecificRule::properties)
+              .map(BuiltinCatalogHintProvider::flattenProperties)
               .orElse(Map.of());
       case BUILTIN_OPERATOR ->
           ruleForOperator((BuiltinOperatorNode) node, catalog, engineKey)
-              .map(EngineSpecificRule::properties)
+              .map(BuiltinCatalogHintProvider::flattenProperties)
               .orElse(Map.of());
       case BUILTIN_TYPE ->
           ruleForType((BuiltinTypeNode) node, catalog, engineKey)
-              .map(EngineSpecificRule::properties)
+              .map(BuiltinCatalogHintProvider::flattenProperties)
               .orElse(Map.of());
       case BUILTIN_CAST ->
           ruleForCast((BuiltinCastNode) node, catalog, engineKey)
-              .map(EngineSpecificRule::properties)
+              .map(BuiltinCatalogHintProvider::flattenProperties)
               .orElse(Map.of());
       case BUILTIN_COLLATION ->
           ruleForCollation((BuiltinCollationNode) node, catalog, engineKey)
-              .map(EngineSpecificRule::properties)
+              .map(BuiltinCatalogHintProvider::flattenProperties)
               .orElse(Map.of());
       case BUILTIN_AGGREGATE ->
           ruleForAggregate((BuiltinAggregateNode) node, catalog, engineKey)
-              .map(EngineSpecificRule::properties)
+              .map(BuiltinCatalogHintProvider::flattenProperties)
               .orElse(Map.of());
       default -> Map.of();
     };
-  }
-
-  private static String engineVersionFor(RelationNode node) {
-    if (node instanceof BuiltinFunctionNode fn) {
-      return fn.engineVersion();
-    }
-    if (node instanceof BuiltinOperatorNode op) {
-      return op.engineVersion();
-    }
-    if (node instanceof BuiltinTypeNode type) {
-      return type.engineVersion();
-    }
-    if (node instanceof BuiltinCastNode cast) {
-      return cast.engineVersion();
-    }
-    if (node instanceof BuiltinCollationNode coll) {
-      return coll.engineVersion();
-    }
-    if (node instanceof BuiltinAggregateNode agg) {
-      return agg.engineVersion();
-    }
-    return null;
   }
 
   private Optional<EngineSpecificRule> ruleForFunction(
@@ -212,36 +168,30 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
 
   private Optional<EngineSpecificRule> selectRule(
       List<EngineSpecificRule> rules, EngineKey engineKey) {
-    if (rules == null || rules.isEmpty()) {
-      return Optional.empty();
-    }
-    for (EngineSpecificRule rule : rules) {
-      if (ruleMatches(rule, engineKey.engineKind(), engineKey.engineVersion())) {
-        return Optional.of(rule);
-      }
-    }
-    return Optional.empty();
+    return EngineSpecificMatcher.selectRule(
+        rules, engineKey.engineKind(), engineKey.engineVersion());
   }
 
   private static boolean functionMatches(BuiltinFunctionNode node, BuiltinFunctionDef def) {
     return def.name().equals(node.name())
         && def.argumentTypes().equals(node.argumentTypes())
         && def.returnType().equals(node.returnType())
-        && def.aggregate() == node.aggregate()
-        && def.window() == node.window();
+        && def.isAggregate() == node.aggregate()
+        && def.isWindow() == node.window();
   }
 
   private static boolean operatorMatches(BuiltinOperatorNode node, BuiltinOperatorDef def) {
     return def.name().equals(node.name())
         && equals(def.leftType(), node.leftType())
         && equals(def.rightType(), node.rightType())
-        && equals(def.functionName(), node.functionName());
+        && equals(def.returnType(), node.returnType())
+        && def.isCommutative() == node.commutative()
+        && def.isAssociative() == node.associative();
   }
 
   private static boolean typeMatches(BuiltinTypeNode node, BuiltinTypeDef def) {
     return def.name().equals(node.name())
         && equals(def.category(), node.category())
-        && (def.oid() == null ? node.oid() == null : def.oid().equals(node.oid()))
         && equals(def.elementType(), node.elementType());
   }
 
@@ -263,59 +213,54 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
   }
 
   private static boolean equals(String left, String right) {
-    if (left == null) {
-      return right == null;
-    }
+    if (left == null) return right == null;
     return left.equals(right);
   }
 
-  private static boolean ruleMatches(
-      EngineSpecificRule rule, String engineKind, String engineVersion) {
-    if (rule == null) {
-      return false;
-    }
-    if (rule.hasEngineKind()
-        && (engineKind == null || !rule.engineKind().equalsIgnoreCase(engineKind))) {
-      return false;
-    }
-    if (rule.hasMinVersion() && compareVersions(engineVersion, rule.minVersion()) < 0) {
-      return false;
-    }
-    if (rule.hasMaxVersion() && compareVersions(engineVersion, rule.maxVersion()) > 0) {
-      return false;
-    }
-    return true;
-  }
+  // -------------------------------------------------------------------------
+  //  PROTO REFLECTION EXTRACTOR
+  // -------------------------------------------------------------------------
 
-  private static int compareVersions(String left, String right) {
-    if (left == null || left.isBlank()) {
-      left = "0";
-    }
-    if (right == null || right.isBlank()) {
-      right = "0";
-    }
-    if (isSemantic(left) && isSemantic(right)) {
-      return compareSemantic(left, right);
-    }
-    return left.compareToIgnoreCase(right);
-  }
+  private static Map<String, String> extractProtoFields(Message proto) {
+    Map<String, String> map = new LinkedHashMap<>();
 
-  private static boolean isSemantic(String value) {
-    return value.matches("[0-9]+(\\.[0-9]+)*");
-  }
+    for (Map.Entry<FieldDescriptor, Object> entry : proto.getAllFields().entrySet()) {
+      String key = entry.getKey().getName();
+      Object value = entry.getValue();
 
-  private static int compareSemantic(String left, String right) {
-    String[] leftParts = left.split("\\.");
-    String[] rightParts = right.split("\\.");
-    int length = Math.max(leftParts.length, rightParts.length);
-    for (int i = 0; i < length; i++) {
-      int leftVal = i < leftParts.length ? Integer.parseInt(leftParts[i]) : 0;
-      int rightVal = i < rightParts.length ? Integer.parseInt(rightParts[i]) : 0;
-      if (leftVal != rightVal) {
-        return Integer.compare(leftVal, rightVal);
+      if (value instanceof List<?> list) {
+        String joined = list.stream().map(Object::toString).collect(Collectors.joining(","));
+        map.put(key, joined);
+      } else {
+        map.put(key, value.toString());
       }
     }
-    return 0;
+
+    return map;
+  }
+
+  private static Map<String, String> flattenProperties(EngineSpecificRule rule) {
+    if (rule == null) return Map.of();
+
+    Map<String, String> props = new LinkedHashMap<>(rule.properties());
+
+    if (rule.floeFunction() != null) {
+      props.putAll(extractProtoFields(rule.floeFunction()));
+    }
+    if (rule.floeType() != null) {
+      props.putAll(extractProtoFields(rule.floeType()));
+    }
+    if (rule.floeOperator() != null) {
+      props.putAll(extractProtoFields(rule.floeOperator()));
+    }
+    if (rule.floeCast() != null) {
+      props.putAll(extractProtoFields(rule.floeCast()));
+    }
+    if (rule.floeAggregate() != null) {
+      props.putAll(extractProtoFields(rule.floeAggregate()));
+    }
+
+    return props.isEmpty() ? Map.of() : Map.copyOf(props);
   }
 
   private static byte[] toJsonPayload(Map<String, String> properties) {

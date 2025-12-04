@@ -20,9 +20,9 @@ class BuiltinDefinitionRegistryTest {
 
   @Test
   void loadsCatalogAndCachesLookups() {
-    var catalog = registry.catalog("demo-pg-builtins");
+    var catalog = registry.catalog("floe-demo");
 
-    assertThat(catalog.engineVersion()).isEqualTo("demo-pg-builtins");
+    assertThat(catalog.engineKind()).isEqualTo("floe-demo");
     assertThat(catalog.fingerprint()).isNotBlank();
     assertThat(catalog.functions())
         .extracting(BuiltinFunctionDef::name)
@@ -35,7 +35,7 @@ class BuiltinDefinitionRegistryTest {
     assertThat(catalog.aggregate("pg_catalog.sum")).isPresent();
 
     // Second call returns cached instance
-    assertThat(registry.catalog("demo-pg-builtins")).isSameAs(catalog);
+    assertThat(registry.catalog("floe-demo")).isSameAs(catalog);
   }
 
   @Test

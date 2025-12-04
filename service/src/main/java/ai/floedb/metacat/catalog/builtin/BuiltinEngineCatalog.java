@@ -10,31 +10,41 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * Immutable view of all builtin objects for a specific engine version.
+ * Immutable view of all builtin SQL objects for a specific engine kind.
  *
  * <p>The registry loads {@link BuiltinCatalogData} once per engine version, then materialises this
  * structure with convenient lookups (by name/signature) and a deterministic fingerprint so higher
  * layers can cache derived payloads safely.
+ *
+ * <p>This class uses the *engine-neutral* SQL definitions aggregated by BuiltinCatalogData, not the
+ * raw proto model. Engine-specific metadata for Floe or other engines is preserved inside the
+ * Builtin*Def classes.
  */
 public final class BuiltinEngineCatalog {
 
-  private final String engineVersion;
+  private final String engineKind;
   private final String fingerprint;
+
   private final List<BuiltinFunctionDef> functions;
   private final Map<String, List<BuiltinFunctionDef>> functionsByName;
+
   private final List<BuiltinOperatorDef> operators;
   private final Map<String, BuiltinOperatorDef> operatorsByName;
+
   private final List<BuiltinTypeDef> types;
   private final Map<String, BuiltinTypeDef> typesByName;
+
   private final List<BuiltinCastDef> casts;
   private final Map<String, BuiltinCastDef> castsByKey;
+
   private final List<BuiltinCollationDef> collations;
   private final Map<String, BuiltinCollationDef> collationsByName;
+
   private final List<BuiltinAggregateDef> aggregates;
   private final Map<String, BuiltinAggregateDef> aggregatesByName;
 
   private BuiltinEngineCatalog(
-      String engineVersion,
+      String engineKind,
       String fingerprint,
       List<BuiltinFunctionDef> functions,
       Map<String, List<BuiltinFunctionDef>> functionsByName,
@@ -48,7 +58,8 @@ public final class BuiltinEngineCatalog {
       Map<String, BuiltinCollationDef> collationsByName,
       List<BuiltinAggregateDef> aggregates,
       Map<String, BuiltinAggregateDef> aggregatesByName) {
-    this.engineVersion = engineVersion;
+
+    this.engineKind = engineKind;
     this.fingerprint = fingerprint;
     this.functions = functions;
     this.functionsByName = functionsByName;
@@ -64,8 +75,9 @@ public final class BuiltinEngineCatalog {
     this.aggregatesByName = aggregatesByName;
   }
 
-  /** Builds a catalog snapshot from parsed builtin data. */
-  public static BuiltinEngineCatalog from(String engineVersion, BuiltinCatalogData data) {
+  /** Builds a materialised catalog snapshot from parsed builtin data. */
+  public static BuiltinEngineCatalog from(String engineKind, BuiltinCatalogData data) {
+
     List<BuiltinFunctionDef> functions = copy(data.functions());
     List<BuiltinOperatorDef> operators = copy(data.operators());
     List<BuiltinTypeDef> types = copy(data.types());
@@ -76,7 +88,7 @@ public final class BuiltinEngineCatalog {
     String fingerprint = computeFingerprint(data);
 
     return new BuiltinEngineCatalog(
-        engineVersion,
+        engineKind,
         fingerprint,
         functions,
         indexMulti(functions, BuiltinFunctionDef::name),
@@ -92,11 +104,10 @@ public final class BuiltinEngineCatalog {
         indexUnique(aggregates, BuiltinAggregateDef::name));
   }
 
-  public String engineVersion() {
-    return engineVersion;
+  public String engineKind() {
+    return engineKind;
   }
 
-  /** Stable fingerprint derived from the protobuf payload. */
   public String fingerprint() {
     return fingerprint;
   }
@@ -105,7 +116,6 @@ public final class BuiltinEngineCatalog {
     return functions;
   }
 
-  /** Returns all overloads matching the provided name (may be empty). */
   public List<BuiltinFunctionDef> functions(String name) {
     return functionsByName.getOrDefault(name, List.of());
   }

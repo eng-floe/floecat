@@ -7,10 +7,8 @@ public record BuiltinFunctionDef(
     String name,
     List<String> argumentTypes,
     String returnType,
-    boolean aggregate,
-    boolean window,
-    boolean strict,
-    boolean immutable,
+    boolean isAggregate,
+    boolean isWindow,
     List<EngineSpecificRule> engineSpecific) {
 
   public BuiltinFunctionDef {
