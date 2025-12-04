@@ -1,9 +1,10 @@
-package ai.floedb.metacat.service.query.resolve;
+package ai.floedb.metacat.service.query.resolver;
 
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.query.rpc.SchemaColumn;
 import ai.floedb.metacat.query.rpc.SchemaDescriptor;
+import ai.floedb.metacat.service.query.graph.model.TableNode;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -45,7 +46,35 @@ public class LogicalSchemaMapper {
     Set<String> partitionKeys = new HashSet<>(table.getUpstream().getPartitionKeysList());
     Map<String, Integer> fieldIds = new HashMap<>(table.getUpstream().getFieldIdByPathMap());
 
-    return switch (fmt) {
+    return mapInternal(fmt, schemaJson, partitionKeys, fieldIds);
+  }
+
+  /** Builds a logical schema descriptor directly from a cached {@link TableNode}. */
+  public SchemaDescriptor map(TableNode node, String overrideSchemaJson) {
+    String schemaJson =
+        (overrideSchemaJson == null || overrideSchemaJson.isBlank())
+            ? node.schemaJson()
+            : overrideSchemaJson;
+    if (schemaJson == null || schemaJson.isBlank()) {
+      return SchemaDescriptor.getDefaultInstance();
+    }
+    return mapInternal(
+        node.format(),
+        schemaJson,
+        new HashSet<>(node.partitionKeys()),
+        new HashMap<>(node.fieldIdByPath()));
+  }
+
+  public SchemaDescriptor map(TableNode node) {
+    return map(node, node.schemaJson());
+  }
+
+  private SchemaDescriptor mapInternal(
+      TableFormat format,
+      String schemaJson,
+      Set<String> partitionKeys,
+      Map<String, Integer> fieldIds) {
+    return switch (format) {
       case TF_ICEBERG -> mapIceberg(schemaJson, partitionKeys);
       case TF_DELTA -> mapDelta(schemaJson, partitionKeys, fieldIds);
       default -> mapGeneric(schemaJson);

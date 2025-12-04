@@ -21,6 +21,7 @@ import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.LogHelper;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.query.graph.MetadataGraph;
 import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
@@ -47,6 +48,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
+  @Inject MetadataGraph metadataGraph;
 
   private static final Set<String> NAMESPACE_MUTABLE_PATHS =
       Set.of("display_name", "description", "path", "policy_ref", "properties", "catalog_id");
@@ -420,6 +422,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                     .build();
 
                             namespaceRepo.create(built);
+                            metadataGraph.invalidate(namespaceId);
                             return new IdempotencyGuard.CreateResult<>(built, namespaceId);
                           },
                           (ns) -> namespaceRepo.metaForSafe(ns.getResourceId()),
@@ -484,6 +487,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
               .setCreatedAt(tsNow)
               .build();
       namespaceRepo.create(ns);
+      metadataGraph.invalidate(rid);
     }
   }
 
@@ -540,6 +544,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       corr,
                       "namespace",
                       conflictInfo);
+                  metadataGraph.invalidate(nsId);
 
                   var outMeta = namespaceRepo.metaForSafe(nsId);
                   var latest = namespaceRepo.getById(nsId).orElse(desired);
@@ -579,6 +584,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   if (catalogId == null) {
                     var safe = namespaceRepo.metaForSafe(namespaceId);
                     namespaceRepo.delete(namespaceId);
+                    metadataGraph.invalidate(namespaceId);
                     return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -610,6 +616,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           "namespace",
                           Map.of("id", namespaceId.getId()));
 
+                  metadataGraph.invalidate(namespaceId);
                   return DeleteNamespaceResponse.newBuilder().setMeta(meta).build();
                 }),
             correlationId())

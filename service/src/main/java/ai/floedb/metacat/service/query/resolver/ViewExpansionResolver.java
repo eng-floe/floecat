@@ -1,4 +1,4 @@
-package ai.floedb.metacat.service.query.resolve;
+package ai.floedb.metacat.service.query.resolver;
 
 import ai.floedb.metacat.query.rpc.QueryInput;
 import jakarta.enterprise.context.ApplicationScoped;

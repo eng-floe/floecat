@@ -1,6 +1,5 @@
 package ai.floedb.metacat.service.directory;
 
-import ai.floedb.metacat.catalog.rpc.Catalog;
 import ai.floedb.metacat.catalog.rpc.DirectoryService;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogResponse;
@@ -10,7 +9,6 @@ import ai.floedb.metacat.catalog.rpc.LookupTableRequest;
 import ai.floedb.metacat.catalog.rpc.LookupTableResponse;
 import ai.floedb.metacat.catalog.rpc.LookupViewRequest;
 import ai.floedb.metacat.catalog.rpc.LookupViewResponse;
-import ai.floedb.metacat.catalog.rpc.Namespace;
 import ai.floedb.metacat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveCatalogResponse;
 import ai.floedb.metacat.catalog.rpc.ResolveFQTablesRequest;
@@ -23,37 +21,26 @@ import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveTableResponse;
 import ai.floedb.metacat.catalog.rpc.ResolveViewRequest;
 import ai.floedb.metacat.catalog.rpc.ResolveViewResponse;
-import ai.floedb.metacat.catalog.rpc.Table;
-import ai.floedb.metacat.catalog.rpc.View;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageResponse;
-import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.LogHelper;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
-import ai.floedb.metacat.service.repo.impl.CatalogRepository;
-import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
-import ai.floedb.metacat.service.repo.impl.TableRepository;
-import ai.floedb.metacat.service.repo.impl.ViewRepository;
+import ai.floedb.metacat.service.query.graph.MetadataGraph;
 import ai.floedb.metacat.service.security.impl.Authorizer;
 import ai.floedb.metacat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.jboss.logging.Logger;
 
 @GrpcService
 public class DirectoryServiceImpl extends BaseServiceImpl implements DirectoryService {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
-  @Inject CatalogRepository catalogs;
-  @Inject NamespaceRepository namespaces;
-  @Inject TableRepository tables;
-  @Inject ViewRepository views;
+  @Inject MetadataGraph metadataGraph;
 
   private static final Logger LOG = Logger.getLogger(DirectoryService.class);
 
@@ -68,20 +55,10 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   authz.require(principalContext, "catalog.read");
 
-                  var tenantId = principalContext.getTenantId();
-                  Catalog cat =
-                      catalogs
-                          .getByName(tenantId, request.getRef().getCatalog())
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(),
-                                      "catalog",
-                                      Map.of("id", request.getRef().getCatalog())));
+                  var resourceId =
+                      metadataGraph.resolveCatalog(correlationId(), request.getRef().getCatalog());
 
-                  return ResolveCatalogResponse.newBuilder()
-                      .setResourceId(cat.getResourceId())
-                      .build();
+                  return ResolveCatalogResponse.newBuilder().setResourceId(resourceId).build();
                 }),
             correlationId())
         .onFailure()
@@ -101,14 +78,13 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   authz.require(principalContext, "catalog.read");
 
-                  var catalogOpt = catalogs.getById(request.getResourceId());
-                  if (catalogOpt.isEmpty()) {
+                  var catalogNode = metadataGraph.catalog(request.getResourceId());
+                  if (catalogNode.isEmpty()) {
                     return LookupCatalogResponse.newBuilder().build();
                   }
-                  var catalog = catalogOpt.get();
 
                   return LookupCatalogResponse.newBuilder()
-                      .setDisplayName(catalog.getDisplayName())
+                      .setDisplayName(catalogNode.get().displayName())
                       .build();
                 }),
             correlationId())
@@ -131,38 +107,10 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   var ref = request.getRef();
                   validateNameRefOrThrow(ref);
-                  var tenantId = principalContext.getTenantId();
 
-                  Catalog cat =
-                      catalogs
-                          .getByName(tenantId, ref.getCatalog())
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(), "catalog", Map.of("id", ref.getCatalog())));
+                  var namespaceId = metadataGraph.resolveNamespace(correlationId(), ref);
 
-                  var fullPath = new ArrayList<>(ref.getPathList());
-                  if (!ref.getName().isBlank()) {
-                    fullPath.add(ref.getName());
-                  }
-
-                  Namespace namespace =
-                      namespaces
-                          .getByPath(tenantId, cat.getResourceId().getId(), fullPath)
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(),
-                                      "namespace.by_path_missing",
-                                      Map.of(
-                                          "catalog_id",
-                                          cat.getResourceId().getId(),
-                                          "path",
-                                          String.join(".", fullPath))));
-
-                  return ResolveNamespaceResponse.newBuilder()
-                      .setResourceId(namespace.getResourceId())
-                      .build();
+                  return ResolveNamespaceResponse.newBuilder().setResourceId(namespaceId).build();
                 }),
             correlationId())
         .onFailure()
@@ -182,31 +130,12 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   authz.require(principalContext, "catalog.read");
 
-                  var namespaceId = request.getResourceId();
-                  var namespaceOpt = namespaces.getById(namespaceId);
-
-                  if (namespaceOpt.isEmpty()) {
+                  var namespaceName = metadataGraph.namespaceName(request.getResourceId());
+                  if (namespaceName.isEmpty()) {
                     return LookupNamespaceResponse.newBuilder().build();
                   }
-                  var namespace = namespaceOpt.get();
 
-                  var catalogId = namespace.getCatalogId();
-                  var catalog =
-                      catalogs
-                          .getById(catalogId)
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(), "catalog", Map.of("id", catalogId.getId())));
-
-                  var nr =
-                      NameRef.newBuilder()
-                          .setCatalog(catalog.getDisplayName())
-                          .addAllPath(namespace.getParentsList())
-                          .setName(namespace.getDisplayName())
-                          .build();
-
-                  return LookupNamespaceResponse.newBuilder().setRef(nr).build();
+                  return LookupNamespaceResponse.newBuilder().setRef(namespaceName.get()).build();
                 }),
             correlationId())
         .onFailure()
@@ -230,56 +159,9 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   validateNameRefOrThrow(nameRef);
                   validateTableNameOrThrow(nameRef);
 
-                  var tenantId = principalContext.getTenantId();
+                  var tableId = metadataGraph.resolveTable(correlationId(), nameRef);
 
-                  Catalog catalog =
-                      catalogs
-                          .getByName(tenantId, nameRef.getCatalog())
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(),
-                                      "catalog",
-                                      Map.of("id", nameRef.getCatalog())));
-
-                  Namespace namespace =
-                      namespaces
-                          .getByPath(
-                              tenantId, catalog.getResourceId().getId(), nameRef.getPathList())
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(),
-                                      "namespace.by_path_missing",
-                                      Map.of(
-                                          "catalog_id",
-                                          catalog.getResourceId().getId(),
-                                          "path",
-                                          String.join(".", nameRef.getPathList()))));
-
-                  Table table =
-                      tables
-                          .getByName(
-                              tenantId,
-                              catalog.getResourceId().getId(),
-                              namespace.getResourceId().getId(),
-                              nameRef.getName())
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(),
-                                      "table.by_name_missing",
-                                      Map.of(
-                                          "catalog",
-                                          nameRef.getCatalog(),
-                                          "path",
-                                          String.join(".", nameRef.getPathList()),
-                                          "name",
-                                          nameRef.getName())));
-
-                  return ResolveTableResponse.newBuilder()
-                      .setResourceId(table.getResourceId())
-                      .build();
+                  return ResolveTableResponse.newBuilder().setResourceId(tableId).build();
                 }),
             correlationId())
         .onFailure()
@@ -299,37 +181,12 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   authz.require(principalContext, List.of("catalog.read", "table.read"));
 
-                  var tableId = request.getResourceId();
-
-                  var tableOpt = tables.getById(tableId);
-                  if (tableOpt.isEmpty()) {
-                    return LookupTableResponse.newBuilder().build();
-                  }
-                  var table = tableOpt.get();
-
-                  var catalogOpt = catalogs.getById(table.getCatalogId());
-                  var namespaceOpt = namespaces.getById(table.getNamespaceId());
-
-                  if (catalogOpt.isEmpty() || namespaceOpt.isEmpty()) {
+                  var tableName = metadataGraph.tableName(request.getResourceId());
+                  if (tableName.isEmpty()) {
                     return LookupTableResponse.newBuilder().build();
                   }
 
-                  var catalog = catalogOpt.get();
-                  var namespace = namespaceOpt.get();
-
-                  var path = new ArrayList<>(namespace.getParentsList());
-                  if (!namespace.getDisplayName().isBlank()) {
-                    path.add(namespace.getDisplayName());
-                  }
-
-                  var nameRef =
-                      NameRef.newBuilder()
-                          .setCatalog(catalog.getDisplayName())
-                          .addAllPath(path)
-                          .setName(table.getDisplayName())
-                          .build();
-
-                  return LookupTableResponse.newBuilder().setName(nameRef).build();
+                  return LookupTableResponse.newBuilder().setName(tableName.get()).build();
                 }),
             correlationId())
         .onFailure()
@@ -353,56 +210,9 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   validateNameRefOrThrow(nameRef);
                   validateViewNameOrThrow(nameRef);
 
-                  var tenantId = principalContext.getTenantId();
+                  var viewId = metadataGraph.resolveView(correlationId(), nameRef);
 
-                  Catalog catalog =
-                      catalogs
-                          .getByName(tenantId, nameRef.getCatalog())
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(),
-                                      "catalog",
-                                      Map.of("id", nameRef.getCatalog())));
-
-                  Namespace namespace =
-                      namespaces
-                          .getByPath(
-                              tenantId, catalog.getResourceId().getId(), nameRef.getPathList())
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(),
-                                      "namespace.by_path_missing",
-                                      Map.of(
-                                          "catalog_id",
-                                          catalog.getResourceId().getId(),
-                                          "path",
-                                          String.join(".", nameRef.getPathList()))));
-
-                  View view =
-                      views
-                          .getByName(
-                              tenantId,
-                              catalog.getResourceId().getId(),
-                              namespace.getResourceId().getId(),
-                              nameRef.getName())
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(),
-                                      "view.by_name_missing",
-                                      Map.of(
-                                          "catalog",
-                                          nameRef.getCatalog(),
-                                          "path",
-                                          String.join(".", nameRef.getPathList()),
-                                          "name",
-                                          nameRef.getName())));
-
-                  return ResolveViewResponse.newBuilder()
-                      .setResourceId(view.getResourceId())
-                      .build();
+                  return ResolveViewResponse.newBuilder().setResourceId(viewId).build();
                 }),
             correlationId())
         .onFailure()
@@ -422,37 +232,12 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   authz.require(principalContext, List.of("catalog.read", "view.read"));
 
-                  var viewId = request.getResourceId();
-
-                  var viewOpt = views.getById(viewId);
-                  if (viewOpt.isEmpty()) {
-                    return LookupViewResponse.newBuilder().build();
-                  }
-                  var view = viewOpt.get();
-
-                  var catalogOpt = catalogs.getById(view.getCatalogId());
-                  var namespaceOpt = namespaces.getById(view.getNamespaceId());
-
-                  if (catalogOpt.isEmpty() || namespaceOpt.isEmpty()) {
+                  var viewName = metadataGraph.viewName(request.getResourceId());
+                  if (viewName.isEmpty()) {
                     return LookupViewResponse.newBuilder().build();
                   }
 
-                  var catalog = catalogOpt.get();
-                  var namespace = namespaceOpt.get();
-
-                  var path = new ArrayList<>(namespace.getParentsList());
-                  if (!namespace.getDisplayName().isBlank()) {
-                    path.add(namespace.getDisplayName());
-                  }
-
-                  var nameRef =
-                      NameRef.newBuilder()
-                          .setCatalog(catalog.getDisplayName())
-                          .addAllPath(path)
-                          .setName(view.getDisplayName())
-                          .build();
-
-                  return LookupViewResponse.newBuilder().setName(nameRef).build();
+                  return LookupViewResponse.newBuilder().setName(viewName.get()).build();
                 }),
             correlationId())
         .onFailure()
@@ -478,155 +263,47 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   final String token = request.hasPage() ? request.getPage().getPageToken() : "";
 
                   var builder = ResolveFQViewsResponse.newBuilder();
-                  var tenantId = principalContext.getTenantId();
 
                   if (request.hasList()) {
-                    if (token != null && !token.isEmpty()) {
-                      throw GrpcErrors.invalidArgument(
-                          correlationId(), "page_token.invalid", Map.of("page_token", token));
-                    }
+                    var result =
+                        metadataGraph.resolveViews(
+                            correlationId(), request.getList().getNamesList(), limit, token);
 
-                    var names = request.getList().getNamesList();
-                    final int end = Math.min(names.size(), Math.max(1, limit));
-
-                    for (int i = 0; i < end; i++) {
-                      NameRef nameRef = names.get(i);
-                      try {
-                        validateNameRefOrThrow(nameRef);
-                        validateViewNameOrThrow(nameRef);
-
-                        Catalog catalog =
-                            catalogs
-                                .getByName(tenantId, nameRef.getCatalog())
-                                .orElseThrow(
-                                    () ->
-                                        GrpcErrors.notFound(
-                                            correlationId(),
-                                            "catalog",
-                                            Map.of("id", nameRef.getCatalog())));
-
-                        Namespace namespace =
-                            namespaces
-                                .getByPath(
-                                    tenantId,
-                                    catalog.getResourceId().getId(),
-                                    nameRef.getPathList())
-                                .orElseThrow(
-                                    () ->
-                                        GrpcErrors.notFound(
-                                            correlationId(),
-                                            "namespace.by_path_missing",
-                                            Map.of(
-                                                "catalog_id", catalog.getResourceId().getId(),
-                                                "path", String.join(".", nameRef.getPathList()))));
-
-                        Optional<View> viewOpt =
-                            views.getByName(
-                                tenantId,
-                                catalog.getResourceId().getId(),
-                                namespace.getResourceId().getId(),
-                                nameRef.getName());
-
-                        var viewId =
-                            viewOpt
-                                .map(View::getResourceId)
-                                .orElse(ResourceId.getDefaultInstance());
-                        var outName =
-                            viewOpt.isPresent()
-                                ? NameRef.newBuilder()
-                                    .setCatalog(catalog.getDisplayName())
-                                    .addAllPath(nameRef.getPathList())
-                                    .setName(nameRef.getName())
-                                    .setResourceId(viewId)
-                                    .build()
-                                : nameRef;
-
-                        builder.addViews(
-                            ResolveFQViewsResponse.Entry.newBuilder()
-                                .setName(outName)
-                                .setResourceId(viewId));
-                      } catch (Throwable t) {
-                        builder.addViews(
-                            ResolveFQViewsResponse.Entry.newBuilder()
-                                .setName(nameRef)
-                                .setResourceId(ResourceId.getDefaultInstance()));
-                      }
-                    }
+                    result
+                        .relations()
+                        .forEach(
+                            qr ->
+                                builder.addViews(
+                                    ResolveFQViewsResponse.Entry.newBuilder()
+                                        .setName(qr.name())
+                                        .setResourceId(qr.resourceId())));
 
                     builder.setPage(
-                        PageResponse.newBuilder().setTotalSize(names.size()).setNextPageToken(""));
+                        PageResponse.newBuilder()
+                            .setTotalSize(result.totalSize())
+                            .setNextPageToken(result.nextPageToken()));
 
                     return builder.build();
                   }
 
                   if (request.hasPrefix()) {
-                    var prefix = request.getPrefix();
-                    validateNameRefOrThrow(prefix);
+                    var result =
+                        metadataGraph.resolveViews(
+                            correlationId(), request.getPrefix(), limit, token);
 
-                    Catalog catalog =
-                        catalogs
-                            .getByName(tenantId, prefix.getCatalog())
-                            .orElseThrow(
-                                () ->
-                                    GrpcErrors.notFound(
-                                        correlationId(),
-                                        "catalog",
-                                        Map.of("id", prefix.getCatalog())));
-
-                    Namespace namespace =
-                        namespaces
-                            .getByPath(
-                                tenantId, catalog.getResourceId().getId(), prefix.getPathList())
-                            .orElseThrow(
-                                () ->
-                                    GrpcErrors.notFound(
-                                        correlationId(),
-                                        "namespace.by_path_missing",
-                                        Map.of(
-                                            "catalog_id", catalog.getResourceId().getId(),
-                                            "path", String.join(".", prefix.getPathList()))));
-
-                    StringBuilder next = new StringBuilder();
-                    final List<View> entries;
-                    try {
-                      entries =
-                          views.list(
-                              tenantId,
-                              catalog.getResourceId().getId(),
-                              namespace.getResourceId().getId(),
-                              Math.max(1, limit),
-                              token,
-                              next);
-                    } catch (IllegalArgumentException badToken) {
-                      throw GrpcErrors.invalidArgument(
-                          correlationId(), "page_token.invalid", Map.of("page_token", token));
-                    }
-
-                    int total =
-                        views.count(
-                            tenantId,
-                            catalog.getResourceId().getId(),
-                            namespace.getResourceId().getId());
-
-                    for (View view : entries) {
-                      var nr =
-                          NameRef.newBuilder()
-                              .setCatalog(catalog.getDisplayName())
-                              .addAllPath(prefix.getPathList())
-                              .setName(view.getDisplayName())
-                              .setResourceId(view.getResourceId())
-                              .build();
-
-                      builder.addViews(
-                          ResolveFQViewsResponse.Entry.newBuilder()
-                              .setName(nr)
-                              .setResourceId(view.getResourceId()));
-                    }
+                    result
+                        .relations()
+                        .forEach(
+                            qr ->
+                                builder.addViews(
+                                    ResolveFQViewsResponse.Entry.newBuilder()
+                                        .setName(qr.name())
+                                        .setResourceId(qr.resourceId())));
 
                     builder.setPage(
                         PageResponse.newBuilder()
-                            .setTotalSize(total)
-                            .setNextPageToken(next.toString()));
+                            .setTotalSize(result.totalSize())
+                            .setNextPageToken(result.nextPageToken()));
                     return builder.build();
                   }
 
@@ -656,156 +333,47 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   final String token = request.hasPage() ? request.getPage().getPageToken() : "";
 
                   var builder = ResolveFQTablesResponse.newBuilder();
-                  var tenantId = principalContext.getTenantId();
 
                   if (request.hasList()) {
-                    if (token != null && !token.isEmpty()) {
-                      throw GrpcErrors.invalidArgument(
-                          correlationId(), "page_token.invalid", Map.of("page_token", token));
-                    }
+                    var result =
+                        metadataGraph.resolveTables(
+                            correlationId(), request.getList().getNamesList(), limit, token);
 
-                    var names = request.getList().getNamesList();
-                    final int end = Math.min(names.size(), Math.max(1, limit));
-
-                    for (int i = 0; i < end; i++) {
-                      NameRef nameRef = names.get(i);
-                      try {
-                        validateNameRefOrThrow(nameRef);
-                        validateTableNameOrThrow(nameRef);
-
-                        Catalog catalog =
-                            catalogs
-                                .getByName(tenantId, nameRef.getCatalog())
-                                .orElseThrow(
-                                    () ->
-                                        GrpcErrors.notFound(
-                                            correlationId(),
-                                            "catalog",
-                                            Map.of("id", nameRef.getCatalog())));
-
-                        Namespace namespace =
-                            namespaces
-                                .getByPath(
-                                    tenantId,
-                                    catalog.getResourceId().getId(),
-                                    nameRef.getPathList())
-                                .orElseThrow(
-                                    () ->
-                                        GrpcErrors.notFound(
-                                            correlationId(),
-                                            "namespace.by_path_missing",
-                                            Map.of(
-                                                "catalog_id", catalog.getResourceId().getId(),
-                                                "path", String.join(".", nameRef.getPathList()))));
-
-                        Optional<Table> tableOpt =
-                            tables.getByName(
-                                tenantId,
-                                catalog.getResourceId().getId(),
-                                namespace.getResourceId().getId(),
-                                nameRef.getName());
-
-                        var tableId =
-                            tableOpt
-                                .map(Table::getResourceId)
-                                .orElse(ResourceId.getDefaultInstance());
-                        var outName =
-                            tableOpt.isPresent()
-                                ? NameRef.newBuilder()
-                                    .setCatalog(catalog.getDisplayName())
-                                    .addAllPath(nameRef.getPathList())
-                                    .setName(nameRef.getName())
-                                    .setResourceId(tableId)
-                                    .build()
-                                : nameRef;
-
-                        builder.addTables(
-                            ResolveFQTablesResponse.Entry.newBuilder()
-                                .setName(outName)
-                                .setResourceId(tableId));
-
-                      } catch (Throwable t) {
-                        builder.addTables(
-                            ResolveFQTablesResponse.Entry.newBuilder()
-                                .setName(nameRef)
-                                .setResourceId(ResourceId.getDefaultInstance()));
-                      }
-                    }
+                    result
+                        .relations()
+                        .forEach(
+                            qr ->
+                                builder.addTables(
+                                    ResolveFQTablesResponse.Entry.newBuilder()
+                                        .setName(qr.name())
+                                        .setResourceId(qr.resourceId())));
 
                     builder.setPage(
-                        PageResponse.newBuilder().setTotalSize(names.size()).setNextPageToken(""));
+                        PageResponse.newBuilder()
+                            .setTotalSize(result.totalSize())
+                            .setNextPageToken(result.nextPageToken()));
 
                     return builder.build();
                   }
 
                   if (request.hasPrefix()) {
-                    var prefix = request.getPrefix();
-                    validateNameRefOrThrow(prefix);
+                    var result =
+                        metadataGraph.resolveTables(
+                            correlationId(), request.getPrefix(), limit, token);
 
-                    Catalog catalog =
-                        catalogs
-                            .getByName(tenantId, prefix.getCatalog())
-                            .orElseThrow(
-                                () ->
-                                    GrpcErrors.notFound(
-                                        correlationId(),
-                                        "catalog",
-                                        Map.of("id", prefix.getCatalog())));
-
-                    Namespace namespace =
-                        namespaces
-                            .getByPath(
-                                tenantId, catalog.getResourceId().getId(), prefix.getPathList())
-                            .orElseThrow(
-                                () ->
-                                    GrpcErrors.notFound(
-                                        correlationId(),
-                                        "namespace.by_path_missing",
-                                        Map.of(
-                                            "catalog_id", catalog.getResourceId().getId(),
-                                            "path", String.join(".", prefix.getPathList()))));
-
-                    StringBuilder next = new StringBuilder();
-                    final List<Table> entries;
-                    try {
-                      entries =
-                          tables.list(
-                              tenantId,
-                              catalog.getResourceId().getId(),
-                              namespace.getResourceId().getId(),
-                              Math.max(1, limit),
-                              token,
-                              next);
-                    } catch (IllegalArgumentException badToken) {
-                      throw GrpcErrors.invalidArgument(
-                          correlationId(), "page_token.invalid", Map.of("page_token", token));
-                    }
-
-                    int total =
-                        tables.count(
-                            tenantId,
-                            catalog.getResourceId().getId(),
-                            namespace.getResourceId().getId());
-
-                    for (Table table : entries) {
-                      var nr =
-                          NameRef.newBuilder()
-                              .setCatalog(catalog.getDisplayName())
-                              .addAllPath(prefix.getPathList())
-                              .setName(table.getDisplayName())
-                              .setResourceId(table.getResourceId())
-                              .build();
-
-                      builder.addTables(
-                          ResolveFQTablesResponse.Entry.newBuilder()
-                              .setName(nr)
-                              .setResourceId(table.getResourceId()));
-                    }
+                    result
+                        .relations()
+                        .forEach(
+                            qr ->
+                                builder.addTables(
+                                    ResolveFQTablesResponse.Entry.newBuilder()
+                                        .setName(qr.name())
+                                        .setResourceId(qr.resourceId())));
 
                     builder.setPage(
                         PageResponse.newBuilder()
-                            .setTotalSize(total)
-                            .setNextPageToken(next.toString()));
+                            .setTotalSize(result.totalSize())
+                            .setNextPageToken(result.nextPageToken()));
                     return builder.build();
                   }
 

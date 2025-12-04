@@ -1,9 +1,10 @@
-package ai.floedb.metacat.service.query.resolve;
+package ai.floedb.metacat.service.query.resolver;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.metacat.common.rpc.PrincipalContext;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.query.rpc.*;
 import ai.floedb.metacat.service.query.impl.QueryContext;
@@ -31,11 +32,11 @@ public class SnapshotResolverTest {
   }
 
   private ResourceId table(String id) {
-    return ResourceId.newBuilder().setId(id).build();
+    return ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_TABLE).build();
   }
 
   private ResourceId view(String id) {
-    return ResourceId.newBuilder().setId(id).build();
+    return ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_VIEW).build();
   }
 
   /** Builds a QueryContext with given pinned snapshots. */

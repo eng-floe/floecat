@@ -393,7 +393,11 @@ public class ConnectorIT {
           conn.enumerateSnapshotsWithStats(
               "db",
               "events",
-              ResourceId.newBuilder().setTenantId("t").setId("tbl").build(),
+              ResourceId.newBuilder()
+                  .setTenantId("t")
+                  .setId("tbl")
+                  .setKind(ResourceKind.RK_TABLE)
+                  .build(),
               Set.of("#1", "#4", "#9"));
 
       var cs1 = onlyIds.get(0).columnStats();
@@ -409,7 +413,11 @@ public class ConnectorIT {
           conn.enumerateSnapshotsWithStats(
               "db",
               "events",
-              ResourceId.newBuilder().setTenantId("t").setId("tbl").build(),
+              ResourceId.newBuilder()
+                  .setTenantId("t")
+                  .setId("tbl")
+                  .setKind(ResourceKind.RK_TABLE)
+                  .build(),
               Set.of("user.name", "attrs.value"));
 
       var cs2 = onlyNames.get(0).columnStats();
@@ -425,7 +433,11 @@ public class ConnectorIT {
           conn.enumerateSnapshotsWithStats(
               "db",
               "events",
-              ResourceId.newBuilder().setTenantId("t").setId("tbl").build(),
+              ResourceId.newBuilder()
+                  .setTenantId("t")
+                  .setId("tbl")
+                  .setKind(ResourceKind.RK_TABLE)
+                  .build(),
               Set.of("#2", "items.element.sku"));
 
       var cs3 = mixed.get(0).columnStats();
@@ -441,7 +453,11 @@ public class ConnectorIT {
           conn.enumerateSnapshotsWithStats(
               "db",
               "events",
-              ResourceId.newBuilder().setTenantId("t").setId("tbl").build(),
+              ResourceId.newBuilder()
+                  .setTenantId("t")
+                  .setId("tbl")
+                  .setKind(ResourceKind.RK_TABLE)
+                  .build(),
               Collections.emptySet());
 
       assertEquals(8, allCols.get(0).columnStats().size());

@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.metacat.catalog.rpc.*;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.PageRequest;
+import ai.floedb.metacat.common.rpc.ResourceKind;
 import ai.floedb.metacat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.metacat.service.util.TestDataResetter;
 import ai.floedb.metacat.service.util.TestSupport;
@@ -349,6 +350,7 @@ class DirectoryIT {
         ai.floedb.metacat.common.rpc.ResourceId.newBuilder()
             .setTenantId(TestSupport.DEFAULT_SEED_TENANT)
             .setId("nope")
+            .setKind(ResourceKind.RK_UNSPECIFIED)
             .build();
 
     var lcat =
