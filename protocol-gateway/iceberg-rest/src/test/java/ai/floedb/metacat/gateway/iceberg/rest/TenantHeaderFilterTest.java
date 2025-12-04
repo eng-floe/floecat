@@ -10,6 +10,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
+import ai.floedb.metacat.gateway.iceberg.rest.services.tenant.TenantContext;
+import ai.floedb.metacat.gateway.iceberg.rest.support.filter.TenantHeaderFilter;
 import jakarta.enterprise.inject.Instance;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.core.MultivaluedHashMap;
@@ -31,9 +33,9 @@ class TenantHeaderFilterTest {
     when(config.defaultTenantId()).thenReturn("tenant-default");
     when(config.defaultAuthorization()).thenReturn("Bearer default");
 
-    filter.config = configInstance;
+    filter.setConfigInstance(configInstance);
     TenantContext tenantContext = mock(TenantContext.class);
-    filter.tenantContext = tenantContext;
+    filter.setTenantContext(tenantContext);
 
     ContainerRequestContext ctx = mock(ContainerRequestContext.class);
     UriInfo uriInfo = mock(UriInfo.class);
@@ -65,8 +67,8 @@ class TenantHeaderFilterTest {
     TenantHeaderFilter filter = new TenantHeaderFilter();
     Instance<IcebergGatewayConfig> configInstance = mock(Instance.class);
     when(configInstance.isUnsatisfied()).thenReturn(true);
-    filter.config = configInstance;
-    filter.tenantContext = mock(TenantContext.class);
+    filter.setConfigInstance(configInstance);
+    filter.setTenantContext(mock(TenantContext.class));
 
     ContainerRequestContext ctx = mock(ContainerRequestContext.class);
     UriInfo uriInfo = mock(UriInfo.class);
@@ -99,8 +101,8 @@ class TenantHeaderFilterTest {
     when(config.defaultTenantId()).thenReturn("tenant-default");
     when(config.authHeader()).thenReturn("authorization");
     when(config.defaultAuthorization()).thenReturn("undefined");
-    filter.config = configInstance;
-    filter.tenantContext = mock(TenantContext.class);
+    filter.setConfigInstance(configInstance);
+    filter.setTenantContext(mock(TenantContext.class));
 
     ContainerRequestContext ctx = mock(ContainerRequestContext.class);
     UriInfo uriInfo = mock(UriInfo.class);

@@ -79,6 +79,8 @@ import ai.floedb.metacat.execution.rpc.ScanBundle;
 import ai.floedb.metacat.execution.rpc.ScanFile;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
+import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableKey;
+import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableRepository;
 import ai.floedb.metacat.query.rpc.BeginQueryRequest;
 import ai.floedb.metacat.query.rpc.BeginQueryResponse;
 import ai.floedb.metacat.query.rpc.DescribeInputsRequest;
@@ -1954,48 +1956,48 @@ class RestResourceTest {
 
   private String stageCreateRequest(String tableName) {
     return """
-        {
-          "name": "%s",
-          "schema": {
-            "schema-id": 1,
-            "last-column-id": 1,
-            "type": "struct",
-            "fields": [
-              {
-                "id": 1,
-                "name": "id",
-                "required": true,
-                "type": "int"
-              }
-            ]
-          },
-          "partition-spec": {
-            "spec-id": 0,
-            "fields": [
-              {
-                "name": "id",
-                "field-id": 1,
-                "source-id": 1,
-                "transform": "identity"
-              }
-            ]
-          },
-          "write-order": {
-            "sort-order-id": 0,
-            "fields": [
-              {
-                "source-id": 1
-              }
-            ]
-          },
-          "properties": {
-            "metadata-location": "s3://bucket/%s/metadata.json",
-            "io-impl": "org.apache.iceberg.inmemory.InMemoryFileIO"
-          },
-          "location": "s3://bucket/%s",
-          "stage-create": true
-        }
-        """
+    {
+      "name": "%s",
+      "schema": {
+        "schema-id": 1,
+        "last-column-id": 1,
+        "type": "struct",
+        "fields": [
+          {
+            "id": 1,
+            "name": "id",
+            "required": true,
+            "type": "int"
+          }
+        ]
+      },
+      "partition-spec": {
+        "spec-id": 0,
+        "fields": [
+          {
+            "name": "id",
+            "field-id": 1,
+            "source-id": 1,
+            "transform": "identity"
+          }
+        ]
+      },
+      "write-order": {
+        "sort-order-id": 0,
+        "fields": [
+          {
+            "source-id": 1
+          }
+        ]
+      },
+      "properties": {
+        "metadata-location": "s3://bucket/%s/metadata.json",
+        "io-impl": "org.apache.iceberg.inmemory.InMemoryFileIO"
+      },
+      "location": "s3://bucket/%s",
+      "stage-create": true
+    }
+    """
         .formatted(tableName, tableName, tableName);
   }
 }

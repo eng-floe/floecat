@@ -2,6 +2,8 @@ package ai.floedb.metacat.gateway.iceberg.rest;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.metacat.gateway.iceberg.rest.api.metadata.TableMetadataView;
+import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MetadataMirrorService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -15,10 +17,11 @@ class MetadataMirrorServiceTest {
   @Test
   void mirrorsMetadataAndPointerFiles() throws IOException {
     MetadataMirrorService service = new MetadataMirrorService();
-    service.mapper = new ObjectMapper();
+    ObjectMapper mapper = new ObjectMapper();
+    service.setMapper(mapper);
 
     TableMetadataView metadata =
-        service.mapper.readValue(
+        mapper.readValue(
             """
             {
               "format-version": 2,
