@@ -50,6 +50,9 @@ class QueryServiceSchemaIT {
   @GrpcClient("metacat")
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
 
+  @GrpcClient("metacat")
+  ViewServiceGrpc.ViewServiceBlockingStub view;
+
   String catalogPrefix = this.getClass().getSimpleName() + "_";
 
   @Inject TestDataResetter resetter;
@@ -164,5 +167,39 @@ class QueryServiceSchemaIT {
     assertTrue(
         resp2.getSchemas(0).getColumnsList().stream().anyMatch(c -> c.getName().equals("qty")),
         "schemaV2 must include column 'qty'");
+  }
+
+  @Test
+  void describeInputsHandlesViewInputs() {
+    var cat = TestSupport.createCatalog(catalog, catalogPrefix + "cat_view", "");
+    var ns =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "sch", List.of("db"), "desc");
+    var createdView =
+        TestSupport.createView(
+            view, cat.getResourceId(), ns.getResourceId(), "orders_view", "select 1", "desc");
+
+    var name =
+        NameRef.newBuilder()
+            .setCatalog(cat.getDisplayName())
+            .addPath("db")
+            .addPath("sch")
+            .setName(createdView.getDisplayName())
+            .build();
+
+    var begin = queries.beginQuery(BeginQueryRequest.newBuilder().setTtlSeconds(10).build());
+    String qid = begin.getQuery().getQueryId();
+
+    var response =
+        schemaSvc.describeInputs(
+            DescribeInputsRequest.newBuilder()
+                .setQueryId(qid)
+                .addInputs(QueryInput.newBuilder().setName(name))
+                .build());
+
+    assertEquals(1, response.getSchemasCount());
+    assertEquals(
+        0,
+        response.getSchemas(0).getColumnsCount(),
+        "view schema should currently be empty (no stored output columns)");
   }
 }

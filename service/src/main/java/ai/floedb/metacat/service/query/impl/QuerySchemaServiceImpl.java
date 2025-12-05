@@ -1,10 +1,5 @@
 package ai.floedb.metacat.service.query.impl;
 
-import ai.floedb.metacat.catalog.rpc.GetSnapshotRequest;
-import ai.floedb.metacat.catalog.rpc.GetTableRequest;
-import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
-import ai.floedb.metacat.catalog.rpc.Table;
-import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.query.rpc.DescribeInputsRequest;
@@ -16,6 +11,9 @@ import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.LogHelper;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
 import ai.floedb.metacat.service.query.QueryContextStore;
+import ai.floedb.metacat.service.query.graph.MetadataGraph;
+import ai.floedb.metacat.service.query.graph.model.TableNode;
+import ai.floedb.metacat.service.query.graph.model.ViewNode;
 import ai.floedb.metacat.service.query.resolver.LogicalSchemaMapper;
 import ai.floedb.metacat.service.query.resolver.ObligationsResolver;
 import ai.floedb.metacat.service.query.resolver.QueryInputResolver;
@@ -49,12 +47,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   @Inject ObligationsResolver obligations;
   @Inject ViewExpansionResolver expansions;
   @Inject QueryContextStore queryStore;
-
-  @GrpcClient("metacat")
-  TableServiceGrpc.TableServiceBlockingStub tables;
-
-  @GrpcClient("metacat")
-  SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots;
+  @Inject MetadataGraph metadataGraph;
 
   @Override
   public Uni<DescribeInputsResponse> describeInputs(DescribeInputsRequest request) {
@@ -84,37 +77,8 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                   DescribeInputsResponse.Builder out = DescribeInputsResponse.newBuilder();
 
                   for (SnapshotPin pin : pins) {
-
-                    ResourceId rid = pin.getTableId();
-
-                    // Load table metadata
-                    Table t =
-                        tables
-                            .getTable(GetTableRequest.newBuilder().setTableId(rid).build())
-                            .getTable();
-
-                    String schemaJson = t.getSchemaJson();
-
-                    // Apply snapshot override if snapshot_id > 0
-                    long snapId = pin.getSnapshotId();
-                    if (snapId > 0) {
-
-                      var snap =
-                          snapshots
-                              .getSnapshot(
-                                  GetSnapshotRequest.newBuilder()
-                                      .setTableId(rid)
-                                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapId))
-                                      .build())
-                              .getSnapshot();
-
-                      if (!snap.getSchemaJson().isBlank()) {
-                        schemaJson = snap.getSchemaJson();
-                      }
-                    }
-
-                    SchemaDescriptor desc = schemaMapper.map(t, schemaJson);
-                    out.addSchemas(desc);
+                    SchemaDescriptor descriptor = schemaForPin(correlationId(), pin);
+                    out.addSchemas(descriptor);
                   }
 
                   // Compute expansions + obligations and store updated context
@@ -140,5 +104,52 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private SnapshotRef snapshotRefFrom(SnapshotPin pin) {
+    if (pin.hasSnapshotId()) {
+      return SnapshotRef.newBuilder().setSnapshotId(pin.getSnapshotId()).build();
+    }
+    if (pin.hasAsOf()) {
+      return SnapshotRef.newBuilder().setAsOf(pin.getAsOf()).build();
+    }
+    return null;
+  }
+
+  private SchemaDescriptor schemaForPin(String correlationId, SnapshotPin pin) {
+    ResourceId rid = pin.getTableId();
+    return switch (rid.getKind()) {
+      case RK_TABLE -> describeTable(correlationId, rid, pin);
+      case RK_VIEW -> describeView(correlationId, rid);
+      default ->
+          throw GrpcErrors.invalidArgument(
+              correlationId, "query.input.invalid", java.util.Map.of("resource_id", rid.getId()));
+    };
+  }
+
+  private SchemaDescriptor describeTable(String correlationId, ResourceId rid, SnapshotPin pin) {
+    TableNode tableNode =
+        metadataGraph
+            .table(rid)
+            .orElseThrow(
+                () ->
+                    GrpcErrors.notFound(
+                        correlationId, "table", java.util.Map.of("id", rid.getId())));
+
+    SnapshotRef snapshotRef = snapshotRefFrom(pin);
+    String schemaJson = metadataGraph.schemaJsonFor(correlationId, tableNode, snapshotRef);
+    return schemaMapper.map(tableNode, schemaJson);
+  }
+
+  private SchemaDescriptor describeView(String correlationId, ResourceId rid) {
+    ViewNode viewNode =
+        metadataGraph
+            .view(rid)
+            .orElseThrow(
+                () ->
+                    GrpcErrors.notFound(
+                        correlationId, "view", java.util.Map.of("id", rid.getId())));
+
+    return SchemaDescriptor.newBuilder().addAllColumns(viewNode.outputColumns()).build();
   }
 }

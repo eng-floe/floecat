@@ -43,6 +43,8 @@ query lifecycle / scan bundle logic.
 - `catalog/builtin` – Shared builtin catalog data model, validator, and loader helpers.
 - `service/query` – Query lifecycle management (`QueryContext`, `QueryContextStore`,
   `QueryServiceImpl`).
+- `service/query/graph` – MetadataGraph cache + immutable node models shared by planners/executors
+  (see [`docs/metadata-graph.md`](metadata-graph.md)).
 - `service/gc` – Scheduled cleanup of stale idempotency entries.
 - `service/bootstrap` – Optional seeding of demo tenants and catalog data.
 - `service/metrics` – `MeteringInterceptor` + `StorageUsageMetrics` for Micrometer integration.
@@ -63,7 +65,8 @@ helpers like `deterministicUuid`. Highlights:
 - **TableStatisticsServiceImpl** – Persists per-snapshot table/column/file stats; validates
   NDV/histogram payloads; paginates table, column, and file-level listings; uses client-streaming
   `PutColumnStats`/`PutFileColumnStats` to batch writes per stream.
-- **DirectoryServiceImpl** – Provides fast name↔ID lookup using pointer prefixes.
+- **DirectoryServiceImpl** – Provides fast name↔ID lookup via `MetadataGraph` (Resolve*/Lookup*) and
+  reuses the graph’s ResolveFQ helpers for list/prefix pagination.
 - **TenantServiceImpl** – Administers tenants and enforces conventional permissions.
 - **ConnectorsImpl** – Manages connector lifecycle, validates `ConnectorSpec` via SPI factories,
   wires reconciliation job submission, and exposes `ValidateConnector` + `TriggerReconcile`.

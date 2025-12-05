@@ -22,6 +22,7 @@ import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.LogHelper;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.query.graph.MetadataGraph;
 import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
@@ -48,6 +49,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
+  @Inject MetadataGraph metadataGraph;
 
   private static final Set<String> TABLE_MUTABLE_PATHS =
       Set.of(
@@ -243,6 +245,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           .build();
                     }
                     tableRepo.create(table);
+                    metadataGraph.invalidate(tableResourceId);
                     var meta = tableRepo.metaForSafe(tableResourceId);
                     return CreateTableResponse.newBuilder().setTable(table).setMeta(meta).build();
                   }
@@ -255,6 +258,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           () -> fingerprint,
                           () -> {
                             tableRepo.create(table);
+                            metadataGraph.invalidate(tableResourceId);
                             return new IdempotencyGuard.CreateResult<>(table, tableResourceId);
                           },
                           t -> tableRepo.metaForSafe(t.getResourceId()),
@@ -332,6 +336,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                       corr,
                       "table",
                       conflictInfo);
+                  metadataGraph.invalidate(tableId);
 
                   var outMeta = tableRepo.metaForSafe(tableId);
                   var latest = tableRepo.getById(tableId).orElse(desired);
@@ -370,10 +375,12 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                             "table",
                             Map.of("id", tableId.getId()));
 
+                    metadataGraph.invalidate(tableId);
                     return DeleteTableResponse.newBuilder().setMeta(meta).build();
 
                   } catch (BaseResourceRepository.NotFoundException pointerMissing) {
                     tableRepo.delete(tableId);
+                    metadataGraph.invalidate(tableId);
                     return DeleteTableResponse.newBuilder()
                         .setMeta(tableRepo.metaForSafe(tableId))
                         .build();

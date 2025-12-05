@@ -1,52 +1,62 @@
 package ai.floedb.metacat.service.query.resolver;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.metacat.catalog.rpc.*;
-import ai.floedb.metacat.common.rpc.*;
-import ai.floedb.metacat.query.rpc.*;
+import ai.floedb.metacat.common.rpc.NameRef;
+import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.ResourceKind;
+import ai.floedb.metacat.common.rpc.SnapshotRef;
+import ai.floedb.metacat.query.rpc.QueryInput;
+import ai.floedb.metacat.query.rpc.SnapshotPin;
+import ai.floedb.metacat.service.query.graph.MetadataGraph;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 public class QueryInputResolverTest {
 
   QueryInputResolver resolver;
-  FakeDir dir;
-  FakeSnaps snaps;
+  FakeGraph metadataGraph;
 
   @BeforeEach
   void init() {
     resolver = new QueryInputResolver();
-    dir = new FakeDir();
-    snaps = new FakeSnaps();
-
-    resolver.setDirectoryApi(dir);
-    resolver.setSnapshotApi(snaps);
+    metadataGraph = new FakeGraph();
+    resolver.metadataGraph = metadataGraph;
   }
 
   NameRef name(String cat, String... parts) {
     NameRef.Builder b = NameRef.newBuilder().setCatalog(cat);
-    for (int i = 0; i < parts.length - 1; i++) b.addPath(parts[i]);
+    for (int i = 0; i < parts.length - 1; i++) {
+      b.addPath(parts[i]);
+    }
     b.setName(parts[parts.length - 1]);
     return b.build();
   }
 
   ResourceId rid(String id) {
-    return ResourceId.newBuilder().setId(id).build();
+    return ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_TABLE).build();
   }
 
-  // -------------------------------------------------------
-  // TESTS
-  // -------------------------------------------------------
+  ResourceId viewRid(String id) {
+    return ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_VIEW).build();
+  }
 
   /** Resolving a name that maps only to a table should return the table id. */
   @Test
   void resolve_table_only() {
     NameRef n = name("c", "ns", "t");
-    dir.tables.put(n, rid("T1"));
+    ResourceId tableId = rid("T1");
+    metadataGraph.bind(n, tableId);
 
     var res =
         resolver.resolveInputs(
@@ -59,7 +69,8 @@ public class QueryInputResolverTest {
   @Test
   void resolve_view_only() {
     NameRef n = name("c", "ns", "v");
-    dir.views.put(n, rid("V1"));
+    ResourceId viewId = ResourceId.newBuilder().setId("V1").setKind(ResourceKind.RK_VIEW).build();
+    metadataGraph.bind(n, viewId);
 
     var res =
         resolver.resolveInputs(
@@ -72,8 +83,7 @@ public class QueryInputResolverTest {
   @Test
   void resolve_ambiguous() {
     NameRef n = name("c", "x", "y");
-    dir.tables.put(n, rid("T"));
-    dir.views.put(n, rid("V"));
+    metadataGraph.fail(n, new StatusRuntimeException(io.grpc.Status.INVALID_ARGUMENT));
 
     assertThrows(
         StatusRuntimeException.class,
@@ -86,6 +96,7 @@ public class QueryInputResolverTest {
   @Test
   void resolve_unresolved() {
     NameRef n = name("c", "a", "b");
+    metadataGraph.fail(n, new StatusRuntimeException(io.grpc.Status.INVALID_ARGUMENT));
 
     assertThrows(
         StatusRuntimeException.class,
@@ -98,7 +109,8 @@ public class QueryInputResolverTest {
   @Test
   void snapshot_override_id() {
     NameRef n = name("c", "ns", "t2");
-    dir.tables.put(n, rid("T2"));
+    ResourceId tableId = rid("T2");
+    metadataGraph.bind(n, tableId);
 
     QueryInput qi =
         QueryInput.newBuilder()
@@ -111,6 +123,10 @@ public class QueryInputResolverTest {
 
     assertEquals("T2", p.getTableId().getId());
     assertEquals(777, p.getSnapshotId());
+    FakeGraph.PinCall call = metadataGraph.pinCalls().get(metadataGraph.pinCalls().size() - 1);
+    assertEquals(tableId, call.tableId());
+    assertEquals(777, call.override().getSnapshotId());
+    assertTrue(call.asOfDefault().isEmpty());
   }
 
   /**
@@ -120,8 +136,8 @@ public class QueryInputResolverTest {
   @Test
   void snapshot_override_asof() {
     NameRef n = name("c", "ns", "t3");
-    dir.tables.put(n, rid("T3"));
-
+    ResourceId tableId = rid("T3");
+    metadataGraph.bind(n, tableId);
     Timestamp ts = Timestamp.newBuilder().setSeconds(100).build();
 
     QueryInput qi =
@@ -135,6 +151,9 @@ public class QueryInputResolverTest {
 
     assertEquals(0L, p.getSnapshotId());
     assertEquals(ts, p.getAsOf());
+    FakeGraph.PinCall call = metadataGraph.pinCalls().get(metadataGraph.pinCalls().size() - 1);
+    assertEquals(Optional.empty(), call.asOfDefault());
+    assertEquals(ts, call.override().getAsOf());
   }
 
   /**
@@ -144,8 +163,8 @@ public class QueryInputResolverTest {
   @Test
   void snapshot_asof_default() {
     NameRef n = name("c", "ns", "t4");
-    dir.tables.put(n, rid("T4"));
-    snaps.current.put("T4", 9999L);
+    ResourceId tableId = rid("T4");
+    metadataGraph.bind(n, tableId);
 
     Timestamp ts = Timestamp.newBuilder().setSeconds(50).build();
 
@@ -158,6 +177,9 @@ public class QueryInputResolverTest {
 
     assertEquals(0L, p.getSnapshotId());
     assertEquals(ts, p.getAsOf());
+    FakeGraph.PinCall call = metadataGraph.pinCalls().get(metadataGraph.pinCalls().size() - 1);
+    assertEquals(Optional.of(ts), call.asOfDefault());
+    assertEquals(SnapshotRef.WhichCase.WHICH_NOT_SET, call.override().getWhichCase());
   }
 
   /**
@@ -167,8 +189,9 @@ public class QueryInputResolverTest {
   @Test
   void snapshot_fallback_current() {
     NameRef n = name("c", "ns", "t5");
-    dir.tables.put(n, rid("T5"));
-    snaps.current.put("T5", 4444L);
+    ResourceId tableId = rid("T5");
+    metadataGraph.bind(n, tableId);
+    metadataGraph.setCurrentSnapshot(tableId, 4444L);
 
     SnapshotPin p =
         resolver
@@ -187,7 +210,7 @@ public class QueryInputResolverTest {
   @Test
   void direct_table_id() {
     ResourceId rid = rid("TABX");
-    snaps.current.put("TABX", 222L);
+    metadataGraph.setCurrentSnapshot(rid, 222L);
 
     SnapshotPin p =
         resolver
@@ -203,7 +226,7 @@ public class QueryInputResolverTest {
   /** Views never have snapshots. A viewId must always produce a pin with snapshotId=0. */
   @Test
   void direct_view_id() {
-    ResourceId rid = rid("VIEWX");
+    ResourceId rid = viewRid("VIEWX");
 
     SnapshotPin p =
         resolver
@@ -223,17 +246,14 @@ public class QueryInputResolverTest {
   @Test
   void snapshot_override_last_field_wins() {
     NameRef n = name("c", "ns", "t6");
-    dir.tables.put(n, rid("T6"));
+    ResourceId tableId = rid("T6");
+    metadataGraph.bind(n, tableId);
 
     Timestamp ts = Timestamp.newBuilder().setSeconds(999).build();
 
     SnapshotRef ref =
-        SnapshotRef.newBuilder()
-            .setSnapshotId(555) // first
-            .setAsOf(ts) // last → wins
-            .build();
+        SnapshotRef.newBuilder().setSnapshotId(555).setAsOf(ts).build(); // last field wins
 
-    // Protobuf semantics
     assertEquals(SnapshotRef.WhichCase.AS_OF, ref.getWhichCase());
     assertFalse(ref.hasSnapshotId());
     assertEquals(ts, ref.getAsOf());
@@ -256,10 +276,12 @@ public class QueryInputResolverTest {
     NameRef n1 = name("c", "x", "t1");
     NameRef n2 = name("c", "y", "t2");
 
-    dir.tables.put(n1, rid("T1"));
-    dir.tables.put(n2, rid("T2"));
-    snaps.current.put("T1", 10L);
-    snaps.current.put("T2", 20L);
+    ResourceId r1 = rid("T1");
+    ResourceId r2 = rid("T2");
+    metadataGraph.bind(n1, r1);
+    metadataGraph.bind(n2, r2);
+    metadataGraph.setCurrentSnapshot(r1, 10L);
+    metadataGraph.setCurrentSnapshot(r2, 20L);
 
     var res =
         resolver.resolveInputs(
@@ -270,7 +292,6 @@ public class QueryInputResolverTest {
             Optional.empty());
 
     assertEquals(List.of("T1", "T2"), res.resolved().stream().map(ResourceId::getId).toList());
-
     assertEquals(10, res.snapshotSet().getPins(0).getSnapshotId());
     assertEquals(20, res.snapshotSet().getPins(1).getSnapshotId());
   }
@@ -279,7 +300,8 @@ public class QueryInputResolverTest {
   @Test
   void resolve_nested_paths() {
     NameRef n = name("catA", "lvl1", "lvl2", "tbl");
-    dir.tables.put(n, rid("NESTED"));
+    ResourceId nested = rid("NESTED");
+    metadataGraph.bind(n, nested);
 
     var res =
         resolver.resolveInputs(
@@ -303,10 +325,6 @@ public class QueryInputResolverTest {
             .setResourceId(rid)
             .build();
 
-    // Put impossible mappings to ensure resolver does NOT call directory
-    dir.tables.clear();
-    dir.views.clear();
-
     var res =
         resolver.resolveInputs(
             "cid", List.of(QueryInput.newBuilder().setName(n).build()), Optional.empty());
@@ -318,10 +336,10 @@ public class QueryInputResolverTest {
   @Test
   void snapshot_empty_snapshotref_behaves_as_no_override() {
     NameRef n = name("c", "ns", "tbl");
-    dir.tables.put(n, rid("T_EMPTY"));
-    snaps.current.put("T_EMPTY", 999L);
+    ResourceId tableId = rid("T_EMPTY");
+    metadataGraph.bind(n, tableId);
+    metadataGraph.setCurrentSnapshot(tableId, 999L);
 
-    // SnapshotRef.newBuilder().build() → which = NONE
     QueryInput qi =
         QueryInput.newBuilder().setName(n).setSnapshot(SnapshotRef.newBuilder().build()).build();
 
@@ -340,9 +358,10 @@ public class QueryInputResolverTest {
     NameRef n = name("c", "x", "tblA");
     ResourceId ridB = rid("tblB");
 
-    dir.tables.put(n, rid("tblA"));
-    snaps.current.put("tblA", 100L);
-    snaps.current.put("tblB", 200L);
+    ResourceId ridA = rid("tblA");
+    metadataGraph.bind(n, ridA);
+    metadataGraph.setCurrentSnapshot(ridA, 100L);
+    metadataGraph.setCurrentSnapshot(ridB, 200L);
 
     var res =
         resolver.resolveInputs(
@@ -353,7 +372,6 @@ public class QueryInputResolverTest {
             Optional.empty());
 
     assertEquals(List.of("tblA", "tblB"), res.resolved().stream().map(ResourceId::getId).toList());
-
     assertEquals(100L, res.snapshotSet().getPins(0).getSnapshotId());
     assertEquals(200L, res.snapshotSet().getPins(1).getSnapshotId());
   }
@@ -363,7 +381,7 @@ public class QueryInputResolverTest {
    */
   @Test
   void missing_target_case_must_error() {
-    QueryInput qi = QueryInput.newBuilder().build(); // no target set
+    QueryInput qi = QueryInput.newBuilder().build();
 
     assertThrows(
         StatusRuntimeException.class,
@@ -376,7 +394,7 @@ public class QueryInputResolverTest {
    */
   @Test
   void view_with_asof_override_uses_timestamp() {
-    ResourceId rid = rid("V1");
+    ResourceId rid = viewRid("V1");
     Timestamp ts = Timestamp.newBuilder().setSeconds(202).build();
 
     QueryInput qi =
@@ -393,36 +411,80 @@ public class QueryInputResolverTest {
     assertEquals(ts, pin.getAsOf());
   }
 
-  // -------------------------------------------------------
-  // Fake implementations
-  // -------------------------------------------------------
+  // ----------------------------------------------------------------------
+  // Helpers / test doubles
+  // ----------------------------------------------------------------------
 
-  static class FakeDir implements QueryInputResolver.DirectoryApi {
+  static final class FakeGraph extends MetadataGraph {
 
-    final Map<NameRef, ResourceId> tables = new HashMap<>();
-    final Map<NameRef, ResourceId> views = new HashMap<>();
+    private final Map<NameRef, ResourceId> nameBindings = new HashMap<>();
+    private final Map<NameRef, RuntimeException> failures = new HashMap<>();
+    private final Map<String, Long> currentSnapshots = new HashMap<>();
+    private final List<PinCall> pinCalls = new ArrayList<>();
 
-    public ResolveTableResponse resolveTable(ResolveTableRequest req) {
-      ResourceId r = tables.get(req.getRef());
-      if (r == null) throw new RuntimeException("no table");
-      return ResolveTableResponse.newBuilder().setResourceId(r).build();
+    FakeGraph() {
+      super(null, null, null, null, null);
     }
 
-    public ResolveViewResponse resolveView(ResolveViewRequest req) {
-      ResourceId r = views.get(req.getRef());
-      if (r == null) throw new RuntimeException("no view");
-      return ResolveViewResponse.newBuilder().setResourceId(r).build();
+    void bind(NameRef ref, ResourceId id) {
+      nameBindings.put(ref, id);
     }
-  }
 
-  static class FakeSnaps implements QueryInputResolver.SnapshotApi {
-
-    final Map<String, Long> current = new HashMap<>();
-
-    public GetSnapshotResponse getSnapshot(GetSnapshotRequest req) {
-      long snap = current.getOrDefault(req.getTableId().getId(), 0L);
-      Snapshot s = Snapshot.newBuilder().setSnapshotId(snap).build();
-      return GetSnapshotResponse.newBuilder().setSnapshot(s).build();
+    void fail(NameRef ref, RuntimeException ex) {
+      failures.put(ref, ex);
     }
+
+    void setCurrentSnapshot(ResourceId id, long snapshotId) {
+      currentSnapshots.put(id.getId(), snapshotId);
+    }
+
+    List<PinCall> pinCalls() {
+      return pinCalls;
+    }
+
+    @Override
+    public ResourceId resolveName(String correlationId, NameRef ref) {
+      if (ref.hasResourceId()) {
+        return ref.getResourceId();
+      }
+      RuntimeException failure = failures.get(ref);
+      if (failure != null) {
+        throw failure;
+      }
+      ResourceId id = nameBindings.get(ref);
+      if (id == null) {
+        throw new StatusRuntimeException(io.grpc.Status.INVALID_ARGUMENT);
+      }
+      return id;
+    }
+
+    @Override
+    public SnapshotPin snapshotPinFor(
+        String correlationId,
+        ResourceId tableId,
+        SnapshotRef override,
+        Optional<Timestamp> asOfDefault) {
+      pinCalls.add(new PinCall(correlationId, tableId, override, asOfDefault));
+      SnapshotPin.Builder builder = SnapshotPin.newBuilder().setTableId(tableId);
+      if (override != null && override.hasSnapshotId()) {
+        builder.setSnapshotId(override.getSnapshotId());
+      } else if (override != null && override.hasAsOf()) {
+        builder.setAsOf(override.getAsOf());
+      } else if (asOfDefault.isPresent()) {
+        builder.setAsOf(asOfDefault.get());
+      } else {
+        long snapshot = currentSnapshots.getOrDefault(tableId.getId(), 0L);
+        if (snapshot > 0) {
+          builder.setSnapshotId(snapshot);
+        }
+      }
+      return builder.build();
+    }
+
+    record PinCall(
+        String correlationId,
+        ResourceId tableId,
+        SnapshotRef override,
+        Optional<Timestamp> asOfDefault) {}
   }
 }

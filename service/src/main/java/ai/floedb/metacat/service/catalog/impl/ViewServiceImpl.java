@@ -21,6 +21,7 @@ import ai.floedb.metacat.service.common.IdempotencyGuard;
 import ai.floedb.metacat.service.common.LogHelper;
 import ai.floedb.metacat.service.common.MutationOps;
 import ai.floedb.metacat.service.error.impl.GrpcErrors;
+import ai.floedb.metacat.service.query.graph.MetadataGraph;
 import ai.floedb.metacat.service.repo.IdempotencyRepository;
 import ai.floedb.metacat.service.repo.impl.CatalogRepository;
 import ai.floedb.metacat.service.repo.impl.NamespaceRepository;
@@ -45,6 +46,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
+  @Inject MetadataGraph metadataGraph;
 
   private static final Set<String> VIEW_MUTABLE_PATHS =
       Set.of("display_name", "description", "sql", "properties", "catalog_id", "namespace_id");
@@ -241,6 +243,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           .build();
                     }
                     viewRepo.create(view);
+                    metadataGraph.invalidate(viewResourceId);
                     var meta = viewRepo.metaForSafe(viewResourceId);
                     return CreateViewResponse.newBuilder().setView(view).setMeta(meta).build();
                   }
@@ -253,6 +256,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           () -> fingerprint,
                           () -> {
                             viewRepo.create(view);
+                            metadataGraph.invalidate(viewResourceId);
                             return new IdempotencyGuard.CreateResult<>(view, viewResourceId);
                           },
                           v -> viewRepo.metaForSafe(v.getResourceId()),
@@ -329,6 +333,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                       corr,
                       "view",
                       conflictInfo);
+                  metadataGraph.invalidate(viewId);
 
                   var outMeta = viewRepo.metaForSafe(viewId);
                   var latest = viewRepo.getById(viewId).orElse(desired);
@@ -366,9 +371,11 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                             "view",
                             Map.of("id", viewId.getId()));
 
+                    metadataGraph.invalidate(viewId);
                     return DeleteViewResponse.newBuilder().setMeta(meta).build();
                   } catch (BaseResourceRepository.NotFoundException missing) {
                     viewRepo.delete(viewId);
+                    metadataGraph.invalidate(viewId);
                     return DeleteViewResponse.newBuilder()
                         .setMeta(viewRepo.metaForSafe(viewId))
                         .build();
