@@ -7,7 +7,6 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import java.util.List;
 import java.util.Map;
 
-/** Minimal DTOs for Iceberg table requests. */
 public final class TableRequests {
   private TableRequests() {}
 

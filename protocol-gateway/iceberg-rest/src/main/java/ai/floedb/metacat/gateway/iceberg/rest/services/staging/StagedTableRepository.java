@@ -7,7 +7,6 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
-/** In-memory backing store for staged table payloads. */
 @ApplicationScoped
 public class StagedTableRepository {
   private final ConcurrentMap<StagedTableKey, StagedTableEntry> stages = new ConcurrentHashMap<>();

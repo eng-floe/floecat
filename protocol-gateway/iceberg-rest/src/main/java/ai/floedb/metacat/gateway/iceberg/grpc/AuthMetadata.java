@@ -5,7 +5,6 @@ import io.grpc.Metadata;
 import jakarta.ws.rs.core.HttpHeaders;
 import java.util.Optional;
 
-/** Builds gRPC metadata from inbound HTTP headers for auth/tenant propagation. */
 public final class AuthMetadata {
   private AuthMetadata() {}
 

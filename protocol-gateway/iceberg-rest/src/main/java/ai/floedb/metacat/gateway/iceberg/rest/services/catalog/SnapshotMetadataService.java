@@ -40,11 +40,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
-import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class SnapshotMetadataService {
-  private static final Logger LOG = Logger.getLogger(SnapshotMetadataService.class);
 
   @Inject GrpcWithHeaders grpc;
   @Inject ObjectMapper mapper;

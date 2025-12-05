@@ -7,7 +7,6 @@ import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NamespacePaths;
 
-/** Shared helper for common snapshot request patterns. */
 public final class SnapshotSupport {
   private SnapshotSupport() {}
 

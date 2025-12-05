@@ -30,7 +30,6 @@ import java.util.List;
 import java.util.Map;
 import org.eclipse.microprofile.config.Config;
 
-/** Shared stage commit workflow for table and transaction endpoints. */
 @ApplicationScoped
 public class StageCommitProcessor {
   @Inject GrpcWithHeaders grpc;

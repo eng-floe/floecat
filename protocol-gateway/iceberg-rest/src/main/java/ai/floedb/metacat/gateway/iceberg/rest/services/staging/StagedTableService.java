@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Optional;
 import org.eclipse.microprofile.config.Config;
 
-/** Service facade for staged table persistence. */
 @ApplicationScoped
 public class StagedTableService {
   private static final long MIN_TTL_SECONDS = 60L;

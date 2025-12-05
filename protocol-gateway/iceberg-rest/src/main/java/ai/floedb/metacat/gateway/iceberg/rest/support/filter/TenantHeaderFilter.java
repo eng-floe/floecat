@@ -14,19 +14,16 @@ import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.ext.Provider;
 import java.util.Optional;
 
-/** Enforces presence of the tenant header configured for the gateway. */
 @Provider
 @Priority(Priorities.AUTHENTICATION)
 public class TenantHeaderFilter implements ContainerRequestFilter {
   @Inject Instance<IcebergGatewayConfig> config;
   @Inject TenantContext tenantContext;
 
-  /** Visible for tests to provide a mock config. */
   public void setConfigInstance(Instance<IcebergGatewayConfig> config) {
     this.config = config;
   }
 
-  /** Visible for tests to inject a mock tenant context. */
   public void setTenantContext(TenantContext tenantContext) {
     this.tenantContext = tenantContext;
   }
@@ -36,7 +33,6 @@ public class TenantHeaderFilter implements ContainerRequestFilter {
 
   @Override
   public void filter(ContainerRequestContext requestContext) {
-    // Allow config endpoint without tenant header.
     if (requestContext.getUriInfo().getPath().equals("v1/config")) {
       return;
     }

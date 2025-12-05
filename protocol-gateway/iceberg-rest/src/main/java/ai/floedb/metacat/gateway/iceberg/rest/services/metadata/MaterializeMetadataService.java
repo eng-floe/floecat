@@ -23,7 +23,6 @@ import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;
 import org.jboss.logging.Logger;
 
-/** Handles materializing Iceberg metadata files into the table's backing storage (e.g. S3). */
 @ApplicationScoped
 public class MaterializeMetadataService {
   private static final Logger LOG = Logger.getLogger(MaterializeMetadataService.class);
@@ -34,7 +33,6 @@ public class MaterializeMetadataService {
 
   @Inject ObjectMapper mapper;
 
-  /** Visible for tests. */
   public void setMapper(ObjectMapper mapper) {
     this.mapper = mapper;
   }

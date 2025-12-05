@@ -5,7 +5,6 @@ import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import io.grpc.StatusRuntimeException;
 import jakarta.ws.rs.core.Response;
 
-/** Shared builders for the common Iceberg REST error responses. */
 public final class IcebergErrorResponses {
   private IcebergErrorResponses() {}
 

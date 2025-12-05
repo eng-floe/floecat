@@ -14,10 +14,6 @@ import java.util.List;
 import java.util.Optional;
 import org.jboss.logging.Logger;
 
-/**
- * Handles staged table materialization when a commit references a stage payload rather than an
- * existing table.
- */
 @ApplicationScoped
 public class StageMaterializationService {
   private static final Logger LOG = Logger.getLogger(StageMaterializationService.class);

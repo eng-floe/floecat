@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import java.util.List;
 import java.util.Map;
 
-/** Minimal DTOs for Iceberg view requests. */
 public final class ViewRequests {
   private ViewRequests() {}
 

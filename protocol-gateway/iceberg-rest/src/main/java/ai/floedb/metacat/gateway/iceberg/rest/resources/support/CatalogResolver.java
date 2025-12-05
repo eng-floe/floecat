@@ -7,7 +7,6 @@ import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NameResolution
 import java.util.Map;
 import java.util.Optional;
 
-/** Utility for resolving REST prefixes into catalog identifiers. */
 public final class CatalogResolver {
   private CatalogResolver() {}
 

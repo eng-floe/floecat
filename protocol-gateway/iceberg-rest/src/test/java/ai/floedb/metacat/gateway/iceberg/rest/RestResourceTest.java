@@ -202,7 +202,6 @@ class RestResourceTest {
             .setDisplayName("customers")
             .build();
 
-    // We still return a PageResponse from the mock, but we don't assert the token at REST level.
     PageResponse page = PageResponse.newBuilder().setNextPageToken("next").setTotalSize(3).build();
 
     when(tableStub.listTables(any()))

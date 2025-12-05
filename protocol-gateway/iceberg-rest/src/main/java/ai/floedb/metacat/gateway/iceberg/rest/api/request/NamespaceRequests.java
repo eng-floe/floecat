@@ -6,7 +6,6 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import java.util.List;
 import java.util.Map;
 
-/** Minimal DTOs for Iceberg namespace requests. */
 public final class NamespaceRequests {
   private NamespaceRequests() {}
 

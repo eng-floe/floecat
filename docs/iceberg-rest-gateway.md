@@ -31,8 +31,6 @@ This document describes the Iceberg REST protocol gateway that fronts Metacat an
 | View rename endpoints (Iceberg) | Map to `UpdateView` | REST rename path maps to update with mask. |
 
 ## Gap list
-
-- **Register table** – `/v1/{prefix}/namespaces/{namespace}/register` still returns 501 until a register RPC exists.
 - **Plan-task pagination** – `/plan` currently returns every file in one response. `/tasks` is unimplemented, so large scans aren’t streamed/paged yet.
 - **Load credentials** – `/tables/{table}/credentials` requires a `LoadCredentials` RPC to surface vended storage credentials.
 - **Multi-table transactions** – `/v1/{prefix}/transactions/commit` replays staged payloads one table at a time. There’s no ACID guarantee across tables or catalogs.

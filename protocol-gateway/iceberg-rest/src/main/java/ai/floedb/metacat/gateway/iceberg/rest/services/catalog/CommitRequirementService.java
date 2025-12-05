@@ -12,10 +12,6 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import org.jboss.logging.Logger;
 
-/**
- * Validates commit requirements for Iceberg commits. TableCommitService delegates the requirement
- * computations here so the core flow can shrink around orchestration.
- */
 @ApplicationScoped
 public class CommitRequirementService {
   private static final Logger LOG = Logger.getLogger(CommitRequirementService.class);

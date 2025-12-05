@@ -2,7 +2,6 @@ package ai.floedb.metacat.gateway.iceberg.rest.resources.support;
 
 import ai.floedb.metacat.common.rpc.PageRequest;
 
-/** Helper for creating {@link PageRequest} builders consistently across resources. */
 public final class PageRequestHelper {
   private PageRequestHelper() {}
 

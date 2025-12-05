@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/** Holds staged table metadata until a transaction commit materializes it. */
 public record StagedTableEntry(
     StagedTableKey key,
     ResourceId catalogId,

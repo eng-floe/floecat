@@ -20,10 +20,6 @@ import jakarta.inject.Inject;
 import java.util.List;
 import java.util.stream.Collectors;
 
-/**
- * Handles catalog lifecycle operations (list/create/delete) so {@code TableResource} can delegate
- * to a focused service instead of issuing gRPC calls directly.
- */
 @ApplicationScoped
 public class TableLifecycleService {
   @Inject GrpcWithHeaders grpc;

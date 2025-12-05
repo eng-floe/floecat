@@ -40,7 +40,6 @@ import java.util.UUID;
 import org.eclipse.microprofile.config.Config;
 import org.jboss.logging.Logger;
 
-/** Shared helpers for translating Iceberg REST requests into Metacat RPCs. */
 public class TableGatewaySupport {
   private static final Logger LOG = Logger.getLogger(TableGatewaySupport.class);
   private static final List<StorageCredentialDto> STATIC_STORAGE_CREDENTIALS =

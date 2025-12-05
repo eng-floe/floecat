@@ -129,7 +129,6 @@ public class SnapshotResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       @PathParam("snapshotId") long snapshotId) {
-    // Underlying API does not yet expose rollback; return 501.
     return IcebergErrorResponses.unsupported("rollback not implemented");
   }
 
