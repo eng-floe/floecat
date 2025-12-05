@@ -21,6 +21,18 @@ public final class IcebergErrorResponses {
     return error(message, "NotFoundException", Response.Status.NOT_FOUND);
   }
 
+  public static Response unprocessable(String message) {
+    return error(message, "ValidationException", 422);
+  }
+
+  public static Response unsupported(String message) {
+    return error(message, "UnsupportedOperationException", Response.Status.NOT_IMPLEMENTED);
+  }
+
+  public static Response failure(String message, String type, Response.Status status) {
+    return error(message, type, status);
+  }
+
   public static Response grpcError(StatusRuntimeException exception) {
     var status = exception.getStatus();
     Response.Status httpStatus;
@@ -53,8 +65,12 @@ public final class IcebergErrorResponses {
   }
 
   private static Response error(String message, String type, Response.Status status) {
-    return Response.status(status)
-        .entity(new IcebergErrorResponse(new IcebergError(message, type, status.getStatusCode())))
+    return error(message, type, status.getStatusCode());
+  }
+
+  private static Response error(String message, String type, int statusCode) {
+    return Response.status(statusCode)
+        .entity(new IcebergErrorResponse(new IcebergError(message, type, statusCode)))
         .build();
   }
 }

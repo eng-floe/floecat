@@ -23,9 +23,8 @@ import ai.floedb.metacat.gateway.iceberg.rest.api.dto.StatsDto.NdvDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.StatsDto.NdvSketchDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.StatsDto.TableStatsDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.StatsDto.UpstreamStampDto;
-import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
-import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NameResolution;
-import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NamespacePaths;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.PageRequestHelper;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.SnapshotSupport;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
@@ -48,15 +47,13 @@ public class StatsResource {
       @PathParam("snapshot") long snapshot,
       @QueryParam("pageToken") String pageToken,
       @QueryParam("pageSize") Integer pageSize) {
-    String catalog = CatalogResolver.resolveCatalog(config, prefix);
-    ResourceId tableId =
-        NameResolution.resolveTable(grpc, catalog, NamespacePaths.split(namespace), table);
+    PageRequest.Builder page = PageRequestHelper.builder(pageToken, pageSize);
+    if (page == null) {
+      page = PageRequest.newBuilder();
+    }
+    ResourceId tableId = SnapshotSupport.resolveTableId(grpc, config, prefix, namespace, table);
     SnapshotRef ref = SnapshotRef.newBuilder().setSnapshotId(snapshot).build();
     TableStatisticsServiceBlockingStub stub = grpc.withHeaders(grpc.raw().stats());
-
-    PageRequest.Builder page = PageRequest.newBuilder();
-    if (pageToken != null) page.setPageToken(pageToken);
-    if (pageSize != null) page.setPageSize(pageSize);
 
     GetTableStatsResponse tableResp =
         stub.getTableStats(

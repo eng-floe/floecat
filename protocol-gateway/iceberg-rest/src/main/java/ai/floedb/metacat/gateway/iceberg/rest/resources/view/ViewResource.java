@@ -15,6 +15,7 @@ import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.PageRequestHelper;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NamespacePaths;
 import ai.floedb.metacat.gateway.iceberg.rest.support.mapper.ViewResponseMapper;
@@ -57,14 +58,8 @@ public class ViewResource {
         NameResolution.resolveNamespace(grpc, catalogName, NamespacePaths.split(namespace));
 
     ListViewsRequest.Builder req = ListViewsRequest.newBuilder().setNamespaceId(namespaceId);
-    if (pageToken != null || pageSize != null) {
-      PageRequest.Builder page = PageRequest.newBuilder();
-      if (pageToken != null) {
-        page.setPageToken(pageToken);
-      }
-      if (pageSize != null) {
-        page.setPageSize(pageSize);
-      }
+    PageRequest.Builder page = PageRequestHelper.builder(pageToken, pageSize);
+    if (page != null) {
       req.setPage(page);
     }
 

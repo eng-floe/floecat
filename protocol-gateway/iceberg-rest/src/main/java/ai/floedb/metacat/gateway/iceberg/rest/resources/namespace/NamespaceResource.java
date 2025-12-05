@@ -15,11 +15,11 @@ import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.NamespaceInfoDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.NamespacePropertiesResponse;
-import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergError;
-import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.NamespacePropertiesRequest;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.NamespaceRequests;
 import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.IcebergErrorResponses;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.PageRequestHelper;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NamespacePaths;
 import ai.floedb.metacat.gateway.iceberg.rest.services.tenant.TenantContext;
@@ -86,14 +86,8 @@ public class NamespaceResource {
     if (namePrefix != null) {
       req.setNamePrefix(namePrefix);
     }
-    if (pageToken != null || pageSize != null) {
-      PageRequest.Builder page = PageRequest.newBuilder();
-      if (pageToken != null) {
-        page.setPageToken(pageToken);
-      }
-      if (pageSize != null) {
-        page.setPageSize(pageSize);
-      }
+    PageRequest.Builder page = PageRequestHelper.builder(pageToken, pageSize);
+    if (page != null) {
       req.setPage(page);
     }
 
@@ -134,20 +128,12 @@ public class NamespaceResource {
   @POST
   public Response create(@PathParam("prefix") String prefix, NamespaceRequests.Create req) {
     if (req == null || req.namespace() == null || req.namespace().isEmpty()) {
-      return Response.status(400)
-          .entity(
-              new IcebergErrorResponse(
-                  new IcebergError("Namespace name must be provided", "ValidationException", 400)))
-          .build();
+      return IcebergErrorResponses.validation("Namespace name must be provided");
     }
 
     List<String> path = req.namespace();
     if (path.isEmpty() || path.stream().anyMatch(part -> part == null || part.isBlank())) {
-      return Response.status(400)
-          .entity(
-              new IcebergErrorResponse(
-                  new IcebergError("Namespace name must be provided", "ValidationException", 400)))
-          .build();
+      return IcebergErrorResponses.validation("Namespace name must be provided");
     }
 
     final String displayName = path.get(path.size() - 1);
@@ -264,12 +250,7 @@ public class NamespaceResource {
     Set<String> conflict = new HashSet<>(removals);
     conflict.retainAll(updates.keySet());
     if (!conflict.isEmpty()) {
-      return Response.status(422)
-          .entity(
-              new IcebergErrorResponse(
-                  new IcebergError(
-                      "A key cannot be in both removals and updates", "ValidationException", 422)))
-          .build();
+      return IcebergErrorResponses.unprocessable("A key cannot be in both removals and updates");
     }
 
     var existing =

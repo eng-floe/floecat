@@ -8,8 +8,6 @@ import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.TransactionCommitResponse;
-import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergError;
-import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.metacat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.RenameRequest;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
@@ -204,14 +202,10 @@ public class TableAdminResource {
       return MirrorMetadataResult.success(resolvedMetadata, resolvedLocation);
     } catch (MetadataMirrorException e) {
       return MirrorMetadataResult.failure(
-          Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-              .entity(
-                  new IcebergErrorResponse(
-                      new IcebergError(
-                          "Failed to persist Iceberg metadata files",
-                          "CommitFailedException",
-                          500)))
-              .build());
+          IcebergErrorResponses.failure(
+              "Failed to persist Iceberg metadata files",
+              "CommitFailedException",
+              Response.Status.INTERNAL_SERVER_ERROR));
     }
   }
 

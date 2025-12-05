@@ -6,7 +6,6 @@ import ai.floedb.metacat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.SnapshotSpec;
-import ai.floedb.metacat.common.rpc.PageRequest;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
@@ -15,10 +14,10 @@ import ai.floedb.metacat.gateway.iceberg.rest.api.dto.PageDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.PartitionSpecDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.SnapshotDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.SnapshotsResponse;
-import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergError;
-import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.SnapshotRequests;
 import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.IcebergErrorResponses;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.SnapshotSupport;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NamespacePaths;
 import com.google.protobuf.Timestamp;
@@ -49,21 +48,8 @@ public class SnapshotResource {
       @PathParam("table") String table,
       @QueryParam("pageToken") String pageToken,
       @QueryParam("pageSize") Integer pageSize) {
-    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
-    ResourceId tableId =
-        NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
-
-    ListSnapshotsRequest.Builder req = ListSnapshotsRequest.newBuilder().setTableId(tableId);
-    if (pageToken != null || pageSize != null) {
-      PageRequest.Builder page = PageRequest.newBuilder();
-      if (pageToken != null) {
-        page.setPageToken(pageToken);
-      }
-      if (pageSize != null) {
-        page.setPageSize(pageSize);
-      }
-      req.setPage(page);
-    }
+    ResourceId tableId = SnapshotSupport.resolveTableId(grpc, config, prefix, namespace, table);
+    ListSnapshotsRequest.Builder req = SnapshotSupport.listSnapshots(tableId, pageToken, pageSize);
 
     SnapshotServiceGrpc.SnapshotServiceBlockingStub stub = grpc.withHeaders(grpc.raw().snapshot());
     var resp = stub.listSnapshots(req.build());
@@ -79,9 +65,7 @@ public class SnapshotResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       @PathParam("snapshotId") long snapshotId) {
-    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
-    ResourceId tableId =
-        NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
+    ResourceId tableId = SnapshotSupport.resolveTableId(grpc, config, prefix, namespace, table);
     SnapshotServiceGrpc.SnapshotServiceBlockingStub stub = grpc.withHeaders(grpc.raw().snapshot());
     var resp =
         stub.getSnapshot(
@@ -99,9 +83,7 @@ public class SnapshotResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       SnapshotRequests.Create req) {
-    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
-    ResourceId tableId =
-        NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
+    ResourceId tableId = SnapshotSupport.resolveTableId(grpc, config, prefix, namespace, table);
 
     SnapshotSpec.Builder spec = SnapshotSpec.newBuilder().setTableId(tableId);
     if (req != null) {
@@ -148,11 +130,7 @@ public class SnapshotResource {
       @PathParam("table") String table,
       @PathParam("snapshotId") long snapshotId) {
     // Underlying API does not yet expose rollback; return 501.
-    return Response.status(Response.Status.NOT_IMPLEMENTED)
-        .entity(
-            new IcebergErrorResponse(
-                new IcebergError("rollback not implemented", "UnsupportedOperationException", 501)))
-        .build();
+    return IcebergErrorResponses.unsupported("rollback not implemented");
   }
 
   private SnapshotDto toDto(ai.floedb.metacat.catalog.rpc.Snapshot snapshot) {
