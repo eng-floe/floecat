@@ -48,9 +48,23 @@ class TableCommitSideEffectServiceTest {
         .thenReturn(new MaterializeResult("s3://mirror/orders/v2.json", mirrored));
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
 
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .setFormat(TableFormat.TF_ICEBERG)
+                    .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
+                    .build())
+            .build();
     MaterializeMetadataResult result =
         service.materializeMetadata(
-            "cat.db", tableId, "orders", metadata, "s3://warehouse/tables/orders/metadata.json");
+            "cat.db",
+            tableId,
+            "orders",
+            table,
+            metadata,
+            "s3://warehouse/tables/orders/metadata.json");
 
     assertNull(result.error());
     assertSame(mirrored, result.metadata());
@@ -75,6 +89,7 @@ class TableCommitSideEffectServiceTest {
             "cat.db",
             ResourceId.getDefaultInstance(),
             "orders",
+            null,
             metadata,
             metadata.metadataLocation());
 

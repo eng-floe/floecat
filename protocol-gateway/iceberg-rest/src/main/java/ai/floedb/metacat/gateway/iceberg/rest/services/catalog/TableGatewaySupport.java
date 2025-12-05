@@ -405,9 +405,7 @@ public class TableGatewaySupport {
         "register:" + prefix + (namespaceFq.isBlank() ? "" : ":" + namespaceFq) + "." + tableName;
 
     String connectorUri =
-        (metadataLocation != null && !metadataLocation.isBlank())
-            ? metadataLocation
-            : tableLocation;
+        (tableLocation != null && !tableLocation.isBlank()) ? tableLocation : metadataLocation;
     ConnectorSpec.Builder spec =
         ConnectorSpec.newBuilder()
             .setDisplayName(displayName)

@@ -369,7 +369,7 @@ class RestResourceTest {
     ArgumentCaptor<CreateConnectorRequest> createReq =
         ArgumentCaptor.forClass(CreateConnectorRequest.class);
     verify(connectorsStub).createConnector(createReq.capture());
-    assertEquals("s3://b/db/new_table/metadata.json", createReq.getValue().getSpec().getUri());
+    assertEquals("s3://b/db/new_table", createReq.getValue().getSpec().getUri());
     assertEquals("new_table", createReq.getValue().getSpec().getSource().getTable());
     assertEquals(nsId, createReq.getValue().getSpec().getDestination().getNamespaceId());
     assertEquals("none", createReq.getValue().getSpec().getAuth().getScheme());

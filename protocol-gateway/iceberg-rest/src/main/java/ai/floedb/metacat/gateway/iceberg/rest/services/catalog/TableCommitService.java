@@ -152,8 +152,7 @@ public class TableCommitService {
           resolveStageId(req, transactionId),
           meta == null ? "<null>" : meta.currentSnapshotId(),
           meta == null || meta.snapshots() == null ? 0 : meta.snapshots().size());
-      sideEffectService.runConnectorSync(
-          tableSupport, sideEffects.connectorId(), namespacePath, table);
+      runConnectorSync(tableSupport, sideEffects.connectorId(), namespacePath, namespace, table);
       return builder.build();
     }
 
@@ -203,6 +202,15 @@ public class TableCommitService {
           return updateError;
         }
       }
+      Response locationError =
+          tablePropertyService.applyLocationUpdate(spec, mask, tableSupplier, req.updates());
+      if (locationError != null) {
+        return locationError;
+      }
+      String unsupported = unsupportedUpdateAction(req);
+      if (unsupported != null) {
+        return validationError("unsupported commit update action: " + unsupported);
+      }
       Response snapshotError =
           snapshotMetadataService.applySnapshotUpdates(
               tableSupport,
@@ -216,18 +224,9 @@ public class TableCommitService {
       if (snapshotError != null) {
         return snapshotError;
       }
-      Response locationError =
-          tablePropertyService.applyLocationUpdate(spec, mask, tableSupplier, req.updates());
-      if (locationError != null) {
-        return locationError;
-      }
       mergedProps =
           materializePendingSnapshotMetadataIfNeeded(
               namespace, table, tableId, tableSupplier, mergedProps, snapshotContext);
-      String unsupported = unsupportedUpdateAction(req);
-      if (unsupported != null) {
-        return validationError("unsupported commit update action: " + unsupported);
-      }
       if (mergedProps != null) {
         spec.clearProperties().putAllProperties(mergedProps);
         mask.addPaths("properties");
@@ -269,8 +268,7 @@ public class TableCommitService {
       if (responseDto != null && responseDto.metadataLocation() != null) {
         builder.tag(responseDto.metadataLocation());
       }
-      sideEffectService.runConnectorSync(
-          tableSupport, sideEffects.connectorId(), namespacePath, table);
+      runConnectorSync(tableSupport, sideEffects.connectorId(), namespacePath, namespace, table);
       return builder.build();
     }
 
@@ -321,8 +319,7 @@ public class TableCommitService {
     if (responseDto != null && responseDto.metadataLocation() != null) {
       builder.tag(responseDto.metadataLocation());
     }
-    sideEffectService.runConnectorSync(
-        tableSupport, sideEffects.connectorId(), namespacePath, table);
+    runConnectorSync(tableSupport, sideEffects.connectorId(), namespacePath, namespace, table);
     return builder.build();
   }
 
@@ -339,6 +336,23 @@ public class TableCommitService {
   private Table tableWithPropertyOverrides(
       Supplier<Table> tableSupplier, Map<String, String> propertyOverrides) {
     return tablePropertyService.tableWithPropertyOverrides(tableSupplier, propertyOverrides);
+  }
+
+  private void runConnectorSync(
+      TableGatewaySupport tableSupport,
+      ResourceId connectorId,
+      List<String> namespacePath,
+      String namespace,
+      String tableName) {
+    try {
+      sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
+    } catch (Exception e) {
+      LOG.warnf(
+          e,
+          "Post-commit connector sync failed for %s.%s",
+          namespace == null ? "<missing>" : namespace,
+          tableName == null ? "<missing>" : tableName);
+    }
   }
 
   public List<Snapshot> fetchSnapshots(
@@ -448,7 +462,12 @@ public class TableCommitService {
         TableResponseMapper.toCommitResponse(
             tableName, tableForMetadata, snapshotMetadata, snapshotList);
     return sideEffectService.materializeMetadata(
-        namespace, null, tableName, pendingResponse.metadata(), pendingResponse.metadataLocation());
+        namespace,
+        null,
+        tableName,
+        tableForMetadata,
+        pendingResponse.metadata(),
+        pendingResponse.metadataLocation());
   }
 
   private Map<String, String> materializePendingSnapshotMetadataIfNeeded(
@@ -497,10 +516,11 @@ public class TableCommitService {
       String namespace,
       ResourceId tableId,
       String table,
+      Table tableRecord,
       TableMetadataView metadata,
       String metadataLocation) {
     return sideEffectService.materializeMetadata(
-        namespace, tableId, table, metadata, metadataLocation);
+        namespace, tableId, table, tableRecord, metadata, metadataLocation);
   }
 
   /** Exposes connector sync orchestration for legacy call sites. */

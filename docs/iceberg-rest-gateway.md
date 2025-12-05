@@ -97,7 +97,7 @@ This section summarizes how the gateway mirrors Iceberg’s two-phase workflow s
 
 ## Endpoint mapping highlights
 
-- Config (`/v1/config`): build endpoints and default properties from gateway config + Metacat catalog properties; follow Gravitino’s `IcebergConfigOperations`.
+- Config (`/v1/config`): build endpoints and default properties from gateway config + Metacat catalog properties; expose the Iceberg configuration map clients expect.
 - Namespace operations: direct `NamespaceService`; map properties and parents/path to Iceberg namespace parts.
 - Table operations: `TableService`; ensure upstream format = ICEBERG; translate schema_json; rename/move via `update_mask` on `namespace_id` and `display_name`; stage-create/commit leverage the staging store described above.
 - View operations: `ViewService`; rename/move via `update_mask`; SQL passthrough.
@@ -112,4 +112,4 @@ This section summarizes how the gateway mirrors Iceberg’s two-phase workflow s
 - Unit tests cover DTO translators, plan response mappers, error mapping, and config builders.
 - Contract tests use RestAssured and mocked gRPC stubs (`RestResourceTest`) to validate endpoints, error shapes, and rename/move semantics.
 - End-to-end tests (`IcebergRestTest`) boot the full Metacat service stack (in-memory backend, real gRPC services) in a separate JVM, then exercise the gateway over HTTP to verify namespace CRUD and config endpoints behave correctly through the actual gRPC implementations.
-- Integration: run the gateway against Metacat services (docker or local dev) and compare responses with Gravitino examples (`docs/iceberg-rest-service.md`).
+- Integration: run the gateway against Metacat services (docker or local dev) and compare responses with Iceberg spec expectations.

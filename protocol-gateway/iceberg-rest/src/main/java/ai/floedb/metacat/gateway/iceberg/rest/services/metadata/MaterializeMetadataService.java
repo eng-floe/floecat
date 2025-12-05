@@ -217,6 +217,7 @@ public class MaterializeMetadataService {
     if (directory == null) {
       directory = metadataDirectory(metadata);
     }
+    directory = normalizeMetadataDirectory(directory);
     if (directory == null || directory.isBlank()) {
       return null;
     }
@@ -239,26 +240,66 @@ public class MaterializeMetadataService {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return null;
     }
-    int slash = metadataLocation.lastIndexOf('/');
+    String trimmed = metadataLocation;
+    while (trimmed.endsWith("/") && trimmed.length() > 1) {
+      trimmed = trimmed.substring(0, trimmed.length() - 1);
+    }
+    int slash = trimmed.lastIndexOf('/');
     if (slash < 0) {
       return null;
     }
-    return metadataLocation.substring(0, slash + 1);
+    return trimmed.substring(0, slash + 1);
   }
 
   private String metadataDirectory(TableMetadataView metadata) {
     if (metadata == null) {
       return null;
     }
-    String location = metadata.location();
-    if ((location == null || location.isBlank()) && metadata.properties() != null) {
-      location = metadata.properties().get("location");
+    String location = firstNonBlank(metadata.metadataLocation(), metadata.location());
+    String directory = directoryOf(location);
+    if (directory != null) {
+      return directory;
     }
+
+    Map<String, String> props = metadata.properties();
+    if (props != null && !props.isEmpty()) {
+      String candidate =
+          firstNonBlank(
+              props.get("metadata-location"),
+              firstNonBlank(props.get("metadata_location"), props.get("location")));
+      directory = directoryOf(candidate);
+      if (directory != null) {
+        return directory;
+      }
+    }
+
+    directory = directoryFromMetadataLog(metadata);
+    if (directory != null) {
+      return directory;
+    }
+
+    location = firstNonBlank(location, props == null ? null : props.get("location"));
     if (location == null || location.isBlank()) {
       return null;
     }
     String base = location.endsWith("/") ? location.substring(0, location.length() - 1) : location;
     return base + "/metadata/";
+  }
+
+  private String directoryFromMetadataLog(TableMetadataView metadata) {
+    if (metadata == null || metadata.metadataLog() == null) {
+      return null;
+    }
+    for (Map<String, Object> entry : metadata.metadataLog()) {
+      Object value = entry == null ? null : entry.get("metadata-file");
+      if (value instanceof String file && !file.isBlank()) {
+        String directory = directoryOf(file);
+        if (directory != null) {
+          return directory;
+        }
+      }
+    }
+    return null;
   }
 
   private String nextMetadataFileName(String currentLocation, TableMetadataView metadata) {
@@ -311,5 +352,24 @@ public class MaterializeMetadataService {
     } catch (RuntimeException e) {
       return false;
     }
+  }
+
+  private String normalizeMetadataDirectory(String directory) {
+    if (directory == null || directory.isBlank()) {
+      return null;
+    }
+    String normalized = directory;
+    while (normalized.endsWith("/") && normalized.length() > 1) {
+      normalized = normalized.substring(0, normalized.length() - 1);
+    }
+    if (normalized.endsWith(".metadata.json")) {
+      int slash = normalized.lastIndexOf('/');
+      if (slash >= 0) {
+        normalized = normalized.substring(0, slash);
+      } else {
+        return null;
+      }
+    }
+    return normalized.endsWith("/") ? normalized : normalized + "/";
   }
 }

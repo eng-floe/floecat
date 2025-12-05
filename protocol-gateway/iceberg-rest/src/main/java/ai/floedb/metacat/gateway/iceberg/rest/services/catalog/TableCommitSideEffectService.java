@@ -28,6 +28,7 @@ public class TableCommitSideEffectService {
       String namespace,
       ResourceId tableId,
       String table,
+      Table tableRecord,
       TableMetadataView metadata,
       String metadataLocation) {
     if (metadata == null) {
@@ -40,7 +41,7 @@ public class TableCommitSideEffectService {
       TableMetadataView resolvedMetadata =
           mirrorResult.metadata() != null ? mirrorResult.metadata() : metadata;
       if (tableId != null) {
-        updateTableMetadataProperties(tableId, resolvedMetadata, resolvedLocation);
+        updateTableMetadataProperties(tableId, tableRecord, resolvedMetadata, resolvedLocation);
       }
       return MaterializeMetadataResult.success(resolvedMetadata, resolvedLocation);
     } catch (MaterializeMetadataException e) {
@@ -158,19 +159,46 @@ public class TableCommitSideEffectService {
   }
 
   private void updateTableMetadataProperties(
-      ResourceId tableId, TableMetadataView metadata, String resolvedLocation) {
+      ResourceId tableId, Table tableRecord, TableMetadataView metadata, String resolvedLocation) {
     if (tableId == null || metadata == null) {
       return;
     }
-    Map<String, String> props =
-        metadata.properties() != null
-            ? new LinkedHashMap<>(metadata.properties())
-            : new LinkedHashMap<>();
-    if (resolvedLocation != null && !resolvedLocation.isBlank()) {
-      props.put("metadata-location", resolvedLocation);
-      props.put("metadata_location", resolvedLocation);
+    Table current = tableRecord;
+    if (current == null) {
+      try {
+        current = tableLifecycleService.getTable(tableId);
+      } catch (Exception e) {
+        LOG.warnf(
+            e,
+            "Failed to load table %s for metadata mirroring; skipping metadata-property update",
+            tableId.getId());
+        return;
+      }
     }
-    if (props.isEmpty()) {
+    if (current == null) {
+      LOG.warnf(
+          "Table %s not found for metadata mirroring; skipping metadata-property update",
+          tableId.getId());
+      return;
+    }
+    Map<String, String> props = new LinkedHashMap<>(current.getPropertiesMap());
+    boolean mutated = false;
+    Map<String, String> metadataProps = metadata.properties();
+    if (metadataProps != null && !metadataProps.isEmpty()) {
+      for (Map.Entry<String, String> entry : metadataProps.entrySet()) {
+        String key = entry.getKey();
+        String value = entry.getValue();
+        if (key == null || key.isBlank() || value == null) {
+          continue;
+        }
+        mutated |= putIfChanged(props, key, value);
+      }
+    }
+    if (resolvedLocation != null && !resolvedLocation.isBlank()) {
+      mutated |= putIfChanged(props, "metadata-location", resolvedLocation);
+      mutated |= putIfChanged(props, "metadata_location", resolvedLocation);
+    }
+    if (!mutated) {
       return;
     }
     TableSpec spec = TableSpec.newBuilder().putAllProperties(props).build();
@@ -185,6 +213,14 @@ public class TableCommitSideEffectService {
     } catch (Exception e) {
       LOG.warnf(e, "Failed to update metadata properties for tableId=%s", tableId.getId());
     }
+  }
+
+  private static boolean putIfChanged(Map<String, String> props, String key, String value) {
+    if (key == null || key.isBlank() || value == null) {
+      return false;
+    }
+    String existing = props.put(key, value);
+    return !value.equals(existing);
   }
 
   private ResourceId resolveConnectorId(Table tableRecord) {
@@ -245,6 +281,7 @@ public class TableCommitSideEffectService {
               namespace,
               tableId,
               tableName,
+              tableRecord,
               responseDto.metadata(),
               responseDto.metadataLocation());
       if (materializationResult.error() != null) {

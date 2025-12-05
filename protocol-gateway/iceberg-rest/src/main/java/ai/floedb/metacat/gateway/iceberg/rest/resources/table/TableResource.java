@@ -173,6 +173,7 @@ public class TableResource {
             namespace,
             created.getResourceId(),
             tableName,
+            created,
             loadResult.metadata(),
             loadResult.metadataLocation());
     if (materializationResult.error() != null) {
