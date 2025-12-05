@@ -25,11 +25,11 @@ import static ai.floedb.metacat.gateway.iceberg.rest.support.mapper.table.TableM
 import static ai.floedb.metacat.gateway.iceberg.rest.support.mapper.table.TableMappingUtil.maybeInt;
 import static ai.floedb.metacat.gateway.iceberg.rest.support.mapper.table.TableMappingUtil.maybeLong;
 
-import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergMetadata;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;

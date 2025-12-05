@@ -13,6 +13,7 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.builder.RequestSpecBuilder;
 import io.restassured.http.ContentType;
 import io.restassured.specification.RequestSpecification;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -149,8 +150,7 @@ class IcebergRestIT {
     String view = uniqueName("it_view_");
     createNamespace(namespace);
     try {
-      Map<String, Object> createPayload =
-          Map.of("name", view, "sql", "SELECT 1", "properties", Map.of("dialect", "spark"));
+      Map<String, Object> createPayload = createViewPayload(namespace, view);
 
       given()
           .spec(spec)
@@ -159,7 +159,9 @@ class IcebergRestIT {
           .post("/v1/sales/namespaces/" + namespace + "/views")
           .then()
           .statusCode(200)
-          .body("metadata.location", equalTo("metacat://" + view));
+          .body(
+              "metadata.location",
+              equalTo("metacat://views/" + namespace + "/" + view + "/metadata.json"));
 
       given()
           .spec(spec)
@@ -217,5 +219,31 @@ class IcebergRestIT {
         .delete("/v1/sales/namespaces/" + namespace + "/views/" + view)
         .then()
         .statusCode(anyOf(is(204), is(404)));
+  }
+
+  private Map<String, Object> createViewPayload(String namespace, String view) {
+    Map<String, Object> schema =
+        Map.of(
+            "schema-id",
+            1,
+            "type",
+            "struct",
+            "fields",
+            List.of(Map.of("id", 1, "name", "dummy", "required", true, "type", "string")));
+    Map<String, Object> representation =
+        Map.of("type", "sql", "sql", "SELECT 1", "dialect", "ansi");
+    Map<String, Object> version = new java.util.LinkedHashMap<>();
+    version.put("version-id", 1);
+    version.put("schema-id", 1);
+    version.put("summary", Map.of("operation", "create"));
+    version.put("representations", List.of(representation));
+    version.put("default-namespace", List.of(namespace));
+
+    Map<String, Object> payload = new java.util.LinkedHashMap<>();
+    payload.put("name", view);
+    payload.put("schema", schema);
+    payload.put("view-version", version);
+    payload.put("properties", Map.of("dialect", "spark"));
+    return payload;
   }
 }

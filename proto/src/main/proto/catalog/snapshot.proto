@@ -7,7 +7,7 @@ option java_package = "ai.floedb.metacat.catalog.rpc";
 import "common/common.proto";
 import "google/protobuf/timestamp.proto";
 import "catalog/partition.proto";
-import "catalog/iceberg.proto";
+import "gateway/iceberg.proto";
 import "google/protobuf/field_mask.proto";
 
 // ----- Snapshot -----
@@ -24,7 +24,7 @@ message Snapshot {
   string manifest_list = 9;
   map<string,string> summary = 10;
   int32 schema_id = 11;
-  IcebergMetadata iceberg = 12;
+  ai.floedb.metacat.gateway.iceberg.IcebergMetadata iceberg = 12;
 }
 
 message ListSnapshotsRequest {
@@ -56,7 +56,7 @@ message SnapshotSpec {
   optional string manifest_list = 9;
   map<string,string> summary = 10;
   optional int32 schema_id = 11;
-  IcebergMetadata iceberg = 12;
+  ai.floedb.metacat.gateway.iceberg.IcebergMetadata iceberg = 12;
 }
 
 message CreateSnapshotRequest {

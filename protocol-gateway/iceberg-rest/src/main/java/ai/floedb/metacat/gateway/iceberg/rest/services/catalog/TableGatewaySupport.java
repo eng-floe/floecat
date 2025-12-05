@@ -1,6 +1,5 @@
 package ai.floedb.metacat.gateway.iceberg.rest.services.catalog;
 
-import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
@@ -30,6 +29,7 @@ import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;

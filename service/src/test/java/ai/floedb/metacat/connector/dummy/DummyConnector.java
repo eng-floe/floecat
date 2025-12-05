@@ -226,8 +226,7 @@ public final class DummyConnector implements MetacatConnector {
             0L,
             null,
             Map.of(),
-            0,
-            null));
+            0));
   }
 
   @Override

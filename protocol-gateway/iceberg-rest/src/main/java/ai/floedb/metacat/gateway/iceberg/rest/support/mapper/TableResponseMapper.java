@@ -1,6 +1,5 @@
 package ai.floedb.metacat.gateway.iceberg.rest.support.mapper;
 
-import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
@@ -9,6 +8,7 @@ import ai.floedb.metacat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.metacat.gateway.iceberg.rest.support.mapper.table.TableMetadataBuilder;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergMetadata;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;

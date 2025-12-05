@@ -5,10 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
-import ai.floedb.metacat.catalog.rpc.IcebergRef;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergRef;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
 import java.util.Map;

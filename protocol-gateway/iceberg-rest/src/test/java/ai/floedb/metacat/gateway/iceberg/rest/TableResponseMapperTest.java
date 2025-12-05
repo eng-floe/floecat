@@ -4,13 +4,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
-import ai.floedb.metacat.catalog.rpc.IcebergStatisticsFile;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.metacat.gateway.iceberg.rest.support.mapper.TableResponseMapper;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergStatisticsFile;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;

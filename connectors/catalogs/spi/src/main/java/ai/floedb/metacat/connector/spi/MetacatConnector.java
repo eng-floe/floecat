@@ -60,8 +60,7 @@ public interface MetacatConnector extends Closeable {
       long sequenceNumber,
       String manifestList,
       Map<String, String> summary,
-      int schemaId,
-      ai.floedb.metacat.catalog.rpc.IcebergMetadata icebergMetadata) {}
+      int schemaId) {}
 
   record ScanBundle(List<ScanFile> dataFiles, List<ScanFile> deleteFiles) {}
 }

@@ -1,7 +1,5 @@
 package ai.floedb.metacat.gateway.iceberg.rest.services.catalog;
 
-import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
-import ai.floedb.metacat.catalog.rpc.IcebergRef;
 import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
@@ -15,6 +13,8 @@ import ai.floedb.metacat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.StageCommitProcessor.StageCommitResult;
 import ai.floedb.metacat.gateway.iceberg.rest.support.mapper.TableResponseMapper;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergRef;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;

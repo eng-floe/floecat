@@ -33,6 +33,7 @@ import ai.floedb.metacat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.metacat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.metacat.connector.spi.ConnectorFactory;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
+import ai.floedb.metacat.connector.spi.IcebergSnapshotMetadataProvider;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
 import ai.floedb.metacat.reconciler.jobs.ReconcileScope;
 import com.google.protobuf.FieldMask;
@@ -206,7 +207,8 @@ public class ReconcilerService {
               connector.enumerateSnapshotsWithStats(
                   sourceNsFq, srcTable, destTableId, includeSelectors, includeStats);
 
-          ingestAllSnapshotsAndStatsFiltered(destTableId, bundles, includeSelectors, includeStats);
+          ingestAllSnapshotsAndStatsFiltered(
+              destTableId, connector, bundles, includeSelectors, includeStats);
           changed++;
         } catch (Exception e) {
           errors++;
@@ -403,7 +405,10 @@ public class ReconcilerService {
     }
   }
 
-  private void ensureSnapshot(ResourceId tableId, MetacatConnector.SnapshotBundle snapshotBundle) {
+  private void ensureSnapshot(
+      ResourceId tableId,
+      MetacatConnector connector,
+      MetacatConnector.SnapshotBundle snapshotBundle) {
     if (snapshotBundle == null) {
       return;
     }
@@ -446,9 +451,14 @@ public class ReconcilerService {
       spec.setSchemaId(snapshotBundle.schemaId());
       mask.addPaths("schema_id");
     }
-    if (snapshotBundle.icebergMetadata() != null) {
-      spec.setIceberg(snapshotBundle.icebergMetadata());
-      mask.addPaths("iceberg");
+    if (connector instanceof IcebergSnapshotMetadataProvider icebergProvider) {
+      icebergProvider
+          .icebergMetadata(snapshotBundle.snapshotId())
+          .ifPresent(
+              metadata -> {
+                spec.setIceberg(metadata);
+                mask.addPaths("iceberg");
+              });
     }
     SnapshotSpec snapshotSpec = spec.build();
     var request = CreateSnapshotRequest.newBuilder().setSpec(snapshotSpec).build();
@@ -473,6 +483,7 @@ public class ReconcilerService {
 
   private void ingestAllSnapshotsAndStatsFiltered(
       ResourceId tableId,
+      MetacatConnector connector,
       List<MetacatConnector.SnapshotBundle> bundles,
       Set<String> includeSelectors,
       boolean includeStats) {
@@ -488,7 +499,7 @@ public class ReconcilerService {
         continue;
       }
 
-      ensureSnapshot(tableId, snapshotBundle);
+      ensureSnapshot(tableId, connector, snapshotBundle);
 
       if (includeStats) {
         if (statsAlreadyCaptured(tableId, snapshotId)) {

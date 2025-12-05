@@ -3,14 +3,14 @@ package ai.floedb.metacat.gateway.iceberg.rest.support.mapper.table;
 import static ai.floedb.metacat.gateway.iceberg.rest.support.mapper.table.TableMappingUtil.asInteger;
 import static ai.floedb.metacat.gateway.iceberg.rest.support.mapper.table.TableMappingUtil.firstNonNull;
 
-import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
-import ai.floedb.metacat.catalog.rpc.IcebergSchema;
-import ai.floedb.metacat.catalog.rpc.IcebergSortField;
-import ai.floedb.metacat.catalog.rpc.IcebergSortOrder;
 import ai.floedb.metacat.catalog.rpc.PartitionField;
 import ai.floedb.metacat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergSchema;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergSortField;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergSortOrder;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;

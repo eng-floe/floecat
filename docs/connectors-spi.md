@@ -17,11 +17,14 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Metac
   - `listTables(namespaceFq)`.
   - `describe(namespaceFq, tableName)` → `TableDescriptor` with location, schema JSON, partition
     keys, and properties.
-  - `enumerateSnapshotsWithStats(...)` → `SnapshotBundle`s containing per-snapshot table/column/file stats plus optional Iceberg metadata blobs.
+  - `enumerateSnapshotsWithStats(...)` → `SnapshotBundle`s containing per-snapshot table/column/file stats.
 - **`ConnectorFactory`** – Instantiates connectors given a `ConnectorConfig` (URI, options,
   authentication). The service uses it to validate specs and the reconciler uses it during runs.
 - **`ConnectorConfigMapper`** – Bidirectional conversion between RPC `Connector` protobufs and the
   SPI’s `ConnectorConfig` records.
+- **`IcebergSnapshotMetadataProvider`** – Optional extension that connectors can implement when they
+  need to surface full Iceberg table metadata alongside snapshot stats. The reconciler probes for
+  this interface when persisting snapshots.
 - **Auth providers** – `AuthProvider` + concrete implementations such as `NoAuthProvider` and
   `AwsSigV4AuthProvider` supply credentials or headers per connector.
 - **Stats helpers** – `StatsEngine`, `GenericStatsEngine`, `ProtoStatsBuilder`, and NDV utilities
@@ -42,12 +45,10 @@ interface MetacatConnector extends Closeable {
 }
 ```
 `TableDescriptor`, `SnapshotBundle`, and `ScanBundle` are immutable records; connectors populate them
-with canonical metadata that the reconciler ingests. Iceberg connectors attach the full table
-metadata snapshot (`IcebergMetadata`) to each `SnapshotBundle`, preserving schema/spec/sort-order/log
-history at ingest time. `SnapshotBundle.fileStats` is optional but should be populated when Parquet
-footers or upstream metadata can provide per-file row counts, sizes, and per-column stats. Snapshot
-bundles also carry manifest-list URIs, sequence numbers, summary maps, and the metadata blob so
-downstream APIs can mirror Iceberg’s REST contract.
+with canonical metadata that the reconciler ingests. `SnapshotBundle.fileStats` is optional but
+should be populated when Parquet footers or upstream metadata can provide per-file row counts, sizes,
+and per-column stats. Snapshot bundles also carry manifest-list URIs, sequence numbers, and summary
+maps so downstream APIs can mirror Iceberg’s REST contract.
 
 `ConnectorConfig` encodes:
 - Kind + source/destination selectors (`SourceSelector`, `DestinationTarget`).

@@ -1,12 +1,12 @@
 package ai.floedb.metacat.gateway.iceberg.rest.support.mapper.table;
 
-import ai.floedb.metacat.catalog.rpc.IcebergBlobMetadata;
-import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
-import ai.floedb.metacat.catalog.rpc.IcebergMetadataLogEntry;
-import ai.floedb.metacat.catalog.rpc.IcebergPartitionStatisticsFile;
-import ai.floedb.metacat.catalog.rpc.IcebergSnapshotLogEntry;
-import ai.floedb.metacat.catalog.rpc.IcebergStatisticsFile;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergBlobMetadata;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergMetadataLogEntry;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergPartitionStatisticsFile;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergSnapshotLogEntry;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergStatisticsFile;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;

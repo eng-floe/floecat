@@ -33,14 +33,6 @@ import ai.floedb.metacat.catalog.rpc.GetNamespaceResponse;
 import ai.floedb.metacat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.metacat.catalog.rpc.GetTableResponse;
 import ai.floedb.metacat.catalog.rpc.GetViewResponse;
-import ai.floedb.metacat.catalog.rpc.IcebergBlobMetadata;
-import ai.floedb.metacat.catalog.rpc.IcebergEncryptedKey;
-import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
-import ai.floedb.metacat.catalog.rpc.IcebergPartitionStatisticsFile;
-import ai.floedb.metacat.catalog.rpc.IcebergRef;
-import ai.floedb.metacat.catalog.rpc.IcebergSortField;
-import ai.floedb.metacat.catalog.rpc.IcebergSortOrder;
-import ai.floedb.metacat.catalog.rpc.IcebergStatisticsFile;
 import ai.floedb.metacat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.metacat.catalog.rpc.ListNamespacesResponse;
 import ai.floedb.metacat.catalog.rpc.ListSnapshotsResponse;
@@ -96,6 +88,15 @@ import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableRepository;
 import ai.floedb.metacat.gateway.iceberg.rest.services.view.ViewMetadataService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.view.ViewMetadataService.MetadataContext;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergBlobMetadata;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergEncryptedKey;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergPartitionStatisticsFile;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergRef;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergSchema;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergSortField;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergSortOrder;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergStatisticsFile;
 import ai.floedb.metacat.query.rpc.BeginQueryRequest;
 import ai.floedb.metacat.query.rpc.BeginQueryResponse;
 import ai.floedb.metacat.query.rpc.DescribeInputsRequest;
@@ -849,23 +850,23 @@ class RestResourceTest {
     given()
         .body(
             ("""
+            {
+              "requirements":[{"type":"assert-view-uuid","uuid":"%s"}],
+              "updates":[
                 {
-                  "requirements":[{"type":"assert-view-uuid","uuid":"%s"}],
-                  "updates":[
-                    {
-                      "action":"add-view-version",
-                      "view-version":{
-                        "version-id":2,
-                        "timestamp-ms":1700000100,
-                        "schema-id":1,
-                        "summary":{"operation":"replace"},
-                        "representations":[{"type":"sql","sql":"select 2","dialect":"ansi"}],
-                        "default-namespace":["db"]
-                      }
-                    }
-                  ]
+                  "action":"add-view-version",
+                  "view-version":{
+                    "version-id":2,
+                    "timestamp-ms":1700000100,
+                    "schema-id":1,
+                    "summary":{"operation":"replace"},
+                    "representations":[{"type":"sql","sql":"select 2","dialect":"ansi"}],
+                    "default-namespace":["db"]
+                  }
                 }
-                """)
+              ]
+            }
+            """)
                 .formatted(baseContext.metadata().viewUuid()))
         .header("Content-Type", "application/json")
         .when()
@@ -1697,12 +1698,12 @@ class RestResourceTest {
                     .setDefaultSpecId(1)
                     .setDefaultSortOrderId(1)
                     .addSchemas(
-                        ai.floedb.metacat.catalog.rpc.IcebergSchema.newBuilder()
+                        IcebergSchema.newBuilder()
                             .setSchemaId(1)
                             .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
                             .build())
                     .addSchemas(
-                        ai.floedb.metacat.catalog.rpc.IcebergSchema.newBuilder()
+                        IcebergSchema.newBuilder()
                             .setSchemaId(3)
                             .setSchemaJson(
                                 "{\"type\":\"struct\",\"fields\":[{\"name\":\"c\",\"type\":\"long\"}]}")

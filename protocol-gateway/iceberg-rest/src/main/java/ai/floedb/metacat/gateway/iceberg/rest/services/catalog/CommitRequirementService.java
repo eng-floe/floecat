@@ -1,7 +1,7 @@
 package ai.floedb.metacat.gateway.iceberg.rest.services.catalog;
 
-import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
 import ai.floedb.metacat.catalog.rpc.Table;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.ws.rs.core.Response;
 import java.util.List;

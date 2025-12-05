@@ -2,7 +2,6 @@ package ai.floedb.metacat.gateway.iceberg.rest.services.catalog;
 
 import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
 import ai.floedb.metacat.catalog.rpc.GetTableRequest;
-import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
 import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
@@ -20,6 +19,7 @@ import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.metacat.gateway.iceberg.rest.support.mapper.TableResponseMapper;
+import ai.floedb.metacat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
