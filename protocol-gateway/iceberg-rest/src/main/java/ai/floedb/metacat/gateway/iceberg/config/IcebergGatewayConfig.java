@@ -40,6 +40,9 @@ public interface IcebergGatewayConfig {
     Map<String, String> properties();
 
     Optional<AuthTemplate> auth();
+
+    @WithDefault("true")
+    boolean captureStatistics();
   }
 
   interface AuthTemplate {

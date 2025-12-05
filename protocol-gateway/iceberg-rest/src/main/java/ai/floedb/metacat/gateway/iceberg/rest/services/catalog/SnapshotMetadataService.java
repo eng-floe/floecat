@@ -63,6 +63,29 @@ public class SnapshotMetadataService {
     return out;
   }
 
+  public IcebergMetadata loadSnapshotMetadata(ResourceId tableId, long snapshotId) {
+    SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub =
+        grpc.withHeaders(grpc.raw().snapshot());
+    try {
+      var resp =
+          snapshotStub.getSnapshot(
+              GetSnapshotRequest.newBuilder()
+                  .setTableId(tableId)
+                  .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
+                  .build());
+      if (resp == null || !resp.hasSnapshot()) {
+        return null;
+      }
+      Snapshot snapshot = resp.getSnapshot();
+      if (!snapshot.hasIceberg()) {
+        return null;
+      }
+      return snapshot.getIceberg();
+    } catch (io.grpc.StatusRuntimeException e) {
+      return null;
+    }
+  }
+
   public Response applySnapshotUpdates(
       TableGatewaySupport tableSupport,
       ResourceId tableId,

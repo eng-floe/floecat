@@ -9,8 +9,12 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.metacat.catalog.rpc.Table;
+import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
+import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MetadataMirrorException;
 import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MetadataMirrorService;
@@ -100,6 +104,109 @@ class TableCommitSideEffectServiceTest {
 
     verify(tableSupport, never()).runSyncMetadataCapture(any(), any(), any());
     verify(tableSupport, never()).triggerScopedReconcile(any(), any(), any());
+  }
+
+  @Test
+  void applyMirrorResultUpdatesMetadataAndLocation() throws Exception {
+    TableMetadataView original = metadata("s3://orig/location");
+    CommitTableResponseDto response = new CommitTableResponseDto("s3://orig/location", original);
+
+    TableMetadataView mirrored = original.withMetadataLocation("s3://new/location");
+    MirrorMetadataResult mirror = MirrorMetadataResult.success(mirrored, "s3://new/location");
+
+    CommitTableResponseDto updated = service.applyMirrorResult(response, mirror);
+
+    assertEquals("s3://new/location", updated.metadataLocation());
+    assertSame(mirrored, updated.metadata());
+  }
+
+  @Test
+  void applyMirrorResultReturnsOriginalWhenUnchanged() throws Exception {
+    TableMetadataView original = metadata("s3://orig/location");
+    CommitTableResponseDto response = new CommitTableResponseDto("s3://orig/location", original);
+    MirrorMetadataResult mirror = MirrorMetadataResult.success(original, "s3://orig/location");
+
+    CommitTableResponseDto result = service.applyMirrorResult(response, mirror);
+
+    assertSame(response, result);
+  }
+
+  @Test
+  void finalizeCommitResponseMirrorsAndSynchronizesConnector() throws Exception {
+    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+    ResourceId connectorId = ResourceId.newBuilder().setId("conn-1").build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .setFormat(TableFormat.TF_ICEBERG)
+                    .setConnectorId(connectorId)
+                    .setUri("s3://existing/location")
+                    .build())
+            .build();
+    TableMetadataView metadata = metadata("s3://orig/location");
+    TableMetadataView mirrored = metadata.withMetadataLocation("s3://mirror/location");
+    CommitTableResponseDto response = new CommitTableResponseDto("s3://orig/location", metadata);
+    when(metadataMirrorService.mirror("cat.db", "orders", metadata, "s3://orig/location"))
+        .thenReturn(new MirrorResult("s3://mirror/location", mirrored));
+
+    TableCommitSideEffectService.PostCommitResult result =
+        service.finalizeCommitResponse(
+            "cat.db",
+            "orders",
+            table.getResourceId(),
+            table,
+            response,
+            false,
+            tableSupport,
+            "foo",
+            List.of("db"),
+            ResourceId.newBuilder().setId("ns").build(),
+            ResourceId.newBuilder().setId("catalog").build(),
+            "idem");
+
+    assertNull(result.error());
+    assertEquals("s3://mirror/location", result.response().metadataLocation());
+    assertEquals(connectorId, result.connectorId());
+    verify(tableSupport).updateConnectorMetadata(connectorId, "s3://mirror/location");
+  }
+
+  @Test
+  void finalizeCommitResponseSkipsMirrorWhenRequested() throws Exception {
+    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+    ResourceId connectorId = ResourceId.newBuilder().setId("conn-1").build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .setFormat(TableFormat.TF_ICEBERG)
+                    .setConnectorId(connectorId)
+                    .build())
+            .build();
+    TableMetadataView metadata = metadata("s3://orig/location");
+    CommitTableResponseDto response = new CommitTableResponseDto("s3://orig/location", metadata);
+
+    TableCommitSideEffectService.PostCommitResult result =
+        service.finalizeCommitResponse(
+            "cat.db",
+            "orders",
+            table.getResourceId(),
+            table,
+            response,
+            true,
+            tableSupport,
+            "foo",
+            List.of("db"),
+            ResourceId.newBuilder().setId("ns").build(),
+            ResourceId.newBuilder().setId("catalog").build(),
+            "idem");
+
+    assertNull(result.error());
+    assertSame(response, result.response());
+    verify(metadataMirrorService, never()).mirror(any(), any(), any(), any());
+    assertEquals(connectorId, result.connectorId());
   }
 
   private TableMetadataView metadata(String metadataLocation) throws JsonProcessingException {

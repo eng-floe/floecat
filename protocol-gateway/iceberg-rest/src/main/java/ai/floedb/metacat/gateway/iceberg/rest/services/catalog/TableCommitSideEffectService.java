@@ -3,7 +3,6 @@ package ai.floedb.metacat.gateway.iceberg.rest.services.catalog;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableSpec;
 import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
-import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.metadata.TableMetadataView;
@@ -12,6 +11,7 @@ import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MetadataMirrorSe
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -120,7 +120,7 @@ public class TableCommitSideEffectService {
       } else {
         String baseLocation = tableLocation(tableRecord);
         String resolvedLocation =
-          tableSupport.resolveTableLocation(baseLocation, effectiveMetadata);
+            tableSupport.resolveTableLocation(baseLocation, effectiveMetadata);
         connectorId =
             tableSupport.createExternalConnector(
                 prefix,
@@ -218,5 +218,65 @@ public class TableCommitSideEffectService {
 
   private static String nonBlank(String primary, String fallback) {
     return primary != null && !primary.isBlank() ? primary : fallback;
+  }
+
+  public PostCommitResult finalizeCommitResponse(
+      String namespace,
+      String tableName,
+      ResourceId tableId,
+      Table tableRecord,
+      CommitTableResponseDto responseDto,
+      boolean skipMirroring,
+      TableGatewaySupport tableSupport,
+      String prefix,
+      List<String> namespacePath,
+      ResourceId namespaceId,
+      ResourceId catalogId,
+      String idempotencyKey) {
+    if (responseDto == null) {
+      return PostCommitResult.success(null, null);
+    }
+    CommitTableResponseDto resolvedResponse = responseDto;
+    if (!skipMirroring) {
+      MirrorMetadataResult mirrorResult =
+          mirrorMetadata(
+              namespace,
+              tableId,
+              tableName,
+              responseDto.metadata(),
+              responseDto.metadataLocation());
+      if (mirrorResult.error() != null) {
+        return PostCommitResult.failure(mirrorResult.error());
+      }
+      resolvedResponse = applyMirrorResult(responseDto, mirrorResult);
+    }
+    ResourceId connectorId =
+        synchronizeConnector(
+            tableSupport,
+            prefix,
+            namespacePath,
+            namespaceId,
+            catalogId,
+            tableName,
+            tableRecord,
+            resolvedResponse.metadata(),
+            resolvedResponse.metadataLocation(),
+            idempotencyKey);
+    return PostCommitResult.success(resolvedResponse, connectorId);
+  }
+
+  public record PostCommitResult(
+      Response error, CommitTableResponseDto response, ResourceId connectorId) {
+    static PostCommitResult success(CommitTableResponseDto response, ResourceId connectorId) {
+      return new PostCommitResult(null, response, connectorId);
+    }
+
+    static PostCommitResult failure(Response error) {
+      return new PostCommitResult(error, null, null);
+    }
+
+    boolean hasError() {
+      return error != null;
+    }
   }
 }

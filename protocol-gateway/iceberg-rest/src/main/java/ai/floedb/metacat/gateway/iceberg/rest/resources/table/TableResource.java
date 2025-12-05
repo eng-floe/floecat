@@ -234,8 +234,7 @@ public class TableResource {
     if (connectorId != null) {
       tableSupport.updateTableUpstream(
           created.getResourceId(), namespacePath, tableName, connectorId, upstreamUri);
-      tableCommitService.runConnectorSync(
-          tableSupport, connectorId, namespacePath, tableName);
+      tableCommitService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
     }
 
     Response.ResponseBuilder builder = Response.ok(loadResult);

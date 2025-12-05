@@ -45,6 +45,8 @@ public class TableGatewaySupport {
   private static final Logger LOG = Logger.getLogger(TableGatewaySupport.class);
   private static final List<StorageCredentialDto> STATIC_STORAGE_CREDENTIALS =
       List.of(new StorageCredentialDto("*", Map.of("type", "static")));
+  private static final String CONNECTOR_CAPTURE_STATS_PROPERTY =
+      "metacat.connector.capture-statistics";
 
   private final GrpcWithHeaders grpc;
   private final IcebergGatewayConfig config;
@@ -356,6 +358,8 @@ public class TableGatewaySupport {
     if (template.properties() != null && !template.properties().isEmpty()) {
       spec.putAllProperties(template.properties());
     }
+    spec.putProperties(
+        CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(template.captureStatistics()));
     template.description().ifPresent(spec::setDescription);
 
     CreateConnectorRequest.Builder request =
@@ -414,7 +418,8 @@ public class TableGatewaySupport {
             .setAuth(AuthConfig.newBuilder().setScheme("none").build())
             .putProperties("external.metadata-location", metadataLocation)
             .putProperties("external.table-name", tableName)
-            .putProperties("external.namespace", namespaceFq);
+            .putProperties("external.namespace", namespaceFq)
+            .putProperties(CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(true));
 
     CreateConnectorRequest.Builder request =
         CreateConnectorRequest.newBuilder().setSpec(spec.build());

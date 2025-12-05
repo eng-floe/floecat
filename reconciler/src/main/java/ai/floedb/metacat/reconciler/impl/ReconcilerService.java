@@ -6,6 +6,7 @@ import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
+import ai.floedb.metacat.catalog.rpc.GetTableStatsRequest;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.NamespaceSpec;
 import ai.floedb.metacat.catalog.rpc.PutColumnStatsRequest;
@@ -21,6 +22,7 @@ import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.connector.rpc.Connector;
 import ai.floedb.metacat.connector.rpc.ConnectorSpec;
 import ai.floedb.metacat.connector.rpc.ConnectorState;
@@ -489,6 +491,10 @@ public class ReconcilerService {
       ensureSnapshot(tableId, snapshotBundle);
 
       if (includeStats) {
+        if (statsAlreadyCaptured(tableId, snapshotId)) {
+          continue;
+        }
+
         var tsIn = snapshotBundle.tableStats();
         if (tsIn != null) {
           var tStats = tsIn.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
@@ -546,6 +552,30 @@ public class ReconcilerService {
               .atMost(Duration.ofMinutes(1));
         }
       }
+    }
+  }
+
+  private boolean statsAlreadyCaptured(ResourceId tableId, long snapshotId) {
+    if (snapshotId <= 0) {
+      return false;
+    }
+
+    try {
+      var response =
+          clients
+              .statistics()
+              .getTableStats(
+                  GetTableStatsRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                      .build());
+      var stats = response.getStats();
+      return stats.hasTableId() && stats.getSnapshotId() == snapshotId;
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return false;
+      }
+      throw e;
     }
   }
 

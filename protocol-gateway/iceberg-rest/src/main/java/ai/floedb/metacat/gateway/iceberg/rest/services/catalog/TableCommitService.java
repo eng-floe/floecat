@@ -1,57 +1,28 @@
 package ai.floedb.metacat.gateway.iceberg.rest.services.catalog;
 
-import ai.floedb.metacat.catalog.rpc.CreateSnapshotRequest;
-import ai.floedb.metacat.catalog.rpc.DeleteSnapshotRequest;
-import ai.floedb.metacat.catalog.rpc.GetSnapshotRequest;
-import ai.floedb.metacat.catalog.rpc.IcebergBlobMetadata;
-import ai.floedb.metacat.catalog.rpc.IcebergEncryptedKey;
 import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
-import ai.floedb.metacat.catalog.rpc.IcebergPartitionStatisticsFile;
 import ai.floedb.metacat.catalog.rpc.IcebergRef;
-import ai.floedb.metacat.catalog.rpc.IcebergSchema;
-import ai.floedb.metacat.catalog.rpc.IcebergSortField;
-import ai.floedb.metacat.catalog.rpc.IcebergSortOrder;
-import ai.floedb.metacat.catalog.rpc.IcebergStatisticsFile;
 import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
-import ai.floedb.metacat.catalog.rpc.PartitionField;
-import ai.floedb.metacat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
-import ai.floedb.metacat.catalog.rpc.SnapshotSpec;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableSpec;
-import ai.floedb.metacat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
-import ai.floedb.metacat.common.rpc.IdempotencyKey;
 import ai.floedb.metacat.common.rpc.ResourceId;
-import ai.floedb.metacat.common.rpc.SnapshotRef;
-import ai.floedb.metacat.common.rpc.SpecialSnapshot;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.MirrorMetadataResult;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.StageCommitProcessor.StageCommitResult;
-import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableEntry;
-import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableService;
-import ai.floedb.metacat.gateway.iceberg.rest.services.tenant.TenantContext;
 import ai.floedb.metacat.gateway.iceberg.rest.support.mapper.TableResponseMapper;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
-import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -63,13 +34,11 @@ public class TableCommitService {
 
   @Inject GrpcWithHeaders grpc;
   @Inject TableLifecycleService tableLifecycleService;
-  @Inject StageCommitProcessor stageCommitProcessor;
-  @Inject StagedTableService stagedTableService;
-  @Inject TenantContext tenantContext;
-  @Inject ObjectMapper mapper;
   @Inject SnapshotMetadataService snapshotMetadataService;
   @Inject TablePropertyService tablePropertyService;
   @Inject TableCommitSideEffectService sideEffectService;
+  @Inject StageMaterializationService stageMaterializationService;
+  @Inject CommitRequirementService commitRequirementService;
 
   public Response commit(CommitCommand command) {
     String prefix = command.prefix();
@@ -86,57 +55,24 @@ public class TableCommitService {
 
     final Table[] stagedTableHolder = new Table[1];
     StageCommitResult stageMaterialization = null;
-    String bodyStageId = req == null ? null : req.stageId();
-    String effectiveStageId = resolveStageId(req, transactionId);
-    if (effectiveStageId != null) {
-      LOG.infof(
-          "Commit request referenced stage payload namespace=%s table=%s stageId=%s (body=%s"
-              + " header=%s)",
-          namespace, table, effectiveStageId, bodyStageId, transactionId);
-    }
 
     ResourceId resolvedTableId = null;
     try {
       resolvedTableId = tableLifecycleService.resolveTableId(catalogName, namespacePath, table);
     } catch (io.grpc.StatusRuntimeException e) {
-      String stageIdToUse = effectiveStageId;
-      if (stageIdToUse == null && tenantContext.getTenantId() != null) {
-        Optional<StagedTableEntry> latest =
-            stagedTableService.findLatestStage(
-                tenantContext.getTenantId(), catalogName, namespacePath, table);
-        if (latest.isPresent()) {
-          stageIdToUse = latest.get().key().stageId();
-          LOG.infof(
-              "Found staged payload without explicit stage id namespace=%s table=%s stageId=%s",
-              namespace, table, stageIdToUse);
-        }
+      StageMaterializationService.StageMaterializationResult materialization;
+      try {
+        materialization =
+            stageMaterializationService.materializeIfTableMissing(
+                e, prefix, catalogName, namespacePath, table, req, transactionId);
+      } catch (StageCommitException sce) {
+        return sce.toResponse();
       }
-      if (stageIdToUse != null && e.getStatus().getCode() == io.grpc.Status.Code.NOT_FOUND) {
-        LOG.infof(
-            "Table not found for commit, attempting staged materialization namespace=%s table=%s"
-                + " stageId=%s",
-            namespace, table, stageIdToUse);
-        try {
-          stageMaterialization =
-              stageCommitProcessor.commitStage(
-                  prefix,
-                  catalogName,
-                  tenantContext.getTenantId(),
-                  namespacePath,
-                  table,
-                  stageIdToUse);
-          stagedTableHolder[0] = stageMaterialization.table();
-          resolvedTableId = stagedTableHolder[0].getResourceId();
-        } catch (StageCommitException sce) {
-          return sce.toResponse();
-        }
+      if (materialization != null) {
+        stageMaterialization = materialization.result();
+        stagedTableHolder[0] = stageMaterialization.table();
+        resolvedTableId = stageMaterialization.table().getResourceId();
       } else {
-        if (e.getStatus().getCode() == io.grpc.Status.Code.NOT_FOUND) {
-          LOG.warnf(
-              "Commit request table not found and no stage id supplied namespace=%s table=%s"
-                  + " bodyStageId=%s headerStageId=%s",
-              namespace, table, bodyStageId, transactionId);
-        }
         throw e;
       }
     }
@@ -180,32 +116,31 @@ public class TableCommitService {
       Table current = tableSupplier.get();
       IcebergMetadata metadata = tableSupport.loadCurrentMetadata(current);
       List<Snapshot> snapshotList = fetchSnapshots(tableId, SnapshotMode.ALL, metadata);
-      CommitTableResponseDto responseDto =
+      CommitTableResponseDto initialResponse =
           TableResponseMapper.toCommitResponse(table, current, metadata, snapshotList);
-      MirrorMetadataResult mirrorResult =
-          sideEffectService.mirrorMetadata(
-              namespace, tableId, table, responseDto.metadata(), responseDto.metadataLocation());
-      if (mirrorResult.error() != null) {
-        return mirrorResult.error();
-      }
-      responseDto = sideEffectService.applyMirrorResult(responseDto, mirrorResult);
-      ResourceId connectorId =
-          sideEffectService.synchronizeConnector(
+      var sideEffects =
+          sideEffectService.finalizeCommitResponse(
+              namespace,
+              table,
+              tableId,
+              current,
+              initialResponse,
+              false,
               tableSupport,
               prefix,
               namespacePath,
               namespaceId,
               catalogId,
-              table,
-              current,
-              responseDto.metadata(),
-              responseDto.metadataLocation(),
               idempotencyKey);
+      if (sideEffects.hasError()) {
+        return sideEffects.error();
+      }
+      CommitTableResponseDto responseDto = sideEffects.response();
       Response.ResponseBuilder builder = Response.ok(responseDto);
-      if (responseDto.metadataLocation() != null) {
+      if (responseDto != null && responseDto.metadataLocation() != null) {
         builder.tag(responseDto.metadataLocation());
       }
-      TableMetadataView meta = responseDto.metadata();
+      TableMetadataView meta = responseDto == null ? null : responseDto.metadata();
       LOG.infof(
           "Stage commit satisfied for %s.%s tableId=%s stageId=%s currentSnapshot=%s"
               + " snapshotCount=%d",
@@ -217,7 +152,8 @@ public class TableCommitService {
           resolveStageId(req, transactionId),
           meta == null ? "<null>" : meta.currentSnapshotId(),
           meta == null || meta.snapshots() == null ? 0 : meta.snapshots().size());
-      sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, table);
+      sideEffectService.runConnectorSync(
+          tableSupport, sideEffects.connectorId(), namespacePath, table);
       return builder.build();
     }
 
@@ -226,7 +162,12 @@ public class TableCommitService {
     SnapshotUpdateContext snapshotContext = new SnapshotUpdateContext();
     if (req != null) {
       Response requirementError =
-          validateRequirements(tableSupport, req.requirements(), tableSupplier);
+          commitRequirementService.validateRequirements(
+              tableSupport,
+              req.requirements(),
+              tableSupplier,
+              this::validationError,
+              this::conflictError);
       if (requirementError != null) {
         return requirementError;
       }
@@ -256,7 +197,8 @@ public class TableCommitService {
         if (mergedProps == null) {
           mergedProps = new LinkedHashMap<>(tableSupplier.get().getPropertiesMap());
         }
-        Response updateError = tablePropertyService.applyPropertyUpdates(mergedProps, req.updates());
+        Response updateError =
+            tablePropertyService.applyPropertyUpdates(mergedProps, req.updates());
         if (updateError != null) {
           return updateError;
         }
@@ -322,27 +264,26 @@ public class TableCommitService {
       Table current = tableSupplier.get();
       IcebergMetadata metadata = tableSupport.loadCurrentMetadata(current);
       List<Snapshot> snapshotList = fetchSnapshots(tableId, SnapshotMode.ALL, metadata);
-      CommitTableResponseDto responseDto =
+      CommitTableResponseDto initialResponse =
           TableResponseMapper.toCommitResponse(table, current, metadata, snapshotList);
-      MirrorMetadataResult mirrorResult =
-          sideEffectService.mirrorMetadata(
-              namespace, tableId, table, responseDto.metadata(), responseDto.metadataLocation());
-      if (mirrorResult.error() != null) {
-        return mirrorResult.error();
-      }
-      responseDto = sideEffectService.applyMirrorResult(responseDto, mirrorResult);
-      ResourceId connectorId =
-          sideEffectService.synchronizeConnector(
+      var sideEffects =
+          sideEffectService.finalizeCommitResponse(
+              namespace,
+              table,
+              tableId,
+              current,
+              initialResponse,
+              false,
               tableSupport,
               prefix,
               namespacePath,
               namespaceId,
               catalogId,
-              table,
-              current,
-              responseDto.metadata(),
-              responseDto.metadataLocation(),
               idempotencyKey);
+      if (sideEffects.hasError()) {
+        return sideEffects.error();
+      }
+      CommitTableResponseDto responseDto = sideEffects.response();
       Response.ResponseBuilder builder = Response.ok(responseDto);
       LOG.infof(
           "Commit response for %s.%s tableId=%s currentSnapshot=%s snapshotCount=%d",
@@ -351,10 +292,11 @@ public class TableCommitService {
           current.hasResourceId() ? current.getResourceId().getId() : "<missing>",
           metadata != null ? metadata.getCurrentSnapshotId() : "<null>",
           snapshotList == null ? 0 : snapshotList.size());
-      if (responseDto.metadataLocation() != null) {
+      if (responseDto != null && responseDto.metadataLocation() != null) {
         builder.tag(responseDto.metadataLocation());
       }
-    sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, table);
+      sideEffectService.runConnectorSync(
+          tableSupport, sideEffects.connectorId(), namespacePath, table);
       return builder.build();
     }
 
@@ -363,9 +305,11 @@ public class TableCommitService {
     Table updated = tableLifecycleService.updateTable(updateRequest.build());
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(updated);
     List<Snapshot> snapshotList = fetchSnapshots(tableId, SnapshotMode.ALL, metadata);
-    CommitTableResponseDto responseDto =
+    CommitTableResponseDto initialResponse =
         TableResponseMapper.toCommitResponse(table, updated, metadata, snapshotList);
-    if (snapshotContext.hasMirroredMetadata()) {
+    boolean skipMirror = snapshotContext.hasMirroredMetadata();
+    CommitTableResponseDto responseDto = initialResponse;
+    if (skipMirror) {
       String location = snapshotContext.mirroredMetadataLocation;
       responseDto =
           new CommitTableResponseDto(
@@ -373,27 +317,25 @@ public class TableCommitService {
               responseDto.metadata() == null
                   ? null
                   : responseDto.metadata().withMetadataLocation(location));
-    } else {
-      MirrorMetadataResult mirrorResult =
-          sideEffectService.mirrorMetadata(
-              namespace, tableId, table, responseDto.metadata(), responseDto.metadataLocation());
-      if (mirrorResult.error() != null) {
-        return mirrorResult.error();
-      }
-      responseDto = sideEffectService.applyMirrorResult(responseDto, mirrorResult);
     }
-    ResourceId connectorId =
-        sideEffectService.synchronizeConnector(
+    var sideEffects =
+        sideEffectService.finalizeCommitResponse(
+            namespace,
+            table,
+            tableId,
+            updated,
+            responseDto,
+            skipMirror,
             tableSupport,
             prefix,
             namespacePath,
             namespaceId,
             catalogId,
-            table,
-            updated,
-            responseDto.metadata(),
-            responseDto.metadataLocation(),
             idempotencyKey);
+    if (sideEffects.hasError()) {
+      return sideEffects.error();
+    }
+    responseDto = sideEffects.response();
     Response.ResponseBuilder builder = Response.ok(responseDto);
     LOG.infof(
         "Commit response for %s.%s tableId=%s currentSnapshot=%s snapshotCount=%d",
@@ -402,10 +344,11 @@ public class TableCommitService {
         updated.hasResourceId() ? updated.getResourceId().getId() : "<missing>",
         metadata != null ? metadata.getCurrentSnapshotId() : "<null>",
         snapshotList == null ? 0 : snapshotList.size());
-    if (responseDto.metadataLocation() != null) {
+    if (responseDto != null && responseDto.metadataLocation() != null) {
       builder.tag(responseDto.metadataLocation());
     }
-    sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, table);
+    sideEffectService.runConnectorSync(
+        tableSupport, sideEffects.connectorId(), namespacePath, table);
     return builder.build();
   }
 
@@ -422,44 +365,6 @@ public class TableCommitService {
   private Table tableWithPropertyOverrides(
       Supplier<Table> tableSupplier, Map<String, String> propertyOverrides) {
     return tablePropertyService.tableWithPropertyOverrides(tableSupplier, propertyOverrides);
-  }
-
-  private IcebergMetadata loadSnapshotMetadata(ResourceId tableId, long snapshotId) {
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub =
-        grpc.withHeaders(grpc.raw().snapshot());
-    try {
-      var resp =
-          snapshotStub.getSnapshot(
-              GetSnapshotRequest.newBuilder()
-                  .setTableId(tableId)
-                  .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
-                  .build());
-      if (resp == null || !resp.hasSnapshot()) {
-        return null;
-      }
-      Snapshot snapshot = resp.getSnapshot();
-      if (!snapshot.hasIceberg()) {
-        return null;
-      }
-      return snapshot.getIceberg();
-    } catch (io.grpc.StatusRuntimeException e) {
-      return null;
-    }
-  }
-
-  private String schemaJsonFromMetadata(IcebergMetadata metadata, Integer schemaId) {
-    if (metadata == null || metadata.getSchemasCount() == 0) {
-      return null;
-    }
-    Integer targetId = schemaId != null ? schemaId : metadata.getCurrentSchemaId();
-    if (targetId != null && targetId > 0) {
-      for (IcebergSchema schema : metadata.getSchemasList()) {
-        if (schema.getSchemaId() == targetId) {
-          return schema.getSchemaJson();
-        }
-      }
-    }
-    return null;
   }
 
   public List<Snapshot> fetchSnapshots(
@@ -486,723 +391,6 @@ public class TableCommitService {
     } catch (io.grpc.StatusRuntimeException e) {
       return List.of();
     }
-  }
-
-  private Response createSnapshotPlaceholder(
-      ResourceId tableId,
-      List<String> namespacePath,
-      String tableName,
-      Table existing,
-      Map<String, Object> snapshot,
-      String idempotencyKey,
-      TableGatewaySupport tableSupport) {
-    Long snapshotId = asLong(snapshot.get("snapshot-id"));
-    if (snapshotId == null) {
-      return validationError("add-snapshot requires snapshot.snapshot-id");
-    }
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub stub = grpc.withHeaders(grpc.raw().snapshot());
-    SnapshotSpec.Builder spec =
-        SnapshotSpec.newBuilder().setTableId(tableId).setSnapshotId(snapshotId);
-    Long upstreamCreated = asLong(snapshot.get("timestamp-ms"));
-    if (upstreamCreated != null) {
-      spec.setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreated));
-    }
-    Long parentId = asLong(snapshot.get("parent-snapshot-id"));
-    if (parentId != null) {
-      spec.setParentSnapshotId(parentId);
-    }
-    Long sequenceNumber = asLong(snapshot.get("sequence-number"));
-    if (sequenceNumber != null) {
-      spec.setSequenceNumber(sequenceNumber);
-    }
-    String manifestList = asString(snapshot.get("manifest-list"));
-    if (manifestList != null && !manifestList.isBlank()) {
-      spec.setManifestList(manifestList);
-    }
-    Map<String, String> summary = asStringMap(snapshot.get("summary"));
-    if (!summary.isEmpty()) {
-      spec.putAllSummary(summary);
-    }
-    Integer schemaId = asInteger(snapshot.get("schema-id"));
-    IcebergMetadata metadata = null;
-    if (schemaId == null) {
-      schemaId = propertyInt(existing.getPropertiesMap(), "current-schema-id");
-    }
-    if (schemaId == null) {
-      metadata = tableSupport.loadCurrentMetadata(existing);
-      if (metadata != null && metadata.getCurrentSchemaId() > 0) {
-        schemaId = metadata.getCurrentSchemaId();
-      }
-    } else {
-      metadata = tableSupport.loadCurrentMetadata(existing);
-    }
-    if (schemaId == null) {
-      schemaId = 0;
-    }
-    spec.setSchemaId(schemaId);
-    String schemaJson = asString(snapshot.get("schema-json"));
-    if (schemaJson == null || schemaJson.isBlank()) {
-      schemaJson = existing.getSchemaJson();
-    }
-    if ((schemaJson == null || schemaJson.isBlank()) && metadata != null) {
-      schemaJson = schemaJsonFromMetadata(metadata, schemaId);
-    }
-    if (schemaJson != null && !schemaJson.isBlank()) {
-      spec.setSchemaJson(schemaJson);
-    }
-    CreateSnapshotRequest.Builder request =
-        CreateSnapshotRequest.newBuilder().setSpec(spec.build());
-    if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-      request.setIdempotency(
-          IdempotencyKey.newBuilder().setKey(idempotencyKey + ":snapshot:" + snapshotId).build());
-    }
-    stub.createSnapshot(request.build());
-    return null;
-  }
-
-  private void deleteSnapshots(ResourceId tableId, List<Long> snapshotIds) {
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub stub = grpc.withHeaders(grpc.raw().snapshot());
-    for (Long id : snapshotIds) {
-      if (id == null) {
-        continue;
-      }
-      stub.deleteSnapshot(
-          DeleteSnapshotRequest.newBuilder().setTableId(tableId).setSnapshotId(id).build());
-    }
-  }
-
-  private Response applySnapshotMetadataUpdates(
-      ResourceId tableId,
-      Supplier<Table> tableSupplier,
-      Table existingTable,
-      Long preferredSnapshotId,
-      SnapshotMetadataChanges changes) {
-    if (!changes.hasChanges()) {
-      return null;
-    }
-    Table table = existingTable != null ? existingTable : tableSupplier.get();
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub stub = grpc.withHeaders(grpc.raw().snapshot());
-    Snapshot snapshot;
-    Long targetSnapshotId = preferredSnapshotId;
-    if (targetSnapshotId == null) {
-      try {
-        snapshot =
-            stub.getSnapshot(
-                    GetSnapshotRequest.newBuilder()
-                        .setTableId(tableId)
-                        .setSnapshot(
-                            SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
-                        .build())
-                .getSnapshot();
-        targetSnapshotId = snapshot.getSnapshotId();
-      } catch (io.grpc.StatusRuntimeException e) {
-        Long propertySnapshot = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
-        targetSnapshotId = propertySnapshot;
-        snapshot = null;
-      }
-    } else {
-      snapshot = null;
-    }
-
-    if (targetSnapshotId == null || targetSnapshotId <= 0) {
-      return validationError("snapshot metadata updates require current snapshot id");
-    }
-
-    if (snapshot == null) {
-      snapshot =
-          stub.getSnapshot(
-                  GetSnapshotRequest.newBuilder()
-                      .setTableId(tableId)
-                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(targetSnapshotId))
-                      .build())
-              .getSnapshot();
-    }
-
-    IcebergMetadata.Builder iceberg =
-        snapshot != null && snapshot.hasIceberg()
-            ? snapshot.getIceberg().toBuilder()
-            : IcebergMetadata.newBuilder();
-    boolean mutated = false;
-
-    if (changes.tableUuid != null) {
-      iceberg.setTableUuid(changes.tableUuid);
-      mutated = true;
-    }
-    if (changes.formatVersion != null) {
-      iceberg.setFormatVersion(changes.formatVersion);
-      mutated = true;
-    }
-    if (!changes.schemaIdsToRemove.isEmpty()) {
-      List<IcebergSchema> filtered = new ArrayList<>();
-      for (IcebergSchema schema : iceberg.getSchemasList()) {
-        if (changes.schemaIdsToRemove.contains(schema.getSchemaId())) {
-          mutated = true;
-          continue;
-        }
-        filtered.add(schema);
-      }
-      if (filtered.size() != iceberg.getSchemasCount()) {
-        iceberg.clearSchemas();
-        iceberg.addAllSchemas(filtered);
-      }
-    }
-    if (!changes.schemasToAdd.isEmpty()) {
-      iceberg.addAllSchemas(changes.schemasToAdd);
-      mutated = true;
-    }
-    if (changes.setCurrentSchemaLast) {
-      Integer lastSchema = lastSchemaId(iceberg);
-      if (lastSchema == null) {
-        return validationError("set-current-schema requires at least one schema");
-      }
-      iceberg.setCurrentSchemaId(lastSchema);
-      mutated = true;
-    } else if (changes.currentSchemaId != null) {
-      iceberg.setCurrentSchemaId(changes.currentSchemaId);
-      mutated = true;
-    }
-    if (!changes.partitionSpecIdsToRemove.isEmpty()) {
-      List<PartitionSpecInfo> filtered = new ArrayList<>();
-      for (PartitionSpecInfo spec : iceberg.getPartitionSpecsList()) {
-        if (changes.partitionSpecIdsToRemove.contains(spec.getSpecId())) {
-          mutated = true;
-          continue;
-        }
-        filtered.add(spec);
-      }
-      if (filtered.size() != iceberg.getPartitionSpecsCount()) {
-        iceberg.clearPartitionSpecs();
-        iceberg.addAllPartitionSpecs(filtered);
-      }
-    }
-    if (!changes.partitionSpecsToAdd.isEmpty()) {
-      iceberg.addAllPartitionSpecs(changes.partitionSpecsToAdd);
-      mutated = true;
-    }
-    if (changes.setDefaultSpecLast) {
-      Integer lastSpec = lastPartitionSpecId(iceberg);
-      if (lastSpec == null) {
-        return validationError("set-default-spec requires at least one partition spec");
-      }
-      iceberg.setDefaultSpecId(lastSpec);
-      mutated = true;
-    } else if (changes.defaultSpecId != null) {
-      iceberg.setDefaultSpecId(changes.defaultSpecId);
-      mutated = true;
-    }
-    if (!changes.sortOrdersToAdd.isEmpty()) {
-      iceberg.addAllSortOrders(changes.sortOrdersToAdd);
-      mutated = true;
-    }
-    if (changes.setDefaultSortOrderLast) {
-      Integer lastSortOrder = lastSortOrderId(iceberg);
-      if (lastSortOrder == null) {
-        return validationError("set-default-sort-order requires at least one sort order");
-      }
-      iceberg.setDefaultSortOrderId(lastSortOrder);
-      mutated = true;
-    } else if (changes.defaultSortOrderId != null) {
-      iceberg.setDefaultSortOrderId(changes.defaultSortOrderId);
-      mutated = true;
-    }
-
-    if (!changes.statisticsSnapshotsToRemove.isEmpty() || !changes.statisticsToAdd.isEmpty()) {
-      var replace =
-          changes.statisticsToAdd.stream()
-              .map(IcebergStatisticsFile::getSnapshotId)
-              .collect(Collectors.toSet());
-      List<IcebergStatisticsFile> filtered = new ArrayList<>();
-      for (IcebergStatisticsFile file : iceberg.getStatisticsList()) {
-        long snapId = file.getSnapshotId();
-        if (changes.statisticsSnapshotsToRemove.contains(snapId) || replace.contains(snapId)) {
-          mutated = true;
-          continue;
-        }
-        filtered.add(file);
-      }
-      if (!changes.statisticsToAdd.isEmpty()) {
-        filtered.addAll(changes.statisticsToAdd);
-        mutated = true;
-      }
-      if (mutated) {
-        iceberg.clearStatistics();
-        iceberg.addAllStatistics(filtered);
-      }
-    }
-    if (!changes.partitionStatisticsSnapshotsToRemove.isEmpty()
-        || !changes.partitionStatisticsToAdd.isEmpty()) {
-      var replace =
-          changes.partitionStatisticsToAdd.stream()
-              .map(IcebergPartitionStatisticsFile::getSnapshotId)
-              .collect(Collectors.toSet());
-      List<IcebergPartitionStatisticsFile> filtered = new ArrayList<>();
-      for (IcebergPartitionStatisticsFile file : iceberg.getPartitionStatisticsList()) {
-        long snapId = file.getSnapshotId();
-        if (changes.partitionStatisticsSnapshotsToRemove.contains(snapId)
-            || replace.contains(snapId)) {
-          mutated = true;
-          continue;
-        }
-        filtered.add(file);
-      }
-      if (!changes.partitionStatisticsToAdd.isEmpty()) {
-        filtered.addAll(changes.partitionStatisticsToAdd);
-        mutated = true;
-      }
-      if (mutated) {
-        iceberg.clearPartitionStatistics();
-        iceberg.addAllPartitionStatistics(filtered);
-      }
-    }
-    if (!changes.encryptionKeysToRemove.isEmpty() || !changes.encryptionKeysToAdd.isEmpty()) {
-      Map<String, IcebergEncryptedKey> keys = new LinkedHashMap<>();
-      for (IcebergEncryptedKey key : iceberg.getEncryptionKeysList()) {
-        if (changes.encryptionKeysToRemove.contains(key.getKeyId())) {
-          mutated = true;
-          continue;
-        }
-        keys.put(key.getKeyId(), key);
-      }
-      for (IcebergEncryptedKey key : changes.encryptionKeysToAdd) {
-        keys.put(key.getKeyId(), key);
-        mutated = true;
-      }
-      iceberg.clearEncryptionKeys();
-      iceberg.addAllEncryptionKeys(keys.values());
-    }
-
-    if (!changes.refsToRemove.isEmpty() || !changes.refsToSet.isEmpty()) {
-      var refs = new LinkedHashMap<>(iceberg.getRefsMap());
-      if (!changes.refsToRemove.isEmpty()) {
-        mutated = refs.keySet().removeAll(changes.refsToRemove) || mutated;
-      }
-      if (!changes.refsToSet.isEmpty()) {
-        refs.putAll(changes.refsToSet);
-        mutated = true;
-      }
-      iceberg.clearRefs();
-      iceberg.putAllRefs(refs);
-    }
-
-    if (!mutated) {
-      return null;
-    }
-
-    SnapshotSpec.Builder spec =
-        SnapshotSpec.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(targetSnapshotId)
-            .setIceberg(iceberg);
-    FieldMask mask = FieldMask.newBuilder().addPaths("iceberg").build();
-
-    stub.updateSnapshot(
-        UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build());
-    return null;
-  }
-
-  private IcebergSchema buildIcebergSchema(
-      Map<String, Object> schemaMap, Map<String, Object> update) throws JsonProcessingException {
-    Integer schemaId = asInteger(schemaMap.get("schema-id"));
-    if (schemaId == null) {
-      throw new IllegalArgumentException("add-schema requires schema.schema-id");
-    }
-    String schemaJson = mapper.writeValueAsString(schemaMap);
-    IcebergSchema.Builder builder =
-        IcebergSchema.newBuilder().setSchemaId(schemaId).setSchemaJson(schemaJson);
-    Integer lastColumnId =
-        asInteger(firstNonNull(update.get("last-column-id"), schemaMap.get("last-column-id")));
-    if (lastColumnId != null) {
-      builder.setLastColumnId(lastColumnId);
-    }
-    List<Integer> identifierIds = asIntegerList(schemaMap.get("identifier-field-ids"));
-    if (!identifierIds.isEmpty()) {
-      builder.addAllIdentifierFieldIds(identifierIds);
-    }
-    return builder.build();
-  }
-
-  private PartitionSpecInfo buildPartitionSpec(Map<String, Object> specMap) {
-    Integer specId = asInteger(specMap.get("spec-id"));
-    if (specId == null) {
-      throw new IllegalArgumentException("add-spec requires spec.spec-id");
-    }
-    PartitionSpecInfo.Builder builder = PartitionSpecInfo.newBuilder().setSpecId(specId);
-    String specName = asString(specMap.get("name"));
-    builder.setSpecName(specName == null || specName.isBlank() ? "spec-" + specId : specName);
-    List<Map<String, Object>> fields = asMapList(specMap.get("fields"));
-    if (fields.isEmpty()) {
-      throw new IllegalArgumentException("add-spec requires spec.fields");
-    }
-    for (Map<String, Object> field : fields) {
-      String name = asString(field.get("name"));
-      Integer fieldId = asInteger(firstNonNull(field.get("field-id"), field.get("source-id")));
-      String transform = asString(field.get("transform"));
-      if (name == null || fieldId == null || transform == null || transform.isBlank()) {
-        throw new IllegalArgumentException(
-            "add-spec fields require name, field-id/source-id, and transform");
-      }
-      builder.addFields(
-          PartitionField.newBuilder()
-              .setFieldId(fieldId)
-              .setName(name)
-              .setTransform(transform)
-              .build());
-    }
-    return builder.build();
-  }
-
-  private IcebergSortOrder buildSortOrder(Map<String, Object> orderMap) {
-    Integer orderId =
-        asInteger(firstNonNull(orderMap.get("sort-order-id"), orderMap.get("order-id")));
-    if (orderId == null) {
-      throw new IllegalArgumentException("add-sort-order requires sort-order.sort-order-id");
-    }
-    IcebergSortOrder.Builder builder = IcebergSortOrder.newBuilder().setSortOrderId(orderId);
-    List<Map<String, Object>> fields = asMapList(orderMap.get("fields"));
-    if (fields.isEmpty()) {
-      throw new IllegalArgumentException("add-sort-order requires sort-order.fields");
-    }
-    for (Map<String, Object> field : fields) {
-      Integer sourceId = asInteger(field.get("source-id"));
-      if (sourceId == null) {
-        throw new IllegalArgumentException("sort-order.fields require source-id");
-      }
-      String transform = asString(field.get("transform"));
-      if (transform == null || transform.isBlank()) {
-        transform = "identity";
-      }
-      String direction = asString(field.get("direction"));
-      if (direction == null || direction.isBlank()) {
-        direction = "ASC";
-      }
-      String nullOrder = asString(field.get("null-order"));
-      if (nullOrder == null || nullOrder.isBlank()) {
-        nullOrder = "NULLS_FIRST";
-      }
-      builder.addFields(
-          IcebergSortField.newBuilder()
-              .setSourceFieldId(sourceId)
-              .setTransform(transform)
-              .setDirection(direction)
-              .setNullOrder(nullOrder)
-              .build());
-    }
-    return builder.build();
-  }
-
-  private IcebergStatisticsFile buildStatisticsFile(Map<String, Object> statsMap) {
-    Long snapshotId = asLong(statsMap.get("snapshot-id"));
-    String path = asString(statsMap.get("statistics-path"));
-    Long size = asLong(statsMap.get("file-size-in-bytes"));
-    Long footerSize = asLong(statsMap.get("file-footer-size-in-bytes"));
-    List<Map<String, Object>> blobMaps = asMapList(statsMap.get("blob-metadata"));
-    if (snapshotId == null || path == null || path.isBlank() || size == null) {
-      throw new IllegalArgumentException(
-          "set-statistics requires snapshot-id, statistics-path, and file-size-in-bytes");
-    }
-    IcebergStatisticsFile.Builder builder =
-        IcebergStatisticsFile.newBuilder()
-            .setSnapshotId(snapshotId)
-            .setStatisticsPath(path)
-            .setFileSizeInBytes(size);
-    if (footerSize != null) {
-      builder.setFileFooterSizeInBytes(footerSize);
-    }
-    if (!blobMaps.isEmpty()) {
-      for (Map<String, Object> blobMap : blobMaps) {
-        builder.addBlobMetadata(buildBlobMetadata(blobMap));
-      }
-    }
-    return builder.build();
-  }
-
-  private IcebergBlobMetadata buildBlobMetadata(Map<String, Object> blobMap) {
-    String type = asString(blobMap.get("type"));
-    Long snapshotId = asLong(blobMap.get("snapshot-id"));
-    Long sequenceNumber = asLong(blobMap.get("sequence-number"));
-    List<Integer> fields = asIntegerList(blobMap.get("fields"));
-    if (type == null
-        || type.isBlank()
-        || snapshotId == null
-        || sequenceNumber == null
-        || fields.isEmpty()) {
-      throw new IllegalArgumentException(
-          "statistics blob-metadata requires type, snapshot-id, sequence-number, and fields");
-    }
-    IcebergBlobMetadata.Builder builder =
-        IcebergBlobMetadata.newBuilder()
-            .setType(type)
-            .setSnapshotId(snapshotId)
-            .setSequenceNumber(sequenceNumber)
-            .addAllFields(fields);
-    Map<String, String> props = asStringMap(blobMap.get("properties"));
-    if (!props.isEmpty()) {
-      builder.putAllProperties(props);
-    }
-    return builder.build();
-  }
-
-  private IcebergPartitionStatisticsFile buildPartitionStatisticsFile(
-      Map<String, Object> statsMap) {
-    Long snapshotId = asLong(statsMap.get("snapshot-id"));
-    String path = asString(statsMap.get("statistics-path"));
-    Long size = asLong(statsMap.get("file-size-in-bytes"));
-    if (snapshotId == null || path == null || path.isBlank() || size == null) {
-      throw new IllegalArgumentException(
-          "set-partition-statistics requires snapshot-id, statistics-path, and file-size-in-bytes");
-    }
-    return IcebergPartitionStatisticsFile.newBuilder()
-        .setSnapshotId(snapshotId)
-        .setStatisticsPath(path)
-        .setFileSizeInBytes(size)
-        .build();
-  }
-
-  private IcebergEncryptedKey buildEncryptionKey(Map<String, Object> keyMap) {
-    String keyId = asString(keyMap.get("key-id"));
-    String metadataB64 = asString(keyMap.get("encrypted-key-metadata"));
-    if (keyId == null || keyId.isBlank() || metadataB64 == null || metadataB64.isBlank()) {
-      throw new IllegalArgumentException(
-          "add-encryption-key requires key-id and encrypted-key-metadata");
-    }
-    byte[] decoded;
-    try {
-      decoded = Base64.getDecoder().decode(metadataB64);
-    } catch (IllegalArgumentException e) {
-      throw new IllegalArgumentException("encrypted-key-metadata must be valid base64");
-    }
-    IcebergEncryptedKey.Builder builder =
-        IcebergEncryptedKey.newBuilder()
-            .setKeyId(keyId)
-            .setEncryptedKeyMetadata(ByteString.copyFrom(decoded));
-    String encryptedBy = asString(keyMap.get("encrypted-by-id"));
-    if (encryptedBy != null && !encryptedBy.isBlank()) {
-      builder.setEncryptedById(encryptedBy);
-    }
-    return builder.build();
-  }
-
-  private static Integer lastSchemaId(IcebergMetadata.Builder builder) {
-    int count = builder.getSchemasCount();
-    if (count == 0) {
-      return null;
-    }
-    return builder.getSchemas(count - 1).getSchemaId();
-  }
-
-  private static Integer lastPartitionSpecId(IcebergMetadata.Builder builder) {
-    int count = builder.getPartitionSpecsCount();
-    if (count == 0) {
-      return null;
-    }
-    return builder.getPartitionSpecs(count - 1).getSpecId();
-  }
-
-  private static Integer lastSortOrderId(IcebergMetadata.Builder builder) {
-    int count = builder.getSortOrdersCount();
-    if (count == 0) {
-      return null;
-    }
-    return builder.getSortOrders(count - 1).getSortOrderId();
-  }
-
-  private static final class SnapshotMetadataChanges {
-    String tableUuid;
-    Integer formatVersion;
-    final List<IcebergSchema> schemasToAdd = new ArrayList<>();
-    final Set<Integer> schemaIdsToRemove = new LinkedHashSet<>();
-    Integer currentSchemaId;
-    boolean setCurrentSchemaLast;
-    final List<PartitionSpecInfo> partitionSpecsToAdd = new ArrayList<>();
-    final Set<Integer> partitionSpecIdsToRemove = new LinkedHashSet<>();
-    Integer defaultSpecId;
-    boolean setDefaultSpecLast;
-    final List<IcebergSortOrder> sortOrdersToAdd = new ArrayList<>();
-    Integer defaultSortOrderId;
-    boolean setDefaultSortOrderLast;
-    final List<IcebergStatisticsFile> statisticsToAdd = new ArrayList<>();
-    final Set<Long> statisticsSnapshotsToRemove = new LinkedHashSet<>();
-    final List<IcebergPartitionStatisticsFile> partitionStatisticsToAdd = new ArrayList<>();
-    final Set<Long> partitionStatisticsSnapshotsToRemove = new LinkedHashSet<>();
-    final List<IcebergEncryptedKey> encryptionKeysToAdd = new ArrayList<>();
-    final Set<String> encryptionKeysToRemove = new LinkedHashSet<>();
-    final Map<String, IcebergRef> refsToSet = new LinkedHashMap<>();
-    final Set<String> refsToRemove = new LinkedHashSet<>();
-
-    boolean hasChanges() {
-      return tableUuid != null
-          || formatVersion != null
-          || !schemasToAdd.isEmpty()
-          || !schemaIdsToRemove.isEmpty()
-          || currentSchemaId != null
-          || setCurrentSchemaLast
-          || !partitionSpecsToAdd.isEmpty()
-          || !partitionSpecIdsToRemove.isEmpty()
-          || defaultSpecId != null
-          || setDefaultSpecLast
-          || !sortOrdersToAdd.isEmpty()
-          || defaultSortOrderId != null
-          || setDefaultSortOrderLast
-          || !statisticsToAdd.isEmpty()
-          || !statisticsSnapshotsToRemove.isEmpty()
-          || !partitionStatisticsToAdd.isEmpty()
-          || !partitionStatisticsSnapshotsToRemove.isEmpty()
-          || !encryptionKeysToAdd.isEmpty()
-          || !encryptionKeysToRemove.isEmpty()
-          || !refsToSet.isEmpty()
-          || !refsToRemove.isEmpty();
-    }
-  }
-
-  private static Map<String, String> asStringMap(Object value) {
-    if (!(value instanceof Map<?, ?> map)) {
-      return Map.of();
-    }
-    Map<String, String> result = new LinkedHashMap<>();
-    for (Map.Entry<?, ?> entry : map.entrySet()) {
-      if (entry.getKey() == null || entry.getValue() == null) {
-        continue;
-      }
-      result.put(entry.getKey().toString(), entry.getValue().toString());
-    }
-    return result;
-  }
-
-  private static List<String> asStringList(Object value) {
-    if (!(value instanceof List<?> list)) {
-      return List.of();
-    }
-    List<String> out = new ArrayList<>();
-    for (Object item : list) {
-      if (item != null) {
-        out.add(item.toString());
-      }
-    }
-    return out;
-  }
-
-  private static String asString(Object value) {
-    return value == null ? null : String.valueOf(value);
-  }
-
-  private static Long asLong(Object value) {
-    if (value == null) {
-      return null;
-    }
-    if (value instanceof Number number) {
-      return number.longValue();
-    }
-    String text = value.toString();
-    if (text.isBlank()) {
-      return null;
-    }
-    try {
-      return Long.parseLong(text);
-    } catch (NumberFormatException e) {
-      return null;
-    }
-  }
-
-  private static List<Long> asLongList(Object value) {
-    if (!(value instanceof List<?> list)) {
-      return List.of();
-    }
-    List<Long> out = new ArrayList<>();
-    for (Object item : list) {
-      Long val = asLong(item);
-      if (val != null) {
-        out.add(val);
-      }
-    }
-    return out;
-  }
-
-  private static Integer asInteger(Object value) {
-    if (value == null) {
-      return null;
-    }
-    if (value instanceof Number number) {
-      return number.intValue();
-    }
-    String text = value.toString();
-    if (text.isBlank()) {
-      return null;
-    }
-    try {
-      return Integer.parseInt(text);
-    } catch (NumberFormatException e) {
-      return null;
-    }
-  }
-
-  private static List<Integer> asIntegerList(Object value) {
-    if (!(value instanceof List<?> list)) {
-      return List.of();
-    }
-    List<Integer> out = new ArrayList<>();
-    for (Object item : list) {
-      Integer val = asInteger(item);
-      if (val != null) {
-        out.add(val);
-      }
-    }
-    return out;
-  }
-
-  private static List<Map<String, Object>> asMapList(Object value) {
-    if (!(value instanceof List<?> list)) {
-      return List.of();
-    }
-    List<Map<String, Object>> out = new ArrayList<>();
-    for (Object item : list) {
-      Map<String, Object> map = asObjectMap(item);
-      if (map != null && !map.isEmpty()) {
-        out.add(map);
-      }
-    }
-    return out;
-  }
-
-  private static Map<String, Object> asObjectMap(Object value) {
-    if (!(value instanceof Map<?, ?> map)) {
-      return null;
-    }
-    Map<String, Object> out = new LinkedHashMap<>();
-    for (Map.Entry<?, ?> entry : map.entrySet()) {
-      if (entry.getKey() == null) {
-        continue;
-      }
-      out.put(entry.getKey().toString(), entry.getValue());
-    }
-    return out;
-  }
-
-  private static Integer propertyInt(Map<String, String> props, String key) {
-    String value = props.get(key);
-    if (value == null || value.isBlank()) {
-      return null;
-    }
-    try {
-      return Integer.parseInt(value);
-    } catch (NumberFormatException e) {
-      return null;
-    }
-  }
-
-  private static Long propertyLong(Map<String, String> props, String key) {
-    String value = props.get(key);
-    if (value == null || value.isBlank()) {
-      return null;
-    }
-    try {
-      return Long.parseLong(value);
-    } catch (NumberFormatException e) {
-      return null;
-    }
-  }
-
-  private static Object firstNonNull(Object first, Object second) {
-    return first != null ? first : second;
   }
 
   private String unsupportedUpdateAction(TableRequests.Commit req) {
@@ -1243,6 +431,10 @@ public class TableCommitService {
     return null;
   }
 
+  private static String asString(Object value) {
+    return value == null ? null : String.valueOf(value);
+  }
+
   private Response validationError(String message) {
     return Response.status(Response.Status.BAD_REQUEST)
         .entity(
@@ -1261,130 +453,6 @@ public class TableCommitService {
         .build();
   }
 
-  private Response validateRequirements(
-      TableGatewaySupport tableSupport,
-      List<Map<String, Object>> requirements,
-      Supplier<Table> tableSupplier) {
-    if (requirements == null || requirements.isEmpty()) {
-      return null;
-    }
-    Table table = tableSupplier.get();
-    Map<String, String> props = table.getPropertiesMap();
-    IcebergMetadata[] metadataHolder = new IcebergMetadata[1];
-    Supplier<IcebergMetadata> metadataSupplier =
-        () -> {
-          if (metadataHolder[0] == null) {
-            metadataHolder[0] = tableSupport.loadCurrentMetadata(table);
-          }
-          return metadataHolder[0];
-        };
-    for (Map<String, Object> requirement : requirements) {
-      if (requirement == null) {
-        return validationError("commit requirement entry cannot be null");
-      }
-      String type = asString(requirement.get("type"));
-      if (type == null || type.isBlank()) {
-        return validationError("commit requirement missing type");
-      }
-      switch (type) {
-        case "assert-create" -> {
-          // no-op
-        }
-        case "assert-table-uuid" -> {
-          String expected = asString(requirement.get("uuid"));
-          if (expected == null || expected.isBlank()) {
-            return validationError("assert-table-uuid requires uuid");
-          }
-          String actual =
-              Optional.ofNullable(props.get("table-uuid"))
-                  .orElse(table.hasResourceId() ? table.getResourceId().getId() : "");
-          if (!expected.equals(actual)) {
-            return conflictError("assert-table-uuid failed");
-          }
-        }
-        case "assert-current-schema-id" -> {
-          Integer expected = asInteger(requirement.get("current-schema-id"));
-          if (expected == null) {
-            return validationError("assert-current-schema-id requires current-schema-id");
-          }
-          Integer actual = propertyInt(props, "current-schema-id");
-          if (!expected.equals(actual)) {
-            return conflictError("assert-current-schema-id failed");
-          }
-        }
-        case "assert-last-assigned-field-id" -> {
-          Integer expected = asInteger(requirement.get("last-assigned-field-id"));
-          if (expected == null) {
-            return validationError("assert-last-assigned-field-id requires last-assigned-field-id");
-          }
-          Integer actual = propertyInt(props, "last-assigned-field-id");
-          if (!expected.equals(actual)) {
-            return conflictError("assert-last-assigned-field-id failed");
-          }
-        }
-        case "assert-last-assigned-partition-id" -> {
-          Integer expected = asInteger(requirement.get("last-assigned-partition-id"));
-          if (expected == null) {
-            return validationError(
-                "assert-last-assigned-partition-id requires last-assigned-partition-id");
-          }
-          Integer actual = propertyInt(props, "last-assigned-partition-id");
-          if (!expected.equals(actual)) {
-            return conflictError("assert-last-assigned-partition-id failed");
-          }
-        }
-        case "assert-default-spec-id" -> {
-          Integer expected = asInteger(requirement.get("default-spec-id"));
-          if (expected == null) {
-            return validationError("assert-default-spec-id requires default-spec-id");
-          }
-          Integer actual = propertyInt(props, "default-spec-id");
-          if (!expected.equals(actual)) {
-            return conflictError("assert-default-spec-id failed");
-          }
-        }
-        case "assert-default-sort-order-id" -> {
-          Integer expected = asInteger(requirement.get("default-sort-order-id"));
-          if (expected == null) {
-            return validationError("assert-default-sort-order-id requires default-sort-order-id");
-          }
-          Integer actual = propertyInt(props, "default-sort-order-id");
-          if (!expected.equals(actual)) {
-            return conflictError("assert-default-sort-order-id failed");
-          }
-        }
-        case "assert-ref-snapshot-id" -> {
-          String refName = asString(requirement.get("ref"));
-          Long expected = asLong(requirement.get("snapshot-id"));
-          if (refName == null || refName.isBlank()) {
-            return validationError("assert-ref-snapshot-id requires ref");
-          }
-          if (expected == null) {
-            LOG.debugf(
-                "Skipping assert-ref-snapshot-id requirement for table %s ref %s because"
-                    + " snapshot-id was not provided",
-                table.hasResourceId() ? table.getResourceId().getId() : "<unknown>", refName);
-            continue;
-          }
-          Long actual = null;
-          IcebergMetadata metadata = metadataSupplier.get();
-          if (metadata != null && metadata.getRefsMap().containsKey(refName)) {
-            actual = metadata.getRefsMap().get(refName).getSnapshotId();
-          } else if ("main".equals(refName)) {
-            actual = propertyLong(props, "current-snapshot-id");
-          }
-          if (!Objects.equals(actual, expected)) {
-            return conflictError("assert-ref-snapshot-id failed for ref " + refName);
-          }
-        }
-        default -> {
-          return validationError("unsupported commit requirement: " + type);
-        }
-      }
-    }
-    return null;
-  }
-
   private MirrorMetadataResult mirrorPendingSnapshotMetadata(
       String namespace,
       String tableName,
@@ -1395,7 +463,8 @@ public class TableCommitService {
     if (snapshotIdForMirror == null) {
       return null;
     }
-    IcebergMetadata snapshotMetadata = loadSnapshotMetadata(tableId, snapshotIdForMirror);
+    IcebergMetadata snapshotMetadata =
+        snapshotMetadataService.loadSnapshotMetadata(tableId, snapshotIdForMirror);
     if (snapshotMetadata == null) {
       return null;
     }
