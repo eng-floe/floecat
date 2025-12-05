@@ -12,8 +12,37 @@ import java.util.Map;
 public final class ViewResponseMapper {
   private ViewResponseMapper() {}
 
-  public static LoadViewResultDto toLoadResult(String namespacePath, String viewName, View view) {
+  public static LoadViewResultDto toLoadResult(
+      String namespacePath, String viewName, View view, ViewMetadataView storedMetadata) {
     Map<String, String> props = new LinkedHashMap<>(view.getPropertiesMap());
+    String metadataLocation = props.get("metadata-location");
+
+    ViewMetadataView metadata = storedMetadata;
+    if (metadata == null) {
+      metadata = synthesizeMetadata(namespacePath, viewName, view, props);
+      metadataLocation = metadata.location();
+    } else if (metadataLocation == null || metadataLocation.isBlank()) {
+      metadataLocation = metadata.location();
+    } else if (metadata.location() == null || metadata.location().isBlank()) {
+      metadata =
+          new ViewMetadataView(
+              metadata.viewUuid(),
+              metadata.formatVersion(),
+              metadataLocation,
+              metadata.currentVersionId(),
+              metadata.versions(),
+              metadata.versionLog(),
+              metadata.schemas(),
+              metadata.properties());
+    }
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      metadataLocation = "metacat://" + viewName;
+    }
+    return new LoadViewResultDto(metadataLocation, metadata, Map.of());
+  }
+
+  private static ViewMetadataView synthesizeMetadata(
+      String namespacePath, String viewName, View view, Map<String, String> props) {
     String metadataLocation =
         props.getOrDefault(
             "metadata-location", props.getOrDefault("location", "metacat://" + viewName));
@@ -31,16 +60,14 @@ public final class ViewResponseMapper {
     ViewMetadataView.ViewHistoryEntry history = new ViewMetadataView.ViewHistoryEntry(0, timestamp);
     ViewMetadataView.SchemaSummary schema =
         new ViewMetadataView.SchemaSummary(0, "struct", List.of(), List.of());
-    ViewMetadataView metadata =
-        new ViewMetadataView(
-            view.hasResourceId() ? view.getResourceId().getId() : viewName,
-            1,
-            metadataLocation,
-            0,
-            List.of(version),
-            List.of(history),
-            List.of(schema),
-            props);
-    return new LoadViewResultDto(metadataLocation, metadata, Map.of());
+    return new ViewMetadataView(
+        view.hasResourceId() ? view.getResourceId().getId() : viewName,
+        1,
+        metadataLocation,
+        0,
+        List.of(version),
+        List.of(history),
+        List.of(schema),
+        props);
   }
 }

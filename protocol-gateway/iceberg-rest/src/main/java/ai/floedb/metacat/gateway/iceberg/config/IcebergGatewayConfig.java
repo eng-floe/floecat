@@ -2,6 +2,7 @@ package ai.floedb.metacat.gateway.iceberg.config;
 
 import io.smallrye.config.ConfigMapping;
 import io.smallrye.config.WithDefault;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 
@@ -29,6 +30,12 @@ public interface IcebergGatewayConfig {
   Map<String, String> catalogMapping();
 
   Map<String, RegisterConnectorTemplate> registerConnectors();
+
+  @WithDefault("PT10M")
+  Duration planTaskTtl();
+
+  @WithDefault("128")
+  int planTaskFilesPerTask();
 
   interface RegisterConnectorTemplate {
     String uri();

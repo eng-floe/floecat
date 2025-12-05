@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -19,15 +20,19 @@ import ai.floedb.metacat.catalog.rpc.CreateNamespaceResponse;
 import ai.floedb.metacat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.CreateSnapshotResponse;
 import ai.floedb.metacat.catalog.rpc.CreateTableResponse;
+import ai.floedb.metacat.catalog.rpc.CreateViewRequest;
+import ai.floedb.metacat.catalog.rpc.CreateViewResponse;
 import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteSnapshotResponse;
 import ai.floedb.metacat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteViewRequest;
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.GetNamespaceResponse;
 import ai.floedb.metacat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.metacat.catalog.rpc.GetTableResponse;
+import ai.floedb.metacat.catalog.rpc.GetViewResponse;
 import ai.floedb.metacat.catalog.rpc.IcebergBlobMetadata;
 import ai.floedb.metacat.catalog.rpc.IcebergEncryptedKey;
 import ai.floedb.metacat.catalog.rpc.IcebergMetadata;
@@ -59,10 +64,12 @@ import ai.floedb.metacat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateTableResponse;
+import ai.floedb.metacat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateViewResponse;
 import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.catalog.rpc.View;
 import ai.floedb.metacat.catalog.rpc.ViewServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.ViewSpec;
 import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.common.rpc.ResourceKind;
@@ -70,28 +77,38 @@ import ai.floedb.metacat.connector.rpc.Connector;
 import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.metacat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.metacat.connector.rpc.CreateConnectorResponse;
+import ai.floedb.metacat.connector.rpc.DeleteConnectorResponse;
 import ai.floedb.metacat.connector.rpc.DestinationTarget;
+import ai.floedb.metacat.connector.rpc.GetConnectorResponse;
 import ai.floedb.metacat.connector.rpc.SyncCaptureRequest;
 import ai.floedb.metacat.connector.rpc.SyncCaptureResponse;
 import ai.floedb.metacat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.metacat.connector.rpc.TriggerReconcileResponse;
+import ai.floedb.metacat.connector.rpc.UpdateConnectorResponse;
 import ai.floedb.metacat.execution.rpc.ScanBundle;
 import ai.floedb.metacat.execution.rpc.ScanFile;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
+import ai.floedb.metacat.gateway.iceberg.rest.api.request.ViewRequests;
+import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
+import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
 import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableRepository;
+import ai.floedb.metacat.gateway.iceberg.rest.services.view.ViewMetadataService;
+import ai.floedb.metacat.gateway.iceberg.rest.services.view.ViewMetadataService.MetadataContext;
 import ai.floedb.metacat.query.rpc.BeginQueryRequest;
 import ai.floedb.metacat.query.rpc.BeginQueryResponse;
 import ai.floedb.metacat.query.rpc.DescribeInputsRequest;
 import ai.floedb.metacat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.metacat.query.rpc.FetchScanBundleResponse;
+import ai.floedb.metacat.query.rpc.GetQueryRequest;
 import ai.floedb.metacat.query.rpc.GetQueryResponse;
 import ai.floedb.metacat.query.rpc.Operator;
 import ai.floedb.metacat.query.rpc.QueryDescriptor;
 import ai.floedb.metacat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.metacat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import io.grpc.Status;
@@ -105,6 +122,7 @@ import io.restassured.specification.RequestSpecification;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.MediaType;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -114,7 +132,9 @@ import org.mockito.ArgumentCaptor;
 class RestResourceTest {
   @InjectMock GrpcWithHeaders grpc;
   @InjectMock GrpcClients clients;
+  @InjectMock TableMetadataImportService metadataImportService;
   @Inject StagedTableRepository stageRepository;
+  @Inject ViewMetadataService viewMetadataService;
 
   private TableServiceGrpc.TableServiceBlockingStub tableStub;
   private DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryStub;
@@ -170,9 +190,40 @@ class RestResourceTest {
         .thenReturn(DeleteSnapshotResponse.newBuilder().build());
     when(snapshotStub.listSnapshots(any())).thenReturn(ListSnapshotsResponse.getDefaultInstance());
     when(snapshotStub.getSnapshot(any())).thenReturn(GetSnapshotResponse.getDefaultInstance());
+    when(viewStub.getView(any())).thenReturn(GetViewResponse.getDefaultInstance());
     when(connectorsStub.triggerReconcile(any()))
         .thenReturn(TriggerReconcileResponse.newBuilder().setJobId("job").build());
     when(connectorsStub.syncCapture(any())).thenReturn(SyncCaptureResponse.newBuilder().build());
+    when(queryStub.getQuery(any()))
+        .thenAnswer(
+            inv -> {
+              GetQueryRequest request = inv.getArgument(0);
+              String queryId = request == null ? "" : request.getQueryId();
+              return GetQueryResponse.newBuilder()
+                  .setQuery(QueryDescriptor.newBuilder().setQueryId(queryId).build())
+                  .build();
+            });
+    when(connectorsStub.deleteConnector(any()))
+        .thenReturn(DeleteConnectorResponse.newBuilder().build());
+    when(metadataImportService.importMetadata(any(), any()))
+        .thenAnswer(
+            inv -> {
+              String metadataLocation = inv.getArgument(0, String.class);
+              String tableLocation = metadataLocation;
+              if (tableLocation != null) {
+                int idx = tableLocation.indexOf("/metadata");
+                if (idx > 0) {
+                  tableLocation = tableLocation.substring(0, idx);
+                } else {
+                  int slash = tableLocation.lastIndexOf('/');
+                  if (slash > 0) {
+                    tableLocation = tableLocation.substring(0, slash);
+                  }
+                }
+              }
+              return new ImportedMetadata(
+                  "{\"type\":\"struct\",\"fields\":[]}", Map.of(), tableLocation);
+            });
     ResourceId catalogId = ResourceId.newBuilder().setId("cat:default").build();
     when(directoryStub.resolveCatalog(any()))
         .thenReturn(ResolveCatalogResponse.newBuilder().setResourceId(catalogId).build());
@@ -392,6 +443,138 @@ class RestResourceTest {
   }
 
   @Test
+  void registerTableConflictsWhenExistsAndNoOverwrite() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    when(tableStub.createTable(any())).thenThrow(new StatusRuntimeException(Status.ALREADY_EXISTS));
+
+    given()
+        .header("x-tenant-id", "tenant1")
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(
+            """
+            {
+              "name":"existing_table",
+              "metadata-location":"s3://bucket/db/existing_table/metadata.json"
+            }
+            """)
+        .when()
+        .post("/v1/foo/namespaces/db/register")
+        .then()
+        .statusCode(409)
+        .body("error.type", equalTo("CommitFailedException"));
+  }
+
+  @Test
+  void registerTableOverwriteUpdatesMetadata() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    when(tableStub.createTable(any())).thenThrow(new StatusRuntimeException(Status.ALREADY_EXISTS));
+
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:existing_table").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("conn-1").setKind(ResourceKind.RK_CONNECTOR).build();
+    Table existing =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setDisplayName("existing_table")
+            .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
+            .putProperties("metadata-location", "s3://bucket/db/existing_table/old.metadata.json")
+            .build();
+    when(tableStub.getTable(any()))
+        .thenReturn(
+            ai.floedb.metacat.catalog.rpc.GetTableResponse.newBuilder().setTable(existing).build());
+
+    Table updated =
+        existing.toBuilder()
+            .putProperties("metadata-location", "s3://bucket/db/existing_table/new.metadata.json")
+            .putProperties("metadata_location", "s3://bucket/db/existing_table/new.metadata.json")
+            .build();
+    when(tableStub.updateTable(any()))
+        .thenReturn(UpdateTableResponse.newBuilder().setTable(updated).build());
+
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(ResourceId.newBuilder().setId("cat:default").build())
+                    .setNamespaceId(nsId)
+                    .setTableId(tableId)
+                    .build())
+            .build();
+    when(connectorsStub.getConnector(any()))
+        .thenReturn(GetConnectorResponse.newBuilder().setConnector(connector).build());
+
+    when(connectorsStub.updateConnector(any()))
+        .thenReturn(UpdateConnectorResponse.newBuilder().setConnector(connector).build());
+
+    given()
+        .header("x-tenant-id", "tenant1")
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(
+            """
+            {
+              "name":"existing_table",
+              "metadata-location":"s3://bucket/db/existing_table/new.metadata.json",
+              "overwrite":true
+            }
+            """)
+        .when()
+        .post("/v1/foo/namespaces/db/register")
+        .then()
+        .statusCode(200)
+        .body("metadata-location", equalTo("s3://bucket/db/existing_table/new.metadata.json"));
+
+    ArgumentCaptor<UpdateTableRequest> updateCaptor =
+        ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(tableStub, atLeast(1)).updateTable(updateCaptor.capture());
+    boolean updatedProps =
+        updateCaptor.getAllValues().stream()
+            .anyMatch(
+                req ->
+                    req.getSpec()
+                        .getPropertiesMap()
+                        .getOrDefault("metadata-location", "")
+                        .equals("s3://bucket/db/existing_table/new.metadata.json"));
+    assertTrue(updatedProps);
+  }
+
+  @Test
+  void registerTableValidatesMetadataReadFailures() {
+    when(metadataImportService.importMetadata(any(), any()))
+        .thenThrow(new IllegalArgumentException("bad metadata"));
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    given()
+        .header("x-tenant-id", "tenant1")
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(
+            """
+            {
+              "name":"bad_table",
+              "metadata-location":"s3://bucket/db/bad/metadata.json"
+            }
+            """)
+        .when()
+        .post("/v1/foo/namespaces/db/register")
+        .then()
+        .statusCode(400)
+        .body("error.message", equalTo("bad metadata"));
+
+    verify(tableStub, never()).createTable(any());
+  }
+
+  @Test
   void listsViewsWithPagination() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     when(directoryStub.resolveNamespace(any()))
@@ -426,6 +609,69 @@ class RestResourceTest {
         .body("identifiers[1].name", equalTo("dashboards"))
         .body("identifiers[1].namespace[0]", equalTo("db"));
     // no assertion on $['next-page-token']
+  }
+
+  @Test
+  void createViewPersistsMetadata() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    when(viewStub.createView(any()))
+        .thenAnswer(
+            inv -> {
+              CreateViewRequest request = inv.getArgument(0);
+              ViewSpec spec = request.getSpec();
+              View created =
+                  View.newBuilder()
+                      .setResourceId(ResourceId.newBuilder().setId("cat:db:new_view"))
+                      .setDisplayName(spec.getDisplayName())
+                      .setSql(spec.getSql())
+                      .putAllProperties(spec.getPropertiesMap())
+                      .build();
+              return CreateViewResponse.newBuilder().setView(created).build();
+            });
+
+    given()
+        .body(
+            """
+            {
+              "name":"new_view",
+              "location":"s3://warehouse/views/db/new_view/metadata.json",
+              "schema":{
+                "schema-id":1,
+                "type":"struct",
+                "fields":[]
+              },
+              "view-version":{
+                "version-id":1,
+                "timestamp-ms":1700000000,
+                "schema-id":1,
+                "summary":{"operation":"create"},
+                "representations":[{"type":"sql","sql":"select 1","dialect":"ansi"}],
+                "default-namespace":["db"]
+              },
+              "properties":{"comment":"demo"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/views")
+        .then()
+        .statusCode(200)
+        .body("metadata-location", equalTo("s3://warehouse/views/db/new_view/metadata.json"))
+        .body("metadata.properties.comment", equalTo("demo"))
+        .body("metadata.versions[0].representations[0].sql", equalTo("select 1"));
+
+    ArgumentCaptor<CreateViewRequest> createCaptor =
+        ArgumentCaptor.forClass(CreateViewRequest.class);
+    verify(viewStub).createView(createCaptor.capture());
+    assertTrue(
+        createCaptor
+            .getValue()
+            .getSpec()
+            .getPropertiesMap()
+            .containsKey(ViewMetadataService.METADATA_PROPERTY_KEY));
   }
 
   @Test
@@ -487,6 +733,22 @@ class RestResourceTest {
   }
 
   @Test
+  void headNamespaceChecksExistence() {
+    ResourceId nsId = ResourceId.newBuilder().setId("foo:analytics").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    Namespace ns = Namespace.newBuilder().setResourceId(nsId).setDisplayName("analytics").build();
+    when(namespaceStub.getNamespace(any()))
+        .thenReturn(GetNamespaceResponse.newBuilder().setNamespace(ns).build());
+
+    given().when().head("/v1/foo/namespaces/analytics").then().statusCode(200);
+
+    ArgumentCaptor<GetNamespaceRequest> req = ArgumentCaptor.forClass(GetNamespaceRequest.class);
+    verify(namespaceStub).getNamespace(req.capture());
+    assertEquals(nsId, req.getValue().getNamespaceId());
+  }
+
+  @Test
   void deletesNamespaceHonorsRequireEmpty() {
     ResourceId nsId = ResourceId.newBuilder().setId("foo:analytics").build();
     when(directoryStub.resolveNamespace(any()))
@@ -505,6 +767,15 @@ class RestResourceTest {
     ResourceId viewId = ResourceId.newBuilder().setId("cat:db:reports").build();
     when(directoryStub.resolveView(any()))
         .thenReturn(ResolveViewResponse.newBuilder().setResourceId(viewId).build());
+
+    View existing =
+        View.newBuilder()
+            .setResourceId(viewId)
+            .setDisplayName("reports")
+            .setSql("select 0")
+            .build();
+    when(viewStub.getView(any()))
+        .thenReturn(GetViewResponse.newBuilder().setView(existing).build());
 
     View updated =
         View.newBuilder()
@@ -527,6 +798,83 @@ class RestResourceTest {
     given().when().delete("/v1/foo/namespaces/db/views/reports").then().statusCode(204);
 
     verify(viewStub).deleteView(any(DeleteViewRequest.class));
+  }
+
+  @Test
+  void commitViewAddsVersion() throws Exception {
+    ObjectMapper json = new ObjectMapper();
+    ResourceId viewId = ResourceId.newBuilder().setId("cat:db:reports").build();
+    when(directoryStub.resolveView(any()))
+        .thenReturn(ResolveViewResponse.newBuilder().setResourceId(viewId).build());
+
+    ViewRequests.ViewRepresentation rep =
+        new ViewRequests.ViewRepresentation("sql", "select 1", "ansi");
+    ViewRequests.ViewVersion version =
+        new ViewRequests.ViewVersion(
+            1, 1700000000L, 1, Map.of("operation", "create"), List.of(rep), List.of("db"), null);
+    ViewRequests.Create baseCreate =
+        new ViewRequests.Create(
+            "reports",
+            null,
+            json.readTree("{\"schema-id\":1,\"type\":\"struct\",\"fields\":[]}"),
+            version,
+            Map.of("comment", "base"));
+    MetadataContext baseContext =
+        viewMetadataService.fromCreate(List.of("db"), "reports", baseCreate);
+    Map<String, String> baseProps = viewMetadataService.buildPropertyMap(baseContext);
+    View existing =
+        View.newBuilder()
+            .setResourceId(viewId)
+            .setDisplayName("reports")
+            .setSql(baseContext.sql())
+            .putAllProperties(baseProps)
+            .build();
+    when(viewStub.getView(any()))
+        .thenReturn(GetViewResponse.newBuilder().setView(existing).build());
+
+    when(viewStub.updateView(any()))
+        .thenAnswer(
+            inv -> {
+              UpdateViewRequest request = inv.getArgument(0);
+              View updated =
+                  View.newBuilder()
+                      .setResourceId(viewId)
+                      .setDisplayName("reports")
+                      .setSql(request.getSpec().getSql())
+                      .putAllProperties(request.getSpec().getPropertiesMap())
+                      .build();
+              return UpdateViewResponse.newBuilder().setView(updated).build();
+            });
+
+    given()
+        .body(
+            ("""
+                {
+                  "requirements":[{"type":"assert-view-uuid","uuid":"%s"}],
+                  "updates":[
+                    {
+                      "action":"add-view-version",
+                      "view-version":{
+                        "version-id":2,
+                        "timestamp-ms":1700000100,
+                        "schema-id":1,
+                        "summary":{"operation":"replace"},
+                        "representations":[{"type":"sql","sql":"select 2","dialect":"ansi"}],
+                        "default-namespace":["db"]
+                      }
+                    }
+                  ]
+                }
+                """)
+                .formatted(baseContext.metadata().viewUuid()))
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/views/reports")
+        .then()
+        .statusCode(200)
+        .body("metadata.current-version-id", equalTo(2))
+        .body("metadata.versions.size()", equalTo(2))
+        .body("metadata.versions[1].representations[0].sql", equalTo("select 2"));
   }
 
   @Test
@@ -768,6 +1116,7 @@ class RestResourceTest {
   void createsUpdatesAndDeletesTable() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    ResourceId connectorId = ResourceId.newBuilder().setId("conn-1").build();
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
     when(directoryStub.resolveTable(any()))
@@ -819,6 +1168,12 @@ class RestResourceTest {
             .build();
     when(tableStub.updateTable(any()))
         .thenReturn(UpdateTableResponse.newBuilder().setTable(updated).build());
+    Table updatedWithUpstream =
+        updated.toBuilder()
+            .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
+            .build();
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(updatedWithUpstream).build());
 
     given()
         .body("{\"name\":\"orders_new\",\"schemaJson\":\"{}\"}")
@@ -832,6 +1187,7 @@ class RestResourceTest {
     given().when().delete("/v1/foo/namespaces/db/tables/orders").then().statusCode(204);
 
     verify(tableStub).deleteTable(any(DeleteTableRequest.class));
+    verify(connectorsStub).deleteConnector(any());
   }
 
   @Test
@@ -1730,7 +2086,7 @@ class RestResourceTest {
         .when()
         .post("/v1/foo/namespaces/db/tables/orders/metrics")
         .then()
-        .statusCode(202);
+        .statusCode(204);
 
     verify(statsStub, never()).putTableStats(any());
   }
@@ -1751,6 +2107,8 @@ class RestResourceTest {
     ScanBundle bundle = ScanBundle.newBuilder().addDataFiles(file).build();
     when(queryStub.beginQuery(any()))
         .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    when(queryScanStub.fetchScanBundle(any()))
+        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
 
     given()
         .body("{\"snapshot-id\":7}")
@@ -1759,10 +2117,10 @@ class RestResourceTest {
         .post("/v1/foo/namespaces/db/tables/orders/plan")
         .then()
         .statusCode(200)
-        .body("status", equalTo("in-progress"))
+        .body("status", equalTo("completed"))
         .body("'plan-id'", equalTo("plan-1"))
         .body("'plan-tasks'.size()", equalTo(1))
-        .body("'plan-tasks'[0]", equalTo("plan-1"))
+        .body("'plan-tasks'[0]", equalTo("plan-1-task-0"))
         .body("$", not(hasKey("file-scan-tasks")));
 
     ArgumentCaptor<BeginQueryRequest> req = ArgumentCaptor.forClass(BeginQueryRequest.class);
@@ -1774,7 +2132,7 @@ class RestResourceTest {
     assertEquals(tableId, describe.getValue().getInputs(0).getTableId());
     assertEquals(7L, describe.getValue().getInputs(0).getSnapshot().getSnapshotId());
 
-    verify(queryScanStub, never()).fetchScanBundle(any());
+    verify(queryScanStub, times(1)).fetchScanBundle(any());
   }
 
   @Test
@@ -1813,8 +2171,8 @@ class RestResourceTest {
         .statusCode(200)
         .body("status", equalTo("completed"))
         .body("'plan-tasks'.size()", equalTo(1))
-        .body("'plan-tasks'[0]", equalTo("plan-1"))
-        .body("'file-scan-tasks'[0].'data-file'.'file-path'", equalTo("s3://bucket/file.parquet"));
+        .body("'plan-tasks'[0]", equalTo("plan-1-task-0"))
+        .body("$", not(hasKey("file-scan-tasks")));
 
     ArgumentCaptor<FetchScanBundleRequest> fetch =
         ArgumentCaptor.forClass(FetchScanBundleRequest.class);
@@ -1910,7 +2268,7 @@ class RestResourceTest {
         .statusCode(200);
 
     given()
-        .body("{\"plan-task\":\"plan-1\"}")
+        .body("{\"plan-task\":\"plan-1-task-0\"}")
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders/tasks")

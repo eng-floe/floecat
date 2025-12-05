@@ -79,7 +79,7 @@ public class TablePlanService {
   }
 
   public PlanResponseDto fetchPlan(String planId, List<StorageCredentialDto> credentials) {
-    PlanContext ctx = planContexts.get(planId);
+    PlanContext ctx = planContexts.remove(planId);
     if (ctx == null) {
       throw new IllegalArgumentException("unknown plan id " + planId);
     }

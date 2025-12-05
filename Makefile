@@ -1,16 +1,47 @@
 # -------- Metacat Makefile (Quarkus + gRPC) --------
-# Quick refs:
-#   make / make build            # build all (skip tests)
-#   make run                     # Quarkus dev
-#   make start|stop|logs|status  # background dev helpers
-#   make cli-run                 # build & run CLI
+# Quick refs – build & tests:
+#   make / make build            # build proto + all modules (skip tests)
+#   make build-all               # build all modules only (skip tests)
+#   make proto                   # generate/install protobuf stubs
+#   make test                    # unit + IT (service, REST gateway, client-cli)
+#   make unit-test               # unit tests only (service, REST gateway, client-cli)
+#   make integration-test        # integration tests only (service, REST gateway, client-cli)
+#   make verify                  # full Maven verify lifecycle
+#
+# Dev – foreground & background:
+#   make run                     # quarkus:dev for service (foreground)
+#   make run-rest                # quarkus:dev for REST gateway (foreground)
+#   make run-all                 # start REST (bg), then run service (fg)
+#   make start                   # start service in background
+#   make start-rest              # start REST gateway in background
+#   make start-all               # start service + REST gateway in background
+#   make stop                    # stop service + REST gateway
+#   make logs                    # tail -f service log
+#   make logs-rest               # tail -f REST gateway log
+#   make status                  # show background dev status
+#
+# Connectors:
+#   make trino-connector         # build Trino connector (Java 21, with-trino profile)
+#   make trino-test              # test Trino connector only
+#
+# CLI:
+#   make cli                     # build client CLI (fast-jar, skip tests)
+#   make cli-run                 # run client CLI (use ARGS=...)
+#   make cli-test                # run CLI tests
+#
+# Utilities:
+#   make clean                   # mvn clean + remove dev dirs
+#   make clean-java              # mvn clean only
+#   make clean-dev               # remove dev pids/logs/isolated repos
 #   make docker                  # build service container image
-#   make test|unit-test|integration-test|verify
+#   make fmt                     # format Java sources (google-java-format)
+#   make help                    # show target list from this Makefile
 #
 # Examples:
 #   make MVN=./mvnw run
 #   make CLI_ISOLATED=0 cli-run
-
+#   make ARGS="catalog list" cli-run
+#   make QUARKUS_PROFILE=test run-service
 .SHELLFLAGS := -eo pipefail -c
 SHELL       := bash
 MAKEFLAGS  += --no-builtin-rules

@@ -7,10 +7,13 @@ import ai.floedb.metacat.catalog.rpc.Snapshot;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableSpec;
+import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.ContentFileDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.CredentialsResponseDto;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.FileScanTaskDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.PlanResponseDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.StageCreateResponseDto;
@@ -26,6 +29,9 @@ import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.MaterializeMetada
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.TableCommitService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
+import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
+import ai.floedb.metacat.gateway.iceberg.rest.services.planning.PlanTaskManager;
 import ai.floedb.metacat.gateway.iceberg.rest.services.planning.TablePlanService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NamespacePaths;
 import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StageState;
@@ -36,6 +42,8 @@ import ai.floedb.metacat.gateway.iceberg.rest.services.tenant.TenantContext;
 import ai.floedb.metacat.gateway.iceberg.rest.support.mapper.TableResponseMapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.protobuf.FieldMask;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.annotation.PostConstruct;
 import jakarta.inject.Inject;
@@ -78,6 +86,8 @@ public class TableResource {
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableCommitService tableCommitService;
   @Inject TablePlanService tablePlanService;
+  @Inject PlanTaskManager planTaskManager;
+  @Inject TableMetadataImportService tableMetadataImportService;
 
   private TableGatewaySupport tableSupport;
 
@@ -404,7 +414,23 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table) {
     String catalogName = CatalogResolver.resolveCatalog(config, prefix);
-    tableLifecycleService.deleteTable(catalogName, namespace, table);
+    List<String> namespacePath = NamespacePaths.split(namespace);
+    ResourceId tableId = tableLifecycleService.resolveTableId(catalogName, namespacePath, table);
+    ResourceId connectorId = null;
+    try {
+      Table existing = tableLifecycleService.getTable(tableId);
+      if (existing.hasUpstream() && existing.getUpstream().hasConnectorId()) {
+        connectorId = existing.getUpstream().getConnectorId();
+      }
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
+        throw e;
+      }
+    }
+    tableLifecycleService.deleteTable(tableId);
+    if (connectorId != null) {
+      tableSupport.deleteConnector(connectorId);
+    }
     return Response.noContent().build();
   }
 
@@ -475,14 +501,24 @@ public class TableResource {
               caseSensitive,
               useSnapshotSchema,
               request.minRowsRequested());
+      PlanResponseDto planned =
+          tablePlanService.fetchPlan(handle.queryId(), tableSupport.defaultCredentials());
+      PlanTaskManager.PlanDescriptor descriptor =
+          planTaskManager.registerCompletedPlan(
+              handle.queryId(),
+              namespace,
+              table,
+              copyOfOrEmpty(planned.fileScanTasks()),
+              copyOfOrEmptyContent(planned.deleteFiles()),
+              planned.storageCredentials());
       return Response.ok(
               new PlanResponseDto(
-                  "in-progress",
-                  handle.queryId(),
-                  List.of(handle.queryId()),
+                  descriptor.status().value(),
+                  descriptor.planId(),
+                  descriptor.planTasks(),
                   null,
                   null,
-                  tableSupport.defaultCredentials()))
+                  planned.storageCredentials()))
           .build();
     } catch (IllegalArgumentException ex) {
       return IcebergErrorResponses.validation(ex.getMessage());
@@ -498,12 +534,20 @@ public class TableResource {
       @PathParam("planId") String planId) {
     tableLifecycleService.resolveTableId(
         CatalogResolver.resolveCatalog(config, prefix), namespace, table);
-    try {
-      return Response.ok(tablePlanService.fetchPlan(planId, tableSupport.defaultCredentials()))
-          .build();
-    } catch (IllegalArgumentException ex) {
-      return IcebergErrorResponses.validation(ex.getMessage());
-    }
+    return planTaskManager
+        .findPlan(planId)
+        .map(
+            descriptor ->
+                Response.ok(
+                        new PlanResponseDto(
+                            descriptor.status().value(),
+                            descriptor.planId(),
+                            descriptor.planTasks(),
+                            null,
+                            null,
+                            descriptor.credentials()))
+                    .build())
+        .orElseGet(() -> IcebergErrorResponses.notFound("plan " + planId + " not found"));
   }
 
   @Path("/tables/{table}/plan/{planId}")
@@ -515,6 +559,7 @@ public class TableResource {
       @PathParam("planId") String planId) {
     tableLifecycleService.resolveTableId(
         CatalogResolver.resolveCatalog(config, prefix), namespace, table);
+    planTaskManager.cancelPlan(planId);
     tablePlanService.cancelPlan(planId);
     return Response.noContent().build();
   }
@@ -531,11 +576,10 @@ public class TableResource {
     }
     tableLifecycleService.resolveTableId(
         CatalogResolver.resolveCatalog(config, prefix), namespace, table);
-    try {
-      return Response.ok(tablePlanService.fetchTasks(request.planTask().trim())).build();
-    } catch (IllegalArgumentException ex) {
-      return IcebergErrorResponses.validation(ex.getMessage());
-    }
+    return planTaskManager
+        .consumeTask(namespace, table, request.planTask().trim())
+        .map(response -> Response.ok(response).build())
+        .orElseGet(() -> IcebergErrorResponses.notFound("plan-task not found"));
   }
 
   @Path("/tables/{table}/credentials")
@@ -561,10 +605,16 @@ public class TableResource {
     if (request == null || request.snapshotId() == null) {
       return IcebergErrorResponses.validation("snapshot-id is required");
     }
-    LOG.infof(
-        "Received metrics report for %s.%s snapshot=%d (deferred)",
-        namespace, table, request.snapshotId());
-    return Response.status(Response.Status.ACCEPTED).build();
+    try {
+      LOG.infof(
+          "Received metrics report namespace=%s table=%s payload=%s",
+          namespace, table, mapper.writeValueAsString(request));
+    } catch (JsonProcessingException e) {
+      LOG.infof(
+          "Received metrics report namespace=%s table=%s payload=%s",
+          namespace, table, String.valueOf(request));
+    }
+    return Response.noContent().build();
   }
 
   @Path("/register")
@@ -577,6 +627,7 @@ public class TableResource {
     if (req == null || req.metadataLocation() == null || req.metadataLocation().isBlank()) {
       return IcebergErrorResponses.validation("metadata-location is required");
     }
+    String metadataLocation = req.metadataLocation().trim();
     String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId catalogId = CatalogResolver.resolveCatalogId(grpc, config, prefix);
     List<String> namespacePath = NamespacePaths.split(namespace);
@@ -587,10 +638,49 @@ public class TableResource {
     }
     String tableName = req.name().trim();
 
-    TableSpec.Builder spec = tableSupport.baseTableSpec(catalogId, namespaceId, tableName);
-    tableSupport.addMetadataLocationProperties(spec, req.metadataLocation());
+    Map<String, String> ioProperties =
+        req != null && req.properties() != null
+            ? new LinkedHashMap<>(req.properties())
+            : new LinkedHashMap<>();
+    ImportedMetadata importedMetadata;
+    try {
+      importedMetadata = tableMetadataImportService.importMetadata(metadataLocation, ioProperties);
+    } catch (IllegalArgumentException e) {
+      return IcebergErrorResponses.validation(e.getMessage());
+    }
 
-    Table created = tableLifecycleService.createTable(spec, idempotencyKey);
+    TableSpec.Builder spec = tableSupport.baseTableSpec(catalogId, namespaceId, tableName);
+    if (importedMetadata.schemaJson() != null && !importedMetadata.schemaJson().isBlank()) {
+      spec.setSchemaJson(importedMetadata.schemaJson());
+    }
+    Map<String, String> mergedProps =
+        mergeImportedProperties(null, importedMetadata, metadataLocation);
+    if (!mergedProps.isEmpty()) {
+      spec.putAllProperties(mergedProps);
+    }
+    tableSupport.addMetadataLocationProperties(spec, metadataLocation);
+
+    Table created;
+    try {
+      created = tableLifecycleService.createTable(spec, idempotencyKey);
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.ALREADY_EXISTS) {
+        if (Boolean.TRUE.equals(req.overwrite())) {
+          return overwriteRegisteredTable(
+              prefix,
+              catalogName,
+              namespacePath,
+              namespaceId,
+              catalogId,
+              tableName,
+              metadataLocation,
+              idempotencyKey,
+              importedMetadata);
+        }
+        return IcebergErrorResponses.conflict("Table already exists");
+      }
+      throw e;
+    }
 
     var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
     ResourceId connectorId;
@@ -608,6 +698,9 @@ public class TableResource {
               idempotencyKey);
       upstreamUri = connectorTemplate.uri();
     } else {
+      String resolvedLocation =
+          tableSupport.resolveTableLocation(
+              importedMetadata != null ? importedMetadata.tableLocation() : null, metadataLocation);
       connectorId =
           tableSupport.createExternalConnector(
               prefix,
@@ -616,10 +709,10 @@ public class TableResource {
               catalogId,
               tableName,
               created.getResourceId(),
-              req.metadataLocation(),
-              tableSupport.resolveTableLocation(null, req.metadataLocation()),
+              metadataLocation,
+              resolvedLocation,
               idempotencyKey);
-      upstreamUri = tableSupport.resolveTableLocation(null, req.metadataLocation());
+      upstreamUri = resolvedLocation;
     }
 
     tableSupport.updateTableUpstream(
@@ -641,6 +734,140 @@ public class TableResource {
       builder.tag(etagValue);
     }
     return builder.build();
+  }
+
+  private Response overwriteRegisteredTable(
+      String prefix,
+      String catalogName,
+      List<String> namespacePath,
+      ResourceId namespaceId,
+      ResourceId catalogId,
+      String tableName,
+      String metadataLocation,
+      String idempotencyKey,
+      ImportedMetadata importedMetadata) {
+    ResourceId tableId =
+        tableLifecycleService.resolveTableId(catalogName, namespacePath, tableName);
+    Table existing;
+    try {
+      existing = tableLifecycleService.getTable(tableId);
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return IcebergErrorResponses.notFound(
+            "Table " + String.join(".", namespacePath) + "." + tableName + " not found");
+      }
+      throw e;
+    }
+
+    Map<String, String> props =
+        mergeImportedProperties(existing.getPropertiesMap(), importedMetadata, metadataLocation);
+
+    FieldMask.Builder mask = FieldMask.newBuilder().addPaths("properties");
+    TableSpec.Builder updateSpec = TableSpec.newBuilder().putAllProperties(props);
+    if (importedMetadata != null
+        && importedMetadata.schemaJson() != null
+        && !importedMetadata.schemaJson().isBlank()) {
+      updateSpec.setSchemaJson(importedMetadata.schemaJson());
+      mask.addPaths("schema_json");
+    }
+    Table updated =
+        tableLifecycleService.updateTable(
+            UpdateTableRequest.newBuilder()
+                .setTableId(tableId)
+                .setSpec(updateSpec)
+                .setUpdateMask(mask)
+                .build());
+
+    ResourceId connectorId =
+        existing.hasUpstream() && existing.getUpstream().hasConnectorId()
+            ? existing.getUpstream().getConnectorId()
+            : null;
+    String resolvedLocation =
+        tableSupport.resolveTableLocation(
+            importedMetadata != null ? importedMetadata.tableLocation() : null, metadataLocation);
+    if (connectorId == null) {
+      var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
+      String upstreamUri;
+      if (connectorTemplate != null && connectorTemplate.uri() != null) {
+        connectorId =
+            tableSupport.createTemplateConnector(
+                prefix,
+                namespacePath,
+                namespaceId,
+                catalogId,
+                tableName,
+                tableId,
+                connectorTemplate,
+                idempotencyKey);
+        upstreamUri = connectorTemplate.uri();
+      } else {
+        connectorId =
+            tableSupport.createExternalConnector(
+                prefix,
+                namespacePath,
+                namespaceId,
+                catalogId,
+                tableName,
+                tableId,
+                metadataLocation,
+                resolvedLocation,
+                idempotencyKey);
+        upstreamUri = resolvedLocation;
+      }
+      if (connectorId != null) {
+        tableSupport.updateTableUpstream(
+            tableId, namespacePath, tableName, connectorId, upstreamUri);
+      }
+    } else {
+      tableSupport.updateConnectorMetadata(connectorId, metadataLocation);
+      String existingUri =
+          existing.hasUpstream() && existing.getUpstream().getUri() != null
+              ? existing.getUpstream().getUri()
+              : null;
+      if (resolvedLocation != null
+          && (existingUri == null || !resolvedLocation.equals(existingUri))) {
+        tableSupport.updateTableUpstream(
+            tableId, namespacePath, tableName, connectorId, resolvedLocation);
+      }
+    }
+    tableCommitService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
+
+    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(updated);
+    Response.ResponseBuilder builder =
+        Response.ok(
+            TableResponseMapper.toLoadResult(
+                tableName,
+                updated,
+                metadata,
+                List.of(),
+                tableSupport.defaultTableConfig(),
+                tableSupport.defaultCredentials()));
+    String etagValue = metadataLocation(updated, metadata);
+    if (etagValue != null) {
+      builder.tag(etagValue);
+    }
+    return builder.build();
+  }
+
+  private Map<String, String> mergeImportedProperties(
+      Map<String, String> existing, ImportedMetadata importedMetadata, String metadataLocation) {
+    Map<String, String> merged = new LinkedHashMap<>();
+    if (existing != null && !existing.isEmpty()) {
+      merged.putAll(existing);
+    }
+    if (importedMetadata != null && importedMetadata.properties() != null) {
+      merged.putAll(importedMetadata.properties());
+    }
+    if (importedMetadata != null
+        && importedMetadata.tableLocation() != null
+        && !importedMetadata.tableLocation().isBlank()) {
+      merged.put("location", importedMetadata.tableLocation());
+    }
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      merged.put("metadata-location", metadataLocation);
+      merged.put("metadata_location", metadataLocation);
+    }
+    return merged;
   }
 
   private SnapshotMode parseSnapshotMode(String raw) {
@@ -716,6 +943,20 @@ public class TableResource {
   private static List<String> copyOfOrNull(List<String> values) {
     if (values == null || values.isEmpty()) {
       return null;
+    }
+    return List.copyOf(values);
+  }
+
+  private static List<FileScanTaskDto> copyOfOrEmpty(List<FileScanTaskDto> values) {
+    if (values == null || values.isEmpty()) {
+      return List.of();
+    }
+    return List.copyOf(values);
+  }
+
+  private static List<ContentFileDto> copyOfOrEmptyContent(List<ContentFileDto> values) {
+    if (values == null || values.isEmpty()) {
+      return List.of();
     }
     return List.copyOf(values);
   }

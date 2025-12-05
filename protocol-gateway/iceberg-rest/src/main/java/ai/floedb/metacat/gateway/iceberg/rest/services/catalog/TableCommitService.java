@@ -511,7 +511,6 @@ public class TableCommitService {
     return mergedProps;
   }
 
-  /** Exposes mirroring for legacy call sites such as {@link TableResource}. */
   public MaterializeMetadataResult materializeMetadata(
       String namespace,
       ResourceId tableId,
@@ -523,7 +522,6 @@ public class TableCommitService {
         namespace, tableId, table, tableRecord, metadata, metadataLocation);
   }
 
-  /** Exposes connector sync orchestration for legacy call sites. */
   public void runConnectorSync(
       TableGatewaySupport tableSupport,
       ResourceId connectorId,

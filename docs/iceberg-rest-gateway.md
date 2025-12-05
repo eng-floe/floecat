@@ -8,7 +8,7 @@ This document describes the Iceberg REST protocol gateway that fronts Metacat an
 - Keeps protocol handling isolated so other protocols can plug in later.
 - Reuses Metacat auth/tenancy, logging, metrics; persisted state lives in existing services (tables, snapshots, staged tables via the catalog DB).
 - Implements the full single-catalog write path expected by Iceberg REST clients: stage-create, transaction commit, per-table commit (updates, snapshots, refs), metrics ingestion, and reconcile triggers.
-- Current non-goals: multi-catalog transactions, `/plan` task pagination (`/tasks`), and inline manifest serving. These still require new RPCs or connector-level support.
+- Current non-goals: multi-catalog transactions and inline manifest serving. `/plan` now materializes a full plan, registers task chunks, and surfaces them via `/tasks`, but asynchronous planner RPCs and streaming manifests remain out of scope.
 
 ## Metacat gRPC coverage vs Iceberg REST
 
@@ -25,32 +25,64 @@ This document describes the Iceberg REST protocol gateway that fronts Metacat an
 | Table/view directory resolution | `DirectoryService` | For name → id resolution; used internally by gateway. |
 | Stats | `TableStatisticsService` | Can expose optional stats endpoints if desired. |
 | Commit/transactions | `TableService` + `SnapshotService` + staging store | Stage-create, per-table commit, and `/transactions/commit` realized via a staged metadata store plus existing RPCs. Multi-table atomicity beyond staged payload replay is not yet supported. |
-| Scan planning | `QueryService` | Gateway calls `BeginQuery` to return “completed” plan responses (all files in one payload). Plan-task pagination and `/tasks` are still unimplemented. |
+| Scan planning | `QueryService` | Gateway calls `BeginQuery`/`FetchScanBundle`, then `PlanTaskManager` persists the result, chunks files into task IDs (`{plan-id}-task-{n}`), and serves them via `/plan` + `/tasks`. Status remains “completed”; async planners are not yet wired. |
 | Scan/plan manifests, streaming tasks | Missing | Need planner RPCs that page plan-tasks or serve manifests incrementally. |
-| Table metrics | `TableStatisticsService` | `/metrics` maps to `PutTableStats` (ingests scan/commit reports). |
-| View rename endpoints (Iceberg) | Map to `UpdateView` | REST rename path maps to update with mask. |
+| Table metrics | Logging only today | `/metrics` validates payloads and logs them. Hooking into `TableStatisticsService` is a follow-up. |
+| View rename endpoints (Iceberg) | Map to `UpdateView` | REST rename path maps to update with mask; `ViewMetadataService` enforces Iceberg schema/version semantics. |
 
 ## Gap list
-- **Plan-task pagination** – `/plan` currently returns every file in one response. `/tasks` is unimplemented, so large scans aren’t streamed/paged yet.
-- **Load credentials** – `/tables/{table}/credentials` requires a `LoadCredentials` RPC to surface vended storage credentials.
+- **Load credentials** – `/tables/{table}/credentials` still returns static defaults; implementing a `LoadCredentials` RPC (or storage signing service) remains open.
+- **Metrics persistence** – `/tables/{table}/metrics` only logs the payload. Persisting into `TableStatisticsService` or Micrometer/OTel needs additional plumbing.
 - **Multi-table transactions** – `/v1/{prefix}/transactions/commit` replays staged payloads one table at a time. There’s no ACID guarantee across tables or catalogs.
 - **Manifest/file serving** – not modeled; may require signed URL service or storage gateway.
 
-## Module layout
+## Module layout (`protocol-gateway/iceberg-rest`)
 
-- `protocol-gateway/`
-  - `protocol-gateway-iceberg-rest/` – Quarkus RESTEasy Reactive app hosting the Iceberg REST endpoints.
-  - `protocol-gateway-common/` – shared auth/error/metrics utilities and gRPC client wiring.
+- `src/main/java` – REST resources, DTOs, and service adapters that translate Iceberg requests into Metacat gRPC calls (tables, namespaces, views, planning, staging, metadata import, etc.).
+- `src/main/resources` – Quarkus config (`application.properties`) for HTTP port, plan chunk sizing/TTL, and tenant defaults.
+- `src/test/java` – RestAssured-based contract tests (`RestResourceTest`), real-service smoke tests, and helper fakes for staging/planning services.
+- `pom.xml` – module dependencies (Quarkus, RestAssured, Micrometer, Apache Iceberg for metadata import).
 
 ## Implementation architecture
 
 - Quarkus REST controllers cover each Iceberg resource (Config, Namespace, Table, View, Snapshot, Stats). Planning and rename endpoints live with the table/view controllers, while `/transactions/*` is handled by the table resource.
 - Each controller injects `GrpcWithHeaders` clients for the underlying Metacat services (Catalog, Namespace, Table, View, Snapshot, Schema, Directory, TableStatistics, Query) so requests stay in-process and follow tenant context.
 - Stage storage: `StagedTableRepository` records create/commit payloads keyed by tenant/catalog/namespace/table + stage-id; `StagedTableService` keeps the payload lifecycle and TTL enforcement.
+- External table import: `TableMetadataImportService` can ingest an Iceberg `metadata.json` (S3, etc.) using Apache Iceberg parsers, extract schema/properties, and feed register operations so Metacat can reference existing tables without recreating them.
 - Snapshot handling: `SnapshotMetadataService` directly rewrites Iceberg metadata/snapshot APIs, while `TableCommitService` now materializes snapshot metadata files (via `MaterializeMetadataService`) before updating `TableService` to avoid dangling `metadata-location` references.
 - Response mappers/DTOs (`LoadTableResultDto`, `CommitTableResponseDto`, `TableMetadataView`) synthesize the Iceberg spec from catalog metadata and snapshot refs; field masks drive partial updates (rename/move/props) and connectors use the resolved metadata location.
 - Connector wiring: `TableCommitSideEffectService` creates or updates connectors, updates table upstreams, and runs metadata capture/reconcile after commits. REST helpers mirror this path when staging or admin operations materialize metadata and return credentials/config.
+- Plan/task lifecycle: `TablePlanService` issues `BeginQuery`, builds predicates, and fetches scan bundles via `QueryScanService`. `PlanTaskManager` caches the result (with TTL + configurable chunk size), generates deterministic task IDs, and enforces namespace/table scoping when `/tasks` consumes them.
+- View metadata: `ViewMetadataService` maps Iceberg view schemas, versions, requirements, and summaries onto Metacat’s `ViewService`. REST view DTOs now mirror Iceberg’s OpenAPI contract (schemas, version-logs, operations).
 - Auth/config: `TenantHeaderFilter` propagates tenant headers and `IcebergGatewayConfig` + catalog mappings resolve prefixes/catalog IDs and runtime overrides for metadata copying or connector creation.
+
+## Scan planning implementation
+
+`POST /tables/{table}/plan` immediately runs the scan through `TablePlanService`. The service:
+
+1. Resolves the Metacat table ID via `DirectoryService`.
+2. Calls `BeginQuery` and registers snapshot inputs with `QuerySchemaService` so enforcement and lineage understand the plan.
+3. Builds `FetchScanBundleRequest` predicates from Iceberg filter expressions (case-sensitive configurable) and fetches the bundle from `QueryScanService`.
+4. Hands the completed bundle plus credentials to `PlanTaskManager`, which:
+   - Stores `{planId → namespace/table}` metadata with a configurable TTL (default 5 minutes).
+   - Chunks data files into tasks of `planTaskFilesPerTask` (default 128) and registers `{planId}-task-{n}` entries.
+   - Serves `/plan` responses with only status + plan/task IDs while `/tasks` returns the actual `file-scan-tasks` payloads.
+5. `/plan/{planId}` simply reflects the cached descriptor, `/plan/{planId}` `DELETE` cancels both the cached entry and the underlying query, and `/tasks` consumes a task exactly once per namespace/table.
+
+Current limitations: plans are always returned as `"completed"` and there is no paging between `submitted/completed`, so extremely large scans still require the backends to stream data files quickly.
+
+## External table registration and lifecycle
+
+- `POST /register` accepts Iceberg metadata locations plus optional IO properties. `TableMetadataImportService` reads the referenced `metadata.json`, extracts schema/properties/table location, and feeds a synthetic create request into the existing commit path so the table is tracked inside Metacat without rewriting manifests.
+- The gateway creates a connector per registered table so downstream services (Trino, ingestion jobs) can locate the data.
+- `DELETE /tables/{table}` now also tears down the connector if the table’s upstream contained one, preventing orphaned connectors when tables are dropped or re-registered.
+
+## View semantics
+
+- REST view DTOs (`CreateViewRequest`, `UpdateViewRequest`, etc.) now mirror Iceberg’s OpenAPI schema, including schema JSON, metadata references, version logs, and requirements/updates.
+- `ViewMetadataService` persists Iceberg view metadata blobs inside Metacat, mediates requirements (assert-current-schema, etc.), and reconstructs responses so Trino or other Iceberg clients see canonical history.
+- The CLI (`client-cli/Shell`) exposes `view list/get/create/update/delete` commands, making it easy to inspect stored view metadata and validate payloads end-to-end.
+
 
 ## Write path and transaction flow
 
@@ -99,15 +131,9 @@ This section summarizes how the gateway mirrors Iceberg’s two-phase workflow s
 - Namespace operations: direct `NamespaceService`; map properties and parents/path to Iceberg namespace parts.
 - Table operations: `TableService`; ensure upstream format = ICEBERG; translate schema_json; rename/move via `update_mask` on `namespace_id` and `display_name`; stage-create/commit leverage the staging store described above.
 - View operations: `ViewService`; rename/move via `update_mask`; SQL passthrough.
+- Plan endpoints: `/tables/{table}/plan` resolves the table, validates snapshot filters, invokes `TablePlanService`, and surfaces only plan metadata. `/tables/{table}/tasks` consumes plan-task IDs stored in `PlanTaskManager` and returns the file/delete payload chunk referenced by that task.
 - Snapshot/history: `SnapshotService`; map snapshot_id, parent_id, timestamps, schema_json, and partition-spec metadata to Iceberg history responses. Snapshots now embed `schemaJson` plus `PartitionSpecInfo` (specId, specName, partition field `fieldId/name/transform`) sourced from connectors.
 - Schema history: `/v1/{prefix}/namespaces/{namespace}/tables/{table}/schemas` replays each snapshot's `schemaJson` along with its snapshotId, `upstreamCreatedAt`, and `ingestedAt`.
 - Partition spec history: `/v1/{prefix}/namespaces/{namespace}/tables/{table}/partition-specs` replays each snapshot's `PartitionSpecInfo` so clients can inspect how partition layouts evolved.
 - Schema fetch: `SchemaService` to build Iceberg schema response.
-- Optional stats: `TableStatisticsService` mapped to Iceberg metrics if exposed.
-
-## Testing strategy
-
-- Unit tests cover DTO translators, plan response mappers, error mapping, and config builders.
-- Contract tests use RestAssured and mocked gRPC stubs (`RestResourceTest`) to validate endpoints, error shapes, and rename/move semantics.
-- End-to-end tests (`IcebergRestTest`) boot the full Metacat service stack (in-memory backend, real gRPC services) in a separate JVM, then exercise the gateway over HTTP to verify namespace CRUD and config endpoints behave correctly through the actual gRPC implementations.
-- Integration: run the gateway against Metacat services (docker or local dev) and compare responses with Iceberg spec expectations.
+- Metrics: `/tables/{table}/metrics` enforces the request schema and logs the payload for now; it becomes a no-op until the stats service integration lands.

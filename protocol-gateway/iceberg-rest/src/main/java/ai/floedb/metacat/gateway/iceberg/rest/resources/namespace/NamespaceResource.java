@@ -28,6 +28,7 @@ import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.HEAD;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
@@ -123,6 +124,19 @@ public class NamespaceResource {
     var resp =
         stub.getNamespace(GetNamespaceRequest.newBuilder().setNamespaceId(namespaceId).build());
     return Response.ok(toInfo(resp.getNamespace())).build();
+  }
+
+  @Path("/{namespace}")
+  @HEAD
+  public Response exists(
+      @PathParam("prefix") String prefix, @PathParam("namespace") String namespace) {
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
+    ResourceId namespaceId =
+        NameResolution.resolveNamespace(grpc, catalogName, NamespacePaths.split(namespace));
+    NamespaceServiceGrpc.NamespaceServiceBlockingStub stub =
+        grpc.withHeaders(grpc.raw().namespace());
+    stub.getNamespace(GetNamespaceRequest.newBuilder().setNamespaceId(namespaceId).build());
+    return Response.ok().build();
   }
 
   @POST

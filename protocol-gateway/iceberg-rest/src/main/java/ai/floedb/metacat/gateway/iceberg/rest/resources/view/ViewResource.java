@@ -5,6 +5,7 @@ import ai.floedb.metacat.catalog.rpc.DeleteViewRequest;
 import ai.floedb.metacat.catalog.rpc.GetViewRequest;
 import ai.floedb.metacat.catalog.rpc.ListViewsRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateViewRequest;
+import ai.floedb.metacat.catalog.rpc.View;
 import ai.floedb.metacat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.ViewSpec;
 import ai.floedb.metacat.common.rpc.PageRequest;
@@ -15,9 +16,12 @@ import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.IcebergErrorResponses;
 import ai.floedb.metacat.gateway.iceberg.rest.resources.support.PageRequestHelper;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NamespacePaths;
+import ai.floedb.metacat.gateway.iceberg.rest.services.view.ViewMetadataService;
+import ai.floedb.metacat.gateway.iceberg.rest.services.view.ViewMetadataService.MetadataContext;
 import ai.floedb.metacat.gateway.iceberg.rest.support.mapper.ViewResponseMapper;
 import com.google.protobuf.FieldMask;
 import jakarta.inject.Inject;
@@ -45,6 +49,7 @@ import java.util.stream.Collectors;
 public class ViewResource {
   @Inject GrpcWithHeaders grpc;
   @Inject IcebergGatewayConfig config;
+  @Inject ViewMetadataService viewMetadataService;
 
   @GET
   public Response list(
@@ -87,23 +92,28 @@ public class ViewResource {
       ViewRequests.Create req) {
     String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId catalogId = CatalogResolver.resolveCatalogId(grpc, config, prefix);
-    ResourceId namespaceId =
-        NameResolution.resolveNamespace(grpc, catalogName, NamespacePaths.split(namespace));
+    List<String> namespacePath = NamespacePaths.split(namespace);
+    ResourceId namespaceId = NameResolution.resolveNamespace(grpc, catalogName, namespacePath);
 
     String viewName = req != null && req.name() != null ? req.name() : "view";
+
+    MetadataContext metadataContext;
+    try {
+      metadataContext = viewMetadataService.fromCreate(namespacePath, viewName, req);
+    } catch (IllegalArgumentException e) {
+      return IcebergErrorResponses.validation(e.getMessage());
+    }
 
     ViewSpec.Builder spec =
         ViewSpec.newBuilder()
             .setCatalogId(catalogId)
             .setNamespaceId(namespaceId)
             .setDisplayName(viewName);
-    if (req != null) {
-      if (req.sql() != null) {
-        spec.setSql(req.sql());
-      }
-      if (req.properties() != null) {
-        spec.putAllProperties(req.properties());
-      }
+    spec.setSql(metadataContext.sql());
+    try {
+      spec.putAllProperties(viewMetadataService.buildPropertyMap(metadataContext));
+    } catch (IllegalArgumentException e) {
+      return IcebergErrorResponses.validation(e.getMessage());
     }
 
     ViewServiceGrpc.ViewServiceBlockingStub stub = grpc.withHeaders(grpc.raw().view());
@@ -113,7 +123,11 @@ public class ViewResource {
           ai.floedb.metacat.common.rpc.IdempotencyKey.newBuilder().setKey(idempotencyKey));
     }
     var created = stub.createView(request.build());
-    return Response.ok(ViewResponseMapper.toLoadResult(namespace, viewName, created.getView()))
+    MetadataContext responseContext =
+        viewMetadataService.fromView(namespacePath, viewName, created.getView());
+    return Response.ok(
+            ViewResponseMapper.toLoadResult(
+                namespace, viewName, created.getView(), responseContext.metadata()))
         .build();
   }
 
@@ -124,11 +138,14 @@ public class ViewResource {
       @PathParam("namespace") String namespace,
       @PathParam("view") String view) {
     String catalogName = CatalogResolver.resolveCatalog(config, prefix);
-    ResourceId viewId =
-        NameResolution.resolveView(grpc, catalogName, NamespacePaths.split(namespace), view);
+    List<String> namespacePath = NamespacePaths.split(namespace);
+    ResourceId viewId = NameResolution.resolveView(grpc, catalogName, namespacePath, view);
     ViewServiceGrpc.ViewServiceBlockingStub stub = grpc.withHeaders(grpc.raw().view());
     var resp = stub.getView(GetViewRequest.newBuilder().setViewId(viewId).build());
-    return Response.ok(ViewResponseMapper.toLoadResult(namespace, view, resp.getView())).build();
+    MetadataContext context = viewMetadataService.fromView(namespacePath, view, resp.getView());
+    return Response.ok(
+            ViewResponseMapper.toLoadResult(namespace, view, resp.getView(), context.metadata()))
+        .build();
   }
 
   @Path("/{view}")
@@ -150,9 +167,13 @@ public class ViewResource {
       @PathParam("view") String view,
       ViewRequests.Update req) {
     String catalogName = CatalogResolver.resolveCatalog(config, prefix);
-    ResourceId viewId =
-        NameResolution.resolveView(grpc, catalogName, NamespacePaths.split(namespace), view);
+    List<String> namespacePath = NamespacePaths.split(namespace);
+    ResourceId viewId = NameResolution.resolveView(grpc, catalogName, namespacePath, view);
     ViewServiceGrpc.ViewServiceBlockingStub stub = grpc.withHeaders(grpc.raw().view());
+    View current = stub.getView(GetViewRequest.newBuilder().setViewId(viewId).build()).getView();
+    MetadataContext metadataContext = viewMetadataService.fromView(namespacePath, view, current);
+    MetadataContext workingContext = metadataContext;
+    boolean propertiesDirty = false;
 
     ViewSpec.Builder spec = ViewSpec.newBuilder();
     FieldMask.Builder mask = FieldMask.newBuilder();
@@ -171,11 +192,29 @@ public class ViewResource {
       if (req.sql() != null) {
         spec.setSql(req.sql());
         mask.addPaths("sql");
+        try {
+          workingContext = viewMetadataService.withSql(workingContext, req.sql());
+          propertiesDirty = true;
+        } catch (IllegalArgumentException e) {
+          return IcebergErrorResponses.validation(e.getMessage());
+        }
       }
       if (req.properties() != null && !req.properties().isEmpty()) {
-        spec.putAllProperties(req.properties());
-        mask.addPaths("properties");
+        try {
+          workingContext = viewMetadataService.withUserProperties(workingContext, req.properties());
+          propertiesDirty = true;
+        } catch (IllegalArgumentException e) {
+          return IcebergErrorResponses.validation(e.getMessage());
+        }
       }
+    }
+    if (propertiesDirty) {
+      try {
+        spec.putAllProperties(viewMetadataService.buildPropertyMap(workingContext));
+      } catch (IllegalArgumentException e) {
+        return IcebergErrorResponses.validation(e.getMessage());
+      }
+      mask.addPaths("properties");
     }
     var resp =
         stub.updateView(
@@ -184,7 +223,12 @@ public class ViewResource {
                 .setSpec(spec)
                 .setUpdateMask(mask)
                 .build());
-    return Response.ok(ViewResponseMapper.toLoadResult(namespace, view, resp.getView())).build();
+    MetadataContext responseContext =
+        viewMetadataService.fromView(namespacePath, view, resp.getView());
+    return Response.ok(
+            ViewResponseMapper.toLoadResult(
+                namespace, view, resp.getView(), responseContext.metadata()))
+        .build();
   }
 
   @Path("/{view}")
@@ -210,29 +254,26 @@ public class ViewResource {
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       ViewRequests.Commit req) {
     String catalogName = CatalogResolver.resolveCatalog(config, prefix);
-    ResourceId viewId =
-        NameResolution.resolveView(grpc, catalogName, NamespacePaths.split(namespace), view);
+    List<String> namespacePath = NamespacePaths.split(namespace);
+    ResourceId viewId = NameResolution.resolveView(grpc, catalogName, namespacePath, view);
     ViewServiceGrpc.ViewServiceBlockingStub stub = grpc.withHeaders(grpc.raw().view());
-
-    ViewSpec.Builder spec = ViewSpec.newBuilder();
-    FieldMask.Builder mask = FieldMask.newBuilder();
-    if (req != null) {
-      if (req.namespace() != null && !req.namespace().isEmpty()) {
-        var targetNs =
-            NameResolution.resolveNamespace(
-                grpc, catalogName, new java.util.ArrayList<>(req.namespace()));
-        spec.setNamespaceId(targetNs);
-        mask.addPaths("namespace_id");
-      }
-      if (req.sql() != null) {
-        spec.setSql(req.sql());
-        mask.addPaths("sql");
-      }
-      if (req.summary() != null && !req.summary().isEmpty()) {
-        spec.putAllProperties(req.summary());
-        mask.addPaths("properties");
-      }
+    View current = stub.getView(GetViewRequest.newBuilder().setViewId(viewId).build()).getView();
+    MetadataContext baseContext = viewMetadataService.fromView(namespacePath, view, current);
+    MetadataContext updated;
+    try {
+      updated = viewMetadataService.applyCommit(namespacePath, baseContext, req);
+    } catch (IllegalArgumentException e) {
+      return IcebergErrorResponses.validation(e.getMessage());
     }
+
+    ViewSpec.Builder spec = ViewSpec.newBuilder().setSql(updated.sql());
+    FieldMask.Builder mask = FieldMask.newBuilder().addPaths("sql").addPaths("properties");
+    try {
+      spec.putAllProperties(viewMetadataService.buildPropertyMap(updated));
+    } catch (IllegalArgumentException e) {
+      return IcebergErrorResponses.validation(e.getMessage());
+    }
+
     var resp =
         stub.updateView(
             UpdateViewRequest.newBuilder()
@@ -240,7 +281,12 @@ public class ViewResource {
                 .setSpec(spec)
                 .setUpdateMask(mask)
                 .build());
-    return Response.ok(ViewResponseMapper.toLoadResult(namespace, view, resp.getView())).build();
+    MetadataContext responseContext =
+        viewMetadataService.fromView(namespacePath, view, resp.getView());
+    return Response.ok(
+            ViewResponseMapper.toLoadResult(
+                namespace, view, resp.getView(), responseContext.metadata()))
+        .build();
   }
 
   private String flattenPageToken(PageResponse page) {

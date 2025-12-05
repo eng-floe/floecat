@@ -18,6 +18,7 @@ import ai.floedb.metacat.connector.rpc.ConnectorSpec;
 import ai.floedb.metacat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.metacat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.metacat.connector.rpc.CreateConnectorResponse;
+import ai.floedb.metacat.connector.rpc.DeleteConnectorRequest;
 import ai.floedb.metacat.connector.rpc.GetConnectorRequest;
 import ai.floedb.metacat.connector.rpc.NamespacePath;
 import ai.floedb.metacat.connector.rpc.SourceSelector;
@@ -205,6 +206,18 @@ public class TableGatewaySupport {
               .build());
     } catch (StatusRuntimeException e) {
       LOG.warnf(e, "Failed to update connector metadata for %s", connectorId.getId());
+    }
+  }
+
+  public void deleteConnector(ResourceId connectorId) {
+    if (connectorId == null) {
+      return;
+    }
+    try {
+      ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
+      stub.deleteConnector(DeleteConnectorRequest.newBuilder().setConnectorId(connectorId).build());
+    } catch (StatusRuntimeException e) {
+      LOG.warnf(e, "Failed to delete connector %s", connectorId.getId());
     }
   }
 

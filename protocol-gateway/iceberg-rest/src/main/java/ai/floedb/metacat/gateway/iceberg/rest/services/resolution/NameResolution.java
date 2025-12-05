@@ -12,7 +12,6 @@ import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Resolves human-readable identifiers into Metacat ResourceIds via DirectoryService. */
 public final class NameResolution {
   private NameResolution() {}
 

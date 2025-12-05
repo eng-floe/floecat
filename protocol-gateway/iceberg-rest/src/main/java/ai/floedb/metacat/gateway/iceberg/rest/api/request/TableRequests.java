@@ -36,5 +36,8 @@ public final class TableRequests {
       @JsonProperty("updates") List<Map<String, Object>> updates) {}
 
   public record Register(
-      String name, @JsonProperty("metadata-location") String metadataLocation, Boolean overwrite) {}
+      String name,
+      @JsonProperty("metadata-location") String metadataLocation,
+      Boolean overwrite,
+      Map<String, String> properties) {}
 }
