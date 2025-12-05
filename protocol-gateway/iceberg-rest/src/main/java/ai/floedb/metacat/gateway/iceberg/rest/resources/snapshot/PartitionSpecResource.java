@@ -7,7 +7,11 @@ import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
-import ai.floedb.metacat.gateway.iceberg.rest.api.dto.*;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.PageDto;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.PartitionSpecDto;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.PartitionSpecHistoryDto;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.PartitionSpecsResponse;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NamespacePaths;
 import com.google.protobuf.Timestamp;
@@ -21,8 +25,6 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Collectors;
 
 @Path("/v1/{prefix}/namespaces/{namespace}/tables/{table}/partition-specs")
@@ -38,7 +40,7 @@ public class PartitionSpecResource {
       @PathParam("table") String table,
       @QueryParam("pageToken") String pageToken,
       @QueryParam("pageSize") Integer pageSize) {
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId tableId =
         NameResolution.resolveTable(grpc, catalogName, NamespacePaths.split(namespace), table);
 
@@ -67,11 +69,6 @@ public class PartitionSpecResource {
                         toIso(s.getIngestedAt())))
             .collect(Collectors.toList());
     return Response.ok(new PartitionSpecsResponse(specs, toDto(resp.getPage()))).build();
-  }
-
-  private String resolveCatalog(String prefix) {
-    Map<String, String> mapping = config.catalogMapping();
-    return Optional.ofNullable(mapping == null ? null : mapping.get(prefix)).orElse(prefix);
   }
 
   private PageDto toDto(PageResponse page) {

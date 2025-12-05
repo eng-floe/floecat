@@ -13,10 +13,13 @@ import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
-import ai.floedb.metacat.gateway.iceberg.rest.api.dto.*;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.NamespaceInfoDto;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.NamespacePropertiesResponse;
 import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
-import ai.floedb.metacat.gateway.iceberg.rest.api.request.*;
+import ai.floedb.metacat.gateway.iceberg.rest.api.request.NamespacePropertiesRequest;
+import ai.floedb.metacat.gateway.iceberg.rest.api.request.NamespaceRequests;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NamespacePaths;
 import ai.floedb.metacat.gateway.iceberg.rest.services.tenant.TenantContext;
@@ -40,7 +43,6 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -63,8 +65,8 @@ public class NamespaceResource {
       @QueryParam("namePrefix") String namePrefix,
       @QueryParam("pageToken") String pageToken,
       @QueryParam("pageSize") Integer pageSize) {
-    String catalogName = resolveCatalog(prefix);
-    ResourceId catalogId = resolveCatalogId(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
+    ResourceId catalogId = CatalogResolver.resolveCatalogId(grpc, config, prefix);
     ListNamespacesRequest.Builder req = ListNamespacesRequest.newBuilder();
     String parentNamespace = parent != null && !parent.isBlank() ? parent : namespace;
     if (parentNamespace != null && !parentNamespace.isBlank()) {
@@ -119,7 +121,7 @@ public class NamespaceResource {
   @GET
   public Response get(
       @PathParam("prefix") String prefix, @PathParam("namespace") String namespace) {
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId namespaceId =
         NameResolution.resolveNamespace(grpc, catalogName, NamespacePaths.split(namespace));
     NamespaceServiceGrpc.NamespaceServiceBlockingStub stub =
@@ -151,7 +153,7 @@ public class NamespaceResource {
     final String displayName = path.get(path.size() - 1);
     final List<String> parents = path.subList(0, path.size() - 1);
 
-    ResourceId catalogId = resolveCatalogId(prefix);
+    ResourceId catalogId = CatalogResolver.resolveCatalogId(grpc, config, prefix);
 
     NamespaceSpec.Builder spec =
         NamespaceSpec.newBuilder()
@@ -193,7 +195,7 @@ public class NamespaceResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       NamespaceRequests.Update req) {
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId namespaceId =
         NameResolution.resolveNamespace(grpc, catalogName, NamespacePaths.split(namespace));
 
@@ -232,7 +234,7 @@ public class NamespaceResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @QueryParam("requireEmpty") Boolean requireEmpty) {
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId namespaceId =
         NameResolution.resolveNamespace(grpc, catalogName, NamespacePaths.split(namespace));
     NamespaceServiceGrpc.NamespaceServiceBlockingStub stub =
@@ -251,7 +253,7 @@ public class NamespaceResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       NamespacePropertiesRequest req) {
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId namespaceId =
         NameResolution.resolveNamespace(grpc, catalogName, NamespacePaths.split(namespace));
     NamespaceServiceGrpc.NamespaceServiceBlockingStub stub =
@@ -315,11 +317,6 @@ public class NamespaceResource {
     return Response.ok(new NamespacePropertiesResponse(updated, removed, missing)).build();
   }
 
-  private String resolveCatalog(String prefix) {
-    Map<String, String> mapping = config.catalogMapping();
-    return Optional.ofNullable(mapping == null ? null : mapping.get(prefix)).orElse(prefix);
-  }
-
   private List<String> concat(List<String> parents, String name) {
     List<String> out = new java.util.ArrayList<>(parents);
     out.add(name);
@@ -346,9 +343,5 @@ public class NamespaceResource {
   private String flattenPageToken(PageResponse page) {
     String token = page.getNextPageToken();
     return token == null || token.isBlank() ? null : token;
-  }
-
-  private ResourceId resolveCatalogId(String prefix) {
-    return NameResolution.resolveCatalog(grpc, resolveCatalog(prefix));
   }
 }

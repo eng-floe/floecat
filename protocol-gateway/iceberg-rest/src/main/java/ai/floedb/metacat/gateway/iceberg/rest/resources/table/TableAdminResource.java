@@ -7,11 +7,14 @@ import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
-import ai.floedb.metacat.gateway.iceberg.rest.api.dto.*;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.TransactionCommitResponse;
 import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.metacat.gateway.iceberg.rest.api.metadata.TableMetadataView;
-import ai.floedb.metacat.gateway.iceberg.rest.api.request.*;
+import ai.floedb.metacat.gateway.iceberg.rest.api.request.RenameRequest;
+import ai.floedb.metacat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.IcebergErrorResponses;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.StageCommitException;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.StageCommitProcessor;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
@@ -35,7 +38,6 @@ import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.eclipse.microprofile.config.Config;
 
 @Path("/v1/{prefix}/tables")
@@ -64,15 +66,15 @@ public class TableAdminResource {
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       RenameRequest request) {
     if (request == null || request.source() == null || request.destination() == null) {
-      return validationError("source and destination are required");
+      return IcebergErrorResponses.validation("source and destination are required");
     }
     if (request.source().namespace() == null
         || request.source().name() == null
         || request.destination().namespace() == null
         || request.destination().name() == null) {
-      return validationError("namespace and name must be provided");
+      return IcebergErrorResponses.validation("namespace and name must be provided");
     }
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     var sourcePath = request.source().namespace();
     var destinationPath = request.destination().namespace();
 
@@ -103,14 +105,14 @@ public class TableAdminResource {
     if (request == null
         || request.stagedRefUpdates() == null
         || request.stagedRefUpdates().isEmpty()) {
-      return validationError("staged-ref-updates are required");
+      return IcebergErrorResponses.validation("staged-ref-updates are required");
     }
     String tenantId = tenantContext.getTenantId();
     if (tenantId == null || tenantId.isBlank()) {
-      return validationError("tenant context is required");
+      return IcebergErrorResponses.validation("tenant context is required");
     }
-    String catalogName = resolveCatalog(prefix);
-    ResourceId catalogId = resolveCatalogId(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
+    ResourceId catalogId = CatalogResolver.resolveCatalogId(grpc, config, prefix);
     List<TransactionCommitResponse.TransactionCommitResult> results = new java.util.ArrayList<>();
     for (TransactionCommitRequest.StagedRefUpdate update : request.stagedRefUpdates()) {
       try {
@@ -179,33 +181,6 @@ public class TableAdminResource {
     }
     stagedTableService.expireStages();
     return Response.ok(new TransactionCommitResponse(results)).build();
-  }
-
-  private String resolveCatalog(String prefix) {
-    var mapping = config.catalogMapping();
-    return Optional.ofNullable(mapping == null ? null : mapping.get(prefix)).orElse(prefix);
-  }
-
-  private ResourceId resolveCatalogId(String prefix) {
-    return NameResolution.resolveCatalog(grpc, resolveCatalog(prefix));
-  }
-
-  private Response validationError(String message) {
-    return Response.status(Response.Status.BAD_REQUEST)
-        .entity(new IcebergErrorResponse(new IcebergError(message, "ValidationException", 400)))
-        .build();
-  }
-
-  private Response conflictError(String message) {
-    return Response.status(Response.Status.CONFLICT)
-        .entity(new IcebergErrorResponse(new IcebergError(message, "CommitFailedException", 409)))
-        .build();
-  }
-
-  private Response notFound(String message) {
-    return Response.status(Response.Status.NOT_FOUND)
-        .entity(new IcebergErrorResponse(new IcebergError(message, "NotFoundException", 404)))
-        .build();
   }
 
   private MirrorMetadataResult mirrorMetadata(

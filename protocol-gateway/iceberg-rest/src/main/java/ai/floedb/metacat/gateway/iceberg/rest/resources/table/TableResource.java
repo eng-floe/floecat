@@ -10,11 +10,18 @@ import ai.floedb.metacat.catalog.rpc.TableSpec;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
-import ai.floedb.metacat.gateway.iceberg.rest.api.dto.*;
-import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergError;
-import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.CredentialsResponseDto;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.PlanResponseDto;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.StageCreateResponseDto;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.metadata.TableMetadataView;
-import ai.floedb.metacat.gateway.iceberg.rest.api.request.*;
+import ai.floedb.metacat.gateway.iceberg.rest.api.request.MetricsRequests;
+import ai.floedb.metacat.gateway.iceberg.rest.api.request.PlanRequests;
+import ai.floedb.metacat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.metacat.gateway.iceberg.rest.api.request.TaskRequests;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.IcebergErrorResponses;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.MirrorMetadataResult;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.TableCommitService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
@@ -48,7 +55,6 @@ import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -87,7 +93,7 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @QueryParam("pageToken") String pageToken,
       @QueryParam("pageSize") Integer pageSize) {
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     try {
       TableLifecycleService.ListTablesResult result =
           tableLifecycleService.listTables(catalogName, namespace, pageSize, pageToken);
@@ -98,7 +104,7 @@ public class TableResource {
       }
       return Response.ok(body).build();
     } catch (StatusRuntimeException e) {
-      return mapGrpcError(e);
+      return IcebergErrorResponses.grpcError(e);
     }
   }
 
@@ -110,8 +116,8 @@ public class TableResource {
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       @HeaderParam("Iceberg-Transaction-Id") String transactionId,
       TableRequests.Create req) {
-    String catalogName = resolveCatalog(prefix);
-    ResourceId catalogId = resolveCatalogId(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
+    ResourceId catalogId = CatalogResolver.resolveCatalogId(grpc, config, prefix);
     List<String> namespacePath = NamespacePaths.split(namespace);
     ResourceId namespaceId = tableLifecycleService.resolveNamespaceId(catalogName, namespacePath);
 
@@ -140,7 +146,7 @@ public class TableResource {
     try {
       spec = tableSupport.buildCreateSpec(catalogId, namespaceId, tableName, req);
     } catch (IllegalArgumentException | JsonProcessingException e) {
-      return validationError(e.getMessage());
+      return IcebergErrorResponses.validation(e.getMessage());
     }
 
     Table created = tableLifecycleService.createTable(spec, idempotencyKey);
@@ -154,7 +160,7 @@ public class TableResource {
             TableResponseMapper.toLoadResultFromCreate(
                 tableName, created, req, tableConfig, credentials);
       } catch (IllegalArgumentException e) {
-        return validationError(e.getMessage());
+        return IcebergErrorResponses.validation(e.getMessage());
       }
     } else {
       loadResult =
@@ -256,14 +262,14 @@ public class TableResource {
       String transactionId,
       String idempotencyKey) {
     if (req == null) {
-      return validationError("stage-create requires a request body");
+      return IcebergErrorResponses.validation("stage-create requires a request body");
     }
     if (req.location() == null || req.location().isBlank()) {
-      return validationError("location is required");
+      return IcebergErrorResponses.validation("location is required");
     }
     String tenantId = tenantContext.getTenantId();
     if (tenantId == null || tenantId.isBlank()) {
-      return validationError("tenant context is required");
+      return IcebergErrorResponses.validation("tenant context is required");
     }
     String stageId =
         (transactionId == null || transactionId.isBlank())
@@ -316,7 +322,7 @@ public class TableResource {
                   stored.key().stageId()))
           .build();
     } catch (IllegalArgumentException | JsonProcessingException e) {
-      return validationError(e.getMessage());
+      return IcebergErrorResponses.validation(e.getMessage());
     }
   }
 
@@ -328,14 +334,14 @@ public class TableResource {
       @PathParam("table") String table,
       @QueryParam("snapshots") String snapshots,
       @HeaderParam("If-None-Match") String ifNoneMatch) {
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId tableId = tableLifecycleService.resolveTableId(catalogName, namespace, table);
     Table tableRecord = tableLifecycleService.getTable(tableId);
     SnapshotMode snapshotMode;
     try {
       snapshotMode = parseSnapshotMode(snapshots);
     } catch (IllegalArgumentException e) {
-      return validationError(e.getMessage());
+      return IcebergErrorResponses.validation(e.getMessage());
     }
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(tableRecord);
     List<Snapshot> snapshotList = fetchSnapshots(tableId, snapshotMode, metadata);
@@ -364,7 +370,7 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table) {
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     tableLifecycleService.resolveTableId(catalogName, namespace, table);
     return Response.noContent().build();
   }
@@ -394,7 +400,7 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table) {
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     tableLifecycleService.deleteTable(catalogName, namespace, table);
     return Response.noContent().build();
   }
@@ -408,8 +414,8 @@ public class TableResource {
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       @HeaderParam("Iceberg-Transaction-Id") String transactionId,
       TableRequests.Commit req) {
-    String catalogName = resolveCatalog(prefix);
-    ResourceId catalogId = resolveCatalogId(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
+    ResourceId catalogId = CatalogResolver.resolveCatalogId(grpc, config, prefix);
     List<String> namespacePath = NamespacePaths.split(namespace);
     ResourceId namespaceId = tableLifecycleService.resolveNamespaceId(catalogName, namespacePath);
     return tableCommitService.commit(
@@ -435,17 +441,19 @@ public class TableResource {
       @PathParam("table") String table,
       PlanRequests.Plan rawRequest) {
     PlanRequests.Plan request = rawRequest == null ? PlanRequests.Plan.empty() : rawRequest;
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId tableId = tableLifecycleService.resolveTableId(catalogName, namespace, table);
     Long startSnapshotId = request.startSnapshotId();
     Long endSnapshotId = request.endSnapshotId();
     Long snapshotId = request.snapshotId();
     if (startSnapshotId != null && endSnapshotId != null && startSnapshotId >= endSnapshotId) {
-      return validationError("start-snapshot-id must be less than end-snapshot-id");
+      return IcebergErrorResponses.validation(
+          "start-snapshot-id must be less than end-snapshot-id");
     }
     Long resolvedSnapshotId = endSnapshotId != null ? endSnapshotId : snapshotId;
     if (startSnapshotId != null && resolvedSnapshotId == null) {
-      return validationError("start-snapshot-id requires snapshot-id or end-snapshot-id");
+      return IcebergErrorResponses.validation(
+          "start-snapshot-id requires snapshot-id or end-snapshot-id");
     }
     boolean caseSensitive =
         request.caseSensitive() == null || Boolean.TRUE.equals(request.caseSensitive());
@@ -474,7 +482,7 @@ public class TableResource {
                   tableSupport.defaultCredentials()))
           .build();
     } catch (IllegalArgumentException ex) {
-      return validationError(ex.getMessage());
+      return IcebergErrorResponses.validation(ex.getMessage());
     }
   }
 
@@ -485,12 +493,13 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       @PathParam("planId") String planId) {
-    tableLifecycleService.resolveTableId(resolveCatalog(prefix), namespace, table);
+    tableLifecycleService.resolveTableId(
+        CatalogResolver.resolveCatalog(config, prefix), namespace, table);
     try {
       return Response.ok(tablePlanService.fetchPlan(planId, tableSupport.defaultCredentials()))
           .build();
     } catch (IllegalArgumentException ex) {
-      return validationError(ex.getMessage());
+      return IcebergErrorResponses.validation(ex.getMessage());
     }
   }
 
@@ -501,7 +510,8 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       @PathParam("planId") String planId) {
-    tableLifecycleService.resolveTableId(resolveCatalog(prefix), namespace, table);
+    tableLifecycleService.resolveTableId(
+        CatalogResolver.resolveCatalog(config, prefix), namespace, table);
     tablePlanService.cancelPlan(planId);
     return Response.noContent().build();
   }
@@ -514,13 +524,14 @@ public class TableResource {
       @PathParam("table") String table,
       TaskRequests.Fetch request) {
     if (request == null || request.planTask() == null || request.planTask().isBlank()) {
-      return validationError("plan-task is required");
+      return IcebergErrorResponses.validation("plan-task is required");
     }
-    tableLifecycleService.resolveTableId(resolveCatalog(prefix), namespace, table);
+    tableLifecycleService.resolveTableId(
+        CatalogResolver.resolveCatalog(config, prefix), namespace, table);
     try {
       return Response.ok(tablePlanService.fetchTasks(request.planTask().trim())).build();
     } catch (IllegalArgumentException ex) {
-      return validationError(ex.getMessage());
+      return IcebergErrorResponses.validation(ex.getMessage());
     }
   }
 
@@ -531,7 +542,7 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       @QueryParam("planId") String planId) {
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     tableLifecycleService.resolveTableId(catalogName, namespace, table);
     return Response.ok(new CredentialsResponseDto(tableSupport.defaultCredentials())).build();
   }
@@ -545,7 +556,7 @@ public class TableResource {
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       MetricsRequests.Report request) {
     if (request == null || request.snapshotId() == null) {
-      return validationError("snapshot-id is required");
+      return IcebergErrorResponses.validation("snapshot-id is required");
     }
     LOG.infof(
         "Received metrics report for %s.%s snapshot=%d (deferred)",
@@ -561,15 +572,15 @@ public class TableResource {
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       TableRequests.Register req) {
     if (req == null || req.metadataLocation() == null || req.metadataLocation().isBlank()) {
-      return validationError("metadata-location is required");
+      return IcebergErrorResponses.validation("metadata-location is required");
     }
-    String catalogName = resolveCatalog(prefix);
-    ResourceId catalogId = resolveCatalogId(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
+    ResourceId catalogId = CatalogResolver.resolveCatalogId(grpc, config, prefix);
     List<String> namespacePath = NamespacePaths.split(namespace);
     ResourceId namespaceId = tableLifecycleService.resolveNamespaceId(catalogName, namespacePath);
 
     if (req.name() == null || req.name().isBlank()) {
-      return validationError("name is required");
+      return IcebergErrorResponses.validation("name is required");
     }
     String tableName = req.name().trim();
 
@@ -693,55 +704,6 @@ public class TableResource {
   private enum SnapshotMode {
     ALL,
     REFS
-  }
-
-  private String resolveCatalog(String prefix) {
-    Map<String, String> mapping = config.catalogMapping();
-    return Optional.ofNullable(mapping == null ? null : mapping.get(prefix)).orElse(prefix);
-  }
-
-  private ResourceId resolveCatalogId(String prefix) {
-    return tableLifecycleService.resolveCatalogId(resolveCatalog(prefix));
-  }
-
-  private Response validationError(String message) {
-    return Response.status(Response.Status.BAD_REQUEST)
-        .entity(new IcebergErrorResponse(new IcebergError(message, "ValidationException", 400)))
-        .build();
-  }
-
-  private Response mapGrpcError(StatusRuntimeException exception) {
-    var status = exception.getStatus();
-    Response.Status httpStatus;
-    String type;
-    switch (status.getCode()) {
-      case NOT_FOUND -> {
-        httpStatus = Response.Status.NOT_FOUND;
-        type = "NoSuchObjectException";
-      }
-      case INVALID_ARGUMENT -> {
-        httpStatus = Response.Status.BAD_REQUEST;
-        type = "ValidationException";
-      }
-      case PERMISSION_DENIED -> {
-        httpStatus = Response.Status.FORBIDDEN;
-        type = "ForbiddenException";
-      }
-      case UNAUTHENTICATED -> {
-        httpStatus = Response.Status.UNAUTHORIZED;
-        type = "UnauthorizedException";
-      }
-      default -> {
-        httpStatus = Response.Status.INTERNAL_SERVER_ERROR;
-        type = status.getCode().name();
-      }
-    }
-    String message =
-        status.getDescription() == null ? status.getCode().name() : status.getDescription();
-    return Response.status(httpStatus)
-        .entity(
-            new IcebergErrorResponse(new IcebergError(message, type, httpStatus.getStatusCode())))
-        .build();
   }
 
   private static String nonBlank(String primary, String fallback) {

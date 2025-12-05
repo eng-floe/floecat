@@ -12,8 +12,9 @@ import ai.floedb.metacat.common.rpc.PageResponse;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
-import ai.floedb.metacat.gateway.iceberg.rest.api.dto.*;
-import ai.floedb.metacat.gateway.iceberg.rest.api.request.*;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
+import ai.floedb.metacat.gateway.iceberg.rest.api.request.ViewRequests;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NamespacePaths;
 import ai.floedb.metacat.gateway.iceberg.rest.support.mapper.ViewResponseMapper;
@@ -35,7 +36,6 @@ import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Collectors;
 
 @Path("/v1/{prefix}/namespaces/{namespace}/views")
@@ -51,8 +51,8 @@ public class ViewResource {
       @PathParam("namespace") String namespace,
       @QueryParam("pageToken") String pageToken,
       @QueryParam("pageSize") Integer pageSize) {
-    String catalogName = resolveCatalog(prefix);
-    ResourceId catalogId = resolveCatalogId(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
+    ResourceId catalogId = CatalogResolver.resolveCatalogId(grpc, config, prefix);
     ResourceId namespaceId =
         NameResolution.resolveNamespace(grpc, catalogName, NamespacePaths.split(namespace));
 
@@ -90,8 +90,8 @@ public class ViewResource {
       @PathParam("namespace") String namespace,
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       ViewRequests.Create req) {
-    String catalogName = resolveCatalog(prefix);
-    ResourceId catalogId = resolveCatalogId(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
+    ResourceId catalogId = CatalogResolver.resolveCatalogId(grpc, config, prefix);
     ResourceId namespaceId =
         NameResolution.resolveNamespace(grpc, catalogName, NamespacePaths.split(namespace));
 
@@ -128,7 +128,7 @@ public class ViewResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("view") String view) {
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId viewId =
         NameResolution.resolveView(grpc, catalogName, NamespacePaths.split(namespace), view);
     ViewServiceGrpc.ViewServiceBlockingStub stub = grpc.withHeaders(grpc.raw().view());
@@ -142,7 +142,7 @@ public class ViewResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("view") String view) {
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     NameResolution.resolveView(grpc, catalogName, NamespacePaths.split(namespace), view);
     return Response.noContent().build();
   }
@@ -154,7 +154,7 @@ public class ViewResource {
       @PathParam("namespace") String namespace,
       @PathParam("view") String view,
       ViewRequests.Update req) {
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId viewId =
         NameResolution.resolveView(grpc, catalogName, NamespacePaths.split(namespace), view);
     ViewServiceGrpc.ViewServiceBlockingStub stub = grpc.withHeaders(grpc.raw().view());
@@ -198,7 +198,7 @@ public class ViewResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("view") String view) {
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId viewId =
         NameResolution.resolveView(grpc, catalogName, NamespacePaths.split(namespace), view);
     ViewServiceGrpc.ViewServiceBlockingStub stub = grpc.withHeaders(grpc.raw().view());
@@ -214,7 +214,7 @@ public class ViewResource {
       @PathParam("view") String view,
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       ViewRequests.Commit req) {
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId viewId =
         NameResolution.resolveView(grpc, catalogName, NamespacePaths.split(namespace), view);
     ViewServiceGrpc.ViewServiceBlockingStub stub = grpc.withHeaders(grpc.raw().view());
@@ -248,17 +248,8 @@ public class ViewResource {
     return Response.ok(ViewResponseMapper.toLoadResult(namespace, view, resp.getView())).build();
   }
 
-  private String resolveCatalog(String prefix) {
-    Map<String, String> mapping = config.catalogMapping();
-    return Optional.ofNullable(mapping == null ? null : mapping.get(prefix)).orElse(prefix);
-  }
-
   private String flattenPageToken(PageResponse page) {
     String token = page.getNextPageToken();
     return token == null || token.isBlank() ? null : token;
-  }
-
-  private ResourceId resolveCatalogId(String prefix) {
-    return NameResolution.resolveCatalog(grpc, resolveCatalog(prefix));
   }
 }

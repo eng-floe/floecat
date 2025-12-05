@@ -23,6 +23,7 @@ import ai.floedb.metacat.gateway.iceberg.rest.api.dto.StatsDto.NdvDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.StatsDto.NdvSketchDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.StatsDto.TableStatsDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.StatsDto.UpstreamStampDto;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NamespacePaths;
 import jakarta.inject.Inject;
@@ -32,8 +33,6 @@ import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Collectors;
 
 @Path("/v1/{prefix}/namespaces/{namespace}/tables/{table}/snapshots/{snapshot}/stats")
@@ -49,7 +48,7 @@ public class StatsResource {
       @PathParam("snapshot") long snapshot,
       @QueryParam("pageToken") String pageToken,
       @QueryParam("pageSize") Integer pageSize) {
-    String catalog = resolveCatalog(prefix);
+    String catalog = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId tableId =
         NameResolution.resolveTable(grpc, catalog, NamespacePaths.split(namespace), table);
     SnapshotRef ref = SnapshotRef.newBuilder().setSnapshotId(snapshot).build();
@@ -172,10 +171,5 @@ public class StatsResource {
       case FC_EQUALITY_DELETES -> FileContentDto.EQUALITY_DELETES;
       default -> FileContentDto.UNSPECIFIED;
     };
-  }
-
-  private String resolveCatalog(String prefix) {
-    Map<String, String> mapping = config.catalogMapping();
-    return Optional.ofNullable(mapping == null ? null : mapping.get(prefix)).orElse(prefix);
   }
 }

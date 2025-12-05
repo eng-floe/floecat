@@ -26,8 +26,9 @@ import ai.floedb.metacat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.metacat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
-import ai.floedb.metacat.gateway.iceberg.rest.api.dto.*;
+import ai.floedb.metacat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;
@@ -35,7 +36,6 @@ import io.grpc.StatusRuntimeException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 import org.eclipse.microprofile.config.Config;
 import org.jboss.logging.Logger;
@@ -306,7 +306,7 @@ public class TableGatewaySupport {
     if (direct != null) {
       return direct;
     }
-    String resolved = resolveCatalog(prefix);
+    String resolved = CatalogResolver.resolveCatalog(config, prefix);
     return templates.get(resolved);
   }
 
@@ -482,7 +482,8 @@ public class TableGatewaySupport {
       }
       var response = stub.syncCapture(request.build());
       LOG.infof(
-          "Triggered sync metadata capture connector=%s namespace=%s table=%s scanned=%d changed=%d errors=%d",
+          "Triggered sync metadata capture connector=%s namespace=%s table=%s scanned=%d changed=%d"
+              + " errors=%d",
           connectorId.getId(),
           namespaceFq,
           tableName,
@@ -544,11 +545,6 @@ public class TableGatewaySupport {
       }
     }
     return out;
-  }
-
-  private String resolveCatalog(String prefix) {
-    Map<String, String> mapping = config.catalogMapping();
-    return Optional.ofNullable(mapping == null ? null : mapping.get(prefix)).orElse(prefix);
   }
 
   private static Long propertyLong(Map<String, String> props, String key) {

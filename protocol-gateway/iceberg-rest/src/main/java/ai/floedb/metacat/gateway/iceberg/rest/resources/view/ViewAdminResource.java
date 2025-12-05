@@ -6,9 +6,9 @@ import ai.floedb.metacat.catalog.rpc.ViewSpec;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
-import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergError;
-import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.RenameRequest;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
+import ai.floedb.metacat.gateway.iceberg.rest.resources.support.IcebergErrorResponses;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NameResolution;
 import com.google.protobuf.FieldMask;
 import jakarta.inject.Inject;
@@ -19,7 +19,6 @@ import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
-import java.util.Optional;
 
 @Path("/v1/{prefix}/views")
 @Produces(MediaType.APPLICATION_JSON)
@@ -34,15 +33,15 @@ public class ViewAdminResource {
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       RenameRequest request) {
     if (request == null || request.source() == null || request.destination() == null) {
-      return validationError("source and destination are required");
+      return IcebergErrorResponses.validation("source and destination are required");
     }
     if (request.source().namespace() == null
         || request.source().name() == null
         || request.destination().namespace() == null
         || request.destination().name() == null) {
-      return validationError("namespace and name must be provided");
+      return IcebergErrorResponses.validation("namespace and name must be provided");
     }
-    String catalogName = resolveCatalog(prefix);
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId viewId =
         NameResolution.resolveView(
             grpc, catalogName, request.source().namespace(), request.source().name());
@@ -59,16 +58,5 @@ public class ViewAdminResource {
     stub.updateView(
         UpdateViewRequest.newBuilder().setViewId(viewId).setSpec(spec).setUpdateMask(mask).build());
     return Response.noContent().build();
-  }
-
-  private String resolveCatalog(String prefix) {
-    var mapping = config.catalogMapping();
-    return Optional.ofNullable(mapping == null ? null : mapping.get(prefix)).orElse(prefix);
-  }
-
-  private Response validationError(String message) {
-    return Response.status(Response.Status.BAD_REQUEST)
-        .entity(new IcebergErrorResponse(new IcebergError(message, "ValidationException", 400)))
-        .build();
   }
 }
