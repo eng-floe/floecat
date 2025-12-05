@@ -19,7 +19,6 @@ import ai.floedb.metacat.service.query.resolver.ObligationsResolver;
 import ai.floedb.metacat.service.query.resolver.QueryInputResolver;
 import ai.floedb.metacat.service.query.resolver.SnapshotResolver;
 import ai.floedb.metacat.service.query.resolver.ViewExpansionResolver;
-import io.quarkus.grpc.GrpcClient;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
