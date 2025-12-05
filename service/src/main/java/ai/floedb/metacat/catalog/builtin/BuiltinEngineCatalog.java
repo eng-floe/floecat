@@ -75,7 +75,7 @@ public final class BuiltinEngineCatalog {
     List<BuiltinCollationDef> collations = copy(data.collations());
     List<BuiltinAggregateDef> aggregates = copy(data.aggregates());
 
-    String fingerprint = computeFingerprint(data);
+    String fingerprint = computeFingerprint(engineKind, data);
 
     return new BuiltinEngineCatalog(
         engineKind,
@@ -170,13 +170,22 @@ public final class BuiltinEngineCatalog {
                 Map::copyOf));
   }
 
-  private static String computeFingerprint(BuiltinCatalogData data) {
+  private static String computeFingerprint(String engineKind, BuiltinCatalogData data) {
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
-      byte[] bytes = BuiltinCatalogProtoMapper.toProto(data).toByteArray();
-      return HexFormat.of().formatHex(digest.digest(bytes));
-    } catch (NoSuchAlgorithmException e) {
-      throw new IllegalStateException("SHA-256 digest not available", e);
+
+      // Salt with engine kind to avoid cross-engine collisions
+      digest.update(engineKind.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+      // Use canonical protobuf serialization for deterministic hashing
+      var proto = BuiltinCatalogProtoMapper.toProto(data);
+      var dos =
+          new java.security.DigestOutputStream(java.io.OutputStream.nullOutputStream(), digest);
+      proto.writeTo(dos);
+      dos.flush();
+      return HexFormat.of().formatHex(digest.digest());
+    } catch (NoSuchAlgorithmException | java.io.IOException e) {
+      throw new IllegalStateException("Failed to compute fingerprint", e);
     }
   }
 }

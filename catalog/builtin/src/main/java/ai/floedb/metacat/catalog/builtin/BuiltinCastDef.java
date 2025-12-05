@@ -1,6 +1,7 @@
 package ai.floedb.metacat.catalog.builtin;
 
 import ai.floedb.metacat.common.rpc.NameRef;
+import ai.floedb.metacat.common.rpc.ResourceKind;
 import java.util.List;
 import java.util.Objects;
 
@@ -9,7 +10,8 @@ public record BuiltinCastDef(
     NameRef sourceType,
     NameRef targetType,
     BuiltinCastMethod method,
-    List<EngineSpecificRule> engineSpecific) {
+    List<EngineSpecificRule> engineSpecific)
+    implements BuiltinDef {
 
   public BuiltinCastDef {
     name = Objects.requireNonNull(name, "name");
@@ -17,5 +19,10 @@ public record BuiltinCastDef(
     targetType = Objects.requireNonNull(targetType, "targetType");
     method = Objects.requireNonNull(method, "method");
     engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
+  }
+
+  @Override
+  public ResourceKind kind() {
+    return ResourceKind.RK_CAST;
   }
 }

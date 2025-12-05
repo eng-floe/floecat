@@ -37,21 +37,43 @@ public class EngineHintManager {
       @ConfigProperty(name = "metacat.metadata.hint.cache-max-weight", defaultValue = "67108864")
           long maxWeightBytes) {
     this(
-        providers == null ? List.of() : providers.stream().toList(), meterRegistry, maxWeightBytes);
+        providers == null ? List.of() : providers.stream().toList(),
+        meterRegistry,
+        maxWeightBytes,
+        false); // always async in prod
   }
 
+  /** Production constructor */
   EngineHintManager(
       List<EngineHintProvider> providers, MeterRegistry meterRegistry, long maxWeightBytes) {
+    this(providers, meterRegistry, maxWeightBytes, false);
+  }
+
+  /** Test-only constructor enabling synchronous eviction */
+  EngineHintManager(
+      List<EngineHintProvider> providers,
+      MeterRegistry meterRegistry,
+      long maxWeightBytes,
+      boolean forceSynchronous) {
     this.providers = List.copyOf(providers == null ? List.of() : providers);
-    long boundedWeight = Math.max(1, Math.min(Integer.MAX_VALUE, maxWeightBytes));
+
+    long bounded = Math.max(1, Math.min(Integer.MAX_VALUE, maxWeightBytes));
+
     Weigher<HintCacheKey, EngineHint> weigher =
-        (key, hint) -> (int) Math.min(Integer.MAX_VALUE, hint.sizeBytes());
-    this.cache =
-        Caffeine.newBuilder()
-            .maximumWeight(boundedWeight)
+        (k, v) -> (int) Math.min(Integer.MAX_VALUE, v.sizeBytes());
+
+    var builder =
+        Caffeine.<HintCacheKey, EngineHint>newBuilder()
+            .maximumWeight(bounded)
             .weigher(weigher)
-            .expireAfterAccess(Duration.ofMinutes(30))
-            .build();
+            .expireAfterAccess(Duration.ofMinutes(30));
+
+    if (forceSynchronous) {
+      builder = builder.executor(Runnable::run);
+    }
+
+    this.cache = builder.build();
+
     if (meterRegistry != null) {
       this.hitCounter = meterRegistry.counter("metacat.metadata.hint.cache", "result", "hit");
       this.missCounter = meterRegistry.counter("metacat.metadata.hint.cache", "result", "miss");
@@ -129,14 +151,19 @@ public class EngineHintManager {
         .findFirst();
   }
 
-  private record HintCacheKey(
+  /** Test-only: exposes the Caffeine cache for inspection in unit tests. */
+  Cache<HintCacheKey, EngineHint> cache() {
+    return cache;
+  }
+
+  static final record HintCacheKey(
       ResourceId resourceId,
       long pointerVersion,
       EngineKey engineKey,
       String hintType,
       String fingerprint) {
 
-    private HintCacheKey {
+    HintCacheKey {
       Objects.requireNonNull(resourceId, "resourceId");
       Objects.requireNonNull(engineKey, "engineKey");
       Objects.requireNonNull(hintType, "hintType");

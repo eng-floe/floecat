@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.metacat.catalog.builtin.*;
 import ai.floedb.metacat.common.rpc.NameRef;
+import ai.floedb.metacat.common.rpc.ResourceKind;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -108,6 +109,35 @@ class BuiltinNodeRegistryTest {
     assertThat(nodeRegistry.nodesFor(FLOE_KIND, "").functions()).isEmpty();
   }
 
+  @Test
+  void resourceIdBuildsStableIds() {
+    var id = BuiltinNodeRegistry.resourceId("floe", ResourceKind.RK_FUNCTION, nr("pg_catalog.abs"));
+
+    assertThat(id.getTenantId()).isEqualTo("_builtin");
+    assertThat(id.getKind()).isEqualTo(ResourceKind.RK_FUNCTION);
+    assertThat(id.getId()).isEqualTo("floe:pg_catalog.abs");
+  }
+
+  @Test
+  void buildsFunctionNodeWithCorrectResourceIds() {
+    var rule =
+        new EngineSpecificRule(FLOE_KIND, "1.0", "", null, null, null, null, null, null, Map.of());
+    var fn =
+        new BuiltinFunctionDef(
+            nr("pg.abs"), List.of(nr("pg.int4")), nr("pg.int4"), false, false, List.of(rule));
+
+    var catalog =
+        new BuiltinCatalogData(List.of(fn), List.of(), List.of(), List.of(), List.of(), List.of());
+    var registry = new BuiltinDefinitionRegistry(new StaticLoader(Map.of(FLOE_KIND, catalog)));
+    var nodes = new BuiltinNodeRegistry(registry).nodesFor(FLOE_KIND, "1.0");
+
+    var built = nodes.functions().get(0);
+
+    assertThat(built.displayName()).isEqualTo("pg.abs");
+    assertThat(built.argumentTypes().get(0).getId()).isEqualTo(FLOE_KIND + ":pg.int4");
+    assertThat(built.returnType().getId()).isEqualTo(FLOE_KIND + ":pg.int4");
+  }
+
   // -----------------------------------------------------
   // Test Catalog Setup
   // -----------------------------------------------------
@@ -151,7 +181,7 @@ class BuiltinNodeRegistryTest {
             functions, List.of(), List.of(int4), List.of(), List.of(), List.of());
 
     var loader =
-        new StaticBuiltinCatalogLoader(
+        new StaticLoader(
             Map.of(
                 FLOE_KIND, catalog,
                 PG_KIND, catalog));
@@ -159,10 +189,10 @@ class BuiltinNodeRegistryTest {
     return new BuiltinDefinitionRegistry(loader);
   }
 
-  private static final class StaticBuiltinCatalogLoader extends BuiltinCatalogLoader {
+  private static final class StaticLoader extends BuiltinCatalogLoader {
     private final Map<String, BuiltinCatalogData> catalogs;
 
-    private StaticBuiltinCatalogLoader(Map<String, BuiltinCatalogData> catalogs) {
+    private StaticLoader(Map<String, BuiltinCatalogData> catalogs) {
       this.catalogs = catalogs;
     }
 

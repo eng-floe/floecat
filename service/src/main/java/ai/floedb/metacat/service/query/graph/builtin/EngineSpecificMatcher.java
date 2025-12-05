@@ -57,80 +57,119 @@ public final class EngineSpecificMatcher {
   }
 
   /**
-   * Compares engine versions using "natural" ordering rules. Examples:
+   * Planner-agnostic SemVer-like version comparison.
    *
-   * <ul>
-   *   <li>"10" &gt; "2" (numeric magnitudes, ignoring leading zeros).
-   *   <li>"16.1" &gt; "16.0beta2" (numeric segment beats alphanumeric suffix at the same position).
-   *   <li>"16.1beta" &lt; "16.1" (letters sort before digits at the same position).
-   * </ul>
+   * <p>Supports arbitrary vendor version strings such as: "1.0", "1.0.1", "1.0-beta", "1.0beta2",
+   * "16.0rc1", "2024.01.15-alpha".
    *
-   * Numeric segments are compared by magnitude, non-numeric segments are compared
-   * case-insensitively, and digit segments always sort after non-digit segments at the same
-   * position.
+   * <p>Rules: 1. Split version into (core, prerelease) parts. 2. Compare core version numerically
+   * segment-by-segment. 3. A version *without* prerelease is greater than the same version *with*
+   * prerelease. 4. Prerelease identifiers split on '.', compare each: - numeric identifiers compare
+   * numerically - non-numeric identifiers compare lexically (case-insensitive) - numeric
+   * identifiers are always greater than non-numeric ones
    */
   private static int compareVersions(String left, String right) {
-    if (left == null || left.isBlank()) {
-      left = "0";
+    left = normalizeVersion(left);
+    right = normalizeVersion(right);
+
+    var lp = splitVersion(left);
+    var rp = splitVersion(right);
+
+    // 1. Compare core version (numeric segments)
+    int coreCmp = compareDotSeparatedNumeric(lp.core, rp.core);
+    if (coreCmp != 0) {
+      return coreCmp;
     }
-    if (right == null || right.isBlank()) {
-      right = "0";
+
+    // 2. If cores equal: release > prerelease
+    boolean leftPre = !lp.prerelease.isEmpty();
+    boolean rightPre = !rp.prerelease.isEmpty();
+    if (leftPre && !rightPre) return -1;
+    if (!leftPre && rightPre) return 1;
+    if (!leftPre && !rightPre) return 0;
+
+    // 3. Compare prerelease segments
+    return comparePrerelease(lp.prerelease, rp.prerelease);
+  }
+
+  private static String normalizeVersion(String v) {
+    return (v == null || v.isBlank()) ? "0" : v.trim();
+  }
+
+  private record VersionParts(String core, List<String> prerelease) {}
+
+  private static VersionParts splitVersion(String v) {
+    // Detect prerelease: split on first dash or first sequence of letters after numbers
+    int dash = v.indexOf('-');
+    if (dash >= 0) {
+      return new VersionParts(v.substring(0, dash), List.of(v.substring(dash + 1).split("\\.")));
     }
+
+    // Handle versions like "1.0beta2" or "16.0rc1"
     int i = 0;
-    int j = 0;
-    int lenLeft = left.length();
-    int lenRight = right.length();
-    while (i < lenLeft && j < lenRight) {
-      char c1 = left.charAt(i);
-      char c2 = right.charAt(j);
-      boolean digit1 = Character.isDigit(c1);
-      boolean digit2 = Character.isDigit(c2);
-      if (digit1 && digit2) {
-        int start1 = i;
-        while (i < lenLeft && Character.isDigit(left.charAt(i))) {
-          i++;
-        }
-        int start2 = j;
-        while (j < lenRight && Character.isDigit(right.charAt(j))) {
-          j++;
-        }
-        String num1 = stripLeadingZeros(left.substring(start1, i));
-        String num2 = stripLeadingZeros(right.substring(start2, j));
-        if (num1.length() != num2.length()) {
-          return Integer.compare(num1.length(), num2.length());
-        }
-        int cmp = num1.compareTo(num2);
-        if (cmp != 0) {
-          return cmp;
-        }
-        continue;
-      }
-      if (digit1 != digit2) {
-        return digit1 ? 1 : -1;
-      }
-      char normalized1 = Character.toLowerCase(c1);
-      char normalized2 = Character.toLowerCase(c2);
-      if (normalized1 != normalized2) {
-        return normalized1 - normalized2;
-      }
+    while (i < v.length() && (Character.isDigit(v.charAt(i)) || v.charAt(i) == '.')) {
       i++;
-      j++;
     }
-    if (i < lenLeft) {
-      return 1;
+
+    if (i == v.length()) {
+      return new VersionParts(v, List.of());
     }
-    if (j < lenRight) {
-      return -1;
+    return new VersionParts(v.substring(0, i), List.of(v.substring(i).split("\\.")));
+  }
+
+  private static int compareDotSeparatedNumeric(String a, String b) {
+    String[] as = a.split("\\.");
+    String[] bs = b.split("\\.");
+
+    int n = Math.max(as.length, bs.length);
+    for (int i = 0; i < n; i++) {
+      int ai = (i < as.length) ? parseIntSafe(as[i]) : 0;
+      int bi = (i < bs.length) ? parseIntSafe(bs[i]) : 0;
+      int cmp = Integer.compare(ai, bi);
+      if (cmp != 0) return cmp;
     }
     return 0;
   }
 
-  private static String stripLeadingZeros(String value) {
-    int index = 0;
-    while (index < value.length() && value.charAt(index) == '0') {
-      index++;
+  private static int parseIntSafe(String s) {
+    try {
+      return Integer.parseInt(s);
+    } catch (NumberFormatException e) {
+      return 0;
     }
-    String stripped = value.substring(index);
-    return stripped.isEmpty() ? "0" : stripped;
+  }
+
+  private static int comparePrerelease(List<String> left, List<String> right) {
+    int n = Math.max(left.size(), right.size());
+    for (int i = 0; i < n; i++) {
+      String l = (i < left.size()) ? left.get(i) : "";
+      String r = (i < right.size()) ? right.get(i) : "";
+
+      int cmp = comparePrereleaseToken(l, r);
+      if (cmp != 0) {
+        return cmp;
+      }
+    }
+    return 0;
+  }
+
+  private static int comparePrereleaseToken(String a, String b) {
+    boolean aNum = a.matches("\\d+");
+    boolean bNum = b.matches("\\d+");
+
+    // Empty (missing) prerelease segments < any actual identifier
+    if (a.isEmpty() && !b.isEmpty()) return -1;
+    if (!a.isEmpty() && b.isEmpty()) return 1;
+
+    if (aNum && bNum) {
+      return Integer.compare(Integer.parseInt(a), Integer.parseInt(b));
+    }
+
+    // Numeric identifiers have higher precedence than alpha identifiers
+    if (aNum && !bNum) return 1;
+    if (!aNum && bNum) return -1;
+
+    // Lexical compare for non-numeric
+    return a.compareToIgnoreCase(b);
   }
 }
