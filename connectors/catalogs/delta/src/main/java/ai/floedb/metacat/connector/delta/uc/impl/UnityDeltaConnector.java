@@ -7,7 +7,6 @@ import ai.floedb.metacat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.connector.common.GenericStatsEngine;
-import ai.floedb.metacat.connector.common.PlannedFile;
 import ai.floedb.metacat.connector.common.ProtoStatsBuilder;
 import ai.floedb.metacat.connector.common.StatsEngine;
 import ai.floedb.metacat.connector.common.ndv.NdvProvider;
@@ -16,8 +15,6 @@ import ai.floedb.metacat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.metacat.connector.spi.AuthProvider;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
-import ai.floedb.metacat.execution.rpc.ScanFile;
-import ai.floedb.metacat.execution.rpc.ScanFileContent;
 import ai.floedb.metacat.types.LogicalType;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -321,56 +318,6 @@ public final class UnityDeltaConnector implements MetacatConnector {
             Map.of(),
             0,
             null));
-  }
-
-  @Override
-  public ScanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime) {
-    final String tableRoot = storageLocation(namespaceFq, tableName);
-    final Table table = Table.forPath(engine, tableRoot);
-
-    final Snapshot snap = resolveSnapshot(table, snapshotId, asOfTime);
-    final long version = snap.getVersion();
-
-    try (var planner =
-        new DeltaPlanner(engine, parquetInput, tableRoot, version, null, null, null, false)) {
-
-      if (planner.hasInlineDeletionVectors()) {
-        throw new UnsupportedOperationException(
-            "Delta table uses inline deletion vectors; not supported for snapshot " + version);
-      }
-
-      List<ScanFile> data = new ArrayList<>();
-      for (PlannedFile<String> pf : planner) {
-        data.add(
-            ScanFile.newBuilder()
-                .setFilePath(pf.path())
-                .setFileFormat("PARQUET")
-                .setFileSizeInBytes(pf.sizeBytes())
-                .setRecordCount(pf.rowCount())
-                .setFileContent(ScanFileContent.SCAN_FILE_CONTENT_DATA)
-                .build());
-      }
-
-      List<ScanFile> deletes = new ArrayList<>();
-      for (DeletionVectorDescriptor dv : planner.deletionVectors()) {
-        String dvPath =
-            (dv.isOnDisk() && dv.getPathOrInlineDv() != null) ? dv.getPathOrInlineDv() : "";
-        long rowCount = dv.getCardinality();
-        long sizeBytes = dv.getSizeInBytes();
-        deletes.add(
-            ScanFile.newBuilder()
-                .setFilePath(dvPath)
-                .setFileFormat("DELETION_VECTOR")
-                .setFileSizeInBytes(sizeBytes)
-                .setRecordCount(rowCount)
-                .setFileContent(ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES)
-                .build());
-      }
-
-      return new ScanBundle(data, deletes);
-    } catch (Exception e) {
-      throw new RuntimeException("Enumerating Delta files failed (version " + version + ")", e);
-    }
   }
 
   @Override

@@ -37,8 +37,6 @@ public interface MetacatConnector extends Closeable {
     return enumerateSnapshotsWithStats(namespaceFq, tableName, destinationTableId, includeColumns);
   }
 
-  ScanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime);
-
   @Override
   void close();
 

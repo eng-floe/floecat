@@ -23,10 +23,10 @@ import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;
 import org.jboss.logging.Logger;
 
-/** Handles mirroring Iceberg metadata files into the table's backing storage (e.g. S3). */
+/** Handles materializing Iceberg metadata files into the table's backing storage (e.g. S3). */
 @ApplicationScoped
-public class MetadataMirrorService {
-  private static final Logger LOG = Logger.getLogger(MetadataMirrorService.class);
+public class MaterializeMetadataService {
+  private static final Logger LOG = Logger.getLogger(MaterializeMetadataService.class);
   private static final String DEFAULT_IO_IMPL = "org.apache.iceberg.aws.s3.S3FileIO";
   private static final Set<String> IO_PROP_PREFIXES =
       Set.of("s3.", "s3a.", "s3n.", "fs.", "client.", "aws.", "hadoop.");
@@ -39,25 +39,25 @@ public class MetadataMirrorService {
     this.mapper = mapper;
   }
 
-  public record MirrorResult(String metadataLocation, TableMetadataView metadata) {}
+  public record MaterializeResult(String metadataLocation, TableMetadataView metadata) {}
 
-  public MirrorResult mirror(
+  public MaterializeResult materialize(
       String namespaceFq,
       String tableName,
       TableMetadataView metadata,
       String metadataLocationOverride) {
     if (metadata == null) {
       LOG.debugf(
-          "Skipping metadata mirror for %s.%s because commit metadata was empty",
+          "Skipping metadata materialization for %s.%s because commit metadata was empty",
           namespaceFq, tableName);
-      return new MirrorResult(metadataLocationOverride, null);
+      return new MaterializeResult(metadataLocationOverride, null);
     }
     String requestedLocation = firstNonBlank(metadataLocationOverride, metadata.metadataLocation());
-    if (requestedLocation != null && !shouldMirror(requestedLocation)) {
+    if (requestedLocation != null && !shouldMaterialize(requestedLocation)) {
       LOG.debugf(
-          "Skipping metadata mirror for %s.%s because metadata-location was %s",
+          "Skipping metadata materialization for %s.%s because metadata-location was %s",
           namespaceFq, tableName, requestedLocation);
-      return new MirrorResult(requestedLocation, metadata);
+      return new MaterializeResult(requestedLocation, metadata);
     }
     String resolvedLocation = null;
     FileIO fileIO = null;
@@ -67,28 +67,28 @@ public class MetadataMirrorService {
       resolvedLocation = resolveVersionedLocation(fileIO, requestedLocation, metadata);
       if (resolvedLocation == null || resolvedLocation.isBlank()) {
         LOG.debugf(
-            "Skipping metadata mirror for %s.%s because metadata-location was unavailable",
+            "Skipping metadata materialization for %s.%s because metadata-location was unavailable",
             namespaceFq, tableName);
-        return new MirrorResult(requestedLocation, metadata);
+        return new MaterializeResult(requestedLocation, metadata);
       }
       TableMetadataView resolvedMetadata = metadata.withMetadataLocation(resolvedLocation);
       String canonicalJson = canonicalMetadataJson(resolvedMetadata, resolvedLocation);
       writeJson(fileIO, resolvedLocation, canonicalJson);
       LOG.infof(
-          "Mirrored Iceberg metadata files for %s.%s to %s",
+          "Materialized Iceberg metadata files for %s.%s to %s",
           namespaceFq, tableName, resolvedLocation);
-      return new MirrorResult(resolvedLocation, resolvedMetadata);
-    } catch (MetadataMirrorException e) {
+      return new MaterializeResult(resolvedLocation, resolvedMetadata);
+    } catch (MaterializeMetadataException e) {
       throw e;
     } catch (Exception e) {
-      throw new MetadataMirrorException(
-          "Failed to mirror Iceberg metadata files to " + resolvedLocation, e);
+      throw new MaterializeMetadataException(
+          "Failed to materialize Iceberg metadata files to " + resolvedLocation, e);
     } finally {
       closeQuietly(fileIO);
     }
   }
 
-  private boolean shouldMirror(String metadataLocation) {
+  private boolean shouldMaterialize(String metadataLocation) {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return false;
     }
@@ -104,7 +104,8 @@ public class MetadataMirrorService {
       return !SKIPPED_SCHEMES.contains(scheme.toLowerCase(Locale.ROOT));
     } catch (IllegalArgumentException e) {
       LOG.debugf(
-          "Skipping metadata mirror because metadata-location %s is invalid", metadataLocation);
+          "Skipping metadata materialization because metadata-location %s is invalid",
+          metadataLocation);
       return false;
     }
   }
@@ -115,14 +116,14 @@ public class MetadataMirrorService {
       Class<?> clazz = Class.forName(impl);
       Object instance = clazz.getDeclaredConstructor().newInstance();
       if (!(instance instanceof FileIO fileIO)) {
-        throw new MetadataMirrorException(impl + " does not implement FileIO");
+        throw new MaterializeMetadataException(impl + " does not implement FileIO");
       }
       fileIO.initialize(filterIoProperties(props));
       return fileIO;
-    } catch (MetadataMirrorException e) {
+    } catch (MaterializeMetadataException e) {
       throw e;
     } catch (Exception e) {
-      throw new MetadataMirrorException("Unable to instantiate FileIO " + impl, e);
+      throw new MaterializeMetadataException("Unable to instantiate FileIO " + impl, e);
     }
   }
 
@@ -158,7 +159,7 @@ public class MetadataMirrorService {
       TableMetadata parsed = TableMetadataParser.fromJson(metadataLocation, node);
       return TableMetadataParser.toJson(parsed);
     } catch (RuntimeException e) {
-      throw new MetadataMirrorException("Unable to serialize Iceberg metadata", e);
+      throw new MaterializeMetadataException("Unable to serialize Iceberg metadata", e);
     }
   }
 
@@ -168,7 +169,7 @@ public class MetadataMirrorService {
     try (PositionOutputStream stream = outputFile.createOrOverwrite()) {
       stream.write(data);
     } catch (IOException e) {
-      throw new MetadataMirrorException("Failed to write metadata file " + location, e);
+      throw new MaterializeMetadataException("Failed to write metadata file " + location, e);
     }
   }
 

@@ -10,10 +10,6 @@ This document describes the Iceberg REST protocol gateway that fronts Metacat an
 - Implements the full single-catalog write path expected by Iceberg REST clients: stage-create, transaction commit, per-table commit (updates, snapshots, refs), metrics ingestion, and reconcile triggers.
 - Current non-goals: multi-catalog transactions, `/plan` task pagination (`/tasks`), and inline manifest serving. These still require new RPCs or connector-level support.
 
-## Reference
-
-- Apache Gravitino Iceberg REST server for routing and DTO patterns: `gravitino/iceberg/iceberg-rest-server/src/main/java/org/apache/gravitino/iceberg/server/GravitinoIcebergRESTServer.java` and `.../service/rest/Iceberg*Operations.java`.
-
 ## Metacat gRPC coverage vs Iceberg REST
 
 | Iceberg REST surface | Metacat gRPC | Notes |
@@ -50,16 +46,13 @@ This document describes the Iceberg REST protocol gateway that fronts Metacat an
 
 ## Implementation architecture
 
-- Quarkus REST controllers per resource: Config, Namespace, Table, View, Snapshot, Stats (metrics). Planning and rename endpoints live under the table/view controllers.
-- gRPC clients injected for Catalog, Namespace, Table, View, Snapshot, Schema, Directory, TableStatistics, and Query services via `GrpcClients`.
-- Stage storage: `StagedTableRepository` persisted via the catalog DB keeps staged payloads keyed by tenant/catalog/namespace/table + stage-id. `StagedTableService` handles save/load/delete/expiry.
-- `StageCommitProcessor` takes a staged entry, replays the Iceberg spec via `TableService` (create or fetch existing), loads current metadata/snapshots via `SnapshotService`, wires connectors, and returns the canonical `LoadTableResultDto`.
-- Auth: `TenantHeaderFilter` enforces tenant/auth headers and pushes metadata into gRPC calls using `GrpcWithHeaders`.
-- Config resolution: `/v1/config` builds defaults/overrides/endpoints from gateway config (`IcebergGatewayConfig`) and the catalog mapping.
-- DTO translation: dedicated records (`LoadTableResultDto`, `PlanResponseDto`, etc.) map proto responses to the Iceberg spec. Field masks handle partial updates (rename/move).
-- Error mapping: `ErrorMapper` wraps gRPC `StatusRuntimeException` into Iceberg’s `{"error":{message,type,code}}` contract.
-- Planning: `/plan` calls `QueryService.beginQuery`, `/plan/{planId}` calls `GetQuery`, `/plan/{planId}` DELETE calls `EndQuery`. Large plans are currently returned in one payload (no `/tasks` pagination yet).
-- Metrics: `/tables/{table}/metrics` writes reports via `TableStatisticsService.putTableStats`.
+- Quarkus REST controllers cover each Iceberg resource (Config, Namespace, Table, View, Snapshot, Stats). Planning and rename endpoints live with the table/view controllers, while `/transactions/*` is handled by the table resource.
+- Each controller injects `GrpcWithHeaders` clients for the underlying Metacat services (Catalog, Namespace, Table, View, Snapshot, Schema, Directory, TableStatistics, Query) so requests stay in-process and follow tenant context.
+- Stage storage: `StagedTableRepository` records create/commit payloads keyed by tenant/catalog/namespace/table + stage-id; `StagedTableService` keeps the payload lifecycle and TTL enforcement.
+- Snapshot handling: `SnapshotMetadataService` directly rewrites Iceberg metadata/snapshot APIs, while `TableCommitService` now materializes snapshot metadata files (via `MaterializeMetadataService`) before updating `TableService` to avoid dangling `metadata-location` references.
+- Response mappers/DTOs (`LoadTableResultDto`, `CommitTableResponseDto`, `TableMetadataView`) synthesize the Iceberg spec from catalog metadata and snapshot refs; field masks drive partial updates (rename/move/props) and connectors use the resolved metadata location.
+- Connector wiring: `TableCommitSideEffectService` creates or updates connectors, updates table upstreams, and runs metadata capture/reconcile after commits. REST helpers mirror this path when staging or admin operations materialize metadata and return credentials/config.
+- Auth/config: `TenantHeaderFilter` propagates tenant headers and `IcebergGatewayConfig` + catalog mappings resolve prefixes/catalog IDs and runtime overrides for metadata copying or connector creation.
 
 ## Write path and transaction flow
 

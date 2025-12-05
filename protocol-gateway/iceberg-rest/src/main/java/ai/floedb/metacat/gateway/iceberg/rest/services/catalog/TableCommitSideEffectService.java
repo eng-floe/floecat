@@ -6,8 +6,8 @@ import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.metadata.TableMetadataView;
-import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MetadataMirrorException;
-import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MetadataMirrorService;
+import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MaterializeMetadataException;
+import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -21,48 +21,50 @@ import org.jboss.logging.Logger;
 public class TableCommitSideEffectService {
   private static final Logger LOG = Logger.getLogger(TableCommitSideEffectService.class);
 
-  @Inject MetadataMirrorService metadataMirrorService;
+  @Inject MaterializeMetadataService materializeMetadataService;
   @Inject TableLifecycleService tableLifecycleService;
 
-  public MirrorMetadataResult mirrorMetadata(
+  public MaterializeMetadataResult materializeMetadata(
       String namespace,
       ResourceId tableId,
       String table,
       TableMetadataView metadata,
       String metadataLocation) {
     if (metadata == null) {
-      return MirrorMetadataResult.success(null, metadataLocation);
+      return MaterializeMetadataResult.success(null, metadataLocation);
     }
     try {
-      MetadataMirrorService.MirrorResult mirrorResult =
-          metadataMirrorService.mirror(namespace, table, metadata, metadataLocation);
+      MaterializeMetadataService.MaterializeResult mirrorResult =
+          materializeMetadataService.materialize(namespace, table, metadata, metadataLocation);
       String resolvedLocation = nonBlank(mirrorResult.metadataLocation(), metadataLocation);
       TableMetadataView resolvedMetadata =
           mirrorResult.metadata() != null ? mirrorResult.metadata() : metadata;
       if (tableId != null) {
         updateTableMetadataProperties(tableId, resolvedMetadata, resolvedLocation);
       }
-      return MirrorMetadataResult.success(resolvedMetadata, resolvedLocation);
-    } catch (MetadataMirrorException e) {
+      return MaterializeMetadataResult.success(resolvedMetadata, resolvedLocation);
+    } catch (MaterializeMetadataException e) {
       LOG.warnf(
           e,
-          "Failed to mirror Iceberg metadata for %s.%s to %s (serving original metadata)",
+          "Failed to materialize Iceberg metadata for %s.%s to %s (serving original metadata)",
           namespace,
           table,
           metadataLocation);
-      return MirrorMetadataResult.success(metadata, metadataLocation);
+      return MaterializeMetadataResult.success(metadata, metadataLocation);
     }
   }
 
-  public CommitTableResponseDto applyMirrorResult(
-      CommitTableResponseDto responseDto, MirrorMetadataResult mirrorResult) {
-    if (responseDto == null || mirrorResult == null) {
+  public CommitTableResponseDto applyMaterializationResult(
+      CommitTableResponseDto responseDto, MaterializeMetadataResult materializationResult) {
+    if (responseDto == null || materializationResult == null) {
       return responseDto;
     }
     TableMetadataView updatedMetadata =
-        mirrorResult.metadata() != null ? mirrorResult.metadata() : responseDto.metadata();
+        materializationResult.metadata() != null
+            ? materializationResult.metadata()
+            : responseDto.metadata();
     String updatedLocation =
-        nonBlank(mirrorResult.metadataLocation(), responseDto.metadataLocation());
+        nonBlank(materializationResult.metadataLocation(), responseDto.metadataLocation());
     if (updatedMetadata == responseDto.metadata()
         && java.util.Objects.equals(updatedLocation, responseDto.metadataLocation())) {
       return responseDto;
@@ -226,7 +228,7 @@ public class TableCommitSideEffectService {
       ResourceId tableId,
       Table tableRecord,
       CommitTableResponseDto responseDto,
-      boolean skipMirroring,
+      boolean skipMaterialization,
       TableGatewaySupport tableSupport,
       String prefix,
       List<String> namespacePath,
@@ -237,18 +239,18 @@ public class TableCommitSideEffectService {
       return PostCommitResult.success(null, null);
     }
     CommitTableResponseDto resolvedResponse = responseDto;
-    if (!skipMirroring) {
-      MirrorMetadataResult mirrorResult =
-          mirrorMetadata(
+    if (!skipMaterialization) {
+      MaterializeMetadataResult materializationResult =
+          materializeMetadata(
               namespace,
               tableId,
               tableName,
               responseDto.metadata(),
               responseDto.metadataLocation());
-      if (mirrorResult.error() != null) {
-        return PostCommitResult.failure(mirrorResult.error());
+      if (materializationResult.error() != null) {
+        return PostCommitResult.failure(materializationResult.error());
       }
-      resolvedResponse = applyMirrorResult(responseDto, mirrorResult);
+      resolvedResponse = applyMaterializationResult(responseDto, materializationResult);
     }
     ResourceId connectorId =
         synchronizeConnector(

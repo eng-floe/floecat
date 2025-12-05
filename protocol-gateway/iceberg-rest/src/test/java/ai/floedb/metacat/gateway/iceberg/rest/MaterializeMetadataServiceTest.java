@@ -3,7 +3,7 @@ package ai.floedb.metacat.gateway.iceberg.rest;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.metacat.gateway.iceberg.rest.api.metadata.TableMetadataView;
-import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MetadataMirrorService;
+import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -12,11 +12,11 @@ import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.SeekableInputStream;
 import org.junit.jupiter.api.Test;
 
-class MetadataMirrorServiceTest {
+class MaterializeMetadataServiceTest {
 
   @Test
   void mirrorsMetadataAndPointerFiles() throws IOException {
-    MetadataMirrorService service = new MetadataMirrorService();
+    MaterializeMetadataService service = new MaterializeMetadataService();
     ObjectMapper mapper = new ObjectMapper();
     service.setMapper(mapper);
 
@@ -77,8 +77,8 @@ class MetadataMirrorServiceTest {
             """,
             TableMetadataView.class);
 
-    MetadataMirrorService.MirrorResult mirrorResult =
-        service.mirror("ns", "table", metadata, metadata.metadataLocation());
+    MaterializeMetadataService.MaterializeResult mirrorResult =
+        service.materialize("ns", "table", metadata, metadata.metadataLocation());
 
     InMemoryFileIO io = new InMemoryFileIO();
     String metadataJson = readFile(io, mirrorResult.metadataLocation());

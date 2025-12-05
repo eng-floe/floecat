@@ -145,15 +145,19 @@ clean-dev:
 # ===================================================
 # Dev (foreground)
 # ===================================================
-.PHONY: run
-run: $(PROTO_JAR)
-	@$(MAKE) start-rest
+.PHONY: run run-service run-all
+run: run-service
+
+run-service: $(PROTO_JAR)
 	@echo "==> [DEV] quarkus:dev (profile=$(QUARKUS_PROFILE))"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
 	  $(QUARKUS_DEV_ARGS) \
 	  $(REACTOR_SERVICE) \
 	  $(QUARKUS_DEV_GOAL)
+
+.PHONY: run-all
+run-all: start-rest run-service
 
 # ===================================================
 # Dev (background)
@@ -184,8 +188,9 @@ run-rest:
 	  $(REACTOR_REST) \
 	  $(QUARKUS_DEV_GOAL)
 
-.PHONY: start-service start-rest start
-start: start-service start-rest
+.PHONY: start-service start-rest start start-all
+start: start-service
+start-all: start-service start-rest
 
 start-service: $(PROTO_JAR)
 	@if [ -f "$(SERVICE_PID)" ] && ps -p $$(cat "$(SERVICE_PID)") >/dev/null 2>&1; then \

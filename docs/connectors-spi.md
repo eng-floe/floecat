@@ -18,8 +18,6 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Metac
   - `describe(namespaceFq, tableName)` → `TableDescriptor` with location, schema JSON, partition
     keys, and properties.
   - `enumerateSnapshotsWithStats(...)` → `SnapshotBundle`s containing per-snapshot table/column/file stats plus optional Iceberg metadata blobs.
-  - `plan(namespaceFq, tableName, snapshotId, asOfTime)` → `ScanBundle` describing data/delete files pinned to the snapshot. (The SPI keeps the upstream “plan” term so Iceberg/Delta authors can map it directly to their native APIs.)
-- _Terminology note_: elsewhere in the repo “planning” refers to the dedicated planner service. Within the SPI the `plan()` verb simply mirrors upstream engines (`TableScan.planFiles()` in Iceberg, Delta manifests) to keep connector authors oriented; the returned `ScanBundle` is purely execution metadata.
 - **`ConnectorFactory`** – Instantiates connectors given a `ConnectorConfig` (URI, options,
   authentication). The service uses it to validate specs and the reconciler uses it during runs.
 - **`ConnectorConfigMapper`** – Bidirectional conversion between RPC `Connector` protobufs and the
@@ -41,7 +39,6 @@ interface MetacatConnector extends Closeable {
   List<String> listTables(String namespaceFq);
   TableDescriptor describe(String namespaceFq, String tableName);
   List<SnapshotBundle> enumerateSnapshotsWithStats(...);
-  ScanBundle plan(...);
 }
 ```
 `TableDescriptor`, `SnapshotBundle`, and `ScanBundle` are immutable records; connectors populate them
@@ -78,7 +75,6 @@ ConnectorFactory.create(ConnectorConfig)
       → listNamespaces/listTables → service repo ensures namespace/table existence
       → describe → Table specs persisted with upstream references
       → enumerateSnapshotsWithStats → StatsRepository writes Table/Column/File stats per snapshot
-      → plan → `QueryService.FetchScanBundle` returns data/delete file manifests to planners
   ← close() cleans up HTTP/S3/DB connections
 ```
 `ConnectorFactory.create` is invoked both in `ConnectorsImpl.validate` (short-lived) and in the

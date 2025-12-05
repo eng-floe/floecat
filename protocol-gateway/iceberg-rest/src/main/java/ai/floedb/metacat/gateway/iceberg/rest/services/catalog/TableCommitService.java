@@ -221,35 +221,9 @@ public class TableCommitService {
       if (locationError != null) {
         return locationError;
       }
-      if (snapshotContext.lastSnapshotId != null) {
-        Map<String, String> propsForMirror =
-            tablePropertyService.ensurePropertyMap(tableSupplier, mergedProps);
-        MirrorMetadataResult pendingMirror =
-            mirrorPendingSnapshotMetadata(
-                namespace,
-                table,
-                tableId,
-                tableSupplier,
-                propsForMirror,
-                snapshotContext.lastSnapshotId);
-        if (pendingMirror != null) {
-          TableMetadataView pendingMetadata =
-              pendingMirror.metadata() != null ? pendingMirror.metadata() : null;
-          String resolvedLocation =
-              nonBlank(
-                  pendingMirror.metadataLocation(),
-                  pendingMetadata != null ? pendingMetadata.metadataLocation() : null);
-          mergedProps =
-              pendingMetadata != null && pendingMetadata.properties() != null
-                  ? new LinkedHashMap<>(pendingMetadata.properties())
-                  : propsForMirror;
-          if (mergedProps != null && resolvedLocation != null && !resolvedLocation.isBlank()) {
-            mergedProps.put("metadata-location", resolvedLocation);
-            mergedProps.put("metadata_location", resolvedLocation);
-            snapshotContext.mirroredMetadataLocation = resolvedLocation;
-          }
-        }
-      }
+      mergedProps =
+          materializePendingSnapshotMetadataIfNeeded(
+              namespace, table, tableId, tableSupplier, mergedProps, snapshotContext);
       String unsupported = unsupportedUpdateAction(req);
       if (unsupported != null) {
         return validationError("unsupported commit update action: " + unsupported);
@@ -307,10 +281,10 @@ public class TableCommitService {
     List<Snapshot> snapshotList = fetchSnapshots(tableId, SnapshotMode.ALL, metadata);
     CommitTableResponseDto initialResponse =
         TableResponseMapper.toCommitResponse(table, updated, metadata, snapshotList);
-    boolean skipMirror = snapshotContext.hasMirroredMetadata();
+    boolean skipMaterialization = snapshotContext.hasMaterializedMetadata();
     CommitTableResponseDto responseDto = initialResponse;
-    if (skipMirror) {
-      String location = snapshotContext.mirroredMetadataLocation;
+    if (skipMaterialization) {
+      String location = snapshotContext.materializedMetadataLocation;
       responseDto =
           new CommitTableResponseDto(
               location,
@@ -325,7 +299,7 @@ public class TableCommitService {
             tableId,
             updated,
             responseDto,
-            skipMirror,
+            skipMaterialization,
             tableSupport,
             prefix,
             namespacePath,
@@ -453,18 +427,18 @@ public class TableCommitService {
         .build();
   }
 
-  private MirrorMetadataResult mirrorPendingSnapshotMetadata(
+  private MaterializeMetadataResult materializePendingSnapshotMetadata(
       String namespace,
       String tableName,
       ResourceId tableId,
       Supplier<Table> tableSupplier,
       Map<String, String> mergedProps,
-      Long snapshotIdForMirror) {
-    if (snapshotIdForMirror == null) {
+      Long snapshotIdForMaterialization) {
+    if (snapshotIdForMaterialization == null) {
       return null;
     }
     IcebergMetadata snapshotMetadata =
-        snapshotMetadataService.loadSnapshotMetadata(tableId, snapshotIdForMirror);
+        snapshotMetadataService.loadSnapshotMetadata(tableId, snapshotIdForMaterialization);
     if (snapshotMetadata == null) {
       return null;
     }
@@ -473,18 +447,60 @@ public class TableCommitService {
     CommitTableResponseDto pendingResponse =
         TableResponseMapper.toCommitResponse(
             tableName, tableForMetadata, snapshotMetadata, snapshotList);
-    return sideEffectService.mirrorMetadata(
+    return sideEffectService.materializeMetadata(
         namespace, null, tableName, pendingResponse.metadata(), pendingResponse.metadataLocation());
   }
 
+  private Map<String, String> materializePendingSnapshotMetadataIfNeeded(
+      String namespace,
+      String tableName,
+      ResourceId tableId,
+      Supplier<Table> tableSupplier,
+      Map<String, String> mergedProps,
+      SnapshotUpdateContext snapshotContext) {
+    if (snapshotContext == null || snapshotContext.lastSnapshotId == null) {
+      return mergedProps;
+    }
+    Map<String, String> propsForMaterialization =
+        tablePropertyService.ensurePropertyMap(tableSupplier, mergedProps);
+    MaterializeMetadataResult pendingMaterialization =
+        materializePendingSnapshotMetadata(
+            namespace,
+            tableName,
+            tableId,
+            tableSupplier,
+            propsForMaterialization,
+            snapshotContext.lastSnapshotId);
+    if (pendingMaterialization != null) {
+      TableMetadataView pendingMetadata =
+          pendingMaterialization.metadata() != null ? pendingMaterialization.metadata() : null;
+      String resolvedLocation =
+          nonBlank(
+              pendingMaterialization.metadataLocation(),
+              pendingMetadata != null ? pendingMetadata.metadataLocation() : null);
+      Map<String, String> updatedProps =
+          pendingMetadata != null && pendingMetadata.properties() != null
+              ? new LinkedHashMap<>(pendingMetadata.properties())
+              : propsForMaterialization;
+      if (updatedProps != null && resolvedLocation != null && !resolvedLocation.isBlank()) {
+        updatedProps.put("metadata-location", resolvedLocation);
+        updatedProps.put("metadata_location", resolvedLocation);
+        snapshotContext.materializedMetadataLocation = resolvedLocation;
+      }
+      return updatedProps;
+    }
+    return mergedProps;
+  }
+
   /** Exposes mirroring for legacy call sites such as {@link TableResource}. */
-  public MirrorMetadataResult mirrorMetadata(
+  public MaterializeMetadataResult materializeMetadata(
       String namespace,
       ResourceId tableId,
       String table,
       TableMetadataView metadata,
       String metadataLocation) {
-    return sideEffectService.mirrorMetadata(namespace, tableId, table, metadata, metadataLocation);
+    return sideEffectService.materializeMetadata(
+        namespace, tableId, table, metadata, metadataLocation);
   }
 
   /** Exposes connector sync orchestration for legacy call sites. */

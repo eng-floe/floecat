@@ -2,9 +2,9 @@ package ai.floedb.metacat.gateway.iceberg.rest.services.catalog;
 
 class SnapshotUpdateContext {
   Long lastSnapshotId;
-  String mirroredMetadataLocation;
+  String materializedMetadataLocation;
 
-  boolean hasMirroredMetadata() {
-    return mirroredMetadataLocation != null && !mirroredMetadataLocation.isBlank();
+  boolean hasMaterializedMetadata() {
+    return materializedMetadataLocation != null && !materializedMetadataLocation.isBlank();
   }
 }

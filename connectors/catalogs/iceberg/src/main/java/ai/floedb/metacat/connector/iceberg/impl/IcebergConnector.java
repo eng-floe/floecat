@@ -25,8 +25,6 @@ import ai.floedb.metacat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.metacat.connector.common.ndv.StaticOnceNdvProvider;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
-import ai.floedb.metacat.execution.rpc.ScanFile;
-import ai.floedb.metacat.execution.rpc.ScanFileContent;
 import ai.floedb.metacat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
@@ -44,7 +42,6 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.ContentFile;
-import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.HistoryEntry;
@@ -81,6 +78,7 @@ public final class IcebergConnector implements MetacatConnector {
   private final boolean ndvEnabled;
   private final double ndvSampleFraction;
   private final long ndvMaxFiles;
+  private final FileIO externalFileIO;
 
   private static final org.slf4j.Logger LOG =
       org.slf4j.LoggerFactory.getLogger(IcebergConnector.class);
@@ -94,7 +92,8 @@ public final class IcebergConnector implements MetacatConnector {
       String singleTableName,
       boolean ndvEnabled,
       double ndvSampleFraction,
-      long ndvMaxFiles) {
+      long ndvMaxFiles,
+      FileIO externalFileIO) {
     this.connectorId = connectorId;
     this.catalog = catalog;
     this.glueFilter = filter;
@@ -104,6 +103,7 @@ public final class IcebergConnector implements MetacatConnector {
     this.ndvEnabled = ndvEnabled;
     this.ndvSampleFraction = ndvSampleFraction;
     this.ndvMaxFiles = ndvMaxFiles;
+    this.externalFileIO = externalFileIO;
   }
 
   public static MetacatConnector create(
@@ -132,7 +132,9 @@ public final class IcebergConnector implements MetacatConnector {
 
     String externalMetadata = opts.get("external.metadata-location");
     if (externalMetadata != null && !externalMetadata.isBlank()) {
-      Table table = loadExternalTable(externalMetadata, opts);
+      LoadedExternalTable loaded = loadExternalTable(externalMetadata, opts);
+      Table table = loaded.table();
+      FileIO fileIO = loaded.fileIO();
       String namespaceFq = opts.getOrDefault("external.namespace", "");
       String detectedName =
           (table.name() == null || table.name().isBlank())
@@ -148,7 +150,8 @@ public final class IcebergConnector implements MetacatConnector {
           tableName,
           ndvEnabled,
           ndvSampleFraction,
-          ndvMaxFiles);
+          ndvMaxFiles,
+          fileIO);
     }
 
     Map<String, String> props = new HashMap<>();
@@ -214,7 +217,8 @@ public final class IcebergConnector implements MetacatConnector {
         null,
         ndvEnabled,
         ndvSampleFraction,
-        ndvMaxFiles);
+        ndvMaxFiles,
+        null);
   }
 
   @Override
@@ -413,62 +417,6 @@ public final class IcebergConnector implements MetacatConnector {
     return out;
   }
 
-  @Override
-  public ScanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime) {
-    Table table = loadTable(namespaceFq, tableName);
-
-    TableScan scan = table.newScan().includeColumnStats();
-    if (snapshotId > 0) {
-      scan.useSnapshot(snapshotId);
-    } else {
-      scan.asOfTime(asOfTime);
-    }
-
-    Snapshot snap = table.snapshot(snapshotId);
-    int schemaId = (snap != null) ? snap.schemaId() : table.schema().schemaId();
-    Schema schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
-    var schemaColumns = schema.columns();
-
-    ScanBundle result = new ScanBundle(new ArrayList<>(), new ArrayList<>());
-    try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
-      for (FileScanTask task : tasks) {
-        {
-          DataFile df = task.file();
-          var pf =
-              ScanFile.newBuilder()
-                  .setFilePath(df.location())
-                  .setFileFormat(df.format().name())
-                  .setFileSizeInBytes(df.fileSizeInBytes())
-                  .setRecordCount(df.recordCount())
-                  .setPartitionDataJson(partitionJson(table, df))
-                  .setPartitionSpecId(df.specId())
-                  .setFileContent(ScanFileContent.SCAN_FILE_CONTENT_DATA);
-          result.dataFiles().add(pf.build());
-        }
-
-        for (var df : task.deletes()) {
-          var pf =
-              ScanFile.newBuilder()
-                  .setFilePath(df.location())
-                  .setFileFormat(df.format().name())
-                  .setFileSizeInBytes(df.fileSizeInBytes())
-                  .setRecordCount(df.recordCount())
-                  .setPartitionDataJson(partitionJson(table, df))
-                  .setPartitionSpecId(df.specId())
-                  .setFileContent(
-                      df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
-                          ? ScanFileContent.SCAN_FILE_CONTENT_EQUALITY_DELETES
-                          : ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES);
-          result.deleteFiles().add(pf.build());
-        }
-      }
-    } catch (Exception e) {
-      throw new RuntimeException("Iceberg planning failed (snapshot " + snapshotId + ")", e);
-    }
-
-    return result;
-  }
-
   private boolean isSingleTableMode() {
     return singleTable != null;
   }
@@ -505,7 +453,8 @@ public final class IcebergConnector implements MetacatConnector {
     }
   }
 
-  private static Table loadExternalTable(String metadataLocation, Map<String, String> options) {
+  private static LoadedExternalTable loadExternalTable(
+      String metadataLocation, Map<String, String> options) {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       throw new IllegalArgumentException("metadataLocation is required");
     }
@@ -525,8 +474,10 @@ public final class IcebergConnector implements MetacatConnector {
     fileIO.initialize(ioProps);
     String resolvedMetadataLocation = resolveMetadataLocation(metadataLocation);
     StaticTableOperations ops = new StaticTableOperations(resolvedMetadataLocation, fileIO);
-    return new BaseTable(ops, deriveTableName(metadataLocation));
+    return new LoadedExternalTable(new BaseTable(ops, deriveTableName(metadataLocation)), fileIO);
   }
+
+  private static record LoadedExternalTable(Table table, FileIO fileIO) {}
 
   private static String deriveTableName(String metadataLocation) {
     if (metadataLocation == null || metadataLocation.isBlank()) {
@@ -789,6 +740,12 @@ public final class IcebergConnector implements MetacatConnector {
     try {
       catalog.close();
     } catch (Exception ignore) {
+    }
+    if (externalFileIO instanceof AutoCloseable closeable) {
+      try {
+        closeable.close();
+      } catch (Exception ignoreClose) {
+      }
     }
   }
 

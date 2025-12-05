@@ -22,7 +22,7 @@ import ai.floedb.metacat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.TaskRequests;
 import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
 import ai.floedb.metacat.gateway.iceberg.rest.resources.support.IcebergErrorResponses;
-import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.MirrorMetadataResult;
+import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.MaterializeMetadataResult;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.TableCommitService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
@@ -168,20 +168,22 @@ public class TableResource {
               tableName, created, metadata, List.of(), tableConfig, credentials);
     }
 
-    MirrorMetadataResult mirrorResult =
-        tableCommitService.mirrorMetadata(
+    MaterializeMetadataResult materializationResult =
+        tableCommitService.materializeMetadata(
             namespace,
             created.getResourceId(),
             tableName,
             loadResult.metadata(),
             loadResult.metadataLocation());
-    if (mirrorResult.error() != null) {
-      return mirrorResult.error();
+    if (materializationResult.error() != null) {
+      return materializationResult.error();
     }
     TableMetadataView responseMetadata =
-        mirrorResult.metadata() != null ? mirrorResult.metadata() : loadResult.metadata();
+        materializationResult.metadata() != null
+            ? materializationResult.metadata()
+            : loadResult.metadata();
     String responseMetadataLocation =
-        nonBlank(mirrorResult.metadataLocation(), loadResult.metadataLocation());
+        nonBlank(materializationResult.metadataLocation(), loadResult.metadataLocation());
     String preferredMetadataLocation =
         req != null && tableSupport.metadataLocationFromCreate(req) != null
             ? tableSupport.metadataLocationFromCreate(req)

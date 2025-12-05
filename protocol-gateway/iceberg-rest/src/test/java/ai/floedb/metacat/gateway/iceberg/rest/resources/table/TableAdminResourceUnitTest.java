@@ -25,7 +25,7 @@ import ai.floedb.metacat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.StageCommitProcessor;
-import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MetadataMirrorService;
+import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.tenant.TenantContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -43,7 +43,8 @@ class TableAdminResourceUnitTest {
   private final StagedTableService stagedTableService = mock(StagedTableService.class);
   private final TenantContext tenantContext = mock(TenantContext.class);
   private final StageCommitProcessor stageCommitProcessor = mock(StageCommitProcessor.class);
-  private final MetadataMirrorService metadataMirrorService = mock(MetadataMirrorService.class);
+  private final MaterializeMetadataService materializeMetadataService =
+      mock(MaterializeMetadataService.class);
   private final Config mpConfig = mock(Config.class);
   private final GrpcClients clients = mock(GrpcClients.class);
   private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryStub =
@@ -60,7 +61,7 @@ class TableAdminResourceUnitTest {
     resource.stagedTableService = stagedTableService;
     resource.tenantContext = tenantContext;
     resource.stageCommitProcessor = stageCommitProcessor;
-    resource.metadataMirrorService = metadataMirrorService;
+    resource.materializeMetadataService = materializeMetadataService;
     resource.mapper = new ObjectMapper();
     resource.mpConfig = mpConfig;
     resource.initSupport();

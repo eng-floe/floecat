@@ -16,8 +16,8 @@ import ai.floedb.metacat.gateway.iceberg.rest.resources.support.IcebergErrorResp
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.StageCommitException;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.StageCommitProcessor;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MetadataMirrorException;
-import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MetadataMirrorService;
+import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MaterializeMetadataException;
+import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.tenant.TenantContext;
@@ -46,7 +46,7 @@ public class TableAdminResource {
   @Inject StagedTableService stagedTableService;
   @Inject TenantContext tenantContext;
   @Inject StageCommitProcessor stageCommitProcessor;
-  @Inject MetadataMirrorService metadataMirrorService;
+  @Inject MaterializeMetadataService materializeMetadataService;
   @Inject ObjectMapper mapper;
   @Inject Config mpConfig;
 
@@ -125,22 +125,24 @@ public class TableAdminResource {
         String namespaceFq = String.join(".", update.table().namespace());
         ResourceId namespaceId =
             NameResolution.resolveNamespace(grpc, catalogName, update.table().namespace());
-        MirrorMetadataResult mirrorResult =
-            mirrorMetadata(
+        MaterializeMetadataResult materializationResult =
+            materializeMetadata(
                 namespaceFq,
                 stageResult.table().getResourceId(),
                 update.table().name(),
                 stageResult.loadResult().metadata(),
                 stageResult.loadResult().metadataLocation());
-        if (mirrorResult.error() != null) {
-          return mirrorResult.error();
+        if (materializationResult.error() != null) {
+          return materializationResult.error();
         }
         TableMetadataView mirroredMetadata =
-            mirrorResult.metadata() != null
-                ? mirrorResult.metadata()
+            materializationResult.metadata() != null
+                ? materializationResult.metadata()
                 : stageResult.loadResult().metadata();
         String metadataLocation =
-            nonBlank(mirrorResult.metadataLocation(), stageResult.loadResult().metadataLocation());
+            nonBlank(
+                materializationResult.metadataLocation(),
+                stageResult.loadResult().metadataLocation());
         ResourceId connectorId =
             synchronizeConnector(
                 prefix,
@@ -181,27 +183,27 @@ public class TableAdminResource {
     return Response.ok(new TransactionCommitResponse(results)).build();
   }
 
-  private MirrorMetadataResult mirrorMetadata(
+  private MaterializeMetadataResult materializeMetadata(
       String namespace,
       ResourceId tableId,
       String table,
       TableMetadataView metadata,
       String metadataLocation) {
     if (metadata == null) {
-      return MirrorMetadataResult.success(null, metadataLocation);
+      return MaterializeMetadataResult.success(null, metadataLocation);
     }
     try {
-      MetadataMirrorService.MirrorResult mirrorResult =
-          metadataMirrorService.mirror(namespace, table, metadata, metadataLocation);
+      MaterializeMetadataService.MaterializeResult mirrorResult =
+          materializeMetadataService.materialize(namespace, table, metadata, metadataLocation);
       String resolvedLocation = nonBlank(mirrorResult.metadataLocation(), metadataLocation);
       TableMetadataView resolvedMetadata =
           mirrorResult.metadata() != null ? mirrorResult.metadata() : metadata;
       if (tableId != null) {
         updateTableMetadataProperties(tableId, resolvedMetadata, resolvedLocation);
       }
-      return MirrorMetadataResult.success(resolvedMetadata, resolvedLocation);
-    } catch (MetadataMirrorException e) {
-      return MirrorMetadataResult.failure(
+      return MaterializeMetadataResult.success(resolvedMetadata, resolvedLocation);
+    } catch (MaterializeMetadataException e) {
+      return MaterializeMetadataResult.failure(
           IcebergErrorResponses.failure(
               "Failed to persist Iceberg metadata files",
               "CommitFailedException",
@@ -343,14 +345,14 @@ public class TableAdminResource {
     return primary != null && !primary.isBlank() ? primary : fallback;
   }
 
-  private record MirrorMetadataResult(
+  private record MaterializeMetadataResult(
       Response error, TableMetadataView metadata, String metadataLocation) {
-    static MirrorMetadataResult success(TableMetadataView metadata, String location) {
-      return new MirrorMetadataResult(null, metadata, location);
+    static MaterializeMetadataResult success(TableMetadataView metadata, String location) {
+      return new MaterializeMetadataResult(null, metadata, location);
     }
 
-    static MirrorMetadataResult failure(Response error) {
-      return new MirrorMetadataResult(error, null, null);
+    static MaterializeMetadataResult failure(Response error) {
+      return new MaterializeMetadataResult(error, null, null);
     }
   }
 }
