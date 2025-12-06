@@ -33,6 +33,9 @@
     <module>connectors/catalogs/iceberg</module>
     <module>connectors/catalogs/delta</module>
     <module>catalog/builtin</module>
+    <module>extensions/builtin/spi</module>
+    <module>extensions/builtin/runtime</module>
+    <module>extensions/plugins/floedb</module>
     <module>service</module>
     <module>tools/builtin-validator</module>
     <module>protocol-gateway</module>

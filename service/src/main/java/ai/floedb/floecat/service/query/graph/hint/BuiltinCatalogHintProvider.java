@@ -166,12 +166,13 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
   private static Map<String, String> flatten(EngineSpecificRule rule) {
     Map<String, String> props = new LinkedHashMap<>(rule.properties());
 
-    if (rule.floeFunction() != null) props.putAll(extract(rule.floeFunction()));
-    if (rule.floeType() != null) props.putAll(extract(rule.floeType()));
-    if (rule.floeOperator() != null) props.putAll(extract(rule.floeOperator()));
-    if (rule.floeCast() != null) props.putAll(extract(rule.floeCast()));
-    if (rule.floeAggregate() != null) props.putAll(extract(rule.floeAggregate()));
-    if (rule.floeCollation() != null) props.putAll(extract(rule.floeCollation()));
+    // Add payload metadata without decoding engine-specific structures
+    if (!rule.payloadType().isBlank()) {
+      props.put("_payload_type", rule.payloadType());
+    }
+    if (rule.hasExtensionPayload()) {
+      props.put("_payload_size", Integer.toString(rule.extensionPayload().length));
+    }
 
     return props;
   }

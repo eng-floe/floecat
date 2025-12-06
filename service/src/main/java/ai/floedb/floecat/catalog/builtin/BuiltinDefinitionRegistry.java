@@ -1,10 +1,12 @@
 package ai.floedb.floecat.catalog.builtin;
 
+import ai.floedb.floecat.extensions.builtin.spi.EngineBuiltinExtension;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-import java.util.Objects;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import org.jboss.logging.Logger;
 
 /**
  * Loads builtin catalog bundles per engine kind and exposes indexed {@link BuiltinEngineCatalog}
@@ -12,31 +14,46 @@ import java.util.concurrent.ConcurrentMap;
  * release.
  */
 @ApplicationScoped
-public class BuiltinDefinitionRegistry {
+public final class BuiltinDefinitionRegistry {
+  private static final Logger LOG = Logger.getLogger(BuiltinDefinitionRegistry.class);
 
-  private final BuiltinCatalogLoader loader;
+  private Map<String, EngineBuiltinExtension> plugins;
   private final ConcurrentMap<String, BuiltinEngineCatalog> cache = new ConcurrentHashMap<>();
 
-  @Inject
-  public BuiltinDefinitionRegistry(BuiltinCatalogLoader loader) {
-    this.loader = Objects.requireNonNull(loader, "loader");
+  public BuiltinDefinitionRegistry() {
+    // must stay empty — Quarkus CDI calls this via reflection
+  }
+
+  @PostConstruct
+  void init() {
+    Map<String, EngineBuiltinExtension> tmp = new HashMap<>();
+    ServiceLoader.load(EngineBuiltinExtension.class)
+        .forEach(ext -> tmp.put(ext.engineKind().toLowerCase(Locale.ROOT), ext));
+    this.plugins = Map.copyOf(tmp);
   }
 
   /** Returns the builtin catalog for the provided engine kind, loading it once if necessary. */
   public BuiltinEngineCatalog catalog(String engineKind) {
-    if (engineKind == null || engineKind.isBlank()) {
+    if (engineKind == null || engineKind.isBlank())
       throw new IllegalArgumentException("engine_kind must be provided");
-    }
-    return cache.computeIfAbsent(engineKind, this::loadCatalog);
-  }
-
-  /** Test-only hook to drop cached catalogs so subsequent calls reload from disk. */
-  void clear() {
-    cache.clear();
+    String key = engineKind.toLowerCase(Locale.ROOT);
+    return cache.computeIfAbsent(key, this::loadCatalog);
   }
 
   private BuiltinEngineCatalog loadCatalog(String engineKind) {
-    var data = loader.getCatalog(engineKind);
+    EngineBuiltinExtension ext = plugins.get(engineKind.toLowerCase(Locale.ROOT));
+    if (ext == null) {
+      LOG.warn("No builtin plugin for engine_kind=" + engineKind + " → empty catalog");
+      return BuiltinEngineCatalog.from(
+          engineKind,
+          new BuiltinCatalogData(List.of(), List.of(), List.of(), List.of(), List.of(), List.of()));
+    }
+    BuiltinCatalogData data = ext.loadBuiltinCatalog();
     return BuiltinEngineCatalog.from(engineKind, data);
+  }
+
+  /** Test-only hook to drop cached catalogs so subsequent calls reload from disk. */
+  public void clear() {
+    cache.clear();
   }
 }

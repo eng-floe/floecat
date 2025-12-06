@@ -1,11 +1,5 @@
 package ai.floedb.floecat.catalog.builtin;
 
-import ai.floedb.floecat.query.rpc.FloeAggregateSpecific;
-import ai.floedb.floecat.query.rpc.FloeCastSpecific;
-import ai.floedb.floecat.query.rpc.FloeCollationSpecific;
-import ai.floedb.floecat.query.rpc.FloeFunctionSpecific;
-import ai.floedb.floecat.query.rpc.FloeOperatorSpecific;
-import ai.floedb.floecat.query.rpc.FloeTypeSpecific;
 import java.util.Map;
 
 /** Engine-specific applicability window for a builtin object. */
@@ -13,12 +7,10 @@ public record EngineSpecificRule(
     String engineKind,
     String minVersion,
     String maxVersion,
-    FloeFunctionSpecific floeFunction,
-    FloeOperatorSpecific floeOperator,
-    FloeCastSpecific floeCast,
-    FloeTypeSpecific floeType,
-    FloeAggregateSpecific floeAggregate,
-    FloeCollationSpecific floeCollation,
+    // Opaque, engine-specific payload (optional; interpreted by plugins only)
+    String payloadType,
+    byte[] extensionPayload,
+    // Generic key/value metadata (Spark, Trino, etc.)
     Map<String, String> properties) {
 
   public EngineSpecificRule {
@@ -26,7 +18,12 @@ public record EngineSpecificRule(
     minVersion = minVersion == null ? "" : minVersion.trim();
     maxVersion = maxVersion == null ? "" : maxVersion.trim();
 
-    // Floe-specific fields left as null when not present — correct semantic behavior.
+    // Payload can be null; normalize to empty to simplify equality / hashing
+    payloadType = payloadType == null ? "" : payloadType.trim();
+    extensionPayload =
+        (extensionPayload == null || extensionPayload.length == 0)
+            ? new byte[0]
+            : extensionPayload.clone();
 
     properties = Map.copyOf(properties == null ? Map.of() : properties);
   }
@@ -41,5 +38,9 @@ public record EngineSpecificRule(
 
   public boolean hasMaxVersion() {
     return !maxVersion.isBlank();
+  }
+
+  public boolean hasExtensionPayload() {
+    return extensionPayload.length > 0;
   }
 }
