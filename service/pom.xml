@@ -141,6 +141,12 @@
     </dependency>
 
     <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-extension-floedb-builtin</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
       <groupId>org.jboss.logmanager</groupId>
       <artifactId>jboss-logmanager</artifactId>
       <version>3.1.2.Final</version>

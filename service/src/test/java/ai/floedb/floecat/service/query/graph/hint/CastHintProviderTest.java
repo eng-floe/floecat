@@ -15,9 +15,7 @@ class CastHintProviderTest {
   @Test
   void matchesCastSignatureAndMethod() {
 
-    var rule =
-        new EngineSpecificRule(
-            ENGINE, "16.0", "", null, null, null, null, null, null, Map.of("oid", "7712"));
+    var rule = new EngineSpecificRule(ENGINE, "16.0", "", "", null, Map.of("oid", "7712"));
 
     var catalog =
         new BuiltinCatalogData(
@@ -39,9 +37,9 @@ class CastHintProviderTest {
 
     var node = BuiltinTestSupport.castNode(ENGINE, "pg.cast", "pg.int4", "pg.text", "explicit");
 
-    assertThat(
-            BuiltinTestSupport.json(
-                provider.compute(node, key, BuiltinCatalogHintProvider.HINT_TYPE, "cid")))
-        .contains("\"oid\":\"7712\"");
+    var result = provider.compute(node, key, BuiltinCatalogHintProvider.HINT_TYPE, "cid");
+    assertThat(result.contentType()).contains("");
+    assertThat(result.payload()).isEmpty();
+    assertThat(result.metadata()).containsEntry("oid", "7712");
   }
 }

@@ -19,12 +19,9 @@ class BuiltinCatalogProtoMapperTest {
 
     // Rules: engine kind only inside our EngineSpecificRule; proto only carries floe_* and
     // properties
-    var postgresRule =
-        new EngineSpecificRule(
-            "postgres", "16.0", "", null, null, null, null, null, null, Map.of());
+    var postgresRule = new EngineSpecificRule("postgres", "16.0", "", "", null, Map.of());
 
-    var floeRule =
-        new EngineSpecificRule("floedb", "", "", null, null, null, null, null, null, Map.of());
+    var floeRule = new EngineSpecificRule("floedb", "", "", "", null, Map.of());
 
     // Function
     var function =

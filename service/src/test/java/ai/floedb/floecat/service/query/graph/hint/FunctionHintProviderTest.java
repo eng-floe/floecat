@@ -3,7 +3,6 @@ package ai.floedb.floecat.service.query.graph.hint;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.catalog.builtin.*;
-import ai.floedb.floecat.query.rpc.FloeFunctionSpecific;
 import ai.floedb.floecat.service.query.graph.model.EngineKey;
 import java.util.List;
 import java.util.Map;
@@ -18,29 +17,11 @@ class FunctionHintProviderTest {
 
     var rule4 =
         new EngineSpecificRule(
-            ENGINE,
-            "16.0",
-            "",
-            FloeFunctionSpecific.newBuilder().setPronamespace(100).build(),
-            null,
-            null,
-            null,
-            null,
-            null,
-            Map.of("oid", "4444"));
+            ENGINE, "16.0", "", "", null, Map.of("oid", "4444", "pronamespace", "100"));
 
     var rule8 =
         new EngineSpecificRule(
-            ENGINE,
-            "16.0",
-            "",
-            FloeFunctionSpecific.newBuilder().setPronamespace(200).build(),
-            null,
-            null,
-            null,
-            null,
-            null,
-            Map.of("oid", "8888"));
+            ENGINE, "16.0", "", "", null, Map.of("oid", "8888", "pronamespace", "200"));
 
     var catalog =
         new BuiltinCatalogData(
@@ -71,14 +52,14 @@ class FunctionHintProviderTest {
     var n4 = BuiltinTestSupport.functionNode(ENGINE, List.of("pg.int4"), "pg.int4", "pg.abs");
     var n8 = BuiltinTestSupport.functionNode(ENGINE, List.of("pg.int8"), "pg.int8", "pg.abs");
 
-    assertThat(
-            BuiltinTestSupport.json(
-                provider.compute(n4, key, BuiltinCatalogHintProvider.HINT_TYPE, "cid")))
-        .contains("\"oid\":\"4444\"");
+    var result = provider.compute(n4, key, BuiltinCatalogHintProvider.HINT_TYPE, "cid");
+    assertThat(result.contentType()).contains("");
+    assertThat(result.payload()).isEmpty();
+    assertThat(result.metadata()).containsEntry("oid", "4444");
 
-    assertThat(
-            BuiltinTestSupport.json(
-                provider.compute(n8, key, BuiltinCatalogHintProvider.HINT_TYPE, "cid")))
-        .contains("\"oid\":\"8888\"");
+    var result2 = provider.compute(n8, key, BuiltinCatalogHintProvider.HINT_TYPE, "cid");
+    assertThat(result2.contentType()).contains("");
+    assertThat(result2.payload()).isEmpty();
+    assertThat(result2.metadata()).containsEntry("oid", "8888");
   }
 }

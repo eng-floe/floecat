@@ -13,38 +13,42 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Floe builtin extension: loads human-friendly PBtxt files and rewrites engine_specific blocks into
- * payload bytes.
+ * Base class for Floe builtin extensions: loads human-friendly PBtxt files and rewrites
+ * engine_specific blocks into payload bytes.
  *
  * <p>Floe-specific structures (floe_function, floe_type…) are embedded in PBtxt using readable
  * fields, then extracted from UnknownFieldSet, re-parsed into the correct Floe*Specific proto, and
  * serialized into payload bytes.
  */
-public final class FloeBuiltinExtension implements EngineBuiltinExtension {
+public abstract class FloeBuiltinExtension implements EngineBuiltinExtension {
 
   @Override
-  public String engineKind() {
-    return "floedb";
-  }
-
-  @Override
-  public BuiltinCatalogData loadBuiltinCatalog() {
-    BuiltinRegistry registry = loadFromResource("/builtins/" + engineKind() + ".pbtxt");
+  public final BuiltinCatalogData loadBuiltinCatalog() {
+    BuiltinRegistry registry = loadFromResource(getResourcePath());
     BuiltinRegistry rewritten = rewriteFloeExtensions(registry);
     return BuiltinCatalogProtoMapper.fromProto(rewritten, engineKind());
+  }
+
+  /**
+   * Returns the resource path to load (e.g., "/builtins/floedb.pbtxt"). Subclasses can override to
+   * use different files.
+   */
+  protected String getResourcePath() {
+    return "/builtins/" + engineKind() + ".pbtxt";
   }
 
   // ---------------------------------------------------------------------
   // PBtxt loader
   // ---------------------------------------------------------------------
 
-  private BuiltinRegistry loadFromResource(String resourcePath) {
+  protected BuiltinRegistry loadFromResource(String resourcePath) {
     try (InputStream in = getClass().getResourceAsStream(resourcePath)) {
       if (in == null) {
         throw new IllegalStateException("Builtin file not found: " + resourcePath);
       }
       BuiltinRegistry.Builder builder = BuiltinRegistry.newBuilder();
-      TextFormat.getParser().merge(new InputStreamReader(in, StandardCharsets.UTF_8), builder);
+      var parser = TextFormat.Parser.newBuilder().setAllowUnknownFields(true).build();
+      parser.merge(new InputStreamReader(in, StandardCharsets.UTF_8), builder);
       return builder.build();
     } catch (Exception e) {
       throw new IllegalStateException("Failed to load builtin file: " + resourcePath, e);
@@ -55,7 +59,7 @@ public final class FloeBuiltinExtension implements EngineBuiltinExtension {
   // Rewrite PBtxt engine_specific blocks → payload bytes
   // ---------------------------------------------------------------------
 
-  private BuiltinRegistry rewriteFloeExtensions(BuiltinRegistry in) {
+  protected BuiltinRegistry rewriteFloeExtensions(BuiltinRegistry in) {
     BuiltinRegistry.Builder out = in.toBuilder();
 
     // Functions
@@ -125,7 +129,7 @@ public final class FloeBuiltinExtension implements EngineBuiltinExtension {
   // Convert readable PBtxt → opaque payload bytes
   // ---------------------------------------------------------------------
 
-  private EngineSpecific convertRule(EngineSpecific es) {
+  protected EngineSpecific convertRule(EngineSpecific es) {
 
     // Already rewritten → nothing to do
     if (!es.getPayload().isEmpty()) {
@@ -181,7 +185,7 @@ public final class FloeBuiltinExtension implements EngineBuiltinExtension {
     return es; // no Floe-specific block
   }
 
-  private <T extends com.google.protobuf.Message> EngineSpecific parseAndRewrite(
+  protected <T extends com.google.protobuf.Message> EngineSpecific parseAndRewrite(
       EngineSpecific es, String type, com.google.protobuf.Parser<T> parser, ByteString raw) {
 
     try {
@@ -199,6 +203,22 @@ public final class FloeBuiltinExtension implements EngineBuiltinExtension {
 
     } catch (Exception e) {
       throw new IllegalStateException("Failed to parse Floe-specific payload type=" + type, e);
+    }
+  }
+
+  /** Concrete implementation for the main FloeDB engine. */
+  public static final class FloeDb extends FloeBuiltinExtension {
+    @Override
+    public String engineKind() {
+      return "floedb";
+    }
+  }
+
+  /** Concrete implementation for the demo FloeDB engine. */
+  public static final class FloeDemo extends FloeBuiltinExtension {
+    @Override
+    public String engineKind() {
+      return "floe-demo";
     }
   }
 }

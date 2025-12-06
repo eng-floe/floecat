@@ -23,4 +23,8 @@ public record BuiltinCatalogData(
   private static <T> List<T> copy(List<T> values) {
     return List.copyOf(values == null ? List.of() : values);
   }
+
+  public static BuiltinCatalogData empty() {
+    return new BuiltinCatalogData(List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+  }
 }

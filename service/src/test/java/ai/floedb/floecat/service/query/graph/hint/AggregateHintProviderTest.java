@@ -3,7 +3,6 @@ package ai.floedb.floecat.service.query.graph.hint;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.catalog.builtin.*;
-import ai.floedb.floecat.query.rpc.FloeAggregateSpecific;
 import ai.floedb.floecat.service.query.graph.model.EngineKey;
 import java.util.List;
 import java.util.Map;
@@ -21,12 +20,8 @@ class AggregateHintProviderTest {
             ENGINE,
             "16.0",
             "",
-            null,
-            null,
-            null,
-            null,
-            FloeAggregateSpecific.newBuilder().setAggfinalextra(true).build(),
-            null,
+            "json",
+            "{\"aggfinalextra\":true}".getBytes(),
             Map.of("oid", "6006"));
 
     var catalog =
@@ -49,10 +44,10 @@ class AggregateHintProviderTest {
 
     var node = BuiltinTestSupport.aggregateNode(ENGINE, "pg.sum", List.of("pg.int4"), "pg.int4");
 
-    assertThat(
-            BuiltinTestSupport.json(
-                provider.compute(node, key, BuiltinCatalogHintProvider.HINT_TYPE, "cid")))
-        .contains("\"oid\":\"6006\"")
-        .contains("\"aggfinalextra\":\"true\"");
+    var result = provider.compute(node, key, BuiltinCatalogHintProvider.HINT_TYPE, "cid");
+    var payload = result.payload();
+    assertThat(result.contentType()).contains("json");
+    assertThat(new String(payload)).contains("aggfinalextra");
+    assertThat(result.metadata()).containsEntry("oid", "6006");
   }
 }

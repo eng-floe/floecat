@@ -1,24 +1,14 @@
 package ai.floedb.floecat.service.query.graph.hint;
 
-import ai.floedb.floecat.catalog.builtin.BuiltinAggregateDef;
-import ai.floedb.floecat.catalog.builtin.BuiltinCastDef;
-import ai.floedb.floecat.catalog.builtin.BuiltinDef;
-import ai.floedb.floecat.catalog.builtin.BuiltinFunctionDef;
-import ai.floedb.floecat.catalog.builtin.BuiltinOperatorDef;
-import ai.floedb.floecat.catalog.builtin.EngineSpecificRule;
-import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.catalog.builtin.*;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.query.graph.builtin.BuiltinNodeRegistry;
 import ai.floedb.floecat.service.query.graph.model.*;
-import com.google.protobuf.Message;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.stream.Collectors;
 
-/** Publishes per-object builtin metadata as engine hints. */
+/* Publishes per-object builtin metadata as engine hints. */
 @ApplicationScoped
 public class BuiltinCatalogHintProvider implements EngineHintProvider {
 
@@ -54,8 +44,7 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
 
   @Override
   public String fingerprint(RelationNode node, EngineKey engineKey, String hintType) {
-    // The fingerprint MUST change whenever the matched rules change
-    Map<String, String> props = propertiesFor(node, engineKey);
+    EngineSpecificRule r = matchedRule(node, engineKey);
 
     String base =
         node.id().getId()
@@ -66,36 +55,42 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
             + ":"
             + engineKey.engineVersion();
 
-    if (props.isEmpty()) {
-      return base;
-    }
-    return base + ":" + props.hashCode();
+    return (r == null) ? base : base + ":" + r.hashCode();
   }
 
   @Override
   public EngineHint compute(
       RelationNode node, EngineKey engineKey, String hintType, String correlationId) {
+    EngineSpecificRule rule = matchedRule(node, engineKey);
 
-    Map<String, String> properties = propertiesFor(node, engineKey);
-    byte[] payload = toJsonPayload(properties);
+    if (rule == null) {
+      return new EngineHint(
+          "", // empty content-type
+          new byte[0], // empty payload
+          0,
+          Map.of() // empty metadata
+          );
+    }
+
+    String contentType = rule.payloadType();
+    byte[] payload = rule.extensionPayload();
+    Map<String, String> meta = rule.properties();
 
     return new EngineHint(
-        "application/json",
-        payload,
-        payload.length,
-        Map.of("entries", Integer.toString(properties.size())));
+        (contentType == null) ? "" : contentType,
+        payload == null ? new byte[0] : payload,
+        payload == null ? 0 : payload.length,
+        meta == null ? Map.of() : meta);
   }
 
-  /**
-   * Reads the filtered & rule-applied BuiltinDefs from BuiltinNodeRegistry, avoids re-matching
-   * against raw catalog definitions.
-   */
-  private Map<String, String> propertiesFor(RelationNode node, EngineKey engineKey) {
-    if (!SUPPORTED_KINDS.contains(node.kind())) return Map.of();
+  /** Determines the matching rule for the provided node. */
+  private EngineSpecificRule matchedRule(RelationNode node, EngineKey engineKey) {
+    if (!SUPPORTED_KINDS.contains(node.kind())) {
+      return null;
+    }
 
     var nodes = nodeRegistry.nodesFor(engineKey.engineKind(), engineKey.engineVersion());
 
-    // Step 1: get matching BuiltinDef list based on kind
     List<? extends BuiltinDef> defs =
         switch (node.kind()) {
           case BUILTIN_FUNCTION -> nodes.catalogData().functions();
@@ -107,10 +102,8 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
           default -> List.of();
         };
 
-    // Step 2: fast filter by ResourceId
     String engineKind = engineKey.engineKind();
 
-    // Collapse List<? extends BuiltinDef> → List<BuiltinDef> (safe: all elements are BuiltinDef)
     @SuppressWarnings("unchecked")
     List<BuiltinDef> candidates =
         (List<BuiltinDef>)
@@ -124,13 +117,12 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
                                         engineKind, def.kind(), def.name())))
                     .toList();
 
-    if (candidates.isEmpty()) return Map.of();
-
-    // Step 3: pick the correct entry based on signature when needed
-    EngineSpecificRule rule = null;
+    if (candidates.isEmpty()) {
+      return null;
+    }
 
     for (BuiltinDef def : candidates) {
-      rule =
+      EngineSpecificRule r =
           switch (def.kind()) {
             case RK_FUNCTION ->
                 matchFunction((BuiltinFunctionDef) def, (BuiltinFunctionNode) node, engineKind);
@@ -143,105 +135,47 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
 
             case RK_CAST -> matchCast((BuiltinCastDef) def, (BuiltinCastNode) node, engineKind);
 
-            case RK_TYPE, RK_COLLATION -> matchSingleRule(def);
+            case RK_TYPE, RK_COLLATION -> def.engineSpecific().stream().findFirst().orElse(null);
 
             default -> null;
           };
 
-      if (rule != null) break;
+      if (r != null) return r;
     }
 
-    if (rule == null) return Map.of();
-    return flatten(rule);
+    return null;
   }
 
-  private static ResourceId id(String engineKind, ResourceKind kind, NameRef ref) {
-    return BuiltinNodeRegistry.resourceId(engineKind, kind, ref);
-  }
-
-  // ────────────────────────────────────────────────
-  //   Flatten rule properties
-  // ────────────────────────────────────────────────
-
-  private static Map<String, String> flatten(EngineSpecificRule rule) {
-    Map<String, String> props = new LinkedHashMap<>(rule.properties());
-
-    // Add payload metadata without decoding engine-specific structures
-    if (!rule.payloadType().isBlank()) {
-      props.put("_payload_type", rule.payloadType());
-    }
-    if (rule.hasExtensionPayload()) {
-      props.put("_payload_size", Integer.toString(rule.extensionPayload().length));
-    }
-
-    return props;
-  }
-
-  private static Map<String, String> extract(Message proto) {
-    Map<String, String> out = new LinkedHashMap<>();
-    for (var e : proto.getAllFields().entrySet()) {
-      String k = e.getKey().getName();
-      Object v = e.getValue();
-      if (v instanceof List<?> list) {
-        out.put(k, list.stream().map(Object::toString).collect(Collectors.joining(",")));
-      } else {
-        out.put(k, v.toString());
-      }
-    }
-    return out;
-  }
-
-  private static byte[] toJsonPayload(Map<String, String> props) {
-    if (props.isEmpty()) return "{}".getBytes(StandardCharsets.UTF_8);
-
-    String json =
-        props.entrySet().stream()
-            .sorted(Map.Entry.comparingByKey())
-            .map(e -> "\"" + escape(e.getKey()) + "\":\"" + escape(e.getValue()) + "\"")
-            .collect(Collectors.joining(",", "{", "}"));
-
-    return json.getBytes(StandardCharsets.UTF_8);
-  }
-
-  private static String escape(String s) {
-    return s.replace("\\", "\\\\").replace("\"", "\\\"");
-  }
-
-  /** Signature match for functions */
   private EngineSpecificRule matchFunction(
       BuiltinFunctionDef def, BuiltinFunctionNode fn, String engineKind) {
-    var argIds =
+    boolean argsMatch =
         def.argumentTypes().stream()
             .map(a -> BuiltinNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, a))
-            .toList();
-    boolean argsMatch = argIds.equals(fn.argumentTypes());
+            .toList()
+            .equals(fn.argumentTypes());
 
-    var retId = BuiltinNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.returnType());
-    boolean returnMatch = retId.equals(fn.returnType());
+    boolean retMatch =
+        BuiltinNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.returnType())
+            .equals(fn.returnType());
 
-    return (argsMatch && returnMatch)
-        ? def.engineSpecific().stream().findFirst().orElse(null)
-        : null;
+    return (argsMatch && retMatch) ? def.engineSpecific().stream().findFirst().orElse(null) : null;
   }
 
-  /** Signature match for aggregates */
   private EngineSpecificRule matchAggregate(
       BuiltinAggregateDef def, BuiltinAggregateNode an, String engineKind) {
-    var argIds =
+    boolean argsMatch =
         def.argumentTypes().stream()
             .map(a -> BuiltinNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, a))
-            .toList();
-    boolean argsMatch = argIds.equals(an.argumentTypes());
+            .toList()
+            .equals(an.argumentTypes());
 
-    var retId = BuiltinNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.returnType());
-    boolean returnMatch = retId.equals(an.returnType());
+    boolean retMatch =
+        BuiltinNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.returnType())
+            .equals(an.returnType());
 
-    return (argsMatch && returnMatch)
-        ? def.engineSpecific().stream().findFirst().orElse(null)
-        : null;
+    return (argsMatch && retMatch) ? def.engineSpecific().stream().findFirst().orElse(null) : null;
   }
 
-  /** Signature match for operators */
   private EngineSpecificRule matchOperator(
       BuiltinOperatorDef def, BuiltinOperatorNode on, String engineKind) {
     boolean leftMatch =
@@ -252,38 +186,28 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
         BuiltinNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.rightType())
             .equals(on.rightType());
 
-    boolean returnMatch =
+    boolean retMatch =
         BuiltinNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.returnType())
             .equals(on.returnType());
 
-    return (leftMatch && rightMatch && returnMatch)
+    return (leftMatch && rightMatch && retMatch)
         ? def.engineSpecific().stream().findFirst().orElse(null)
         : null;
   }
 
-  /** Signature match for casts */
   private EngineSpecificRule matchCast(BuiltinCastDef def, BuiltinCastNode cn, String engineKind) {
-    boolean sourceMatch =
+    boolean srcMatch =
         BuiltinNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.sourceType())
             .equals(cn.sourceType());
 
-    boolean targetMatch =
+    boolean dstMatch =
         BuiltinNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.targetType())
             .equals(cn.targetType());
 
     boolean methodMatch = def.method().wireValue().equalsIgnoreCase(cn.method());
 
-    return (sourceMatch && targetMatch && methodMatch)
+    return (srcMatch && dstMatch && methodMatch)
         ? def.engineSpecific().stream().findFirst().orElse(null)
         : null;
-  }
-
-  /** Default single-rule match (types, collations) */
-  private EngineSpecificRule matchSingleRule(BuiltinDef def) {
-    return switch (def.kind()) {
-      case RK_TYPE -> def.engineSpecific().stream().findFirst().orElse(null);
-      case RK_COLLATION -> def.engineSpecific().stream().findFirst().orElse(null);
-      default -> null;
-    };
   }
 }
