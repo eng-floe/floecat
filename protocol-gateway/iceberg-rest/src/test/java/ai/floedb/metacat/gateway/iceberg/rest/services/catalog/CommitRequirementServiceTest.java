@@ -85,6 +85,68 @@ class CommitRequirementServiceTest {
     assertNull(resp);
   }
 
+  @Test
+  void validateRequirementsPrefersMetadataForTableUuid() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .putProperties("table-uuid", "prop-uuid")
+            .build();
+    IcebergMetadata metadata = IcebergMetadata.newBuilder().setTableUuid("meta-uuid").build();
+    when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-table-uuid", "uuid", "meta-uuid")),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNull(resp);
+  }
+
+  @Test
+  void validateRequirementsAcceptsPropertyUuidEvenIfMetadataDiffers() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .putProperties("table-uuid", "placeholder-uuid")
+            .build();
+    IcebergMetadata metadata = IcebergMetadata.newBuilder().setTableUuid("real-uuid").build();
+    when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-table-uuid", "uuid", "placeholder-uuid")),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNull(resp);
+  }
+
+  @Test
+  void validateRequirementsUsesMetadataForMainRefSnapshot() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .build();
+    IcebergMetadata metadata = IcebergMetadata.newBuilder().setCurrentSnapshotId(77).build();
+    when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-ref-snapshot-id", "ref", "main", "snapshot-id", 77)),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNull(resp);
+  }
+
   private Function<String, Response> validation() {
     return message -> Response.status(Response.Status.BAD_REQUEST).entity(message).build();
   }

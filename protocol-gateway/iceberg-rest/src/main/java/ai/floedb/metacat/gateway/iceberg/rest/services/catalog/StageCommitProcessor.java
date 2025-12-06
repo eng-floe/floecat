@@ -131,7 +131,7 @@ public class StageCommitProcessor {
     }
   }
 
-  private void validateStageRequirements(
+  void validateStageRequirements(
       List<Map<String, Object>> requirements,
       String catalogName,
       List<String> namespacePath,
@@ -150,7 +150,7 @@ public class StageCommitProcessor {
       }
       if ("assert-create".equals(type)) {
         if (tableExists) {
-          continue;
+          throw StageCommitException.conflict("assert-create failed");
         }
         try {
           NameResolution.resolveTable(grpc, catalogName, namespacePath, tableName);

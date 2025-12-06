@@ -92,14 +92,14 @@ This section summarizes how the gateway mirrors Iceberg’s two-phase workflow s
 ### Stage-create (`POST /tables` with `stage-create=true`)
 
 1. Gateway validates the `CreateTableRequest`, normalizes schema/spec/order, and derives connector metadata (location, properties, requirements).
-2. A `StagedTableEntry` is stored via `StagedTableService.saveStage`, keyed by tenant/catalog/namespace/table + a generated stage-id (unless the client supplies one via `Iceberg-Transaction-Id`).
-3. The response returns `StageCreateResponse` fields (stage-id, requirements, config overrides, storage credentials). No table is materialized yet.
+2. A `StagedTableEntry` is stored via `StagedTableService.saveStage`, keyed by tenant/catalog/namespace/table + a generated stage-id (or a client-supplied `Iceberg-Transaction-Id`).
+3. The response returns `StageCreateResponse` fields (stage-id, requirements, config overrides, storage credentials). No table is materialized yet, and **clients must persist that stage-id** for the eventual commit.
 4. Idempotency: issuing the same stage-create (same composite key + stage-id) returns the cached entry instead of overwriting metadata.
 
 ### Commit (`POST /tables/{table}`) without direct stage reference
 
-1. Gateway resolves the table. If it does not exist and no stage is supplied, the request fails with 404.
-2. If the table is missing but a staged entry exists (either via `stage-id` header/body or via “latest stage” lookup for the tenant/catalog/table), `StageCommitProcessor` materializes the table through `TableService.createTable`, wires connectors, and deletes the staged record.
+1. Gateway resolves the table. If it does not exist and the request does not reference a staged create (via `stage-id` in the body or `Iceberg-Transaction-Id` header), the request fails with 404 unless **exactly one** staged payload exists for that tenant/catalog/table, in which case the gateway reuses that lone stage-id.
+2. If the table is missing and a unique stage-id is known (either provided explicitly or inferred from the single staged payload), `StageCommitProcessor` materializes the table through `TableService.createTable`, wires connectors, and deletes the staged record. Missing stage-ids with multiple staged entries (or none at all) result in a `400 ValidationException` so the client can retry with the correct id.
 3. Snapshot/metadata updates (add/remove snapshot, refs, schemas/specs, statistics, location) are replayed using `SnapshotService`, `TableService.updateTable`, and helper methods to mutate Iceberg metadata blobs.
 4. The response uses `TableResponseMapper.toCommitResponse`, which always includes the latest snapshots referenced by `current-snapshot-id` and `refs`, ensuring Iceberg clients can deserialize the metadata.
 

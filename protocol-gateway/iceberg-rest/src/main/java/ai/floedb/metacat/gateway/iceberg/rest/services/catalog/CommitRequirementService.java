@@ -53,12 +53,28 @@ public class CommitRequirementService {
           if (expected == null || expected.isBlank()) {
             return validationErrorFactory.apply("assert-table-uuid requires uuid");
           }
-          String actual =
+          String propertyUuid =
               Optional.ofNullable(props.get("table-uuid"))
-                  .orElse(table.hasResourceId() ? table.getResourceId().getId() : "");
-          if (!expected.equals(actual)) {
-            return conflictErrorFactory.apply("assert-table-uuid failed");
+                  .filter(value -> !value.isBlank())
+                  .orElse(null);
+          if (propertyUuid != null && expected.equals(propertyUuid)) {
+            continue;
           }
+          IcebergMetadata metadata = metadataSupplier.get();
+          String metadataUuid =
+              metadata != null
+                      && metadata.getTableUuid() != null
+                      && !metadata.getTableUuid().isBlank()
+                  ? metadata.getTableUuid()
+                  : null;
+          if (metadataUuid != null && expected.equals(metadataUuid)) {
+            continue;
+          }
+          String fallbackUuid = table.hasResourceId() ? table.getResourceId().getId() : "";
+          if (expected.equals(fallbackUuid)) {
+            continue;
+          }
+          return conflictErrorFactory.apply("assert-table-uuid failed");
         }
         case "assert-current-schema-id" -> {
           Integer expected = asInteger(requirement.get("current-schema-id"));
@@ -66,7 +82,11 @@ public class CommitRequirementService {
             return validationErrorFactory.apply(
                 "assert-current-schema-id requires current-schema-id");
           }
-          Integer actual = propertyInt(props, "current-schema-id");
+          IcebergMetadata metadata = metadataSupplier.get();
+          Integer actual =
+              metadata != null
+                  ? metadata.getCurrentSchemaId()
+                  : propertyInt(props, "current-schema-id");
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-current-schema-id failed");
           }
@@ -77,7 +97,11 @@ public class CommitRequirementService {
             return validationErrorFactory.apply(
                 "assert-last-assigned-field-id requires last-assigned-field-id");
           }
-          Integer actual = propertyInt(props, "last-assigned-field-id");
+          IcebergMetadata metadata = metadataSupplier.get();
+          Integer actual =
+              metadata != null
+                  ? metadata.getLastColumnId()
+                  : propertyInt(props, "last-assigned-field-id");
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-last-assigned-field-id failed");
           }
@@ -88,7 +112,11 @@ public class CommitRequirementService {
             return validationErrorFactory.apply(
                 "assert-last-assigned-partition-id requires last-assigned-partition-id");
           }
-          Integer actual = propertyInt(props, "last-assigned-partition-id");
+          IcebergMetadata metadata = metadataSupplier.get();
+          Integer actual =
+              metadata != null
+                  ? metadata.getLastPartitionId()
+                  : propertyInt(props, "last-assigned-partition-id");
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-last-assigned-partition-id failed");
           }
@@ -98,7 +126,11 @@ public class CommitRequirementService {
           if (expected == null) {
             return validationErrorFactory.apply("assert-default-spec-id requires default-spec-id");
           }
-          Integer actual = propertyInt(props, "default-spec-id");
+          IcebergMetadata metadata = metadataSupplier.get();
+          Integer actual =
+              metadata != null
+                  ? metadata.getDefaultSpecId()
+                  : propertyInt(props, "default-spec-id");
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-default-spec-id failed");
           }
@@ -109,7 +141,11 @@ public class CommitRequirementService {
             return validationErrorFactory.apply(
                 "assert-default-sort-order-id requires default-sort-order-id");
           }
-          Integer actual = propertyInt(props, "default-sort-order-id");
+          IcebergMetadata metadata = metadataSupplier.get();
+          Integer actual =
+              metadata != null
+                  ? metadata.getDefaultSortOrderId()
+                  : propertyInt(props, "default-sort-order-id");
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-default-sort-order-id failed");
           }
@@ -132,7 +168,11 @@ public class CommitRequirementService {
           if (metadata != null && metadata.getRefsMap().containsKey(refName)) {
             actual = metadata.getRefsMap().get(refName).getSnapshotId();
           } else if ("main".equals(refName)) {
-            actual = propertyLong(props, "current-snapshot-id");
+            if (metadata != null && metadata.getCurrentSnapshotId() > 0) {
+              actual = metadata.getCurrentSnapshotId();
+            } else {
+              actual = propertyLong(props, "current-snapshot-id");
+            }
           }
           if (!Objects.equals(actual, expected)) {
             return conflictErrorFactory.apply("assert-ref-snapshot-id failed for ref " + refName);

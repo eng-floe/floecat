@@ -25,6 +25,7 @@ import ai.floedb.metacat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.StageCommitProcessor;
+import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.StageMaterializationService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.tenant.TenantContext;
@@ -42,7 +43,8 @@ class TableAdminResourceUnitTest {
   private final IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
   private final StagedTableService stagedTableService = mock(StagedTableService.class);
   private final TenantContext tenantContext = mock(TenantContext.class);
-  private final StageCommitProcessor stageCommitProcessor = mock(StageCommitProcessor.class);
+  private final StageMaterializationService stageMaterializationService =
+      mock(StageMaterializationService.class);
   private final MaterializeMetadataService materializeMetadataService =
       mock(MaterializeMetadataService.class);
   private final Config mpConfig = mock(Config.class);
@@ -60,7 +62,7 @@ class TableAdminResourceUnitTest {
     resource.config = config;
     resource.stagedTableService = stagedTableService;
     resource.tenantContext = tenantContext;
-    resource.stageCommitProcessor = stageCommitProcessor;
+    resource.stageMaterializationService = stageMaterializationService;
     resource.materializeMetadataService = materializeMetadataService;
     resource.mapper = new ObjectMapper();
     resource.mpConfig = mpConfig;
@@ -105,8 +107,10 @@ class TableAdminResourceUnitTest {
         new LoadTableResultDto("s3://bucket/orders/metadata.json", null, Map.of(), List.of());
     StageCommitProcessor.StageCommitResult stageResult =
         new StageCommitProcessor.StageCommitResult(table, loadResult);
-    when(stageCommitProcessor.commitStage(any(), any(), any(), any(), any(), any()))
-        .thenReturn(stageResult);
+    StageMaterializationService.StageMaterializationResult stageMaterializationResult =
+        new StageMaterializationService.StageMaterializationResult("stage-commit", stageResult);
+    when(stageMaterializationService.materializeTransactionStage(any(), any(), any(), any(), any()))
+        .thenReturn(stageMaterializationResult);
     when(tableStub.updateTable(any()))
         .thenReturn(UpdateTableResponse.newBuilder().setTable(table).build());
 

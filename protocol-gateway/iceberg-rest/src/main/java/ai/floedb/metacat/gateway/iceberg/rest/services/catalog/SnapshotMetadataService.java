@@ -669,9 +669,6 @@ public class SnapshotMetadataService {
     String specName = asString(specMap.get("name"));
     builder.setSpecName(specName == null || specName.isBlank() ? "spec-" + specId : specName);
     List<Map<String, Object>> fields = asMapList(specMap.get("fields"));
-    if (fields.isEmpty()) {
-      throw new IllegalArgumentException("add-spec requires spec.fields");
-    }
     for (Map<String, Object> field : fields) {
       String name = asString(field.get("name"));
       Integer fieldId = asInteger(firstNonNull(field.get("field-id"), field.get("source-id")));
@@ -698,9 +695,6 @@ public class SnapshotMetadataService {
     }
     IcebergSortOrder.Builder builder = IcebergSortOrder.newBuilder().setSortOrderId(orderId);
     List<Map<String, Object>> fields = asMapList(orderMap.get("fields"));
-    if (fields.isEmpty()) {
-      throw new IllegalArgumentException("add-sort-order requires sort-order.fields");
-    }
     for (Map<String, Object> field : fields) {
       Integer sourceId = asInteger(field.get("source-id"));
       if (sourceId == null) {

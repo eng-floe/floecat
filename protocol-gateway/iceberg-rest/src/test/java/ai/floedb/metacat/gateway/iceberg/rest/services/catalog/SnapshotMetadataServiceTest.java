@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 
+import ai.floedb.metacat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
@@ -14,6 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -77,6 +79,34 @@ class SnapshotMetadataServiceTest {
     IcebergErrorResponse error = (IcebergErrorResponse) response.getEntity();
     assertEquals("set-snapshot-ref requires ref-name", error.error().message());
     verifyNoInteractions(tableSupport);
+  }
+
+  @Test
+  void buildPartitionSpecAllowsEmptyFields() throws Exception {
+    Map<String, Object> spec = new LinkedHashMap<>();
+    spec.put("spec-id", 7);
+    spec.put("fields", List.of());
+
+    var method = SnapshotMetadataService.class.getDeclaredMethod("buildPartitionSpec", Map.class);
+    method.setAccessible(true);
+    PartitionSpecInfo specInfo = (PartitionSpecInfo) method.invoke(service, spec);
+
+    Assertions.assertEquals(7, specInfo.getSpecId());
+    Assertions.assertEquals(0, specInfo.getFieldsCount());
+  }
+
+  @Test
+  void buildSortOrderAllowsEmptyFields() throws Exception {
+    Map<String, Object> order = new LinkedHashMap<>();
+    order.put("sort-order-id", 3);
+    order.put("fields", List.of());
+
+    var method = SnapshotMetadataService.class.getDeclaredMethod("buildSortOrder", Map.class);
+    method.setAccessible(true);
+    var sortOrder =
+        (ai.floedb.metacat.gateway.iceberg.rpc.IcebergSortOrder) method.invoke(service, order);
+    Assertions.assertEquals(3, sortOrder.getSortOrderId());
+    Assertions.assertEquals(0, sortOrder.getFieldsCount());
   }
 
   private Supplier<ai.floedb.metacat.catalog.rpc.Table> neverInvokedTableSupplier() {

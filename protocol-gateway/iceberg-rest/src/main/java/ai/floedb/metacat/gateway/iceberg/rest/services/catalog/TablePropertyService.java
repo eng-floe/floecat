@@ -1,7 +1,6 @@
 package ai.floedb.metacat.gateway.iceberg.rest.services.catalog;
 
 import ai.floedb.metacat.catalog.rpc.Table;
-import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.TableSpec;
 import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergError;
@@ -136,15 +135,20 @@ public class TablePropertyService {
       return null;
     }
     Table existing = tableSupplier.get();
-    TableFormat upstreamFormat =
-        existing.hasUpstream() ? existing.getUpstream().getFormat() : TableFormat.TF_ICEBERG;
-    UpstreamRef.Builder builder =
-        existing.hasUpstream()
-            ? existing.getUpstream().toBuilder()
-            : UpstreamRef.newBuilder().setFormat(upstreamFormat);
-    builder.setUri(location);
+    if (existing == null || !existing.hasUpstream()) {
+      LOG.debug("Skipping set-location update for table without upstream reference");
+      return null;
+    }
+    UpstreamRef upstream = existing.getUpstream();
+    if (!upstream.hasConnectorId() || upstream.getConnectorId().getId().isBlank()) {
+      LOG.debug(
+          "Skipping set-location update for table without upstream connector (will be applied once"
+              + " connector is registered)");
+      return null;
+    }
+    UpstreamRef.Builder builder = upstream.toBuilder().setUri(location);
     spec.setUpstream(builder.build());
-    mask.addPaths("upstream");
+    mask.addPaths("upstream.uri");
     return null;
   }
 

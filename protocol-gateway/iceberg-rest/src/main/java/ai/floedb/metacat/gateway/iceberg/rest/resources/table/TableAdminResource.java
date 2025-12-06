@@ -15,6 +15,7 @@ import ai.floedb.metacat.gateway.iceberg.rest.resources.support.CatalogResolver;
 import ai.floedb.metacat.gateway.iceberg.rest.resources.support.IcebergErrorResponses;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.StageCommitException;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.StageCommitProcessor;
+import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.StageMaterializationService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MaterializeMetadataException;
 import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
@@ -45,7 +46,7 @@ public class TableAdminResource {
   @Inject IcebergGatewayConfig config;
   @Inject StagedTableService stagedTableService;
   @Inject TenantContext tenantContext;
-  @Inject StageCommitProcessor stageCommitProcessor;
+  @Inject StageMaterializationService stageMaterializationService;
   @Inject MaterializeMetadataService materializeMetadataService;
   @Inject ObjectMapper mapper;
   @Inject Config mpConfig;
@@ -114,14 +115,14 @@ public class TableAdminResource {
     List<TransactionCommitResponse.TransactionCommitResult> results = new java.util.ArrayList<>();
     for (TransactionCommitRequest.StagedRefUpdate update : request.stagedRefUpdates()) {
       try {
-        StageCommitProcessor.StageCommitResult stageResult =
-            stageCommitProcessor.commitStage(
+        var stageMaterialization =
+            stageMaterializationService.materializeTransactionStage(
                 prefix,
                 catalogName,
-                tenantId,
                 update.table().namespace(),
                 update.table().name(),
                 update.stageId());
+        StageCommitProcessor.StageCommitResult stageResult = stageMaterialization.result();
         String namespaceFq = String.join(".", update.table().namespace());
         ResourceId namespaceId =
             NameResolution.resolveNamespace(grpc, catalogName, update.table().namespace());
@@ -170,7 +171,7 @@ public class TableAdminResource {
         results.add(
             new TransactionCommitResponse.TransactionCommitResult(
                 update.table(),
-                update.stageId(),
+                stageMaterialization.stageId(),
                 metadataLocation,
                 responseMetadata,
                 stageResult.loadResult().config(),

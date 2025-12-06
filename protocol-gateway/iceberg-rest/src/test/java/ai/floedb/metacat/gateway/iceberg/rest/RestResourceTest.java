@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -1343,7 +1344,12 @@ class RestResourceTest {
             {
               "stage-id": "stage-table",
               "requirements": [{"type":"assert-create"}],
-              "updates": []
+              "updates": [
+                {
+                  "action":"set-properties",
+                  "updates":{"alpha":"beta"}
+                }
+              ]
             }
             """)
         .contentType(MediaType.APPLICATION_JSON)
@@ -1356,6 +1362,12 @@ class RestResourceTest {
         new StagedTableKey("tenant1", "foo", List.of("db"), "orders", "stage-table");
     assertTrue(stageRepository.get(key).isEmpty());
     verify(tableStub, times(1)).createTable(any());
+    ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(tableStub, atLeastOnce()).updateTable(captor.capture());
+    boolean propertyUpdated =
+        captor.getAllValues().stream()
+            .anyMatch(req -> "beta".equals(req.getSpec().getPropertiesMap().get("alpha")));
+    assertTrue(propertyUpdated, "expected a captured updateTable call to set alpha=beta");
     verify(connectorsStub, times(1)).createConnector(any());
   }
 
@@ -1437,6 +1449,7 @@ class RestResourceTest {
         UpstreamRef.newBuilder()
             .setFormat(TableFormat.TF_ICEBERG)
             .setUri("s3://bucket/path/")
+            .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
             .build();
     Table current =
         Table.newBuilder()
