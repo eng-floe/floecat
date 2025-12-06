@@ -1,160 +1,258 @@
 package ai.floedb.metacat.catalog.builtin;
 
-import ai.floedb.metacat.catalog.rpc.BuiltinAggregate;
-import ai.floedb.metacat.catalog.rpc.BuiltinCast;
-import ai.floedb.metacat.catalog.rpc.BuiltinCatalog;
-import ai.floedb.metacat.catalog.rpc.BuiltinCollation;
-import ai.floedb.metacat.catalog.rpc.BuiltinFunction;
-import ai.floedb.metacat.catalog.rpc.BuiltinOperator;
-import ai.floedb.metacat.catalog.rpc.BuiltinType;
+import ai.floedb.metacat.common.rpc.NameRef;
+import ai.floedb.metacat.query.rpc.*;
 import java.util.Objects;
 
-/** Helper to convert between protobuf `BuiltinCatalog` messages and in-memory records. */
+/**
+ * Maps between engine-neutral builtin definitions (Builtin*Def using NameRef) and the wire protocol
+ * (SqlFunction, SqlOperator, etc.) which also uses NameRef.
+ */
 public final class BuiltinCatalogProtoMapper {
 
   private BuiltinCatalogProtoMapper() {}
 
-  public static BuiltinCatalog toProto(BuiltinCatalogData catalog) {
-    Objects.requireNonNull(catalog, "catalog");
+  // =========================================================================
+  //  Top-level Registry
+  // =========================================================================
 
-    var builder = BuiltinCatalog.newBuilder().setVersion(catalog.version());
-    catalog.functions().forEach(fn -> builder.addFunctions(toProto(fn)));
-    catalog.operators().forEach(op -> builder.addOperators(toProto(op)));
-    catalog.types().forEach(t -> builder.addTypes(toProto(t)));
-    catalog.casts().forEach(c -> builder.addCasts(toProto(c)));
-    catalog.collations().forEach(c -> builder.addCollations(toProto(c)));
-    catalog.aggregates().forEach(a -> builder.addAggregates(toProto(a)));
+  public static BuiltinRegistry toProto(BuiltinCatalogData catalog) {
+    Objects.requireNonNull(catalog, "catalog");
+    var builder = BuiltinRegistry.newBuilder();
+
+    catalog.functions().forEach(f -> builder.addFunctions(toProtoFunction(f)));
+    catalog.operators().forEach(o -> builder.addOperators(toProtoOperator(o)));
+    catalog.types().forEach(t -> builder.addTypes(toProtoType(t)));
+    catalog.casts().forEach(c -> builder.addCasts(toProtoCast(c)));
+    catalog.collations().forEach(c -> builder.addCollations(toProtoCollation(c)));
+    catalog.aggregates().forEach(a -> builder.addAggregates(toProtoAggregate(a)));
+
     return builder.build();
   }
 
-  public static BuiltinCatalogData fromProto(BuiltinCatalog proto) {
+  public static BuiltinCatalogData fromProto(BuiltinRegistry proto) {
+    return fromProto(proto, "");
+  }
+
+  public static BuiltinCatalogData fromProto(BuiltinRegistry proto, String defaultEngine) {
     Objects.requireNonNull(proto, "proto");
+
     return new BuiltinCatalogData(
-        proto.getVersion(),
-        proto.getFunctionsList().stream()
-            .map(BuiltinCatalogProtoMapper::fromProtoFunction)
-            .toList(),
-        proto.getOperatorsList().stream()
-            .map(BuiltinCatalogProtoMapper::fromProtoOperator)
-            .toList(),
-        proto.getTypesList().stream().map(BuiltinCatalogProtoMapper::fromProtoType).toList(),
-        proto.getCastsList().stream().map(BuiltinCatalogProtoMapper::fromProtoCast).toList(),
-        proto.getCollationsList().stream()
-            .map(BuiltinCatalogProtoMapper::fromProtoCollation)
-            .toList(),
-        proto.getAggregatesList().stream()
-            .map(BuiltinCatalogProtoMapper::fromProtoAggregate)
-            .toList());
+        proto.getFunctionsList().stream().map(f -> fromProtoFunction(f, defaultEngine)).toList(),
+        proto.getOperatorsList().stream().map(o -> fromProtoOperator(o, defaultEngine)).toList(),
+        proto.getTypesList().stream().map(t -> fromProtoType(t, defaultEngine)).toList(),
+        proto.getCastsList().stream().map(c -> fromProtoCast(c, defaultEngine)).toList(),
+        proto.getCollationsList().stream().map(c -> fromProtoCollation(c, defaultEngine)).toList(),
+        proto.getAggregatesList().stream().map(a -> fromProtoAggregate(a, defaultEngine)).toList());
   }
 
-  private static BuiltinFunction toProto(BuiltinFunctionDef def) {
-    return BuiltinFunction.newBuilder()
-        .setName(def.name())
-        .addAllArgumentTypes(def.argumentTypes())
-        .setReturnType(def.returnType())
-        .setIsAggregate(def.aggregate())
-        .setIsWindow(def.window())
-        .setIsStrict(def.strict())
-        .setIsImmutable(def.immutable())
-        .build();
+  // =========================================================================
+  //  SqlFunction
+  // =========================================================================
+
+  private static SqlFunction toProtoFunction(BuiltinFunctionDef def) {
+    var builder =
+        SqlFunction.newBuilder()
+            .setName(def.name())
+            .addAllArgumentTypes(def.argumentTypes())
+            .setReturnType(def.returnType())
+            .setIsAggregate(def.isAggregate())
+            .setIsWindow(def.isWindow())
+            .setOrigin(Origin.ORIGIN_BUILTIN);
+
+    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    return builder.build();
   }
 
-  private static BuiltinFunctionDef fromProtoFunction(BuiltinFunction proto) {
+  private static BuiltinFunctionDef fromProtoFunction(SqlFunction proto, String defaultEngine) {
     return new BuiltinFunctionDef(
         proto.getName(),
         proto.getArgumentTypesList(),
         proto.getReturnType(),
         proto.getIsAggregate(),
         proto.getIsWindow(),
-        proto.getIsStrict(),
-        proto.getIsImmutable());
+        proto.getEngineSpecificList().stream()
+            .map(es -> fromProtoRule(es, defaultEngine))
+            .toList());
   }
 
-  private static BuiltinOperator toProto(BuiltinOperatorDef def) {
-    return BuiltinOperator.newBuilder()
-        .setName(def.name())
-        .setLeftType(def.leftType())
-        .setRightType(def.rightType())
-        .setFunctionName(def.functionName())
-        .build();
-  }
+  // =========================================================================
+  //  SqlOperator
+  // =========================================================================
 
-  private static BuiltinOperatorDef fromProtoOperator(BuiltinOperator proto) {
-    return new BuiltinOperatorDef(
-        proto.getName(), proto.getLeftType(), proto.getRightType(), proto.getFunctionName());
-  }
-
-  private static BuiltinType toProto(BuiltinTypeDef def) {
+  private static SqlOperator toProtoOperator(BuiltinOperatorDef def) {
     var builder =
-        BuiltinType.newBuilder()
+        SqlOperator.newBuilder()
             .setName(def.name())
-            .setCategory(def.category())
-            .setIsArray(def.array());
-    if (def.oid() != null) {
-      builder.setOid(def.oid());
-    }
-    if (def.array() && def.elementType() != null && !def.elementType().isBlank()) {
-      builder.setElementType(def.elementType());
-    }
+            .setLeftType(def.leftType())
+            .setRightType(def.rightType())
+            .setReturnType(def.returnType())
+            .setIsCommutative(def.isCommutative())
+            .setIsAssociative(def.isAssociative())
+            .setOrigin(Origin.ORIGIN_BUILTIN);
+
+    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
     return builder.build();
   }
 
-  private static BuiltinTypeDef fromProtoType(BuiltinType proto) {
-    Integer oid = proto.getOid() == 0 ? null : proto.getOid();
-    String elementType =
-        proto.getIsArray() && !proto.getElementType().isBlank() ? proto.getElementType() : null;
+  private static BuiltinOperatorDef fromProtoOperator(SqlOperator proto, String defaultEngine) {
+    return new BuiltinOperatorDef(
+        proto.getName(),
+        proto.getLeftType(),
+        proto.getRightType(),
+        proto.getReturnType(),
+        proto.getIsCommutative(),
+        proto.getIsAssociative(),
+        proto.getEngineSpecificList().stream()
+            .map(es -> fromProtoRule(es, defaultEngine))
+            .toList());
+  }
+
+  // =========================================================================
+  //  SqlType
+  // =========================================================================
+
+  private static SqlType toProtoType(BuiltinTypeDef def) {
+    var builder =
+        SqlType.newBuilder()
+            .setName(def.name())
+            .setCategory(def.category())
+            .setIsArray(def.array())
+            .setOrigin(Origin.ORIGIN_BUILTIN);
+
+    if (def.array() && def.elementType() != null) {
+      builder.setElementType(def.elementType());
+    }
+
+    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    return builder.build();
+  }
+
+  private static BuiltinTypeDef fromProtoType(SqlType proto, String defaultEngine) {
+    NameRef elem =
+        proto.getIsArray() && proto.hasElementType() && !proto.getElementType().getName().isBlank()
+            ? proto.getElementType()
+            : null;
+
     return new BuiltinTypeDef(
-        proto.getName(), oid, proto.getCategory(), proto.getIsArray(), elementType);
+        proto.getName(),
+        proto.getCategory(),
+        proto.getIsArray(),
+        elem,
+        proto.getEngineSpecificList().stream()
+            .map(es -> fromProtoRule(es, defaultEngine))
+            .toList());
   }
 
-  private static BuiltinCast toProto(BuiltinCastDef def) {
-    return BuiltinCast.newBuilder()
-        .setSourceType(def.sourceType())
-        .setTargetType(def.targetType())
-        .setMethod(def.method().wireValue())
-        .build();
+  // =========================================================================
+  //  SqlCast
+  // =========================================================================
+
+  private static SqlCast toProtoCast(BuiltinCastDef def) {
+    var builder =
+        SqlCast.newBuilder()
+            .setName(def.name())
+            .setSourceType(def.sourceType())
+            .setTargetType(def.targetType())
+            .setMethod(def.method().wireValue())
+            .setOrigin(Origin.ORIGIN_BUILTIN);
+
+    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    return builder.build();
   }
 
-  private static BuiltinCastDef fromProtoCast(BuiltinCast proto) {
+  private static BuiltinCastDef fromProtoCast(SqlCast proto, String defaultEngine) {
     return new BuiltinCastDef(
+        proto.getName(),
         proto.getSourceType(),
         proto.getTargetType(),
-        BuiltinCastMethod.fromWireValue(proto.getMethod()));
+        BuiltinCastMethod.fromWireValue(proto.getMethod()),
+        proto.getEngineSpecificList().stream()
+            .map(es -> fromProtoRule(es, defaultEngine))
+            .toList());
   }
 
-  private static BuiltinCollation toProto(BuiltinCollationDef def) {
-    return BuiltinCollation.newBuilder().setName(def.name()).setLocale(def.locale()).build();
-  }
+  // =========================================================================
+  //  SqlCollation
+  // =========================================================================
 
-  private static BuiltinCollationDef fromProtoCollation(BuiltinCollation proto) {
-    return new BuiltinCollationDef(proto.getName(), proto.getLocale());
-  }
-
-  private static BuiltinAggregate toProto(BuiltinAggregateDef def) {
+  private static SqlCollation toProtoCollation(BuiltinCollationDef def) {
     var builder =
-        BuiltinAggregate.newBuilder()
+        SqlCollation.newBuilder()
+            .setName(def.name())
+            .setLocale(def.locale())
+            .setOrigin(Origin.ORIGIN_BUILTIN);
+
+    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    return builder.build();
+  }
+
+  private static BuiltinCollationDef fromProtoCollation(SqlCollation proto, String defaultEngine) {
+    return new BuiltinCollationDef(
+        proto.getName(),
+        proto.getLocale(),
+        proto.getEngineSpecificList().stream()
+            .map(es -> fromProtoRule(es, defaultEngine))
+            .toList());
+  }
+
+  // =========================================================================
+  //  SqlAggregate
+  // =========================================================================
+
+  private static SqlAggregate toProtoAggregate(BuiltinAggregateDef def) {
+    var builder =
+        SqlAggregate.newBuilder()
             .setName(def.name())
             .addAllArgumentTypes(def.argumentTypes())
             .setStateType(def.stateType())
-            .setReturnType(def.returnType());
-    if (def.stateFunction() != null && !def.stateFunction().isBlank()) {
-      builder.setStateFn(def.stateFunction());
-    }
-    if (def.finalFunction() != null && !def.finalFunction().isBlank()) {
-      builder.setFinalFn(def.finalFunction());
-    }
+            .setReturnType(def.returnType())
+            .setOrigin(Origin.ORIGIN_BUILTIN);
+
+    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
     return builder.build();
   }
 
-  private static BuiltinAggregateDef fromProtoAggregate(BuiltinAggregate proto) {
-    String stateFn = proto.getStateFn().isBlank() ? null : proto.getStateFn();
-    String finalFn = proto.getFinalFn().isBlank() ? null : proto.getFinalFn();
+  private static BuiltinAggregateDef fromProtoAggregate(SqlAggregate proto, String defaultEngine) {
     return new BuiltinAggregateDef(
         proto.getName(),
         proto.getArgumentTypesList(),
         proto.getStateType(),
         proto.getReturnType(),
-        stateFn,
-        finalFn);
+        proto.getEngineSpecificList().stream()
+            .map(es -> fromProtoRule(es, defaultEngine))
+            .toList());
+  }
+
+  // =========================================================================
+  //  EngineSpecific <-> EngineSpecificRule
+  // =========================================================================
+
+  private static EngineSpecific toProtoRule(EngineSpecificRule rule) {
+    var builder = EngineSpecific.newBuilder();
+
+    if (rule.floeFunction() != null) builder.setFloeFunction(rule.floeFunction());
+    if (rule.floeOperator() != null) builder.setFloeOperator(rule.floeOperator());
+    if (rule.floeCast() != null) builder.setFloeCast(rule.floeCast());
+    if (rule.floeType() != null) builder.setFloeType(rule.floeType());
+    if (rule.floeAggregate() != null) builder.setFloeAggregate(rule.floeAggregate());
+    if (rule.floeCollation() != null) builder.setFloeCollation(rule.floeCollation());
+
+    builder.putAllProperties(rule.properties());
+    return builder.build();
+  }
+
+  private static EngineSpecificRule fromProtoRule(EngineSpecific proto, String defaultEngineKind) {
+    return new EngineSpecificRule(
+        proto.getEngineKind().isBlank() ? defaultEngineKind : proto.getEngineKind(),
+        proto.getMinVersion(),
+        proto.getMaxVersion(),
+        proto.hasFloeFunction() ? proto.getFloeFunction() : null,
+        proto.hasFloeOperator() ? proto.getFloeOperator() : null,
+        proto.hasFloeCast() ? proto.getFloeCast() : null,
+        proto.hasFloeType() ? proto.getFloeType() : null,
+        proto.hasFloeAggregate() ? proto.getFloeAggregate() : null,
+        proto.hasFloeCollation() ? proto.getFloeCollation() : null,
+        proto.getPropertiesMap());
   }
 }

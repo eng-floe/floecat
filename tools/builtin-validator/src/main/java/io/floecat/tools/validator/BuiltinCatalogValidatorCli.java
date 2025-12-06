@@ -3,7 +3,7 @@ package io.floecat.tools.validator;
 import ai.floedb.metacat.catalog.builtin.BuiltinCatalogData;
 import ai.floedb.metacat.catalog.builtin.BuiltinCatalogProtoMapper;
 import ai.floedb.metacat.catalog.builtin.BuiltinCatalogValidator;
-import ai.floedb.metacat.catalog.rpc.BuiltinCatalog;
+import ai.floedb.metacat.query.rpc.BuiltinRegistry;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.TextFormat;
 import java.io.IOException;
@@ -105,10 +105,12 @@ public final class BuiltinCatalogValidatorCli {
     boolean valid = errors.isEmpty() && (warnings.isEmpty() || !options.strict());
     boolean shouldFail = !errors.isEmpty() || (options.strict() && !warnings.isEmpty());
 
+    String catalogLabel = options.catalogPath().getFileName().toString();
+
     if (options.json()) {
-      emitJson(out, catalog.version(), stats, errors, warnings, valid);
+      emitJson(out, catalogLabel, stats, errors, warnings, valid);
     } else {
-      emitHumanReadable(out, catalog.version(), stats, errors, warnings, valid);
+      emitHumanReadable(out, catalogLabel, stats, errors, warnings, valid);
     }
 
     return shouldFail ? 1 : 0;
@@ -117,13 +119,13 @@ public final class BuiltinCatalogValidatorCli {
   /** Emits the friendly console output requested in the design doc. */
   private void emitHumanReadable(
       PrintStream out,
-      String version,
+      String catalogLabel,
       CatalogStats stats,
       List<String> errors,
       List<String> warnings,
       boolean valid) {
     if (valid) {
-      out.printf("%sLoaded builtin catalog: %s%n", successPrefix, version);
+      out.printf("%sLoaded builtin catalog: %s%n", successPrefix, catalogLabel);
       out.printf("%sTypes: %d OK%n", successPrefix, stats.types());
       out.printf("%sFunctions: %d OK%n", successPrefix, stats.functions());
       out.printf("%sOperators: %d OK%n", successPrefix, stats.operators());
@@ -156,14 +158,14 @@ public final class BuiltinCatalogValidatorCli {
   /** Emits machine readable JSON output for automation. */
   private void emitJson(
       PrintStream out,
-      String version,
+      String catalogLabel,
       CatalogStats stats,
       List<String> errors,
       List<String> warnings,
       boolean valid) {
     var builder = new StringBuilder();
     builder.append("{\n");
-    builder.append("  \"version\": \"").append(escapeJson(version)).append("\",\n");
+    builder.append("  \"catalog\": \"").append(escapeJson(catalogLabel)).append("\",\n");
     builder.append("  \"valid\": ").append(valid).append(",\n");
     builder
         .append("  \"errors\": ")
@@ -217,9 +219,6 @@ public final class BuiltinCatalogValidatorCli {
     Objects.requireNonNull(code, "code");
     if (code.equals("catalog.null")) {
       return "Catalog payload is null";
-    }
-    if (code.equals("catalog.version.required")) {
-      return "Catalog version is required";
     }
     if (code.equals("types.empty")) {
       return "Catalog defines no types";
@@ -289,19 +288,32 @@ public final class BuiltinCatalogValidatorCli {
       throw new IOException("Catalog file does not exist: " + path);
     }
 
+    String engineKind = inferEngineKind(path);
+
     try {
       byte[] bytes = Files.readAllBytes(path);
-      return BuiltinCatalogProtoMapper.fromProto(BuiltinCatalog.parseFrom(bytes));
+      return BuiltinCatalogProtoMapper.fromProto(BuiltinRegistry.parseFrom(bytes), engineKind);
     } catch (InvalidProtocolBufferException binaryParseFailure) {
-      var builder = BuiltinCatalog.newBuilder();
+      var builder = BuiltinRegistry.newBuilder();
       try (var reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
         TextFormat.getParser().merge(reader, builder);
-        return BuiltinCatalogProtoMapper.fromProto(builder.build());
+        return BuiltinCatalogProtoMapper.fromProto(builder.build(), engineKind);
       } catch (TextFormat.ParseException textFailure) {
         throw new IOException(
             "Catalog file is not valid protobuf (binary or text): " + path, textFailure);
       }
     }
+  }
+
+  private static String inferEngineKind(Path path) {
+    String name = path.getFileName().toString();
+    String base = name;
+    if (base.endsWith(".pbtxt")) {
+      base = base.substring(0, base.length() - ".pbtxt".length());
+    } else if (base.endsWith(".pb")) {
+      base = base.substring(0, base.length() - ".pb".length());
+    }
+    return base;
   }
 
   /** Prints the expected CLI arguments. */

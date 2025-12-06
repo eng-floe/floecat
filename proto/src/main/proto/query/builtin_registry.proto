@@ -1,0 +1,29 @@
+syntax = "proto3";
+package ai.floedb.metacat.query;
+
+import "query/sql_objects.proto";
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.query.rpc";
+
+message BuiltinRegistry {
+  repeated SqlFunction  functions   = 1;
+  repeated SqlOperator  operators   = 2;
+  repeated SqlType      types       = 3;
+  repeated SqlCast      casts       = 4;
+  repeated SqlCollation collations  = 5;
+  repeated SqlAggregate aggregates  = 6;
+}
+
+message GetBuiltinCatalogRequest {
+  string engine_kind = 1;
+  string engine_version = 2;
+}
+
+message GetBuiltinCatalogResponse {
+  BuiltinRegistry registry = 1;
+}
+
+service BuiltinCatalogService {
+  rpc GetBuiltinCatalog(GetBuiltinCatalogRequest) returns (GetBuiltinCatalogResponse);
+}

@@ -112,10 +112,10 @@ pins snapshots, and stores the lease. Planners request connector `ScanBundle`s l
 expansion map, obligations) is returned to the caller inside the `QueryDescriptor`.
 
 ### Builtin Catalog Service
-`BuiltinCatalogLoader` reads immutable builtin catalogs (`builtin_catalog_<engine_version>.pb[pbtxt]`)
-from the configured location, caches them by engine version, and exposes them through
-`BuiltinCatalogService.GetBuiltinCatalog`. Clients must send `x-engine-version`; when the caller’s
-`current_version` matches the cached version the RPC returns an empty response to avoid retransfers.
+`BuiltinCatalogLoader` reads immutable builtin catalogs (`<engine_kind>.pb[pbtxt]`) from the
+configured location, caches them by engine kind, and exposes them through
+`BuiltinCatalogService.GetBuiltinCatalog`. Clients must send both `x-engine-kind` and
+`x-engine-version`; the RPC always returns the filtered builtin bundle for the requested engine.
 
 ### GC and Bootstrap
 `IdempotencyGc` runs on a configurable cadence (see `metacat.gc.*` config) and sweeps expired

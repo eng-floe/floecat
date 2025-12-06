@@ -232,7 +232,9 @@ class MetadataGraphTest {
             null,
             registry,
             principalProvider,
-            42L);
+            42L,
+            null,
+            null);
     instrumentedGraph.setSnapshotClient(snapshotClient);
 
     assertThat(registry.get("metacat.metadata.graph.cache.enabled").gauge().value()).isEqualTo(1.0);
@@ -254,7 +256,9 @@ class MetadataGraphTest {
             null,
             registry,
             principalProvider,
-            0L);
+            0L,
+            null,
+            null);
     instrumentedGraph.setSnapshotClient(snapshotClient);
 
     assertThat(registry.get("metacat.metadata.graph.cache.enabled").gauge().value()).isZero();
