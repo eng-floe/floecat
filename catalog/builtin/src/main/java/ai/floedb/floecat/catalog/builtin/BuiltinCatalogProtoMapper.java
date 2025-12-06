@@ -5,7 +5,6 @@ import ai.floedb.floecat.query.rpc.*;
 import com.google.protobuf.ByteString;
 import java.util.Objects;
 
-
 /**
  * Maps between engine-neutral builtin definitions (Builtin*Def using NameRef) and the wire protocol
  * (SqlFunction, SqlOperator, etc.) which also uses NameRef.

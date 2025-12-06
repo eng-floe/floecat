@@ -1,177 +1,163 @@
-syntax = "proto3";
+syntax = "proto2";
 package ai.floedb.floecat.extensions.floedb.proto;
 
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.extensions.floedb.proto";
 
-//
-// ------------------------------------------------------
-// pg_proc (Floe/PG function metadata)
-// ------------------------------------------------------
+import "query/engine_specific.proto";
+
 message FloeFunctionSpecific {
-  int32  oid = 100;              // function OID
-  string proname = 101;          // function name (text)
+  optional int32  oid = 100;
+  optional string proname = 101;
 
-  int32  pronamespace = 1;       // OID
-  int32  proowner = 2;           // OID
-  int32  prolang = 3;            // OID
-  float  procost = 4;
-  float  prorows = 5;
-  int32  provariadic = 6;        // OID
-  string protransform = 7;       // text
-  bool   proisagg = 8;
-  bool   proiswindow = 9;
-  bool   prosecdef = 10;
-  bool   proleakproof = 11;
-  bool   proisstrict = 12;
-  bool   proretset = 13;
-  string provolatile = 14;
-  int32  pronargs = 15;
-  int32  pronargdefaults = 16;
+  optional int32  pronamespace = 1;
+  optional int32  proowner = 2;
+  optional int32  prolang = 3;
+  optional float  procost = 4;
+  optional float  prorows = 5;
+  optional int32  provariadic = 6;
+  optional string protransform = 7;
+  optional bool   proisagg = 8;
+  optional bool   proiswindow = 9;
+  optional bool   prosecdef = 10;
+  optional bool   proleakproof = 11;
+  optional bool   proisstrict = 12;
+  optional bool   proretset = 13;
+  optional string provolatile = 14;
+  optional int32  pronargs = 15;
+  optional int32  pronargdefaults = 16;
 
-  int32  prorettype = 17;                  // OID
-  repeated int32 proargtypes = 18;         // OIDs
-  repeated int32 proallargtypes = 19;      // OIDs
+  optional int32  prorettype = 17;
+  repeated int32  proargtypes = 18;
+  repeated int32  proallargtypes = 19;
   repeated string proargmodes = 20;
   repeated string proargnames = 21;
-  string proargdefaults = 22;
+  optional string proargdefaults = 22;
 
-  repeated int32 protrftypes = 23;         // OIDs
+  repeated int32 protrftypes = 23;
 
-  string prosrc = 24;
-  string probin = 25;
+  optional string prosrc = 24;
+  optional string probin = 25;
   repeated string proconfig = 26;
   repeated string proacl = 27;
-  bool   prosp = 28;
-  bool   proybudf = 29;
-  int32  prorettypmod = 30;
-  string procreated = 31;
-  bool   proisbatch = 32;
-  int32  proybcost = 33;
+  optional bool   prosp = 28;
+  optional bool   proybudf = 29;
+  optional int32  prorettypmod = 30;
+  optional string procreated = 31;
+  optional bool   proisbatch = 32;
+  optional int32  proybcost = 33;
 }
 
-//
-// ------------------------------------------------------
-// pg_cast
-// ------------------------------------------------------
 message FloeCastSpecific {
-  int32 castsource = 1;   // OID
-  int32 casttarget = 2;   // OID
-  int32 castfunc = 3;     // OID
-  string castcontext = 4;
-  string castmethod = 5;
+  optional int32 castsource = 1;
+  optional int32 casttarget = 2;
+  optional int32 castfunc = 3;
+  optional string castcontext = 4;
+  optional string castmethod = 5;
 }
 
-//
-// ------------------------------------------------------
-// pg_type (Floe/PG type metadata)
-// ------------------------------------------------------
 message FloeTypeSpecific {
-  int32 oid = 100;              // type OID
-  string typname = 101;         // name of type (text)
+  optional int32 oid = 100;
+  optional string typname = 101;
 
-  int32 typnamespace = 1;       // OID
-  int32 typowner = 2;           // OID
-  int32 typlen = 3;
-  bool  typbyval = 4;
-  string typtype = 5;
-  string typcategory = 6;
-  bool  typispreferred = 7;
-  bool  typisdefined = 8;
-  string typdelim = 9;
+  optional int32 typnamespace = 1;
+  optional int32 typowner = 2;
+  optional int32 typlen = 3;
+  optional bool  typbyval = 4;
+  optional string typtype = 5;
+  optional string typcategory = 6;
+  optional bool  typispreferred = 7;
+  optional bool  typisdefined = 8;
+  optional string typdelim = 9;
 
-  int32 typrelid = 10;          // OID
-  int32 typelem = 11;           // OID
-  int32 typarray = 12;          // OID
+  optional int32 typrelid = 10;
+  optional int32 typelem = 11;
+  optional int32 typarray = 12;
 
-  string typinput = 13;
-  string typoutput = 14;
-  string typreceive = 15;
-  string typsend = 16;
-  string typmodin = 17;
-  string typmodout = 18;
-  string typanalyze = 19;
+  optional string typinput = 13;
+  optional string typoutput = 14;
+  optional string typreceive = 15;
+  optional string typsend = 16;
+  optional string typmodin = 17;
+  optional string typmodout = 18;
+  optional string typanalyze = 19;
 
-  string typalign = 20;
-  string typstorage = 21;
-  bool   typnotnull = 22;
+  optional string typalign = 20;
+  optional string typstorage = 21;
+  optional bool   typnotnull = 22;
 
-  int32  typbasetype = 23;      // OID
-  int32  typtypmod = 24;
-  int32  typndims = 25;
-  int32  typcollation = 26;     // OID
+  optional int32  typbasetype = 23;
+  optional int32  typtypmod = 24;
+  optional int32  typndims = 25;
+  optional int32  typcollation = 26;
 
-  string typdefaultbin = 27;
-  string typdefault = 28;
+  optional string typdefaultbin = 27;
+  optional string typdefault = 28;
 
   repeated string typacl = 29;
 }
 
-//
-// ------------------------------------------------------
-// pg_operator
-// ------------------------------------------------------
 message FloeOperatorSpecific {
-  int32 oid = 100;         // operator OID
-  string oprname = 101;    // operator name
+  optional int32 oid = 100;
+  optional string oprname = 101;
 
-  int32 oprnamespace = 1;  // OID
-  int32 oprowner = 2;      // OID
+  optional int32 oprnamespace = 1;
+  optional int32 oprowner = 2;
 
-  string oprkind = 3;
-  bool   oprcanmerge = 4;
-  bool   oprcanhash = 5;
+  optional string oprkind = 3;
+  optional bool   oprcanmerge = 4;
+  optional bool   oprcanhash = 5;
 
-  int32  oprleft = 6;      // OID
-  int32  oprright = 7;     // OID
-  int32  oprresult = 8;    // OID
-  int32  oprcom = 9;       // OID
-  int32  oprnegate = 10;   // OID
-  int32  oprcode = 11;     // OID
-  int32  oprrest = 12;     // OID
-  int32  oprjoin = 13;     // OID
+  optional int32  oprleft = 6;
+  optional int32  oprright = 7;
+  optional int32  oprresult = 8;
+  optional int32  oprcom = 9;
+  optional int32  oprnegate = 10;
+  optional int32  oprcode = 11;
+  optional int32  oprrest = 12;
+  optional int32  oprjoin = 13;
 }
 
-//
-// ------------------------------------------------------
-// pg_aggregate
-// ------------------------------------------------------
 message FloeAggregateSpecific {
-  int32 aggfnoid = 1;        // OID of final function (aggfnoid in PG)
+  optional int32 aggfnoid = 1;
+  optional string aggkind = 2;
+  optional int32 aggnumdirectargs = 3;
 
-  string aggkind = 2;
-  int32 aggnumdirectargs = 3;
+  optional int32 aggtransfn = 4;
+  optional int32 aggfinalfn = 5;
+  optional int32 aggmtransfn = 6;
+  optional int32 aggminvtransfn = 7;
+  optional int32 aggmfinalfn = 8;
 
-  int32 aggtransfn = 4;      // OID
-  int32 aggfinalfn = 5;      // OID
-  int32 aggmtransfn = 6;     // OID
-  int32 aggminvtransfn = 7;  // OID
-  int32 aggmfinalfn = 8;     // OID
+  optional bool  aggfinalextra = 9;
+  optional bool  aggmfinalextra = 10;
 
-  bool  aggfinalextra = 9;
-  bool  aggmfinalextra = 10;
+  optional int32 aggsortop = 11;
 
-  int32 aggsortop = 11;      // OID
+  optional int32 aggtranstype = 12;
+  optional int32 aggtransspace = 13;
 
-  int32 aggtranstype = 12;   // OID
-  int32 aggtransspace = 13;
+  optional int32 aggmtranstype = 14;
+  optional int32 aggmtransspace = 15;
 
-  int32 aggmtranstype = 14;  // OID
-  int32 aggmtransspace = 15;
-
-  string agginitval = 16;
-  string aggminitval = 17;
+  optional string agginitval = 16;
+  optional string aggminitval = 17;
 }
 
-//
-// ------------------------------------------------------
-// pg_collation
-// ------------------------------------------------------
 message FloeCollationSpecific {
-  int32 oid = 1;
-  string collname = 2;
-  int32 collnamespace = 3;  // matches pg_namespace OID
-  int32 collencoding = 4;   // -1 = "all"
-  string collcollate = 5;   // "en_US"
-  string collctype = 6;     // same
+  optional int32 oid = 1;
+  optional string collname = 2;
+  optional int32 collnamespace = 3;
+  optional int32 collencoding = 4;
+  optional string collcollate = 5;
+  optional string collctype = 6;
+}
+
+extend ai.floedb.floecat.query.EngineSpecific {
+  optional FloeFunctionSpecific floe_function = 1;
+  optional FloeOperatorSpecific floe_operator = 2;
+  optional FloeCastSpecific floe_cast = 3;
+  optional FloeTypeSpecific floe_type = 4;
+  optional FloeAggregateSpecific floe_aggregate = 5;
+  optional FloeCollationSpecific floe_collation = 6;
 }

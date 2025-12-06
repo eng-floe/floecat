@@ -6,8 +6,8 @@ import ai.floedb.floecat.extensions.builtin.spi.EngineBuiltinExtension;
 import ai.floedb.floecat.extensions.floedb.proto.*;
 import ai.floedb.floecat.query.rpc.*;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.ExtensionRegistry;
 import com.google.protobuf.TextFormat;
-import com.google.protobuf.UnknownFieldSet;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -42,13 +42,18 @@ public abstract class FloeBuiltinExtension implements EngineBuiltinExtension {
   // ---------------------------------------------------------------------
 
   protected BuiltinRegistry loadFromResource(String resourcePath) {
-    try (InputStream in = getClass().getResourceAsStream(resourcePath)) {
-      if (in == null) {
-        throw new IllegalStateException("Builtin file not found: " + resourcePath);
-      }
+    InputStream in = getClass().getResourceAsStream(resourcePath);
+    if (in == null) {
+      throw new IllegalStateException("Builtin file not found: " + resourcePath);
+    }
+    try (in) {
+      // Register all Floe proto extensions so TextFormat parser can deserialize them
+      ExtensionRegistry extensionRegistry = ExtensionRegistry.newInstance();
+      EngineFloe.registerAllExtensions(extensionRegistry);
+
       BuiltinRegistry.Builder builder = BuiltinRegistry.newBuilder();
       var parser = TextFormat.Parser.newBuilder().setAllowUnknownFields(true).build();
-      parser.merge(new InputStreamReader(in, StandardCharsets.UTF_8), builder);
+      parser.merge(new InputStreamReader(in, StandardCharsets.UTF_8), extensionRegistry, builder);
       return builder.build();
     } catch (Exception e) {
       throw new IllegalStateException("Failed to load builtin file: " + resourcePath, e);
@@ -136,64 +141,43 @@ public abstract class FloeBuiltinExtension implements EngineBuiltinExtension {
       return es;
     }
 
-    UnknownFieldSet u = es.getUnknownFields();
-
-    // The unknown field number (1–6) identifies which Floe proto is embedded
-    if (u.hasField(1)) {
-      return parseAndRewrite(
-          es,
-          "floe.function+proto",
-          FloeFunctionSpecific.parser(),
-          u.getField(1).getLengthDelimitedList().get(0));
+    // Extract Floe extensions (proto2 extensions registered in ExtensionRegistry)
+    // These are the proper way to handle structured Floe-specific data
+    if (es.hasExtension(EngineFloe.floeFunction)) {
+      FloeFunctionSpecific spec = es.getExtension(EngineFloe.floeFunction);
+      return rewriteExtension(es, spec, "floe.function+proto");
     }
-    if (u.hasField(2)) {
-      return parseAndRewrite(
-          es,
-          "floe.operator+proto",
-          FloeOperatorSpecific.parser(),
-          u.getField(2).getLengthDelimitedList().get(0));
+    if (es.hasExtension(EngineFloe.floeOperator)) {
+      FloeOperatorSpecific spec = es.getExtension(EngineFloe.floeOperator);
+      return rewriteExtension(es, spec, "floe.operator+proto");
     }
-    if (u.hasField(3)) {
-      return parseAndRewrite(
-          es,
-          "floe.cast+proto",
-          FloeCastSpecific.parser(),
-          u.getField(3).getLengthDelimitedList().get(0));
+    if (es.hasExtension(EngineFloe.floeCast)) {
+      FloeCastSpecific spec = es.getExtension(EngineFloe.floeCast);
+      return rewriteExtension(es, spec, "floe.cast+proto");
     }
-    if (u.hasField(4)) {
-      return parseAndRewrite(
-          es,
-          "floe.type+proto",
-          FloeTypeSpecific.parser(),
-          u.getField(4).getLengthDelimitedList().get(0));
+    if (es.hasExtension(EngineFloe.floeType)) {
+      FloeTypeSpecific spec = es.getExtension(EngineFloe.floeType);
+      return rewriteExtension(es, spec, "floe.type+proto");
     }
-    if (u.hasField(5)) {
-      return parseAndRewrite(
-          es,
-          "floe.aggregate+proto",
-          FloeAggregateSpecific.parser(),
-          u.getField(5).getLengthDelimitedList().get(0));
+    if (es.hasExtension(EngineFloe.floeAggregate)) {
+      FloeAggregateSpecific spec = es.getExtension(EngineFloe.floeAggregate);
+      return rewriteExtension(es, spec, "floe.aggregate+proto");
     }
-    if (u.hasField(6)) {
-      return parseAndRewrite(
-          es,
-          "floe.collation+proto",
-          FloeCollationSpecific.parser(),
-          u.getField(6).getLengthDelimitedList().get(0));
+    if (es.hasExtension(EngineFloe.floeCollation)) {
+      FloeCollationSpecific spec = es.getExtension(EngineFloe.floeCollation);
+      return rewriteExtension(es, spec, "floe.collation+proto");
     }
 
-    return es; // no Floe-specific block
+    // No Floe extensions found - return unmodified
+    return es;
   }
 
-  protected <T extends com.google.protobuf.Message> EngineSpecific parseAndRewrite(
-      EngineSpecific es, String type, com.google.protobuf.Parser<T> parser, ByteString raw) {
-
+  /** Rewrite a proto2 extension into opaque payload bytes. */
+  protected <T extends com.google.protobuf.Message> EngineSpecific rewriteExtension(
+      EngineSpecific es, T extension, String type) {
     try {
-      // Parse the readable PBtxt block into the correct proto type
-      T parsed = parser.parseFrom(raw);
-
       // Canonical binary serialization
-      ByteString payload = parsed.toByteString();
+      ByteString payload = extension.toByteString();
 
       return es.toBuilder()
           .setPayloadType(type)
@@ -202,7 +186,7 @@ public abstract class FloeBuiltinExtension implements EngineBuiltinExtension {
           .build();
 
     } catch (Exception e) {
-      throw new IllegalStateException("Failed to parse Floe-specific payload type=" + type, e);
+      throw new IllegalStateException("Failed to rewrite extension payload type=" + type, e);
     }
   }
 

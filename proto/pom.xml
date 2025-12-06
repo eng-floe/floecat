@@ -43,6 +43,18 @@
   </dependencies>
 
   <build>
+    <resources>
+      <resource>
+        <directory>src/main/proto</directory>
+        <includes>
+          <include>**/*.proto</include>
+        </includes>
+        <targetPath>META-INF/proto</targetPath>
+      </resource>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+    </resources>
     <plugins>
       <plugin>
         <groupId>io.quarkus</groupId>
@@ -90,6 +102,32 @@
             <goals>
               <goal>jandex</goal>
             </goals>
+          </execution>
+        </executions>
+      </plugin>
+      
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-resources-plugin</artifactId>
+        <version>3.3.1</version>
+        <executions>
+          <execution>
+            <id>copy-proto-resources</id>
+            <phase>process-resources</phase>
+            <goals>
+              <goal>resources</goal>
+            </goals>
+            <configuration>
+              <resources>
+                <resource>
+                  <directory>${project.basedir}/src/main/proto</directory>
+                  <includes>
+                    <include>**/*.proto</include>
+                  </includes>
+                  <targetPath>META-INF/proto</targetPath>
+                </resource>
+              </resources>
+            </configuration>
           </execution>
         </executions>
       </plugin>

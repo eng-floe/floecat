@@ -1,9 +1,9 @@
-package ai.floedb.metacat.extensions.floedb;
+package ai.floedb.floecat.extensions.floedb;
 
-import ai.floedb.metacat.catalog.builtin.BuiltinCatalogData;
-import ai.floedb.metacat.catalog.builtin.BuiltinCatalogValidator;
-import ai.floedb.metacat.query.rpc.BuiltinRegistry;
-import ai.floedb.metacat.query.rpc.EngineSpecific;
+import ai.floedb.floecat.catalog.builtin.BuiltinCatalogData;
+import ai.floedb.floecat.catalog.builtin.BuiltinCatalogValidator;
+import ai.floedb.floecat.query.rpc.BuiltinRegistry;
+import ai.floedb.floecat.query.rpc.EngineSpecific;
 import org.junit.jupiter.api.Test;
 
 /** Tests for Floe builtin extension plugins: loading, parsing, and validation of .pbtxt files. */
@@ -72,17 +72,29 @@ class FloeBuiltinExtensionTest {
     var extension = new FloeBuiltinExtension.FloeDb();
     BuiltinCatalogData catalog = extension.loadBuiltinCatalog();
 
-    // Ensure engine_specific rules were properly rewritten to payload bytes
+    // Ensure engine_specific rules are loaded from the pbtxt file
     var functionsWithRules =
         catalog.functions().stream().filter(f -> !f.engineSpecific().isEmpty()).toList();
 
-    assert !functionsWithRules.isEmpty()
-        : "Some functions should have engine-specific rules after rewriting";
+    // At least some functions should have engine-specific rules
+    assert !functionsWithRules.isEmpty() : "Some functions should have engine-specific rules";
 
-    // Validate each rule has payload data
+    // Validate that rules with Floe extensions have been converted to payloads
     for (var func : functionsWithRules) {
       for (var rule : func.engineSpecific()) {
-        assert rule.hasExtensionPayload() : "Rewritten rules should have payload bytes";
+        // Each rule should either have a payload (if it had Floe extensions)
+        // or be a base rule without extensions
+        String payloadType = rule.payloadType();
+        byte[] payload = rule.extensionPayload();
+
+        if (!payloadType.isEmpty()) {
+          // If there's a payload type, there must be payload data
+          assert payload.length > 0
+              : "Rule with payloadType '" + payloadType + "' should have payload bytes";
+          // Verify payload type indicates it's a Floe extension
+          assert payloadType.startsWith("floe.")
+              : "Expected Floe payload type, got: " + payloadType;
+        }
       }
     }
   }

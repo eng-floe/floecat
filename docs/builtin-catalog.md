@@ -2,7 +2,7 @@
 
 ## Overview
 
-Metacat's builtin catalog system provides engine-specific metadata (functions, operators, types, casts, collations, aggregates) to query planners. This enables the planner to understand and rewrite queries against heterogeneous engines (Floe, Postgres, Trino, Spark, etc.) without embedding engine-specific logic.
+Floecat's builtin catalog system provides engine-specific metadata (functions, operators, types, casts, collations, aggregates) to query planners. This enables the planner to understand and rewrite queries against heterogeneous engines (Floe, Postgres, Trino, Spark, etc.) without embedding engine-specific logic.
 
 The architecture is **plugin-based**: each engine implements a builtin catalog plugin that provides structured, versioned metadata matching the engine's capabilities.
 
@@ -247,16 +247,16 @@ Floe-specific fields (like `floe_function`) are captured as unknown fields durin
 
 ### ServiceLoader Registration
 
-Each plugin registers itself in `META-INF/services/ai.floedb.metacat.extensions.builtin.spi.EngineBuiltinExtension`:
+Each plugin registers itself in `META-INF/services/ai.floedb.floecat.extensions.builtin.spi.EngineBuiltinExtension`:
 
 ```
-ai.floedb.metacat.extensions.floedb.FloeBuiltinExtension$FloeDb
-ai.floedb.metacat.extensions.floedb.FloeBuiltinExtension$FloeDemo
+ai.floedb.floecat.extensions.floedb.FloeBuiltinExtension$FloeDb
+ai.floedb.floecat.extensions.floedb.FloeBuiltinExtension$FloeDemo
 ```
 
 ## Data Flow
 
-### Request Flow (Planner → Metacat)
+### Request Flow (Planner → Floecat)
 
 1. **Planner** sends `GetBuiltinCatalogRequest` with headers:
    - `x-engine-kind: "floe-demo"`
@@ -343,7 +343,7 @@ When planner requests a version, Layer 2 filters Layer 1's full catalog:
   ──────────────────────────────────────────────────────
   Total:                                           ~307MB
 
-This is acceptable for a service with 8GB+ heap. Typical Metacat deployments
+This is acceptable for a service with 8GB+ heap. Typical Floecat deployments
 allocate 16GB+ to handle metadata graph + execution plans.
 ```
 
@@ -375,7 +375,7 @@ Plugins can define proto extensions on `EngineSpecific` to support rich PBtxt sy
 
 ```proto
 // In extensions/plugins/floedb/src/main/proto/engine_floe.proto
-extend ai.floedb.metacat.query.EngineSpecific {
+extend ai.floedb.floecat.query.EngineSpecific {
   FloeFunctionSpecific floe_function = 1001;
   FloeOperatorSpecific floe_operator = 1002;
   FloeCastSpecific floe_cast = 1003;
@@ -425,7 +425,7 @@ public class MyEngineBuiltinExtension implements EngineBuiltinExtension {
 
 ### Step 2: Register with ServiceLoader
 
-Create `resources/META-INF/services/ai.floedb.metacat.extensions.builtin.spi.EngineBuiltinExtension`:
+Create `resources/META-INF/services/ai.floedb.floecat.extensions.builtin.spi.EngineBuiltinExtension`:
 
 ```
 com.example.MyEngineBuiltinExtension
@@ -440,7 +440,7 @@ import "query/engine_specific.proto";
 
 message MyEngineFunction { /* ... */ }
 
-extend ai.floedb.metacat.query.EngineSpecific {
+extend ai.floedb.floecat.query.EngineSpecific {
   MyEngineFunction my_function = 1100;  // Use allocated range for your engine
 }
 ```
