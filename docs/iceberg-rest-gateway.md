@@ -55,6 +55,7 @@ This document describes the Iceberg REST protocol gateway that fronts Metacat an
 - Plan/task lifecycle: `TablePlanService` issues `BeginQuery`, builds predicates, and fetches scan bundles via `QueryScanService`. `PlanTaskManager` caches the result (with TTL + configurable chunk size), generates deterministic task IDs, and enforces namespace/table scoping when `/tasks` consumes them.
 - View metadata: `ViewMetadataService` maps Iceberg view schemas, versions, requirements, and summaries onto Metacat’s `ViewService`. REST view DTOs now mirror Iceberg’s OpenAPI contract (schemas, version-logs, operations).
 - Auth/config: `TenantHeaderFilter` propagates tenant headers and `IcebergGatewayConfig` + catalog mappings resolve prefixes/catalog IDs and runtime overrides for metadata copying or connector creation.
+- Prefix compatibility: `metacat.gateway.default-prefix` optionally rewrites legacy prefix-less paths (e.g., `/v1/namespaces`) to `/v1/{prefix}/...`, which is useful for clients like DuckDB that ignore the catalog name returned from `/v1/config`.
 
 ## Scan planning implementation
 

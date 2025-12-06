@@ -26,8 +26,9 @@ public interface IcebergGatewayConfig {
   @WithDefault("")
   String defaultAuthorization();
 
-  @WithDefault("")
   Map<String, String> catalogMapping();
+
+  Optional<String> defaultPrefix();
 
   Map<String, RegisterConnectorTemplate> registerConnectors();
 

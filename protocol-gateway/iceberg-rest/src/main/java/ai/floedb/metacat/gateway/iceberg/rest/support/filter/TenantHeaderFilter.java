@@ -4,19 +4,28 @@ import ai.floedb.metacat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.metacat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.metacat.gateway.iceberg.rest.services.tenant.TenantContext;
-import jakarta.annotation.Priority;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
-import jakarta.ws.rs.Priorities;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.container.ContainerRequestFilter;
+import jakarta.ws.rs.container.PreMatching;
+import jakarta.ws.rs.core.PathSegment;
 import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.UriBuilder;
+import jakarta.ws.rs.core.UriInfo;
 import jakarta.ws.rs.ext.Provider;
+import java.net.URI;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import org.jboss.logging.Logger;
+import org.jboss.resteasy.reactive.server.ServerRequestFilter;
 
 @Provider
-@Priority(Priorities.AUTHENTICATION)
+@PreMatching
 public class TenantHeaderFilter implements ContainerRequestFilter {
+  private static final Logger LOG = Logger.getLogger(TenantHeaderFilter.class);
   @Inject Instance<IcebergGatewayConfig> config;
   @Inject TenantContext tenantContext;
 
@@ -32,7 +41,13 @@ public class TenantHeaderFilter implements ContainerRequestFilter {
   private static final String DEFAULT_AUTH_HEADER = "authorization";
 
   @Override
+  @ServerRequestFilter(priority = 10)
   public void filter(ContainerRequestContext requestContext) {
+    LOG.infof("TenantHeaderFilter invoked for path %s", requestContext.getUriInfo().getPath());
+    rewriteDefaultPrefix(requestContext);
+    if (requestContext.getProperty("rewrittenPath") != null) {
+      LOG.infof("Request URI after rewrite: %s", requestContext.getUriInfo().getRequestUri());
+    }
     if (requestContext.getUriInfo().getPath().equals("v1/config")) {
       return;
     }
@@ -61,6 +76,43 @@ public class TenantHeaderFilter implements ContainerRequestFilter {
     if (auth == null || auth.isBlank()) {
       requestContext.abortWith(unauthorized("missing authorization header"));
     }
+  }
+
+  private static final Set<String> PREFIXED_SEGMENTS =
+      new HashSet<>(List.of("namespaces", "tables", "views", "transactions"));
+
+  private void rewriteDefaultPrefix(ContainerRequestContext context) {
+    String prefix = defaultPrefix();
+    if (prefix.isEmpty()) {
+      LOG.info("No default prefix configured; skipping path rewrite");
+      return;
+    }
+    LOG.infof(
+        "Evaluating prefix rewrite for path %s with prefix '%s'",
+        context.getUriInfo().getPath(), prefix);
+    UriInfo uriInfo = context.getUriInfo();
+    List<PathSegment> segments = uriInfo.getPathSegments();
+    if (segments.size() < 2) {
+      return;
+    }
+    if (!"v1".equals(segments.get(0).getPath())) {
+      return;
+    }
+    String second = segments.get(1).getPath();
+    if (prefix.equals(second) || !PREFIXED_SEGMENTS.contains(second)) {
+      LOG.infof(
+          "Skipping prefix rewrite for path %s (second segment=%s)", uriInfo.getPath(), second);
+      return;
+    }
+    StringBuilder newPath = new StringBuilder("/v1/").append(prefix);
+    for (int i = 1; i < segments.size(); i++) {
+      newPath.append('/').append(segments.get(i).getPath());
+    }
+    URI newUri =
+        UriBuilder.fromUri(uriInfo.getRequestUri()).replacePath(newPath.toString()).build();
+    context.setRequestUri(newUri);
+    context.setProperty("rewrittenPath", newPath.toString());
+    LOG.infof("Rewrote legacy path %s to %s", uriInfo.getPath(), newPath);
   }
 
   private String resolveTenantHeaderName() {
@@ -120,6 +172,32 @@ public class TenantHeaderFilter implements ContainerRequestFilter {
       return Optional.of(value.trim());
     } catch (Exception ignored) {
       return Optional.empty();
+    }
+  }
+
+  private String defaultPrefix() {
+    if (config.isUnsatisfied()) {
+      LOG.info("Config not available when resolving default prefix");
+      return "";
+    }
+    try {
+      var cfg = config.get();
+      String value = cfg.defaultPrefix().map(String::trim).orElse("");
+      LOG.infof("Resolved default prefix property to '%s'", value);
+      if (value.isEmpty()) {
+        String systemValue = System.getProperty("metacat.gateway.default-prefix", "");
+        String envValue = System.getenv("METACAT_GATEWAY_DEFAULT_PREFIX");
+        LOG.infof("Fallback system property='%s', env='%s'", systemValue, envValue);
+        if (!systemValue.isBlank()) {
+          value = systemValue.trim();
+        } else if (envValue != null && !envValue.isBlank()) {
+          value = envValue.trim();
+        }
+      }
+      return value;
+    } catch (Exception ex) {
+      LOG.error("Failed to resolve default prefix", ex);
+      return "";
     }
   }
 
