@@ -1,0 +1,109 @@
+syntax = "proto3";
+package ai.floedb.metacat.query;
+
+import "query/engine_specific.proto";
+import "common/common.proto";
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.query.rpc";
+
+/**
+ * UNIFIED ENGINE-NEUTRAL SQL OBJECT MODEL
+ */
+
+enum Origin {
+  ORIGIN_UNSPECIFIED = 0;
+  ORIGIN_BUILTIN = 1;  // shipped by engine
+  ORIGIN_USER = 2;     // created via DDL
+}
+
+/** 
+ * FUNCTION  (scalar, aggregate, window)
+ */ 
+message SqlFunction {
+  ai.floedb.metacat.common.NameRef name = 1;
+  repeated ai.floedb.metacat.common.NameRef argument_types = 2;  // fully resolved type names
+  ai.floedb.metacat.common.NameRef return_type = 3;
+
+  bool is_aggregate = 4;   // functional category
+  bool is_window = 5;
+
+  Origin origin = 10;
+
+  repeated EngineSpecific engine_specific = 99;
+}
+
+/** 
+ * OPERATOR
+ */ 
+message SqlOperator {
+  ai.floedb.metacat.common.NameRef name = 1;       // e.g. "+", "=", "||"
+  ai.floedb.metacat.common.NameRef left_type = 2;
+  ai.floedb.metacat.common.NameRef right_type = 3;
+  ai.floedb.metacat.common.NameRef return_type = 4;
+
+  bool is_commutative = 5;  // optional, universal property
+  bool is_associative = 6;  // optional, universal property
+
+  Origin origin = 10;
+
+  repeated EngineSpecific engine_specific = 99;
+}
+
+/** 
+ * TYPE
+ */
+message SqlType {
+  ai.floedb.metacat.common.NameRef name = 1;
+  string category = 2;      // numeric, string, bool, date, etc.
+  bool is_array = 3;
+  ai.floedb.metacat.common.NameRef element_type = 4;  // if array
+
+  Origin origin = 10;
+
+  repeated EngineSpecific engine_specific = 99;
+}
+
+/**
+ * CAST
+ */
+message SqlCast {
+  ai.floedb.metacat.common.NameRef name = 1;
+  ai.floedb.metacat.common.NameRef source_type = 2;
+  ai.floedb.metacat.common.NameRef target_type = 3;
+
+  // implicit, assignment, explicit
+  string method = 4;
+
+  Origin origin = 10;
+
+  repeated EngineSpecific engine_specific = 99;
+}
+
+/**
+ * COLLATION
+ */
+message SqlCollation {
+  ai.floedb.metacat.common.NameRef name = 1;
+  string locale = 2;
+
+  Origin origin = 10;
+
+  repeated EngineSpecific engine_specific = 99;
+}
+
+/**
+ * AGGREGATE
+ */
+message SqlAggregate {
+  ai.floedb.metacat.common.NameRef name = 1;
+  repeated ai.floedb.metacat.common.NameRef argument_types = 2;
+  ai.floedb.metacat.common.NameRef return_type = 3;
+
+  // minimal engine-neutral requirement
+  ai.floedb.metacat.common.NameRef state_type = 4;  // needed for type-checking only
+
+  Origin origin = 10;
+
+  repeated EngineSpecific engine_specific = 99;
+}

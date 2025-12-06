@@ -15,30 +15,29 @@ class BuiltinCatalogValidationTest {
   @Test
   void allBundledCatalogsValidate() throws IOException {
     Path builtinsDir = Path.of("src/main/resources/builtins");
-    Set<String> engineVersions = new HashSet<>();
+    Set<String> engineKinds = new HashSet<>();
 
     try (var files = Files.list(builtinsDir)) {
       files
           .filter(Files::isRegularFile)
           .map(path -> path.getFileName().toString())
-          .filter(name -> name.startsWith("builtin_catalog_"))
+          .filter(name -> name.endsWith(".pb") || name.endsWith(".pbtxt"))
           .forEach(
               name -> {
-                String version =
-                    name.replaceFirst("builtin_catalog_", "").replaceFirst("\\.(pb|pbtxt)$", "");
-                engineVersions.add(version);
+                String base = name.replaceFirst("\\.(pb|pbtxt)$", "");
+                engineKinds.add(base);
               });
     }
 
-    assertThat(engineVersions).isNotEmpty();
+    assertThat(engineKinds).isNotEmpty();
 
-    for (String version : engineVersions) {
+    for (String kind : engineKinds) {
       BuiltinCatalogLoader loader = new BuiltinCatalogLoader();
       loader.configuredLocation = "file:" + builtinsDir.toAbsolutePath();
       loader.init();
-      var catalog = loader.getCatalog(version);
+      var catalog = loader.getCatalog(kind);
       var errors = BuiltinCatalogValidator.validate(catalog);
-      assertThat(errors).as("catalog " + version + " should be valid").isEmpty();
+      assertThat(errors).as("catalog " + kind + " should be valid").isEmpty();
     }
   }
 }

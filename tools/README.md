@@ -19,7 +19,7 @@ mvn -pl tools/builtin-validator package
 
 ```bash
 java -jar tools/builtin-validator/target/builtin-validator.jar \
-    /path/to/builtin_catalog_<engine>.pb[txt] \
+    /path/to/<engine_kind>.pb[txt] \
     [--json] [--strict]
 ```
 
@@ -74,7 +74,7 @@ VALIDATION FAILED (2 errors)
 
 | Section | Rules Enforced |
 |---------|----------------|
-| **Catalog-Level** | File must parse as protobuf (binary or text); `catalog.version` must not be empty and must match `^[A-Za-z0-9_.-]+$`. |
+| **Catalog-Level** | File must parse as protobuf (binary or text). |
 | **Types** | `type.name` required; names and OIDs must be unique; `category` required; if `is_array=true` the `element_type` must exist and cannot form a self-loop or circular array chain; `element_type` references must resolve. |
 | **Functions** | `name` required; signature (`name + argument_types`) unique; every argument and return type must exist; aggregate + window combos are rejected/warned. |
 | **Operators** | `name` required; signature (`name + left + right`) unique; operand types (unless intentionally blank for unary) must exist; referenced function must exist. |

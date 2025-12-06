@@ -35,12 +35,15 @@ public class InboundContextInterceptor implements ServerInterceptor {
       Metadata.Key.of("x-query-id", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> ENGINE_VERSION_HEADER =
       Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ENGINE_KIND_HEADER =
+      Metadata.Key.of("x-engine-kind", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORR =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
 
   public static final Context.Key<PrincipalContext> PC_KEY = PrincipalProvider.KEY;
   public static final Context.Key<String> QUERY_KEY = Context.key("query_id");
   public static final Context.Key<String> ENGINE_VERSION_KEY = Context.key("engine_version");
+  public static final Context.Key<String> ENGINE_KIND_KEY = Context.key("engine_kind");
   public static final Context.Key<String> CORR_KEY = Context.key("correlation_id");
 
   private Clock clock = Clock.systemUTC();
@@ -59,6 +62,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
     String queryIdHeader = Optional.ofNullable(headers.get(QUERY_ID_HEADER)).orElse("");
     String engineVersion = Optional.ofNullable(headers.get(ENGINE_VERSION_HEADER)).orElse("");
+    String engineKind = Optional.ofNullable(headers.get(ENGINE_KIND_HEADER)).orElse("");
 
     ResolvedContext resolvedContext = resolvePrincipalAndQuery(headers, queryIdHeader);
 
@@ -70,6 +74,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
             .withValue(PC_KEY, principalContext)
             .withValue(QUERY_KEY, queryId)
             .withValue(ENGINE_VERSION_KEY, engineVersion)
+            .withValue(ENGINE_KIND_KEY, engineKind)
             .withValue(CORR_KEY, correlationId);
 
     MDC.put("query_id", queryId);
@@ -85,6 +90,9 @@ public class InboundContextInterceptor implements ServerInterceptor {
       span.setAttribute("subject", principalContext.getSubject());
       if (engineVersion != null && !engineVersion.isBlank()) {
         span.setAttribute("engine_version", engineVersion);
+      }
+      if (engineKind != null && !engineKind.isBlank()) {
+        span.setAttribute("engine_kind", engineKind);
       }
     }
 
@@ -121,6 +129,10 @@ public class InboundContextInterceptor implements ServerInterceptor {
       String ev = ENGINE_VERSION_KEY.get();
       if (ev != null && !ev.isBlank()) {
         span.setAttribute("engine_version", ev);
+      }
+      String ek = ENGINE_KIND_KEY.get();
+      if (ek != null && !ek.isBlank()) {
+        span.setAttribute("engine_kind", ek);
       }
     }
 

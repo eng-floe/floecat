@@ -65,6 +65,63 @@ Common fields:
 adapters that compute hints on demand and stash them inside the node map. Consumers should treat the
 payload as immutable and versioned.
 
+### Version‑Specificity and Matching Semantics
+Engine‑specific hint providers rely on `EngineSpecificMatcher`, which compares an engine’s
+(engine_kind, engine_version) against each rule’s declared constraints. Version matching is
+inclusive: `min_version` and `max_version` both participate in ≥ / ≤ comparisons. Versions are
+compared using natural ordering: numeric segments compare by magnitude, while mixed alphanumeric
+segments (e.g., `16.0beta2`, `16.0rc1`) follow prefix ordering where numeric segments always sort
+after alphabetic suffixes. Pre‑release versions (`alpha`, `beta`, `rc`) therefore sort strictly
+before the corresponding final release. Rules omitting `engine_kind` inherit the catalog file’s
+engine kind. Hint providers compute a fingerprint per node and engine so cached hints remain
+isolated across engine versions and hint revisions.
+
+### Builtin Nodes & Engine Filtering
+Builtin SQL objects (types, functions, operators, casts, collations, aggregates) never hit the
+pointer/blob repositories. Instead, the graph delegates to `BuiltinNodeRegistry`, which loads the
+pb/pbtxt catalogs once per engine kind, materialises immutable relation nodes, and caches the
+result per `(engine_kind, engine_version)`. Catalog files live under `resources/builtins` and follow
+the `<engine_kind>.pb[pbtxt]` naming convention. Each builtin definition can declare one or more
+`engine_specific` rules (engine kind + min/max versions + optional properties). The registry filters
+definitions using those rules so a planner calling with `x-engine-kind=postgres,
+x-engine-version=16.0` only sees builtin nodes that actually exist in that engine release. Callers
+that omit either header simply receive an empty builtin bundle; the catalog files remain untouched.
+Only `GetBuiltinCatalog` enforces the headers strictly so planners cannot accidentally rely on
+partial data.
+
+Each `engine_specific` block may also attach arbitrary key/value `properties`. When the registry
+materialises a `(engine_kind, engine_version)` bundle it drops every rule that does not match that
+engine/version, so the filtered catalog (and `GetBuiltinCatalog` response) only contains the rules
+that apply to the caller. Pbtxt authors rarely need to repeat the engine kind in each rule; any
+`engine_specific` entry without an explicit `engine_kind` automatically inherits the file’s engine
+kind. Builtin nodes intentionally stay rule-free; the `BuiltinCatalogHintProvider` reuses the cached
+definitions and `EngineSpecificMatcher` to expose the matching rule’s properties through the
+`builtin.catalog.properties` engine hint (JSON payload).
+
+The matcher applies all engine‑specific constraints eagerly when materializing builtin bundles.
+For a given (engine_kind, engine_version) pair, only the rules that match naturally‑ordered
+version boundaries are retained. As a result, builtin nodes exposed through
+`MetadataGraph.builtinNodes` already represent the exact set applicable for that engine release.
+Rules that declare version‑scoped properties contribute those properties to the
+`builtin.catalog.properties` hint, which is computed by the BuiltinCatalogHintProvider using the
+same matching semantics.
+
+`MetadataGraph.builtinNodes(engineKind, engineVersion)` exposes the filtered bundle. `GetBuiltinCatalog`
+is currently the only caller, but the same bundle will eventually back `GetCatalogBundle` and system
+catalog streaming so builtin objects look and behave like every other relation node. Because builtin
+catalogs are immutable per engine version, the registry stores them entirely in memory and evicts
+them only when FloeCAT restarts.
+
+### Deterministic Hint Caching
+The hint system used by builtin catalog providers and other planners is backed by a weight‑bounded
+Caffeine cache keyed on `(resourceId, pointerVersion, engineKey, hintType, fingerprint)`. The
+fingerprint is provider‑defined and ensures that changes in provider logic (e.g., version of a
+builtin definition, rule filtering logic, or planner‑specific metadata) produce new cached entries.
+Cache eviction is weight‑aware: inserts that exceed the configured maximum immediately trigger
+synchronous eviction when running in test mode, and asynchronous eviction in production. Eviction
+can invalidate old hints even when pointer versions are unchanged, ensuring stale engine‑specific
+metadata is not reused beyond its boundary conditions.
+
 ## Graph APIs
 `MetadataGraph` (CDI `@ApplicationScoped`) exposes the APIs that higher layers call. Key methods:
 
@@ -79,6 +136,12 @@ payload as immutable and versioned.
 | `ResolveResult resolveViews(String cid, NameRef prefix, int limit, String token)` | Lists views below a prefix with next-page tokens and total counts. |
 | `SnapshotPin snapshotPinFor(String cid, ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOfDefault)` | Normalises snapshot selection (override → as-of → current). |
 | `void invalidate(ResourceId id)` | Evicts every cached version of an ID (call after successful mutations). |
+
+### Engine Hint Retrieval
+All tables and views participating in planning may embed engine‑specific hints. The Metadata Graph
+delegates hint evaluation to the EngineHintManager, which selects providers based on node kind,
+hint type, and engine availability. Hints are cached per fingerprint and engine key so that
+planners requesting different engine versions or planner modes never interfere with one another.
 
 Internally the graph:
 

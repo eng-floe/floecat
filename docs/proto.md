@@ -45,7 +45,7 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 | `TenantService` | Tenant CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `TriggerReconcile`, `GetReconcileJob`. |
 | `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`, `FetchScanBundle`. |
-| `BuiltinCatalogService` | `GetBuiltinCatalog` | Returns the cached builtin catalog for the engine version carried in the `x-engine-version` header; callers can send `current_version` to short circuit identical catalogs. |
+| `BuiltinCatalogService` | `GetBuiltinCatalog` | Returns the builtin catalog filtered by the `x-engine-kind` / `x-engine-version` headers supplied with the request. |
 
 Each RPC requires a populated `tenant_id` within the `ResourceId`s; the Quarkus service checks this
 before hitting repository storage.
@@ -65,8 +65,8 @@ before hitting repository storage.
 
 `catalog/builtin.proto` exposes immutable builtin metadata via `BuiltinCatalogService.GetBuiltinCatalog`
 so planners can hydrate functions/operators/types once per engine version. Clients send the
-`x-engine-version` header; when the RPC’s `current_version` matches the cached catalog Floecat returns
-an empty response.
+`x-engine-kind` and `x-engine-version` headers and always receive the filtered catalog for that
+engine release.
 
 ## Important Internal Details
 - **Field numbering** – All proto files reserve low numbers for required identity fields and push

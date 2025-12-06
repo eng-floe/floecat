@@ -4,7 +4,6 @@ import java.util.List;
 
 /** Immutable representation of a builtin catalog after parsing from protobuf. */
 public record BuiltinCatalogData(
-    String version,
     List<BuiltinFunctionDef> functions,
     List<BuiltinOperatorDef> operators,
     List<BuiltinTypeDef> types,
@@ -13,7 +12,6 @@ public record BuiltinCatalogData(
     List<BuiltinAggregateDef> aggregates) {
 
   public BuiltinCatalogData {
-    version = version == null ? "" : version;
     functions = copy(functions);
     operators = copy(operators);
     types = copy(types);
