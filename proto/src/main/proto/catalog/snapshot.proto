@@ -6,6 +6,9 @@ option java_package = "ai.floedb.metacat.catalog.rpc";
 
 import "common/common.proto";
 import "google/protobuf/timestamp.proto";
+import "catalog/partition.proto";
+import "gateway/iceberg.proto";
+import "google/protobuf/field_mask.proto";
 
 // ----- Snapshot -----
 
@@ -16,6 +19,12 @@ message Snapshot {
   google.protobuf.Timestamp ingested_at = 4;
   int64 parent_snapshot_id = 5;
   string schema_json = 6;
+  PartitionSpecInfo partition_spec = 7;
+  int64 sequence_number = 8;
+  string manifest_list = 9;
+  map<string,string> summary = 10;
+  int32 schema_id = 11;
+  ai.floedb.metacat.gateway.iceberg.IcebergMetadata iceberg = 12;
 }
 
 message ListSnapshotsRequest {
@@ -41,6 +50,13 @@ message SnapshotSpec {
   google.protobuf.Timestamp upstream_created_at = 3;
   google.protobuf.Timestamp ingested_at = 4;
   int64 parent_snapshot_id = 5;
+  optional string schema_json = 6;
+  PartitionSpecInfo partition_spec = 7;
+  optional int64 sequence_number = 8;
+  optional string manifest_list = 9;
+  map<string,string> summary = 10;
+  optional int32 schema_id = 11;
+  ai.floedb.metacat.gateway.iceberg.IcebergMetadata iceberg = 12;
 }
 
 message CreateSnapshotRequest {
@@ -61,6 +77,16 @@ message DeleteSnapshotResponse {
   ai.floedb.metacat.common.MutationMeta meta = 1;
 }
 
+message UpdateSnapshotRequest {
+  SnapshotSpec spec = 1;
+  ai.floedb.metacat.common.Precondition precondition = 2;
+  google.protobuf.FieldMask update_mask = 3;
+}
+message UpdateSnapshotResponse {
+  Snapshot snapshot = 1;
+  ai.floedb.metacat.common.MutationMeta meta = 2;
+}
+
 // ----- Services -----
 
 service SnapshotService {
@@ -68,4 +94,5 @@ service SnapshotService {
   rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
   rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
   rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
+  rpc UpdateSnapshot(UpdateSnapshotRequest) returns (UpdateSnapshotResponse);
 }

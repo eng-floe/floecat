@@ -213,12 +213,20 @@ public final class DummyConnector implements MetacatConnector {
 
     List<FileColumnStats> fileStats = List.of(f1, f2, f3);
 
-    return List.of(new SnapshotBundle(snapshotId, 0L, createdAt, tStats, cstats, fileStats));
-  }
-
-  @Override
-  public ScanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime) {
-    return new ScanBundle(List.of(), List.of());
+    return List.of(
+        new SnapshotBundle(
+            snapshotId,
+            0L,
+            createdAt,
+            tStats,
+            cstats,
+            fileStats,
+            "{}",
+            null,
+            0L,
+            null,
+            Map.of(),
+            0));
   }
 
   @Override

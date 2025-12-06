@@ -157,16 +157,29 @@ class LogicalSchemaMapperTest {
   // ICEBERG fallback to generic
   // -------------------------------------------------------------------------
   @Test
-  void icebergInvalidSchemaFallsBackToGeneric() {
-    String badJson = "{not-valid-json}";
+  void genericSchemaParsesWhenFormatUnspecified() {
+    String genericJson =
+        """
+            {"cols":[
+                {"name":"id","type":"int"},
+                {"name":"name","type":"string"}
+            ]}
+        """;
 
-    UpstreamRef upstream = UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).build();
+    UpstreamRef upstream = UpstreamRef.newBuilder().setFormat(TableFormat.TF_UNSPECIFIED).build();
 
-    Table t = baseTable(badJson, upstream);
+    Table t = baseTable(genericJson, upstream);
 
-    SchemaDescriptor desc = mapper.map(t, badJson);
+    SchemaDescriptor desc = mapper.map(t, genericJson);
 
-    // generic fallback → empty schema
-    assertEquals(0, desc.getColumnsCount());
+    assertEquals(2, desc.getColumnsCount());
+
+    SchemaColumn id = desc.getColumns(0);
+    assertEquals("id", id.getName());
+    assertEquals("int", id.getLogicalType());
+
+    SchemaColumn name = desc.getColumns(1);
+    assertEquals("name", name.getName());
+    assertEquals("string", name.getLogicalType());
   }
 }

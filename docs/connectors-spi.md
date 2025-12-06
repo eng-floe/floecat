@@ -16,14 +16,15 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Metac
   - `listNamespaces()`.
   - `listTables(namespaceFq)`.
   - `describe(namespaceFq, tableName)` → `TableDescriptor` with location, schema JSON, partition
-    keys, properties.
+    keys, and properties.
   - `enumerateSnapshotsWithStats(...)` → `SnapshotBundle`s containing per-snapshot table/column/file stats.
-  - `plan(namespaceFq, tableName, snapshotId, asOfTime)` → `ScanBundle` describing data/delete files pinned to the snapshot. (The SPI keeps the upstream “plan” term so Iceberg/Delta authors can map it directly to their native APIs.)
-- _Terminology note_: elsewhere in the repo “planning” refers to the dedicated planner service. Within the SPI the `plan()` verb simply mirrors upstream engines (`TableScan.planFiles()` in Iceberg, Delta manifests) to keep connector authors oriented; the returned `ScanBundle` is purely execution metadata.
 - **`ConnectorFactory`** – Instantiates connectors given a `ConnectorConfig` (URI, options,
   authentication). The service uses it to validate specs and the reconciler uses it during runs.
 - **`ConnectorConfigMapper`** – Bidirectional conversion between RPC `Connector` protobufs and the
   SPI’s `ConnectorConfig` records.
+- **`IcebergSnapshotMetadataProvider`** – Optional extension that connectors can implement when they
+  need to surface full Iceberg table metadata alongside snapshot stats. The reconciler probes for
+  this interface when persisting snapshots.
 - **Auth providers** – `AuthProvider` + concrete implementations such as `NoAuthProvider` and
   `AwsSigV4AuthProvider` supply credentials or headers per connector.
 - **Stats helpers** – `StatsEngine`, `GenericStatsEngine`, `ProtoStatsBuilder`, and NDV utilities
@@ -41,13 +42,13 @@ interface MetacatConnector extends Closeable {
   List<String> listTables(String namespaceFq);
   TableDescriptor describe(String namespaceFq, String tableName);
   List<SnapshotBundle> enumerateSnapshotsWithStats(...);
-  ScanBundle plan(...);
 }
 ```
 `TableDescriptor`, `SnapshotBundle`, and `ScanBundle` are immutable records; connectors populate them
 with canonical metadata that the reconciler ingests. `SnapshotBundle.fileStats` is optional but
-should be populated when Parquet footers or upstream metadata can provide per-file row counts,
-sizes, and per-column stats.
+should be populated when Parquet footers or upstream metadata can provide per-file row counts, sizes,
+and per-column stats. Snapshot bundles also carry manifest-list URIs, sequence numbers, and summary
+maps so downstream APIs can mirror Iceberg’s REST contract.
 
 `ConnectorConfig` encodes:
 - Kind + source/destination selectors (`SourceSelector`, `DestinationTarget`).
@@ -75,7 +76,6 @@ ConnectorFactory.create(ConnectorConfig)
       → listNamespaces/listTables → service repo ensures namespace/table existence
       → describe → Table specs persisted with upstream references
       → enumerateSnapshotsWithStats → StatsRepository writes Table/Column/File stats per snapshot
-      → plan → `QueryService.FetchScanBundle` returns data/delete file manifests to planners
   ← close() cleans up HTTP/S3/DB connections
 ```
 `ConnectorFactory.create` is invoked both in `ConnectorsImpl.validate` (short-lived) and in the

@@ -1,0 +1,95 @@
+syntax = "proto3";
+package ai.floedb.metacat.gateway.iceberg;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.metacat.gateway.iceberg.rpc";
+
+import "catalog/partition.proto";
+
+message IcebergSchema {
+  int32 schema_id = 1;
+  string schema_json = 2;
+  repeated int32 identifier_field_ids = 3;
+  int32 last_column_id = 4;
+}
+
+message IcebergSortField {
+  int32 source_field_id = 1;
+  string transform = 2;
+  string direction = 3;
+  string null_order = 4;
+}
+
+message IcebergSortOrder {
+  int32 sort_order_id = 1;
+  repeated IcebergSortField fields = 2;
+}
+
+message IcebergSnapshotLogEntry {
+  int64 timestamp_ms = 1;
+  int64 snapshot_id = 2;
+}
+
+message IcebergMetadataLogEntry {
+  int64 timestamp_ms = 1;
+  string file = 2;
+}
+
+message IcebergBlobMetadata {
+  string type = 1;
+  int64 snapshot_id = 2;
+  int64 sequence_number = 3;
+  repeated int32 fields = 4;
+  map<string,string> properties = 99;
+}
+
+message IcebergStatisticsFile {
+  int64 snapshot_id = 1;
+  string statistics_path = 2;
+  int64 file_size_in_bytes = 3;
+  int64 file_footer_size_in_bytes = 4;
+  repeated IcebergBlobMetadata blob_metadata = 5;
+}
+
+message IcebergPartitionStatisticsFile {
+  int64 snapshot_id = 1;
+  string statistics_path = 2;
+  int64 file_size_in_bytes = 3;
+}
+
+message IcebergEncryptedKey {
+  string key_id = 1;
+  bytes encrypted_key_metadata = 2;
+  string encrypted_by_id = 3;
+}
+
+message IcebergRef {
+  int64 snapshot_id = 1;
+  string type = 2;
+  optional int64 max_reference_age_ms = 3;
+  optional int64 max_snapshot_age_ms = 4;
+  optional int32 min_snapshots_to_keep = 5;
+}
+
+message IcebergMetadata {
+  string table_uuid = 1;
+  int32 format_version = 2;
+  string metadata_location = 3;
+  int64 last_updated_ms = 4;
+  int32 last_column_id = 5;
+  repeated IcebergSchema schemas = 6;
+  int32 current_schema_id = 7;
+  repeated ai.floedb.metacat.catalog.PartitionSpecInfo partition_specs = 8;
+  int32 default_spec_id = 9;
+  int32 last_partition_id = 10;
+  repeated IcebergSortOrder sort_orders = 11;
+  int32 default_sort_order_id = 12;
+  int64 current_snapshot_id = 13;
+  int64 last_sequence_number = 14;
+  repeated IcebergSnapshotLogEntry snapshot_log = 15;
+  repeated IcebergMetadataLogEntry metadata_log = 16;
+  map<string, IcebergRef> refs = 17;
+  repeated IcebergStatisticsFile statistics = 18;
+  repeated IcebergPartitionStatisticsFile partition_statistics = 19;
+  repeated IcebergEncryptedKey encryption_keys = 20;
+}

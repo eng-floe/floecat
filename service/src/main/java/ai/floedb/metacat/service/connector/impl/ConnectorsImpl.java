@@ -23,6 +23,8 @@ import ai.floedb.metacat.connector.rpc.ListConnectorsResponse;
 import ai.floedb.metacat.connector.rpc.NamespacePath;
 import ai.floedb.metacat.connector.rpc.ReconcilePolicy;
 import ai.floedb.metacat.connector.rpc.SourceSelector;
+import ai.floedb.metacat.connector.rpc.SyncCaptureRequest;
+import ai.floedb.metacat.connector.rpc.SyncCaptureResponse;
 import ai.floedb.metacat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.metacat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.metacat.connector.rpc.UpdateConnectorRequest;
@@ -32,7 +34,10 @@ import ai.floedb.metacat.connector.rpc.ValidateConnectorResponse;
 import ai.floedb.metacat.connector.spi.ConnectorConfig;
 import ai.floedb.metacat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.metacat.connector.spi.ConnectorFactory;
+import ai.floedb.metacat.reconciler.impl.ReconcilerService;
+import ai.floedb.metacat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.metacat.reconciler.jobs.ReconcileScope;
 import ai.floedb.metacat.service.common.BaseServiceImpl;
 import ai.floedb.metacat.service.common.Canonicalizer;
 import ai.floedb.metacat.service.common.IdempotencyGuard;
@@ -67,6 +72,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject ReconcileJobStore jobs;
+  @Inject ReconcilerService reconcilerService;
 
   private static final Set<String> CONNECTOR_MUTABLE_PATHS =
       Set.of(
@@ -541,6 +547,56 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   }
 
   @Override
+  public Uni<SyncCaptureResponse> syncCapture(SyncCaptureRequest request) {
+    var L = LogHelper.start(LOG, "SyncCapture");
+
+    return mapFailures(
+            run(
+                () -> {
+                  var pc = principalProvider.get();
+                  authz.require(pc, "connector.manage");
+                  var corr = pc.getCorrelationId();
+
+                  var connectorId = request.getConnectorId();
+                  ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", corr);
+
+                  List<List<String>> nsPaths =
+                      request.getDestinationNamespacePathsList().stream()
+                          .map(NamespacePath::getSegmentsList)
+                          .map(List::copyOf)
+                          .toList();
+                  var scope =
+                      ReconcileScope.of(
+                          nsPaths,
+                          request.getDestinationTableDisplayName(),
+                          request.getDestinationTableColumnsList());
+
+                  CaptureMode mode =
+                      request.getIncludeStatistics()
+                          ? CaptureMode.METADATA_AND_STATS
+                          : CaptureMode.METADATA_ONLY;
+
+                  var result = reconcilerService.reconcile(connectorId, false, scope, mode);
+                  if (!result.ok()) {
+                    if (result.error != null) {
+                      throw new RuntimeException("sync capture failed", result.error);
+                    }
+                    throw new IllegalStateException("sync capture failed");
+                  }
+                  return SyncCaptureResponse.newBuilder()
+                      .setTablesScanned(result.scanned)
+                      .setTablesChanged(result.changed)
+                      .setErrors(result.errors)
+                      .build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
   public Uni<TriggerReconcileResponse> triggerReconcile(TriggerReconcileRequest request) {
     var L = LogHelper.start(LOG, "TriggerReconcile");
 
@@ -563,7 +619,10 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   var jobId =
                       jobs.enqueue(
-                          connectorId.getTenantId(), connectorId.getId(), request.getFullRescan());
+                          connectorId.getTenantId(),
+                          connectorId.getId(),
+                          request.getFullRescan(),
+                          scopeFromRequest(request));
 
                   return TriggerReconcileResponse.newBuilder().setJobId(jobId).build();
                 }),
@@ -613,6 +672,21 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private static ReconcileScope scopeFromRequest(TriggerReconcileRequest request) {
+    if (request == null) {
+      return ReconcileScope.empty();
+    }
+    var namespaces =
+        request.getDestinationNamespacePathsList().stream()
+            .map(NamespacePath::getSegmentsList)
+            .map(List::copyOf)
+            .toList();
+    return ReconcileScope.of(
+        namespaces,
+        request.getDestinationTableDisplayName(),
+        request.getDestinationTableColumnsList());
   }
 
   private static JobState toProtoState(String state) {

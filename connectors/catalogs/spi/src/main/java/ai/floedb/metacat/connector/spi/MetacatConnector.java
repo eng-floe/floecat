@@ -2,6 +2,7 @@ package ai.floedb.metacat.connector.spi;
 
 import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.FileColumnStats;
+import ai.floedb.metacat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.execution.rpc.ScanFile;
@@ -27,7 +28,14 @@ public interface MetacatConnector extends Closeable {
       ResourceId destinationTableId,
       Set<String> includeColumns);
 
-  ScanBundle plan(String namespaceFq, String tableName, long snapshotId, long asOfTime);
+  default List<SnapshotBundle> enumerateSnapshotsWithStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      Set<String> includeColumns,
+      boolean includeStatistics) {
+    return enumerateSnapshotsWithStats(namespaceFq, tableName, destinationTableId, includeColumns);
+  }
 
   @Override
   void close();
@@ -46,7 +54,13 @@ public interface MetacatConnector extends Closeable {
       long upstreamCreatedAtMs,
       TableStats tableStats,
       List<ColumnStats> columnStats,
-      List<FileColumnStats> fileStats) {}
+      List<FileColumnStats> fileStats,
+      String schemaJson,
+      PartitionSpecInfo partitionSpec,
+      long sequenceNumber,
+      String manifestList,
+      Map<String, String> summary,
+      int schemaId) {}
 
   record ScanBundle(List<ScanFile> dataFiles, List<ScanFile> deleteFiles) {}
 }

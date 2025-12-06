@@ -6,6 +6,7 @@ import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
+import ai.floedb.metacat.catalog.rpc.GetTableStatsRequest;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.NamespaceSpec;
 import ai.floedb.metacat.catalog.rpc.PutColumnStatsRequest;
@@ -16,10 +17,12 @@ import ai.floedb.metacat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.metacat.catalog.rpc.SnapshotSpec;
 import ai.floedb.metacat.catalog.rpc.TableFormat;
 import ai.floedb.metacat.catalog.rpc.TableSpec;
+import ai.floedb.metacat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.metacat.catalog.rpc.UpstreamRef;
 import ai.floedb.metacat.common.rpc.NameRef;
 import ai.floedb.metacat.common.rpc.ResourceId;
+import ai.floedb.metacat.common.rpc.SnapshotRef;
 import ai.floedb.metacat.connector.rpc.Connector;
 import ai.floedb.metacat.connector.rpc.ConnectorSpec;
 import ai.floedb.metacat.connector.rpc.ConnectorState;
@@ -30,7 +33,9 @@ import ai.floedb.metacat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.metacat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.metacat.connector.spi.ConnectorFactory;
 import ai.floedb.metacat.connector.spi.ConnectorFormat;
+import ai.floedb.metacat.connector.spi.IcebergSnapshotMetadataProvider;
 import ai.floedb.metacat.connector.spi.MetacatConnector;
+import ai.floedb.metacat.reconciler.jobs.ReconcileScope;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
@@ -47,9 +52,20 @@ import java.util.Set;
 
 @ApplicationScoped
 public class ReconcilerService {
+  public enum CaptureMode {
+    METADATA_ONLY,
+    METADATA_AND_STATS
+  }
+
   @Inject GrpcClients clients;
 
-  public Result reconcile(ResourceId connectorId, boolean fullRescan) {
+  public Result reconcile(ResourceId connectorId, boolean fullRescan, ReconcileScope scopeIn) {
+    return reconcile(connectorId, fullRescan, scopeIn, CaptureMode.METADATA_AND_STATS);
+  }
+
+  public Result reconcile(
+      ResourceId connectorId, boolean fullRescan, ReconcileScope scopeIn, CaptureMode captureMode) {
+    ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
     long scanned = 0;
     long changed = 0;
     long errors = 0;
@@ -113,6 +129,18 @@ public class ReconcilerService {
         destNamespaceId = ensureNamespace(destCatalogId, destNsFq);
       }
 
+      String scopeNamespaceFq = destNsFq != null ? destNsFq : sourceNsFq;
+      if (!scope.matchesNamespace(scopeNamespaceFq)) {
+        return new Result(
+            0,
+            0,
+            1,
+            new IllegalArgumentException(
+                "Connector destination namespace "
+                    + scopeNamespaceFq
+                    + " does not match requested scope"));
+      }
+
       if (!destB.hasNamespaceId()) {
         destB.setNamespaceId(destNamespaceId);
         destB.clearNamespace();
@@ -140,13 +168,20 @@ public class ReconcilerService {
               ? dest.getTableDisplayName()
               : null;
 
+      boolean matchedScope = false;
       for (String srcTable : tables) {
-        scanned++;
         try {
           var upstream = connector.describe(sourceNsFq, srcTable);
 
           final String destTableDisplay =
               (tableDisplayHint != null) ? tableDisplayHint : upstream.tableName();
+
+          if (!scope.acceptsTable(scopeNamespaceFq, destTableDisplay)) {
+            continue;
+          }
+
+          matchedScope = true;
+          scanned++;
 
           var effective = overrideDisplay(upstream, destNsFq, destTableDisplay);
 
@@ -167,18 +202,20 @@ public class ReconcilerService {
             dmaskB.addAllPaths(List.of("destination.table_id", "destination.table_display_name"));
           }
 
+          boolean includeStats = captureMode == CaptureMode.METADATA_AND_STATS;
           var bundles =
               connector.enumerateSnapshotsWithStats(
-                  sourceNsFq, srcTable, destTableId, includeSelectors);
+                  sourceNsFq, srcTable, destTableId, includeSelectors, includeStats);
 
-          ingestAllSnapshotsAndStatsFiltered(destTableId, bundles, includeSelectors);
+          ingestAllSnapshotsAndStatsFiltered(
+              destTableId, connector, bundles, includeSelectors, includeStats);
           changed++;
         } catch (Exception e) {
           errors++;
           e.printStackTrace();
           errSummaries.add(
               "ns="
-                  + destNsFq
+                  + scopeNamespaceFq
                   + " table="
                   + sourceNsFq
                   + "."
@@ -186,6 +223,15 @@ public class ReconcilerService {
                   + " : "
                   + rootCauseMessage(e));
         }
+      }
+
+      if (!matchedScope && scope.hasTableFilter()) {
+        return new Result(
+            0,
+            0,
+            1,
+            new IllegalArgumentException(
+                "No tables matched scope: " + scope.destinationTableDisplayName()));
       }
 
       DestinationTarget updated = destB.build();
@@ -304,12 +350,11 @@ public class ReconcilerService {
             .setDisplayName(landingView.tableName())
             .setSchemaJson(landingView.schemaJson())
             .setUpstream(upstream)
-            .putAllProperties(landingView.properties())
-            .build();
+            .putAllProperties(landingView.properties());
 
     return clients
         .table()
-        .createTable(CreateTableRequest.newBuilder().setSpec(spec).build())
+        .createTable(CreateTableRequest.newBuilder().setSpec(spec.build()).build())
         .getTable()
         .getResourceId();
   }
@@ -337,8 +382,7 @@ public class ReconcilerService {
         TableSpec.newBuilder()
             .setSchemaJson(landingView.schemaJson())
             .setUpstream(upstream)
-            .putAllProperties(landingView.properties())
-            .build();
+            .putAllProperties(landingView.properties());
 
     FieldMask mask =
         FieldMask.newBuilder()
@@ -349,7 +393,7 @@ public class ReconcilerService {
     var req =
         UpdateTableRequest.newBuilder()
             .setTableId(tableId)
-            .setSpec(updated)
+            .setSpec(updated.build())
             .setUpdateMask(mask)
             .build();
     try {
@@ -362,20 +406,75 @@ public class ReconcilerService {
   }
 
   private void ensureSnapshot(
-      ResourceId tableId, long snapshotId, long parentId, long upstreamTsMs) {
-    var spec =
+      ResourceId tableId,
+      MetacatConnector connector,
+      MetacatConnector.SnapshotBundle snapshotBundle) {
+    if (snapshotBundle == null) {
+      return;
+    }
+    long upstreamTsMs =
+        snapshotBundle.upstreamCreatedAtMs() > 0
+            ? snapshotBundle.upstreamCreatedAtMs()
+            : System.currentTimeMillis();
+    SnapshotSpec.Builder spec =
         SnapshotSpec.newBuilder()
             .setTableId(tableId)
-            .setSnapshotId(snapshotId)
-            .setParentSnapshotId(parentId)
+            .setSnapshotId(snapshotBundle.snapshotId())
+            .setParentSnapshotId(snapshotBundle.parentId())
             .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamTsMs))
-            .setIngestedAt(Timestamps.fromMillis(System.currentTimeMillis()))
-            .build();
-    var request = CreateSnapshotRequest.newBuilder().setSpec(spec).build();
+            .setIngestedAt(Timestamps.fromMillis(System.currentTimeMillis()));
+    FieldMask.Builder mask = FieldMask.newBuilder().addPaths("upstream_created_at");
+    if (snapshotBundle.parentId() > 0) {
+      mask.addPaths("parent_snapshot_id");
+    }
+    if (snapshotBundle.schemaJson() != null && !snapshotBundle.schemaJson().isBlank()) {
+      spec.setSchemaJson(snapshotBundle.schemaJson());
+      mask.addPaths("schema_json");
+    }
+    if (snapshotBundle.partitionSpec() != null) {
+      spec.setPartitionSpec(snapshotBundle.partitionSpec());
+      mask.addPaths("partition_spec");
+    }
+    if (snapshotBundle.sequenceNumber() > 0) {
+      spec.setSequenceNumber(snapshotBundle.sequenceNumber());
+      mask.addPaths("sequence_number");
+    }
+    if (snapshotBundle.manifestList() != null && !snapshotBundle.manifestList().isBlank()) {
+      spec.setManifestList(snapshotBundle.manifestList());
+      mask.addPaths("manifest_list");
+    }
+    if (snapshotBundle.summary() != null && !snapshotBundle.summary().isEmpty()) {
+      spec.putAllSummary(snapshotBundle.summary());
+      mask.addPaths("summary");
+    }
+    if (snapshotBundle.schemaId() > 0) {
+      spec.setSchemaId(snapshotBundle.schemaId());
+      mask.addPaths("schema_id");
+    }
+    if (connector instanceof IcebergSnapshotMetadataProvider icebergProvider) {
+      icebergProvider
+          .icebergMetadata(snapshotBundle.snapshotId())
+          .ifPresent(
+              metadata -> {
+                spec.setIceberg(metadata);
+                mask.addPaths("iceberg");
+              });
+    }
+    SnapshotSpec snapshotSpec = spec.build();
+    var request = CreateSnapshotRequest.newBuilder().setSpec(snapshotSpec).build();
     try {
       clients.snapshot().createSnapshot(request);
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.ALREADY_EXISTS) {
+        var updateMask = mask.build();
+        if (updateMask.getPathsCount() > 0) {
+          var updateReq =
+              UpdateSnapshotRequest.newBuilder()
+                  .setSpec(snapshotSpec)
+                  .setUpdateMask(updateMask)
+                  .build();
+          clients.snapshot().updateSnapshot(updateReq);
+        }
         return;
       }
       throw e;
@@ -384,8 +483,10 @@ public class ReconcilerService {
 
   private void ingestAllSnapshotsAndStatsFiltered(
       ResourceId tableId,
+      MetacatConnector connector,
       List<MetacatConnector.SnapshotBundle> bundles,
-      Set<String> includeSelectors) {
+      Set<String> includeSelectors,
+      boolean includeStats) {
 
     var seen = new HashSet<Long>();
     for (var snapshotBundle : bundles) {
@@ -398,69 +499,94 @@ public class ReconcilerService {
         continue;
       }
 
-      long parentId = snapshotBundle.parentId();
-      long createdAtMs =
-          (snapshotBundle.upstreamCreatedAtMs() > 0)
-              ? snapshotBundle.upstreamCreatedAtMs()
-              : System.currentTimeMillis();
+      ensureSnapshot(tableId, connector, snapshotBundle);
 
-      ensureSnapshot(tableId, snapshotId, parentId, createdAtMs);
+      if (includeStats) {
+        if (statsAlreadyCaptured(tableId, snapshotId)) {
+          continue;
+        }
 
-      var tsIn = snapshotBundle.tableStats();
-      if (tsIn != null) {
-        var tStats = tsIn.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
-        clients
-            .statistics()
-            .putTableStats(
-                PutTableStatsRequest.newBuilder()
+        var tsIn = snapshotBundle.tableStats();
+        if (tsIn != null) {
+          var tStats = tsIn.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
+          clients
+              .statistics()
+              .putTableStats(
+                  PutTableStatsRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setSnapshotId(snapshotId)
+                      .setStats(tStats)
+                      .build());
+        }
+
+        var cols = snapshotBundle.columnStats();
+        if (cols != null && !cols.isEmpty()) {
+          List<ColumnStats> filtered =
+              (includeSelectors == null || includeSelectors.isEmpty())
+                  ? cols
+                  : cols.stream().filter(c -> matchesSelector(c, includeSelectors)).toList();
+
+          if (!filtered.isEmpty()) {
+            List<PutColumnStatsRequest> columnRequests = new ArrayList<>();
+            for (var c : filtered) {
+              columnRequests.add(
+                  PutColumnStatsRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setSnapshotId(snapshotId)
+                      .addColumns(
+                          c.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
+                      .build());
+            }
+            clients
+                .statisticsMutiny()
+                .putColumnStats(Multi.createFrom().iterable(columnRequests))
+                .await()
+                .atMost(Duration.ofMinutes(1));
+          }
+        }
+
+        var fileCols = snapshotBundle.fileStats();
+        if (fileCols != null && !fileCols.isEmpty()) {
+          List<PutFileColumnStatsRequest> fileRequests = new ArrayList<>();
+          for (var f : fileCols) {
+            fileRequests.add(
+                PutFileColumnStatsRequest.newBuilder()
                     .setTableId(tableId)
                     .setSnapshotId(snapshotId)
-                    .setStats(tStats)
-                    .build());
-      }
-
-      var cols = snapshotBundle.columnStats();
-      if (cols != null && !cols.isEmpty()) {
-        List<ColumnStats> filtered =
-            (includeSelectors == null || includeSelectors.isEmpty())
-                ? cols
-                : cols.stream().filter(c -> matchesSelector(c, includeSelectors)).toList();
-
-        if (!filtered.isEmpty()) {
-          List<PutColumnStatsRequest> columnRequests = new ArrayList<>();
-          for (var c : filtered) {
-            columnRequests.add(
-                PutColumnStatsRequest.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(snapshotId)
-                    .addColumns(c.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
+                    .addFiles(f.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
                     .build());
           }
           clients
               .statisticsMutiny()
-              .putColumnStats(Multi.createFrom().iterable(columnRequests))
+              .putFileColumnStats(Multi.createFrom().iterable(fileRequests))
               .await()
               .atMost(Duration.ofMinutes(1));
         }
       }
+    }
+  }
 
-      var fileCols = snapshotBundle.fileStats();
-      if (fileCols != null && !fileCols.isEmpty()) {
-        List<PutFileColumnStatsRequest> fileRequests = new ArrayList<>();
-        for (var f : fileCols) {
-          fileRequests.add(
-              PutFileColumnStatsRequest.newBuilder()
-                  .setTableId(tableId)
-                  .setSnapshotId(snapshotId)
-                  .addFiles(f.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
-                  .build());
-        }
-        clients
-            .statisticsMutiny()
-            .putFileColumnStats(Multi.createFrom().iterable(fileRequests))
-            .await()
-            .atMost(Duration.ofMinutes(1));
+  private boolean statsAlreadyCaptured(ResourceId tableId, long snapshotId) {
+    if (snapshotId <= 0) {
+      return false;
+    }
+
+    try {
+      var response =
+          clients
+              .statistics()
+              .getTableStats(
+                  GetTableStatsRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                      .build());
+      var stats = response.getStats();
+      return stats.hasTableId() && stats.getSnapshotId() == snapshotId;
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return false;
       }
+      throw e;
     }
   }
 

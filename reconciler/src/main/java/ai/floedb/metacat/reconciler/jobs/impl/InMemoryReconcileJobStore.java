@@ -1,6 +1,7 @@
 package ai.floedb.metacat.reconciler.jobs.impl;
 
 import ai.floedb.metacat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.metacat.reconciler.jobs.ReconcileScope;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Map;
 import java.util.Optional;
@@ -16,7 +17,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private final Set<String> leased = ConcurrentHashMap.newKeySet();
 
   @Override
-  public String enqueue(String tenantId, String connectorId, boolean fullRescan) {
+  public String enqueue(
+      String tenantId, String connectorId, boolean fullRescan, ReconcileScope scope) {
     String id = UUID.randomUUID().toString();
     var job =
         new ReconcileJob(
@@ -30,7 +32,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             0,
             0,
             0,
-            fullRescan);
+            fullRescan,
+            scope);
     jobs.put(id, job);
     ready.add(id);
     return id;
@@ -60,7 +63,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       }
 
       if (leased.add(jobId)) {
-        return Optional.of(new LeasedJob(job.jobId, job.tenantId, job.connectorId, job.fullRescan));
+        return Optional.of(
+            new LeasedJob(job.jobId, job.tenantId, job.connectorId, job.fullRescan, job.scope));
       }
     }
   }
@@ -81,7 +85,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 job.tablesScanned,
                 job.tablesChanged,
                 job.errors,
-                job.fullRescan));
+                job.fullRescan,
+                job.scope));
   }
 
   @Override
@@ -100,7 +105,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 scanned,
                 changed,
                 errors,
-                job.fullRescan));
+                job.fullRescan,
+                job.scope));
   }
 
   @Override
@@ -120,7 +126,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               scanned,
               changed,
               job.errors,
-              job.fullRescan);
+              job.fullRescan,
+              job.scope);
         });
   }
 
@@ -142,7 +149,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               scanned,
               changed,
               errors,
-              job.fullRescan);
+              job.fullRescan,
+              job.scope);
         });
   }
 }

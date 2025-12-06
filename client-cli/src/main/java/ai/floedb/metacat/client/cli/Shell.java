@@ -9,10 +9,12 @@ import ai.floedb.metacat.catalog.rpc.ColumnStats;
 import ai.floedb.metacat.catalog.rpc.CreateCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.CreateTableRequest;
+import ai.floedb.metacat.catalog.rpc.CreateViewRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.DeleteTableRequest;
+import ai.floedb.metacat.catalog.rpc.DeleteViewRequest;
 import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.FileColumnStats;
 import ai.floedb.metacat.catalog.rpc.GetCatalogRequest;
@@ -20,11 +22,14 @@ import ai.floedb.metacat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.metacat.catalog.rpc.GetTableRequest;
 import ai.floedb.metacat.catalog.rpc.GetTableStatsRequest;
+import ai.floedb.metacat.catalog.rpc.GetViewRequest;
 import ai.floedb.metacat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.metacat.catalog.rpc.ListColumnStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ListFileColumnStatsRequest;
 import ai.floedb.metacat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.metacat.catalog.rpc.ListSnapshotsRequest;
+import ai.floedb.metacat.catalog.rpc.ListViewsRequest;
+import ai.floedb.metacat.catalog.rpc.ListViewsResponse;
 import ai.floedb.metacat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.LookupTableRequest;
@@ -50,7 +55,11 @@ import ai.floedb.metacat.catalog.rpc.TableStats;
 import ai.floedb.metacat.catalog.rpc.UpdateCatalogRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.metacat.catalog.rpc.UpdateTableRequest;
+import ai.floedb.metacat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.metacat.catalog.rpc.UpstreamRef;
+import ai.floedb.metacat.catalog.rpc.View;
+import ai.floedb.metacat.catalog.rpc.ViewServiceGrpc;
+import ai.floedb.metacat.catalog.rpc.ViewSpec;
 import ai.floedb.metacat.client.cli.util.CsvListParserUtil;
 import ai.floedb.metacat.client.cli.util.FQNameParserUtil;
 import ai.floedb.metacat.common.rpc.NameRef;
@@ -101,7 +110,11 @@ import ai.floedb.metacat.query.rpc.SnapshotSet;
 import ai.floedb.metacat.query.rpc.TableObligations;
 import com.google.protobuf.Duration;
 import com.google.protobuf.FieldMask;
+import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.JsonFormat;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.picocli.runtime.annotations.TopCommand;
 import jakarta.inject.Inject;
@@ -160,6 +173,10 @@ public class Shell implements Runnable {
   @Inject
   @GrpcClient("metacat")
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots;
+
+  @Inject
+  @GrpcClient("metacat")
+  ViewServiceGrpc.ViewServiceBlockingStub viewService;
 
   @Inject
   @GrpcClient("metacat")
@@ -329,6 +346,11 @@ public class Shell implements Runnable {
          table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...] [--etag <etag>]
              [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
          table delete <id|fq> [--purge-stats] [--purge-snaps] [--etag <etag>]
+         views <catalog.ns[.ns...]>
+         view create <catalog.ns[.ns...].name> [--sql <text>] [--desc <text>] [--props k=v ...]
+         view get <id|catalog.ns[.ns...].name>
+         view update <id|fq> [--display <name>] [--namespace <catalog.ns[.ns...]>] [--sql <text>] [--desc <text>] [--props k=v ...]
+         view delete <id|fq>
          resolve table <fq> | resolve view <fq> | resolve catalog <name> | resolve namespace <fq>
          describe table <fq>
          snapshots <tableFQ>
@@ -389,6 +411,8 @@ public class Shell implements Runnable {
       case "namespace" -> cmdNamespaceCrud(tail(tokens));
       case "tables" -> cmdTables(tail(tokens));
       case "table" -> cmdTableCrud(tail(tokens));
+      case "views" -> cmdViews(tail(tokens));
+      case "view" -> cmdViewCrud(tail(tokens));
       case "connectors" -> cmdConnectorsList();
       case "connector" -> cmdConnectorCrud(tail(tokens));
       case "resolve" -> cmdResolve(tail(tokens));
@@ -516,13 +540,16 @@ public class Shell implements Runnable {
           mask.add("properties");
         }
 
-        var req =
+        var updateCatalogBuilder =
             UpdateCatalogRequest.newBuilder()
                 .setCatalogId(resolveCatalogId(id))
                 .setSpec(sb.build())
-                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build())
-                .setPrecondition(preconditionFromEtag(args))
-                .build();
+                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build());
+        var catalogPrecondition = preconditionFromEtag(args);
+        if (catalogPrecondition != null) {
+          updateCatalogBuilder.setPrecondition(catalogPrecondition);
+        }
+        var req = updateCatalogBuilder.build();
 
         var resp = catalogs.updateCatalog(req);
         printCatalogs(List.of(resp.getCatalog()));
@@ -533,12 +560,15 @@ public class Shell implements Runnable {
           return;
         }
         boolean requireEmpty = args.contains("--require-empty");
-        var req =
+        var deleteCatalogBuilder =
             DeleteCatalogRequest.newBuilder()
                 .setCatalogId(resolveCatalogId(Quotes.unquote(args.get(1))))
-                .setRequireEmpty(requireEmpty)
-                .setPrecondition(preconditionFromEtag(args))
-                .build();
+                .setRequireEmpty(requireEmpty);
+        var deleteCatalogPrecondition = preconditionFromEtag(args);
+        if (deleteCatalogPrecondition != null) {
+          deleteCatalogBuilder.setPrecondition(deleteCatalogPrecondition);
+        }
+        var req = deleteCatalogBuilder.build();
         catalogs.deleteCatalog(req);
         out.println("ok");
       }
@@ -746,13 +776,16 @@ public class Shell implements Runnable {
           return;
         }
 
-        var req =
+        var updateNamespaceBuilder =
             UpdateNamespaceRequest.newBuilder()
                 .setNamespaceId(namespaceId)
                 .setSpec(sb.build())
-                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build())
-                .setPrecondition(preconditionFromEtag(args))
-                .build();
+                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build());
+        var nsPrecondition = preconditionFromEtag(args);
+        if (nsPrecondition != null) {
+          updateNamespaceBuilder.setPrecondition(nsPrecondition);
+        }
+        var req = updateNamespaceBuilder.build();
 
         var resp = namespaces.updateNamespace(req);
         printNamespaces(List.of(resp.getNamespace()));
@@ -766,12 +799,13 @@ public class Shell implements Runnable {
 
         ResourceId nsId = resolveNamespaceIdFlexible(args.get(1));
 
-        var req =
-            DeleteNamespaceRequest.newBuilder()
-                .setNamespaceId(nsId)
-                .setRequireEmpty(requireEmpty)
-                .setPrecondition(preconditionFromEtag(args))
-                .build();
+        var deleteNamespaceBuilder =
+            DeleteNamespaceRequest.newBuilder().setNamespaceId(nsId).setRequireEmpty(requireEmpty);
+        var deleteNamespacePrecondition = preconditionFromEtag(args);
+        if (deleteNamespacePrecondition != null) {
+          deleteNamespaceBuilder.setPrecondition(deleteNamespacePrecondition);
+        }
+        var req = deleteNamespaceBuilder.build();
         namespaces.deleteNamespace(req);
         out.println("ok");
       }
@@ -1003,13 +1037,16 @@ public class Shell implements Runnable {
 
         FieldMask mask = FieldMask.newBuilder().addAllPaths(maskPaths).build();
 
-        var req =
+        var updateTableBuilder =
             UpdateTableRequest.newBuilder()
                 .setTableId(tableId)
                 .setSpec(sb.build())
-                .setPrecondition(preconditionFromEtag(args))
-                .setUpdateMask(mask)
-                .build();
+                .setUpdateMask(mask);
+        var tablePrecondition = preconditionFromEtag(args);
+        if (tablePrecondition != null) {
+          updateTableBuilder.setPrecondition(tablePrecondition);
+        }
+        var req = updateTableBuilder.build();
 
         var resp = tables.updateTable(req);
         printTable(resp.getTable());
@@ -1022,14 +1059,152 @@ public class Shell implements Runnable {
           return;
         }
         ResourceId tableId = resolveTableIdFlexible(args.get(1));
-        var req =
+        var deleteTableBuilder =
             DeleteTableRequest.newBuilder()
                 .setTableId(tableId)
                 .setPurgeStats(args.contains("--purge-stats"))
-                .setPurgeSnapshots(args.contains("--purge-snaps"))
-                .setPrecondition(preconditionFromEtag(args))
-                .build();
+                .setPurgeSnapshots(args.contains("--purge-snaps"));
+        var deleteTablePrecondition = preconditionFromEtag(args);
+        if (deleteTablePrecondition != null) {
+          deleteTableBuilder.setPrecondition(deleteTablePrecondition);
+        }
+        var req = deleteTableBuilder.build();
         tables.deleteTable(req);
+        out.println("ok");
+      }
+      default -> out.println("unknown subcommand");
+    }
+  }
+
+  private void cmdViews(List<String> args) {
+    if (args.isEmpty()) {
+      out.println("usage: views <catalog.ns[.ns...]>");
+      return;
+    }
+    ResourceId namespaceId = resolveNamespaceIdFlexible(args.get(0));
+    List<View> all =
+        collectPages(
+            DEFAULT_PAGE_SIZE,
+            pr ->
+                viewService.listViews(
+                    ListViewsRequest.newBuilder().setNamespaceId(namespaceId).setPage(pr).build()),
+            ListViewsResponse::getViewsList,
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
+    printViews(all);
+  }
+
+  private void cmdViewCrud(List<String> args) {
+    if (args.isEmpty()) {
+      out.println("usage: view <create|get|update|delete> ...");
+      return;
+    }
+    String sub = args.get(0);
+    switch (sub) {
+      case "create" -> {
+        if (args.size() < 2) {
+          out.println(
+              "usage: view create <catalog.ns[.ns...].name> [--sql <text>] [--desc <text>] [--props"
+                  + " k=v ...]");
+          return;
+        }
+        NameRef ref = nameRefForTable(args.get(1));
+        ResourceId catalogId = resolveCatalogId(ref.getCatalog());
+        ResourceId namespaceId =
+            directory
+                .resolveNamespace(
+                    ResolveNamespaceRequest.newBuilder()
+                        .setRef(
+                            NameRef.newBuilder()
+                                .setCatalog(ref.getCatalog())
+                                .addAllPath(ref.getPathList())
+                                .build())
+                        .build())
+                .getResourceId();
+        String sql = Quotes.unquote(parseStringFlag(args, "--sql", ""));
+        String desc = Quotes.unquote(parseStringFlag(args, "--desc", ""));
+        Map<String, String> props = parseKeyValueList(args, "--props");
+
+        ViewSpec.Builder spec =
+            ViewSpec.newBuilder()
+                .setCatalogId(catalogId)
+                .setNamespaceId(namespaceId)
+                .setDisplayName(ref.getName())
+                .setSql(nvl(sql, ""));
+        if (desc != null && !desc.isBlank()) {
+          spec.setDescription(desc);
+        }
+        if (!props.isEmpty()) {
+          spec.putAllProperties(props);
+        }
+        var resp = viewService.createView(CreateViewRequest.newBuilder().setSpec(spec).build());
+        printView(resp.getView());
+      }
+      case "get" -> {
+        if (args.size() < 2) {
+          out.println("usage: view get <id|catalog.ns[.ns...].name>");
+          return;
+        }
+        ResourceId viewId = resolveViewIdFlexible(args.get(1));
+        var resp = viewService.getView(GetViewRequest.newBuilder().setViewId(viewId).build());
+        printView(resp.getView());
+      }
+      case "update" -> {
+        if (args.size() < 2) {
+          out.println(
+              "usage: view update <id|fq> [--display <name>] [--namespace <catalog.ns[.ns...]>]"
+                  + " [--sql <text>] [--desc <text>] [--props k=v ...]");
+          return;
+        }
+        ResourceId viewId = resolveViewIdFlexible(args.get(1));
+        String display = Quotes.unquote(parseStringFlag(args, "--display", null));
+        String ns = Quotes.unquote(parseStringFlag(args, "--namespace", null));
+        String sql = Quotes.unquote(parseStringFlag(args, "--sql", null));
+        String desc = Quotes.unquote(parseStringFlag(args, "--desc", null));
+        Map<String, String> props = parseKeyValueList(args, "--props");
+
+        ViewSpec.Builder spec = ViewSpec.newBuilder();
+        FieldMask.Builder mask = FieldMask.newBuilder();
+        if (display != null) {
+          spec.setDisplayName(display);
+          mask.addPaths("display_name");
+        }
+        if (ns != null) {
+          ResourceId namespaceId = resolveNamespaceIdFlexible(ns);
+          spec.setNamespaceId(namespaceId);
+          mask.addPaths("namespace_id");
+        }
+        if (sql != null) {
+          spec.setSql(sql);
+          mask.addPaths("sql");
+        }
+        if (desc != null) {
+          spec.setDescription(desc);
+          mask.addPaths("description");
+        }
+        if (!props.isEmpty()) {
+          spec.putAllProperties(props);
+          mask.addPaths("properties");
+        }
+        if (mask.getPathsCount() == 0) {
+          out.println("Nothing to update. Provide one or more flags to change.");
+          return;
+        }
+        var resp =
+            viewService.updateView(
+                UpdateViewRequest.newBuilder()
+                    .setViewId(viewId)
+                    .setSpec(spec)
+                    .setUpdateMask(mask)
+                    .build());
+        printView(resp.getView());
+      }
+      case "delete" -> {
+        if (args.size() < 2) {
+          out.println("usage: view delete <id|catalog.ns[.ns...].name>");
+          return;
+        }
+        ResourceId viewId = resolveViewIdFlexible(args.get(1));
+        viewService.deleteView(DeleteViewRequest.newBuilder().setViewId(viewId).build());
         out.println("ok");
       }
       default -> out.println("unknown subcommand");
@@ -1262,13 +1437,16 @@ public class Shell implements Runnable {
           return;
         }
 
-        var req =
+        var updateConnectorBuilder =
             UpdateConnectorRequest.newBuilder()
                 .setConnectorId(connectorId)
                 .setSpec(spec.build())
-                .setPrecondition(preconditionFromEtag(args))
-                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build())
-                .build();
+                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build());
+        var connectorPrecondition = preconditionFromEtag(args);
+        if (connectorPrecondition != null) {
+          updateConnectorBuilder.setPrecondition(connectorPrecondition);
+        }
+        var req = updateConnectorBuilder.build();
 
         var resp = connectors.updateConnector(req);
         printConnectors(List.of(resp.getConnector()));
@@ -1278,11 +1456,14 @@ public class Shell implements Runnable {
           out.println("usage: connector delete <display_name|id> [--etag <etag>]");
           return;
         }
-        var req =
+        var deleteConnectorBuilder =
             DeleteConnectorRequest.newBuilder()
-                .setConnectorId(resolveConnectorId(Quotes.unquote(args.get(1))))
-                .setPrecondition(preconditionFromEtag(args))
-                .build();
+                .setConnectorId(resolveConnectorId(Quotes.unquote(args.get(1))));
+        var deleteConnectorPrecondition = preconditionFromEtag(args);
+        if (deleteConnectorPrecondition != null) {
+          deleteConnectorBuilder.setPrecondition(deleteConnectorPrecondition);
+        }
+        var req = deleteConnectorBuilder.build();
         connectors.deleteConnector(req);
         out.println("ok");
       }
@@ -1539,7 +1720,7 @@ public class Shell implements Runnable {
                     .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
                     .build());
         Snapshot snapshot = resp.getSnapshot();
-        printSnapshots(List.of(snapshot));
+        printSnapshotDetail(snapshot);
       }
       case "delete" -> {
         if (args.size() < 3) {
@@ -1548,14 +1729,25 @@ public class Shell implements Runnable {
         }
         ResourceId tableId = resolveTableIdFlexible(args.get(1));
         long snapshotId = Long.parseLong(args.get(2));
-        var req =
-            DeleteSnapshotRequest.newBuilder()
-                .setTableId(tableId)
-                .setSnapshotId(snapshotId)
-                .setPrecondition(preconditionFromEtag(args))
-                .build();
-        snapshots.deleteSnapshot(req);
-        out.println("ok");
+        var deleteSnapshotBuilder =
+            DeleteSnapshotRequest.newBuilder().setTableId(tableId).setSnapshotId(snapshotId);
+        var snapshotPrecondition = preconditionFromEtag(args);
+        if (snapshotPrecondition != null) {
+          deleteSnapshotBuilder.setPrecondition(snapshotPrecondition);
+        }
+        var req = deleteSnapshotBuilder.build();
+        try {
+          snapshots.deleteSnapshot(req);
+          out.println("ok");
+        } catch (StatusRuntimeException e) {
+          if (e.getStatus().getCode() == Status.Code.FAILED_PRECONDITION) {
+            out.println(
+                "! Precondition failed (etag/version mismatch). Retry with --etag from "
+                    + "`snapshot get`.");
+          } else {
+            throw e;
+          }
+        }
       }
       default -> out.println("unknown subcommand");
     }
@@ -2406,6 +2598,17 @@ public class Shell implements Runnable {
     }
   }
 
+  private void printViews(List<View> views) {
+    out.printf("%-40s  %-24s  %s%n", "VIEW_ID", "CREATED_AT", "DISPLAY_NAME");
+    for (var view : views) {
+      out.printf(
+          "%-40s  %-24s  %s%n",
+          rid(view.getResourceId()),
+          ts(view.getCreatedAt()),
+          Quotes.quoteIfNeeded(view.getDisplayName()));
+    }
+  }
+
   private void printTable(Table t) {
     UpstreamRef upstream = t.hasUpstream() ? t.getUpstream() : UpstreamRef.getDefaultInstance();
     out.println("Table:");
@@ -2428,12 +2631,33 @@ public class Shell implements Runnable {
     }
   }
 
+  private void printView(View view) {
+    out.println("View:");
+    out.printf("  id:           %s%n", rid(view.getResourceId()));
+    out.printf("  name:         %s%n", view.getDisplayName());
+    out.printf("  description:  %s%n", view.hasDescription() ? view.getDescription() : "");
+    out.printf("  sql:          %s%n", view.getSql());
+    out.printf("  created_at:   %s%n", ts(view.getCreatedAt()));
+    if (!view.getPropertiesMap().isEmpty()) {
+      out.println("  properties:");
+      view.getPropertiesMap().forEach((k, v) -> out.printf("    %s = %s%n", k, v));
+    }
+  }
+
   private void printSnapshots(List<Snapshot> snaps) {
     out.printf("%-20s  %-24s  %-20s%n", "SNAPSHOT_ID", "UPSTREAM_CREATED_AT", "PARENT_ID");
     for (var s : snaps) {
       out.printf(
           "%-20d  %-24s  %-20d%n",
           s.getSnapshotId(), ts(s.getUpstreamCreatedAt()), s.getParentSnapshotId());
+    }
+  }
+
+  private void printSnapshotDetail(Snapshot snapshot) {
+    try {
+      out.println(JsonFormat.printer().includingDefaultValueFields().print(snapshot));
+    } catch (InvalidProtocolBufferException e) {
+      out.println(snapshot.toString());
     }
   }
 
@@ -2805,7 +3029,7 @@ public class Shell implements Runnable {
   private Precondition preconditionFromEtag(List<String> args) {
     String etag = parseStringFlag(args, "--etag", "");
     if (etag == null || etag.isBlank()) {
-      return Precondition.getDefaultInstance();
+      return null;
     }
     return Precondition.newBuilder().setExpectedEtag(etag).build();
   }
@@ -2980,6 +3204,17 @@ public class Shell implements Runnable {
     NameRef ref = nameRefForTable(tok);
     return directory
         .resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build())
+        .getResourceId();
+  }
+
+  private ResourceId resolveViewIdFlexible(String tok) {
+    String u = Quotes.unquote(nvl(tok, ""));
+    if (looksLikeUuid(u)) {
+      return viewRid(u);
+    }
+    NameRef ref = nameRefForTable(tok);
+    return directory
+        .resolveView(ResolveViewRequest.newBuilder().setRef(ref).build())
         .getResourceId();
   }
 

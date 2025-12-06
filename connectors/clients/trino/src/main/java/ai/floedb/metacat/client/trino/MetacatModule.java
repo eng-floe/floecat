@@ -7,6 +7,8 @@ import ai.floedb.metacat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.metacat.catalog.rpc.TableServiceGrpc;
+import ai.floedb.metacat.query.rpc.QuerySchemaServiceGrpc;
+import ai.floedb.metacat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.metacat.query.rpc.QueryServiceGrpc;
 import com.google.inject.Binder;
 import com.google.inject.Provides;
@@ -139,6 +141,20 @@ public class MetacatModule extends AbstractConfigurationAwareModule {
   @Singleton
   public QueryServiceGrpc.QueryServiceBlockingStub createQueryStub(ManagedChannel channel) {
     return QueryServiceGrpc.newBlockingStub(channel);
+  }
+
+  @Provides
+  @Singleton
+  public QueryScanServiceGrpc.QueryScanServiceBlockingStub createQueryScanStub(
+      ManagedChannel channel) {
+    return QueryScanServiceGrpc.newBlockingStub(channel);
+  }
+
+  @Provides
+  @Singleton
+  public QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub createQuerySchemaStub(
+      ManagedChannel channel) {
+    return QuerySchemaServiceGrpc.newBlockingStub(channel);
   }
 
   @Provides

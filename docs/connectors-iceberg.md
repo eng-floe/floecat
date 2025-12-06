@@ -31,10 +31,8 @@ AWS Glue lookups, and optionally captures NDV sketches from Parquet files.
   `SchemaParser.toJson`, captures partition keys, and returns table properties.
 - `enumerateSnapshotsWithStats(...)` – Iterates Iceberg snapshots, loads table/column stats using
   the configured `StatsEngine` and NDV providers, and emits `SnapshotBundle`s including upstream
-  timestamps, parent IDs, stats payloads, and per-file stats (row count/size plus per-column
-  metrics when available).
-- `plan(namespace, table, snapshotId, asOfTimestamp)` – Builds an Iceberg `TableScan`, iterates
-  `FileScanTask`s, and emits a `ScanBundle` (data/delete `ScanFile`s) labelled with `ScanFileContent`.
+  timestamps, parent IDs, stats payloads, per-file stats (row count/size plus per-column metrics),
+  sequence numbers, manifest lists, and summary maps.
 
 ## Important Internal Details
 - **Authentication** – The connector supports multiple schemes: `aws-sigv4` (default), OAuth2 token,
@@ -45,9 +43,9 @@ AWS Glue lookups, and optionally captures NDV sketches from Parquet files.
   Parquet footer data.
 - **S3 IO** – Falls back to `org.apache.iceberg.aws.s3.S3FileIO` unless `io-impl` is specified in
   connector options. Header hints (`rest.header.*`) propagate custom headers to REST calls.
-- **Planning** – `plan()` uses Iceberg scanning APIs with projection pushdown to avoid reading
-  entire Parquet files when only metadata is needed. `ScanFile` entries include file format, size,
-  record count, and per-column stats if emitted by Iceberg.
+- **Metadata capture** – `IcebergConnector` implements the SPI’s `IcebergSnapshotMetadataProvider`
+  so the reconciler can persist the table-level `IcebergMetadata` blob (schemas, specs, refs, logs)
+  even though the base `SnapshotBundle` stays storage-agnostic.
 
 ## Data Flow & Lifecycle
 ```

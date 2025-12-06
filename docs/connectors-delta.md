@@ -36,9 +36,6 @@ classes manage OAuth2/SP token acquisition, Databricks SQL execution, and custom
 - `enumerateSnapshotsWithStats(...)` – Iterates Delta snapshots, optionally samples Parquet files to
   produce NDV stats (`SamplingNdvProvider`, `ParquetNdvProvider`), and emits `SnapshotBundle`s with
   per-file stats (row count/size plus per-column metrics when available).
-- `plan(namespace, table, snapshotId, asOf)` – Uses `DeltaPlanner` to read snapshot manifests and
-  produce a `ScanBundle` whose entries are labeled with `ScanFileContent` (data, position deletes,
-  equality deletes).
 
 ## Important Internal Details
 
