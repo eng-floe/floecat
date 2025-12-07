@@ -102,8 +102,10 @@ public final class TableMetadataBuilder {
             ? metadata.getDefaultSortOrderId()
             : maybeInt(props.get("default-sort-order-id"));
     String tableUuid =
-        Optional.ofNullable(props.get("table-uuid"))
-            .orElseGet(() -> table.hasResourceId() ? table.getResourceId().getId() : tableName);
+        (metadata != null && metadata.getTableUuid() != null && !metadata.getTableUuid().isBlank())
+            ? metadata.getTableUuid()
+            : Optional.ofNullable(props.get("table-uuid"))
+                .orElseGet(() -> table.hasResourceId() ? table.getResourceId().getId() : tableName);
     if (lastColumnId == null) {
       lastColumnId = 0;
     }

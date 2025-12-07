@@ -28,10 +28,9 @@ public class StagedTableRepository {
     return Optional.ofNullable(stages.get(key));
   }
 
-  public Optional<StagedTableEntry> findLatest(
+  public Optional<StagedTableEntry> findSingle(
       String tenantId, String catalog, List<String> namespace, String tableName) {
-    Instant latest = null;
-    StagedTableEntry result = null;
+    StagedTableEntry match = null;
     for (StagedTableEntry entry : stages.values()) {
       StagedTableKey key = entry.key();
       if (!tenantId.equals(key.tenantId())
@@ -40,16 +39,12 @@ public class StagedTableRepository {
           || !tableName.equals(key.tableName())) {
         continue;
       }
-      Instant updated = Optional.ofNullable(entry.updatedAt()).orElse(entry.createdAt());
-      if (updated == null) {
-        updated = Instant.EPOCH;
+      if (match != null) {
+        return Optional.empty();
       }
-      if (latest == null || updated.isAfter(latest)) {
-        latest = updated;
-        result = entry;
-      }
+      match = entry;
     }
-    return Optional.ofNullable(result);
+    return Optional.ofNullable(match);
   }
 
   public void delete(StagedTableKey key) {

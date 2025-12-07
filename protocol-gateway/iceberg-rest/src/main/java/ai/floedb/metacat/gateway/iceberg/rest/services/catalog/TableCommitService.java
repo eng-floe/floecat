@@ -55,10 +55,20 @@ public class TableCommitService {
 
     final Table[] stagedTableHolder = new Table[1];
     StageCommitResult stageMaterialization = null;
+    String materializedStageId = null;
 
     ResourceId resolvedTableId = null;
     try {
       resolvedTableId = tableLifecycleService.resolveTableId(catalogName, namespacePath, table);
+      StageMaterializationService.StageMaterializationResult explicitStage =
+          stageMaterializationService.materializeExplicitStage(
+              prefix, catalogName, namespacePath, table, req, transactionId);
+      if (explicitStage != null) {
+        stageMaterialization = explicitStage.result();
+        materializedStageId = explicitStage.stageId();
+        stagedTableHolder[0] = explicitStage.table();
+        resolvedTableId = explicitStage.table().getResourceId();
+      }
     } catch (io.grpc.StatusRuntimeException e) {
       StageMaterializationService.StageMaterializationResult materialization;
       try {
@@ -70,6 +80,7 @@ public class TableCommitService {
       }
       if (materialization != null) {
         stageMaterialization = materialization.result();
+        materializedStageId = materialization.stageId();
         stagedTableHolder[0] = stageMaterialization.table();
         resolvedTableId = stageMaterialization.table().getResourceId();
       } else {
@@ -93,68 +104,6 @@ public class TableCommitService {
             return cached;
           }
         };
-
-    if (stageMaterialization != null) {
-      List<Map<String, Object>> snapshotAdds =
-          snapshotMetadataService.snapshotAdditions(req == null ? null : req.updates());
-      if (!snapshotAdds.isEmpty()) {
-        SnapshotUpdateContext stageSnapshotContext = new SnapshotUpdateContext();
-        Response snapshotError =
-            snapshotMetadataService.applySnapshotUpdates(
-                tableSupport,
-                tableId,
-                namespacePath,
-                table,
-                tableSupplier,
-                snapshotAdds,
-                idempotencyKey,
-                stageSnapshotContext);
-        if (snapshotError != null) {
-          return snapshotError;
-        }
-      }
-      Table current = tableSupplier.get();
-      IcebergMetadata metadata = tableSupport.loadCurrentMetadata(current);
-      List<Snapshot> snapshotList = fetchSnapshots(tableId, SnapshotMode.ALL, metadata);
-      CommitTableResponseDto initialResponse =
-          TableResponseMapper.toCommitResponse(table, current, metadata, snapshotList);
-      var sideEffects =
-          sideEffectService.finalizeCommitResponse(
-              namespace,
-              table,
-              tableId,
-              current,
-              initialResponse,
-              false,
-              tableSupport,
-              prefix,
-              namespacePath,
-              namespaceId,
-              catalogId,
-              idempotencyKey);
-      if (sideEffects.hasError()) {
-        return sideEffects.error();
-      }
-      CommitTableResponseDto responseDto = sideEffects.response();
-      Response.ResponseBuilder builder = Response.ok(responseDto);
-      if (responseDto != null && responseDto.metadataLocation() != null) {
-        builder.tag(responseDto.metadataLocation());
-      }
-      TableMetadataView meta = responseDto == null ? null : responseDto.metadata();
-      LOG.infof(
-          "Stage commit satisfied for %s.%s tableId=%s stageId=%s currentSnapshot=%s"
-              + " snapshotCount=%d",
-          namespace,
-          table,
-          stageMaterialization.table().hasResourceId()
-              ? stageMaterialization.table().getResourceId().getId()
-              : "<missing>",
-          resolveStageId(req, transactionId),
-          meta == null ? "<null>" : meta.currentSnapshotId(),
-          meta == null || meta.snapshots() == null ? 0 : meta.snapshots().size());
-      runConnectorSync(tableSupport, sideEffects.connectorId(), namespacePath, namespace, table);
-      return builder.build();
-    }
 
     TableSpec.Builder spec = TableSpec.newBuilder();
     FieldMask.Builder mask = FieldMask.newBuilder();
@@ -268,6 +217,12 @@ public class TableCommitService {
       if (responseDto != null && responseDto.metadataLocation() != null) {
         builder.tag(responseDto.metadataLocation());
       }
+      logStageCommit(
+          stageMaterialization,
+          nonBlank(materializedStageId, resolveStageId(req, transactionId)),
+          namespace,
+          table,
+          responseDto == null ? null : responseDto.metadata());
       runConnectorSync(tableSupport, sideEffects.connectorId(), namespacePath, namespace, table);
       return builder.build();
     }
@@ -319,8 +274,37 @@ public class TableCommitService {
     if (responseDto != null && responseDto.metadataLocation() != null) {
       builder.tag(responseDto.metadataLocation());
     }
+    logStageCommit(
+        stageMaterialization,
+        nonBlank(materializedStageId, resolveStageId(req, transactionId)),
+        namespace,
+        table,
+        responseDto == null ? null : responseDto.metadata());
     runConnectorSync(tableSupport, sideEffects.connectorId(), namespacePath, namespace, table);
     return builder.build();
+  }
+
+  private void logStageCommit(
+      StageCommitResult stageMaterialization,
+      String stageId,
+      String namespace,
+      String table,
+      TableMetadataView metadata) {
+    if (stageMaterialization == null) {
+      return;
+    }
+    Table staged = stageMaterialization.table();
+    String tableId =
+        staged != null && staged.hasResourceId() ? staged.getResourceId().getId() : "<missing>";
+    String snapshotStr =
+        metadata == null || metadata.currentSnapshotId() == null
+            ? "<null>"
+            : metadata.currentSnapshotId().toString();
+    int snapshotCount =
+        metadata == null || metadata.snapshots() == null ? 0 : metadata.snapshots().size();
+    LOG.infof(
+        "Stage commit satisfied for %s.%s tableId=%s stageId=%s currentSnapshot=%s snapshotCount=%d",
+        namespace, table, tableId, stageId, snapshotStr, snapshotCount);
   }
 
   private String resolveStageId(TableRequests.Commit req, String headerStageId) {
@@ -346,7 +330,7 @@ public class TableCommitService {
       String tableName) {
     try {
       sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
-    } catch (Exception e) {
+    } catch (Throwable e) {
       LOG.warnf(
           e,
           "Post-commit connector sync failed for %s.%s",

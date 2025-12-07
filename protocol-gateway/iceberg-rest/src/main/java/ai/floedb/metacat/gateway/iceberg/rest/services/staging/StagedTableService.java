@@ -37,10 +37,10 @@ public class StagedTableService {
     return repository.get(key);
   }
 
-  public Optional<StagedTableEntry> findLatestStage(
+  public Optional<StagedTableEntry> findSingleStage(
       String tenantId, String catalogName, List<String> namespacePath, String tableName) {
     expireStages();
-    return repository.findLatest(tenantId, catalogName, namespacePath, tableName);
+    return repository.findSingle(tenantId, catalogName, namespacePath, tableName);
   }
 
   public void deleteStage(StagedTableKey key) {

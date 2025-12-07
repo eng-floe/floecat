@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.floedb.metacat.catalog.rpc.Table;
 import ai.floedb.metacat.catalog.rpc.TableSpec;
 import ai.floedb.metacat.catalog.rpc.UpstreamRef;
+import ai.floedb.metacat.common.rpc.ResourceId;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.TableRequests;
 import com.google.protobuf.FieldMask;
 import jakarta.ws.rs.core.Response;
@@ -85,6 +86,33 @@ class TablePropertyServiceTest {
     FieldMask.Builder mask = FieldMask.newBuilder();
     Table table =
         Table.newBuilder()
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .setUri("s3://current")
+                    .setConnectorId(ResourceId.newBuilder().setId("con").build())
+                    .addNamespacePath("ns")
+                    .setTableDisplayName("tbl")
+                    .build())
+            .build();
+
+    Response response =
+        service.applyLocationUpdate(
+            spec,
+            mask,
+            () -> table,
+            List.of(Map.of("action", "set-location", "location", "s3://new/location")));
+
+    assertNull(response);
+    assertEquals(List.of("upstream.uri"), mask.getPathsList());
+    assertEquals("s3://new/location", spec.getUpstream().getUri());
+  }
+
+  @Test
+  void applyLocationUpdateSkipsWithoutConnector() {
+    TableSpec.Builder spec = TableSpec.newBuilder();
+    FieldMask.Builder mask = FieldMask.newBuilder();
+    Table table =
+        Table.newBuilder()
             .setUpstream(UpstreamRef.newBuilder().setUri("s3://current").build())
             .build();
 
@@ -96,8 +124,8 @@ class TablePropertyServiceTest {
             List.of(Map.of("action", "set-location", "location", "s3://new/location")));
 
     assertNull(response);
-    assertEquals(List.of("upstream"), mask.getPathsList());
-    assertEquals("s3://new/location", spec.getUpstream().getUri());
+    assertTrue(mask.getPathsList().isEmpty(), "expected location update to be skipped");
+    assertFalse(spec.hasUpstream(), "upstream should not be mutated without connector");
   }
 
   @Test
