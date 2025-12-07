@@ -235,14 +235,20 @@ public class TableGatewaySupport {
     if (cached != null) {
       return cached;
     }
-    Map<String, String> computed = readPrefixedConfig("metacat.gateway.table-config.");
-    if (computed.isEmpty()) {
-      computed = Map.of();
-    } else {
-      computed = Map.copyOf(computed);
-    }
-    tableConfigCache = computed;
-    return computed;
+    Map<String, String> computed =
+        new LinkedHashMap<>(readPrefixedConfig("metacat.gateway.table-config."));
+    config
+        .defaultRegion()
+        .filter(region -> region != null && !region.isBlank())
+        .ifPresent(
+            region -> {
+              computed.putIfAbsent("s3.region", region);
+              computed.putIfAbsent("region", region);
+              computed.putIfAbsent("client.region", region);
+            });
+    Map<String, String> normalized = computed.isEmpty() ? Map.of() : Map.copyOf(computed);
+    tableConfigCache = normalized;
+    return normalized;
   }
 
   public List<StorageCredentialDto> defaultCredentials() {
@@ -250,16 +256,30 @@ public class TableGatewaySupport {
     if (cached != null) {
       return cached;
     }
-    Map<String, String> props =
-        readPrefixedConfig("metacat.gateway.storage-credential.properties.");
+    Map<String, String> props = new LinkedHashMap<>();
+    config.storageCredential().ifPresent(cfg -> props.putAll(cfg.properties()));
+    readPrefixedConfig("metacat.gateway.storage-credential.properties.")
+        .forEach(
+            (k, v) -> {
+              if (v != null && !v.isBlank()) {
+                props.put(k, v);
+              }
+            });
     if (props.isEmpty()) {
       storageCredentialCache = STATIC_STORAGE_CREDENTIALS;
       return STATIC_STORAGE_CREDENTIALS;
     }
     String scope =
-        mpConfig
-            .getOptionalValue("metacat.gateway.storage-credential.scope", String.class)
-            .orElse("*");
+        config
+            .storageCredential()
+            .flatMap(IcebergGatewayConfig.StorageCredentialConfig::scope)
+            .filter(s -> !s.isBlank())
+            .orElseGet(
+                () ->
+                    mpConfig
+                        .getOptionalValue("metacat.gateway.storage-credential.scope", String.class)
+                        .filter(s -> s != null && !s.isBlank())
+                        .orElse("*"));
     List<StorageCredentialDto> computed =
         List.of(new StorageCredentialDto(scope, Map.copyOf(props)));
     storageCredentialCache = computed;
@@ -500,7 +520,7 @@ public class TableGatewaySupport {
           response.getTablesScanned(),
           response.getTablesChanged(),
           response.getErrors());
-    } catch (StatusRuntimeException e) {
+    } catch (Throwable e) {
       LOG.warnf(
           e,
           "Sync metadata capture failed for connector %s table %s",
@@ -513,23 +533,31 @@ public class TableGatewaySupport {
       ResourceId connectorId, List<String> namespacePath, String tableName) {
     String namespaceFq =
         namespacePath == null || namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
-    ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
-    TriggerReconcileRequest.Builder request =
-        TriggerReconcileRequest.newBuilder()
-            .setConnectorId(connectorId)
-            .setFullRescan(false)
-            .setDestinationTableDisplayName(tableName);
-    if (namespacePath != null && !namespacePath.isEmpty()) {
-      request.addDestinationNamespacePaths(
-          NamespacePath.newBuilder().addAllSegments(namespacePath).build());
+    try {
+      ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
+      TriggerReconcileRequest.Builder request =
+          TriggerReconcileRequest.newBuilder()
+              .setConnectorId(connectorId)
+              .setFullRescan(false)
+              .setDestinationTableDisplayName(tableName);
+      if (namespacePath != null && !namespacePath.isEmpty()) {
+        request.addDestinationNamespacePaths(
+            NamespacePath.newBuilder().addAllSegments(namespacePath).build());
+      }
+      var response = stub.triggerReconcile(request.build());
+      LOG.infof(
+          "Triggered reconcile job connector=%s namespace=%s table=%s jobId=%s",
+          connectorId == null ? "<missing>" : connectorId.getId(),
+          namespaceFq,
+          tableName,
+          response.getJobId());
+    } catch (Throwable e) {
+      LOG.warnf(
+          e,
+          "Reconcile trigger failed for connector %s table %s",
+          connectorId == null ? "<missing>" : connectorId.getId(),
+          tableName);
     }
-    var response = stub.triggerReconcile(request.build());
-    LOG.infof(
-        "Triggered reconcile job connector=%s namespace=%s table=%s jobId=%s",
-        connectorId == null ? "<missing>" : connectorId.getId(),
-        namespaceFq,
-        tableName,
-        response.getJobId());
   }
 
   private AuthConfig toAuthConfig(IcebergGatewayConfig.AuthTemplate template) {

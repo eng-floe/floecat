@@ -85,6 +85,7 @@ import ai.floedb.metacat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.metacat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.metacat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
+import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.metacat.gateway.iceberg.rest.services.staging.StagedTableRepository;
 import ai.floedb.metacat.gateway.iceberg.rest.services.view.ViewMetadataService;
@@ -1215,6 +1216,29 @@ class RestResourceTest {
   }
 
   @Test
+  void stageCreateWithoutLocationFallsBackToDefaultWarehouse() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    given()
+        .body(stageCreateRequestWithoutLocation("ducktab"))
+        .header("Iceberg-Transaction-Id", "stage-default")
+        .contentType(MediaType.APPLICATION_JSON)
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(200)
+        .body("stage-id", equalTo("stage-default"));
+
+    verify(tableStub, never()).createTable(any());
+    StagedTableKey key =
+        new StagedTableKey("tenant1", "foo", List.of("db"), "ducktab", "stage-default");
+    StagedTableEntry entry = stageRepository.get(key).orElseThrow();
+    assertEquals("s3://warehouse/default/foo/db/ducktab", entry.request().location());
+  }
+
+  @Test
   void transactionCommitCreatesStagedTable() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     when(directoryStub.resolveNamespace(any()))
@@ -1264,9 +1288,9 @@ class RestResourceTest {
         .body(
             """
             {
-              "staged-ref-updates": [
+              "table-changes": [
                 {
-                  "table": {"namespace":["db"], "name":"orders"},
+                  "identifier": {"namespace":["db"], "name":"orders"},
                   "stage-id": "stage-commit"
                 }
               ]
@@ -1274,7 +1298,7 @@ class RestResourceTest {
             """)
         .contentType(MediaType.APPLICATION_JSON)
         .when()
-        .post("/v1/foo/tables/transactions/commit")
+        .post("/v1/foo/transactions/commit")
         .then()
         .statusCode(200)
         .body("results[0].table.name", equalTo("orders"))
@@ -2322,7 +2346,41 @@ class RestResourceTest {
         .statusCode(200)
         .body("'storage-credentials'.size()", equalTo(1))
         .body("'storage-credentials'[0].prefix", equalTo("*"))
-        .body("'storage-credentials'[0].config.type", equalTo("static"));
+        .body("'storage-credentials'[0].config.type", equalTo("s3"))
+        .body("'storage-credentials'[0].config.'s3.access-key-id'", equalTo("test-key"))
+        .body("'storage-credentials'[0].config.'s3.secret-access-key'", equalTo("test-secret"));
+  }
+
+  private String stageCreateRequestWithoutLocation(String tableName) {
+    return """
+    {
+      "name": "%s",
+      "schema": {
+        "schema-id": 0,
+        "type": "struct",
+        "fields": [
+          {
+            "id": 1,
+            "name": "i",
+            "required": false,
+            "type": "int"
+          }
+        ]
+      },
+      "partition-spec": {
+        "spec-id": 0,
+        "fields": []
+      },
+      "write-order": {
+        "order-id": 0,
+        "fields": []
+      },
+      "properties": {},
+      "location": null,
+      "stage-create": true
+    }
+    """
+        .formatted(tableName);
   }
 
   private String stageCreateRequest(String tableName) {

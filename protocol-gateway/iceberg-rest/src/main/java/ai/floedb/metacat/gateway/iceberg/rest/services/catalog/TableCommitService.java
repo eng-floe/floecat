@@ -330,7 +330,7 @@ public class TableCommitService {
       String tableName) {
     try {
       sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
-    } catch (Exception e) {
+    } catch (Throwable e) {
       LOG.warnf(
           e,
           "Post-commit connector sync failed for %s.%s",

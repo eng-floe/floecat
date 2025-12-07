@@ -444,7 +444,7 @@ public class SnapshotMetadataService {
     }
 
     if (targetSnapshotId == null || targetSnapshotId <= 0) {
-      return validationError("snapshot metadata updates require current snapshot id");
+      return null;
     }
 
     if (snapshot == null) {

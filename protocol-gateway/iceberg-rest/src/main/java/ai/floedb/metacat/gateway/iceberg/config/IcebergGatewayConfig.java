@@ -30,6 +30,18 @@ public interface IcebergGatewayConfig {
 
   Optional<String> defaultPrefix();
 
+  Optional<String> defaultWarehousePath();
+
+  Optional<String> defaultRegion();
+
+  Optional<StorageCredentialConfig> storageCredential();
+
+  interface StorageCredentialConfig {
+    Optional<String> scope();
+
+    Map<String, String> properties();
+  }
+
   Map<String, RegisterConnectorTemplate> registerConnectors();
 
   @WithDefault("PT10M")

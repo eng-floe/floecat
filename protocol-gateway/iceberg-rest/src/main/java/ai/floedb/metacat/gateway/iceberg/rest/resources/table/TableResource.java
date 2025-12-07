@@ -132,13 +132,16 @@ public class TableResource {
     ResourceId namespaceId = tableLifecycleService.resolveNamespaceId(catalogName, namespacePath);
 
     String tableName = req != null && req.name() != null ? req.name() : "table";
-    if (req != null) {
+    TableRequests.Create effectiveReq = req;
+    if (effectiveReq != null) {
       try {
-        System.out.println("CreateTable request payload: " + mapper.writeValueAsString(req));
+        System.out.println(
+            "CreateTable request payload: " + mapper.writeValueAsString(effectiveReq));
       } catch (JsonProcessingException ignored) {
-        System.out.println("CreateTable request payload: " + req);
+        System.out.println("CreateTable request payload: " + effectiveReq);
       }
-      if (Boolean.TRUE.equals(req.stageCreate())) {
+      effectiveReq = applyDefaultLocationIfMissing(prefix, namespacePath, tableName, effectiveReq);
+      if (Boolean.TRUE.equals(effectiveReq.stageCreate())) {
         return handleStageCreate(
             prefix,
             catalogName,
@@ -146,7 +149,7 @@ public class TableResource {
             namespaceId,
             namespacePath,
             tableName,
-            req,
+            effectiveReq,
             transactionId,
             idempotencyKey);
       }
@@ -154,7 +157,7 @@ public class TableResource {
 
     TableSpec.Builder spec;
     try {
-      spec = tableSupport.buildCreateSpec(catalogId, namespaceId, tableName, req);
+      spec = tableSupport.buildCreateSpec(catalogId, namespaceId, tableName, effectiveReq);
     } catch (IllegalArgumentException | JsonProcessingException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
@@ -277,7 +280,12 @@ public class TableResource {
     if (req == null) {
       return IcebergErrorResponses.validation("stage-create requires a request body");
     }
-    if (req.location() == null || req.location().isBlank()) {
+    TableRequests.Create effectiveReq =
+        applyDefaultLocationIfMissing(prefix, namespacePath, tableName, req);
+    if (effectiveReq.location() == null || effectiveReq.location().isBlank()) {
+      LOG.warnf(
+          "Stage-create request missing location prefix=%s namespace=%s table=%s payload=%s",
+          prefix, namespacePath, tableName, safeSerializeCreate(req));
       return IcebergErrorResponses.validation("location is required");
     }
     String tenantId = tenantContext.getTenantId();
@@ -289,13 +297,14 @@ public class TableResource {
             ? UUID.randomUUID().toString()
             : transactionId.trim();
     try {
-      TableSpec.Builder spec = tableSupport.buildCreateSpec(catalogId, namespaceId, tableName, req);
+      TableSpec.Builder spec =
+          tableSupport.buildCreateSpec(catalogId, namespaceId, tableName, effectiveReq);
       StagedTableEntry entry =
           new StagedTableEntry(
               new StagedTableKey(tenantId, catalogName, namespacePath, tableName, stageId),
               catalogId,
               namespaceId,
-              req,
+              effectiveReq,
               spec.build(),
               STAGE_CREATE_REQUIREMENTS,
               StageState.STAGED,
@@ -322,7 +331,7 @@ public class TableResource {
           TableResponseMapper.toLoadResultFromCreate(
               tableName,
               stubTable,
-              req,
+              effectiveReq,
               tableSupport.defaultTableConfig(),
               tableSupport.defaultCredentials());
       return Response.ok(
@@ -940,6 +949,17 @@ public class TableResource {
     return primary != null && !primary.isBlank() ? primary : fallback;
   }
 
+  private String safeSerializeCreate(TableRequests.Create req) {
+    if (req == null) {
+      return "<null>";
+    }
+    try {
+      return mapper.writeValueAsString(req);
+    } catch (JsonProcessingException e) {
+      return String.valueOf(req);
+    }
+  }
+
   private static List<String> copyOfOrNull(List<String> values) {
     if (values == null || values.isEmpty()) {
       return null;
@@ -959,5 +979,59 @@ public class TableResource {
       return List.of();
     }
     return List.copyOf(values);
+  }
+
+  private TableRequests.Create applyDefaultLocationIfMissing(
+      String prefix, List<String> namespacePath, String tableName, TableRequests.Create req) {
+    if (req == null) {
+      return null;
+    }
+    if (req.location() != null && !req.location().isBlank()) {
+      return req;
+    }
+    String base = config.defaultWarehousePath().orElse(null);
+    if (base == null || base.isBlank()) {
+      return req;
+    }
+    String resolvedName = (tableName == null || tableName.isBlank()) ? "table" : tableName.trim();
+    StringBuilder builder = new StringBuilder(ensureEndsWithSlash(base.trim()));
+    if (prefix != null && !prefix.isBlank()) {
+      builder.append(trimSlashes(prefix)).append('/');
+    }
+    if (namespacePath != null && !namespacePath.isEmpty()) {
+      builder.append(String.join("/", namespacePath)).append('/');
+    }
+    builder.append(resolvedName);
+    String computedLocation = builder.toString();
+    return new TableRequests.Create(
+        req.name(),
+        req.schemaJson(),
+        req.schema(),
+        computedLocation,
+        req.properties(),
+        req.partitionSpec(),
+        req.writeOrder(),
+        req.stageCreate());
+  }
+
+  private static String ensureEndsWithSlash(String base) {
+    if (base == null || base.isBlank()) {
+      return "";
+    }
+    return base.endsWith("/") ? base : base + "/";
+  }
+
+  private static String trimSlashes(String text) {
+    if (text == null) {
+      return "";
+    }
+    String trimmed = text.trim();
+    while (trimmed.startsWith("/")) {
+      trimmed = trimmed.substring(1);
+    }
+    while (trimmed.endsWith("/") && !trimmed.isEmpty()) {
+      trimmed = trimmed.substring(0, trimmed.length() - 1);
+    }
+    return trimmed;
   }
 }

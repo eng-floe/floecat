@@ -154,8 +154,26 @@ public class TableCommitSideEffectService {
     if (connectorId == null || connectorId.getId().isBlank()) {
       return;
     }
-    tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
-    tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
+    try {
+      tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
+    } catch (Throwable e) {
+      LOG.warnf(
+          e,
+          "Connector sync capture failed connectorId=%s namespace=%s table=%s",
+          connectorId.getId(),
+          namespacePath == null ? "<null>" : String.join(".", namespacePath),
+          tableName);
+    }
+    try {
+      tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
+    } catch (Throwable e) {
+      LOG.warnf(
+          e,
+          "Connector reconcile trigger failed connectorId=%s namespace=%s table=%s",
+          connectorId.getId(),
+          namespacePath == null ? "<null>" : String.join(".", namespacePath),
+          tableName);
+    }
   }
 
   private void updateTableMetadataProperties(
