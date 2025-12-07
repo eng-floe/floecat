@@ -178,7 +178,7 @@ java --enable-native-access=ALL-UNNAMED \
 Set the account context first:
 
 ```
-account 31a47986-efaf-35f5-b810-09ba18ca81d2
+account 5eaa9cd5-7d08-3750-9457-cfe800b0b9d2
 ```
 
 Then explore `catalog`, `namespace`, `table`, `connector`, and `query` commands. The CLI exercises
