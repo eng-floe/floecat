@@ -39,8 +39,7 @@ class TableResponseMapperTest {
 
     assertNotNull(result.metadata());
     assertEquals("s3://bucket/orders/metadata", result.config().get("write.metadata.path"));
-    assertEquals(
-        "s3://bucket/orders/metadata", result.metadata().properties().get("write.metadata.path"));
+    assertFalse(result.metadata().properties().containsKey("write.metadata.path"));
     List<Map<String, Object>> schemas = result.metadata().schemas();
     assertFalse(schemas.isEmpty(), "Expected at least one schema");
     Object fields = schemas.get(0).get("fields");
@@ -63,9 +62,7 @@ class TableResponseMapperTest {
         TableResponseMapper.toLoadResultFromCreate("orders", table, request, Map.of(), List.of());
 
     assertEquals("s3://bucket/orders/metadata", loadResult.config().get("write.metadata.path"));
-    assertEquals(
-        "s3://bucket/orders/metadata",
-        loadResult.metadata().properties().get("write.metadata.path"));
+    assertFalse(loadResult.metadata().properties().containsKey("write.metadata.path"));
     List<Map<String, Object>> schemas = loadResult.metadata().schemas();
     assertFalse(schemas.isEmpty(), "schema list should not be empty");
     Object fields = schemas.get(0).get("fields");

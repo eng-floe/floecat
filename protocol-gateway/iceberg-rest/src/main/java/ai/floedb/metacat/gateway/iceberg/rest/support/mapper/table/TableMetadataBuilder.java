@@ -190,7 +190,6 @@ public final class TableMetadataBuilder {
     }
     syncProperty(props, "table-uuid", tableUuid);
     syncDualProperty(props, "metadata-location", metadataLocation);
-    syncWriteMetadataPath(props, metadataLocation);
     syncProperty(props, "current-snapshot-id", currentSnapshotId);
     syncProperty(props, "last-sequence-number", lastSequenceNumber);
     syncProperty(props, "current-schema-id", currentSchemaId);
@@ -233,7 +232,6 @@ public final class TableMetadataBuilder {
         resolveInitialMetadataLocation(tableName, table, props, metadataLocation);
     props.put("metadata-location", resolvedMetadata);
     props.put("metadata_location", resolvedMetadata);
-    syncWriteMetadataPath(props, resolvedMetadata);
     Map<String, Object> schema = schemaFromTable(table);
     Integer schemaId = asInteger(schema.get("schema-id"));
     Integer lastColumnId = asInteger(schema.get("last-column-id"));
@@ -321,7 +319,6 @@ public final class TableMetadataBuilder {
     }
     props.put("metadata-location", metadataLoc);
     props.put("metadata_location", metadataLoc);
-    syncWriteMetadataPath(props, metadataLoc);
     final String metadataLocation = metadataLoc;
     String location =
         Optional.ofNullable(request.location())
@@ -504,40 +501,6 @@ public final class TableMetadataBuilder {
       return;
     }
     props.put(key, value.toString());
-  }
-
-  private static void syncWriteMetadataPath(Map<String, String> props, String metadataLocation) {
-    if (props == null) {
-      return;
-    }
-    String directory = metadataDirectory(metadataLocation);
-    if (directory == null || directory.isBlank()) {
-      return;
-    }
-    props.put("write.metadata.path", directory);
-  }
-
-  private static String metadataDirectory(String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return null;
-    }
-    if (isMetadataPointer(metadataLocation)) {
-      return null;
-    }
-    int slash = metadataLocation.lastIndexOf('/');
-    if (slash < 0) {
-      return null;
-    }
-    return metadataLocation.substring(0, slash);
-  }
-
-  private static boolean isMetadataPointer(String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return false;
-    }
-    int slash = metadataLocation.lastIndexOf('/');
-    String file = slash >= 0 ? metadataLocation.substring(slash + 1) : metadataLocation;
-    return "metadata.json".equalsIgnoreCase(file);
   }
 
   private static String nextMetadataFileName() {

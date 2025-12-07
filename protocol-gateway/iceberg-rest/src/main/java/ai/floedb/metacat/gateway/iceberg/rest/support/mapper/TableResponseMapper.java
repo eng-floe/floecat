@@ -25,8 +25,7 @@ public final class TableResponseMapper {
       List<StorageCredentialDto> storageCredentials) {
     Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
     TableMetadataView metadataView =
-        ensureMetadataPath(
-            TableMetadataBuilder.fromCatalog(tableName, table, props, metadata, snapshots));
+        TableMetadataBuilder.fromCatalog(tableName, table, props, metadata, snapshots);
     Map<String, String> effectiveConfig =
         augmentConfigWithMetadataPath(configOverrides, metadataView.metadataLocation());
     return new LoadTableResultDto(
@@ -37,8 +36,7 @@ public final class TableResponseMapper {
       String tableName, Table table, IcebergMetadata metadata, List<Snapshot> snapshots) {
     Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
     TableMetadataView metadataView =
-        ensureMetadataPath(
-            TableMetadataBuilder.fromCatalog(tableName, table, props, metadata, snapshots));
+        TableMetadataBuilder.fromCatalog(tableName, table, props, metadata, snapshots);
     return new CommitTableResponseDto(metadataView.metadataLocation(), metadataView);
   }
 
@@ -49,7 +47,7 @@ public final class TableResponseMapper {
       Map<String, String> configOverrides,
       List<StorageCredentialDto> storageCredentials) {
     TableMetadataView metadataView =
-        ensureMetadataPath(TableMetadataBuilder.fromCreateRequest(tableName, table, request));
+        TableMetadataBuilder.fromCreateRequest(tableName, table, request);
     Map<String, String> effectiveConfig =
         augmentConfigWithMetadataPath(configOverrides, metadataView.metadataLocation());
     return new LoadTableResultDto(
@@ -83,16 +81,5 @@ public final class TableResponseMapper {
       return null;
     }
     return metadataLocation.substring(0, slash);
-  }
-
-  private static TableMetadataView ensureMetadataPath(TableMetadataView metadataView) {
-    if (metadataView == null || metadataView.metadataLocation() == null) {
-      return metadataView;
-    }
-    Map<String, String> props = metadataView.properties();
-    if (props != null && props.containsKey("write.metadata.path")) {
-      return metadataView;
-    }
-    return metadataView.withMetadataLocation(metadataView.metadataLocation());
   }
 }

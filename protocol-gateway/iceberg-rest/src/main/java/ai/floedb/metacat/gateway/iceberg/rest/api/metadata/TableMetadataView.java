@@ -40,7 +40,6 @@ public record TableMetadataView(
             : new java.util.LinkedHashMap<>(properties);
     updatedProps.put("metadata-location", newLocation);
     updatedProps.put("metadata_location", newLocation);
-    updateWriteMetadataPath(updatedProps, newLocation);
     return new TableMetadataView(
         formatVersion,
         tableUuid,
@@ -64,31 +63,5 @@ public record TableMetadataView(
         statistics,
         partitionStatistics,
         snapshots);
-  }
-
-  private static void updateWriteMetadataPath(Map<String, String> props, String metadataLocation) {
-    if (props == null) {
-      return;
-    }
-    String directory = metadataDirectory(metadataLocation);
-    if (directory == null || directory.isBlank()) {
-      return;
-    }
-    props.put("write.metadata.path", directory);
-  }
-
-  private static String metadataDirectory(String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return null;
-    }
-    int slash = metadataLocation.lastIndexOf('/');
-    String file = slash >= 0 ? metadataLocation.substring(slash + 1) : metadataLocation;
-    if ("metadata.json".equalsIgnoreCase(file)) {
-      return null;
-    }
-    if (slash < 0) {
-      return null;
-    }
-    return metadataLocation.substring(0, slash);
   }
 }
