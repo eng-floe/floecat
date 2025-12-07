@@ -1,9 +1,9 @@
 syntax = "proto3";
 
-package ai.floedb.metacat.common;
+package ai.floedb.floecat.common;
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.common.rpc";
+option java_package = "ai.floedb.floecat.common.rpc";
 
 // Simple presign service to hand back short-lived URLs or tokens for file access.
 service ObjectAccess {

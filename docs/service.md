@@ -1,15 +1,15 @@
 # Service Runtime
 
 ## Overview
-The `service/` module is the authoritative runtime for Metacat. It hosts the Quarkus gRPC server,
+The `service/` module is the authoritative runtime for Floecat. It hosts the Quarkus gRPC server,
 implements every public API from [`proto/`](proto.md), manages multi-tenant security contexts,
 translates requests into pointer/blob mutations, assembles execution scan bundles, and operates background
 tasks such as idempotency GC and repository seeding.
 
 It is structured for testability: each gRPC service delegates to repository abstractions, which in
 turn encapsulate storage backends. Tests such as
-`service/src/test/java/ai/floedb/metacat/service/repo/impl/TableRepositoryTest.java` and
-`service/src/test/java/ai/floedb/metacat/service/it/QueryServiceIT.java` probe repository semantics and
+`service/src/test/java/ai/floedb/floecat/service/repo/impl/TableRepositoryTest.java` and
+`service/src/test/java/ai/floedb/floecat/service/it/QueryServiceIT.java` probe repository semantics and
 query lifecycle / scan bundle logic.
 
 ## Architecture & Responsibilities
@@ -118,9 +118,9 @@ configured location, caches them by engine kind, and exposes them through
 `x-engine-version`; the RPC always returns the filtered builtin bundle for the requested engine.
 
 ### GC and Bootstrap
-`IdempotencyGc` runs on a configurable cadence (see `metacat.gc.*` config) and sweeps expired
+`IdempotencyGc` runs on a configurable cadence (see `floecat.gc.*` config) and sweeps expired
 idempotency records in slices to avoid starvation. `SeedRunner` populates demo data when
-`metacat.seed.enabled=true`.
+`floecat.seed.enabled=true`.
 
 ### Statistics streaming semantics
 `TableStatisticsServiceImpl` enforces a single `table_id` + `snapshot_id` per streamed call to
@@ -146,12 +146,12 @@ Notable `application.properties` keys:
 | Property | Purpose |
 |----------|---------|
 | `quarkus.grpc.server.*` | Port, HTTP2, plaintext/reflection toggles. |
-| `quarkus.grpc.clients.metacat.*` | Loopback client config for internal RPC calls. |
-| `metacat.seed.enabled` | Enable demo data seeding. |
-| `metacat.kv` / `metacat.blob` | Select pointer/blob store implementation (`memory`, `dynamodb`, `s3`). |
-| `metacat.query.*` | Default TTL, grace period, max cache size, safety expiry for query contexts. |
-| `metacat.builtins.location` | Filesystem or classpath location for builtin catalog files (default `classpath:builtins`). |
-| `metacat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for GC. |
+| `quarkus.grpc.clients.floecat.*` | Loopback client config for internal RPC calls. |
+| `floecat.seed.enabled` | Enable demo data seeding. |
+| `floecat.kv` / `floecat.blob` | Select pointer/blob store implementation (`memory`, `dynamodb`, `s3`). |
+| `floecat.query.*` | Default TTL, grace period, max cache size, safety expiry for query contexts. |
+| `floecat.builtins.location` | Filesystem or classpath location for builtin catalog files (default `classpath:builtins`). |
+| `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for GC. |
 | `quarkus.log.*` | JSON logging, file rotation, audit handlers per RPC package. |
 | `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters. |
 

@@ -3,13 +3,13 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>ai.floedb.metacat</groupId>
-    <artifactId>metacat</artifactId>
+    <groupId>ai.floedb.floecat</groupId>
+    <artifactId>floecat</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
-  <groupId>ai.floedb.metacat</groupId>
+  <groupId>ai.floedb.floecat</groupId>
   <artifactId>protocol-gateway</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>

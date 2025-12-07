@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package ai.floedb.metacat.storage;
+package ai.floedb.floecat.storage;
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.storage.rpc";
+option java_package = "ai.floedb.floecat.storage.rpc";
 
 import "common/common.proto";
 
@@ -20,8 +20,8 @@ message IdempotencyRecord {
 
   Status status = 3;
 
-  ai.floedb.metacat.common.ResourceId resource_id = 4;
-  ai.floedb.metacat.common.MutationMeta meta = 5;
+  ai.floedb.floecat.common.ResourceId resource_id = 4;
+  ai.floedb.floecat.common.MutationMeta meta = 5;
 
   bytes payload = 6;
 

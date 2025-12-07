@@ -1,8 +1,8 @@
 syntax = "proto3";
-package ai.floedb.metacat.catalog;
+package ai.floedb.floecat.catalog;
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.catalog.rpc";
+option java_package = "ai.floedb.floecat.catalog.rpc";
 
 import "common/common.proto";
 import "google/protobuf/timestamp.proto";
@@ -18,7 +18,7 @@ enum TableFormat {
 }
 
 message UpstreamRef {
-  optional ai.floedb.metacat.common.ResourceId connector_id = 1;
+  optional ai.floedb.floecat.common.ResourceId connector_id = 1;
   string uri = 2;
   repeated string namespace_path = 3;
   string table_display_name = 4;
@@ -28,11 +28,11 @@ message UpstreamRef {
 }
 
 message Table {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  ai.floedb.floecat.common.ResourceId resource_id = 1;
   string display_name = 2;
   optional string description = 3;
-  ai.floedb.metacat.common.ResourceId catalog_id = 4;
-  ai.floedb.metacat.common.ResourceId namespace_id = 5;
+  ai.floedb.floecat.common.ResourceId catalog_id = 4;
+  ai.floedb.floecat.common.ResourceId namespace_id = 5;
   google.protobuf.Timestamp created_at = 6;
   string schema_json = 7;
   UpstreamRef upstream = 8;
@@ -40,25 +40,25 @@ message Table {
 }
 
 message ListTablesRequest {
-  ai.floedb.metacat.common.ResourceId namespace_id = 1;
-  ai.floedb.metacat.common.PageRequest page = 2;
+  ai.floedb.floecat.common.ResourceId namespace_id = 1;
+  ai.floedb.floecat.common.PageRequest page = 2;
 }
 message ListTablesResponse {
   repeated Table tables = 1;
-  ai.floedb.metacat.common.PageResponse page = 2;
+  ai.floedb.floecat.common.PageResponse page = 2;
 }
 
 message GetTableRequest {
-  ai.floedb.metacat.common.ResourceId table_id = 1;
-  optional ai.floedb.metacat.common.SnapshotRef snapshot = 2;
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  optional ai.floedb.floecat.common.SnapshotRef snapshot = 2;
 }
 message GetTableResponse {
   Table table = 1;
 }
 
 message TableSpec {
-  ai.floedb.metacat.common.ResourceId catalog_id = 1;
-  ai.floedb.metacat.common.ResourceId namespace_id = 2;
+  ai.floedb.floecat.common.ResourceId catalog_id = 1;
+  ai.floedb.floecat.common.ResourceId namespace_id = 2;
   optional string display_name = 3;
   optional string description = 4;
   optional string schema_json = 5;
@@ -68,32 +68,32 @@ message TableSpec {
 
 message CreateTableRequest {
   TableSpec spec = 1;
-  ai.floedb.metacat.common.IdempotencyKey idempotency = 2;
+  ai.floedb.floecat.common.IdempotencyKey idempotency = 2;
 }
 message CreateTableResponse {
   Table table = 1;
-  ai.floedb.metacat.common.MutationMeta meta = 2;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
 message UpdateTableRequest {
-  ai.floedb.metacat.common.ResourceId table_id = 1;
+  ai.floedb.floecat.common.ResourceId table_id = 1;
   TableSpec spec = 2;
-  ai.floedb.metacat.common.Precondition precondition = 3;
+  ai.floedb.floecat.common.Precondition precondition = 3;
   google.protobuf.FieldMask update_mask = 4;
 }
 message UpdateTableResponse {
   Table table = 1;
-  ai.floedb.metacat.common.MutationMeta meta = 2;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
 message DeleteTableRequest {
-  ai.floedb.metacat.common.ResourceId table_id = 1;
+  ai.floedb.floecat.common.ResourceId table_id = 1;
   bool purge_stats = 2;
   bool purge_snapshots = 3;
-  ai.floedb.metacat.common.Precondition precondition = 4;
+  ai.floedb.floecat.common.Precondition precondition = 4;
 }
 message DeleteTableResponse {
-  ai.floedb.metacat.common.MutationMeta meta = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 1;
 }
 
 // ----- Services -----

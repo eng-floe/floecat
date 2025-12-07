@@ -1,0 +1,17 @@
+package ai.floedb.floecat.service.query.graph.model;
+
+import java.util.Objects;
+
+/**
+ * Cache key for engine-specific hints.
+ *
+ * <p>Separating the key from {@link EngineHint} lets implementations keep immutable hint maps while
+ * still performing constant-time lookups.
+ */
+public record EngineKey(String engineKind, String engineVersion) {
+
+  public EngineKey {
+    Objects.requireNonNull(engineKind, "engineKind");
+    Objects.requireNonNull(engineVersion, "engineVersion");
+  }
+}

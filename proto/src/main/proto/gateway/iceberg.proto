@@ -1,8 +1,8 @@
 syntax = "proto3";
-package ai.floedb.metacat.gateway.iceberg;
+package ai.floedb.floecat.gateway.iceberg;
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.gateway.iceberg.rpc";
+option java_package = "ai.floedb.floecat.gateway.iceberg.rpc";
 
 import "catalog/partition.proto";
 
@@ -79,7 +79,7 @@ message IcebergMetadata {
   int32 last_column_id = 5;
   repeated IcebergSchema schemas = 6;
   int32 current_schema_id = 7;
-  repeated ai.floedb.metacat.catalog.PartitionSpecInfo partition_specs = 8;
+  repeated ai.floedb.floecat.catalog.PartitionSpecInfo partition_specs = 8;
   int32 default_spec_id = 9;
   int32 last_partition_id = 10;
   repeated IcebergSortOrder sort_orders = 11;

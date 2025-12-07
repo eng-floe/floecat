@@ -1,8 +1,8 @@
 syntax = "proto3";
-package ai.floedb.metacat.catalog;
+package ai.floedb.floecat.catalog;
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.catalog.rpc";
+option java_package = "ai.floedb.floecat.catalog.rpc";
 
 import "common/common.proto";
 import "google/protobuf/timestamp.proto";
@@ -13,7 +13,7 @@ import "google/protobuf/field_mask.proto";
 // ----- Snapshot -----
 
 message Snapshot {
-  ai.floedb.metacat.common.ResourceId table_id = 1;
+  ai.floedb.floecat.common.ResourceId table_id = 1;
   int64 snapshot_id = 2;
   google.protobuf.Timestamp upstream_created_at = 3;
   google.protobuf.Timestamp ingested_at = 4;
@@ -24,28 +24,28 @@ message Snapshot {
   string manifest_list = 9;
   map<string,string> summary = 10;
   int32 schema_id = 11;
-  ai.floedb.metacat.gateway.iceberg.IcebergMetadata iceberg = 12;
+  ai.floedb.floecat.gateway.iceberg.IcebergMetadata iceberg = 12;
 }
 
 message ListSnapshotsRequest {
-  ai.floedb.metacat.common.ResourceId table_id = 1;
-  ai.floedb.metacat.common.PageRequest page = 2;
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  ai.floedb.floecat.common.PageRequest page = 2;
 }
 message ListSnapshotsResponse {
   repeated Snapshot snapshots = 1;
-  ai.floedb.metacat.common.PageResponse page = 2;
+  ai.floedb.floecat.common.PageResponse page = 2;
 }
 
 message GetSnapshotRequest {
-  ai.floedb.metacat.common.ResourceId table_id = 1;
-  ai.floedb.metacat.common.SnapshotRef snapshot = 2;
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  ai.floedb.floecat.common.SnapshotRef snapshot = 2;
 }
 message GetSnapshotResponse {
   Snapshot snapshot = 1;
 }
 
 message SnapshotSpec {
-  ai.floedb.metacat.common.ResourceId table_id = 1;
+  ai.floedb.floecat.common.ResourceId table_id = 1;
   int64 snapshot_id = 2;
   google.protobuf.Timestamp upstream_created_at = 3;
   google.protobuf.Timestamp ingested_at = 4;
@@ -56,35 +56,35 @@ message SnapshotSpec {
   optional string manifest_list = 9;
   map<string,string> summary = 10;
   optional int32 schema_id = 11;
-  ai.floedb.metacat.gateway.iceberg.IcebergMetadata iceberg = 12;
+  ai.floedb.floecat.gateway.iceberg.IcebergMetadata iceberg = 12;
 }
 
 message CreateSnapshotRequest {
   SnapshotSpec spec = 1;
-  ai.floedb.metacat.common.IdempotencyKey idempotency = 2;
+  ai.floedb.floecat.common.IdempotencyKey idempotency = 2;
 }
 message CreateSnapshotResponse {
   Snapshot snapshot = 1;
-  ai.floedb.metacat.common.MutationMeta meta = 2;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
 message DeleteSnapshotRequest {
-  ai.floedb.metacat.common.ResourceId table_id = 1;
+  ai.floedb.floecat.common.ResourceId table_id = 1;
   int64 snapshot_id = 2;
-  ai.floedb.metacat.common.Precondition precondition = 3;
+  ai.floedb.floecat.common.Precondition precondition = 3;
 }
 message DeleteSnapshotResponse {
-  ai.floedb.metacat.common.MutationMeta meta = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 1;
 }
 
 message UpdateSnapshotRequest {
   SnapshotSpec spec = 1;
-  ai.floedb.metacat.common.Precondition precondition = 2;
+  ai.floedb.floecat.common.Precondition precondition = 2;
   google.protobuf.FieldMask update_mask = 3;
 }
 message UpdateSnapshotResponse {
   Snapshot snapshot = 1;
-  ai.floedb.metacat.common.MutationMeta meta = 2;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
 // ----- Services -----

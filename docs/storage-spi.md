@@ -1,7 +1,7 @@
 # Storage SPI
 
 ## Overview
-The storage SPI defines how Metacat persists immutable protobuf blobs and mutable pointer entries.
+The storage SPI defines how Floecat persists immutable protobuf blobs and mutable pointer entries.
 It abstracts the underlying medium (in-memory, DynamoDB/S3, or future stores) so repositories inside
 `service/` can compose high-level behaviours (idempotency, pagination, hierarchical lookups) without
 being tied to specific infrastructure.
@@ -10,7 +10,7 @@ Two interfaces power the system:
 - `BlobStore` – Byte-addressable storage for protobuf payloads.
 - `PointerStore` – Versioned key/value metadata for name and hierarchy indexes.
 
-Both live in `storage/spi/src/main/java/ai/floedb/metacat/storage`.
+Both live in `storage/spi/src/main/java/ai/floedb/floecat/storage`.
 
 ## Architecture & Responsibilities
 - **BlobStore** responsibilities:
@@ -58,10 +58,10 @@ GC → pointerStore.listPointersByPrefix + pointerStore.deleteByPrefix
 ```
 
 ## Configuration & Extensibility
-- Select an implementation via `metacat.kv` (`memory`, `dynamodb`, ...)
-  and `metacat.blob` (`memory`, `s3`, ...).
+- Select an implementation via `floecat.kv` (`memory`, `dynamodb`, ...)
+  and `floecat.blob` (`memory`, `s3`, ...).
 - Add new backends by implementing the interfaces and wiring them with CDI qualifiers (for example
-  `@IfBuildProperty(name = "metacat.kv", stringValue = "foo")`).
+  `@IfBuildProperty(name = "floecat.kv", stringValue = "foo")`).
 - Ensure new stores honour the SPI’s CAS semantics and throw the defined exceptions.
 
 ## Examples & Scenarios

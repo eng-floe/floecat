@@ -13,8 +13,8 @@ fully-qualified name parsing (`FQNameParserUtil`) and CSV-like argument parsing 
 ## Architecture & Responsibilities
 
 - **`Shell` (top-level Picocli command)** – Boots an interactive REPL using JLine, configures history
-  persistence (`~/.metacat_shell_history`), auto-completion, and command dispatch. Commands share a
-  current tenant context and use injected blocking stubs annotated with `@GrpcClient("metacat")`.
+  persistence (`~/.floecat_shell_history`), auto-completion, and command dispatch. Commands share a
+  current tenant context and use injected blocking stubs annotated with `@GrpcClient("floecat")`.
 - **Utility parsers** – `FQNameParserUtil` splits catalog.namespace.table strings into `NameRef`s;
   `CsvListParserUtil` converts `k=v` style arguments into Java maps/lists.
 - **Display helpers** – The shell formats responses into human-readable tables, summarising
@@ -51,8 +51,8 @@ syntactic sugar such as `catalog.ns.table` references and `--props k=v` repeated
 ## Important Internal Details
 
 - **Tenant context** – Commands fail fast if `currentTenantId` is empty. The REPL prompts the user to
-  run `tenant <id>` first or set `METACAT_TENANT` before launching.
-- **Error handling** – Set `METACAT_SHELL_DEBUG=true` (or `-Dmetacat.shell.debug=true`) to print full
+  run `tenant <id>` first or set `FLOECAT_TENANT` before launching.
+- **Error handling** – Set `FLOECAT_SHELL_DEBUG=true` (or `-Dfloecat.shell.debug=true`) to print full
   stack traces when gRPC calls fail. Otherwise the shell surfaces localized messages from
   `GrpcErrors`.
 - **Pagination defaults** – `DEFAULT_PAGE_SIZE` is 1000; commands like `catalogs` accept
@@ -78,7 +78,7 @@ reconciliation) show job IDs that can be polled via `connector job <id>`.
 - Configure the target endpoint using Quarkus client properties (default `localhost:9100`).
 - Extend commands by adding nested `@Command` classes under `Shell`. Because the CLI already injects
   every gRPC stub, new commands only need to format inputs and call the stub.
-- Add new parsing helpers in `client-cli/src/main/java/ai/floedb/metacat/client/cli/util` for custom
+- Add new parsing helpers in `client-cli/src/main/java/ai/floedb/floecat/client/cli/util` for custom
   arg shapes.
 
 ## Examples & Scenarios

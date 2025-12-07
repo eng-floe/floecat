@@ -5,8 +5,8 @@
 unit tests. It stores pointers and blobs in concurrent in-memory maps while preserving the atomic
 semantics expected by the service.
 
-The module registers its beans under the build properties `metacat.kv=memory` and
-`metacat.blob=memory`, making it the default backend for `make run`.
+The module registers its beans under the build properties `floecat.kv=memory` and
+`floecat.blob=memory`, making it the default backend for `make run`.
 
 ## Architecture & Responsibilities
 - **`InMemoryPointerStore`** – Maintains a `ConcurrentHashMap<String, Pointer>` and implements CAS by
@@ -16,7 +16,7 @@ The module registers its beans under the build properties `metacat.kv=memory` an
   (ETag, timestamps). Implements `head`, `get`, `put`, and prefix deletion by scanning key sets.
 
 Both classes are annotated with `@Singleton` and `@IfBuildProperty` so Quarkus only wires them when
-`metacat.kv`/`metacat.blob` match `memory`.
+`floecat.kv`/`floecat.blob` match `memory`.
 
 ## Public API / Surface Area
 Implements the SPI without deviation. `InMemoryPointerStore.listPointersByPrefix` throws an
@@ -39,7 +39,7 @@ Repository writes pointer → InMemoryPointerStore.compareAndSet (atomic map com
 Because everything resides in memory, data resets whenever the process restarts.
 
 ## Configuration & Extensibility
-- Enable by setting `metacat.kv=memory` and `metacat.blob=memory` (default in
+- Enable by setting `floecat.kv=memory` and `floecat.blob=memory` (default in
   `service/src/main/resources/application.properties`).
 - Ideal for unit tests; integration tests like `TableRepositoryTest` use it to validate repository
   logic without external dependencies.

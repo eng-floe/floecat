@@ -1,13 +1,13 @@
 # Protobuf & RPC Contracts
 
 ## Overview
-Metacat's public surface is entirely gRPC. The `proto/` module defines canonical protobuf
+Floecat's public surface is entirely gRPC. The `proto/` module defines canonical protobuf
 structures for resource identifiers, catalog services, query lifecycle metadata, connectors, statistics, and
 helper schemas. Every other module depends on these contracts for serialization, validation, and
 compatibility.
 
 The contract files are organised by domain (`common/`, `catalog/`, `query/`, `execution/`,
-`connector/`, `tenant/`, `types/`, `statistics/`). Generated Java stubs live under the `ai.floedb.metacat.*.rpc`
+`connector/`, `tenant/`, `types/`, `statistics/`). Generated Java stubs live under the `ai.floedb.floecat.*.rpc`
 packages and are consumed by the Quarkus service, connectors, CLI, and reconciler.
 
 ## Architecture & Responsibilities
@@ -134,7 +134,7 @@ grpcurl -plaintext -d '{
     }
   },
   "idempotency": {"key": "create-events"}
-}' localhost:9100 ai.floedb.metacat.catalog.TableService/CreateTable
+}' localhost:9100 ai.floedb.floecat.catalog.TableService/CreateTable
 ```
 
 ### Beginning a query lifecycle lease
@@ -143,7 +143,7 @@ grpcurl -plaintext -d '{
   "inputs": [
     {"name": {"catalog":"demo","path":["sales"],"name":"events"}}
   ]
-}' localhost:9100 ai.floedb.metacat.query.QueryService/BeginQuery
+}' localhost:9100 ai.floedb.floecat.query.QueryService/BeginQuery
 ```
 
 ## Cross-References

@@ -1,13 +1,13 @@
 # Metadata Graph
 
 ## Overview
-Metacat’s query-facing services share a common metadata cache called the **Metadata Graph**. It sits
+Floecat’s query-facing services share a common metadata cache called the **Metadata Graph**. It sits
 between the pointer/blob repositories and any RPC that needs to inspect catalogs, namespaces, tables,
 or views. The graph provides:
 
 - Immutable node models that can be safely reused across requests.
 - A per-tenant Caffeine-backed cache keyed by resource ID + pointer version so invalidation is
-  deterministic (can be disabled by setting `metacat.metadata.graph.cache-max-size` to 0; the limit
+  deterministic (can be disabled by setting `floecat.metadata.graph.cache-max-size` to 0; the limit
   applies to each tenant independently).
 - Helper APIs for name resolution (Directory RPC parity) and snapshot pinning (Snapshot RPC parity).
 - Extension points (`EngineHint`) so planners/executors can attach engine-specific payloads without
@@ -184,13 +184,13 @@ The graph surfaces a couple of Micrometer gauges so operators can verify cache s
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `metacat.metadata.graph.cache.enabled` | Gauge | 1.0 when caching is enabled, 0.0 when `cache-max-size=0`. |
-| `metacat.metadata.graph.cache.max_size` | Gauge | Per-tenant configured max size (0 when caching is disabled). |
-| `metacat.metadata.graph.cache.tenants` | Gauge | Number of tenant cache partitions that currently exist. |
-| `metacat.metadata.graph.cache.entries` | Gauge | Total estimated entries across all tenant caches. |
+| `floecat.metadata.graph.cache.enabled` | Gauge | 1.0 when caching is enabled, 0.0 when `cache-max-size=0`. |
+| `floecat.metadata.graph.cache.max_size` | Gauge | Per-tenant configured max size (0 when caching is disabled). |
+| `floecat.metadata.graph.cache.tenants` | Gauge | Number of tenant cache partitions that currently exist. |
+| `floecat.metadata.graph.cache.entries` | Gauge | Total estimated entries across all tenant caches. |
 
-These gauges complement the per-tenant `metacat.metadata.graph.cache{result=hit|miss,tenant=<id>}`
-counters and the `metacat.metadata.graph.load` timer that track cache effectiveness.
+These gauges complement the per-tenant `floecat.metadata.graph.cache{result=hit|miss,tenant=<id>}`
+counters and the `floecat.metadata.graph.load` timer that track cache effectiveness.
 
 ## Testing
 `MetadataGraphTest` uses in-memory repository/snapshot/directory fakes to exercise cache behavior and

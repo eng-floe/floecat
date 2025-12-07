@@ -11,7 +11,7 @@ classes manage OAuth2/SP token acquisition, Databricks SQL execution, and custom
 
 ## Architecture & Responsibilities
 
-- **`UnityDeltaConnector`** – Concrete `MetacatConnector` that:
+- **`UnityDeltaConnector`** – Concrete `FloecatConnector` that:
   - Talks to Unity Catalog REST (`UcHttp`) to list catalogs/schemas/tables.
   - Uses Delta Kernel (`io.delta.kernel.Table`) for schema and snapshot access.
   - Executes Databricks SQL statements via `SqlStmtClient` if a warehouse is configured.
@@ -21,7 +21,7 @@ classes manage OAuth2/SP token acquisition, Databricks SQL execution, and custom
   tokens, CLI profiles) consumed by `UcHttp` and SQL client.
 - **`UcBaseSupport` / `UcHttp`** – HTTP helpers for constructing API URLs, encoding parameters, and
   handling retries/timeouts.
-- **`DeltaTypeMapper`** – Maps Delta/Parquet logical types into Metacat logical types for stats.
+- **`DeltaTypeMapper`** – Maps Delta/Parquet logical types into Floecat logical types for stats.
 
 ## Public API / Surface Area
 

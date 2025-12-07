@@ -1,6 +1,6 @@
-# Metacat
+# Floecat
 
-Metacat is a catalog-of-catalogs for modern data lakehouses. It federates metadata harvested from
+Floecat is a catalog-of-catalogs for modern data lakehouses. It federates metadata harvested from
 Delta Lake and Iceberg sources, stores the canonical view in an append-only blob store, and exposes
 the resulting hierarchy over gRPC for discovery, authorization, and query planning.
 
@@ -10,7 +10,7 @@ component-specific documentation lives under [`docs/`](docs); see the [Documenta
 
 ## System Overview
 
-Metacat tracks a resource graph anchored at Tenants and spanning Catalogs, Namespaces, Tables,
+Floecat tracks a resource graph anchored at Tenants and spanning Catalogs, Namespaces, Tables,
 Views, Snapshots, statistics, and query-lifecycle artifacts.
 
 ```
@@ -69,7 +69,7 @@ The following modules compose the system (see linked docs for deep dives):
 
 ## Resource Model & Storage Layout
 
-Metacat stores every entity twice: the immutable protobuf payload lives in a BlobStore while a
+Floecat stores every entity twice: the immutable protobuf payload lives in a BlobStore while a
 PointerStore entry (with versions) exposes hierarchical lookup and CAS updates. This design keeps
 history in blobs while enabling fast name-based resolution via pointers.
 
@@ -119,7 +119,7 @@ make stop
 make logs
 ```
 
-Seed data is enabled by default (`metacat.seed.enabled=true`); the service starts with a demo tenant,
+Seed data is enabled by default (`floecat.seed.enabled=true`); the service starts with a demo tenant,
 catalogs, namespaces, tables, and snapshots.
 
 Testing:
@@ -154,17 +154,17 @@ Use any gRPC client (for example `grpcurl`) once the service listens on `localho
 
 ```bash
 grpcurl -plaintext -d '{}' \
-  localhost:9100 ai.floedb.metacat.catalog.CatalogService/ListCatalogs
+  localhost:9100 ai.floedb.floecat.catalog.CatalogService/ListCatalogs
 
 grpcurl -plaintext -d '{
   "catalog_id": {"tenant_id":"31a47986-efaf-35f5-b810-09ba18ca81d2",
                  "id":"109c1761-323a-3f72-83da-ff4f89c3b581","kind":"RK_CATALOG"}
-}' localhost:9100 ai.floedb.metacat.catalog.NamespaceService/ListNamespaces
+}' localhost:9100 ai.floedb.floecat.catalog.NamespaceService/ListNamespaces
 
 grpcurl -plaintext -d '{
   "namespace_id": {"tenant_id":"31a47986-efaf-35f5-b810-09ba18ca81d2",
                    "id":"86853a0f-a999-3c72-9a81-6dc66d1923a2","kind":"RK_NAMESPACE"}
-}' localhost:9100 ai.floedb.metacat.catalog.TableService/ListTables
+}' localhost:9100 ai.floedb.floecat.catalog.TableService/ListTables
 ```
 
 The [`client-cli`](docs/client-cli.md) module provides an interactive shell with auto-completion and
@@ -286,7 +286,7 @@ section in `service.md` references the type system in `types.md` and the connect
 
 ## Contributing
 
-Metacat enforces branch protections and CI. Preferred workflow:
+Floecat enforces branch protections and CI. Preferred workflow:
 
 1. **Fork or branch** – Create a feature branch from `main` (internal) or fork the repo (external).
 2. **Develop** – Keep commits focused, add/extend tests, and run `make fmt` for Google Java Format.

@@ -1,18 +1,18 @@
-# Iceberg REST Gateway for Metacat
+# Iceberg REST Gateway for Floecat
 
-This document describes the Iceberg REST protocol gateway that fronts Metacat and delegates to existing gRPC services.
+This document describes the Iceberg REST protocol gateway that fronts Floecat and delegates to existing gRPC services.
 
 ## Scope
 
-- Exposes the Iceberg REST Catalog API backed by Metacat gRPC (`protocol-gateway/iceberg-rest`).
+- Exposes the Iceberg REST Catalog API backed by Floecat gRPC (`protocol-gateway/iceberg-rest`).
 - Keeps protocol handling isolated so other protocols can plug in later.
-- Reuses Metacat auth/tenancy, logging, metrics; persisted state lives in existing services (tables, snapshots, staged tables via the catalog DB).
+- Reuses Floecat auth/tenancy, logging, metrics; persisted state lives in existing services (tables, snapshots, staged tables via the catalog DB).
 - Implements the full single-catalog write path expected by Iceberg REST clients: stage-create, transaction commit, per-table commit (updates, snapshots, refs), metrics ingestion, and reconcile triggers.
 - Current non-goals: multi-catalog transactions and inline manifest serving. `/plan` now materializes a full plan, registers task chunks, and surfaces them via `/tasks`, but asynchronous planner RPCs and streaming manifests remain out of scope.
 
-## Metacat gRPC coverage vs Iceberg REST
+## Floecat gRPC coverage vs Iceberg REST
 
-| Iceberg REST surface | Metacat gRPC | Notes |
+| Iceberg REST surface | Floecat gRPC | Notes |
 | --- | --- | --- |
 | `/v1/config` | `CatalogService` + gateway config | Build response from catalog metadata and static mappings (warehouse/prefix → catalog_id). |
 | Namespace list/load/create/update/delete | `NamespaceService` | Supports properties + field masks. Exists/HEAD via Get. |
@@ -38,7 +38,7 @@ This document describes the Iceberg REST protocol gateway that fronts Metacat an
 
 ## Module layout (`protocol-gateway/iceberg-rest`)
 
-- `src/main/java` – REST resources, DTOs, and service adapters that translate Iceberg requests into Metacat gRPC calls (tables, namespaces, views, planning, staging, metadata import, etc.).
+- `src/main/java` – REST resources, DTOs, and service adapters that translate Iceberg requests into Floecat gRPC calls (tables, namespaces, views, planning, staging, metadata import, etc.).
 - `src/main/resources` – Quarkus config (`application.properties`) for HTTP port, plan chunk sizing/TTL, and tenant defaults.
 - `src/test/java` – RestAssured-based contract tests (`RestResourceTest`), real-service smoke tests, and helper fakes for staging/planning services.
 - `pom.xml` – module dependencies (Quarkus, RestAssured, Micrometer, Apache Iceberg for metadata import).
@@ -46,22 +46,22 @@ This document describes the Iceberg REST protocol gateway that fronts Metacat an
 ## Implementation architecture
 
 - Quarkus REST controllers cover each Iceberg resource (Config, Namespace, Table, View, Snapshot, Stats). Planning and rename endpoints live with the table/view controllers, while `/transactions/*` is handled by the table resource.
-- Each controller injects `GrpcWithHeaders` clients for the underlying Metacat services (Catalog, Namespace, Table, View, Snapshot, Schema, Directory, TableStatistics, Query) so requests stay in-process and follow tenant context.
+- Each controller injects `GrpcWithHeaders` clients for the underlying Floecat services (Catalog, Namespace, Table, View, Snapshot, Schema, Directory, TableStatistics, Query) so requests stay in-process and follow tenant context.
 - Stage storage: `StagedTableRepository` records create/commit payloads keyed by tenant/catalog/namespace/table + stage-id; `StagedTableService` keeps the payload lifecycle and TTL enforcement.
-- External table import: `TableMetadataImportService` can ingest an Iceberg `metadata.json` (S3, etc.) using Apache Iceberg parsers, extract schema/properties, and feed register operations so Metacat can reference existing tables without recreating them.
+- External table import: `TableMetadataImportService` can ingest an Iceberg `metadata.json` (S3, etc.) using Apache Iceberg parsers, extract schema/properties, and feed register operations so Floecat can reference existing tables without recreating them.
 - Snapshot handling: `SnapshotMetadataService` directly rewrites Iceberg metadata/snapshot APIs, while `TableCommitService` now materializes snapshot metadata files (via `MaterializeMetadataService`) before updating `TableService` to avoid dangling `metadata-location` references.
 - Response mappers/DTOs (`LoadTableResultDto`, `CommitTableResponseDto`, `TableMetadataView`) synthesize the Iceberg spec from catalog metadata and snapshot refs; field masks drive partial updates (rename/move/props) and connectors use the resolved metadata location.
 - Connector wiring: `TableCommitSideEffectService` creates or updates connectors, updates table upstreams, and runs metadata capture/reconcile after commits. REST helpers mirror this path when staging or admin operations materialize metadata and return credentials/config.
 - Plan/task lifecycle: `TablePlanService` issues `BeginQuery`, builds predicates, and fetches scan bundles via `QueryScanService`. `PlanTaskManager` caches the result (with TTL + configurable chunk size), generates deterministic task IDs, and enforces namespace/table scoping when `/tasks` consumes them.
-- View metadata: `ViewMetadataService` maps Iceberg view schemas, versions, requirements, and summaries onto Metacat’s `ViewService`. REST view DTOs now mirror Iceberg’s OpenAPI contract (schemas, version-logs, operations).
+- View metadata: `ViewMetadataService` maps Iceberg view schemas, versions, requirements, and summaries onto Floecat’s `ViewService`. REST view DTOs now mirror Iceberg’s OpenAPI contract (schemas, version-logs, operations).
 - Auth/config: `TenantHeaderFilter` propagates tenant headers and `IcebergGatewayConfig` + catalog mappings resolve prefixes/catalog IDs and runtime overrides for metadata copying or connector creation.
-- Prefix compatibility: `metacat.gateway.default-prefix` optionally rewrites legacy prefix-less paths (e.g., `/v1/namespaces`) to `/v1/{prefix}/...`, which is useful for clients like DuckDB that ignore the catalog name returned from `/v1/config`.
+- Prefix compatibility: `floecat.gateway.default-prefix` optionally rewrites legacy prefix-less paths (e.g., `/v1/namespaces`) to `/v1/{prefix}/...`, which is useful for clients like DuckDB that ignore the catalog name returned from `/v1/config`.
 
 ## Scan planning implementation
 
 `POST /tables/{table}/plan` immediately runs the scan through `TablePlanService`. The service:
 
-1. Resolves the Metacat table ID via `DirectoryService`.
+1. Resolves the Floecat table ID via `DirectoryService`.
 2. Calls `BeginQuery` and registers snapshot inputs with `QuerySchemaService` so enforcement and lineage understand the plan.
 3. Builds `FetchScanBundleRequest` predicates from Iceberg filter expressions (case-sensitive configurable) and fetches the bundle from `QueryScanService`.
 4. Hands the completed bundle plus credentials to `PlanTaskManager`, which:
@@ -74,14 +74,14 @@ Current limitations: plans are always returned as `"completed"` and there is no 
 
 ## External table registration and lifecycle
 
-- `POST /register` accepts Iceberg metadata locations plus optional IO properties. `TableMetadataImportService` reads the referenced `metadata.json`, extracts schema/properties/table location, and feeds a synthetic create request into the existing commit path so the table is tracked inside Metacat without rewriting manifests.
+- `POST /register` accepts Iceberg metadata locations plus optional IO properties. `TableMetadataImportService` reads the referenced `metadata.json`, extracts schema/properties/table location, and feeds a synthetic create request into the existing commit path so the table is tracked inside Floecat without rewriting manifests.
 - The gateway creates a connector per registered table so downstream services (Trino, ingestion jobs) can locate the data.
 - `DELETE /tables/{table}` now also tears down the connector if the table’s upstream contained one, preventing orphaned connectors when tables are dropped or re-registered.
 
 ## View semantics
 
 - REST view DTOs (`CreateViewRequest`, `UpdateViewRequest`, etc.) now mirror Iceberg’s OpenAPI schema, including schema JSON, metadata references, version logs, and requirements/updates.
-- `ViewMetadataService` persists Iceberg view metadata blobs inside Metacat, mediates requirements (assert-current-schema, etc.), and reconstructs responses so Trino or other Iceberg clients see canonical history.
+- `ViewMetadataService` persists Iceberg view metadata blobs inside Floecat, mediates requirements (assert-current-schema, etc.), and reconstructs responses so Trino or other Iceberg clients see canonical history.
 - The CLI (`client-cli/Shell`) exposes `view list/get/create/update/delete` commands, making it easy to inspect stored view metadata and validate payloads end-to-end.
 
 
@@ -116,9 +116,9 @@ This section summarizes how the gateway mirrors Iceberg’s two-phase workflow s
 
 ### Snapshot handling
 
-- Snapshot placeholders (add/remove) leverage `SnapshotService` RPCs so Metacat remains the source of truth for manifests, refs, and history.
+- Snapshot placeholders (add/remove) leverage `SnapshotService` RPCs so Floecat remains the source of truth for manifests, refs, and history.
 - `TableResponseMapper` synthesizes missing schema/spec/order data, aligns refs with actual snapshots, and bumps `last-sequence-number` to the highest known snapshot sequence.
-- Metadata files (`metadata-location`) remain inside Metacat’s storage (e.g., `metacat:///tables/<id>`). Client table locations only contain Iceberg manifests/data; JSON metadata is retrieved via the gateway.
+- Metadata files (`metadata-location`) remain inside Floecat’s storage (e.g., `floecat:///tables/<id>`). Client table locations only contain Iceberg manifests/data; JSON metadata is retrieved via the gateway.
 
 ### Housekeeping & resilience
 
@@ -128,7 +128,7 @@ This section summarizes how the gateway mirrors Iceberg’s two-phase workflow s
 
 ## Endpoint mapping highlights
 
-- Config (`/v1/config`): build endpoints and default properties from gateway config + Metacat catalog properties; expose the Iceberg configuration map clients expect.
+- Config (`/v1/config`): build endpoints and default properties from gateway config + Floecat catalog properties; expose the Iceberg configuration map clients expect.
 - Namespace operations: direct `NamespaceService`; map properties and parents/path to Iceberg namespace parts.
 - Table operations: `TableService`; ensure upstream format = ICEBERG; translate schema_json; rename/move via `update_mask` on `namespace_id` and `display_name`; stage-create/commit leverage the staging store described above.
 - View operations: `ViewService`; rename/move via `update_mask`; SQL passthrough.
@@ -141,7 +141,7 @@ This section summarizes how the gateway mirrors Iceberg’s two-phase workflow s
 
 ## DuckDB quick start
 
-DuckDB needs the HTTP, AWS, and Iceberg extensions plus a catalog attachment that points at the gateway. After configuring `application.properties` with `metacat.gateway.default-warehouse-path`, `metacat.gateway.default-region`, and storage credentials, you can read/write via DuckDB as follows:
+DuckDB needs the HTTP, AWS, and Iceberg extensions plus a catalog attachment that points at the gateway. After configuring `application.properties` with `floecat.gateway.default-warehouse-path`, `floecat.gateway.default-region`, and storage credentials, you can read/write via DuckDB as follows:
 
 ```sql
 INSTALL httpfs;
@@ -152,13 +152,13 @@ INSTALL iceberg;
 LOAD iceberg;
 
 -- Attach an Iceberg catalog that points at the gateway host/port.
-ATTACH 'analytics' AS iceberg_metacat
+ATTACH 'analytics' AS iceberg_floecat
   (TYPE iceberg, ENDPOINT 'http://localhost:9200/', AUTHORIZATION_TYPE none);
 
 -- Create and populate a table in namespace analytics.sales.
-CREATE TABLE iceberg_metacat.sales.quark_events (event_id INTEGER);
-INSERT INTO iceberg_metacat.sales.quark_events VALUES (1), (2), (3), (4);
-SELECT * FROM iceberg_metacat.sales.quark_events;
+CREATE TABLE iceberg_floecat.sales.quark_events (event_id INTEGER);
+INSERT INTO iceberg_floecat.sales.quark_events VALUES (1), (2), (3), (4);
+SELECT * FROM iceberg_floecat.sales.quark_events;
 ```
 
 Use `analytics`/`sales`/`quark_events` (or your own catalog/namespace/table identifiers) consistently; the gateway’s `/v1/config` response advertises the prefix (`analytics` in the example). The region, bucket, and credentials are injected into load/create responses via the config/credential maps, allowing DuckDB to PUT both Parquet and manifest files into the same S3 path without additional client-side configuration.

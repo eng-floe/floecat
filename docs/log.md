@@ -6,7 +6,7 @@ trail. By default the repository includes placeholder files so the directory exi
 control (`log/audit.json`). Runtime logs are created automatically when the service starts.
 
 ## Architecture & Responsibilities
-- **Service log (`log/metacat-service.log`)** – Configured via `quarkus.log.file.*` properties.
+- **Service log (`log/floecat-service.log`)** – Configured via `quarkus.log.file.*` properties.
   Contains structured JSON or plain text (depending on config) capturing application logs, stack
   traces, and diagnostics.
 - **Audit log (`log/audit.json`)** – Dedicated handler for RPC-level audit entries. The service routes
@@ -30,7 +30,7 @@ by tailing files (`make logs`), shipping them to log sinks, or truncating them b
 ## Data Flow & Lifecycle
 ```
 Inbound RPC → InboundContextInterceptor populates MDC → Logger writes structured entry
-  → File handlers append to log/metacat-service.log & log/audit.json
+  → File handlers append to log/floecat-service.log & log/audit.json
   → Rotation policies rename/compress files as needed
 ```
 `make logs` tails both files for convenience.
@@ -40,13 +40,13 @@ Adjust logging via `application.properties`:
 - `quarkus.log.console.json.enabled` – Toggle JSON logging.
 - `quarkus.log.file.*` – Enable/disable file logging, control rotation.
 - `quarkus.log.handler.file."audit".*` – Configure audit handler path, rotation, levels.
-- `quarkus.log.category."ai.floedb.metacat.*".level` – Per-package log levels.
+- `quarkus.log.category."ai.floedb.floecat.*".level` – Per-package log levels.
 
 Forward logs to external systems by pointing Quarkus to syslog/OTLP targets or by shipping files
 from `log/` via sidecars.
 
 ## Examples & Scenarios
-- **Local debugging** – Run `make run` and tail `log/metacat-service.log` for structured traces.
+- **Local debugging** – Run `make run` and tail `log/floecat-service.log` for structured traces.
 - **Auditing** – Inspect `log/audit.json` to review CRUD requests per tenant with correlation IDs for
   compliance.
 

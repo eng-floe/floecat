@@ -1,9 +1,9 @@
 syntax = "proto3";
 
-package ai.floedb.metacat.types;
+package ai.floedb.floecat.types;
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.types.rpc";
+option java_package = "ai.floedb.floecat.types.rpc";
 option java_outer_classname = "LogicalTypeProto";
 
 message LogicalType {

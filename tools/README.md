@@ -1,7 +1,7 @@
 # Tools
 
 This directory holds standalone utilities that are built alongside the main
-Metacat modules. Each tool is designed to run without the service stack so that
+Floecat modules. Each tool is designed to run without the service stack so that
 planners, CI pipelines, or operators can invoke them directly.
 
 ## builtin-validator

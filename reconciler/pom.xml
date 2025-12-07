@@ -2,30 +2,30 @@
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
-    <groupId>ai.floedb.metacat</groupId>
-    <artifactId>metacat</artifactId>
+    <groupId>ai.floedb.floecat</groupId>
+    <artifactId>floecat</artifactId>
     <version>0.1.0-SNAPSHOT</version>
   </parent>
 
-  <artifactId>metacat-reconciler</artifactId>
+  <artifactId>floecat-reconciler</artifactId>
   <packaging>jar</packaging>
 
   <dependencies>
     <dependency>
-      <groupId>ai.floedb.metacat</groupId>
-      <artifactId>metacat-proto</artifactId>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-proto</artifactId>
       <version>${project.version}</version>
     </dependency>
 
     <dependency>
-      <groupId>ai.floedb.metacat</groupId>
-      <artifactId>metacat-connectors-iceberg</artifactId>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-connectors-iceberg</artifactId>
       <version>${project.version}</version>
     </dependency>
 
     <dependency>
-      <groupId>ai.floedb.metacat</groupId>
-      <artifactId>metacat-connectors-delta</artifactId>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-connectors-delta</artifactId>
       <version>${project.version}</version>
     </dependency>
 

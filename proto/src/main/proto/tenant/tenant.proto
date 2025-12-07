@@ -1,9 +1,9 @@
 syntax = "proto3";
 
-package ai.floedb.metacat.tenant;
+package ai.floedb.floecat.tenant;
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.tenant.rpc";
+option java_package = "ai.floedb.floecat.tenant.rpc";
 option java_outer_classname = "TenantProto";
 
 import "common/common.proto";
@@ -12,7 +12,7 @@ import "google/protobuf/timestamp.proto";
 import "google/protobuf/field_mask.proto";
 
 message Tenant {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  ai.floedb.floecat.common.ResourceId resource_id = 1;
   string display_name = 2;
   optional string description = 3;
   google.protobuf.Timestamp created_at = 10;
@@ -26,26 +26,26 @@ message TenantSpec {
 // ====== Requests / Responses ======
 
 message ListTenantsRequest {
-  ai.floedb.metacat.common.PageRequest page = 1;
+  ai.floedb.floecat.common.PageRequest page = 1;
 }
 
 message ListTenantsResponse {
   repeated Tenant tenants = 1;
-  ai.floedb.metacat.common.PageResponse page = 2;
+  ai.floedb.floecat.common.PageResponse page = 2;
 }
 
 message CreateTenantRequest {
   TenantSpec spec = 1;
-  ai.floedb.metacat.common.IdempotencyKey idempotency = 98;
+  ai.floedb.floecat.common.IdempotencyKey idempotency = 98;
 }
 
 message CreateTenantResponse {
   Tenant tenant = 1;
-  ai.floedb.metacat.common.MutationMeta meta = 2;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
 message GetTenantRequest {
-  ai.floedb.metacat.common.ResourceId tenant_id = 1;
+  ai.floedb.floecat.common.ResourceId tenant_id = 1;
 }
 
 message GetTenantResponse {
@@ -53,25 +53,25 @@ message GetTenantResponse {
 }
 
 message UpdateTenantRequest {
-  ai.floedb.metacat.common.ResourceId tenant_id = 1;
+  ai.floedb.floecat.common.ResourceId tenant_id = 1;
   TenantSpec spec = 2;
   google.protobuf.FieldMask update_mask = 3;
-  ai.floedb.metacat.common.Precondition precondition = 98;
+  ai.floedb.floecat.common.Precondition precondition = 98;
 
 }
 
 message UpdateTenantResponse {
   Tenant tenant = 1;
-  ai.floedb.metacat.common.MutationMeta meta = 2;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
 message DeleteTenantRequest {
-  ai.floedb.metacat.common.ResourceId tenant_id = 1;
-  ai.floedb.metacat.common.Precondition precondition = 98;
+  ai.floedb.floecat.common.ResourceId tenant_id = 1;
+  ai.floedb.floecat.common.Precondition precondition = 98;
 }
 
 message DeleteTenantResponse {
-  ai.floedb.metacat.common.MutationMeta meta = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 1;
 }
 
 // ====== Service ======

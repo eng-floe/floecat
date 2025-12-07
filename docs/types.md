@@ -1,7 +1,7 @@
 # Type System Utilities
 
 ## Overview
-The `types/` module implements Metacat’s logical type system. It bridges the logical types declared
+The `types/` module implements Floecat’s logical type system. It bridges the logical types declared
 in protobuf (`types/types.proto`) with Java helpers used by connectors, statistics engines, and the
 execution scan bundle assembler.
 
@@ -12,7 +12,7 @@ Key classes: `LogicalType`, `LogicalKind`, `LogicalTypeProtoAdapter`, `LogicalCo
 - **`LogicalType` / `LogicalKind`** – Immutable representations of logical types (boolean, integer,
   decimal with precision/scale, temporal, UUID, etc.). Validates that decimals include both precision
   and scale.
-- **`LogicalTypeProtoAdapter`** – Converts between protobuf `ai.floedb.metacat.types.LogicalType` and
+- **`LogicalTypeProtoAdapter`** – Converts between protobuf `ai.floedb.floecat.types.LogicalType` and
   JVM `LogicalType`, ensuring kind/precision/scale consistency.
 - **`LogicalCoercions`** – Rules for widening or narrowing conversions between logical types (for
   example INT32 → INT64, DECIMAL precision adjustments).
