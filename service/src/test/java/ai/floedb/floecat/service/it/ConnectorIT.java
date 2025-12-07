@@ -125,7 +125,8 @@ public class ConnectorIT {
 
     assertEquals(3, namespaces.count(accountId.getId(), catId.getId(), List.of()));
 
-    var dbNsId = namespaces.getByPath(accountId.getId(), catId.getId(), List.of("db")).orElseThrow();
+    var dbNsId =
+        namespaces.getByPath(accountId.getId(), catId.getId(), List.of("db")).orElseThrow();
     var anaNsId =
         namespaces
             .getByPath(accountId.getId(), catId.getId(), List.of("analytics", "sales"))
@@ -197,7 +198,8 @@ public class ConnectorIT {
 
     var catId = catalogs.getByName(accountId.getId(), "cat-stats").orElseThrow().getResourceId();
 
-    var dbNsId = namespaces.getByPath(accountId.getId(), catId.getId(), List.of("db")).orElseThrow();
+    var dbNsId =
+        namespaces.getByPath(accountId.getId(), catId.getId(), List.of("db")).orElseThrow();
 
     var tbl =
         tables

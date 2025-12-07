@@ -1,5 +1,9 @@
 package ai.floedb.floecat.service.util;
 
+import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
+import ai.floedb.floecat.account.rpc.AccountSpec;
+import ai.floedb.floecat.account.rpc.CreateAccountRequest;
 import ai.floedb.floecat.catalog.rpc.*;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -13,10 +17,6 @@ import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.BlobStore;
 import ai.floedb.floecat.storage.PointerStore;
-import ai.floedb.floecat.account.rpc.CreateAccountRequest;
-import ai.floedb.floecat.account.rpc.Account;
-import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
-import ai.floedb.floecat.account.rpc.AccountSpec;
 import com.google.protobuf.Any;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
@@ -65,7 +65,9 @@ public final class TestSupport {
         accounts.createAccount(
             CreateAccountRequest.newBuilder()
                 .setSpec(
-                    AccountSpec.newBuilder().setDisplayName(displayName).setDescription(description))
+                    AccountSpec.newBuilder()
+                        .setDisplayName(displayName)
+                        .setDescription(description))
                 .build());
     return resp.getAccount();
   }

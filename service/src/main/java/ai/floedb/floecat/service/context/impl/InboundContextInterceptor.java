@@ -233,7 +233,9 @@ public class InboundContextInterceptor implements ServerInterceptor {
   private void validateAccount(String accountId) {
     ResourceId accountRid =
         ResourceId.newBuilder().setId(accountId).setKind(ResourceKind.RK_ACCOUNT).build();
-    if (accountId == null || isBlank(accountId) || accountRepository.getById(accountRid).isEmpty()) {
+    if (accountId == null
+        || isBlank(accountId)
+        || accountRepository.getById(accountRid).isEmpty()) {
       throw Status.UNAUTHENTICATED
           .withDescription("invalid or unknown account: " + accountId)
           .asRuntimeException();

@@ -1,14 +1,14 @@
 package ai.floedb.floecat.service.repo.impl;
 
+import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.repo.model.AccountKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
-import ai.floedb.floecat.service.repo.model.AccountKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.BlobStore;
 import ai.floedb.floecat.storage.PointerStore;
-import ai.floedb.floecat.account.rpc.Account;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;

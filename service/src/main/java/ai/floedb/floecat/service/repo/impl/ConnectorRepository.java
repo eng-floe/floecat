@@ -61,7 +61,8 @@ public class ConnectorRepository {
     return repo.get(Keys.connectorPointerByName(accountId, displayName));
   }
 
-  public List<Connector> list(String accountId, int limit, String pageToken, StringBuilder nextOut) {
+  public List<Connector> list(
+      String accountId, int limit, String pageToken, StringBuilder nextOut) {
     return repo.listByPrefix(
         Keys.connectorPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }

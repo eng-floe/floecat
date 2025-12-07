@@ -626,7 +626,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         .invoke(L::ok);
   }
 
-  private boolean hasImmediateChildren(String accountId, String catalogId, List<String> parentPath) {
+  private boolean hasImmediateChildren(
+      String accountId, String catalogId, List<String> parentPath) {
     String cursor = "";
     while (true) {
       var next = new StringBuilder();

@@ -2,6 +2,13 @@ package ai.floedb.floecat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
+import ai.floedb.floecat.account.rpc.AccountSpec;
+import ai.floedb.floecat.account.rpc.CreateAccountRequest;
+import ai.floedb.floecat.account.rpc.DeleteAccountRequest;
+import ai.floedb.floecat.account.rpc.GetAccountRequest;
+import ai.floedb.floecat.account.rpc.ListAccountsRequest;
+import ai.floedb.floecat.account.rpc.UpdateAccountRequest;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
@@ -10,13 +17,6 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
-import ai.floedb.floecat.account.rpc.CreateAccountRequest;
-import ai.floedb.floecat.account.rpc.DeleteAccountRequest;
-import ai.floedb.floecat.account.rpc.GetAccountRequest;
-import ai.floedb.floecat.account.rpc.ListAccountsRequest;
-import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
-import ai.floedb.floecat.account.rpc.AccountSpec;
-import ai.floedb.floecat.account.rpc.UpdateAccountRequest;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -50,7 +50,10 @@ class AccountMutationIT {
   @Test
   void accountExists() throws Exception {
     var spec =
-        AccountSpec.newBuilder().setDisplayName(accountPrefix + "t1").setDescription("desc").build();
+        AccountSpec.newBuilder()
+            .setDisplayName(accountPrefix + "t1")
+            .setDescription("desc")
+            .build();
 
     var r1 = tenancy.createAccount(CreateAccountRequest.newBuilder().setSpec(spec).build());
 
@@ -227,7 +230,8 @@ class AccountMutationIT {
 
     tenancy.createAccount(
         CreateAccountRequest.newBuilder()
-            .setSpec(AccountSpec.newBuilder().setDisplayName(accountPrefix + "idem_account2").build())
+            .setSpec(
+                AccountSpec.newBuilder().setDisplayName(accountPrefix + "idem_account2").build())
             .setIdempotency(key)
             .build());
 

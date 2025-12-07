@@ -68,7 +68,8 @@ public class CatalogRepository {
   }
 
   public MutationMeta metaFor(ResourceId catalogResourceId) {
-    return repo.metaFor(new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
+    return repo.metaFor(
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
   public MutationMeta metaFor(ResourceId catalogResourceId, Timestamp nowTs) {

@@ -103,7 +103,8 @@ public class SnapshotRepository {
   }
 
   public MutationMeta metaFor(ResourceId tableId, long snapshotId, Timestamp nowTs) {
-    return repo.metaFor(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId), nowTs);
+    return repo.metaFor(
+        new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId), nowTs);
   }
 
   public MutationMeta metaForSafe(ResourceId tableId, long snapshotId) {

@@ -1,7 +1,7 @@
 package ai.floedb.floecat.service.gc;
 
-import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.runtime.ShutdownEvent;
@@ -93,7 +93,8 @@ public class IdempotencyGcScheduler {
     final long maxTickMillis =
         cfg.getOptionalValue("floecat.gc.idempotency.max-tick-millis", Long.class).orElse(4000L);
     final int accountsPageSize =
-        cfg.getOptionalValue("floecat.gc.idempotency.accounts-page-size", Integer.class).orElse(200);
+        cfg.getOptionalValue("floecat.gc.idempotency.accounts-page-size", Integer.class)
+            .orElse(200);
     final long deadline = now + maxTickMillis;
 
     try {

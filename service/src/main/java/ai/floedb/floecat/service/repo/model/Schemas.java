@@ -1,5 +1,6 @@
 package ai.floedb.floecat.service.repo.model;
 
+import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
@@ -11,7 +12,6 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.service.repo.util.ColumnStatsNormalizer;
 import ai.floedb.floecat.service.repo.util.TableStatsNormalizer;
-import ai.floedb.floecat.account.rpc.Account;
 import com.google.protobuf.util.Timestamps;
 import java.util.ArrayList;
 import java.util.List;
@@ -169,6 +169,7 @@ public final class Schemas {
           v ->
               Map.of(
                   "byName",
-                  Keys.connectorPointerByName(v.getResourceId().getAccountId(), v.getDisplayName())),
+                  Keys.connectorPointerByName(
+                      v.getResourceId().getAccountId(), v.getDisplayName())),
           v -> new ConnectorKey(v.getResourceId().getAccountId(), v.getResourceId().getId()));
 }

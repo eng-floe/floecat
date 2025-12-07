@@ -122,7 +122,8 @@ public class NameResolver {
     }
     final Catalog catalog = catalogOpt.get();
     var namespaceOpt =
-        namespaceRepository.getByPath(accountId, catalog.getResourceId().getId(), ref.getPathList());
+        namespaceRepository.getByPath(
+            accountId, catalog.getResourceId().getId(), ref.getPathList());
     if (namespaceOpt.isEmpty()) {
       return Optional.empty();
     }
@@ -151,7 +152,8 @@ public class NameResolver {
     }
     final Catalog catalog = catalogOpt.get();
     var namespaceOpt =
-        namespaceRepository.getByPath(accountId, catalog.getResourceId().getId(), ref.getPathList());
+        namespaceRepository.getByPath(
+            accountId, catalog.getResourceId().getId(), ref.getPathList());
     if (namespaceOpt.isEmpty()) {
       return Optional.empty();
     }

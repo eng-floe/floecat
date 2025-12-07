@@ -126,7 +126,12 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String cid = req("catalog_id", catalogId);
     String joined = joinPathSegments(reqPath("segments", pathSegments));
-    return "/accounts/" + encode(tid) + "/catalogs/" + encode(cid) + "/namespaces/by-path/" + joined;
+    return "/accounts/"
+        + encode(tid)
+        + "/catalogs/"
+        + encode(cid)
+        + "/namespaces/by-path/"
+        + joined;
   }
 
   public static String namespacePointerByPathPrefix(
@@ -137,7 +142,12 @@ public final class Keys {
       throw new IllegalArgumentException("key arg 'parent_segments' is null; use List.of()");
     String joined = joinPathSegments(parentSegmentsOrEmpty);
     String suffix = joined.isEmpty() ? "" : joined + "/";
-    return "/accounts/" + encode(tid) + "/catalogs/" + encode(cid) + "/namespaces/by-path/" + suffix;
+    return "/accounts/"
+        + encode(tid)
+        + "/catalogs/"
+        + encode(cid)
+        + "/namespaces/by-path/"
+        + suffix;
   }
 
   public static String namespaceBlobUri(String accountId, String namespaceId) {
@@ -234,7 +244,8 @@ public final class Keys {
 
   // ===== Snapshot Stats =====
 
-  private static String snapshotStatsRootPointer(String accountId, String tableId, long snapshotId) {
+  private static String snapshotStatsRootPointer(
+      String accountId, String tableId, long snapshotId) {
     String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     long sid = reqNonNegative("snapshot_id", snapshotId);
@@ -242,7 +253,8 @@ public final class Keys {
         "/accounts/%s/tables/%s/snapshots/%019d/stats/", encode(tid), encode(tbid), sid);
   }
 
-  public static String snapshotTableStatsPointer(String accountId, String tableId, long snapshotId) {
+  public static String snapshotTableStatsPointer(
+      String accountId, String tableId, long snapshotId) {
     return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "table";
   }
 
@@ -278,7 +290,8 @@ public final class Keys {
     return snapshotStatsRootPointer(accountId, tableId, snapshotId);
   }
 
-  public static String snapshotColumnStatsPrefix(String accountId, String tableId, long snapshotId) {
+  public static String snapshotColumnStatsPrefix(
+      String accountId, String tableId, long snapshotId) {
     return snapshotColumnStatsDirectoryPointer(accountId, tableId, snapshotId);
   }
 

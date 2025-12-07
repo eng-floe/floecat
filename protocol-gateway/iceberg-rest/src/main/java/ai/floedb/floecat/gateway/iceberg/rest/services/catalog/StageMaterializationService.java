@@ -2,11 +2,11 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitProcessor.StageCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;

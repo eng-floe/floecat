@@ -37,7 +37,8 @@ import org.junit.jupiter.api.Timeout;
 class TableRepositoryTest {
   private final Clock clock = Clock.systemUTC();
 
-  private final String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+  private final String account =
+      TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
 
   private CatalogRepository catalogRepo;
   private NamespaceRepository namespaceRepo;

@@ -14,10 +14,10 @@ import java.util.concurrent.ConcurrentMap;
 /**
  * Per-account cache manager for {@link RelationNode}s.
  *
- * <p>This manager keeps a dedicated Caffeine cache for each account so eviction pressure is isolated
- * between accounts while sharing the common configuration knobs (enable flag, max size, TTL). It
- * also exposes global gauges and per-account hit/miss counters so operators can understand cache
- * health across multi-account deployments.
+ * <p>This manager keeps a dedicated Caffeine cache for each account so eviction pressure is
+ * isolated between accounts while sharing the common configuration knobs (enable flag, max size,
+ * TTL). It also exposes global gauges and per-account hit/miss counters so operators can understand
+ * cache health across multi-account deployments.
  */
 public class GraphCacheManager {
 
