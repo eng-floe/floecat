@@ -45,7 +45,7 @@ public class TableCommitSideEffectService {
       }
       return MaterializeMetadataResult.success(resolvedMetadata, resolvedLocation);
     } catch (MaterializeMetadataException e) {
-      LOG.warnf(
+      LOG.debugf(
           e,
           "Failed to materialize Iceberg metadata for %s.%s to %s (serving original metadata)",
           namespace,
@@ -84,6 +84,12 @@ public class TableCommitSideEffectService {
       TableMetadataView metadataView,
       String metadataLocation,
       String idempotencyKey) {
+    if (!tableSupport.connectorIntegrationEnabled()) {
+      LOG.debugf(
+          "Connector integration disabled; skipping synchronization for %s.%s",
+          prefix, table == null ? "<unnamed>" : table);
+      return resolveConnectorId(tableRecord);
+    }
     if (tableRecord == null) {
       return null;
     }
@@ -151,6 +157,9 @@ public class TableCommitSideEffectService {
       ResourceId connectorId,
       List<String> namespacePath,
       String tableName) {
+    if (!tableSupport.connectorIntegrationEnabled()) {
+      return;
+    }
     if (connectorId == null || connectorId.getId().isBlank()) {
       return;
     }

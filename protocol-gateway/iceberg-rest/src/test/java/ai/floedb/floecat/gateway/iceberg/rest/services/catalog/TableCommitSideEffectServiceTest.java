@@ -102,6 +102,7 @@ class TableCommitSideEffectServiceTest {
   @Test
   void runConnectorSyncIfPossibleTriggersCaptureAndReconcile() {
     TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+    when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
     ResourceId connectorId = ResourceId.newBuilder().setId("connector-1").build();
     List<String> namespacePath = List.of("db1", "nested");
 
@@ -152,6 +153,7 @@ class TableCommitSideEffectServiceTest {
   @Test
   void finalizeCommitResponseMaterializationAndSynchronizesConnector() throws Exception {
     TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+    when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
     ResourceId connectorId = ResourceId.newBuilder().setId("conn-1").build();
     Table table =
         Table.newBuilder()
@@ -193,6 +195,7 @@ class TableCommitSideEffectServiceTest {
   @Test
   void finalizeCommitResponseSkipsMaterializationWhenRequested() throws Exception {
     TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+    when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
     ResourceId connectorId = ResourceId.newBuilder().setId("conn-1").build();
     Table table =
         Table.newBuilder()

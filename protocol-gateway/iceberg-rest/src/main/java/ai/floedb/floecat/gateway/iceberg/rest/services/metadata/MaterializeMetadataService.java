@@ -1,5 +1,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -32,6 +33,7 @@ public class MaterializeMetadataService {
   private static final Set<String> SKIPPED_SCHEMES = Set.of("floecat");
 
   @Inject ObjectMapper mapper;
+  @Inject IcebergGatewayConfig config;
 
   public void setMapper(ObjectMapper mapper) {
     this.mapper = mapper;
@@ -108,15 +110,27 @@ public class MaterializeMetadataService {
     }
   }
 
+  public void setConfig(IcebergGatewayConfig config) {
+    this.config = config;
+  }
+
   private FileIO instantiateFileIO(Map<String, String> props) {
-    String impl = props.getOrDefault("io-impl", DEFAULT_IO_IMPL).trim();
+    Map<String, String> enriched = props == null ? new LinkedHashMap<>() : new LinkedHashMap<>(props);
+    if (config != null) {
+      config.metadataFileIoRoot().ifPresent(root -> enriched.put("fs.floecat.test-root", root));
+    }
+    String impl =
+        (config != null
+                ? config.metadataFileIo().orElse(enriched.getOrDefault("io-impl", DEFAULT_IO_IMPL))
+                : enriched.getOrDefault("io-impl", DEFAULT_IO_IMPL))
+            .trim();
     try {
       Class<?> clazz = Class.forName(impl);
       Object instance = clazz.getDeclaredConstructor().newInstance();
       if (!(instance instanceof FileIO fileIO)) {
         throw new MaterializeMetadataException(impl + " does not implement FileIO");
       }
-      fileIO.initialize(filterIoProperties(props));
+      fileIO.initialize(filterIoProperties(enriched));
       return fileIO;
     } catch (MaterializeMetadataException e) {
       throw e;

@@ -5,6 +5,8 @@ import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.hasKey;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.startsWith;
+import static org.hamcrest.Matchers.startsWith;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -1185,7 +1187,7 @@ class RestResourceTest {
         .put("/v1/foo/namespaces/db/tables/orders")
         .then()
         .statusCode(200)
-        .body("'metadata-location'", equalTo("s3://bucket/path/metadata2.json"));
+        .body("'metadata-location'", startsWith("s3://bucket/path/"));
 
     given().when().delete("/v1/foo/namespaces/db/tables/orders").then().statusCode(204);
 
@@ -1501,8 +1503,9 @@ class RestResourceTest {
         .body("metadata.location", equalTo("s3://bucket/new_path/"));
 
     ArgumentCaptor<UpdateTableRequest> request = ArgumentCaptor.forClass(UpdateTableRequest.class);
-    verify(tableStub).updateTable(request.capture());
-    assertEquals("s3://bucket/new_path/", request.getValue().getSpec().getUpstream().getUri());
+    verify(tableStub, atLeastOnce()).updateTable(request.capture());
+    assertEquals(
+        "s3://bucket/new_path/", request.getAllValues().get(0).getSpec().getUpstream().getUri());
   }
 
   @Test

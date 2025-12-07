@@ -182,6 +182,10 @@ public class TableGatewaySupport {
     return primary != null && !primary.isBlank() ? primary : fallback;
   }
 
+  public boolean connectorIntegrationEnabled() {
+    return config.connectorIntegrationEnabled();
+  }
+
   public void updateConnectorMetadata(ResourceId connectorId, String metadataLocation) {
     if (connectorId == null || metadataLocation == null || metadataLocation.isBlank()) {
       return;

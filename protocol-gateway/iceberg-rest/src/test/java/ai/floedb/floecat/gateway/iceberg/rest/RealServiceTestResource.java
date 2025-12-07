@@ -65,7 +65,13 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
         "floecat.gateway.upstream-target",
         "localhost:" + httpPort,
         "floecat.gateway.upstream-plaintext",
-        "true");
+        "true",
+        "floecat.gateway.metadata-file-io",
+        "ai.floedb.floecat.gateway.iceberg.rest.support.io.InMemoryS3FileIO",
+        "floecat.gateway.metadata-file-io-root",
+        "target/test-fake-s3",
+        "floecat.gateway.connector-integration-enabled",
+        "false");
   }
 
   @Override

@@ -14,6 +14,10 @@ public class RestResourceTestProfile implements QuarkusTestProfile {
         "floecat.gateway.storage-credential.properties.type", "s3",
         "floecat.gateway.storage-credential.properties.s3.access-key-id", "test-key",
         "floecat.gateway.storage-credential.properties.s3.secret-access-key", "test-secret",
-        "floecat.gateway.storage-credential.properties.s3.region", "us-east-1");
+        "floecat.gateway.storage-credential.properties.s3.region", "us-east-1",
+        "floecat.gateway.metadata-file-io",
+        "ai.floedb.floecat.gateway.iceberg.rest.support.io.InMemoryS3FileIO",
+        "floecat.gateway.metadata-file-io-root",
+        "target/test-fake-s3");
   }
 }
