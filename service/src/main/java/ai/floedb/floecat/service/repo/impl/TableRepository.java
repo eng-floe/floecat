@@ -41,49 +41,49 @@ public class TableRepository {
   }
 
   public boolean delete(ResourceId tableResourceId) {
-    return repo.delete(new TableKey(tableResourceId.getTenantId(), tableResourceId.getId()));
+    return repo.delete(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
   public boolean deleteWithPrecondition(ResourceId tableResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
-        new TableKey(tableResourceId.getTenantId(), tableResourceId.getId()),
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()),
         expectedPointerVersion);
   }
 
   public Optional<Table> getById(ResourceId tableResourceId) {
-    return repo.getByKey(new TableKey(tableResourceId.getTenantId(), tableResourceId.getId()));
+    return repo.getByKey(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
   public Optional<Table> getByName(
-      String tenantId, String catalogId, String namespaceId, String tableName) {
-    return repo.get(Keys.tablePointerByName(tenantId, catalogId, namespaceId, tableName));
+      String accountId, String catalogId, String namespaceId, String tableName) {
+    return repo.get(Keys.tablePointerByName(accountId, catalogId, namespaceId, tableName));
   }
 
   public List<Table> list(
-      String tenantId,
+      String accountId,
       String catalogId,
       String namespaceId,
       int limit,
       String pageToken,
       StringBuilder nextOut) {
-    String prefix = Keys.tablePointerByNamePrefix(tenantId, catalogId, namespaceId);
+    String prefix = Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId);
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
-  public int count(String tenantId, String catalogId, String namespaceId) {
-    return repo.countByPrefix(Keys.tablePointerByNamePrefix(tenantId, catalogId, namespaceId));
+  public int count(String accountId, String catalogId, String namespaceId) {
+    return repo.countByPrefix(Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId));
   }
 
   public MutationMeta metaFor(ResourceId tableResourceId) {
-    return repo.metaFor(new TableKey(tableResourceId.getTenantId(), tableResourceId.getId()));
+    return repo.metaFor(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
   public MutationMeta metaFor(ResourceId tableResourceId, Timestamp nowTs) {
     return repo.metaFor(
-        new TableKey(tableResourceId.getTenantId(), tableResourceId.getId()), nowTs);
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()), nowTs);
   }
 
   public MutationMeta metaForSafe(ResourceId tableResourceId) {
-    return repo.metaForSafe(new TableKey(tableResourceId.getTenantId(), tableResourceId.getId()));
+    return repo.metaForSafe(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 }

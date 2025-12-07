@@ -40,9 +40,9 @@ class PropagationIT {
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
 
   private static PrincipalContext pc() {
-    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
+    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
     return PrincipalContext.newBuilder()
-        .setTenantId(tenantId.getId())
+        .setAccountId(accountId.getId())
         .setSubject("it-user")
         .addPermissions("catalog.read")
         .build();
@@ -60,7 +60,7 @@ class PropagationIT {
 
   @Test
   void correlationIdEchoed() {
-    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
+    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
     String corr = "it-corr-" + UUID.randomUUID();
 
     Metadata m = new Metadata();
@@ -88,7 +88,7 @@ class PropagationIT {
 
     var rid =
         ResourceId.newBuilder()
-            .setTenantId(tenantId.getId())
+            .setAccountId(accountId.getId())
             .setKind(ResourceKind.RK_CATALOG)
             .setId("00000000-0000-0000-0000-000000000000")
             .build();

@@ -6,9 +6,9 @@ between the pointer/blob repositories and any RPC that needs to inspect catalogs
 or views. The graph provides:
 
 - Immutable node models that can be safely reused across requests.
-- A per-tenant Caffeine-backed cache keyed by resource ID + pointer version so invalidation is
+- A per-account Caffeine-backed cache keyed by resource ID + pointer version so invalidation is
   deterministic (can be disabled by setting `floecat.metadata.graph.cache-max-size` to 0; the limit
-  applies to each tenant independently).
+  applies to each account independently).
 - Helper APIs for name resolution (Directory RPC parity) and snapshot pinning (Snapshot RPC parity).
 - Extension points (`EngineHint`) so planners/executors can attach engine-specific payloads without
   mutating the base metadata structures.
@@ -27,8 +27,8 @@ The `service/query/graph` package is split into a few focused modules:
 
 - `model/` – Immutable node records (`CatalogNode`, `NamespaceNode`, `TableNode`, `ViewNode`,
   `SystemViewNode`) plus shared enums (`RelationNodeKind`, `EngineKey`, `EngineHint`, etc.).
-- `cache/` – `GraphCacheManager` + `GraphCacheKey` implement the per-tenant cache-of-caches and
-  expose meters for hit/miss counts, tenant count, and total entries.
+- `cache/` – `GraphCacheManager` + `GraphCacheKey` implement the per-account cache-of-caches and
+  expose meters for hit/miss counts, account count, and total entries.
 - `loader/` – `NodeLoader` wraps the catalog/namespace/table/view repositories to hydrate immutable
   nodes from protobuf metadata (`metaForSafe` + pointer fetches).
 - `resolver/` – `NameResolver` handles catalog/namespace/table/view lookups, while
@@ -55,7 +55,7 @@ Common fields:
 
 | Field                  | Description                                                                 |
 |------------------------|-----------------------------------------------------------------------------|
-| `id()`                 | Stable `ResourceId` carrying tenant/kind/UUID.                              |
+| `id()`                 | Stable `ResourceId` carrying account/kind/UUID.                              |
 | `version()`            | Pointer version used to compose cache keys.                                 |
 | `metadataUpdatedAt()`  | Repository mutation timestamp; informative only (not tied to snapshots).    |
 | `engineHints()`        | Map keyed by `EngineKey(engineKind, engineVersion)` → opaque `EngineHint`.  |
@@ -185,11 +185,11 @@ The graph surfaces a couple of Micrometer gauges so operators can verify cache s
 | Metric | Type | Description |
 |--------|------|-------------|
 | `floecat.metadata.graph.cache.enabled` | Gauge | 1.0 when caching is enabled, 0.0 when `cache-max-size=0`. |
-| `floecat.metadata.graph.cache.max_size` | Gauge | Per-tenant configured max size (0 when caching is disabled). |
-| `floecat.metadata.graph.cache.tenants` | Gauge | Number of tenant cache partitions that currently exist. |
-| `floecat.metadata.graph.cache.entries` | Gauge | Total estimated entries across all tenant caches. |
+| `floecat.metadata.graph.cache.max_size` | Gauge | Per-account configured max size (0 when caching is disabled). |
+| `floecat.metadata.graph.cache.accounts` | Gauge | Number of account cache partitions that currently exist. |
+| `floecat.metadata.graph.cache.entries` | Gauge | Total estimated entries across all account caches. |
 
-These gauges complement the per-tenant `floecat.metadata.graph.cache{result=hit|miss,tenant=<id>}`
+These gauges complement the per-account `floecat.metadata.graph.cache{result=hit|miss,account=<id>}`
 counters and the `floecat.metadata.graph.load` timer that track cache effectiveness.
 
 ## Testing
@@ -202,5 +202,5 @@ own logic while still mirroring real graph responses.
 - Add traversal helpers that expand view dependency trees into stable `RelationInfo` products.
 - Surface resolved snapshot sets on `TableNode` for multi-table AS OF operations.
 - Provide SPI hooks so connectors can contribute engine hints lazily.
-- Harden per-tenant cache lifecycle (limit live tenant shards, auto-evict idle shards, and release
-  tenant-specific metrics) so multi-tenant churn cannot exhaust heap or Micrometer registries.
+- Harden per-account cache lifecycle (limit live account shards, auto-evict idle shards, and release
+  account-specific metrics) so multi-account churn cannot exhaust heap or Micrometer registries.

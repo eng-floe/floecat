@@ -100,7 +100,7 @@ class NamespaceMutationIT {
                                 TestSupport.metaForNamespace(
                                         ptr,
                                         blob,
-                                        cat.getResourceId().getTenantId(),
+                                        cat.getResourceId().getAccountId(),
                                         cat.getDisplayName(),
                                         full)
                                     .getPointerVersion())
@@ -108,7 +108,7 @@ class NamespaceMutationIT {
                                 TestSupport.metaForNamespace(
                                         ptr,
                                         blob,
-                                        cat.getResourceId().getTenantId(),
+                                        cat.getResourceId().getAccountId(),
                                         cat.getDisplayName(),
                                         full)
                                     .getEtag())
@@ -173,7 +173,7 @@ class NamespaceMutationIT {
         TestSupport.metaForNamespace(
             ptr,
             blob,
-            cat.getResourceId().getTenantId(),
+            cat.getResourceId().getAccountId(),
             cat.getDisplayName(),
             List.of(leaf + "_root"));
 

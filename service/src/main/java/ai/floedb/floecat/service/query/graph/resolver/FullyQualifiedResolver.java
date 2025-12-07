@@ -42,7 +42,7 @@ public class FullyQualifiedResolver {
   }
 
   public ResolveResult resolveTableList(
-      String correlationId, String tenantId, List<NameRef> names, int limit, String pageToken) {
+      String correlationId, String accountId, List<NameRef> names, int limit, String pageToken) {
     validateListToken(correlationId, pageToken);
     if (names == null || names.isEmpty()) {
       return new ResolveResult(List.of(), 0, "");
@@ -51,13 +51,13 @@ public class FullyQualifiedResolver {
     int end = Math.min(names.size(), normalizedLimit);
     List<QualifiedRelation> relations = new ArrayList<>(end);
     for (int i = 0; i < end; i++) {
-      relations.add(resolveTableEntry(correlationId, tenantId, names.get(i)));
+      relations.add(resolveTableEntry(correlationId, accountId, names.get(i)));
     }
     return new ResolveResult(relations, names.size(), "");
   }
 
   public ResolveResult resolveViewList(
-      String correlationId, String tenantId, List<NameRef> names, int limit, String pageToken) {
+      String correlationId, String accountId, List<NameRef> names, int limit, String pageToken) {
     validateListToken(correlationId, pageToken);
     if (names == null || names.isEmpty()) {
       return new ResolveResult(List.of(), 0, "");
@@ -66,23 +66,23 @@ public class FullyQualifiedResolver {
     int end = Math.min(names.size(), normalizedLimit);
     List<QualifiedRelation> relations = new ArrayList<>(end);
     for (int i = 0; i < end; i++) {
-      relations.add(resolveViewEntry(correlationId, tenantId, names.get(i)));
+      relations.add(resolveViewEntry(correlationId, accountId, names.get(i)));
     }
     return new ResolveResult(relations, names.size(), "");
   }
 
   public ResolveResult resolveTablesByPrefix(
-      String correlationId, String tenantId, NameRef prefix, int limit, String token) {
-    Catalog catalog = catalogByName(correlationId, tenantId, prefix.getCatalog());
+      String correlationId, String accountId, NameRef prefix, int limit, String token) {
+    Catalog catalog = catalogByName(correlationId, accountId, prefix.getCatalog());
     List<String> namespacePath = namespacePathSegments(prefix);
-    Namespace namespace = namespaceByPath(correlationId, tenantId, catalog, namespacePath);
+    Namespace namespace = namespaceByPath(correlationId, accountId, catalog, namespacePath);
 
     StringBuilder nextOut = new StringBuilder();
     List<Table> entries =
-        listTables(correlationId, tenantId, catalog, namespace, limit, token, nextOut);
+        listTables(correlationId, accountId, catalog, namespace, limit, token, nextOut);
     int total =
         tableRepository.count(
-            tenantId, catalog.getResourceId().getId(), namespace.getResourceId().getId());
+            accountId, catalog.getResourceId().getId(), namespace.getResourceId().getId());
 
     List<QualifiedRelation> relations = new ArrayList<>(entries.size());
     for (Table table : entries) {
@@ -100,17 +100,17 @@ public class FullyQualifiedResolver {
   }
 
   public ResolveResult resolveViewsByPrefix(
-      String correlationId, String tenantId, NameRef prefix, int limit, String token) {
-    Catalog catalog = catalogByName(correlationId, tenantId, prefix.getCatalog());
+      String correlationId, String accountId, NameRef prefix, int limit, String token) {
+    Catalog catalog = catalogByName(correlationId, accountId, prefix.getCatalog());
     List<String> namespacePath = namespacePathSegments(prefix);
-    Namespace namespace = namespaceByPath(correlationId, tenantId, catalog, namespacePath);
+    Namespace namespace = namespaceByPath(correlationId, accountId, catalog, namespacePath);
 
     StringBuilder nextOut = new StringBuilder();
     List<View> entries =
-        listViews(correlationId, tenantId, catalog, namespace, limit, token, nextOut);
+        listViews(correlationId, accountId, catalog, namespace, limit, token, nextOut);
     int total =
         viewRepository.count(
-            tenantId, catalog.getResourceId().getId(), namespace.getResourceId().getId());
+            accountId, catalog.getResourceId().getId(), namespace.getResourceId().getId());
 
     List<QualifiedRelation> relations = new ArrayList<>(entries.size());
     for (View view : entries) {
@@ -127,15 +127,15 @@ public class FullyQualifiedResolver {
     return new ResolveResult(relations, total, nextOut.toString());
   }
 
-  private QualifiedRelation resolveTableEntry(String correlationId, String tenantId, NameRef ref) {
+  private QualifiedRelation resolveTableEntry(String correlationId, String accountId, NameRef ref) {
     try {
       validateNameRef(correlationId, ref);
       validateRelationName(correlationId, ref, "table");
-      Catalog catalog = catalogByName(correlationId, tenantId, ref.getCatalog());
-      Namespace namespace = namespaceByPath(correlationId, tenantId, catalog, ref.getPathList());
+      Catalog catalog = catalogByName(correlationId, accountId, ref.getCatalog());
+      Namespace namespace = namespaceByPath(correlationId, accountId, catalog, ref.getPathList());
       return tableRepository
           .getByName(
-              tenantId,
+              accountId,
               catalog.getResourceId().getId(),
               namespace.getResourceId().getId(),
               ref.getName())
@@ -156,15 +156,15 @@ public class FullyQualifiedResolver {
     }
   }
 
-  private QualifiedRelation resolveViewEntry(String correlationId, String tenantId, NameRef ref) {
+  private QualifiedRelation resolveViewEntry(String correlationId, String accountId, NameRef ref) {
     try {
       validateNameRef(correlationId, ref);
       validateRelationName(correlationId, ref, "view");
-      Catalog catalog = catalogByName(correlationId, tenantId, ref.getCatalog());
-      Namespace namespace = namespaceByPath(correlationId, tenantId, catalog, ref.getPathList());
+      Catalog catalog = catalogByName(correlationId, accountId, ref.getCatalog());
+      Namespace namespace = namespaceByPath(correlationId, accountId, catalog, ref.getPathList());
       return viewRepository
           .getByName(
-              tenantId,
+              accountId,
               catalog.getResourceId().getId(),
               namespace.getResourceId().getId(),
               ref.getName())
@@ -187,7 +187,7 @@ public class FullyQualifiedResolver {
 
   private List<Table> listTables(
       String correlationId,
-      String tenantId,
+      String accountId,
       Catalog catalog,
       Namespace namespace,
       int limit,
@@ -195,7 +195,7 @@ public class FullyQualifiedResolver {
       StringBuilder nextOut) {
     try {
       return tableRepository.list(
-          tenantId,
+          accountId,
           catalog.getResourceId().getId(),
           namespace.getResourceId().getId(),
           Math.max(1, limit),
@@ -209,7 +209,7 @@ public class FullyQualifiedResolver {
 
   private List<View> listViews(
       String correlationId,
-      String tenantId,
+      String accountId,
       Catalog catalog,
       Namespace namespace,
       int limit,
@@ -217,7 +217,7 @@ public class FullyQualifiedResolver {
       StringBuilder nextOut) {
     try {
       return viewRepository.list(
-          tenantId,
+          accountId,
           catalog.getResourceId().getId(),
           namespace.getResourceId().getId(),
           Math.max(1, limit),
@@ -229,17 +229,17 @@ public class FullyQualifiedResolver {
     }
   }
 
-  private Catalog catalogByName(String correlationId, String tenantId, String catalogName) {
+  private Catalog catalogByName(String correlationId, String accountId, String catalogName) {
     return catalogRepository
-        .getByName(tenantId, catalogName)
+        .getByName(accountId, catalogName)
         .orElseThrow(
             () -> GrpcErrors.notFound(correlationId, "catalog", Map.of("id", catalogName)));
   }
 
   private Namespace namespaceByPath(
-      String correlationId, String tenantId, Catalog catalog, List<String> pathSegments) {
+      String correlationId, String accountId, Catalog catalog, List<String> pathSegments) {
     return namespaceRepository
-        .getByPath(tenantId, catalog.getResourceId().getId(), pathSegments)
+        .getByPath(accountId, catalog.getResourceId().getId(), pathSegments)
         .orElseThrow(
             () ->
                 GrpcErrors.notFound(

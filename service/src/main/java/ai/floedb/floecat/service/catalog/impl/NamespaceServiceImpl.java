@@ -66,7 +66,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                 () -> {
                   var princ = principal.get();
                   authz.require(princ, "namespace.read");
-                  final String tenantId = princ.getTenantId();
+                  final String accountId = princ.getAccountId();
 
                   final ResourceId catalogId;
                   final List<String> parentPath;
@@ -126,7 +126,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     try {
                       scanned =
                           namespaceRepo.list(
-                              tenantId, catalogId.getId(), parentPath, batch, cursor, next);
+                              accountId, catalogId.getId(), parentPath, batch, cursor, next);
                     } catch (IllegalArgumentException badToken) {
                       throw GrpcErrors.invalidArgument(
                           correlationId(), "page_token.invalid", Map.of("page_token", cursor));
@@ -192,7 +192,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   final int total =
                       countNamespaces(
-                          tenantId, catalogId.getId(), parentPath, namePrefix, recursive);
+                          accountId, catalogId.getId(), parentPath, namePrefix, recursive);
 
                   var page = MutationOps.pageOut(nextToken, total);
                   return ListNamespacesResponse.newBuilder()
@@ -208,7 +208,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   }
 
   private int countNamespaces(
-      String tenantId,
+      String accountId,
       String catalogId,
       List<String> parentPath,
       String namePrefix,
@@ -220,7 +220,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
       var next = new StringBuilder();
       final List<Namespace> page;
       try {
-        page = namespaceRepo.list(tenantId, catalogId, parentPath, 1000, cursor, next);
+        page = namespaceRepo.list(accountId, catalogId, parentPath, 1000, cursor, next);
       } catch (IllegalArgumentException bad) {
         throw GrpcErrors.invalidArgument(
             correlationId(), "page_token.invalid", Map.of("page_token", cursor));
@@ -335,7 +335,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
             runWithRetry(
                 () -> {
                   var princ = principal.get();
-                  var tenantId = princ.getTenantId();
+                  var accountId = princ.getAccountId();
                   var correlationId = princ.getCorrelationId();
                   authz.require(princ, "namespace.write");
 
@@ -385,19 +385,19 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   var namespaceProto =
                       MutationOps.createProto(
-                          tenantId,
+                          accountId,
                           "CreateNamespace",
                           idempotencyKey,
                           () -> fingerprint,
                           () -> {
                             if (!parents.isEmpty()) {
                               ensurePathChainExists(
-                                  tenantId, spec.getCatalogId(), parents, tsNow, correlationId);
+                                  accountId, spec.getCatalogId(), parents, tsNow, correlationId);
                             }
 
                             String namespaceUuid =
                                 deterministicUuid(
-                                    tenantId,
+                                    accountId,
                                     "namespace",
                                     spec.getCatalogId().getId()
                                         + "/"
@@ -405,7 +405,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                             var namespaceId =
                                 ResourceId.newBuilder()
-                                    .setTenantId(tenantId)
+                                    .setAccountId(accountId)
                                     .setId(namespaceUuid)
                                     .setKind(ResourceKind.RK_NAMESPACE)
                                     .build();
@@ -446,7 +446,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   }
 
   private void ensurePathChainExists(
-      String tenantId,
+      String accountId,
       ResourceId catalogId,
       List<String> parents,
       com.google.protobuf.Timestamp tsNow,
@@ -459,17 +459,17 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         throw GrpcErrors.invalidArgument(corr, "path.segment.blank", Map.of());
       }
       chain.add(seg);
-      var existing = namespaceRepo.getByPath(tenantId, catalogId.getId(), chain);
+      var existing = namespaceRepo.getByPath(accountId, catalogId.getId(), chain);
       if (existing.isPresent()) {
         continue;
       }
 
       String uuid =
           deterministicUuid(
-              tenantId, "namespace", catalogId.getId() + "/" + String.join(PATH_DELIM, chain));
+              accountId, "namespace", catalogId.getId() + "/" + String.join(PATH_DELIM, chain));
       var rid =
           ResourceId.newBuilder()
-              .setTenantId(tenantId)
+              .setAccountId(accountId)
               .setId(uuid)
               .setKind(ResourceKind.RK_NAMESPACE)
               .build();
@@ -589,7 +589,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   }
 
                   if (tableRepo.count(
-                          catalogId.getTenantId(), catalogId.getId(), namespaceId.getId())
+                          catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())
                       > 0) {
                     var pretty =
                         prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
@@ -599,7 +599,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   var parentPath = append(namespace.getParentsList(), namespace.getDisplayName());
                   if (hasImmediateChildren(
-                      catalogId.getTenantId(), catalogId.getId(), parentPath)) {
+                      catalogId.getAccountId(), catalogId.getId(), parentPath)) {
                     var pretty =
                         prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
                     throw GrpcErrors.conflict(
@@ -626,11 +626,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         .invoke(L::ok);
   }
 
-  private boolean hasImmediateChildren(String tenantId, String catalogId, List<String> parentPath) {
+  private boolean hasImmediateChildren(String accountId, String catalogId, List<String> parentPath) {
     String cursor = "";
     while (true) {
       var next = new StringBuilder();
-      var page = namespaceRepo.list(tenantId, catalogId, parentPath, 200, cursor, next);
+      var page = namespaceRepo.list(accountId, catalogId, parentPath, 200, cursor, next);
       for (var ns : page) {
         if (isImmediateChildOf(ns, parentPath)) {
           return true;

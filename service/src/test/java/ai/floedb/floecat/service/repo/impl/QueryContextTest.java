@@ -18,10 +18,10 @@ import org.junit.jupiter.api.function.Executable;
 class QueryContextTest {
   private final Clock clock = Clock.systemUTC();
 
-  private static PrincipalContext pc(ResourceId tenantId, String subject, String queryId) {
+  private static PrincipalContext pc(ResourceId accountId, String subject, String queryId) {
     var b =
         PrincipalContext.newBuilder()
-            .setTenantId(tenantId.getId())
+            .setAccountId(accountId.getId())
             .setSubject(subject == null ? "test-user" : subject);
     if (queryId != null) {
       b.setQueryId(queryId);
@@ -31,8 +31,8 @@ class QueryContextTest {
 
   @Test
   void newActive_valid() {
-    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
-    var pc = pc(tenantId, "alice", "query-123");
+    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var pc = pc(accountId, "alice", "query-123");
     var ctx = QueryContext.newActive("query-123", pc, null, null, null, null, 1_000, 1);
 
     assertEquals("query-123", ctx.getQueryId());
@@ -45,8 +45,8 @@ class QueryContextTest {
 
   @Test
   void builder_rejectsExpiresBeforeCreated() {
-    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
-    var pc = pc(tenantId, "alice", "p1");
+    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var pc = pc(accountId, "alice", "p1");
     Executable ex =
         () ->
             QueryContext.builder()
@@ -61,8 +61,8 @@ class QueryContextTest {
 
   @Test
   void extendLease_isMonotonic() {
-    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
-    var pc = pc(tenantId, "alice", "p1");
+    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var pc = pc(accountId, "alice", "p1");
     var ctx = QueryContext.newActive("p1", pc, null, null, null, null, 200, 1);
     long originalExp = ctx.getExpiresAtMs();
 
@@ -77,8 +77,8 @@ class QueryContextTest {
 
   @Test
   void end_commit_setsStateAndGrace() {
-    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
-    var pc = pc(tenantId, "alice", "p1");
+    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var pc = pc(accountId, "alice", "p1");
     var ctx = QueryContext.newActive("p1", pc, null, null, null, null, 100, 1);
     long targetGrace = clock.millis() + 500;
     var ended = ctx.end(true, targetGrace, 2);
@@ -90,8 +90,8 @@ class QueryContextTest {
 
   @Test
   void asExpired_onlyIfActive() {
-    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
-    var pc = pc(tenantId, "alice", "p1");
+    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var pc = pc(accountId, "alice", "p1");
     var ctx = QueryContext.newActive("p1", pc, null, null, null, null, 100, 1);
 
     var expired = ctx.asExpired(2);
@@ -105,9 +105,9 @@ class QueryContextTest {
   // Ensures QueryContext surfaces the pinned SnapshotPin for tables participating in the lease.
   @Test
   void requireSnapshotPinReturnsPin() {
-    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
-    var pc = pc(tenantId, "alice", "p-lookup");
-    ResourceId tableId = TestSupport.rid(tenantId.getId(), "tbl-lookup", ResourceKind.RK_TABLE);
+    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var pc = pc(accountId, "alice", "p-lookup");
+    ResourceId tableId = TestSupport.rid(accountId.getId(), "tbl-lookup", ResourceKind.RK_TABLE);
     var snapshots =
         SnapshotSet.newBuilder()
             .addPins(SnapshotPin.newBuilder().setTableId(tableId).setSnapshotId(77).build())
@@ -123,10 +123,10 @@ class QueryContextTest {
   // Ensures QueryContext rejects tables that were not pinned in the lease snapshot set.
   @Test
   void requireSnapshotPinMissingTable() {
-    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
-    var pc = pc(tenantId, "alice", "p-missing");
-    ResourceId pinned = TestSupport.rid(tenantId.getId(), "tbl-a", ResourceKind.RK_TABLE);
-    ResourceId other = TestSupport.rid(tenantId.getId(), "tbl-b", ResourceKind.RK_TABLE);
+    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var pc = pc(accountId, "alice", "p-missing");
+    ResourceId pinned = TestSupport.rid(accountId.getId(), "tbl-a", ResourceKind.RK_TABLE);
+    ResourceId other = TestSupport.rid(accountId.getId(), "tbl-b", ResourceKind.RK_TABLE);
 
     var snapshots =
         SnapshotSet.newBuilder()

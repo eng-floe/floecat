@@ -42,7 +42,7 @@ public final class MutationOps {
   }
 
   public static <T> OpResult<T> create(
-      String tenant,
+      String account,
       String operationName,
       String idempotencyKey,
       Fingerprinter fingerprint,
@@ -58,7 +58,7 @@ public final class MutationOps {
 
     T body =
         IdempotencyGuard.runOnce(
-            tenant,
+            account,
             operationName,
             idempotencyKey,
             fingerprint.fingerprint(),
@@ -76,7 +76,7 @@ public final class MutationOps {
   }
 
   public static <T extends Message> OpResult<T> createProto(
-      String tenant,
+      String account,
       String operationName,
       String idempotencyKey,
       Fingerprinter fingerprint,
@@ -90,7 +90,7 @@ public final class MutationOps {
       Function<IdempotencyRecord, Boolean> canReplay) {
 
     return create(
-        tenant,
+        account,
         operationName,
         idempotencyKey,
         fingerprint,

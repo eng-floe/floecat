@@ -47,26 +47,26 @@ class SnapshotRepositoryTest {
 
   @Test
   void snapshotRepoCreateSnapshot() {
-    String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     String catalogId = UUID.randomUUID().toString();
     String nsId = UUID.randomUUID().toString();
     String tblId = UUID.randomUUID().toString();
 
     var catalogRid =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(catalogId)
             .setKind(ResourceKind.RK_CATALOG)
             .build();
     var nsRid =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(nsId)
             .setKind(ResourceKind.RK_NAMESPACE)
             .build();
     var tableRid =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(tblId)
             .setKind(ResourceKind.RK_TABLE)
             .build();
@@ -90,9 +90,9 @@ class SnapshotRepositoryTest {
     tableRepo.create(td);
 
     seedSnapshot(
-        snapshotRepo, tenant, tableRid, 199, clock.millis() - 20_000, clock.millis() - 60_000);
+        snapshotRepo, account, tableRid, 199, clock.millis() - 20_000, clock.millis() - 60_000);
     seedSnapshot(
-        snapshotRepo, tenant, tableRid, 200, clock.millis() - 10_000, clock.millis() - 50_000);
+        snapshotRepo, account, tableRid, 200, clock.millis() - 10_000, clock.millis() - 50_000);
 
     StringBuilder next = new StringBuilder();
     var page1 = snapshotRepo.list(tableRid, 1, "", next);
@@ -114,7 +114,7 @@ class SnapshotRepositoryTest {
 
   private void seedSnapshot(
       SnapshotRepository snapshotRepo,
-      String tenant,
+      String account,
       ResourceId tableId,
       long snapshotId,
       long ingestedAtMs,
@@ -138,10 +138,10 @@ class SnapshotRepositoryTest {
   @Test
   @Timeout(20)
   void snapshotRepoCreateConcurrentSnapshots() throws Exception {
-    String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var tblId =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_TABLE)
             .build();

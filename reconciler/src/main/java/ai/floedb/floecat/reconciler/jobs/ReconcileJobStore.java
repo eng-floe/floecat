@@ -3,7 +3,7 @@ package ai.floedb.floecat.reconciler.jobs;
 import java.util.Optional;
 
 public interface ReconcileJobStore {
-  String enqueue(String tenantId, String connectorId, boolean fullRescan, ReconcileScope scope);
+  String enqueue(String accountId, String connectorId, boolean fullRescan, ReconcileScope scope);
 
   Optional<ReconcileJob> get(String jobId);
 
@@ -20,7 +20,7 @@ public interface ReconcileJobStore {
 
   final class ReconcileJob {
     public final String jobId;
-    public final String tenantId;
+    public final String accountId;
     public final String connectorId;
     public final String state;
     public final String message;
@@ -34,7 +34,7 @@ public interface ReconcileJobStore {
 
     public ReconcileJob(
         String jobId,
-        String tenantId,
+        String accountId,
         String connectorId,
         String state,
         String message,
@@ -46,7 +46,7 @@ public interface ReconcileJobStore {
         boolean fullRescan,
         ReconcileScope scope) {
       this.jobId = jobId;
-      this.tenantId = tenantId;
+      this.accountId = accountId;
       this.connectorId = connectorId;
       this.state = state;
       this.message = message;
@@ -62,19 +62,19 @@ public interface ReconcileJobStore {
 
   final class LeasedJob {
     public final String jobId;
-    public final String tenantId;
+    public final String accountId;
     public final String connectorId;
     public final boolean fullRescan;
     public final ReconcileScope scope;
 
     public LeasedJob(
         String jobId,
-        String tenantId,
+        String accountId,
         String connectorId,
         boolean fullRescan,
         ReconcileScope scope) {
       this.jobId = jobId;
-      this.tenantId = tenantId;
+      this.accountId = accountId;
       this.connectorId = connectorId;
       this.fullRescan = fullRescan;
       this.scope = scope == null ? ReconcileScope.empty() : scope;

@@ -17,7 +17,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableCommitServic
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
-import ai.floedb.floecat.gateway.iceberg.rest.services.tenant.TenantContext;
+import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;
 import jakarta.annotation.PostConstruct;
@@ -37,7 +37,7 @@ import org.eclipse.microprofile.config.Config;
 public class TableAdminResource {
   @Inject GrpcWithHeaders grpc;
   @Inject IcebergGatewayConfig config;
-  @Inject TenantContext tenantContext;
+  @Inject AccountContext accountContext;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableCommitService tableCommitService;
   @Inject ObjectMapper mapper;
@@ -96,9 +96,9 @@ public class TableAdminResource {
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       @HeaderParam("Iceberg-Transaction-Id") String transactionId,
       TransactionCommitRequest request) {
-    String tenantId = tenantContext.getTenantId();
-    if (tenantId == null || tenantId.isBlank()) {
-      return IcebergErrorResponses.validation("tenant context is required");
+    String accountId = accountContext.getAccountId();
+    if (accountId == null || accountId.isBlank()) {
+      return IcebergErrorResponses.validation("account context is required");
     }
     List<TransactionCommitRequest.TableChange> changes =
         request == null ? List.of() : request.resolvedTableChanges();

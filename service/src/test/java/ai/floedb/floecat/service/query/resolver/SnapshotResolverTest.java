@@ -24,7 +24,7 @@ public class SnapshotResolverTest {
   SnapshotResolver resolver;
 
   PrincipalContext principal =
-      PrincipalContext.newBuilder().setTenantId("T").setSubject("user").build();
+      PrincipalContext.newBuilder().setAccountId("T").setSubject("user").build();
 
   @BeforeEach
   void init() {

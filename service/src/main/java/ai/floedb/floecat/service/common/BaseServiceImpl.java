@@ -166,8 +166,8 @@ public abstract class BaseServiceImpl {
     return pctx != null ? pctx.getCorrelationId() : "";
   }
 
-  protected String deterministicUuid(String tenant, String kind, String key) {
-    var name = (tenant + ":" + kind + ":" + key).getBytes(StandardCharsets.UTF_8);
+  protected String deterministicUuid(String account, String kind, String key) {
+    var name = (account + ":" + kind + ":" + key).getBytes(StandardCharsets.UTF_8);
     return UUID.nameUUIDFromBytes(name).toString();
   }
 

@@ -13,7 +13,7 @@ import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
-import ai.floedb.floecat.service.repo.impl.TenantRepository;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.storage.BlobStore;
 import ai.floedb.floecat.storage.PointerStore;
@@ -30,7 +30,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @ApplicationScoped
 public class SeedRunner {
-  @Inject TenantRepository tenants;
+  @Inject AccountRepository accounts;
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;
   @Inject TableRepository tables;
@@ -52,17 +52,17 @@ public class SeedRunner {
     final Clock clock = Clock.systemUTC();
     final long now = clock.millis();
 
-    var tenantId = seedTenant("t-0001", "First tenant", now);
+    var accountId = seedAccount("t-0001", "First account", now);
 
-    var salesId = seedCatalog(tenantId.getId(), "sales", "Sales catalog", now);
+    var salesId = seedCatalog(accountId.getId(), "sales", "Sales catalog", now);
 
-    var salesCoreNsId = seedNamespace(tenantId.getId(), salesId, null, "core", now);
-    var ordersId = seedTable(tenantId.getId(), salesId, salesCoreNsId.getId(), "orders", 0L, now);
-    seedTable(tenantId.getId(), salesId, salesCoreNsId.getId(), "lineitem", 0L, now);
-    seedSnapshot(tenantId.getId(), ordersId, 101L, now - 60_000L, now - 100_000L);
-    seedSnapshot(tenantId.getId(), ordersId, 102L, now, now - 80_000L);
+    var salesCoreNsId = seedNamespace(accountId.getId(), salesId, null, "core", now);
+    var ordersId = seedTable(accountId.getId(), salesId, salesCoreNsId.getId(), "orders", 0L, now);
+    seedTable(accountId.getId(), salesId, salesCoreNsId.getId(), "lineitem", 0L, now);
+    seedSnapshot(accountId.getId(), ordersId, 101L, now - 60_000L, now - 100_000L);
+    seedSnapshot(accountId.getId(), ordersId, 102L, now, now - 80_000L);
     seedView(
-        tenantId.getId(),
+        accountId.getId(),
         salesId,
         salesCoreNsId.getId(),
         "recent_orders",
@@ -71,11 +71,11 @@ public class SeedRunner {
         Map.of("seeded", "true"),
         now);
 
-    var salesStg25NsId = seedNamespace(tenantId.getId(), salesId, List.of("staging"), "2025", now);
-    seedTable(tenantId.getId(), salesId, salesStg25NsId.getId(), "orders_2025", 0L, now);
-    seedTable(tenantId.getId(), salesId, salesStg25NsId.getId(), "staging_events", 0L, now);
+    var salesStg25NsId = seedNamespace(accountId.getId(), salesId, List.of("staging"), "2025", now);
+    seedTable(accountId.getId(), salesId, salesStg25NsId.getId(), "orders_2025", 0L, now);
+    seedTable(accountId.getId(), salesId, salesStg25NsId.getId(), "staging_events", 0L, now);
     seedView(
-        tenantId.getId(),
+        accountId.getId(),
         salesId,
         salesStg25NsId.getId(),
         "orders_with_events",
@@ -88,33 +88,33 @@ public class SeedRunner {
         Map.of("materialized", "false", "seeded", "true"),
         now);
 
-    var financeId = seedCatalog(tenantId.getId(), "finance", "Finance catalog", now);
-    var financeCoreNsId = seedNamespace(tenantId.getId(), financeId, null, "core", now);
+    var financeId = seedCatalog(accountId.getId(), "finance", "Finance catalog", now);
+    var financeCoreNsId = seedNamespace(accountId.getId(), financeId, null, "core", now);
     var glEntriesId =
-        seedTable(tenantId.getId(), financeId, financeCoreNsId.getId(), "gl_entries", 0L, now);
-    seedSnapshot(tenantId.getId(), glEntriesId, 201L, now, now - 20_000L);
+        seedTable(accountId.getId(), financeId, financeCoreNsId.getId(), "gl_entries", 0L, now);
+    seedSnapshot(accountId.getId(), glEntriesId, 201L, now, now - 20_000L);
   }
 
-  private ResourceId seedTenant(String displayName, String description, long now) {
-    String id = uuidFor("/tenant:" + displayName);
+  private ResourceId seedAccount(String displayName, String description, long now) {
+    String id = uuidFor("/account:" + displayName);
     var rid =
-        ResourceId.newBuilder().setTenantId(id).setId(id).setKind(ResourceKind.RK_TENANT).build();
-    var tenant =
-        ai.floedb.floecat.tenant.rpc.Tenant.newBuilder()
+        ResourceId.newBuilder().setAccountId(id).setId(id).setKind(ResourceKind.RK_ACCOUNT).build();
+    var account =
+        ai.floedb.floecat.account.rpc.Account.newBuilder()
             .setResourceId(rid)
             .setDisplayName(displayName)
             .setDescription(description)
             .setCreatedAt(Timestamps.fromMillis(now))
             .build();
-    tenants.create(tenant);
+    accounts.create(account);
     return rid;
   }
 
-  private ResourceId seedCatalog(String tenant, String displayName, String description, long now) {
-    String id = uuidFor(tenant + "/catalog:" + displayName);
+  private ResourceId seedCatalog(String account, String displayName, String description, long now) {
+    String id = uuidFor(account + "/catalog:" + displayName);
     var rid =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(id)
             .setKind(ResourceKind.RK_CATALOG)
             .build();
@@ -130,16 +130,16 @@ public class SeedRunner {
   }
 
   private ResourceId seedNamespace(
-      String tenant, ResourceId catalogId, List<String> path, String display, long now) {
+      String account, ResourceId catalogId, List<String> path, String display, long now) {
     List<String> clean = (path == null) ? List.of() : path;
     List<String> parents = clean.isEmpty() ? List.of() : clean.subList(0, clean.size() - 1);
     String leaf = clean.isEmpty() ? display : clean.get(clean.size() - 1);
 
-    String nsId = uuidFor(tenant + "/ns:" + displayPathKey(catalogId.getId(), clean));
+    String nsId = uuidFor(account + "/ns:" + displayPathKey(catalogId.getId(), clean));
 
     ResourceId nsRid =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(nsId)
             .setKind(ResourceKind.RK_NAMESPACE)
             .build();
@@ -159,22 +159,22 @@ public class SeedRunner {
   }
 
   private ResourceId seedTable(
-      String tenant,
+      String account,
       ResourceId catalogId,
       String namespaceId,
       String name,
       long snapshotId,
       long now) {
-    String tableId = uuidFor(tenant + "/tbl:" + name);
+    String tableId = uuidFor(account + "/tbl:" + name);
     var tableRid =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(tableId)
             .setKind(ResourceKind.RK_TABLE)
             .build();
     var nsRid =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(namespaceId)
             .setKind(ResourceKind.RK_NAMESPACE)
             .build();
@@ -206,7 +206,7 @@ public class SeedRunner {
   }
 
   private void seedSnapshot(
-      String tenant,
+      String account,
       ResourceId tableId,
       long snapshotId,
       long ingestedAtMs,
@@ -223,23 +223,23 @@ public class SeedRunner {
   }
 
   private ResourceId seedView(
-      String tenant,
+      String account,
       ResourceId catalogId,
       String namespaceId,
       String name,
       String sql,
       Map<String, String> properties,
       long now) {
-    String viewId = uuidFor(tenant + "/view:" + name);
+    String viewId = uuidFor(account + "/view:" + name);
     var viewRid =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(viewId)
             .setKind(ResourceKind.RK_VIEW)
             .build();
     var nsRid =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(namespaceId)
             .setKind(ResourceKind.RK_NAMESPACE)
             .build();

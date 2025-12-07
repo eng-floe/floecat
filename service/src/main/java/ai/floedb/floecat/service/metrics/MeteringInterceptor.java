@@ -44,15 +44,15 @@ public class MeteringInterceptor implements ServerInterceptor {
           @Override
           public void sendHeaders(Metadata h) {
             final PrincipalContext pc = InboundContextInterceptor.PC_KEY.get();
-            final String tenant = nullToDash(pc == null ? null : pc.getTenantId());
+            final String account = nullToDash(pc == null ? null : pc.getAccountId());
 
             LongTaskTimer ltt =
                 activeTimers.computeIfAbsent(
-                    key("rpc.active", tenant, op, "-"),
+                    key("rpc.active", account, op, "-"),
                     k ->
                         LongTaskTimer.builder("rpc_active_seconds")
                             .description("In-flight RPCs")
-                            .tags("tenant", tenant, "op", op)
+                            .tags("account", account, "op", op)
                             .register(registry));
             inFlightSample = ltt.start();
 
@@ -62,27 +62,27 @@ public class MeteringInterceptor implements ServerInterceptor {
           @Override
           public void close(Status status, Metadata trailers) {
             final PrincipalContext pc = InboundContextInterceptor.PC_KEY.get();
-            final String tenant = nullToDash(pc == null ? null : pc.getTenantId());
+            final String account = nullToDash(pc == null ? null : pc.getAccountId());
             final String statusStr = status.getCode().name();
 
             try {
               Counter reqs =
                   requestCounters.computeIfAbsent(
-                      key("rpc.requests", tenant, op, statusStr),
+                      key("rpc.requests", account, op, statusStr),
                       k ->
                           Counter.builder("rpc_requests")
                               .description("Total gRPC requests")
-                              .tags("tenant", tenant, "op", op, "status", statusStr)
+                              .tags("account", account, "op", op, "status", statusStr)
                               .register(registry));
               reqs.increment();
 
               Timer latency =
                   latencyTimers.computeIfAbsent(
-                      key("rpc.latency", tenant, op, statusStr),
+                      key("rpc.latency", account, op, statusStr),
                       k ->
                           Timer.builder("rpc_latency_seconds")
                               .description("RPC latency")
-                              .tags("tenant", tenant, "op", op, "status", statusStr)
+                              .tags("account", account, "op", op, "status", statusStr)
                               .publishPercentileHistogram(true)
                               .register(registry));
               latencySample.stop(latency);
@@ -116,7 +116,7 @@ public class MeteringInterceptor implements ServerInterceptor {
     return (s == null || s.isBlank()) ? "-" : s;
   }
 
-  private static String key(String metric, String tenant, String op, String status) {
-    return metric + "|" + tenant + "|" + op + "|" + (status == null ? "-" : status);
+  private static String key(String metric, String account, String op, String status) {
+    return metric + "|" + account + "|" + op + "|" + (status == null ? "-" : status);
   }
 }

@@ -39,7 +39,7 @@ public final class DynamoPointerStore implements PointerStore {
   private static final String ATTR_BLOB_URI = "blob_uri";
   private static final String ATTR_VERSION = "version";
   private static final String ATTR_EXPIRES_AT = "expires_at";
-  private static final String GLOBAL_PK = "_TENANT_DIR";
+  private static final String GLOBAL_PK = "_ACCOUNT_DIR";
 
   private final DynamoDbClient dynamoDb;
   private final String table;
@@ -418,7 +418,7 @@ public final class DynamoPointerStore implements PointerStore {
       return "/" + sk;
     }
 
-    return "/tenants/" + pk + "/" + sk;
+    return "/accounts/" + pk + "/" + sk;
   }
 
   private static String encodeToken(Map<String, AttributeValue> lek) {
@@ -445,11 +445,11 @@ public final class DynamoPointerStore implements PointerStore {
 
   private static MappedKey mapKey(String pointerKey) {
     String k = pointerKey.startsWith("/") ? pointerKey.substring(1) : pointerKey;
-    if (k.startsWith("tenants/by-id/") || k.startsWith("tenants/by-name/")) {
+    if (k.startsWith("accounts/by-id/") || k.startsWith("accounts/by-name/")) {
       return new MappedKey(GLOBAL_PK, k);
     }
 
-    if (!k.startsWith("tenants/")) {
+    if (!k.startsWith("accounts/")) {
       throw new IllegalArgumentException("unexpected key: " + pointerKey);
     }
 
@@ -460,9 +460,9 @@ public final class DynamoPointerStore implements PointerStore {
       throw new IllegalArgumentException("bad key: " + pointerKey);
     }
 
-    String tenantId = k.substring(firstSlash + 1, secondSlash);
+    String accountId = k.substring(firstSlash + 1, secondSlash);
     String remainder = k.substring(secondSlash + 1);
-    return new MappedKey(tenantId, remainder);
+    return new MappedKey(accountId, remainder);
   }
 
   private static MappedPrefix mapPrefix(String prefix) {
@@ -471,13 +471,13 @@ public final class DynamoPointerStore implements PointerStore {
       p = p + "/";
     }
 
-    if (p.equals("tenants/")
-        || p.startsWith("tenants/by-id/")
-        || p.startsWith("tenants/by-name/")) {
+    if (p.equals("accounts/")
+        || p.startsWith("accounts/by-id/")
+        || p.startsWith("accounts/by-name/")) {
       return new MappedPrefix(GLOBAL_PK, p);
     }
 
-    if (!p.startsWith("tenants/")) {
+    if (!p.startsWith("accounts/")) {
       throw new IllegalArgumentException("unexpected prefix: " + prefix);
     }
 
@@ -487,9 +487,9 @@ public final class DynamoPointerStore implements PointerStore {
       throw new IllegalArgumentException("bad prefix: " + prefix);
     }
 
-    String tenantId = p.substring(firstSlash + 1, secondSlash);
+    String accountId = p.substring(firstSlash + 1, secondSlash);
     String remainderPrefix = p.substring(secondSlash + 1);
-    return new MappedPrefix(tenantId, remainderPrefix);
+    return new MappedPrefix(accountId, remainderPrefix);
   }
 
   private record MappedKey(String pk, String sk) {}

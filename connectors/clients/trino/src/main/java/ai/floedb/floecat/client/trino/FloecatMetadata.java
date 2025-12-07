@@ -212,7 +212,7 @@ public class FloecatMetadata implements ConnectorMetadata {
     return new FloecatTableHandle(
         tableName,
         tableId.getId(),
-        tableId.getTenantId(),
+        tableId.getAccountId(),
         tableId.getKind().name(),
         tableUri,
         schemaJson,
@@ -297,7 +297,7 @@ public class FloecatMetadata implements ConnectorMetadata {
         new FloecatTableHandle(
             handle.getSchemaTableName(),
             handle.getTableId(),
-            handle.getTableTenantId(),
+            handle.getTableAccountId(),
             handle.getTableKind(),
             handle.getUri(),
             handle.getSchemaJson(),
@@ -376,7 +376,7 @@ public class FloecatMetadata implements ConnectorMetadata {
         new FloecatTableHandle(
             handle.getSchemaTableName(),
             handle.getTableId(),
-            handle.getTableTenantId(),
+            handle.getTableAccountId(),
             handle.getTableKind(),
             handle.getUri(),
             handle.getSchemaJson(),

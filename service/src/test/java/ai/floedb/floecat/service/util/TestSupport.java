@@ -13,10 +13,10 @@ import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.BlobStore;
 import ai.floedb.floecat.storage.PointerStore;
-import ai.floedb.floecat.tenant.rpc.CreateTenantRequest;
-import ai.floedb.floecat.tenant.rpc.Tenant;
-import ai.floedb.floecat.tenant.rpc.TenantServiceGrpc;
-import ai.floedb.floecat.tenant.rpc.TenantSpec;
+import ai.floedb.floecat.account.rpc.CreateAccountRequest;
+import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
+import ai.floedb.floecat.account.rpc.AccountSpec;
 import com.google.protobuf.Any;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
@@ -31,10 +31,10 @@ import java.util.UUID;
 public final class TestSupport {
   private TestSupport() {}
 
-  public static final String DEFAULT_SEED_TENANT = "t-0001";
+  public static final String DEFAULT_SEED_ACCOUNT = "t-0001";
 
-  public static ResourceId rid(String tenantId, String id, ResourceKind kind) {
-    return ResourceId.newBuilder().setTenantId(tenantId).setId(id).setKind(kind).build();
+  public static ResourceId rid(String accountId, String id, ResourceKind kind) {
+    return ResourceId.newBuilder().setAccountId(accountId).setId(id).setKind(kind).build();
   }
 
   public static NameRef fq(String catalog, List<String> path, String name) {
@@ -45,29 +45,29 @@ public final class TestSupport {
     return b.build();
   }
 
-  public static ResourceId createTenantId(String tid) {
-    String tidUUID = UUID.nameUUIDFromBytes(("/tenant:" + tid).getBytes()).toString();
-    ResourceId tenantId =
+  public static ResourceId createAccountId(String tid) {
+    String tidUUID = UUID.nameUUIDFromBytes(("/account:" + tid).getBytes()).toString();
+    ResourceId accountId =
         ResourceId.newBuilder()
-            .setTenantId(tidUUID)
+            .setAccountId(tidUUID)
             .setId(tidUUID)
-            .setKind(ResourceKind.RK_TENANT)
+            .setKind(ResourceKind.RK_ACCOUNT)
             .build();
-    return tenantId;
+    return accountId;
   }
 
-  public static Tenant createTenant(
-      TenantServiceGrpc.TenantServiceBlockingStub tenants,
+  public static Account createAccount(
+      AccountServiceGrpc.AccountServiceBlockingStub accounts,
       String displayName,
       String description,
       long now) {
     var resp =
-        tenants.createTenant(
-            CreateTenantRequest.newBuilder()
+        accounts.createAccount(
+            CreateAccountRequest.newBuilder()
                 .setSpec(
-                    TenantSpec.newBuilder().setDisplayName(displayName).setDescription(description))
+                    AccountSpec.newBuilder().setDisplayName(displayName).setDescription(description))
                 .build());
-    return resp.getTenant();
+    return resp.getAccount();
   }
 
   public static Catalog createCatalog(
@@ -347,11 +347,11 @@ public final class TestSupport {
   public static MutationMeta metaForNamespace(
       PointerStore ptr,
       BlobStore blobs,
-      String tenant,
+      String account,
       String catalogDisplayName,
       List<String> fullPath) {
 
-    var catIdxKey = Keys.catalogPointerByName(tenant, catalogDisplayName);
+    var catIdxKey = Keys.catalogPointerByName(account, catalogDisplayName);
     var catPtr =
         ptr.get(catIdxKey)
             .orElseThrow(() -> new AssertionError("catalog by-name pointer missing: " + catIdxKey));
@@ -364,7 +364,7 @@ public final class TestSupport {
     }
     var catalogId = cat.getResourceId().getId();
 
-    var nsIdxKey = Keys.namespacePointerByPath(tenant, catalogId, fullPath);
+    var nsIdxKey = Keys.namespacePointerByPath(account, catalogId, fullPath);
     var nsIdxPtr =
         ptr.get(nsIdxKey)
             .orElseThrow(
@@ -378,10 +378,10 @@ public final class TestSupport {
     }
 
     var nsRid = ns.getResourceId();
-    var nsTenant = nsRid.getTenantId();
+    var nsAccount = nsRid.getAccountId();
 
-    var nsPtrKey = Keys.namespacePointerById(nsTenant, nsRid.getId());
-    var nsBlob = Keys.namespaceBlobUri(nsTenant, nsRid.getId());
+    var nsPtrKey = Keys.namespacePointerById(nsAccount, nsRid.getId());
+    var nsBlob = Keys.namespaceBlobUri(nsAccount, nsRid.getId());
 
     var nsPtr =
         ptr.get(nsPtrKey)
@@ -403,9 +403,9 @@ public final class TestSupport {
 
   public static MutationMeta metaForTable(PointerStore ptr, BlobStore blobs, ResourceId tableId) {
 
-    var tenant = tableId.getTenantId();
-    var tblPtrKey = Keys.tablePointerById(tenant, tableId.getId());
-    var tblBlob = Keys.tableBlobUri(tenant, tableId.getId());
+    var account = tableId.getAccountId();
+    var tblPtrKey = Keys.tablePointerById(account, tableId.getId());
+    var tblBlob = Keys.tableBlobUri(account, tableId.getId());
 
     var tblPtr =
         ptr.get(tblPtrKey)
@@ -425,9 +425,9 @@ public final class TestSupport {
   }
 
   public static MutationMeta metaForView(PointerStore ptr, BlobStore blobs, ResourceId viewId) {
-    var tenant = viewId.getTenantId();
-    var viewPtrKey = Keys.viewPointerById(tenant, viewId.getId());
-    var viewBlob = Keys.viewBlobUri(tenant, viewId.getId());
+    var account = viewId.getAccountId();
+    var viewPtrKey = Keys.viewPointerById(account, viewId.getId());
+    var viewBlob = Keys.viewBlobUri(account, viewId.getId());
 
     var viewPtr =
         ptr.get(viewPtrKey)

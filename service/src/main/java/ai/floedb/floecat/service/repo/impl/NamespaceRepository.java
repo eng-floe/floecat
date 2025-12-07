@@ -42,54 +42,54 @@ public class NamespaceRepository {
 
   public boolean delete(ResourceId namespaceResourceId) {
     return repo.delete(
-        new NamespaceKey(namespaceResourceId.getTenantId(), namespaceResourceId.getId()));
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
 
   public boolean deleteWithPrecondition(
       ResourceId namespaceResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
-        new NamespaceKey(namespaceResourceId.getTenantId(), namespaceResourceId.getId()),
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()),
         expectedPointerVersion);
   }
 
   public Optional<Namespace> getById(ResourceId namespaceResourceId) {
     return repo.getByKey(
-        new NamespaceKey(namespaceResourceId.getTenantId(), namespaceResourceId.getId()));
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
 
   public Optional<Namespace> getByPath(
-      String tenantId, String catalogId, List<String> pathSegments) {
-    return repo.get(Keys.namespacePointerByPath(tenantId, catalogId, pathSegments));
+      String accountId, String catalogId, List<String> pathSegments) {
+    return repo.get(Keys.namespacePointerByPath(accountId, catalogId, pathSegments));
   }
 
   public List<Namespace> list(
-      String tenantId,
+      String accountId,
       String catalogId,
       List<String> parentSegmentsOrEmpty,
       int limit,
       String pageToken,
       StringBuilder nextOut) {
-    String prefix = Keys.namespacePointerByPathPrefix(tenantId, catalogId, parentSegmentsOrEmpty);
+    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
-  public int count(String tenantId, String catalogId, List<String> parentSegmentsOrEmpty) {
-    String prefix = Keys.namespacePointerByPathPrefix(tenantId, catalogId, parentSegmentsOrEmpty);
+  public int count(String accountId, String catalogId, List<String> parentSegmentsOrEmpty) {
+    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
     return repo.countByPrefix(prefix);
   }
 
   public MutationMeta metaFor(ResourceId namespaceResourceId) {
     return repo.metaFor(
-        new NamespaceKey(namespaceResourceId.getTenantId(), namespaceResourceId.getId()));
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
 
   public MutationMeta metaFor(ResourceId namespaceResourceId, Timestamp nowTs) {
     return repo.metaFor(
-        new NamespaceKey(namespaceResourceId.getTenantId(), namespaceResourceId.getId()), nowTs);
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()), nowTs);
   }
 
   public MutationMeta metaForSafe(ResourceId namespaceResourceId) {
     return repo.metaForSafe(
-        new NamespaceKey(namespaceResourceId.getTenantId(), namespaceResourceId.getId()));
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
 }

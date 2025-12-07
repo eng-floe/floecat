@@ -22,9 +22,9 @@ class GraphCacheManagerTest {
   }
 
   @Test
-  void perTenantCachesDoNotLeak() {
-    ResourceId tableA = rid("tenant-a", "A");
-    ResourceId tableB = rid("tenant-b", "B");
+  void perAccountCachesDoNotLeak() {
+    ResourceId tableA = rid("account-a", "A");
+    ResourceId tableB = rid("account-b", "B");
     GraphCacheKey keyA = new GraphCacheKey(tableA, 1L);
     GraphCacheKey keyB = new GraphCacheKey(tableB, 1L);
 
@@ -41,7 +41,7 @@ class GraphCacheManagerTest {
 
   @Test
   void invalidateRemovesAllVersions() {
-    ResourceId tableId = rid("tenant", "tbl");
+    ResourceId tableId = rid("account", "tbl");
     GraphCacheKey v1 = new GraphCacheKey(tableId, 1L);
     GraphCacheKey v2 = new GraphCacheKey(tableId, 2L);
     cacheManager.put(tableId, v1, tableNode(tableId));
@@ -59,7 +59,7 @@ class GraphCacheManagerTest {
   @Test
   void disabledCacheReturnsNull() {
     GraphCacheManager disabled = new GraphCacheManager(false, 10, registry);
-    ResourceId tableId = rid("tenant", "tbl");
+    ResourceId tableId = rid("account", "tbl");
     GraphCacheKey key = new GraphCacheKey(tableId, 1L);
 
     disabled.put(tableId, key, tableNode(tableId));
@@ -71,9 +71,9 @@ class GraphCacheManagerTest {
     return TestNodes.tableNode(tableId, "{}");
   }
 
-  private static ResourceId rid(String tenantId, String id) {
+  private static ResourceId rid(String accountId, String id) {
     return ResourceId.newBuilder()
-        .setTenantId(tenantId)
+        .setAccountId(accountId)
         .setId(id)
         .setKind(ResourceKind.RK_TABLE)
         .build();

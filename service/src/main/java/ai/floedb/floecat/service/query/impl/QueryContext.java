@@ -396,9 +396,9 @@ public final class QueryContext {
   private boolean tableIdMatches(ResourceId a, ResourceId b) {
     if (a == null || b == null) return false;
 
-    if (!isBlank(a.getTenantId())
-        && !isBlank(b.getTenantId())
-        && !Objects.equals(a.getTenantId(), b.getTenantId())) {
+    if (!isBlank(a.getAccountId())
+        && !isBlank(b.getAccountId())
+        && !Objects.equals(a.getAccountId(), b.getAccountId())) {
       return false;
     }
     return Objects.equals(a.getId(), b.getId());

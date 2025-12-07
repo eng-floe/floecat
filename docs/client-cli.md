@@ -14,7 +14,7 @@ fully-qualified name parsing (`FQNameParserUtil`) and CSV-like argument parsing 
 
 - **`Shell` (top-level Picocli command)** – Boots an interactive REPL using JLine, configures history
   persistence (`~/.floecat_shell_history`), auto-completion, and command dispatch. Commands share a
-  current tenant context and use injected blocking stubs annotated with `@GrpcClient("floecat")`.
+  current account context and use injected blocking stubs annotated with `@GrpcClient("floecat")`.
 - **Utility parsers** – `FQNameParserUtil` splits catalog.namespace.table strings into `NameRef`s;
   `CsvListParserUtil` converts `k=v` style arguments into Java maps/lists.
 - **Display helpers** – The shell formats responses into human-readable tables, summarising
@@ -30,7 +30,7 @@ Responsibilities:
 
 The CLI exposes commands documented at runtime via `help`. Highlights:
 
-- `tenant <UUID>` – Sets `currentTenantId` environment for subsequent commands.
+- `account <UUID>` – Sets `currentAccountId` environment for subsequent commands.
 - `catalogs` / `catalog <subcommand>` – List/create/update/delete catalogs.
 - `namespaces` / `namespace <subcommand>` – Inspect namespace hierarchies, create nested paths.
 - `tables` / `table <subcommand>` – Manage table definitions, specify schema JSON, upstream
@@ -50,8 +50,8 @@ syntactic sugar such as `catalog.ns.table` references and `--props k=v` repeated
 
 ## Important Internal Details
 
-- **Tenant context** – Commands fail fast if `currentTenantId` is empty. The REPL prompts the user to
-  run `tenant <id>` first or set `FLOECAT_TENANT` before launching.
+- **Account context** – Commands fail fast if `currentAccountId` is empty. The REPL prompts the user to
+  run `account <id>` first or set `FLOECAT_ACCOUNT` before launching.
 - **Error handling** – Set `FLOECAT_SHELL_DEBUG=true` (or `-Dfloecat.shell.debug=true`) to print full
   stack traces when gRPC calls fail. Otherwise the shell surfaces localized messages from
   `GrpcErrors`.
@@ -65,7 +65,7 @@ syntactic sugar such as `catalog.ns.table` references and `--props k=v` repeated
 
 ```
 User command → Picocli parser → Shell subcommand → gRPC stub call
-  → Interceptors attach tenant/principal headers → Service executes request
+  → Interceptors attach account/principal headers → Service executes request
   ← Response printed (tables/JSON summaries)
 ```
 
@@ -86,7 +86,7 @@ reconciliation) show job IDs that can be polled via `connector job <id>`.
 - **Provisioning a catalog and namespace**
 
   ```
-  tenant 31a47986-efaf-35f5-b810-09ba18ca81d2
+  account 31a47986-efaf-35f5-b810-09ba18ca81d2
   catalog create demo --desc "Demo catalog"
   namespace create demo.sales --desc "Sales sandbox" --props owner=analyst
   ```

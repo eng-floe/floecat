@@ -46,7 +46,7 @@ class DirectoryIT {
 
     var ref = NameRef.newBuilder().setCatalog("resolveAndLookupCatalog").build();
     var r = directory.resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(ref).build());
-    assertEquals(cat.getResourceId().getTenantId(), r.getResourceId().getTenantId());
+    assertEquals(cat.getResourceId().getAccountId(), r.getResourceId().getAccountId());
 
     var l =
         directory.lookupCatalog(
@@ -348,7 +348,7 @@ class DirectoryIT {
   void lookupUnknownReturnsEmpty() {
     var bogus =
         ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
-            .setTenantId(TestSupport.DEFAULT_SEED_TENANT)
+            .setAccountId(TestSupport.DEFAULT_SEED_ACCOUNT)
             .setId("nope")
             .setKind(ResourceKind.RK_UNSPECIFIED)
             .build();

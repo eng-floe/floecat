@@ -232,7 +232,7 @@ class RestResourceTest {
         .thenReturn(ResolveCatalogResponse.newBuilder().setResourceId(catalogId).build());
     defaultSpec =
         new RequestSpecBuilder()
-            .addHeader("x-tenant-id", "tenant1")
+            .addHeader("x-tenant-id", "account1")
             .addHeader("authorization", "Bearer token")
             .build();
     RestAssured.requestSpecification = defaultSpec;
@@ -267,7 +267,7 @@ class RestResourceTest {
                 .build());
 
     given()
-        .header("x-tenant-id", "tenant1")
+        .header("x-tenant-id", "account1")
         .when()
         .get("/v1/foo/namespaces/db/tables?pageSize=2&pageToken=tok")
         .then()
@@ -385,7 +385,7 @@ class RestResourceTest {
         ResourceId.newBuilder()
             .setId("conn-1")
             .setKind(ResourceKind.RK_CONNECTOR)
-            .setTenantId("tenant1")
+            .setAccountId("account1")
             .build();
     Connector connector =
         Connector.newBuilder()
@@ -403,7 +403,7 @@ class RestResourceTest {
         .thenReturn(TriggerReconcileResponse.newBuilder().setJobId("job-1").build());
 
     given()
-        .header("x-tenant-id", "tenant1")
+        .header("x-tenant-id", "account1")
         .contentType(MediaType.APPLICATION_JSON)
         .body(
             """
@@ -454,7 +454,7 @@ class RestResourceTest {
     when(tableStub.createTable(any())).thenThrow(new StatusRuntimeException(Status.ALREADY_EXISTS));
 
     given()
-        .header("x-tenant-id", "tenant1")
+        .header("x-tenant-id", "account1")
         .contentType(MediaType.APPLICATION_JSON)
         .body(
             """
@@ -520,7 +520,7 @@ class RestResourceTest {
         .thenReturn(UpdateConnectorResponse.newBuilder().setConnector(connector).build());
 
     given()
-        .header("x-tenant-id", "tenant1")
+        .header("x-tenant-id", "account1")
         .contentType(MediaType.APPLICATION_JSON)
         .body(
             """
@@ -559,7 +559,7 @@ class RestResourceTest {
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
 
     given()
-        .header("x-tenant-id", "tenant1")
+        .header("x-tenant-id", "account1")
         .contentType(MediaType.APPLICATION_JSON)
         .body(
             """
@@ -1211,7 +1211,7 @@ class RestResourceTest {
         .body("requirements[0].type", equalTo("assert-create"));
 
     verify(tableStub, never()).createTable(any());
-    StagedTableKey key = new StagedTableKey("tenant1", "foo", List.of("db"), "orders", "stage-1");
+    StagedTableKey key = new StagedTableKey("account1", "foo", List.of("db"), "orders", "stage-1");
     assertTrue(stageRepository.get(key).isPresent());
   }
 
@@ -1233,7 +1233,7 @@ class RestResourceTest {
 
     verify(tableStub, never()).createTable(any());
     StagedTableKey key =
-        new StagedTableKey("tenant1", "foo", List.of("db"), "ducktab", "stage-default");
+        new StagedTableKey("account1", "foo", List.of("db"), "ducktab", "stage-default");
     StagedTableEntry entry = stageRepository.get(key).orElseThrow();
     assertEquals("s3://warehouse/default/foo/db/ducktab", entry.request().location());
   }
@@ -1306,7 +1306,7 @@ class RestResourceTest {
         .body("results[0].metadata-location", equalTo("s3://bucket/orders/metadata.json"));
 
     StagedTableKey key =
-        new StagedTableKey("tenant1", "foo", List.of("db"), "orders", "stage-commit");
+        new StagedTableKey("account1", "foo", List.of("db"), "orders", "stage-commit");
     assertTrue(stageRepository.get(key).isEmpty());
     verify(tableStub, times(1)).createTable(any());
     verify(connectorsStub, times(1)).createConnector(any());
@@ -1338,7 +1338,7 @@ class RestResourceTest {
         ResourceId.newBuilder()
             .setId("conn-2")
             .setKind(ResourceKind.RK_CONNECTOR)
-            .setTenantId("tenant1")
+            .setAccountId("account1")
             .build();
     Connector connector =
         Connector.newBuilder()
@@ -1383,7 +1383,7 @@ class RestResourceTest {
         .statusCode(200);
 
     StagedTableKey key =
-        new StagedTableKey("tenant1", "foo", List.of("db"), "orders", "stage-table");
+        new StagedTableKey("account1", "foo", List.of("db"), "orders", "stage-table");
     assertTrue(stageRepository.get(key).isEmpty());
     verify(tableStub, times(1)).createTable(any());
     ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
@@ -1418,7 +1418,7 @@ class RestResourceTest {
         ResourceId.newBuilder()
             .setId("conn-1")
             .setKind(ResourceKind.RK_CONNECTOR)
-            .setTenantId("tenant1")
+            .setAccountId("account1")
             .build();
     Connector connector =
         Connector.newBuilder()
@@ -2048,7 +2048,7 @@ class RestResourceTest {
   }
 
   @Test
-  void missingTenantHeaderUsesDefaultTenant() {
+  void missingAccountHeaderUsesDefaultAccount() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
@@ -2079,7 +2079,7 @@ class RestResourceTest {
   void missingAuthHeaderReturns401() {
     RestAssured.requestSpecification = null;
     given()
-        .header("x-tenant-id", "tenant1")
+        .header("x-tenant-id", "account1")
         .when()
         .get("/v1/foo/namespaces/db/tables")
         .then()

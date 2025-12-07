@@ -62,105 +62,105 @@ public final class Keys {
     return id;
   }
 
-  // ===== Tenant =====
+  // ===== Account =====
 
-  public static String tenantRootPointer(String tenantId) {
-    String tid = req("tenant_id", tenantId);
-    return "/tenants/" + encode(tid);
+  public static String accountRootPointer(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid);
   }
 
-  public static String tenantPointerById(String tenantId) {
-    String tid = req("tenant_id", tenantId);
-    return "/tenants/by-id/" + encode(tid);
+  public static String accountPointerById(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/by-id/" + encode(tid);
   }
 
-  public static String tenantPointerByName(String displayName) {
+  public static String accountPointerByName(String displayName) {
     String name = req("display_name", displayName);
-    return "/tenants/by-name/" + encode(name);
+    return "/accounts/by-name/" + encode(name);
   }
 
-  public static String tenantPointerByNamePrefix() {
-    return "/tenants/by-name/";
+  public static String accountPointerByNamePrefix() {
+    return "/accounts/by-name/";
   }
 
-  public static String tenantBlobUri(String tenantId) {
-    String tid = req("tenant_id", tenantId);
-    return "/tenants/" + encode(tid) + "/tenant.pb";
+  public static String accountBlobUri(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/account.pb";
   }
 
   // ===== Catalog =====
 
-  public static String catalogPointerById(String tenantId, String catalogId) {
-    String tid = req("tenant_id", tenantId);
+  public static String catalogPointerById(String accountId, String catalogId) {
+    String tid = req("account_id", accountId);
     String cid = req("catalog_id", catalogId);
-    return "/tenants/" + encode(tid) + "/catalogs/by-id/" + encode(cid);
+    return "/accounts/" + encode(tid) + "/catalogs/by-id/" + encode(cid);
   }
 
-  public static String catalogPointerByName(String tenantId, String displayName) {
-    String tid = req("tenant_id", tenantId);
+  public static String catalogPointerByName(String accountId, String displayName) {
+    String tid = req("account_id", accountId);
     String name = req("display_name", displayName);
-    return "/tenants/" + encode(tid) + "/catalogs/by-name/" + encode(name);
+    return "/accounts/" + encode(tid) + "/catalogs/by-name/" + encode(name);
   }
 
-  public static String catalogPointerByNamePrefix(String tenantId) {
-    String tid = req("tenant_id", tenantId);
-    return "/tenants/" + encode(tid) + "/catalogs/by-name/";
+  public static String catalogPointerByNamePrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/catalogs/by-name/";
   }
 
-  public static String catalogBlobUri(String tenantId, String catalogId) {
-    String tid = req("tenant_id", tenantId);
+  public static String catalogBlobUri(String accountId, String catalogId) {
+    String tid = req("account_id", accountId);
     String cid = req("catalog_id", catalogId);
-    return "/tenants/" + encode(tid) + "/catalogs/" + encode(cid) + "/catalog.pb";
+    return "/accounts/" + encode(tid) + "/catalogs/" + encode(cid) + "/catalog.pb";
   }
 
   // ===== Namespace =====
 
-  public static String namespacePointerById(String tenantId, String namespaceId) {
-    String tid = req("tenant_id", tenantId);
+  public static String namespacePointerById(String accountId, String namespaceId) {
+    String tid = req("account_id", accountId);
     String nid = req("namespace_id", namespaceId);
-    return "/tenants/" + encode(tid) + "/namespaces/by-id/" + encode(nid);
+    return "/accounts/" + encode(tid) + "/namespaces/by-id/" + encode(nid);
   }
 
   public static String namespacePointerByPath(
-      String tenantId, String catalogId, List<String> pathSegments) {
-    String tid = req("tenant_id", tenantId);
+      String accountId, String catalogId, List<String> pathSegments) {
+    String tid = req("account_id", accountId);
     String cid = req("catalog_id", catalogId);
     String joined = joinPathSegments(reqPath("segments", pathSegments));
-    return "/tenants/" + encode(tid) + "/catalogs/" + encode(cid) + "/namespaces/by-path/" + joined;
+    return "/accounts/" + encode(tid) + "/catalogs/" + encode(cid) + "/namespaces/by-path/" + joined;
   }
 
   public static String namespacePointerByPathPrefix(
-      String tenantId, String catalogId, List<String> parentSegmentsOrEmpty) {
-    String tid = req("tenant_id", tenantId);
+      String accountId, String catalogId, List<String> parentSegmentsOrEmpty) {
+    String tid = req("account_id", accountId);
     String cid = req("catalog_id", catalogId);
     if (parentSegmentsOrEmpty == null)
       throw new IllegalArgumentException("key arg 'parent_segments' is null; use List.of()");
     String joined = joinPathSegments(parentSegmentsOrEmpty);
     String suffix = joined.isEmpty() ? "" : joined + "/";
-    return "/tenants/" + encode(tid) + "/catalogs/" + encode(cid) + "/namespaces/by-path/" + suffix;
+    return "/accounts/" + encode(tid) + "/catalogs/" + encode(cid) + "/namespaces/by-path/" + suffix;
   }
 
-  public static String namespaceBlobUri(String tenantId, String namespaceId) {
-    String tid = req("tenant_id", tenantId);
+  public static String namespaceBlobUri(String accountId, String namespaceId) {
+    String tid = req("account_id", accountId);
     String nid = req("namespace_id", namespaceId);
-    return "/tenants/" + encode(tid) + "/namespaces/" + encode(nid) + "/namespace.pb";
+    return "/accounts/" + encode(tid) + "/namespaces/" + encode(nid) + "/namespace.pb";
   }
 
   // ===== Table =====
 
-  public static String tablePointerById(String tenantId, String tableId) {
-    String tid = req("tenant_id", tenantId);
+  public static String tablePointerById(String accountId, String tableId) {
+    String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
-    return "/tenants/" + encode(tid) + "/tables/by-id/" + encode(tbid);
+    return "/accounts/" + encode(tid) + "/tables/by-id/" + encode(tbid);
   }
 
   public static String tablePointerByName(
-      String tenantId, String catalogId, String namespaceId, String tableName) {
-    String tid = req("tenant_id", tenantId);
+      String accountId, String catalogId, String namespaceId, String tableName) {
+    String tid = req("account_id", accountId);
     String cid = req("catalog_id", catalogId);
     String nid = req("namespace_id", namespaceId);
     String name = req("table_name", tableName);
-    return "/tenants/"
+    return "/accounts/"
         + encode(tid)
         + "/catalogs/"
         + encode(cid)
@@ -171,11 +171,11 @@ public final class Keys {
   }
 
   public static String tablePointerByNamePrefix(
-      String tenantId, String catalogId, String namespaceId) {
-    String tid = req("tenant_id", tenantId);
+      String accountId, String catalogId, String namespaceId) {
+    String tid = req("account_id", accountId);
     String cid = req("catalog_id", catalogId);
     String nid = req("namespace_id", namespaceId);
-    return "/tenants/"
+    return "/accounts/"
         + encode(tid)
         + "/catalogs/"
         + encode(cid)
@@ -184,112 +184,112 @@ public final class Keys {
         + "/tables/by-name/";
   }
 
-  public static String tableBlobUri(String tenantId, String tableId) {
-    String tid = req("tenant_id", tenantId);
+  public static String tableBlobUri(String accountId, String tableId) {
+    String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
-    return "/tenants/" + encode(tid) + "/tables/" + encode(tbid) + "/table.pb";
+    return "/accounts/" + encode(tid) + "/tables/" + encode(tbid) + "/table.pb";
   }
 
   // ===== Snapshot =====
 
-  public static String snapshotPointerById(String tenantId, String tableId, long snapshotId) {
-    String tid = req("tenant_id", tenantId);
+  public static String snapshotPointerById(String accountId, String tableId, long snapshotId) {
+    String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     long sid = reqNonNegative("snapshot_id", snapshotId);
     return String.format(
-        "/tenants/%s/tables/%s/snapshots/by-id/%019d", encode(tid), encode(tbid), sid);
+        "/accounts/%s/tables/%s/snapshots/by-id/%019d", encode(tid), encode(tbid), sid);
   }
 
-  public static String snapshotPointerByIdPrefix(String tenantId, String tableId) {
-    String tid = req("tenant_id", tenantId);
+  public static String snapshotPointerByIdPrefix(String accountId, String tableId) {
+    String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
-    return String.format("/tenants/%s/tables/%s/snapshots/by-id/", encode(tid), encode(tbid));
+    return String.format("/accounts/%s/tables/%s/snapshots/by-id/", encode(tid), encode(tbid));
   }
 
   public static String snapshotPointerByTime(
-      String tenantId, String tableId, long snapshotId, long upstreamCreatedAtMs) {
-    String tid = req("tenant_id", tenantId);
+      String accountId, String tableId, long snapshotId, long upstreamCreatedAtMs) {
+    String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     long sid = reqNonNegative("snapshot_id", snapshotId);
     long ts = reqNonNegative("upstream_created_at_ms", upstreamCreatedAtMs);
     long inverted = Long.MAX_VALUE - ts;
     return String.format(
-        "/tenants/%s/tables/%s/snapshots/by-time/%019d-%019d",
+        "/accounts/%s/tables/%s/snapshots/by-time/%019d-%019d",
         encode(tid), encode(tbid), inverted, sid);
   }
 
-  public static String snapshotPointerByTimePrefix(String tenantId, String tableId) {
-    String tid = req("tenant_id", tenantId);
+  public static String snapshotPointerByTimePrefix(String accountId, String tableId) {
+    String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
-    return String.format("/tenants/%s/tables/%s/snapshots/by-time/", encode(tid), encode(tbid));
+    return String.format("/accounts/%s/tables/%s/snapshots/by-time/", encode(tid), encode(tbid));
   }
 
-  public static String snapshotBlobUri(String tenantId, String tableId, long snapshotId) {
-    String tid = req("tenant_id", tenantId);
+  public static String snapshotBlobUri(String accountId, String tableId, long snapshotId) {
+    String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     long sid = reqNonNegative("snapshot_id", snapshotId);
     return String.format(
-        "/tenants/%s/tables/%s/snapshots/%019d/snapshot.pb", encode(tid), encode(tbid), sid);
+        "/accounts/%s/tables/%s/snapshots/%019d/snapshot.pb", encode(tid), encode(tbid), sid);
   }
 
   // ===== Snapshot Stats =====
 
-  private static String snapshotStatsRootPointer(String tenantId, String tableId, long snapshotId) {
-    String tid = req("tenant_id", tenantId);
+  private static String snapshotStatsRootPointer(String accountId, String tableId, long snapshotId) {
+    String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     long sid = reqNonNegative("snapshot_id", snapshotId);
     return String.format(
-        "/tenants/%s/tables/%s/snapshots/%019d/stats/", encode(tid), encode(tbid), sid);
+        "/accounts/%s/tables/%s/snapshots/%019d/stats/", encode(tid), encode(tbid), sid);
   }
 
-  public static String snapshotTableStatsPointer(String tenantId, String tableId, long snapshotId) {
-    return snapshotStatsRootPointer(tenantId, tableId, snapshotId) + "table";
+  public static String snapshotTableStatsPointer(String accountId, String tableId, long snapshotId) {
+    return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "table";
   }
 
   public static String snapshotColumnStatsDirectoryPointer(
-      String tenantId, String tableId, long snapshotId) {
-    return snapshotStatsRootPointer(tenantId, tableId, snapshotId) + "columns/";
+      String accountId, String tableId, long snapshotId) {
+    return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "columns/";
   }
 
   public static String snapshotColumnStatsPointer(
-      String tenantId, String tableId, long snapshotId, String columnId) {
+      String accountId, String tableId, long snapshotId, String columnId) {
     String cid = normalizeColumnId(columnId);
-    return snapshotColumnStatsDirectoryPointer(tenantId, tableId, snapshotId) + encode(cid);
+    return snapshotColumnStatsDirectoryPointer(accountId, tableId, snapshotId) + encode(cid);
   }
 
-  public static String snapshotTableStatsBlobUri(String tenantId, String tableId, String sha256) {
-    String tid = req("tenant_id", tenantId);
+  public static String snapshotTableStatsBlobUri(String accountId, String tableId, String sha256) {
+    String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     return String.format(
-        "/tenants/%s/tables/%s/table-stats/%s.pb", encode(tid), encode(tbid), encode(sha256));
+        "/accounts/%s/tables/%s/table-stats/%s.pb", encode(tid), encode(tbid), encode(sha256));
   }
 
   public static String snapshotColumnStatsBlobUri(
-      String tenantId, String tableId, String columnId, String sha256) {
-    String tid = req("tenant_id", tenantId);
+      String accountId, String tableId, String columnId, String sha256) {
+    String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     String cid = normalizeColumnId(columnId);
     return String.format(
-        "/tenants/%s/tables/%s/column-stats/%s/%s.pb",
+        "/accounts/%s/tables/%s/column-stats/%s/%s.pb",
         encode(tid), encode(tbid), encode(cid), encode(sha256));
   }
 
-  public static String snapshotStatsPrefix(String tenantId, String tableId, long snapshotId) {
-    return snapshotStatsRootPointer(tenantId, tableId, snapshotId);
+  public static String snapshotStatsPrefix(String accountId, String tableId, long snapshotId) {
+    return snapshotStatsRootPointer(accountId, tableId, snapshotId);
   }
 
-  public static String snapshotColumnStatsPrefix(String tenantId, String tableId, long snapshotId) {
-    return snapshotColumnStatsDirectoryPointer(tenantId, tableId, snapshotId);
+  public static String snapshotColumnStatsPrefix(String accountId, String tableId, long snapshotId) {
+    return snapshotColumnStatsDirectoryPointer(accountId, tableId, snapshotId);
   }
 
   public static String snapshotFileStatsDirectoryPointer(
-      String tenantId, String tableId, long snapshotId) {
-    return snapshotStatsRootPointer(tenantId, tableId, snapshotId) + "files/";
+      String accountId, String tableId, long snapshotId) {
+    return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "files/";
   }
 
   public static String snapshotFileStatsPointer(
-      String tenantId, String tableId, long snapshotId, String filePath) {
-    String tid = req("tenant_id", tenantId);
+      String accountId, String tableId, long snapshotId, String filePath) {
+    String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     long sid = reqNonNegative("snapshot_id", snapshotId);
     String fp = req("file_path", filePath);
@@ -297,35 +297,35 @@ public final class Keys {
   }
 
   public static String snapshotFileStatsBlobUri(
-      String tenantId, String tableId, String filePath, String sha256) {
-    String tid = req("tenant_id", tenantId);
+      String accountId, String tableId, String filePath, String sha256) {
+    String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     String fp = req("file_path", filePath);
     String sha = req("sha256", sha256);
     return String.format(
-        "/tenants/%s/tables/%s/file-stats/%s/%s.pb",
+        "/accounts/%s/tables/%s/file-stats/%s/%s.pb",
         encode(tid), encode(tbid), encode(fp), encode(sha));
   }
 
-  public static String snapshotFileStatsPrefix(String tenantId, String tableId, long snapshotId) {
-    return snapshotFileStatsDirectoryPointer(tenantId, tableId, snapshotId);
+  public static String snapshotFileStatsPrefix(String accountId, String tableId, long snapshotId) {
+    return snapshotFileStatsDirectoryPointer(accountId, tableId, snapshotId);
   }
 
   // ===== View =====
 
-  public static String viewPointerById(String tenantId, String viewId) {
-    String tid = req("tenant_id", tenantId);
+  public static String viewPointerById(String accountId, String viewId) {
+    String tid = req("account_id", accountId);
     String vid = req("view_id", viewId);
-    return "/tenants/" + encode(tid) + "/views/by-id/" + encode(vid);
+    return "/accounts/" + encode(tid) + "/views/by-id/" + encode(vid);
   }
 
   public static String viewPointerByName(
-      String tenantId, String catalogId, String namespaceId, String viewName) {
-    String tid = req("tenant_id", tenantId);
+      String accountId, String catalogId, String namespaceId, String viewName) {
+    String tid = req("account_id", accountId);
     String cid = req("catalog_id", catalogId);
     String nid = req("namespace_id", namespaceId);
     String name = req("view_name", viewName);
-    return "/tenants/"
+    return "/accounts/"
         + encode(tid)
         + "/catalogs/"
         + encode(cid)
@@ -336,11 +336,11 @@ public final class Keys {
   }
 
   public static String viewPointerByNamePrefix(
-      String tenantId, String catalogId, String namespaceId) {
-    String tid = req("tenant_id", tenantId);
+      String accountId, String catalogId, String namespaceId) {
+    String tid = req("account_id", accountId);
     String cid = req("catalog_id", catalogId);
     String nid = req("namespace_id", namespaceId);
-    return "/tenants/"
+    return "/accounts/"
         + encode(tid)
         + "/catalogs/"
         + encode(cid)
@@ -349,54 +349,54 @@ public final class Keys {
         + "/views/by-name/";
   }
 
-  public static String viewBlobUri(String tenantId, String viewId) {
-    String tid = req("tenant_id", tenantId);
+  public static String viewBlobUri(String accountId, String viewId) {
+    String tid = req("account_id", accountId);
     String vid = req("view_id", viewId);
-    return "/tenants/" + encode(tid) + "/views/" + encode(vid) + "/view.pb";
+    return "/accounts/" + encode(tid) + "/views/" + encode(vid) + "/view.pb";
   }
 
   // ===== Connector =====
 
-  public static String connectorPointerById(String tenantId, String connectorId) {
-    String tid = req("tenant_id", tenantId);
+  public static String connectorPointerById(String accountId, String connectorId) {
+    String tid = req("account_id", accountId);
     String cid = req("connector_id", connectorId);
-    return "/tenants/" + encode(tid) + "/connectors/by-id/" + encode(cid);
+    return "/accounts/" + encode(tid) + "/connectors/by-id/" + encode(cid);
   }
 
-  public static String connectorPointerByName(String tenantId, String displayName) {
-    String tid = req("tenant_id", tenantId);
+  public static String connectorPointerByName(String accountId, String displayName) {
+    String tid = req("account_id", accountId);
     String name = req("display_name", displayName);
-    return "/tenants/" + encode(tid) + "/connectors/by-name/" + encode(name);
+    return "/accounts/" + encode(tid) + "/connectors/by-name/" + encode(name);
   }
 
-  public static String connectorPointerByNamePrefix(String tenantId) {
-    String tid = req("tenant_id", tenantId);
-    return "/tenants/" + encode(tid) + "/connectors/by-name/";
+  public static String connectorPointerByNamePrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/connectors/by-name/";
   }
 
-  public static String connectorBlobUri(String tenantId, String connectorId) {
-    String tid = req("tenant_id", tenantId);
+  public static String connectorBlobUri(String accountId, String connectorId) {
+    String tid = req("account_id", accountId);
     String cid = req("connector_id", connectorId);
-    return "/tenants/" + encode(tid) + "/connectors/" + encode(cid) + "/connector.pb";
+    return "/accounts/" + encode(tid) + "/connectors/" + encode(cid) + "/connector.pb";
   }
 
   // ===== Idempotency =====
 
-  public static String idempotencyKey(String tenantId, String operation, String key) {
-    String tid = req("tenant_id", tenantId);
+  public static String idempotencyKey(String accountId, String operation, String key) {
+    String tid = req("account_id", accountId);
     String op = req("operation", operation);
     String k = req("key", key);
-    return "/tenants/" + encode(tid) + "/idempotency/" + encode(op) + "/" + encode(k);
+    return "/accounts/" + encode(tid) + "/idempotency/" + encode(op) + "/" + encode(k);
   }
 
-  public static String idempotencyBlobUri(String tenantId, String key) {
-    String tid = req("tenant_id", tenantId);
+  public static String idempotencyBlobUri(String accountId, String key) {
+    String tid = req("account_id", accountId);
     String k = req("key", key);
-    return "/tenants/" + encode(tid) + "/idempotency/" + encode(k) + "/idempotency.pb";
+    return "/accounts/" + encode(tid) + "/idempotency/" + encode(k) + "/idempotency.pb";
   }
 
-  public static String idempotencyPrefixTenant(String tenantId) {
-    String tid = req("tenant_id", tenantId);
-    return "/tenants/" + encode(tid) + "/idempotency/";
+  public static String idempotencyPrefixAccount(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/idempotency/";
   }
 }

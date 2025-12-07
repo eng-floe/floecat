@@ -47,7 +47,7 @@ class NamespacesNamingSemanticsIT {
   @Inject BlobStore blobs;
 
   private ResourceId catalogId;
-  private String tenant;
+  private String account;
 
   @BeforeEach
   void resetStores() {
@@ -56,7 +56,7 @@ class NamespacesNamingSemanticsIT {
 
     var cat = TestSupport.createCatalog(catalogs, "cat-names", "naming semantics");
     catalogId = cat.getResourceId();
-    tenant = catalogId.getTenantId();
+    account = catalogId.getAccountId();
 
     TestSupport.createNamespace(namespaces, catalogId, "db.v1", List.of("env.prod"), "lvl 1");
     TestSupport.createNamespace(
@@ -257,7 +257,7 @@ class NamespacesNamingSemanticsIT {
   @Test
   void byPathPointersExistForLiteralDotPaths() {
     var full = List.of("env.prod", "db.v1", "schema.test");
-    String byPathKey = Keys.namespacePointerByPath(tenant, catalogId.getId(), full);
+    String byPathKey = Keys.namespacePointerByPath(account, catalogId.getId(), full);
     assertTrue(ptr.get(byPathKey).isPresent(), "namespace by-path pointer missing for dotted path");
 
     var rid = resolve("cat-names", full.subList(0, full.size() - 1), full.get(full.size() - 1));

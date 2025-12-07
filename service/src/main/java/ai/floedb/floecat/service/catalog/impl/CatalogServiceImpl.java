@@ -69,7 +69,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   try {
                     catalogs =
                         catalogRepo.list(
-                            principalContext.getTenantId(),
+                            principalContext.getAccountId(),
                             Math.max(1, pageIn.limit),
                             pageIn.token,
                             next);
@@ -80,7 +80,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
 
                   var page =
                       MutationOps.pageOut(
-                          next.toString(), catalogRepo.count(principalContext.getTenantId()));
+                          next.toString(), catalogRepo.count(principalContext.getAccountId()));
 
                   return ListCatalogsResponse.newBuilder()
                       .addAllCatalogs(catalogs)
@@ -131,7 +131,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                 () -> {
                   var pc = principal.get();
                   var corr = pc.getCorrelationId();
-                  var tenantId = pc.getTenantId();
+                  var accountId = pc.getAccountId();
 
                   authz.require(pc, "catalog.write");
 
@@ -148,13 +148,13 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var fingerprint = canonicalFingerprint(spec);
                   var catalogUuid =
                       deterministicUuid(
-                          tenantId,
+                          accountId,
                           "catalog",
                           Base64.getUrlEncoder().withoutPadding().encodeToString(fingerprint));
 
                   var catalogId =
                       ResourceId.newBuilder()
-                          .setTenantId(tenantId)
+                          .setAccountId(accountId)
                           .setId(catalogUuid)
                           .setKind(ResourceKind.RK_CATALOG)
                           .build();
@@ -168,7 +168,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                           .build();
 
                   if (idempotencyKey == null) {
-                    var existing = catalogRepo.getByName(tenantId, normName);
+                    var existing = catalogRepo.getByName(accountId, normName);
                     if (existing.isPresent()) {
                       var meta = catalogRepo.metaForSafe(existing.get().getResourceId());
                       return CreateCatalogResponse.newBuilder()
@@ -187,7 +187,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
 
                   var result =
                       MutationOps.createProto(
-                          tenantId,
+                          accountId,
                           "CreateCatalog",
                           idempotencyKey,
                           () -> fingerprint,
@@ -295,7 +295,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var id = request.getCatalogId();
                   ensureKind(id, ResourceKind.RK_CATALOG, "catalog_id", correlationId);
 
-                  if (namespaceRepo.count(id.getTenantId(), id.getId(), List.of()) > 0) {
+                  if (namespaceRepo.count(id.getAccountId(), id.getId(), List.of()) > 0) {
                     var currentCatalog = catalogRepo.getById(id).orElse(null);
                     var displayName =
                         (currentCatalog != null && !currentCatalog.getDisplayName().isBlank())

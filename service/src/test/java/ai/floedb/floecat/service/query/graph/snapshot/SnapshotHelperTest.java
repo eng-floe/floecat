@@ -121,7 +121,7 @@ class SnapshotHelperTest {
 
   private static ResourceId tableId(String id) {
     return ResourceId.newBuilder()
-        .setTenantId("tenant")
+        .setAccountId("account")
         .setId(id)
         .setKind(ResourceKind.RK_TABLE)
         .build();

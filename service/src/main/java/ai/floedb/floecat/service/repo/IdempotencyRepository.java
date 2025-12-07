@@ -10,7 +10,7 @@ public interface IdempotencyRepository {
   Optional<IdempotencyRecord> get(String key);
 
   boolean createPending(
-      String tenantId,
+      String accountId,
       String key,
       String opName,
       String requestHash,
@@ -18,7 +18,7 @@ public interface IdempotencyRepository {
       Timestamp expiresAt);
 
   void finalizeSuccess(
-      String tenantId,
+      String accountId,
       String key,
       String opName,
       String requestHash,

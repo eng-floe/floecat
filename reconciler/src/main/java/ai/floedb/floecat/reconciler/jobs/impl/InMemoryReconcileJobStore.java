@@ -18,12 +18,12 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
 
   @Override
   public String enqueue(
-      String tenantId, String connectorId, boolean fullRescan, ReconcileScope scope) {
+      String accountId, String connectorId, boolean fullRescan, ReconcileScope scope) {
     String id = UUID.randomUUID().toString();
     var job =
         new ReconcileJob(
             id,
-            tenantId,
+            accountId,
             connectorId,
             "JS_QUEUED",
             fullRescan ? "Queued (full)" : "Queued",
@@ -64,7 +64,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
 
       if (leased.add(jobId)) {
         return Optional.of(
-            new LeasedJob(job.jobId, job.tenantId, job.connectorId, job.fullRescan, job.scope));
+            new LeasedJob(job.jobId, job.accountId, job.connectorId, job.fullRescan, job.scope));
       }
     }
   }
@@ -76,7 +76,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         (id, job) ->
             new ReconcileJob(
                 job.jobId,
-                job.tenantId,
+                job.accountId,
                 job.connectorId,
                 "JS_RUNNING",
                 "Running",
@@ -96,7 +96,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         (id, job) ->
             new ReconcileJob(
                 job.jobId,
-                job.tenantId,
+                job.accountId,
                 job.connectorId,
                 job.state,
                 message == null ? (job.message == null ? "" : job.message) : message,
@@ -117,7 +117,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           leased.remove(id);
           return new ReconcileJob(
               job.jobId,
-              job.tenantId,
+              job.accountId,
               job.connectorId,
               "JS_SUCCEEDED",
               "Succeeded",
@@ -140,7 +140,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           leased.remove(id);
           return new ReconcileJob(
               job.jobId,
-              job.tenantId,
+              job.accountId,
               job.connectorId,
               "JS_FAILED",
               message == null ? "Failed" : message,

@@ -270,7 +270,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
             runWithRetry(
                 () -> {
                   var pc = principal.get();
-                  var tenantId = pc.getTenantId();
+                  var accountId = pc.getAccountId();
 
                   authz.require(pc, "table.write");
 
@@ -311,7 +311,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
 
                   var result =
                       MutationOps.createProto(
-                          tenantId,
+                          accountId,
                           "PutTableStats",
                           idempotencyKey,
                           () -> fingerprint,
@@ -476,7 +476,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     stateRef.set(computed);
     final StreamState next = computed;
 
-    var tenantId = principal.get().getTenantId();
+    var accountId = principal.get().getAccountId();
     var tsNow = nowTs();
 
     for (var raw : req.getColumnsList()) {
@@ -491,7 +491,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
       }
 
       MutationOps.createProto(
-          tenantId,
+          accountId,
           "PutColumnStats",
           next.idempotencyKey(),
           () -> fingerprint,
@@ -528,7 +528,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     stateRef.set(computed);
     final StreamState next = computed;
 
-    var tenantId = principal.get().getTenantId();
+    var accountId = principal.get().getAccountId();
     var tsNow = nowTs();
 
     for (var raw : req.getFilesList()) {
@@ -543,7 +543,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
       }
 
       MutationOps.createProto(
-          tenantId,
+          accountId,
           "PutFileColumnStats",
           next.idempotencyKey(),
           () -> fingerprint,

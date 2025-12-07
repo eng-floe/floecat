@@ -36,7 +36,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.tenant.TenantContext;
+import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.support.mapper.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
@@ -82,7 +82,7 @@ public class TableResource {
   @Inject ObjectMapper mapper;
   @Inject Config mpConfig;
   @Inject StagedTableService stagedTableService;
-  @Inject TenantContext tenantContext;
+  @Inject AccountContext accountContext;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableCommitService tableCommitService;
   @Inject TablePlanService tablePlanService;
@@ -288,9 +288,9 @@ public class TableResource {
           prefix, namespacePath, tableName, safeSerializeCreate(req));
       return IcebergErrorResponses.validation("location is required");
     }
-    String tenantId = tenantContext.getTenantId();
-    if (tenantId == null || tenantId.isBlank()) {
-      return IcebergErrorResponses.validation("tenant context is required");
+    String accountId = accountContext.getAccountId();
+    if (accountId == null || accountId.isBlank()) {
+      return IcebergErrorResponses.validation("account context is required");
     }
     String stageId =
         (transactionId == null || transactionId.isBlank())
@@ -301,7 +301,7 @@ public class TableResource {
           tableSupport.buildCreateSpec(catalogId, namespaceId, tableName, effectiveReq);
       StagedTableEntry entry =
           new StagedTableEntry(
-              new StagedTableKey(tenantId, catalogName, namespacePath, tableName, stageId),
+              new StagedTableKey(accountId, catalogName, namespacePath, tableName, stageId),
               catalogId,
               namespaceId,
               effectiveReq,
@@ -313,9 +313,9 @@ public class TableResource {
               idempotencyKey);
       StagedTableEntry stored = stagedTableService.saveStage(entry);
       LOG.infof(
-          "Stored stage-create payload tenant=%s catalog=%s namespace=%s table=%s stageId=%s"
+          "Stored stage-create payload account=%s catalog=%s namespace=%s table=%s stageId=%s"
               + " txnHeader=%s",
-          tenantContext.getTenantId(),
+          accountContext.getAccountId(),
           catalogName,
           namespacePath,
           tableName,

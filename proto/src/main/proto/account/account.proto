@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package ai.floedb.floecat.account;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.account.rpc";
+option java_outer_classname = "AccountProto";
+
+import "common/common.proto";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/field_mask.proto";
+
+message Account {
+  ai.floedb.floecat.common.ResourceId resource_id = 1;
+  string display_name = 2;
+  optional string description = 3;
+  google.protobuf.Timestamp created_at = 10;
+}
+
+message AccountSpec {
+  optional string display_name = 1;
+  optional string description = 2;
+}
+
+// ====== Requests / Responses ======
+
+message ListAccountsRequest {
+  ai.floedb.floecat.common.PageRequest page = 1;
+}
+
+message ListAccountsResponse {
+  repeated Account accounts = 1;
+  ai.floedb.floecat.common.PageResponse page = 2;
+}
+
+message CreateAccountRequest {
+  AccountSpec spec = 1;
+  ai.floedb.floecat.common.IdempotencyKey idempotency = 98;
+}
+
+message CreateAccountResponse {
+  Account account = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message GetAccountRequest {
+  ai.floedb.floecat.common.ResourceId account_id = 1;
+}
+
+message GetAccountResponse {
+  Account account = 1;
+}
+
+message UpdateAccountRequest {
+  ai.floedb.floecat.common.ResourceId account_id = 1;
+  AccountSpec spec = 2;
+  google.protobuf.FieldMask update_mask = 3;
+  ai.floedb.floecat.common.Precondition precondition = 98;
+
+}
+
+message UpdateAccountResponse {
+  Account account = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message DeleteAccountRequest {
+  ai.floedb.floecat.common.ResourceId account_id = 1;
+  ai.floedb.floecat.common.Precondition precondition = 98;
+}
+
+message DeleteAccountResponse {
+  ai.floedb.floecat.common.MutationMeta meta = 1;
+}
+
+// ====== Service ======
+
+service AccountService {
+  rpc ListAccounts (ListAccountsRequest) returns (ListAccountsResponse);
+  rpc GetAccount (GetAccountRequest) returns (GetAccountResponse);
+  rpc CreateAccount (CreateAccountRequest) returns (CreateAccountResponse);
+  rpc UpdateAccount (UpdateAccountRequest) returns (UpdateAccountResponse);
+  rpc DeleteAccount (DeleteAccountRequest) returns (DeleteAccountResponse);
+}

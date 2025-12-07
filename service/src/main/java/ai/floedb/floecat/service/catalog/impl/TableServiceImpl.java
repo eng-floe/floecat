@@ -104,7 +104,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
                     tables =
                         tableRepo.list(
-                            principalContext.getTenantId(),
+                            principalContext.getAccountId(),
                             catalogId.getId(),
                             namespaceId.getId(),
                             Math.max(1, pageIn.limit),
@@ -119,7 +119,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                       MutationOps.pageOut(
                           next.toString(),
                           tableRepo.count(
-                              principalContext.getTenantId(),
+                              principalContext.getAccountId(),
                               catalogId.getId(),
                               namespaceId.getId()));
 
@@ -170,7 +170,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
             runWithRetry(
                 () -> {
                   var pc = principal.get();
-                  var tenantId = pc.getTenantId();
+                  var accountId = pc.getAccountId();
                   var corr = pc.getCorrelationId();
                   authz.require(pc, "table.write");
 
@@ -206,13 +206,13 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                       canonicalFingerprint(spec.toBuilder().setDisplayName(normName).build());
                   var tableUuid =
                       deterministicUuid(
-                          tenantId,
+                          accountId,
                           "table",
                           Base64.getUrlEncoder().withoutPadding().encodeToString(fingerprint));
 
                   var tableResourceId =
                       ResourceId.newBuilder()
-                          .setTenantId(tenantId)
+                          .setAccountId(accountId)
                           .setId(tableUuid)
                           .setKind(ResourceKind.RK_TABLE)
                           .build();
@@ -233,7 +233,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   if (idempotencyKey == null) {
                     var existing =
                         tableRepo.getByName(
-                            tenantId,
+                            accountId,
                             spec.getCatalogId().getId(),
                             spec.getNamespaceId().getId(),
                             normName);
@@ -252,7 +252,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
                   var result =
                       MutationOps.createProto(
-                          tenantId,
+                          accountId,
                           "CreateTable",
                           idempotencyKey,
                           () -> fingerprint,

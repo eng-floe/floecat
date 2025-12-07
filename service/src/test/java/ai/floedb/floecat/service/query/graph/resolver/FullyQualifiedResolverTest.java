@@ -42,11 +42,11 @@ class FullyQualifiedResolverTest {
         new FullyQualifiedResolver(
             catalogRepository, namespaceRepository, tableRepository, viewRepository);
 
-    ResourceId catalogId = rid("tenant", "cat", ResourceKind.RK_CATALOG);
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
     catalogRepository.put(
         Catalog.newBuilder().setResourceId(catalogId).setDisplayName("cat").build());
 
-    ResourceId namespaceId = rid("tenant", "ns", ResourceKind.RK_NAMESPACE);
+    ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);
     namespaceRepository.put(
         Namespace.newBuilder()
             .setResourceId(namespaceId)
@@ -56,7 +56,7 @@ class FullyQualifiedResolverTest {
 
     tableRepository.put(
         Table.newBuilder()
-            .setResourceId(rid("tenant", "tbl1", ResourceKind.RK_TABLE))
+            .setResourceId(rid("account", "tbl1", ResourceKind.RK_TABLE))
             .setCatalogId(catalogId)
             .setNamespaceId(namespaceId)
             .setDisplayName("orders_a")
@@ -64,7 +64,7 @@ class FullyQualifiedResolverTest {
             .build());
     tableRepository.put(
         Table.newBuilder()
-            .setResourceId(rid("tenant", "tbl2", ResourceKind.RK_TABLE))
+            .setResourceId(rid("account", "tbl2", ResourceKind.RK_TABLE))
             .setCatalogId(catalogId)
             .setNamespaceId(namespaceId)
             .setDisplayName("orders_b")
@@ -73,7 +73,7 @@ class FullyQualifiedResolverTest {
 
     viewRepository.put(
         View.newBuilder()
-            .setResourceId(rid("tenant", "view1", ResourceKind.RK_VIEW))
+            .setResourceId(rid("account", "view1", ResourceKind.RK_VIEW))
             .setCatalogId(catalogId)
             .setNamespaceId(namespaceId)
             .setDisplayName("orders_view")
@@ -88,7 +88,7 @@ class FullyQualifiedResolverTest {
             NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("orders_a").build(),
             NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("missing").build());
 
-    var result = resolver.resolveTableList("corr", "tenant", refs, 10, "");
+    var result = resolver.resolveTableList("corr", "account", refs, 10, "");
 
     assertThat(result.totalSize()).isEqualTo(2);
     assertThat(result.relations().get(0).name().getResourceId().getId()).isEqualTo("tbl1");
@@ -99,8 +99,8 @@ class FullyQualifiedResolverTest {
   void resolveTablesByPrefixPaginates() {
     NameRef prefix = NameRef.newBuilder().setCatalog("cat").addPath("ns").build();
 
-    var page1 = resolver.resolveTablesByPrefix("corr", "tenant", prefix, 1, "");
-    var page2 = resolver.resolveTablesByPrefix("corr", "tenant", prefix, 1, page1.nextPageToken());
+    var page1 = resolver.resolveTablesByPrefix("corr", "account", prefix, 1, "");
+    var page2 = resolver.resolveTablesByPrefix("corr", "account", prefix, 1, page1.nextPageToken());
 
     assertThat(page1.relations()).hasSize(1);
     assertThat(page2.relations()).hasSize(1);
@@ -114,14 +114,14 @@ class FullyQualifiedResolverTest {
         List.of(
             NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("orders_view").build());
 
-    var result = resolver.resolveViewList("corr", "tenant", refs, 10, "");
+    var result = resolver.resolveViewList("corr", "account", refs, 10, "");
 
     assertThat(result.totalSize()).isEqualTo(1);
     assertThat(result.relations().get(0).name().getResourceId().getId()).isEqualTo("view1");
   }
 
-  private static ResourceId rid(String tenant, String id, ResourceKind kind) {
-    return ResourceId.newBuilder().setTenantId(tenant).setId(id).setKind(kind).build();
+  private static ResourceId rid(String account, String id, ResourceKind kind) {
+    return ResourceId.newBuilder().setAccountId(account).setId(id).setKind(kind).build();
   }
 
   // Reuse in-memory repos identical to those in NameResolverTest
@@ -142,11 +142,11 @@ class FullyQualifiedResolverTest {
     }
 
     @Override
-    public Optional<Catalog> getByName(String tenantId, String displayName) {
+    public Optional<Catalog> getByName(String accountId, String displayName) {
       return entries.values().stream()
           .filter(
               cat ->
-                  tenantId.equals(cat.getResourceId().getTenantId())
+                  accountId.equals(cat.getResourceId().getAccountId())
                       && displayName.equals(cat.getDisplayName()))
           .findFirst();
     }
@@ -174,11 +174,11 @@ class FullyQualifiedResolverTest {
     }
 
     @Override
-    public Optional<Namespace> getByPath(String tenantId, String catalogId, List<String> path) {
+    public Optional<Namespace> getByPath(String accountId, String catalogId, List<String> path) {
       return entries.values().stream()
           .filter(
               ns ->
-                  tenantId.equals(ns.getResourceId().getTenantId())
+                  accountId.equals(ns.getResourceId().getAccountId())
                       && catalogId.equals(ns.getCatalogId().getId())
                       && matches(ns, path))
           .findFirst();
@@ -217,11 +217,11 @@ class FullyQualifiedResolverTest {
 
     @Override
     public Optional<Table> getByName(
-        String tenantId, String catalogId, String namespaceId, String displayName) {
+        String accountId, String catalogId, String namespaceId, String displayName) {
       return entries.values().stream()
           .filter(
               tbl ->
-                  tenantId.equals(tbl.getResourceId().getTenantId())
+                  accountId.equals(tbl.getResourceId().getAccountId())
                       && catalogId.equals(tbl.getCatalogId().getId())
                       && namespaceId.equals(tbl.getNamespaceId().getId())
                       && displayName.equals(tbl.getDisplayName()))
@@ -230,7 +230,7 @@ class FullyQualifiedResolverTest {
 
     @Override
     public List<Table> list(
-        String tenantId,
+        String accountId,
         String catalogId,
         String namespaceId,
         int limit,
@@ -240,7 +240,7 @@ class FullyQualifiedResolverTest {
           entries.values().stream()
               .filter(
                   tbl ->
-                      tenantId.equals(tbl.getResourceId().getTenantId())
+                      accountId.equals(tbl.getResourceId().getAccountId())
                           && catalogId.equals(tbl.getCatalogId().getId())
                           && namespaceId.equals(tbl.getNamespaceId().getId()))
               .sorted(java.util.Comparator.comparing(Table::getDisplayName))
@@ -265,12 +265,12 @@ class FullyQualifiedResolverTest {
     }
 
     @Override
-    public int count(String tenantId, String catalogId, String namespaceId) {
+    public int count(String accountId, String catalogId, String namespaceId) {
       return (int)
           entries.values().stream()
               .filter(
                   tbl ->
-                      tenantId.equals(tbl.getResourceId().getTenantId())
+                      accountId.equals(tbl.getResourceId().getAccountId())
                           && catalogId.equals(tbl.getCatalogId().getId())
                           && namespaceId.equals(tbl.getNamespaceId().getId()))
               .count();
@@ -300,11 +300,11 @@ class FullyQualifiedResolverTest {
 
     @Override
     public Optional<View> getByName(
-        String tenantId, String catalogId, String namespaceId, String displayName) {
+        String accountId, String catalogId, String namespaceId, String displayName) {
       return entries.values().stream()
           .filter(
               vw ->
-                  tenantId.equals(vw.getResourceId().getTenantId())
+                  accountId.equals(vw.getResourceId().getAccountId())
                       && catalogId.equals(vw.getCatalogId().getId())
                       && namespaceId.equals(vw.getNamespaceId().getId())
                       && displayName.equals(vw.getDisplayName()))
@@ -313,7 +313,7 @@ class FullyQualifiedResolverTest {
 
     @Override
     public List<View> list(
-        String tenantId,
+        String accountId,
         String catalogId,
         String namespaceId,
         int limit,
@@ -323,7 +323,7 @@ class FullyQualifiedResolverTest {
           entries.values().stream()
               .filter(
                   vw ->
-                      tenantId.equals(vw.getResourceId().getTenantId())
+                      accountId.equals(vw.getResourceId().getAccountId())
                           && catalogId.equals(vw.getCatalogId().getId())
                           && namespaceId.equals(vw.getNamespaceId().getId()))
               .sorted(java.util.Comparator.comparing(View::getDisplayName))
@@ -348,12 +348,12 @@ class FullyQualifiedResolverTest {
     }
 
     @Override
-    public int count(String tenantId, String catalogId, String namespaceId) {
+    public int count(String accountId, String catalogId, String namespaceId) {
       return (int)
           entries.values().stream()
               .filter(
                   vw ->
-                      tenantId.equals(vw.getResourceId().getTenantId())
+                      accountId.equals(vw.getResourceId().getAccountId())
                           && catalogId.equals(vw.getCatalogId().getId())
                           && namespaceId.equals(vw.getNamespaceId().getId()))
               .count();

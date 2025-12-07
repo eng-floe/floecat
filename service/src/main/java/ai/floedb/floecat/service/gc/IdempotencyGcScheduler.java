@@ -1,7 +1,7 @@
 package ai.floedb.floecat.service.gc;
 
-import ai.floedb.floecat.service.repo.impl.TenantRepository;
-import ai.floedb.floecat.tenant.rpc.Tenant;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
+import ai.floedb.floecat.account.rpc.Account;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.runtime.ShutdownEvent;
@@ -24,7 +24,7 @@ import org.eclipse.microprofile.config.ConfigProvider;
 @ApplicationScoped
 public class IdempotencyGcScheduler {
 
-  @Inject Provider<TenantRepository> tenants;
+  @Inject Provider<AccountRepository> accounts;
   @Inject Provider<IdempotencyGc> idempotencyGc;
   @Inject MeterRegistry registry;
 
@@ -43,7 +43,7 @@ public class IdempotencyGcScheduler {
             .register(registry);
     sliceCounter =
         Counter.builder("floecat_gc_idempotency_slices")
-            .description("Per-tenant slices")
+            .description("Per-account slices")
             .register(registry);
     registry.gauge("floecat_gc_idempotency_running", running);
     registry.gauge("floecat_gc_idempotency_enabled", enabledGauge);
@@ -51,7 +51,7 @@ public class IdempotencyGcScheduler {
     registry.gauge("floecat_gc_idempotency_last_tick_end_ms", lastTickEndMs);
   }
 
-  private final Map<String, String> tokenByTenant = new ConcurrentHashMap<>();
+  private final Map<String, String> tokenByAccount = new ConcurrentHashMap<>();
   private volatile boolean stopping;
 
   void onStop(@Observes ShutdownEvent ev) {
@@ -76,10 +76,10 @@ public class IdempotencyGcScheduler {
       return;
     }
 
-    final TenantRepository tenantRepo;
+    final AccountRepository accountRepo;
     final IdempotencyGc gc;
     try {
-      tenantRepo = tenants.get();
+      accountRepo = accounts.get();
       gc = idempotencyGc.get();
     } catch (Throwable ignored) {
       return;
@@ -92,29 +92,29 @@ public class IdempotencyGcScheduler {
 
     final long maxTickMillis =
         cfg.getOptionalValue("floecat.gc.idempotency.max-tick-millis", Long.class).orElse(4000L);
-    final int tenantsPageSize =
-        cfg.getOptionalValue("floecat.gc.idempotency.tenants-page-size", Integer.class).orElse(200);
+    final int accountsPageSize =
+        cfg.getOptionalValue("floecat.gc.idempotency.accounts-page-size", Integer.class).orElse(200);
     final long deadline = now + maxTickMillis;
 
     try {
-      List<Tenant> allTenants = fetchAllTenants(tenantRepo, tenantsPageSize);
-      Collections.shuffle(allTenants);
+      List<Account> allAccounts = fetchAllAccounts(accountRepo, accountsPageSize);
+      Collections.shuffle(allAccounts);
 
-      for (Tenant tenant : allTenants) {
+      for (Account account : allAccounts) {
         if (System.currentTimeMillis() >= deadline || stopping) {
           break;
         }
 
-        String tenantId = tenant.getResourceId().getId();
-        String token = tokenByTenant.getOrDefault(tenantId, "");
+        String accountId = account.getResourceId().getId();
+        String token = tokenByAccount.getOrDefault(accountId, "");
 
-        var result = gc.runSliceForTenant(tenantId, token);
+        var result = gc.runSliceForAccount(accountId, token);
         sliceCounter.increment();
 
         if (result.nextToken() == null || result.nextToken().isBlank()) {
-          tokenByTenant.remove(tenantId);
+          tokenByAccount.remove(accountId);
         } else {
-          tokenByTenant.put(tenantId, result.nextToken());
+          tokenByAccount.put(accountId, result.nextToken());
         }
       }
     } finally {
@@ -123,8 +123,8 @@ public class IdempotencyGcScheduler {
     }
   }
 
-  private static List<Tenant> fetchAllTenants(TenantRepository repo, int pageSize) {
-    List<Tenant> out = new ArrayList<>();
+  private static List<Account> fetchAllAccounts(AccountRepository repo, int pageSize) {
+    List<Account> out = new ArrayList<>();
     String tok = "";
     StringBuilder next = new StringBuilder();
     do {

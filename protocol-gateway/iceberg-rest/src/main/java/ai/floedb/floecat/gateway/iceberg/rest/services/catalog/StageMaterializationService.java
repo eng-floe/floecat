@@ -6,7 +6,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitProces
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.tenant.TenantContext;
+import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -18,7 +18,7 @@ import org.jboss.logging.Logger;
 public class StageMaterializationService {
   private static final Logger LOG = Logger.getLogger(StageMaterializationService.class);
 
-  @Inject TenantContext tenantContext;
+  @Inject AccountContext accountContext;
   @Inject StagedTableService stagedTableService;
   @Inject StageCommitProcessor stageCommitProcessor;
 
@@ -109,13 +109,13 @@ public class StageMaterializationService {
   private StageMaterializationResult commitStage(
       String prefix, String catalogName, List<String> namespacePath, String table, String stageId)
       throws StageCommitException {
-    String tenantId = tenantContext.getTenantId();
-    if (tenantId == null || tenantId.isBlank()) {
-      throw StageCommitException.validation("tenant context is required");
+    String accountId = accountContext.getAccountId();
+    if (accountId == null || accountId.isBlank()) {
+      throw StageCommitException.validation("account context is required");
     }
     StageCommitResult result =
         stageCommitProcessor.commitStage(
-            prefix, catalogName, tenantId, namespacePath, table, stageId);
+            prefix, catalogName, accountId, namespacePath, table, stageId);
     return new StageMaterializationResult(stageId, result);
   }
 
@@ -124,13 +124,13 @@ public class StageMaterializationService {
     if (stageId != null && !stageId.isBlank()) {
       return stageId;
     }
-    String tenantId = tenantContext.getTenantId();
-    if (tenantId == null) {
+    String accountId = accountContext.getAccountId();
+    if (accountId == null) {
       return null;
     }
     String resolved =
         stagedTableService
-            .findSingleStage(tenantId, catalogName, namespacePath, table)
+            .findSingleStage(accountId, catalogName, namespacePath, table)
             .map(StagedTableEntry::key)
             .map(StagedTableKey::stageId)
             .orElse(null);

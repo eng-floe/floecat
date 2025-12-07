@@ -12,22 +12,22 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * Per-tenant cache manager for {@link RelationNode}s.
+ * Per-account cache manager for {@link RelationNode}s.
  *
- * <p>This manager keeps a dedicated Caffeine cache for each tenant so eviction pressure is isolated
- * between tenants while sharing the common configuration knobs (enable flag, max size, TTL). It
- * also exposes global gauges and per-tenant hit/miss counters so operators can understand cache
- * health across multi-tenant deployments.
+ * <p>This manager keeps a dedicated Caffeine cache for each account so eviction pressure is isolated
+ * between accounts while sharing the common configuration knobs (enable flag, max size, TTL). It
+ * also exposes global gauges and per-account hit/miss counters so operators can understand cache
+ * health across multi-account deployments.
  */
 public class GraphCacheManager {
 
   private final boolean cacheEnabled;
   private final long cacheMaxSize;
   private final MeterRegistry meterRegistry;
-  private final ConcurrentMap<String, Cache<GraphCacheKey, RelationNode>> tenantCaches =
+  private final ConcurrentMap<String, Cache<GraphCacheKey, RelationNode>> accountCaches =
       new ConcurrentHashMap<>();
-  private final ConcurrentMap<String, Counter> tenantHitCounters = new ConcurrentHashMap<>();
-  private final ConcurrentMap<String, Counter> tenantMissCounters = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, Counter> accountHitCounters = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, Counter> accountMissCounters = new ConcurrentHashMap<>();
 
   public GraphCacheManager(boolean cacheEnabled, long cacheMaxSize, MeterRegistry meterRegistry) {
     this.cacheEnabled = cacheEnabled;
@@ -40,12 +40,12 @@ public class GraphCacheManager {
               "floecat.metadata.graph.cache.max_size",
               () -> cacheEnabled ? (double) cacheMaxSize : 0.0)
           .register(meterRegistry);
-      Gauge.builder("floecat.metadata.graph.cache.tenants", tenantCaches::size)
+      Gauge.builder("floecat.metadata.graph.cache.accounts", accountCaches::size)
           .register(meterRegistry);
       Gauge.builder(
               "floecat.metadata.graph.cache.entries",
               () ->
-                  tenantCaches.values().stream()
+                  accountCaches.values().stream()
                       .mapToDouble(cache -> (double) cache.estimatedSize())
                       .sum())
           .register(meterRegistry);
@@ -60,21 +60,21 @@ public class GraphCacheManager {
     if (!cacheEnabled) {
       return null;
     }
-    Cache<GraphCacheKey, RelationNode> cache = tenantCache(id.getTenantId());
+    Cache<GraphCacheKey, RelationNode> cache = accountCache(id.getAccountId());
     if (cache == null) {
       return null;
     }
     RelationNode node = cache.getIfPresent(key);
-    incrementCounter(id.getTenantId(), node != null);
+    incrementCounter(id.getAccountId(), node != null);
     return node;
   }
 
-  /** Stores the resolved node inside the tenant cache. */
+  /** Stores the resolved node inside the account cache. */
   public void put(ResourceId id, GraphCacheKey key, RelationNode node) {
     if (!cacheEnabled || node == null) {
       return;
     }
-    Cache<GraphCacheKey, RelationNode> cache = tenantCache(id.getTenantId());
+    Cache<GraphCacheKey, RelationNode> cache = accountCache(id.getAccountId());
     if (cache != null) {
       cache.put(key, node);
     }
@@ -85,21 +85,21 @@ public class GraphCacheManager {
     if (!cacheEnabled) {
       return;
     }
-    Cache<GraphCacheKey, RelationNode> cache = tenantCaches.get(id.getTenantId());
+    Cache<GraphCacheKey, RelationNode> cache = accountCaches.get(id.getAccountId());
     if (cache != null) {
       cache.asMap().keySet().removeIf(key -> key.id().equals(id));
       if (cache.estimatedSize() == 0) {
-        tenantCaches.remove(id.getTenantId(), cache);
+        accountCaches.remove(id.getAccountId(), cache);
       }
     }
   }
 
-  private Cache<GraphCacheKey, RelationNode> tenantCache(String tenantId) {
-    if (tenantId == null || tenantId.isBlank()) {
+  private Cache<GraphCacheKey, RelationNode> accountCache(String accountId) {
+    if (accountId == null || accountId.isBlank()) {
       return null;
     }
-    return tenantCaches.computeIfAbsent(
-        tenantId,
+    return accountCaches.computeIfAbsent(
+        accountId,
         id ->
             Caffeine.newBuilder()
                 .maximumSize(cacheMaxSize)
@@ -107,17 +107,17 @@ public class GraphCacheManager {
                 .build());
   }
 
-  private void incrementCounter(String tenantId, boolean hit) {
-    if (meterRegistry == null || tenantId == null || tenantId.isBlank()) {
+  private void incrementCounter(String accountId, boolean hit) {
+    if (meterRegistry == null || accountId == null || accountId.isBlank()) {
       return;
     }
-    ConcurrentMap<String, Counter> counters = hit ? tenantHitCounters : tenantMissCounters;
+    ConcurrentMap<String, Counter> counters = hit ? accountHitCounters : accountMissCounters;
     Counter counter =
         counters.computeIfAbsent(
-            tenantId,
+            accountId,
             id ->
                 meterRegistry.counter(
-                    "floecat.metadata.graph.cache", "result", hit ? "hit" : "miss", "tenant", id));
+                    "floecat.metadata.graph.cache", "result", hit ? "hit" : "miss", "account", id));
     counter.increment();
   }
 }

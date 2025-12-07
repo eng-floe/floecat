@@ -53,7 +53,7 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
 
   @Override
   public boolean createPending(
-      String tenantId,
+      String accountId,
       String key,
       String opName,
       String requestHash,
@@ -68,7 +68,7 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
             .setExpiresAt(expiresAt)
             .build();
 
-    String uri = Keys.idempotencyBlobUri(tenantId, key);
+    String uri = Keys.idempotencyBlobUri(accountId, key);
 
     blobs.put(uri, rec.toByteArray(), "application/x-protobuf");
 
@@ -91,7 +91,7 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
 
   @Override
   public void finalizeSuccess(
-      String tenantId,
+      String accountId,
       String key,
       String opName,
       String requestHash,
@@ -112,7 +112,7 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
             .setExpiresAt(expiresAt)
             .build();
 
-    String uri = Keys.idempotencyBlobUri(tenantId, key);
+    String uri = Keys.idempotencyBlobUri(accountId, key);
     blobs.put(uri, rec.toByteArray(), "application/x-protobuf");
 
     for (int i = 0; i < CAS_MAX; i++) {

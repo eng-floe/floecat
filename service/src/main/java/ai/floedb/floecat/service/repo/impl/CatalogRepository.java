@@ -41,43 +41,43 @@ public class CatalogRepository {
   }
 
   public boolean delete(ResourceId catalogResourceId) {
-    return repo.delete(new CatalogKey(catalogResourceId.getTenantId(), catalogResourceId.getId()));
+    return repo.delete(new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
   public boolean deleteWithPrecondition(ResourceId catalogResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
-        new CatalogKey(catalogResourceId.getTenantId(), catalogResourceId.getId()),
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()),
         expectedPointerVersion);
   }
 
   public Optional<Catalog> getById(ResourceId catalogResourceId) {
     return repo.getByKey(
-        new CatalogKey(catalogResourceId.getTenantId(), catalogResourceId.getId()));
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
-  public Optional<Catalog> getByName(String tenantId, String displayName) {
-    return repo.get(Keys.catalogPointerByName(tenantId, displayName));
+  public Optional<Catalog> getByName(String accountId, String displayName) {
+    return repo.get(Keys.catalogPointerByName(accountId, displayName));
   }
 
-  public List<Catalog> list(String tenantId, int limit, String pageToken, StringBuilder nextOut) {
-    return repo.listByPrefix(Keys.catalogPointerByNamePrefix(tenantId), limit, pageToken, nextOut);
+  public List<Catalog> list(String accountId, int limit, String pageToken, StringBuilder nextOut) {
+    return repo.listByPrefix(Keys.catalogPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 
-  public int count(String tenantId) {
-    return repo.countByPrefix(Keys.catalogPointerByNamePrefix(tenantId));
+  public int count(String accountId) {
+    return repo.countByPrefix(Keys.catalogPointerByNamePrefix(accountId));
   }
 
   public MutationMeta metaFor(ResourceId catalogResourceId) {
-    return repo.metaFor(new CatalogKey(catalogResourceId.getTenantId(), catalogResourceId.getId()));
+    return repo.metaFor(new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
   public MutationMeta metaFor(ResourceId catalogResourceId, Timestamp nowTs) {
     return repo.metaFor(
-        new CatalogKey(catalogResourceId.getTenantId(), catalogResourceId.getId()), nowTs);
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()), nowTs);
   }
 
   public MutationMeta metaForSafe(ResourceId catalogResourceId) {
     return repo.metaForSafe(
-        new CatalogKey(catalogResourceId.getTenantId(), catalogResourceId.getId()));
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 }

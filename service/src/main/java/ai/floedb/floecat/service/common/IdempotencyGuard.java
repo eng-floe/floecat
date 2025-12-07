@@ -22,7 +22,7 @@ public final class IdempotencyGuard {
   public record CreateResult<T>(T resource, ResourceId resourceId) {}
 
   public static <T> T runOnce(
-      String tenantId,
+      String accountId,
       String opName,
       String idempotencyKey,
       byte[] requestBytes,
@@ -40,7 +40,7 @@ public final class IdempotencyGuard {
       return creator.get().resource();
     }
 
-    final String key = Keys.idempotencyKey(tenantId, opName, idempotencyKey);
+    final String key = Keys.idempotencyKey(accountId, opName, idempotencyKey);
     final String requestHash = sha256B64(requestBytes);
 
     var existingOpt = store.get(key);
@@ -81,7 +81,7 @@ public final class IdempotencyGuard {
                 .build());
 
     final boolean createdPending =
-        store.createPending(tenantId, key, opName, requestHash, now, expiresAt);
+        store.createPending(accountId, key, opName, requestHash, now, expiresAt);
     if (!createdPending) {
       var againOpt = store.get(key);
       if (againOpt.isEmpty()) {
@@ -119,7 +119,7 @@ public final class IdempotencyGuard {
       var payload = serializer.apply(created.resource());
 
       store.finalizeSuccess(
-          tenantId, key, opName, requestHash, created.resourceId(), meta, payload, now, expiresAt);
+          accountId, key, opName, requestHash, created.resourceId(), meta, payload, now, expiresAt);
 
       return created.resource();
     } catch (Throwable t) {

@@ -41,11 +41,11 @@ class NameResolverTest {
     resolver =
         new NameResolver(catalogRepository, namespaceRepository, tableRepository, viewRepository);
 
-    ResourceId catalogId = rid("tenant", "cat", ResourceKind.RK_CATALOG);
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
     catalogRepository.put(
         Catalog.newBuilder().setResourceId(catalogId).setDisplayName("cat").build());
 
-    ResourceId namespaceId = rid("tenant", "ns", ResourceKind.RK_NAMESPACE);
+    ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);
     namespaceRepository.put(
         Namespace.newBuilder()
             .setResourceId(namespaceId)
@@ -53,7 +53,7 @@ class NameResolverTest {
             .setDisplayName("ns")
             .build());
 
-    ResourceId tableId = rid("tenant", "tbl", ResourceKind.RK_TABLE);
+    ResourceId tableId = rid("account", "tbl", ResourceKind.RK_TABLE);
     tableRepository.put(
         Table.newBuilder()
             .setResourceId(tableId)
@@ -63,7 +63,7 @@ class NameResolverTest {
             .setSchemaJson("{}")
             .build());
 
-    ResourceId viewId = rid("tenant", "view", ResourceKind.RK_VIEW);
+    ResourceId viewId = rid("account", "view", ResourceKind.RK_VIEW);
     viewRepository.put(
         View.newBuilder()
             .setResourceId(viewId)
@@ -76,33 +76,33 @@ class NameResolverTest {
 
   @Test
   void resolveCatalogIdReturnsResource() {
-    ResourceId resolved = resolver.resolveCatalogId("corr", "tenant", "cat");
+    ResourceId resolved = resolver.resolveCatalogId("corr", "account", "cat");
     assertThat(resolved.getId()).isEqualTo("cat");
   }
 
   @Test
   void resolveNamespaceIdReturnsResource() {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").setName("ns").build();
-    ResourceId resolved = resolver.resolveNamespaceId("corr", "tenant", ref);
+    ResourceId resolved = resolver.resolveNamespaceId("corr", "account", ref);
     assertThat(resolved.getId()).isEqualTo("ns");
   }
 
   @Test
   void resolveTableIdReturnsResource() {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("orders").build();
-    ResourceId resolved = resolver.resolveTableId("corr", "tenant", ref);
+    ResourceId resolved = resolver.resolveTableId("corr", "account", ref);
     assertThat(resolved.getId()).isEqualTo("tbl");
   }
 
   @Test
   void resolveViewIdReturnsResource() {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("orders_v").build();
-    ResourceId resolved = resolver.resolveViewId("corr", "tenant", ref);
+    ResourceId resolved = resolver.resolveViewId("corr", "account", ref);
     assertThat(resolved.getId()).isEqualTo("view");
   }
 
-  private static ResourceId rid(String tenant, String id, ResourceKind kind) {
-    return ResourceId.newBuilder().setTenantId(tenant).setId(id).setKind(kind).build();
+  private static ResourceId rid(String account, String id, ResourceKind kind) {
+    return ResourceId.newBuilder().setAccountId(account).setId(id).setKind(kind).build();
   }
 
   static final class FakeCatalogRepository extends CatalogRepository {
@@ -122,11 +122,11 @@ class NameResolverTest {
     }
 
     @Override
-    public Optional<Catalog> getByName(String tenantId, String displayName) {
+    public Optional<Catalog> getByName(String accountId, String displayName) {
       return entries.values().stream()
           .filter(
               cat ->
-                  tenantId.equals(cat.getResourceId().getTenantId())
+                  accountId.equals(cat.getResourceId().getAccountId())
                       && displayName.equals(cat.getDisplayName()))
           .findFirst();
     }
@@ -154,11 +154,11 @@ class NameResolverTest {
     }
 
     @Override
-    public Optional<Namespace> getByPath(String tenantId, String catalogId, List<String> path) {
+    public Optional<Namespace> getByPath(String accountId, String catalogId, List<String> path) {
       return entries.values().stream()
           .filter(
               ns ->
-                  tenantId.equals(ns.getResourceId().getTenantId())
+                  accountId.equals(ns.getResourceId().getAccountId())
                       && catalogId.equals(ns.getCatalogId().getId())
                       && matches(ns, path))
           .findFirst();
@@ -197,11 +197,11 @@ class NameResolverTest {
 
     @Override
     public Optional<Table> getByName(
-        String tenantId, String catalogId, String namespaceId, String displayName) {
+        String accountId, String catalogId, String namespaceId, String displayName) {
       return entries.values().stream()
           .filter(
               tbl ->
-                  tenantId.equals(tbl.getResourceId().getTenantId())
+                  accountId.equals(tbl.getResourceId().getAccountId())
                       && catalogId.equals(tbl.getCatalogId().getId())
                       && namespaceId.equals(tbl.getNamespaceId().getId())
                       && displayName.equals(tbl.getDisplayName()))
@@ -232,11 +232,11 @@ class NameResolverTest {
 
     @Override
     public Optional<View> getByName(
-        String tenantId, String catalogId, String namespaceId, String displayName) {
+        String accountId, String catalogId, String namespaceId, String displayName) {
       return entries.values().stream()
           .filter(
               vw ->
-                  tenantId.equals(vw.getResourceId().getTenantId())
+                  accountId.equals(vw.getResourceId().getAccountId())
                       && catalogId.equals(vw.getCatalogId().getId())
                       && namespaceId.equals(vw.getNamespaceId().getId())
                       && displayName.equals(vw.getDisplayName()))

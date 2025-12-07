@@ -51,19 +51,19 @@ class EngineHintManagerTest {
   private static TableNode tableNode(long version) {
     ResourceId tableId =
         ResourceId.newBuilder()
-            .setTenantId("tenant")
+            .setAccountId("account")
             .setId("table")
             .setKind(ResourceKind.RK_TABLE)
             .build();
     ResourceId catalogId =
         ResourceId.newBuilder()
-            .setTenantId("tenant")
+            .setAccountId("account")
             .setId("catalog")
             .setKind(ResourceKind.RK_CATALOG)
             .build();
     ResourceId namespaceId =
         ResourceId.newBuilder()
-            .setTenantId("tenant")
+            .setAccountId("account")
             .setId("namespace")
             .setKind(ResourceKind.RK_NAMESPACE)
             .build();

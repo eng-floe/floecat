@@ -105,7 +105,7 @@ class ConcurrencyOCCIdempotencyIT {
             "seed");
 
     var seedTid = base.getResourceId();
-    String canonSeed = Keys.tablePointerById(seedTid.getTenantId(), seedTid.getId());
+    String canonSeed = Keys.tablePointerById(seedTid.getAccountId(), seedTid.getId());
     long v0 = ptr.get(canonSeed).orElseThrow().getVersion();
 
     final int WORKERS = 48;
@@ -262,8 +262,8 @@ class ConcurrencyOCCIdempotencyIT {
     }
 
     for (ResourceId id : createdTableIds) {
-      var canonKey = Keys.tablePointerById(id.getTenantId(), id.getId());
-      var blobUri = Keys.tableBlobUri(id.getTenantId(), id.getId());
+      var canonKey = Keys.tablePointerById(id.getAccountId(), id.getId());
+      var blobUri = Keys.tableBlobUri(id.getAccountId(), id.getId());
       assertTrue(ptr.get(canonKey).isPresent(), "canon pointer must exist for created table");
       assertTrue(blobs.head(blobUri).isPresent(), "blob must exist for created table");
     }
@@ -275,10 +275,10 @@ class ConcurrencyOCCIdempotencyIT {
 
     Thread.sleep(1500);
 
-    final String tenantId = cat.getResourceId().getTenantId();
+    final String accountId = cat.getResourceId().getAccountId();
 
-    String idemBlobPrefix = Keys.idempotencyPrefixTenant(tenantId);
-    String idemPtrPrefix = Keys.idempotencyPrefixTenant(tenantId);
+    String idemBlobPrefix = Keys.idempotencyPrefixAccount(accountId);
+    String idemPtrPrefix = Keys.idempotencyPrefixAccount(accountId);
 
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
     do {

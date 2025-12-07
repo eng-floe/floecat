@@ -29,11 +29,11 @@ public class StagedTableRepository {
   }
 
   public Optional<StagedTableEntry> findSingle(
-      String tenantId, String catalog, List<String> namespace, String tableName) {
+      String accountId, String catalog, List<String> namespace, String tableName) {
     StagedTableEntry match = null;
     for (StagedTableEntry entry : stages.values()) {
       StagedTableKey key = entry.key();
-      if (!tenantId.equals(key.tenantId())
+      if (!accountId.equals(key.accountId())
           || !catalog.equals(key.catalogName())
           || !key.namespace().equals(namespace)
           || !tableName.equals(key.tableName())) {

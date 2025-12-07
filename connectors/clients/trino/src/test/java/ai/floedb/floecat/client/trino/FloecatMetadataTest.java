@@ -75,14 +75,14 @@ class FloecatMetadataTest {
   private static final ResourceId TABLE_ID =
       ResourceId.newBuilder()
           .setId("table-id")
-          .setTenantId("tenant-1")
+          .setAccountId("account-1")
           .setKind(ResourceKind.RK_TABLE)
           .build();
 
   private static final ResourceId CATALOG_ID =
       ResourceId.newBuilder()
           .setId("catalog-id")
-          .setTenantId("tenant-1")
+          .setAccountId("account-1")
           .setKind(ResourceKind.RK_CATALOG)
           .build();
 
@@ -234,7 +234,7 @@ class FloecatMetadataTest {
         new FloecatTableHandle(
             new SchemaTableName("demo", "tbl"),
             TABLE_ID.getId(),
-            TABLE_ID.getTenantId(),
+            TABLE_ID.getAccountId(),
             TABLE_ID.getKind().name(),
             "s3://bucket/table",
             CURRENT_SCHEMA_JSON,
@@ -281,7 +281,7 @@ class FloecatMetadataTest {
         new FloecatTableHandle(
             new SchemaTableName("demo", "tbl"),
             TABLE_ID.getId(),
-            TABLE_ID.getTenantId(),
+            TABLE_ID.getAccountId(),
             TABLE_ID.getKind().name(),
             "s3://bucket/table",
             CURRENT_SCHEMA_JSON,
@@ -322,7 +322,7 @@ class FloecatMetadataTest {
         new FloecatTableHandle(
             new SchemaTableName("demo", "tbl"),
             TABLE_ID.getId(),
-            TABLE_ID.getTenantId(),
+            TABLE_ID.getAccountId(),
             TABLE_ID.getKind().name(),
             "s3://bucket/table",
             CURRENT_SCHEMA_JSON,

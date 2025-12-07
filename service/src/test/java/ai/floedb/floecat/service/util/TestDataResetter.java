@@ -12,28 +12,28 @@ public class TestDataResetter {
   @Inject PointerStore ptr;
   @Inject BlobStore blobs;
 
-  private static final String GLOBAL_TENANTS_BY_ID_PREFIX = "/tenants/by-id/";
+  private static final String GLOBAL_ACCOUNTS_BY_ID_PREFIX = "/accounts/by-id/";
 
   public void wipeAll() {
-    var tenantIds = listTenantIds();
+    var accountIds = listAccountIds();
 
-    for (var tid : tenantIds) {
-      ptr.deleteByPrefix("/tenants/" + tid + "/");
+    for (var tid : accountIds) {
+      ptr.deleteByPrefix("/accounts/" + tid + "/");
     }
-    ptr.deleteByPrefix("/tenants/");
+    ptr.deleteByPrefix("/accounts/");
 
-    for (var tid : tenantIds) {
-      blobs.deletePrefix("/tenants/" + tid + "/");
+    for (var tid : accountIds) {
+      blobs.deletePrefix("/accounts/" + tid + "/");
     }
-    blobs.deletePrefix("/tenants/");
+    blobs.deletePrefix("/accounts/");
   }
 
-  private List<String> listTenantIds() {
+  private List<String> listAccountIds() {
     var ids = new ArrayList<String>();
     String token = "";
     do {
       var next = new StringBuilder();
-      var rows = ptr.listPointersByPrefix(GLOBAL_TENANTS_BY_ID_PREFIX, 200, token, next);
+      var rows = ptr.listPointersByPrefix(GLOBAL_ACCOUNTS_BY_ID_PREFIX, 200, token, next);
       for (var r : rows) {
         var k = r.getKey();
         int idx = k.lastIndexOf('/');

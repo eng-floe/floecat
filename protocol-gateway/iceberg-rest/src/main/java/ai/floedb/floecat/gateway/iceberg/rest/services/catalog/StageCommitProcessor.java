@@ -48,12 +48,12 @@ public class StageCommitProcessor {
   public StageCommitResult commitStage(
       String prefix,
       String catalogName,
-      String tenantId,
+      String accountId,
       List<String> namespacePath,
       String tableName,
       String stageId) {
-    if (tenantId == null || tenantId.isBlank()) {
-      throw StageCommitException.validation("tenant context is required");
+    if (accountId == null || accountId.isBlank()) {
+      throw StageCommitException.validation("account context is required");
     }
     if (namespacePath == null || namespacePath.isEmpty()) {
       throw StageCommitException.validation("namespace is required");
@@ -65,7 +65,7 @@ public class StageCommitProcessor {
       throw StageCommitException.validation("stage-id is required");
     }
     StagedTableKey key =
-        new StagedTableKey(tenantId, catalogName, namespacePath, tableName, stageId);
+        new StagedTableKey(accountId, catalogName, namespacePath, tableName, stageId);
     StagedTableEntry entry =
         stagedTableService
             .getStage(key)

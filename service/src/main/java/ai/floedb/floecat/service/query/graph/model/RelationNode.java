@@ -26,7 +26,7 @@ public sealed interface RelationNode
         BuiltinCollationNode,
         BuiltinAggregateNode {
 
-  /** Stable identifier (tenant + kind + UUID) for the node. */
+  /** Stable identifier (account + kind + UUID) for the node. */
   ResourceId id();
 
   /** Pointer version/Etag used for cache invalidation. */

@@ -42,46 +42,46 @@ public class ConnectorRepository {
 
   public boolean delete(ResourceId connectorResourceId) {
     return repo.delete(
-        new ConnectorKey(connectorResourceId.getTenantId(), connectorResourceId.getId()));
+        new ConnectorKey(connectorResourceId.getAccountId(), connectorResourceId.getId()));
   }
 
   public boolean deleteWithPrecondition(
       ResourceId connectorResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
-        new ConnectorKey(connectorResourceId.getTenantId(), connectorResourceId.getId()),
+        new ConnectorKey(connectorResourceId.getAccountId(), connectorResourceId.getId()),
         expectedPointerVersion);
   }
 
   public Optional<Connector> getById(ResourceId connectorResourceId) {
     return repo.getByKey(
-        new ConnectorKey(connectorResourceId.getTenantId(), connectorResourceId.getId()));
+        new ConnectorKey(connectorResourceId.getAccountId(), connectorResourceId.getId()));
   }
 
-  public Optional<Connector> getByName(String tenantId, String displayName) {
-    return repo.get(Keys.connectorPointerByName(tenantId, displayName));
+  public Optional<Connector> getByName(String accountId, String displayName) {
+    return repo.get(Keys.connectorPointerByName(accountId, displayName));
   }
 
-  public List<Connector> list(String tenantId, int limit, String pageToken, StringBuilder nextOut) {
+  public List<Connector> list(String accountId, int limit, String pageToken, StringBuilder nextOut) {
     return repo.listByPrefix(
-        Keys.connectorPointerByNamePrefix(tenantId), limit, pageToken, nextOut);
+        Keys.connectorPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 
-  public int count(String tenantId) {
-    return repo.countByPrefix(Keys.connectorPointerByNamePrefix(tenantId));
+  public int count(String accountId) {
+    return repo.countByPrefix(Keys.connectorPointerByNamePrefix(accountId));
   }
 
   public MutationMeta metaFor(ResourceId connectorResourceId) {
     return repo.metaFor(
-        new ConnectorKey(connectorResourceId.getTenantId(), connectorResourceId.getId()));
+        new ConnectorKey(connectorResourceId.getAccountId(), connectorResourceId.getId()));
   }
 
   public MutationMeta metaFor(ResourceId connectorResourceId, Timestamp nowTs) {
     return repo.metaFor(
-        new ConnectorKey(connectorResourceId.getTenantId(), connectorResourceId.getId()), nowTs);
+        new ConnectorKey(connectorResourceId.getAccountId(), connectorResourceId.getId()), nowTs);
   }
 
   public MutationMeta metaForSafe(ResourceId connectorResourceId) {
     return repo.metaForSafe(
-        new ConnectorKey(connectorResourceId.getTenantId(), connectorResourceId.getId()));
+        new ConnectorKey(connectorResourceId.getAccountId(), connectorResourceId.getId()));
   }
 }

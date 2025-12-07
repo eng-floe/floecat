@@ -20,7 +20,7 @@ public class FloecatTableHandle implements ConnectorTableHandle {
 
   private final SchemaTableName schemaTableName;
   private final String tableId;
-  private final String tableTenantId;
+  private final String tableAccountId;
   private final String tableKind;
   private final String tableUri;
   private final String schemaJson;
@@ -36,7 +36,7 @@ public class FloecatTableHandle implements ConnectorTableHandle {
   public FloecatTableHandle(
       @JsonProperty("schemaTableName") SchemaTableName schemaTableName,
       @JsonProperty("tableId") String tableId,
-      @JsonProperty("tableTenantId") String tableTenantId,
+      @JsonProperty("tableAccountId") String tableAccountId,
       @JsonProperty("tableKind") String tableKind,
       @JsonProperty("tableUri") String tableUri,
       @JsonProperty("schemaJson") String schemaJson,
@@ -49,7 +49,7 @@ public class FloecatTableHandle implements ConnectorTableHandle {
       @JsonProperty("asOfEpochMillis") Long asOfEpochMillis) {
     this.schemaTableName = schemaTableName;
     this.tableId = tableId;
-    this.tableTenantId = tableTenantId;
+    this.tableAccountId = tableAccountId;
     this.tableKind = tableKind;
     this.tableUri = tableUri;
     this.schemaJson = schemaJson;
@@ -69,14 +69,14 @@ public class FloecatTableHandle implements ConnectorTableHandle {
 
   @com.fasterxml.jackson.annotation.JsonIgnore
   public ResourceId getTableResourceId() {
-    if (tableTenantId == null || tableTenantId.isBlank()) {
-      throw new IllegalStateException("Missing tenant id on table handle for table " + tableId);
+    if (tableAccountId == null || tableAccountId.isBlank()) {
+      throw new IllegalStateException("Missing account id on table handle for table " + tableId);
     }
     ResourceKind kind =
         (tableKind == null || tableKind.isBlank())
             ? ResourceKind.RK_TABLE
             : ResourceKind.valueOf(tableKind);
-    return ResourceId.newBuilder().setId(tableId).setTenantId(tableTenantId).setKind(kind).build();
+    return ResourceId.newBuilder().setId(tableId).setAccountId(tableAccountId).setKind(kind).build();
   }
 
   @JsonProperty
@@ -85,8 +85,8 @@ public class FloecatTableHandle implements ConnectorTableHandle {
   }
 
   @JsonProperty
-  public String getTableTenantId() {
-    return tableTenantId;
+  public String getTableAccountId() {
+    return tableAccountId;
   }
 
   @JsonProperty

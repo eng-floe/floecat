@@ -41,20 +41,20 @@ public class NameResolver {
     this.viewRepository = viewRepository;
   }
 
-  public ResourceId resolveCatalogId(String correlationId, String tenantId, String catalogName) {
+  public ResourceId resolveCatalogId(String correlationId, String accountId, String catalogName) {
     return catalogRepository
-        .getByName(tenantId, catalogName)
+        .getByName(accountId, catalogName)
         .map(Catalog::getResourceId)
         .orElseThrow(
             () -> GrpcErrors.notFound(correlationId, "catalog", Map.of("id", catalogName)));
   }
 
-  public ResourceId resolveNamespaceId(String correlationId, String tenantId, NameRef ref) {
-    Catalog catalog = catalogByName(correlationId, tenantId, ref.getCatalog());
+  public ResourceId resolveNamespaceId(String correlationId, String accountId, NameRef ref) {
+    Catalog catalog = catalogByName(correlationId, accountId, ref.getCatalog());
     List<String> fullPath = namespacePath(ref);
 
     return namespaceRepository
-        .getByPath(tenantId, catalog.getResourceId().getId(), fullPath)
+        .getByPath(accountId, catalog.getResourceId().getId(), fullPath)
         .map(Namespace::getResourceId)
         .orElseThrow(
             () ->
@@ -68,13 +68,13 @@ public class NameResolver {
                         String.join(".", fullPath))));
   }
 
-  public ResourceId resolveTableId(String correlationId, String tenantId, NameRef ref) {
-    Catalog catalog = catalogByName(correlationId, tenantId, ref.getCatalog());
-    Namespace namespace = namespaceByPath(correlationId, tenantId, catalog, ref.getPathList());
+  public ResourceId resolveTableId(String correlationId, String accountId, NameRef ref) {
+    Catalog catalog = catalogByName(correlationId, accountId, ref.getCatalog());
+    Namespace namespace = namespaceByPath(correlationId, accountId, catalog, ref.getPathList());
 
     return tableRepository
         .getByName(
-            tenantId,
+            accountId,
             catalog.getResourceId().getId(),
             namespace.getResourceId().getId(),
             ref.getName())
@@ -90,13 +90,13 @@ public class NameResolver {
                         "name", ref.getName())));
   }
 
-  public ResourceId resolveViewId(String correlationId, String tenantId, NameRef ref) {
-    Catalog catalog = catalogByName(correlationId, tenantId, ref.getCatalog());
-    Namespace namespace = namespaceByPath(correlationId, tenantId, catalog, ref.getPathList());
+  public ResourceId resolveViewId(String correlationId, String accountId, NameRef ref) {
+    Catalog catalog = catalogByName(correlationId, accountId, ref.getCatalog());
+    Namespace namespace = namespaceByPath(correlationId, accountId, catalog, ref.getPathList());
 
     return viewRepository
         .getByName(
-            tenantId,
+            accountId,
             catalog.getResourceId().getId(),
             namespace.getResourceId().getId(),
             ref.getName())
@@ -112,24 +112,24 @@ public class NameResolver {
                         "name", ref.getName())));
   }
 
-  public Optional<ResolvedRelation> resolveTableRelation(String tenantId, NameRef ref) {
+  public Optional<ResolvedRelation> resolveTableRelation(String accountId, NameRef ref) {
     if (!isValidCatalog(ref) || !hasName(ref)) {
       return Optional.empty();
     }
-    var catalogOpt = catalogRepository.getByName(tenantId, ref.getCatalog());
+    var catalogOpt = catalogRepository.getByName(accountId, ref.getCatalog());
     if (catalogOpt.isEmpty()) {
       return Optional.empty();
     }
     final Catalog catalog = catalogOpt.get();
     var namespaceOpt =
-        namespaceRepository.getByPath(tenantId, catalog.getResourceId().getId(), ref.getPathList());
+        namespaceRepository.getByPath(accountId, catalog.getResourceId().getId(), ref.getPathList());
     if (namespaceOpt.isEmpty()) {
       return Optional.empty();
     }
     final Namespace namespace = namespaceOpt.get();
     return tableRepository
         .getByName(
-            tenantId,
+            accountId,
             catalog.getResourceId().getId(),
             namespace.getResourceId().getId(),
             ref.getName())
@@ -141,24 +141,24 @@ public class NameResolver {
                         catalog, namespace, table.getDisplayName(), table.getResourceId())));
   }
 
-  public Optional<ResolvedRelation> resolveViewRelation(String tenantId, NameRef ref) {
+  public Optional<ResolvedRelation> resolveViewRelation(String accountId, NameRef ref) {
     if (!isValidCatalog(ref) || !hasName(ref)) {
       return Optional.empty();
     }
-    var catalogOpt = catalogRepository.getByName(tenantId, ref.getCatalog());
+    var catalogOpt = catalogRepository.getByName(accountId, ref.getCatalog());
     if (catalogOpt.isEmpty()) {
       return Optional.empty();
     }
     final Catalog catalog = catalogOpt.get();
     var namespaceOpt =
-        namespaceRepository.getByPath(tenantId, catalog.getResourceId().getId(), ref.getPathList());
+        namespaceRepository.getByPath(accountId, catalog.getResourceId().getId(), ref.getPathList());
     if (namespaceOpt.isEmpty()) {
       return Optional.empty();
     }
     final Namespace namespace = namespaceOpt.get();
     return viewRepository
         .getByName(
-            tenantId,
+            accountId,
             catalog.getResourceId().getId(),
             namespace.getResourceId().getId(),
             ref.getName())
@@ -170,26 +170,26 @@ public class NameResolver {
                         catalog, namespace, view.getDisplayName(), view.getResourceId())));
   }
 
-  private Catalog catalogByName(String correlationId, String tenantId, String catalogName) {
+  private Catalog catalogByName(String correlationId, String accountId, String catalogName) {
     return catalogRepository
-        .getByName(tenantId, catalogName)
+        .getByName(accountId, catalogName)
         .orElseThrow(
             () -> GrpcErrors.notFound(correlationId, "catalog", Map.of("id", catalogName)));
   }
 
   private Namespace namespaceByPath(
-      String correlationId, String tenantId, Catalog catalog, List<String> pathSegments) {
-    return namespaceByPath(correlationId, tenantId, catalog, pathSegments, null);
+      String correlationId, String accountId, Catalog catalog, List<String> pathSegments) {
+    return namespaceByPath(correlationId, accountId, catalog, pathSegments, null);
   }
 
   private Namespace namespaceByPath(
-      String correlationId, String tenantId, Catalog catalog, List<String> parents, String name) {
+      String correlationId, String accountId, Catalog catalog, List<String> parents, String name) {
     List<String> segments = new java.util.ArrayList<>(parents);
     if (name != null && !name.isBlank()) {
       segments.add(name);
     }
     return namespaceRepository
-        .getByPath(tenantId, catalog.getResourceId().getId(), segments)
+        .getByPath(accountId, catalog.getResourceId().getId(), segments)
         .orElseThrow(
             () ->
                 GrpcErrors.notFound(

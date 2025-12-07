@@ -32,10 +32,10 @@ class NamespaceRepositoryTest {
 
   @Test
   void putAndGetRoundTrip() {
-    String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var catRid =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_CATALOG)
             .build();
@@ -45,7 +45,7 @@ class NamespaceRepositoryTest {
 
     var nsRid =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_NAMESPACE)
             .build();

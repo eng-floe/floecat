@@ -109,7 +109,7 @@ class CatalogMutationIT {
 
     var wrongKind =
         ResourceId.newBuilder()
-            .setTenantId(c.getResourceId().getTenantId())
+            .setAccountId(c.getResourceId().getAccountId())
             .setId(c.getResourceId().getId())
             .setKind(ResourceKind.RK_NAMESPACE)
             .build();
@@ -174,7 +174,7 @@ class CatalogMutationIT {
   void CatalogInvalidId() throws Exception {
     var badId =
         ResourceId.newBuilder()
-            .setTenantId(TestSupport.DEFAULT_SEED_TENANT)
+            .setAccountId(TestSupport.DEFAULT_SEED_ACCOUNT)
             .setKind(ResourceKind.RK_CATALOG)
             .setId("00000000-0000-0000-0000-000000000001")
             .build();
@@ -201,7 +201,7 @@ class CatalogMutationIT {
     var id = c1.getResourceId();
 
     assertEquals(ResourceKind.RK_CATALOG, id.getKind());
-    assertEquals(c1.getResourceId().getTenantId(), id.getTenantId());
+    assertEquals(c1.getResourceId().getAccountId(), id.getAccountId());
     assertTrue(id.getId().matches("^[0-9a-fA-F-]{36}$"), "id must look like UUID");
 
     FieldMask mask_name = FieldMask.newBuilder().addPaths("display_name").build();
@@ -326,7 +326,7 @@ class CatalogMutationIT {
                 .build());
 
     ResourceId catId = ccr.getCatalog().getResourceId();
-    awaitIdemVisible(catId.getTenantId(), "CreateCatalog", key.getKey(), Duration.ofSeconds(2));
+    awaitIdemVisible(catId.getAccountId(), "CreateCatalog", key.getKey(), Duration.ofSeconds(2));
 
     var ex =
         assertThrows(
@@ -344,11 +344,11 @@ class CatalogMutationIT {
         ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
   }
 
-  private void awaitIdemVisible(String tenant, String op, String key, Duration timeout)
+  private void awaitIdemVisible(String account, String op, String key, Duration timeout)
       throws InterruptedException {
     long until = System.currentTimeMillis() + timeout.toMillis();
     while (System.currentTimeMillis() < until) {
-      var recOpt = idempotencyStore.get(Keys.idempotencyKey(tenant, op, key));
+      var recOpt = idempotencyStore.get(Keys.idempotencyKey(account, op, key));
       if (recOpt.isPresent() && recOpt.get().getStatus() == IdempotencyRecord.Status.SUCCEEDED) {
         return;
       }

@@ -3,7 +3,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.support.filter;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
-import ai.floedb.floecat.gateway.iceberg.rest.services.tenant.TenantContext;
+import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.container.ContainerRequestContext;
@@ -24,26 +24,26 @@ import org.jboss.resteasy.reactive.server.ServerRequestFilter;
 
 @Provider
 @PreMatching
-public class TenantHeaderFilter implements ContainerRequestFilter {
-  private static final Logger LOG = Logger.getLogger(TenantHeaderFilter.class);
+public class AccountHeaderFilter implements ContainerRequestFilter {
+  private static final Logger LOG = Logger.getLogger(AccountHeaderFilter.class);
   @Inject Instance<IcebergGatewayConfig> config;
-  @Inject TenantContext tenantContext;
+  @Inject AccountContext accountContext;
 
   public void setConfigInstance(Instance<IcebergGatewayConfig> config) {
     this.config = config;
   }
 
-  public void setTenantContext(TenantContext tenantContext) {
-    this.tenantContext = tenantContext;
+  public void setAccountContext(AccountContext accountContext) {
+    this.accountContext = accountContext;
   }
 
-  private static final String DEFAULT_TENANT_HEADER = "x-tenant-id";
+  private static final String DEFAULT_ACCOUNT_HEADER = "x-tenant-id";
   private static final String DEFAULT_AUTH_HEADER = "authorization";
 
   @Override
   @ServerRequestFilter(priority = 10)
   public void filter(ContainerRequestContext requestContext) {
-    LOG.infof("TenantHeaderFilter invoked for path %s", requestContext.getUriInfo().getPath());
+    LOG.infof("AccountHeaderFilter invoked for path %s", requestContext.getUriInfo().getPath());
     rewriteDefaultPrefix(requestContext);
     if (requestContext.getProperty("rewrittenPath") != null) {
       LOG.infof("Request URI after rewrite: %s", requestContext.getUriInfo().getRequestUri());
@@ -51,19 +51,19 @@ public class TenantHeaderFilter implements ContainerRequestFilter {
     if (requestContext.getUriInfo().getPath().equals("v1/config")) {
       return;
     }
-    String tenantHeader = resolveTenantHeaderName();
-    String tenant = headerValue(requestContext, tenantHeader);
-    if (tenant == null || tenant.isBlank()) {
-      tenant = defaultTenant().orElse(null);
-      if (tenant != null) {
-        requestContext.getHeaders().putSingle(tenantHeader, tenant);
+    String accountHeader = resolveAccountHeaderName();
+    String account = headerValue(requestContext, accountHeader);
+    if (account == null || account.isBlank()) {
+      account = defaultAccount().orElse(null);
+      if (account != null) {
+        requestContext.getHeaders().putSingle(accountHeader, account);
       }
     }
-    if (tenant == null || tenant.isBlank()) {
-      requestContext.abortWith(unauthorized("missing tenant header"));
+    if (account == null || account.isBlank()) {
+      requestContext.abortWith(unauthorized("missing account header"));
       return;
     }
-    tenantContext.setTenantId(tenant.trim());
+    accountContext.setAccountId(account.trim());
 
     String authHeader = resolveAuthHeaderName();
     String auth = headerValue(requestContext, authHeader);
@@ -115,15 +115,15 @@ public class TenantHeaderFilter implements ContainerRequestFilter {
     LOG.infof("Rewrote legacy path %s to %s", uriInfo.getPath(), newPath);
   }
 
-  private String resolveTenantHeaderName() {
+  private String resolveAccountHeaderName() {
     if (config.isUnsatisfied()) {
-      return DEFAULT_TENANT_HEADER;
+      return DEFAULT_ACCOUNT_HEADER;
     }
     try {
-      String header = config.get().tenantHeader();
-      return header == null || header.isBlank() ? DEFAULT_TENANT_HEADER : header;
+      String header = config.get().accountHeader();
+      return header == null || header.isBlank() ? DEFAULT_ACCOUNT_HEADER : header;
     } catch (Exception ignored) {
-      return DEFAULT_TENANT_HEADER;
+      return DEFAULT_ACCOUNT_HEADER;
     }
   }
 
@@ -145,12 +145,12 @@ public class TenantHeaderFilter implements ContainerRequestFilter {
         .build();
   }
 
-  private Optional<String> defaultTenant() {
+  private Optional<String> defaultAccount() {
     if (config.isUnsatisfied()) {
       return Optional.empty();
     }
     try {
-      String value = config.get().defaultTenantId();
+      String value = config.get().defaultAccountId();
       if (value == null || value.isBlank()) {
         return Optional.empty();
       }

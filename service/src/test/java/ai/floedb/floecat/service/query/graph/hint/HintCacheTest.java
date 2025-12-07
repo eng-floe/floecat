@@ -36,7 +36,7 @@ class HintCacheTest {
   private static TableNode tableNode(long version) {
     ResourceId tableId =
         ResourceId.newBuilder()
-            .setTenantId("t")
+            .setAccountId("t")
             .setId("tbl")
             .setKind(ResourceKind.RK_TABLE)
             .build();

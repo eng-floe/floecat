@@ -10,12 +10,12 @@ public final class AuthMetadata {
 
   public static Metadata fromHeaders(IcebergGatewayConfig config, HttpHeaders headers) {
     Metadata md = new Metadata();
-    String tenant = header(headers, config.tenantHeader());
-    if ((tenant == null || tenant.isBlank()) && config.defaultTenantId() != null) {
-      tenant = config.defaultTenantId().isBlank() ? null : config.defaultTenantId();
+    String account = header(headers, config.accountHeader());
+    if ((account == null || account.isBlank()) && config.defaultAccountId() != null) {
+      account = config.defaultAccountId().isBlank() ? null : config.defaultAccountId();
     }
-    if (tenant != null && !tenant.isBlank()) {
-      md.put(key(config.tenantHeader()), tenant);
+    if (account != null && !account.isBlank()) {
+      md.put(key(config.accountHeader()), account);
     }
     String auth = header(headers, config.authHeader());
     if ((auth == null || auth.isBlank()) && config.defaultAuthorization() != null) {

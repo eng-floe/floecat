@@ -134,7 +134,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   QueryDescriptor descriptor =
                       QueryDescriptor.newBuilder()
                           .setQueryId(queryId)
-                          .setTenantId(pc.getTenantId())
+                          .setAccountId(pc.getAccountId())
                           .setQueryStatus(ctx.getQueryStatus())
                           .setCreatedAt(ts(ctx.getCreatedAtMs()))
                           .setExpiresAt(ts(ctx.getExpiresAtMs()))
@@ -247,7 +247,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   var builder =
                       QueryDescriptor.newBuilder()
                           .setQueryId(ctx.getQueryId())
-                          .setTenantId(pc.getTenantId())
+                          .setAccountId(pc.getAccountId())
                           .setQueryStatus(ctx.getQueryStatus())
                           .setCreatedAt(ts(ctx.getCreatedAtMs()))
                           .setExpiresAt(ts(ctx.getExpiresAtMs()));

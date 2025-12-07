@@ -1,7 +1,7 @@
 package ai.floedb.floecat.service.metrics;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.repo.impl.TenantRepository;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.BlobStore;
 import ai.floedb.floecat.storage.PointerStore;
@@ -22,7 +22,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 @ApplicationScoped
 public class StorageUsageMetrics {
 
-  @Inject TenantRepository tenants;
+  @Inject AccountRepository accounts;
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject MeterRegistry registry;
@@ -39,8 +39,8 @@ public class StorageUsageMetrics {
   @ConfigProperty(name = "floecat.metrics.storage.default-avg-bytes", defaultValue = "0")
   long defaultAvgBytes;
 
-  private final Map<String, AtomicLong> tenantBytes = new ConcurrentHashMap<>();
-  private final Map<String, AtomicLong> tenantPointers = new ConcurrentHashMap<>();
+  private final Map<String, AtomicLong> accountBytes = new ConcurrentHashMap<>();
+  private final Map<String, AtomicLong> accountPointers = new ConcurrentHashMap<>();
 
   private Counter refreshErrors;
   private Timer refreshTimer;
@@ -48,12 +48,12 @@ public class StorageUsageMetrics {
   @PostConstruct
   void init() {
     refreshErrors =
-        Counter.builder("tenant.storage.refresh.errors")
+        Counter.builder("account.storage.refresh.errors")
             .description("Errors during storage metrics refresh")
             .register(registry);
 
     refreshTimer =
-        Timer.builder("tenant.storage.refresh.ms")
+        Timer.builder("account.storage.refresh.ms")
             .description("Refresh duration (ms)")
             .publishPercentiles(0.5, 0.95, 0.99)
             .register(registry);
@@ -67,27 +67,27 @@ public class StorageUsageMetrics {
       String token = "";
       StringBuilder next = new StringBuilder();
       do {
-        var page = tenants.list(200, token, next);
+        var page = accounts.list(200, token, next);
         token = next.toString();
         next.setLength(0);
 
         for (var t : page) {
-          final String tenantId = t.getResourceId().getId();
+          final String accountId = t.getResourceId().getId();
           try {
-            int ptrCount = pointerStore.countByPrefix(Keys.tenantRootPointer(tenantId));
+            int ptrCount = pointerStore.countByPrefix(Keys.accountRootPointer(accountId));
             setGauge(
-                tenantPointers,
-                "tenant.pointers.count",
-                "Pointer count per tenant",
-                tenantId,
+                accountPointers,
+                "account.pointers.count",
+                "Pointer count per account",
+                accountId,
                 ptrCount);
 
-            long bytes = estimateBytesForTenant(tenantId, ptrCount);
+            long bytes = estimateBytesForAccount(accountId, ptrCount);
             setGauge(
-                tenantBytes,
-                "tenant.storage.bytes",
-                "Approximate blob bytes per tenant",
-                tenantId,
+                accountBytes,
+                "account.storage.bytes",
+                "Approximate blob bytes per account",
+                accountId,
                 bytes);
 
           } catch (Throwable e) {
@@ -101,24 +101,24 @@ public class StorageUsageMetrics {
   }
 
   private void setGauge(
-      Map<String, AtomicLong> map, String meterName, String desc, String tenantId, long value) {
+      Map<String, AtomicLong> map, String meterName, String desc, String accountId, long value) {
     map.computeIfAbsent(
-            tenantId,
+            accountId,
             tid -> {
               var holder = new AtomicLong(0L);
               Gauge.builder(meterName, holder, AtomicLong::get)
                   .description(desc)
-                  .tag("tenant", tid)
+                  .tag("account", tid)
                   .register(registry);
               return holder;
             })
         .set(value);
   }
 
-  public long estimateBytesForTenant(String tenantId, int knownTotalObjects) {
-    final String tenantPrefix = Keys.tenantRootPointer(tenantId);
+  public long estimateBytesForAccount(String accountId, int knownTotalObjects) {
+    final String accountPrefix = Keys.accountRootPointer(accountId);
     final int totalObjects =
-        knownTotalObjects >= 0 ? knownTotalObjects : pointerStore.countByPrefix(tenantPrefix);
+        knownTotalObjects >= 0 ? knownTotalObjects : pointerStore.countByPrefix(accountPrefix);
 
     if (totalObjects == 0) {
       return 0L;
@@ -131,7 +131,7 @@ public class StorageUsageMetrics {
     while (sampleCount < sampleMax) {
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers =
-          pointerStore.listPointersByPrefix(tenantPrefix, pageSize, token, next);
+          pointerStore.listPointersByPrefix(accountPrefix, pageSize, token, next);
       if (pointers.isEmpty()) {
         break;
       }

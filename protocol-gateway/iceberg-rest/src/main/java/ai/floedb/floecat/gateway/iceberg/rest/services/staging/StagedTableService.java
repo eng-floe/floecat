@@ -38,9 +38,9 @@ public class StagedTableService {
   }
 
   public Optional<StagedTableEntry> findSingleStage(
-      String tenantId, String catalogName, List<String> namespacePath, String tableName) {
+      String accountId, String catalogName, List<String> namespacePath, String tableName) {
     expireStages();
-    return repository.findSingle(tenantId, catalogName, namespacePath, tableName);
+    return repository.findSingle(accountId, catalogName, namespacePath, tableName);
   }
 
   public void deleteStage(StagedTableKey key) {

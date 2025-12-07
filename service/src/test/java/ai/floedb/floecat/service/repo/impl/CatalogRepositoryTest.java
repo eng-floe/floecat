@@ -29,10 +29,10 @@ class CatalogRepositoryTest {
 
   @Test
   void putAndGetRoundTrip() {
-    String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var rid =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_CATALOG)
             .build();
@@ -46,11 +46,11 @@ class CatalogRepositoryTest {
     catalogRepo.create(cat);
     var fetched = catalogRepo.getById(rid).orElseThrow();
     assertEquals("sales", fetched.getDisplayName());
-    fetched = catalogRepo.getByName(tenant, "sales").orElseThrow();
+    fetched = catalogRepo.getByName(account, "sales").orElseThrow();
     assertEquals(rid, fetched.getResourceId());
 
     catalogRepo.delete(rid);
-    fetched = catalogRepo.getByName(tenant, "sales").orElse(null);
+    fetched = catalogRepo.getByName(account, "sales").orElse(null);
     assertNull(fetched);
   }
 
@@ -60,11 +60,11 @@ class CatalogRepositoryTest {
     var blobs = new InMemoryBlobStore();
     var catalogRepo = new CatalogRepository(ptr, blobs);
 
-    String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
 
     var cat1Rid =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_CATALOG)
             .build();
@@ -78,7 +78,7 @@ class CatalogRepositoryTest {
 
     var cat2Rid =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_CATALOG)
             .build();
@@ -92,7 +92,7 @@ class CatalogRepositoryTest {
 
     var cat3Rid =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_CATALOG)
             .build();
@@ -104,20 +104,20 @@ class CatalogRepositoryTest {
             .build();
     catalogRepo.create(cat3);
 
-    List<Catalog> catalogs = catalogRepo.list(tenant, Integer.MAX_VALUE, null, null);
+    List<Catalog> catalogs = catalogRepo.list(account, Integer.MAX_VALUE, null, null);
     assertEquals(3, catalogs.size());
 
     String token = "";
     StringBuilder next = new StringBuilder();
-    List<Catalog> batch = catalogRepo.list(tenant, 1, token, next);
+    List<Catalog> batch = catalogRepo.list(account, 1, token, next);
     assertEquals("lineitem", batch.get(0).getDisplayName());
     token = next.toString();
     next.setLength(0);
-    batch = catalogRepo.list(tenant, 1, token, next);
+    batch = catalogRepo.list(account, 1, token, next);
     assertEquals("orders", batch.get(0).getDisplayName());
     token = next.toString();
     next.setLength(0);
-    batch = catalogRepo.list(tenant, 1, token, next);
+    batch = catalogRepo.list(account, 1, token, next);
     assertEquals("sales", batch.get(0).getDisplayName());
     token = next.toString();
     next.setLength(0);

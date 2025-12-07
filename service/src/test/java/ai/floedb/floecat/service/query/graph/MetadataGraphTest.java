@@ -74,7 +74,7 @@ class MetadataGraphTest {
             viewRepository);
     snapshotClient = new FakeSnapshotClient();
     graph.setSnapshotClient(snapshotClient);
-    principalProvider = new FakePrincipalProvider("tenant");
+    principalProvider = new FakePrincipalProvider("account");
     graph.setPrincipalProvider(principalProvider);
   }
 
@@ -147,9 +147,9 @@ class MetadataGraphTest {
 
   @Test
   void tableResolveCachesNodes() {
-    ResourceId catalogId = rid("tenant", "cat", ResourceKind.RK_CATALOG);
-    ResourceId namespaceId = rid("tenant", "ns", ResourceKind.RK_NAMESPACE);
-    ResourceId tableId = rid("tenant", "tbl", ResourceKind.RK_TABLE);
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);
+    ResourceId tableId = rid("account", "tbl", ResourceKind.RK_TABLE);
 
     MutationMeta meta = mutationMeta(7L, Instant.parse("2024-01-01T00:00:00Z"));
     Table table =
@@ -182,18 +182,18 @@ class MetadataGraphTest {
   }
 
   @Test
-  void tenantCachesAreIsolated() {
-    var tenantOne = seedTable("cached-one", "{}");
-    var tenantTwo = seedTableForTenant("tenant-b", "catB", "nsB", "cached-two", "{}");
+  void accountCachesAreIsolated() {
+    var accountOne = seedTable("cached-one", "{}");
+    var accountTwo = seedTableForAccount("account-b", "catB", "nsB", "cached-two", "{}");
 
-    graph.table(tenantOne.tableId());
-    graph.table(tenantTwo.tableId());
+    graph.table(accountOne.tableId());
+    graph.table(accountTwo.tableId());
 
-    graph.table(tenantOne.tableId());
-    graph.table(tenantTwo.tableId());
+    graph.table(accountOne.tableId());
+    graph.table(accountTwo.tableId());
 
-    assertThat(tableRepository.getByIdCount(tenantOne.tableId())).isEqualTo(1);
-    assertThat(tableRepository.getByIdCount(tenantTwo.tableId())).isEqualTo(1);
+    assertThat(tableRepository.getByIdCount(accountOne.tableId())).isEqualTo(1);
+    assertThat(tableRepository.getByIdCount(accountTwo.tableId())).isEqualTo(1);
   }
 
   @Test
@@ -268,7 +268,7 @@ class MetadataGraphTest {
 
   @Test
   void resolveCatalogByNameUsesGraph() {
-    ResourceId catalogId = rid("tenant", "cat", ResourceKind.RK_CATALOG);
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
     catalogRepository.put(
         Catalog.newBuilder().setResourceId(catalogId).setDisplayName("sales").build(),
         mutationMeta(1L, Instant.now()));
@@ -282,13 +282,13 @@ class MetadataGraphTest {
   void resolveNamespaceReturnsId() {
     var nsId =
         Namespace.newBuilder()
-            .setResourceId(rid("tenant", "ns", ResourceKind.RK_NAMESPACE))
-            .setCatalogId(rid("tenant", "cat", ResourceKind.RK_CATALOG))
+            .setResourceId(rid("account", "ns", ResourceKind.RK_NAMESPACE))
+            .setCatalogId(rid("account", "cat", ResourceKind.RK_CATALOG))
             .setDisplayName("ns")
             .build();
     Catalog catalog =
         Catalog.newBuilder()
-            .setResourceId(rid("tenant", "cat", ResourceKind.RK_CATALOG))
+            .setResourceId(rid("account", "cat", ResourceKind.RK_CATALOG))
             .setDisplayName("cat")
             .build();
     catalogRepository.put(catalog, mutationMeta(1L, Instant.now()));
@@ -370,7 +370,7 @@ class MetadataGraphTest {
 
   @Test
   void catalogWrapperReturnsNode() {
-    ResourceId catalogId = rid("tenant", "cat", ResourceKind.RK_CATALOG);
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
     MutationMeta meta = mutationMeta(3L, Instant.parse("2023-06-01T00:00:00Z"));
     Catalog catalog =
         Catalog.newBuilder()
@@ -388,8 +388,8 @@ class MetadataGraphTest {
 
   @Test
   void namespaceWrapperReturnsNode() {
-    ResourceId catalogId = rid("tenant", "cat", ResourceKind.RK_CATALOG);
-    ResourceId namespaceId = rid("tenant", "ns", ResourceKind.RK_NAMESPACE);
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);
     MutationMeta meta = mutationMeta(11L, Instant.parse("2024-03-10T10:15:30Z"));
     Namespace namespace =
         Namespace.newBuilder()
@@ -410,9 +410,9 @@ class MetadataGraphTest {
 
   @Test
   void viewWrapperReturnsNode() {
-    ResourceId catalogId = rid("tenant", "cat", ResourceKind.RK_CATALOG);
-    ResourceId namespaceId = rid("tenant", "ns", ResourceKind.RK_NAMESPACE);
-    ResourceId viewId = rid("tenant", "view", ResourceKind.RK_VIEW);
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);
+    ResourceId viewId = rid("account", "view", ResourceKind.RK_VIEW);
     MutationMeta meta = mutationMeta(15L, Instant.parse("2024-05-01T05:06:07Z"));
     View view =
         View.newBuilder()
@@ -432,7 +432,7 @@ class MetadataGraphTest {
 
   @Test
   void resolveReturnsEmptyWhenMetadataMissing() {
-    ResourceId missingId = rid("tenant", "missing", ResourceKind.RK_CATALOG);
+    ResourceId missingId = rid("account", "missing", ResourceKind.RK_CATALOG);
 
     Optional<CatalogNode> node = graph.catalog(missingId);
     assertThat(node).isEmpty();
@@ -440,7 +440,7 @@ class MetadataGraphTest {
 
   @Test
   void resolveReturnsEmptyWhenRepoHasNoResource() {
-    ResourceId viewId = rid("tenant", "view", ResourceKind.RK_VIEW);
+    ResourceId viewId = rid("account", "view", ResourceKind.RK_VIEW);
     MutationMeta meta = mutationMeta(1L, Instant.parse("2024-02-01T00:00:00Z"));
     viewRepository.putMeta(viewId, meta);
 
@@ -450,7 +450,7 @@ class MetadataGraphTest {
 
   @Test
   void snapshotPinUsesOverrides() {
-    ResourceId tableId = rid("tenant", "tbl-override", ResourceKind.RK_TABLE);
+    ResourceId tableId = rid("account", "tbl-override", ResourceKind.RK_TABLE);
     SnapshotRef override = SnapshotRef.newBuilder().setSnapshotId(42).build();
 
     SnapshotPin pin = graph.snapshotPinFor("corr", tableId, override, Optional.empty());
@@ -466,7 +466,7 @@ class MetadataGraphTest {
 
   @Test
   void snapshotPinUsesDefaultAndCurrent() {
-    ResourceId tableId = rid("tenant", "tbl-default", ResourceKind.RK_TABLE);
+    ResourceId tableId = rid("account", "tbl-default", ResourceKind.RK_TABLE);
     Timestamp defaultTs = Timestamp.newBuilder().setSeconds(456).build();
 
     SnapshotPin defaultPin = graph.snapshotPinFor("corr", tableId, null, Optional.of(defaultTs));
@@ -493,8 +493,8 @@ class MetadataGraphTest {
     return MutationMeta.newBuilder().setPointerVersion(version).setUpdatedAt(ts).build();
   }
 
-  private static ResourceId rid(String tenant, String id, ResourceKind kind) {
-    return ResourceId.newBuilder().setTenantId(tenant).setId(id).setKind(kind).build();
+  private static ResourceId rid(String account, String id, ResourceKind kind) {
+    return ResourceId.newBuilder().setAccountId(account).setId(id).setKind(kind).build();
   }
 
   private static Timestamp ts(Instant instant) {
@@ -505,20 +505,20 @@ class MetadataGraphTest {
   }
 
   private TableIds seedTable(String name, String schemaJson) {
-    return seedTableForTenant("tenant", "cat", "ns", name, schemaJson);
+    return seedTableForAccount("account", "cat", "ns", name, schemaJson);
   }
 
-  private TableIds seedTableForTenant(
-      String tenantId,
+  private TableIds seedTableForAccount(
+      String accountId,
       String catalogName,
       String namespaceName,
       String tableName,
       String schemaJson) {
-    ResourceId catalogId = rid(tenantId, catalogName, ResourceKind.RK_CATALOG);
-    ResourceId namespaceId = rid(tenantId, namespaceName, ResourceKind.RK_NAMESPACE);
+    ResourceId catalogId = rid(accountId, catalogName, ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid(accountId, namespaceName, ResourceKind.RK_NAMESPACE);
     ResourceId tableId =
         ResourceId.newBuilder()
-            .setTenantId(tenantId)
+            .setAccountId(accountId)
             .setId("table-" + tableName)
             .setKind(ResourceKind.RK_TABLE)
             .build();
@@ -547,9 +547,9 @@ class MetadataGraphTest {
   }
 
   private ResourceId seedView(String name) {
-    ResourceId catalogId = rid("tenant", "cat", ResourceKind.RK_CATALOG);
-    ResourceId namespaceId = rid("tenant", "ns", ResourceKind.RK_NAMESPACE);
-    ResourceId viewId = rid("tenant", "view-" + name, ResourceKind.RK_VIEW);
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);
+    ResourceId viewId = rid("account", "view-" + name, ResourceKind.RK_VIEW);
 
     catalogRepository.put(
         Catalog.newBuilder().setResourceId(catalogId).setDisplayName("cat").build(),
@@ -579,13 +579,13 @@ class MetadataGraphTest {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("tbl").build();
     Catalog catalog =
         Catalog.newBuilder()
-            .setResourceId(rid("tenant", "cat-id", ResourceKind.RK_CATALOG))
+            .setResourceId(rid("account", "cat-id", ResourceKind.RK_CATALOG))
             .setDisplayName("cat")
             .build();
     catalogRepository.put(catalog, mutationMeta(1L, Instant.now()));
     Namespace namespace =
         Namespace.newBuilder()
-            .setResourceId(rid("tenant", "ns-id", ResourceKind.RK_NAMESPACE))
+            .setResourceId(rid("account", "ns-id", ResourceKind.RK_NAMESPACE))
             .setCatalogId(catalog.getResourceId())
             .addAllParents(List.of())
             .setDisplayName("ns")
@@ -593,7 +593,7 @@ class MetadataGraphTest {
     namespaceRepository.put(namespace, mutationMeta(1L, Instant.now()));
     Table table =
         Table.newBuilder()
-            .setResourceId(rid("tenant", "TBL", ResourceKind.RK_TABLE))
+            .setResourceId(rid("account", "TBL", ResourceKind.RK_TABLE))
             .setCatalogId(catalog.getResourceId())
             .setNamespaceId(namespace.getResourceId())
             .setDisplayName("tbl")
@@ -612,13 +612,13 @@ class MetadataGraphTest {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("view").build();
     Catalog catalog =
         Catalog.newBuilder()
-            .setResourceId(rid("tenant", "cat-id", ResourceKind.RK_CATALOG))
+            .setResourceId(rid("account", "cat-id", ResourceKind.RK_CATALOG))
             .setDisplayName("cat")
             .build();
     catalogRepository.put(catalog, mutationMeta(1L, Instant.now()));
     Namespace namespace =
         Namespace.newBuilder()
-            .setResourceId(rid("tenant", "ns-id", ResourceKind.RK_NAMESPACE))
+            .setResourceId(rid("account", "ns-id", ResourceKind.RK_NAMESPACE))
             .setCatalogId(catalog.getResourceId())
             .addAllParents(List.of())
             .setDisplayName("ns")
@@ -626,7 +626,7 @@ class MetadataGraphTest {
     namespaceRepository.put(namespace, mutationMeta(1L, Instant.now()));
     View view =
         View.newBuilder()
-            .setResourceId(rid("tenant", "VIEW", ResourceKind.RK_VIEW))
+            .setResourceId(rid("account", "VIEW", ResourceKind.RK_VIEW))
             .setCatalogId(catalog.getResourceId())
             .setNamespaceId(namespace.getResourceId())
             .setDisplayName("view")
@@ -644,13 +644,13 @@ class MetadataGraphTest {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("obj").build();
     Catalog catalog =
         Catalog.newBuilder()
-            .setResourceId(rid("tenant", "cat-id", ResourceKind.RK_CATALOG))
+            .setResourceId(rid("account", "cat-id", ResourceKind.RK_CATALOG))
             .setDisplayName("cat")
             .build();
     catalogRepository.put(catalog, mutationMeta(1L, Instant.now()));
     Namespace namespace =
         Namespace.newBuilder()
-            .setResourceId(rid("tenant", "ns-id", ResourceKind.RK_NAMESPACE))
+            .setResourceId(rid("account", "ns-id", ResourceKind.RK_NAMESPACE))
             .setCatalogId(catalog.getResourceId())
             .addAllParents(List.of())
             .setDisplayName("ns")
@@ -658,7 +658,7 @@ class MetadataGraphTest {
     namespaceRepository.put(namespace, mutationMeta(1L, Instant.now()));
     Table table =
         Table.newBuilder()
-            .setResourceId(rid("tenant", "tbl-id", ResourceKind.RK_TABLE))
+            .setResourceId(rid("account", "tbl-id", ResourceKind.RK_TABLE))
             .setCatalogId(catalog.getResourceId())
             .setNamespaceId(namespace.getResourceId())
             .setDisplayName("obj")
@@ -668,7 +668,7 @@ class MetadataGraphTest {
     tableRepository.put(table, mutationMeta(1L, Instant.now()));
     View view =
         View.newBuilder()
-            .setResourceId(rid("tenant", "view-id", ResourceKind.RK_VIEW))
+            .setResourceId(rid("account", "view-id", ResourceKind.RK_VIEW))
             .setCatalogId(catalog.getResourceId())
             .setNamespaceId(namespace.getResourceId())
             .setDisplayName("obj")
@@ -725,21 +725,21 @@ class MetadataGraphTest {
 
   @Test
   void resolveTablesPrefixAcceptsNamespaceNameInRef() {
-    ResourceId catalogId = rid("tenant", "cat-nested", ResourceKind.RK_CATALOG);
+    ResourceId catalogId = rid("account", "cat-nested", ResourceKind.RK_CATALOG);
     catalogRepository.put(
         Catalog.newBuilder().setResourceId(catalogId).setDisplayName("cat_nested").build(),
         mutationMeta(1L, Instant.now()));
 
     Namespace namespace =
         Namespace.newBuilder()
-            .setResourceId(rid("tenant", "ns-nested", ResourceKind.RK_NAMESPACE))
+            .setResourceId(rid("account", "ns-nested", ResourceKind.RK_NAMESPACE))
             .setCatalogId(catalogId)
             .addAllParents(List.of("finance"))
             .setDisplayName("sales")
             .build();
     namespaceRepository.put(namespace, mutationMeta(1L, Instant.now()));
 
-    ResourceId tableId = rid("tenant", "tbl-nested", ResourceKind.RK_TABLE);
+    ResourceId tableId = rid("account", "tbl-nested", ResourceKind.RK_TABLE);
     tableRepository.put(
         Table.newBuilder()
             .setResourceId(tableId)
@@ -794,21 +794,21 @@ class MetadataGraphTest {
 
   @Test
   void resolveViewsPrefixAcceptsNamespaceNameInRef() {
-    ResourceId catalogId = rid("tenant", "cat-view-nested", ResourceKind.RK_CATALOG);
+    ResourceId catalogId = rid("account", "cat-view-nested", ResourceKind.RK_CATALOG);
     catalogRepository.put(
         Catalog.newBuilder().setResourceId(catalogId).setDisplayName("cat_view_nested").build(),
         mutationMeta(1L, Instant.now()));
 
     Namespace namespace =
         Namespace.newBuilder()
-            .setResourceId(rid("tenant", "ns-view-nested", ResourceKind.RK_NAMESPACE))
+            .setResourceId(rid("account", "ns-view-nested", ResourceKind.RK_NAMESPACE))
             .setCatalogId(catalogId)
             .addAllParents(List.of("finance"))
             .setDisplayName("sales")
             .build();
     namespaceRepository.put(namespace, mutationMeta(1L, Instant.now()));
 
-    ResourceId viewId = rid("tenant", "view-nested", ResourceKind.RK_VIEW);
+    ResourceId viewId = rid("account", "view-nested", ResourceKind.RK_VIEW);
     viewRepository.put(
         View.newBuilder()
             .setResourceId(viewId)
@@ -865,11 +865,11 @@ class MetadataGraphTest {
     }
 
     @Override
-    public Optional<Catalog> getByName(String tenantId, String displayName) {
+    public Optional<Catalog> getByName(String accountId, String displayName) {
       return entries.values().stream()
           .filter(
               c ->
-                  tenantId.equals(c.getResourceId().getTenantId())
+                  accountId.equals(c.getResourceId().getAccountId())
                       && displayName.equals(c.getDisplayName()))
           .findFirst();
     }
@@ -907,11 +907,11 @@ class MetadataGraphTest {
     }
 
     @Override
-    public Optional<Namespace> getByPath(String tenantId, String catalogId, List<String> path) {
+    public Optional<Namespace> getByPath(String accountId, String catalogId, List<String> path) {
       return entries.values().stream()
           .filter(
               ns ->
-                  tenantId.equals(ns.getResourceId().getTenantId())
+                  accountId.equals(ns.getResourceId().getAccountId())
                       && catalogId.equals(ns.getCatalogId().getId())
                       && matchesPath(ns, path))
           .findFirst();
@@ -999,11 +999,11 @@ class MetadataGraphTest {
 
     @Override
     public Optional<Table> getByName(
-        String tenantId, String catalogId, String namespaceId, String displayName) {
+        String accountId, String catalogId, String namespaceId, String displayName) {
       return entries.values().stream()
           .filter(
               t ->
-                  tenantId.equals(t.getResourceId().getTenantId())
+                  accountId.equals(t.getResourceId().getAccountId())
                       && catalogId.equals(t.getCatalogId().getId())
                       && namespaceId.equals(t.getNamespaceId().getId())
                       && displayName.equals(t.getDisplayName()))
@@ -1012,13 +1012,13 @@ class MetadataGraphTest {
 
     @Override
     public List<Table> list(
-        String tenantId,
+        String accountId,
         String catalogId,
         String namespaceId,
         int limit,
         String pageToken,
         StringBuilder nextOut) {
-      List<Table> sorted = matchingTables(tenantId, catalogId, namespaceId);
+      List<Table> sorted = matchingTables(accountId, catalogId, namespaceId);
       int start = startIndexForToken(sorted, pageToken);
       int want = Math.max(1, limit);
       int end = Math.min(sorted.size(), start + want);
@@ -1031,8 +1031,8 @@ class MetadataGraphTest {
     }
 
     @Override
-    public int count(String tenantId, String catalogId, String namespaceId) {
-      return matchingTables(tenantId, catalogId, namespaceId).size();
+    public int count(String accountId, String catalogId, String namespaceId) {
+      return matchingTables(accountId, catalogId, namespaceId).size();
     }
 
     @Override
@@ -1048,11 +1048,11 @@ class MetadataGraphTest {
       return gets.getOrDefault(id, 0);
     }
 
-    private List<Table> matchingTables(String tenantId, String catalogId, String namespaceId) {
+    private List<Table> matchingTables(String accountId, String catalogId, String namespaceId) {
       return entries.values().stream()
           .filter(
               t ->
-                  tenantId.equals(t.getResourceId().getTenantId())
+                  accountId.equals(t.getResourceId().getAccountId())
                       && catalogId.equals(t.getCatalogId().getId())
                       && namespaceId.equals(t.getNamespaceId().getId()))
           .sorted(Comparator.comparing(Table::getDisplayName))
@@ -1096,11 +1096,11 @@ class MetadataGraphTest {
 
     @Override
     public Optional<View> getByName(
-        String tenantId, String catalogId, String namespaceId, String displayName) {
+        String accountId, String catalogId, String namespaceId, String displayName) {
       return entries.values().stream()
           .filter(
               v ->
-                  tenantId.equals(v.getResourceId().getTenantId())
+                  accountId.equals(v.getResourceId().getAccountId())
                       && catalogId.equals(v.getCatalogId().getId())
                       && namespaceId.equals(v.getNamespaceId().getId())
                       && displayName.equals(v.getDisplayName()))
@@ -1109,13 +1109,13 @@ class MetadataGraphTest {
 
     @Override
     public List<View> list(
-        String tenantId,
+        String accountId,
         String catalogId,
         String namespaceId,
         int limit,
         String pageToken,
         StringBuilder nextOut) {
-      List<View> sorted = matchingViews(tenantId, catalogId, namespaceId);
+      List<View> sorted = matchingViews(accountId, catalogId, namespaceId);
       int start = startIndexForToken(sorted, pageToken);
       int want = Math.max(1, limit);
       int end = Math.min(sorted.size(), start + want);
@@ -1128,8 +1128,8 @@ class MetadataGraphTest {
     }
 
     @Override
-    public int count(String tenantId, String catalogId, String namespaceId) {
-      return matchingViews(tenantId, catalogId, namespaceId).size();
+    public int count(String accountId, String catalogId, String namespaceId) {
+      return matchingViews(accountId, catalogId, namespaceId).size();
     }
 
     @Override
@@ -1141,11 +1141,11 @@ class MetadataGraphTest {
       return meta;
     }
 
-    private List<View> matchingViews(String tenantId, String catalogId, String namespaceId) {
+    private List<View> matchingViews(String accountId, String catalogId, String namespaceId) {
       return entries.values().stream()
           .filter(
               v ->
-                  tenantId.equals(v.getResourceId().getTenantId())
+                  accountId.equals(v.getResourceId().getAccountId())
                       && catalogId.equals(v.getCatalogId().getId())
                       && namespaceId.equals(v.getNamespaceId().getId()))
           .sorted(Comparator.comparing(View::getDisplayName))
@@ -1182,12 +1182,12 @@ class MetadataGraphTest {
   static final class FakePrincipalProvider extends PrincipalProvider {
     private PrincipalContext ctx;
 
-    FakePrincipalProvider(String tenantId) {
-      ctx = PrincipalContext.newBuilder().setTenantId(tenantId).build();
+    FakePrincipalProvider(String accountId) {
+      ctx = PrincipalContext.newBuilder().setAccountId(accountId).build();
     }
 
-    void setTenant(String tenantId) {
-      ctx = PrincipalContext.newBuilder().setTenantId(tenantId).build();
+    void setAccount(String accountId) {
+      ctx = PrincipalContext.newBuilder().setAccountId(accountId).build();
     }
 
     @Override

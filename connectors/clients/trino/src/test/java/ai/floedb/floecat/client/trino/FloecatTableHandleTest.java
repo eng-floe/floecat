@@ -34,7 +34,7 @@ class FloecatTableHandleTest {
         new FloecatTableHandle(
             new SchemaTableName("s", "t"),
             "tbl-id",
-            "tenant",
+            "account",
             ResourceKind.RK_TABLE.name(),
             "s3://bucket/table",
             "{}",
@@ -58,7 +58,7 @@ class FloecatTableHandleTest {
   }
 
   @Test
-  void getTableResourceIdRequiresTenant() {
+  void getTableResourceIdRequiresAccount() {
     FloecatTableHandle handle =
         new FloecatTableHandle(
             new SchemaTableName("s", "t"),

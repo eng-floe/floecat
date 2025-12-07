@@ -34,7 +34,7 @@ public class ReconcilerScheduler {
       try {
         var connectorId =
             ResourceId.newBuilder()
-                .setTenantId(lease.tenantId)
+                .setAccountId(lease.accountId)
                 .setId(lease.connectorId)
                 .setKind(ResourceKind.RK_CONNECTOR)
                 .build();

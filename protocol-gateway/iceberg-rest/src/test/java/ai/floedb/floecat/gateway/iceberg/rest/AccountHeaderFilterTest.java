@@ -10,8 +10,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
-import ai.floedb.floecat.gateway.iceberg.rest.services.tenant.TenantContext;
-import ai.floedb.floecat.gateway.iceberg.rest.support.filter.TenantHeaderFilter;
+import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
+import ai.floedb.floecat.gateway.iceberg.rest.support.filter.AccountHeaderFilter;
 import jakarta.enterprise.inject.Instance;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.core.MultivaluedHashMap;
@@ -28,22 +28,22 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
-class TenantHeaderFilterTest {
+class AccountHeaderFilterTest {
   @Test
   void populatesDefaultHeadersWhenMissing() {
-    TenantHeaderFilter filter = new TenantHeaderFilter();
+    AccountHeaderFilter filter = new AccountHeaderFilter();
     Instance<IcebergGatewayConfig> configInstance = mock(Instance.class);
     IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
     when(configInstance.isUnsatisfied()).thenReturn(false);
     when(configInstance.get()).thenReturn(config);
-    when(config.tenantHeader()).thenReturn("x-tenant-id");
+    when(config.accountHeader()).thenReturn("x-tenant-id");
     when(config.authHeader()).thenReturn("authorization");
-    when(config.defaultTenantId()).thenReturn("tenant-default");
+    when(config.defaultAccountId()).thenReturn("account-default");
     when(config.defaultAuthorization()).thenReturn("Bearer default");
 
     filter.setConfigInstance(configInstance);
-    TenantContext tenantContext = mock(TenantContext.class);
-    filter.setTenantContext(tenantContext);
+    AccountContext accountContext = mock(AccountContext.class);
+    filter.setAccountContext(accountContext);
 
     ContainerRequestContext ctx = mock(ContainerRequestContext.class);
     UriInfo uriInfo = mock(UriInfo.class);
@@ -65,18 +65,18 @@ class TenantHeaderFilterTest {
     filter.filter(ctx);
 
     assertFalse(aborted.get());
-    assertEquals("tenant-default", headers.getFirst("x-tenant-id"));
+    assertEquals("account-default", headers.getFirst("x-tenant-id"));
     assertEquals("Bearer default", headers.getFirst("authorization"));
-    verify(tenantContext).setTenantId("tenant-default");
+    verify(accountContext).setAccountId("account-default");
   }
 
   @Test
   void abortsWhenHeadersMissingAndNoDefaults() {
-    TenantHeaderFilter filter = new TenantHeaderFilter();
+    AccountHeaderFilter filter = new AccountHeaderFilter();
     Instance<IcebergGatewayConfig> configInstance = mock(Instance.class);
     when(configInstance.isUnsatisfied()).thenReturn(true);
     filter.setConfigInstance(configInstance);
-    filter.setTenantContext(mock(TenantContext.class));
+    filter.setAccountContext(mock(AccountContext.class));
 
     ContainerRequestContext ctx = mock(ContainerRequestContext.class);
     UriInfo uriInfo = mock(UriInfo.class);
@@ -100,17 +100,17 @@ class TenantHeaderFilterTest {
 
   @Test
   void placeholderAuthorizationValuesAreIgnored() {
-    TenantHeaderFilter filter = new TenantHeaderFilter();
+    AccountHeaderFilter filter = new AccountHeaderFilter();
     Instance<IcebergGatewayConfig> configInstance = mock(Instance.class);
     IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
     when(configInstance.isUnsatisfied()).thenReturn(false);
     when(configInstance.get()).thenReturn(config);
-    when(config.tenantHeader()).thenReturn("x-tenant-id");
-    when(config.defaultTenantId()).thenReturn("tenant-default");
+    when(config.accountHeader()).thenReturn("x-tenant-id");
+    when(config.defaultAccountId()).thenReturn("account-default");
     when(config.authHeader()).thenReturn("authorization");
     when(config.defaultAuthorization()).thenReturn("undefined");
     filter.setConfigInstance(configInstance);
-    filter.setTenantContext(mock(TenantContext.class));
+    filter.setAccountContext(mock(AccountContext.class));
 
     ContainerRequestContext ctx = mock(ContainerRequestContext.class);
     UriInfo uriInfo = mock(UriInfo.class);
@@ -134,19 +134,19 @@ class TenantHeaderFilterTest {
 
   @Test
   void rewritesLegacyPathsWhenDefaultPrefixConfigured() {
-    TenantHeaderFilter filter = new TenantHeaderFilter();
+    AccountHeaderFilter filter = new AccountHeaderFilter();
     Instance<IcebergGatewayConfig> configInstance = mock(Instance.class);
     IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
     when(configInstance.isUnsatisfied()).thenReturn(false);
     when(configInstance.get()).thenReturn(config);
-    when(config.tenantHeader()).thenReturn("x-tenant-id");
+    when(config.accountHeader()).thenReturn("x-tenant-id");
     when(config.authHeader()).thenReturn("authorization");
-    when(config.defaultTenantId()).thenReturn("tenant-default");
+    when(config.defaultAccountId()).thenReturn("account-default");
     when(config.defaultAuthorization()).thenReturn("Bearer default");
     when(config.defaultPrefix()).thenReturn(Optional.of("sales"));
     filter.setConfigInstance(configInstance);
-    TenantContext tenantContext = mock(TenantContext.class);
-    filter.setTenantContext(tenantContext);
+    AccountContext accountContext = mock(AccountContext.class);
+    filter.setAccountContext(accountContext);
 
     ContainerRequestContext ctx = mock(ContainerRequestContext.class);
     UriInfo uriInfo = mock(UriInfo.class);
@@ -164,7 +164,7 @@ class TenantHeaderFilterTest {
 
     MultivaluedHashMap<String, String> headers = new MultivaluedHashMap<>();
     when(ctx.getHeaders()).thenReturn(headers);
-    when(ctx.getHeaderString("x-tenant-id")).thenReturn("tenant-default");
+    when(ctx.getHeaderString("x-tenant-id")).thenReturn("account-default");
     when(ctx.getHeaderString("authorization")).thenReturn("Bearer default");
 
     AtomicReference<URI> rewrittenUri = new AtomicReference<>();

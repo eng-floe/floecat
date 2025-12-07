@@ -125,7 +125,7 @@ public class MetadataGraph {
   /**
    * Resolve a resource into its cached {@link RelationNode}.
    *
-   * @param id resource identifier (must include kind + tenant)
+   * @param id resource identifier (must include kind + account)
    * @return optional node (empty when resource is missing or not yet supported)
    */
   public Optional<RelationNode> resolve(ResourceId id) {
@@ -229,10 +229,10 @@ public class MetadataGraph {
       return ref.getResourceId();
     }
 
-    String tenantId = requireTenantId(correlationId);
+    String accountId = requireAccountId(correlationId);
 
-    Optional<ResolvedRelation> tableResolved = nameResolver.resolveTableRelation(tenantId, ref);
-    Optional<ResolvedRelation> viewResolved = nameResolver.resolveViewRelation(tenantId, ref);
+    Optional<ResolvedRelation> tableResolved = nameResolver.resolveTableRelation(accountId, ref);
+    Optional<ResolvedRelation> viewResolved = nameResolver.resolveViewRelation(accountId, ref);
 
     if (tableResolved.isPresent() && viewResolved.isPresent()) {
       throw GrpcErrors.invalidArgument(
@@ -253,31 +253,31 @@ public class MetadataGraph {
 
   /** Resolve a catalog display name into its {@link ResourceId}. */
   public ResourceId resolveCatalog(String correlationId, String catalogName) {
-    String tenantId = requireTenantId(correlationId);
-    return nameResolver.resolveCatalogId(correlationId, tenantId, catalogName);
+    String accountId = requireAccountId(correlationId);
+    return nameResolver.resolveCatalogId(correlationId, accountId, catalogName);
   }
 
   /** Resolve a namespace reference (catalog + path/name) into its {@link ResourceId}. */
   public ResourceId resolveNamespace(String correlationId, NameRef ref) {
     validateNameRef(correlationId, ref);
-    String tenantId = requireTenantId(correlationId);
-    return nameResolver.resolveNamespaceId(correlationId, tenantId, ref);
+    String accountId = requireAccountId(correlationId);
+    return nameResolver.resolveNamespaceId(correlationId, accountId, ref);
   }
 
   /** Resolve a table reference into its {@link ResourceId}. */
   public ResourceId resolveTable(String correlationId, NameRef ref) {
     validateNameRef(correlationId, ref);
     validateRelationName(correlationId, ref, "table");
-    String tenantId = requireTenantId(correlationId);
-    return nameResolver.resolveTableId(correlationId, tenantId, ref);
+    String accountId = requireAccountId(correlationId);
+    return nameResolver.resolveTableId(correlationId, accountId, ref);
   }
 
   /** Resolve a view reference into its {@link ResourceId}. */
   public ResourceId resolveView(String correlationId, NameRef ref) {
     validateNameRef(correlationId, ref);
     validateRelationName(correlationId, ref, "view");
-    String tenantId = requireTenantId(correlationId);
-    return nameResolver.resolveViewId(correlationId, tenantId, ref);
+    String accountId = requireAccountId(correlationId);
+    return nameResolver.resolveViewId(correlationId, accountId, ref);
   }
 
   /** Build a {@link NameRef} for the provided namespace identifier (if present). */
@@ -334,28 +334,28 @@ public class MetadataGraph {
 
   public ResolveResult resolveTables(
       String correlationId, List<NameRef> names, int limit, String pageToken) {
-    String tenantId = requireTenantId(correlationId);
-    return fqResolver.resolveTableList(correlationId, tenantId, names, limit, pageToken);
+    String accountId = requireAccountId(correlationId);
+    return fqResolver.resolveTableList(correlationId, accountId, names, limit, pageToken);
   }
 
   public ResolveResult resolveTables(
       String correlationId, NameRef prefix, int limit, String pageToken) {
     validateNameRef(correlationId, prefix);
-    String tenantId = requireTenantId(correlationId);
-    return fqResolver.resolveTablesByPrefix(correlationId, tenantId, prefix, limit, pageToken);
+    String accountId = requireAccountId(correlationId);
+    return fqResolver.resolveTablesByPrefix(correlationId, accountId, prefix, limit, pageToken);
   }
 
   public ResolveResult resolveViews(
       String correlationId, List<NameRef> names, int limit, String pageToken) {
-    String tenantId = requireTenantId(correlationId);
-    return fqResolver.resolveViewList(correlationId, tenantId, names, limit, pageToken);
+    String accountId = requireAccountId(correlationId);
+    return fqResolver.resolveViewList(correlationId, accountId, names, limit, pageToken);
   }
 
   public ResolveResult resolveViews(
       String correlationId, NameRef prefix, int limit, String pageToken) {
     validateNameRef(correlationId, prefix);
-    String tenantId = requireTenantId(correlationId);
-    return fqResolver.resolveViewsByPrefix(correlationId, tenantId, prefix, limit, pageToken);
+    String accountId = requireAccountId(correlationId);
+    return fqResolver.resolveViewsByPrefix(correlationId, accountId, prefix, limit, pageToken);
   }
 
   private NameRef buildNamespaceNameRef(NamespaceNode namespace, String catalogDisplayName) {
@@ -397,12 +397,12 @@ public class MetadataGraph {
     }
   }
 
-  private String requireTenantId(String correlationId) {
+  private String requireAccountId(String correlationId) {
     var principalContext = principalProvider.get();
-    if (principalContext == null || principalContext.getTenantId() == null) {
-      throw new IllegalStateException("MetadataGraph requires tenant context");
+    if (principalContext == null || principalContext.getAccountId() == null) {
+      throw new IllegalStateException("MetadataGraph requires account context");
     }
-    return principalContext.getTenantId();
+    return principalContext.getAccountId();
   }
 
   /**

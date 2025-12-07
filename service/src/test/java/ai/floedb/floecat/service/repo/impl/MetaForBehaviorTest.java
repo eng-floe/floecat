@@ -36,7 +36,7 @@ class MetaForBehaviorTest {
   void metaForExceptionTest() {
     var tblId =
         ResourceId.newBuilder()
-            .setTenantId("t-1")
+            .setAccountId("t-1")
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_TABLE)
             .build();
@@ -50,7 +50,7 @@ class MetaForBehaviorTest {
   void metaForVersionTest() {
     var catId =
         ResourceId.newBuilder()
-            .setTenantId("t-1")
+            .setAccountId("t-1")
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_CATALOG)
             .build();

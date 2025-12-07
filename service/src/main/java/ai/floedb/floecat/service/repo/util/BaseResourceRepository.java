@@ -384,7 +384,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
             .map(
                 header -> {
                   var id = header.getResourceId();
-                  return id.getTenantId() + ":" + id.getId() + ":" + id.getKind().name();
+                  return id.getAccountId() + ":" + id.getId() + ":" + id.getKind().name();
                 })
             .orElse("-");
 

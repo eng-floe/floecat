@@ -113,7 +113,7 @@ class FloecatSplitManagerTest {
             new FloecatTableHandle(
                 new SchemaTableName("s", "t"),
                 "tbl",
-                "tenant",
+                "account",
                 ResourceKind.RK_TABLE.name(),
                 "s3://bucket/table",
                 "{}",
@@ -157,7 +157,7 @@ class FloecatSplitManagerTest {
             new FloecatTableHandle(
                 new SchemaTableName("s", "t"),
                 "tbl",
-                "tenant",
+                "account",
                 ResourceKind.RK_TABLE.name(),
                 "s3://bucket/table",
                 "{}",
@@ -222,7 +222,7 @@ class FloecatSplitManagerTest {
             new FloecatTableHandle(
                 new SchemaTableName("s", "t"),
                 "tbl",
-                "tenant",
+                "account",
                 ResourceKind.RK_TABLE.name(),
                 "s3://bucket/table",
                 "{}",
@@ -293,7 +293,7 @@ class FloecatSplitManagerTest {
             new FloecatTableHandle(
                 new SchemaTableName("s", "t"),
                 "tbl",
-                "tenant",
+                "account",
                 ResourceKind.RK_TABLE.name(),
                 "s3://bucket/table",
                 "{}",

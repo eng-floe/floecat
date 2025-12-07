@@ -18,7 +18,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableCommitService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.tenant.TenantContext;
+import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
@@ -35,7 +35,7 @@ class TableAdminResourceUnitTest {
   private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directory =
       mock(DirectoryServiceGrpc.DirectoryServiceBlockingStub.class);
   private final IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
-  private final TenantContext tenantContext = mock(TenantContext.class);
+  private final AccountContext accountContext = mock(AccountContext.class);
   private final TableLifecycleService tableLifecycleService = mock(TableLifecycleService.class);
   private final TableCommitService tableCommitService = mock(TableCommitService.class);
   private final Config mpConfig = mock(Config.class);
@@ -44,7 +44,7 @@ class TableAdminResourceUnitTest {
   void setUp() {
     resource.grpc = grpc;
     resource.config = config;
-    resource.tenantContext = tenantContext;
+    resource.accountContext = accountContext;
     resource.tableLifecycleService = tableLifecycleService;
     resource.tableCommitService = tableCommitService;
     resource.mapper = new ObjectMapper();
@@ -62,7 +62,7 @@ class TableAdminResourceUnitTest {
     when(config.catalogMapping()).thenReturn(Map.of());
     when(config.storageCredential()).thenReturn(Optional.empty());
     when(config.defaultRegion()).thenReturn(Optional.empty());
-    when(tenantContext.getTenantId()).thenReturn("tenant1");
+    when(accountContext.getAccountId()).thenReturn("account1");
     resource.initSupport();
   }
 

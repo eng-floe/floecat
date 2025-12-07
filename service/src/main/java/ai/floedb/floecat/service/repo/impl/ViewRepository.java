@@ -41,47 +41,47 @@ public class ViewRepository {
   }
 
   public boolean delete(ResourceId viewResourceId) {
-    return repo.delete(new ViewKey(viewResourceId.getTenantId(), viewResourceId.getId()));
+    return repo.delete(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
   }
 
   public boolean deleteWithPrecondition(ResourceId viewResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
-        new ViewKey(viewResourceId.getTenantId(), viewResourceId.getId()), expectedPointerVersion);
+        new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()), expectedPointerVersion);
   }
 
   public Optional<View> getById(ResourceId viewResourceId) {
-    return repo.getByKey(new ViewKey(viewResourceId.getTenantId(), viewResourceId.getId()));
+    return repo.getByKey(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
   }
 
   public Optional<View> getByName(
-      String tenantId, String catalogId, String namespaceId, String viewName) {
-    return repo.get(Keys.viewPointerByName(tenantId, catalogId, namespaceId, viewName));
+      String accountId, String catalogId, String namespaceId, String viewName) {
+    return repo.get(Keys.viewPointerByName(accountId, catalogId, namespaceId, viewName));
   }
 
   public List<View> list(
-      String tenantId,
+      String accountId,
       String catalogId,
       String namespaceId,
       int limit,
       String pageToken,
       StringBuilder nextOut) {
-    String prefix = Keys.viewPointerByNamePrefix(tenantId, catalogId, namespaceId);
+    String prefix = Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId);
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
-  public int count(String tenantId, String catalogId, String namespaceId) {
-    return repo.countByPrefix(Keys.viewPointerByNamePrefix(tenantId, catalogId, namespaceId));
+  public int count(String accountId, String catalogId, String namespaceId) {
+    return repo.countByPrefix(Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId));
   }
 
   public MutationMeta metaFor(ResourceId viewResourceId) {
-    return repo.metaFor(new ViewKey(viewResourceId.getTenantId(), viewResourceId.getId()));
+    return repo.metaFor(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
   }
 
   public MutationMeta metaFor(ResourceId viewResourceId, Timestamp nowTs) {
-    return repo.metaFor(new ViewKey(viewResourceId.getTenantId(), viewResourceId.getId()), nowTs);
+    return repo.metaFor(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()), nowTs);
   }
 
   public MutationMeta metaForSafe(ResourceId viewResourceId) {
-    return repo.metaForSafe(new ViewKey(viewResourceId.getTenantId(), viewResourceId.getId()));
+    return repo.metaForSafe(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
   }
 }

@@ -15,13 +15,13 @@ public interface IcebergGatewayConfig {
   boolean upstreamPlaintext();
 
   @WithDefault("x-tenant-id")
-  String tenantHeader();
+  String accountHeader();
 
   @WithDefault("authorization")
   String authHeader();
 
   @WithDefault("")
-  String defaultTenantId();
+  String defaultAccountId();
 
   @WithDefault("")
   String defaultAuthorization();

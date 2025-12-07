@@ -83,7 +83,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   var catalogId = namespace.getCatalogId();
                   var views =
                       viewRepo.list(
-                          principalContext.getTenantId(),
+                          principalContext.getAccountId(),
                           catalogId.getId(),
                           namespaceId.getId(),
                           Math.max(1, pageIn.limit),
@@ -94,7 +94,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                       MutationOps.pageOut(
                           next.toString(),
                           viewRepo.count(
-                              principalContext.getTenantId(),
+                              principalContext.getAccountId(),
                               catalogId.getId(),
                               namespaceId.getId()));
 
@@ -200,10 +200,10 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   var fingerprint =
                       canonicalFingerprint(spec.toBuilder().setDisplayName(normName).build());
 
-                  var tenantId = pc.getTenantId();
+                  var accountId = pc.getAccountId();
                   var viewUuid =
                       deterministicUuid(
-                          tenantId,
+                          accountId,
                           "view",
                           java.util.Base64.getUrlEncoder()
                               .withoutPadding()
@@ -211,7 +211,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
                   var viewResourceId =
                       ResourceId.newBuilder()
-                          .setTenantId(tenantId)
+                          .setAccountId(accountId)
                           .setId(viewUuid)
                           .setKind(ResourceKind.RK_VIEW)
                           .build();
@@ -231,7 +231,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   if (idempotencyKey == null) {
                     var existing =
                         viewRepo.getByName(
-                            tenantId,
+                            accountId,
                             spec.getCatalogId().getId(),
                             spec.getNamespaceId().getId(),
                             normName);
@@ -250,7 +250,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
                   var result =
                       MutationOps.createProto(
-                          tenantId,
+                          accountId,
                           "CreateView",
                           idempotencyKey,
                           () -> fingerprint,

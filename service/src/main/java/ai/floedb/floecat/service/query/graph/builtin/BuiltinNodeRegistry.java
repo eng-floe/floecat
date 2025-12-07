@@ -310,7 +310,7 @@ public class BuiltinNodeRegistry {
 
   public static ResourceId resourceId(String engineKind, ResourceKind kind, NameRef name) {
     return ResourceId.newBuilder()
-        .setTenantId("_builtin")
+        .setAccountId("_builtin")
         .setKind(kind)
         .setId(engineKind + ":" + safeName(name))
         .build();

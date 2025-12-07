@@ -120,14 +120,14 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   var connectors =
                       connectorRepo.list(
-                          principalContext.getTenantId(),
+                          principalContext.getAccountId(),
                           Math.max(1, pageIn.limit),
                           pageIn.token,
                           next);
 
                   var page =
                       MutationOps.pageOut(
-                          next.toString(), connectorRepo.count(principalContext.getTenantId()));
+                          next.toString(), connectorRepo.count(principalContext.getAccountId()));
 
                   return ListConnectorsResponse.newBuilder()
                       .addAllConnectors(connectors)
@@ -183,7 +183,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
             runWithRetry(
                 () -> {
                   var pc = principalProvider.get();
-                  var tenantId = pc.getTenantId();
+                  var accountId = pc.getAccountId();
                   var corr = pc.getCorrelationId();
 
                   authz.require(pc, "connector.manage");
@@ -196,13 +196,13 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   var connUuid =
                       deterministicUuid(
-                          tenantId,
+                          accountId,
                           "connector",
                           Base64.getUrlEncoder().withoutPadding().encodeToString(fp));
 
                   var connectorId =
                       ResourceId.newBuilder()
-                          .setTenantId(tenantId)
+                          .setAccountId(accountId)
                           .setId(connUuid)
                           .setKind(ResourceKind.RK_CONNECTOR)
                           .build();
@@ -226,7 +226,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   if (dest.hasCatalogDisplayName() && !dest.hasCatalogId()) {
                     final String dName = dest.getCatalogDisplayName().trim();
                     catalogRepo
-                        .getByName(tenantId, dName)
+                        .getByName(accountId, dName)
                         .ifPresentOrElse(
                             cat -> {
                               destB.setCatalogId(cat.getResourceId());
@@ -242,7 +242,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   if (dest.hasCatalogId() && dest.hasCatalogDisplayName()) {
                     var byName =
-                        catalogRepo.getByName(tenantId, dest.getCatalogDisplayName().trim());
+                        catalogRepo.getByName(accountId, dest.getCatalogDisplayName().trim());
                     if (byName.isEmpty()
                         || !byName
                             .get()
@@ -273,7 +273,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   if (destB.hasCatalogId() && dest.hasNamespace() && !dest.hasNamespaceId()) {
                     NamespacePath dNs = dest.getNamespace();
                     namespaceRepo
-                        .getByPath(tenantId, destB.getCatalogId().getId(), dNs.getSegmentsList())
+                        .getByPath(accountId, destB.getCatalogId().getId(), dNs.getSegmentsList())
                         .ifPresent(
                             ns -> {
                               destB.setNamespaceId(ns.getResourceId());
@@ -288,7 +288,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     String dTbl = dest.getTableDisplayName().trim();
                     var tblOpt =
                         tableRepo.getByName(
-                            tenantId,
+                            accountId,
                             destB.getCatalogId().getId(),
                             destB.getNamespaceId().getId(),
                             dTbl);
@@ -339,7 +339,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   var result =
                       MutationOps.createProto(
-                          tenantId,
+                          accountId,
                           "CreateConnector",
                           idempotencyKey,
                           () -> fp,
@@ -619,7 +619,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   var jobId =
                       jobs.enqueue(
-                          connectorId.getTenantId(),
+                          connectorId.getAccountId(),
                           connectorId.getId(),
                           request.getFullRescan(),
                           scopeFromRequest(request));

@@ -22,7 +22,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.support.IcebergErrorResp
 import ai.floedb.floecat.gateway.iceberg.rest.resources.support.PageRequestHelper;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NamespacePaths;
-import ai.floedb.floecat.gateway.iceberg.rest.services.tenant.TenantContext;
+import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import com.google.protobuf.FieldMask;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
@@ -53,7 +53,7 @@ import java.util.stream.Collectors;
 public class NamespaceResource {
   @Inject GrpcWithHeaders grpc;
   @Inject IcebergGatewayConfig config;
-  @Inject TenantContext tenantContext;
+  @Inject AccountContext accountContext;
   @Context UriInfo uriInfo;
 
   @GET

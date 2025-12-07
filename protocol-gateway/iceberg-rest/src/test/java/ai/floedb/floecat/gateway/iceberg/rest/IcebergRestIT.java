@@ -23,7 +23,7 @@ import org.junit.jupiter.api.Test;
 @QuarkusTestResource(value = RealServiceTestResource.class, restrictToAnnotatedClass = true)
 class IcebergRestIT {
 
-  private static final String DEFAULT_TENANT = "31a47986-efaf-35f5-b810-09ba18ca81d2";
+  private static final String DEFAULT_ACCOUNT = "31a47986-efaf-35f5-b810-09ba18ca81d2";
   private static final String EMPTY_SCHEMA_JSON = "{\"type\":\"struct\",\"fields\":[]}";
 
   private RequestSpecification spec;
@@ -32,7 +32,7 @@ class IcebergRestIT {
   void setUp() {
     spec =
         new RequestSpecBuilder()
-            .addHeader("x-tenant-id", DEFAULT_TENANT)
+            .addHeader("x-tenant-id", DEFAULT_ACCOUNT)
             .addHeader("authorization", "Bearer integration-test")
             .setContentType(ContentType.JSON)
             .build();

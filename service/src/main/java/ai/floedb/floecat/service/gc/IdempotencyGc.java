@@ -20,7 +20,7 @@ public class IdempotencyGc {
   public record Result(
       int scanned, int expired, int ptrDeleted, int blobDeleted, String nextToken) {}
 
-  public Result runSliceForTenant(String tenantId, String pageTokenIn) {
+  public Result runSliceForAccount(String accountId, String pageTokenIn) {
     final var cfg = ConfigProvider.getConfig();
 
     final int pageSize =
@@ -31,7 +31,7 @@ public class IdempotencyGc {
         cfg.getOptionalValue("floecat.gc.idempotency.slice-millis", Long.class).orElse(4000L);
 
     final long deadline = System.currentTimeMillis() + sliceMillis;
-    final String prefix = Keys.idempotencyPrefixTenant(tenantId);
+    final String prefix = Keys.idempotencyPrefixAccount(accountId);
     String token = (pageTokenIn == null) ? "" : pageTokenIn;
 
     int scanned = 0;

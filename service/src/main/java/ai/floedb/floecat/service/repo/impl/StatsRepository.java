@@ -63,12 +63,12 @@ public class StatsRepository {
 
   public Optional<TableStats> getTableStats(ResourceId tableId, long snapshotId) {
     return tableStatsRepo.getByKey(
-        new TableStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, ""));
+        new TableStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, ""));
   }
 
   public boolean deleteTableStats(ResourceId tableId, long snapshotId) {
     return tableStatsRepo.delete(
-        new TableStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, ""));
+        new TableStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, ""));
   }
 
   public void putColumnStats(ResourceId tableId, long snapshotId, ColumnStats value) {
@@ -78,7 +78,7 @@ public class StatsRepository {
   public Optional<ColumnStats> getColumnStats(
       ResourceId tableId, long snapshotId, String columnId) {
     return columnStatsRepo.getByKey(
-        new ColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, columnId, ""));
+        new ColumnStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, columnId, ""));
   }
 
   public int putColumnStats(ResourceId tableId, long snapshotId, List<ColumnStats> batch) {
@@ -86,7 +86,7 @@ public class StatsRepository {
     for (ColumnStats cs : batch) {
       ColumnStatsKey key =
           new ColumnStatsKey(
-              cs.getTableId().getTenantId(),
+              cs.getTableId().getAccountId(),
               cs.getTableId().getId(),
               cs.getSnapshotId(),
               cs.getColumnId(),
@@ -102,13 +102,13 @@ public class StatsRepository {
   public List<ColumnStats> list(
       ResourceId tableId, long snapshotId, int limit, String token, StringBuilder nextOut) {
     String prefix =
-        Keys.snapshotColumnStatsPrefix(tableId.getTenantId(), tableId.getId(), snapshotId);
+        Keys.snapshotColumnStatsPrefix(tableId.getAccountId(), tableId.getId(), snapshotId);
     return columnStatsRepo.listByPrefix(prefix, limit, token, nextOut);
   }
 
   public int count(ResourceId tableId, long snapshotId) {
     String prefix =
-        Keys.snapshotColumnStatsPrefix(tableId.getTenantId(), tableId.getId(), snapshotId);
+        Keys.snapshotColumnStatsPrefix(tableId.getAccountId(), tableId.getId(), snapshotId);
     return columnStatsRepo.countByPrefix(prefix);
   }
 
@@ -119,7 +119,7 @@ public class StatsRepository {
   public Optional<FileColumnStats> getFileColumnStats(
       ResourceId tableId, long snapshotId, String filePath) {
     return fileStatsRepo.getByKey(
-        new FileColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, filePath, ""));
+        new FileColumnStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, filePath, ""));
   }
 
   public int putFileColumnStats(ResourceId tableId, long snapshotId, List<FileColumnStats> batch) {
@@ -127,7 +127,7 @@ public class StatsRepository {
     for (FileColumnStats fs : batch) {
       FileColumnStatsKey key =
           new FileColumnStatsKey(
-              fs.getTableId().getTenantId(),
+              fs.getTableId().getAccountId(),
               fs.getTableId().getId(),
               fs.getSnapshotId(),
               fs.getFilePath(),
@@ -143,13 +143,13 @@ public class StatsRepository {
   public List<FileColumnStats> listFileStats(
       ResourceId tableId, long snapshotId, int limit, String token, StringBuilder nextOut) {
     String prefix =
-        Keys.snapshotFileStatsPrefix(tableId.getTenantId(), tableId.getId(), snapshotId);
+        Keys.snapshotFileStatsPrefix(tableId.getAccountId(), tableId.getId(), snapshotId);
     return fileStatsRepo.listByPrefix(prefix, limit, token, nextOut);
   }
 
   public int countFileStats(ResourceId tableId, long snapshotId) {
     String prefix =
-        Keys.snapshotFileStatsPrefix(tableId.getTenantId(), tableId.getId(), snapshotId);
+        Keys.snapshotFileStatsPrefix(tableId.getAccountId(), tableId.getId(), snapshotId);
     return fileStatsRepo.countByPrefix(prefix);
   }
 
@@ -157,7 +157,7 @@ public class StatsRepository {
     deleteTableStats(tableId, snapshotId);
 
     String colPrefix =
-        Keys.snapshotColumnStatsPrefix(tableId.getTenantId(), tableId.getId(), snapshotId);
+        Keys.snapshotColumnStatsPrefix(tableId.getAccountId(), tableId.getId(), snapshotId);
     String token = "";
     StringBuilder next = new StringBuilder();
 
@@ -167,7 +167,7 @@ public class StatsRepository {
         String sha = ColumnStatsNormalizer.sha256Hex(cs.toByteArray());
         ColumnStatsKey key =
             new ColumnStatsKey(
-                cs.getTableId().getTenantId(),
+                cs.getTableId().getAccountId(),
                 cs.getTableId().getId(),
                 cs.getSnapshotId(),
                 cs.getColumnId(),
@@ -179,7 +179,7 @@ public class StatsRepository {
     } while (!token.isEmpty());
 
     String filePrefix =
-        Keys.snapshotFileStatsPrefix(tableId.getTenantId(), tableId.getId(), snapshotId);
+        Keys.snapshotFileStatsPrefix(tableId.getAccountId(), tableId.getId(), snapshotId);
     token = "";
     next.setLength(0);
 
@@ -189,7 +189,7 @@ public class StatsRepository {
         String sha = ColumnStatsNormalizer.sha256Hex(fs.toByteArray());
         FileColumnStatsKey key =
             new FileColumnStatsKey(
-                fs.getTableId().getTenantId(),
+                fs.getTableId().getAccountId(),
                 fs.getTableId().getId(),
                 fs.getSnapshotId(),
                 fs.getFilePath(),
@@ -205,51 +205,51 @@ public class StatsRepository {
 
   public MutationMeta metaForTableStats(ResourceId tableId, long snapshotId) {
     return tableStatsRepo.metaFor(
-        new TableStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, ""));
+        new TableStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, ""));
   }
 
   public MutationMeta metaForTableStats(ResourceId tableId, long snapshotId, Timestamp nowTs) {
     return tableStatsRepo.metaFor(
-        new TableStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, ""), nowTs);
+        new TableStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, ""), nowTs);
   }
 
   public MutationMeta metaForTableStatsSafe(ResourceId tableId, long snapshotId) {
     return tableStatsRepo.metaForSafe(
-        new TableStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, ""));
+        new TableStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, ""));
   }
 
   public MutationMeta metaForColumnStats(ResourceId tableId, long snapshotId, String columnId) {
     return columnStatsRepo.metaFor(
-        new ColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, columnId, ""));
+        new ColumnStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, columnId, ""));
   }
 
   public MutationMeta metaForColumnStats(
       ResourceId tableId, long snapshotId, String columnId, Timestamp nowTs) {
     return columnStatsRepo.metaFor(
-        new ColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, columnId, ""),
+        new ColumnStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, columnId, ""),
         nowTs);
   }
 
   public MutationMeta metaForColumnStatsSafe(ResourceId tableId, long snapshotId, String columnId) {
     return columnStatsRepo.metaForSafe(
-        new ColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, columnId, ""));
+        new ColumnStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, columnId, ""));
   }
 
   public MutationMeta metaForFileColumnStats(ResourceId tableId, long snapshotId, String filePath) {
     return fileStatsRepo.metaFor(
-        new FileColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, filePath, ""));
+        new FileColumnStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, filePath, ""));
   }
 
   public MutationMeta metaForFileColumnStats(
       ResourceId tableId, long snapshotId, String filePath, Timestamp nowTs) {
     return fileStatsRepo.metaFor(
-        new FileColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, filePath, ""),
+        new FileColumnStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, filePath, ""),
         nowTs);
   }
 
   public MutationMeta metaForFileColumnStatsSafe(
       ResourceId tableId, long snapshotId, String filePath) {
     return fileStatsRepo.metaForSafe(
-        new FileColumnStatsKey(tableId.getTenantId(), tableId.getId(), snapshotId, filePath, ""));
+        new FileColumnStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, filePath, ""));
   }
 }

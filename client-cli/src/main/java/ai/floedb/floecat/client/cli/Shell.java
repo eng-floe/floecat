@@ -199,8 +199,8 @@ public class Shell implements Runnable {
   private final boolean debugErrors =
       Boolean.getBoolean("floecat.shell.debug") || System.getenv("FLOECAT_SHELL_DEBUG") != null;
 
-  private volatile String currentTenantId =
-      System.getenv().getOrDefault("FLOECAT_TENANT", "").trim();
+  private volatile String currentAccountId =
+      System.getenv().getOrDefault("FLOECAT_ACCOUNT", "").trim();
 
   @Override
   public void run() {
@@ -227,7 +227,7 @@ public class Shell implements Runnable {
               "snapshots",
               "stats",
               "query",
-              "tenant",
+              "account",
               "help",
               "quit",
               "exit");
@@ -319,7 +319,7 @@ public class Shell implements Runnable {
     out.println(
 """
          Commands:
-         tenant <id>
+         account <id>
          catalogs
          catalog create <display_name> [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...]
          catalog get <display_name|id>
@@ -374,13 +374,13 @@ public class Shell implements Runnable {
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
-             [--dest-tenant <tenant>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
+             [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
              [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
              [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]
          connector delete <display_name|id>  [--etag <etag>]
          connector validate <kind> <uri>
-             [--dest-tenant <tenant>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
+             [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
              [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
@@ -399,12 +399,12 @@ public class Shell implements Runnable {
     String command = tokens.get(0);
 
     switch (command) {
-      case "tenant", "help", "quit", "exit" -> {}
-      default -> ensureTenantSet();
+      case "account", "help", "quit", "exit" -> {}
+      default -> ensureAccountSet();
     }
 
     switch (command) {
-      case "tenant" -> cmdTenant(tail(tokens));
+      case "account" -> cmdAccount(tail(tokens));
       case "catalogs" -> cmdCatalogs();
       case "catalog" -> cmdCatalogCrud(tail(tokens));
       case "namespaces" -> cmdNamespaces(tail(tokens));
@@ -425,21 +425,21 @@ public class Shell implements Runnable {
     }
   }
 
-  private void cmdTenant(List<String> args) {
+  private void cmdAccount(List<String> args) {
     if (args.isEmpty()) {
       out.println(
-          currentTenantId == null || currentTenantId.isBlank()
-              ? "tenant: <not set>"
-              : ("tenant: " + currentTenantId));
+          currentAccountId == null || currentAccountId.isBlank()
+              ? "account: <not set>"
+              : ("account: " + currentAccountId));
       return;
     }
     String t = args.get(0).trim();
     if (t.isEmpty()) {
-      out.println("usage: tenant <tenantId>");
+      out.println("usage: account <accountId>");
       return;
     }
-    currentTenantId = t;
-    out.println("tenant set: " + currentTenantId);
+    currentAccountId = t;
+    out.println("account set: " + currentAccountId);
   }
 
   private List<String> tail(List<String> list) {
@@ -2233,8 +2233,8 @@ public class Shell implements Runnable {
 
   private void printQueryDescriptor(QueryDescriptor query) {
     out.println("query id: " + query.getQueryId());
-    if (!query.getTenantId().isBlank()) {
-      out.println("tenant: " + query.getTenantId());
+    if (!query.getAccountId().isBlank()) {
+      out.println("account: " + query.getAccountId());
     }
     out.println("status: " + query.getQueryStatus().name().toLowerCase(Locale.ROOT));
     out.println("created: " + ts(query.getCreatedAt()));
@@ -2372,10 +2372,10 @@ public class Shell implements Runnable {
   }
 
   private ResourceId resourceId(String id, ResourceKind kind) {
-    if (currentTenantId == null || currentTenantId.isBlank()) {
-      throw new IllegalStateException("No tenant set. Use: tenant <tenantId>");
+    if (currentAccountId == null || currentAccountId.isBlank()) {
+      throw new IllegalStateException("No account set. Use: account <accountId>");
     }
-    return ResourceId.newBuilder().setTenantId(currentTenantId).setKind(kind).setId(id).build();
+    return ResourceId.newBuilder().setAccountId(currentAccountId).setKind(kind).setId(id).build();
   }
 
   private ResourceId catalogRid(String id) {
@@ -3123,9 +3123,9 @@ public class Shell implements Runnable {
     return out;
   }
 
-  private void ensureTenantSet() {
-    if (currentTenantId == null || currentTenantId.isBlank()) {
-      throw new IllegalStateException("No tenant set. Use: tenant <tenantId>");
+  private void ensureAccountSet() {
+    if (currentAccountId == null || currentAccountId.isBlank()) {
+      throw new IllegalStateException("No account set. Use: account <accountId>");
     }
   }
 

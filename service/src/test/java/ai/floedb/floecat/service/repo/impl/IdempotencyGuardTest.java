@@ -35,7 +35,7 @@ import org.junit.jupiter.api.Test;
 
 public class IdempotencyGuardTest {
 
-  private static final String TENANT = "t1";
+  private static final String ACCOUNT = "t1";
   private static final String OP = "CreateThing";
   private static final Timestamp NOW = ts(Instant.parse("2025-01-01T00:00:00Z"));
 
@@ -54,7 +54,7 @@ public class IdempotencyGuardTest {
   void runOnceEmptyKey() {
     var out =
         IdempotencyGuard.runOnce(
-            TENANT,
+            ACCOUNT,
             OP,
             "",
             "req".getBytes(StandardCharsets.UTF_8),
@@ -82,7 +82,7 @@ public class IdempotencyGuardTest {
 
     var r1 =
         IdempotencyGuard.runOnce(
-            TENANT,
+            ACCOUNT,
             OP,
             idemKey,
             req,
@@ -97,14 +97,14 @@ public class IdempotencyGuardTest {
             rec -> true);
     assertThat(r1).isEqualTo("R1");
 
-    assertThat(repo.get(Keys.idempotencyKey(TENANT, OP, idemKey)))
+    assertThat(repo.get(Keys.idempotencyKey(ACCOUNT, OP, idemKey)))
         .get()
         .extracting(IdempotencyRecord::getStatus)
         .isEqualTo(IdempotencyRecord.Status.SUCCEEDED);
 
     var r2 =
         IdempotencyGuard.runOnce(
-            TENANT,
+            ACCOUNT,
             OP,
             idemKey,
             req,
@@ -124,7 +124,7 @@ public class IdempotencyGuardTest {
   void runOnceRejectDifferentFingerprint() throws Exception {
     final String idemKey = "k1";
     final byte[] seedReq = "AAA".getBytes(StandardCharsets.UTF_8);
-    final String key = Keys.idempotencyKey(TENANT, OP, idemKey);
+    final String key = Keys.idempotencyKey(ACCOUNT, OP, idemKey);
 
     MessageDigest md = MessageDigest.getInstance("SHA-256");
     String requestHash = Base64.getEncoder().encodeToString(md.digest(seedReq));
@@ -132,16 +132,16 @@ public class IdempotencyGuardTest {
     Timestamp createdAt = NOW;
     Timestamp expiresAt = Timestamps.add(NOW, Duration.newBuilder().setSeconds(300).build());
 
-    boolean pendingOk = repo.createPending(TENANT, key, OP, requestHash, createdAt, expiresAt);
+    boolean pendingOk = repo.createPending(ACCOUNT, key, OP, requestHash, createdAt, expiresAt);
     assertThat(pendingOk).isTrue();
 
     repo.finalizeSuccess(
-        TENANT,
+        ACCOUNT,
         key,
         OP,
         requestHash,
         ResourceId.newBuilder()
-            .setTenantId(TENANT)
+            .setAccountId(ACCOUNT)
             .setId("rid1")
             .setKind(ResourceKind.RK_UNSPECIFIED)
             .build(),
@@ -155,7 +155,7 @@ public class IdempotencyGuardTest {
             StatusRuntimeException.class,
             () ->
                 IdempotencyGuard.runOnce(
-                    TENANT,
+                    ACCOUNT,
                     OP,
                     idemKey,
                     "BBB".getBytes(StandardCharsets.UTF_8),
@@ -163,7 +163,7 @@ public class IdempotencyGuardTest {
                         new IdempotencyGuard.CreateResult<>(
                             "R2",
                             ResourceId.newBuilder()
-                                .setTenantId(TENANT)
+                                .setAccountId(ACCOUNT)
                                 .setId("rid2")
                                 .setKind(ResourceKind.RK_UNSPECIFIED)
                                 .build()),
@@ -200,7 +200,7 @@ public class IdempotencyGuardTest {
     byte[] req = "REQ".getBytes(StandardCharsets.UTF_8);
 
     seedSucceeded(
-        TENANT,
+        ACCOUNT,
         OP,
         idemKey,
         req,
@@ -213,7 +213,7 @@ public class IdempotencyGuardTest {
             StatusRuntimeException.class,
             () ->
                 IdempotencyGuard.runOnce(
-                    TENANT,
+                    ACCOUNT,
                     OP,
                     idemKey,
                     req,
@@ -241,7 +241,7 @@ public class IdempotencyGuardTest {
     assertThat(mcError.getCode()).isEqualTo(ErrorCode.MC_CONFLICT);
     assertThat(mcError.getMessageKey()).isEqualTo("idempotency_already_succeeded_not_replayable");
 
-    var rec = repo.get(Keys.idempotencyKey(TENANT, OP, idemKey)).orElseThrow();
+    var rec = repo.get(Keys.idempotencyKey(ACCOUNT, OP, idemKey)).orElseThrow();
     assertThat(rec.getStatus()).isEqualTo(IdempotencyRecord.Status.SUCCEEDED);
     assertThat(rec.getPayload().toStringUtf8()).isEqualTo("OLD");
   }
@@ -251,11 +251,11 @@ public class IdempotencyGuardTest {
     String idemKey = "k4";
     byte[] req = "REQ".getBytes(StandardCharsets.UTF_8);
 
-    String key = Keys.idempotencyKey(TENANT, OP, idemKey);
+    String key = Keys.idempotencyKey(ACCOUNT, OP, idemKey);
     String requestHash = sha256B64(req);
-    repo.createPending(TENANT, key, OP, requestHash, NOW, expiresFrom(NOW, 60));
+    repo.createPending(ACCOUNT, key, OP, requestHash, NOW, expiresFrom(NOW, 60));
     repo.finalizeSuccess(
-        TENANT,
+        ACCOUNT,
         key,
         OP,
         requestHash,
@@ -271,7 +271,7 @@ public class IdempotencyGuardTest {
     assertThatThrownBy(
             () ->
                 MutationOps.<ResourceId>createProto(
-                    TENANT,
+                    ACCOUNT,
                     OP,
                     idemKey,
                     () -> req,
@@ -295,7 +295,7 @@ public class IdempotencyGuardTest {
     byte[] req = "REQ".getBytes(StandardCharsets.UTF_8);
 
     seedSucceeded(
-        TENANT,
+        ACCOUNT,
         OP,
         idemKey,
         req,
@@ -308,7 +308,7 @@ public class IdempotencyGuardTest {
             StatusRuntimeException.class,
             () ->
                 IdempotencyGuard.runOnce(
-                    TENANT,
+                    ACCOUNT,
                     OP,
                     idemKey,
                     req,
@@ -341,7 +341,7 @@ public class IdempotencyGuardTest {
     assertThat(mcError.getMessageKey()).isEqualTo("idempotency_already_succeeded_not_replayable");
     assertThat(mcError.getParamsMap()).containsEntry("op", OP).containsEntry("key", idemKey);
 
-    assertThat(repo.get(Keys.idempotencyKey(TENANT, OP, idemKey))).isPresent();
+    assertThat(repo.get(Keys.idempotencyKey(ACCOUNT, OP, idemKey))).isPresent();
   }
 
   @Test
@@ -350,7 +350,7 @@ public class IdempotencyGuardTest {
     byte[] req = "REQ".getBytes(StandardCharsets.UTF_8);
 
     seedSucceeded(
-        TENANT,
+        ACCOUNT,
         OP,
         idemKey,
         req,
@@ -360,7 +360,7 @@ public class IdempotencyGuardTest {
 
     String out =
         IdempotencyGuard.runOnce(
-            TENANT,
+            ACCOUNT,
             OP,
             idemKey,
             req,
@@ -377,7 +377,7 @@ public class IdempotencyGuardTest {
             rec -> true);
 
     assertThat(out).isEqualTo("OLD");
-    assertThat(repo.get(Keys.idempotencyKey(TENANT, OP, idemKey))).isPresent();
+    assertThat(repo.get(Keys.idempotencyKey(ACCOUNT, OP, idemKey))).isPresent();
   }
 
   private static Function<String, byte[]> strSer() {
@@ -398,7 +398,7 @@ public class IdempotencyGuardTest {
 
   private static ResourceId resourceId(String id) {
     return ResourceId.newBuilder()
-        .setTenantId(TENANT)
+        .setAccountId(ACCOUNT)
         .setId(id)
         .setKind(ResourceKind.RK_UNSPECIFIED)
         .build();
@@ -418,7 +418,7 @@ public class IdempotencyGuardTest {
   }
 
   private void seedSucceeded(
-      String tenant,
+      String account,
       String op,
       String idem,
       byte[] requestBytes,
@@ -427,17 +427,17 @@ public class IdempotencyGuardTest {
       MutationMeta meta)
       throws Exception {
 
-    String key = Keys.idempotencyKey(tenant, op, idem);
+    String key = Keys.idempotencyKey(account, op, idem);
     String requestHash = sha256B64(requestBytes);
 
     Timestamp createdAt = NOW;
     Timestamp expiresAt = Timestamps.add(NOW, Duration.newBuilder().setSeconds(300).build());
 
-    boolean ok = repo.createPending(tenant, key, op, requestHash, createdAt, expiresAt);
+    boolean ok = repo.createPending(account, key, op, requestHash, createdAt, expiresAt);
     assertThat(ok).isTrue();
 
     repo.finalizeSuccess(
-        tenant, key, op, requestHash, rid, meta, payloadBytes, createdAt, expiresAt);
+        account, key, op, requestHash, rid, meta, payloadBytes, createdAt, expiresAt);
 
     var rec = repo.get(key).orElseThrow();
     assertThat(rec.getStatus()).isEqualTo(IdempotencyRecord.Status.SUCCEEDED);

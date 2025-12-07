@@ -34,8 +34,8 @@ class QueryContextStoreIT {
   private final Clock clock = Clock.systemUTC();
 
   private static PrincipalContext pc(String queryId) {
-    ResourceId tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
-    var b = PrincipalContext.newBuilder().setTenantId(tenantId.getId()).setSubject("it-user");
+    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var b = PrincipalContext.newBuilder().setAccountId(accountId.getId()).setSubject("it-user");
     if (queryId != null) {
       b.setQueryId(queryId);
     }

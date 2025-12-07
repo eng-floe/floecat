@@ -5,7 +5,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
-import ai.floedb.floecat.service.repo.impl.TenantRepository;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import io.grpc.Context;
 import io.grpc.Contexts;
@@ -49,7 +49,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
   private Clock clock = Clock.systemUTC();
 
   @Inject QueryContextStore queryStore;
-  @Inject TenantRepository tenantRepository;
+  @Inject AccountRepository accountRepository;
 
   @Override
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
@@ -79,14 +79,14 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
     MDC.put("query_id", queryId);
     MDC.put("correlation_id", correlationId);
-    MDC.put("tenant_id", principalContext.getTenantId());
+    MDC.put("account_id", principalContext.getAccountId());
     MDC.put("subject", principalContext.getSubject());
 
     var span = Span.current();
     if (span.getSpanContext().isValid()) {
       span.setAttribute("query_id", queryId);
       span.setAttribute("correlation_id", correlationId);
-      span.setAttribute("tenant_id", principalContext.getTenantId());
+      span.setAttribute("account_id", principalContext.getAccountId());
       span.setAttribute("subject", principalContext.getSubject());
       if (engineVersion != null && !engineVersion.isBlank()) {
         span.setAttribute("engine_version", engineVersion);
@@ -111,7 +111,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
             } finally {
               MDC.remove("query_id");
               MDC.remove("correlation_id");
-              MDC.remove("tenant_id");
+              MDC.remove("account_id");
               MDC.remove("subject");
             }
             super.close(status, metadata);
@@ -124,7 +124,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
     if (span.getSpanContext().isValid()) {
       span.setAttribute("query_id", queryId);
       span.setAttribute("correlation_id", correlationId);
-      span.setAttribute("tenant_id", principalContext.getTenantId());
+      span.setAttribute("account_id", principalContext.getAccountId());
       span.setAttribute("subject", principalContext.getSubject());
       String ev = ENGINE_VERSION_KEY.get();
       if (ev != null && !ev.isBlank()) {
@@ -145,7 +145,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
     if (pcBytes != null) {
       PrincipalContext pc = parsePrincipal(pcBytes);
 
-      validateTenant(pc.getTenantId());
+      validateAccount(pc.getAccountId());
 
       if (!isBlank(queryIdHeader)
           && !isBlank(pc.getQueryId())
@@ -209,15 +209,15 @@ public class InboundContextInterceptor implements ServerInterceptor {
   }
 
   private static PrincipalContext devContext() {
-    var id = UUID.nameUUIDFromBytes("/tenant:t-0001".getBytes()).toString();
+    var id = UUID.nameUUIDFromBytes("/account:t-0001".getBytes()).toString();
     var rid =
-        ResourceId.newBuilder().setTenantId(id).setId(id).setKind(ResourceKind.RK_TENANT).build();
+        ResourceId.newBuilder().setAccountId(id).setId(id).setKind(ResourceKind.RK_ACCOUNT).build();
     return PrincipalContext.newBuilder()
-        .setTenantId(rid.getId())
+        .setAccountId(rid.getId())
         .setSubject("dev-user")
         .setLocale("en")
-        .addPermissions("tenant.read")
-        .addPermissions("tenant.write")
+        .addPermissions("account.read")
+        .addPermissions("account.write")
         .addPermissions("catalog.read")
         .addPermissions("catalog.write")
         .addPermissions("namespace.read")
@@ -230,12 +230,12 @@ public class InboundContextInterceptor implements ServerInterceptor {
         .build();
   }
 
-  private void validateTenant(String tenantId) {
-    ResourceId tenantRid =
-        ResourceId.newBuilder().setId(tenantId).setKind(ResourceKind.RK_TENANT).build();
-    if (tenantId == null || isBlank(tenantId) || tenantRepository.getById(tenantRid).isEmpty()) {
+  private void validateAccount(String accountId) {
+    ResourceId accountRid =
+        ResourceId.newBuilder().setId(accountId).setKind(ResourceKind.RK_ACCOUNT).build();
+    if (accountId == null || isBlank(accountId) || accountRepository.getById(accountRid).isEmpty()) {
       throw Status.UNAUTHENTICATED
-          .withDescription("invalid or unknown tenant: " + tenantId)
+          .withDescription("invalid or unknown account: " + accountId)
           .asRuntimeException();
     }
   }

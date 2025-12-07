@@ -66,11 +66,11 @@ GC → pointerStore.listPointersByPrefix + pointerStore.deleteByPrefix
 
 ## Examples & Scenarios
 - **Creating a catalog** – `CatalogRepository.create` reserves keys
-  (`/tenants/{tenant}/catalogs/by-name/{name}`), writes a blob (`catalog.pb`), and advances pointer
+  (`/accounts/{account}/catalogs/by-name/{name}`), writes a blob (`catalog.pb`), and advances pointer
   versions. If another client created the catalog concurrently, `compareAndSet` fails and the service
   translates it to `MC_CONFLICT`.
 - **GC** – `IdempotencyGc` iterates pointer prefixes representing idempotency records, deletes stale
-  entries, and relies on `deleteByPrefix` to remove entire tenant subtrees efficiently.
+  entries, and relies on `deleteByPrefix` to remove entire account subtrees efficiently.
 
 ## Cross-References
 - In-memory implementation: [`docs/storage-memory.md`](storage-memory.md)

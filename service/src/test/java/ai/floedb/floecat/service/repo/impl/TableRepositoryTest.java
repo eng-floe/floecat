@@ -37,7 +37,7 @@ import org.junit.jupiter.api.Timeout;
 class TableRepositoryTest {
   private final Clock clock = Clock.systemUTC();
 
-  private final String tenant = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT).getId();
+  private final String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
 
   private CatalogRepository catalogRepo;
   private NamespaceRepository namespaceRepo;
@@ -58,12 +58,12 @@ class TableRepositoryTest {
 
   private ResourceId createTable(String catalogName, String namespaceName, String tableName) {
     ResourceId catalogId;
-    if (catalogRepo.getByName(tenant, catalogName).isPresent()) {
-      catalogId = catalogRepo.getByName(tenant, catalogName).get().getResourceId();
+    if (catalogRepo.getByName(account, catalogName).isPresent()) {
+      catalogId = catalogRepo.getByName(account, catalogName).get().getResourceId();
     } else {
       catalogId =
           ResourceId.newBuilder()
-              .setTenantId(tenant)
+              .setAccountId(account)
               .setId(UUID.randomUUID().toString())
               .setKind(ResourceKind.RK_CATALOG)
               .build();
@@ -77,16 +77,16 @@ class TableRepositoryTest {
     }
 
     ResourceId namespaceId;
-    if (namespaceRepo.getByPath(tenant, catalogId.getId(), List.of(namespaceName)).isPresent()) {
+    if (namespaceRepo.getByPath(account, catalogId.getId(), List.of(namespaceName)).isPresent()) {
       namespaceId =
           namespaceRepo
-              .getByPath(tenant, catalogId.getId(), List.of(namespaceName))
+              .getByPath(account, catalogId.getId(), List.of(namespaceName))
               .get()
               .getResourceId();
     } else {
       namespaceId =
           ResourceId.newBuilder()
-              .setTenantId(tenant)
+              .setAccountId(account)
               .setId(UUID.randomUUID().toString())
               .setKind(ResourceKind.RK_NAMESPACE)
               .build();
@@ -106,7 +106,7 @@ class TableRepositoryTest {
   private ResourceId createTable(ResourceId catalogId, ResourceId namespaceId, String tableName) {
     var tableId =
         ResourceId.newBuilder()
-            .setTenantId(tenant)
+            .setAccountId(account)
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_TABLE)
             .build();
@@ -143,12 +143,12 @@ class TableRepositoryTest {
 
     var pointerRow =
         ptr.get(
-            Keys.tablePointerByName(tenant, catalogId.getId(), namespaceId.getId(), "line_item"));
+            Keys.tablePointerByName(account, catalogId.getId(), namespaceId.getId(), "line_item"));
     assertTrue(pointerRow.isPresent(), "by-namespace ROW pointer missing");
 
     var rowsUnderPfx =
         ptr.listPointersByPrefix(
-            Keys.tablePointerByNamePrefix(tenant, catalogId.getId(), namespaceId.getId()),
+            Keys.tablePointerByNamePrefix(account, catalogId.getId(), namespaceId.getId()),
             Integer.MAX_VALUE,
             null,
             null);
@@ -159,7 +159,7 @@ class TableRepositoryTest {
                     r.getKey()
                         .equals(
                             Keys.tablePointerByName(
-                                tenant, catalogId.getId(), namespaceId.getId(), "line_item"))),
+                                account, catalogId.getId(), namespaceId.getId(), "line_item"))),
         "prefix scan doesn't see the row key last written");
 
     String uri = pointerRow.get().getBlobUri();
@@ -180,7 +180,7 @@ class TableRepositoryTest {
 
     var list =
         tableRepo.list(
-            tenant, catalogId.getId(), namespaceId.getId(), Integer.MAX_VALUE, null, null);
+            account, catalogId.getId(), namespaceId.getId(), Integer.MAX_VALUE, null, null);
     assertEquals(1, list.size());
 
     var cur = snapshotRepo.getCurrentSnapshot(tableId).orElseThrow();
@@ -200,7 +200,7 @@ class TableRepositoryTest {
     ResourceId catalogId = foundFirst.getCatalogId();
     ResourceId namespaceId = foundFirst.getNamespaceId();
 
-    assertEquals(100000, tableRepo.count(tenant, catalogId.getId(), namespaceId.getId()));
+    assertEquals(100000, tableRepo.count(account, catalogId.getId(), namespaceId.getId()));
 
     int pages = 0;
     String token = "";
@@ -208,7 +208,7 @@ class TableRepositoryTest {
     do {
       StringBuilder next = new StringBuilder();
       listedTables.addAll(
-          tableRepo.list(tenant, catalogId.getId(), namespaceId.getId(), 10000, token, next));
+          tableRepo.list(account, catalogId.getId(), namespaceId.getId(), 10000, token, next));
       pages++;
 
       token = next.toString();
@@ -225,10 +225,10 @@ class TableRepositoryTest {
   @Test
   @Timeout(30)
   void tableRepoConcurrentMutations() throws Exception {
-    var catId = rid(tenant, ResourceKind.RK_CATALOG);
-    var ns1Id = rid(tenant, ResourceKind.RK_NAMESPACE);
-    var ns2Id = rid(tenant, ResourceKind.RK_NAMESPACE);
-    var tblId = rid(tenant, ResourceKind.RK_TABLE);
+    var catId = rid(account, ResourceKind.RK_CATALOG);
+    var ns1Id = rid(account, ResourceKind.RK_NAMESPACE);
+    var ns2Id = rid(account, ResourceKind.RK_NAMESPACE);
+    var tblId = rid(account, ResourceKind.RK_TABLE);
 
     var cat = Catalog.newBuilder().setResourceId(catId).setDisplayName("sales").build();
     catalogRepo.create(cat);
@@ -261,7 +261,7 @@ class TableRepositoryTest {
             .build();
     tableRepo.create(seed);
 
-    String canonKey = Keys.tablePointerById(tenant, tblId.getId());
+    String canonKey = Keys.tablePointerById(account, tblId.getId());
     long v0 = ptr.get(canonKey).orElseThrow().getVersion();
 
     int WORKERS = 48;
@@ -385,9 +385,9 @@ class TableRepositoryTest {
     }
   }
 
-  private static ResourceId rid(String tenant, ResourceKind kind) {
+  private static ResourceId rid(String account, ResourceKind kind) {
     return ResourceId.newBuilder()
-        .setTenantId(tenant)
+        .setAccountId(account)
         .setId(UUID.randomUUID().toString())
         .setKind(kind)
         .build();

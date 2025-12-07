@@ -113,7 +113,7 @@ class BuiltinNodeRegistryTest {
   void resourceIdBuildsStableIds() {
     var id = BuiltinNodeRegistry.resourceId("floe", ResourceKind.RK_FUNCTION, nr("pg_catalog.abs"));
 
-    assertThat(id.getTenantId()).isEqualTo("_builtin");
+    assertThat(id.getAccountId()).isEqualTo("_builtin");
     assertThat(id.getKind()).isEqualTo(ResourceKind.RK_FUNCTION);
     assertThat(id.getId()).isEqualTo("floe:pg_catalog.abs");
   }

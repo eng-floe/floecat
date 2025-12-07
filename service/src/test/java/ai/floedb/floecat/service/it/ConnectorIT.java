@@ -85,7 +85,7 @@ public class ConnectorIT {
 
   @Test
   void connectorEndToEnd() throws Exception {
-    var tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
+    var accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
     TestSupport.createCatalog(catalogService, "cat-e2e", "");
     var conn =
         TestSupport.createConnector(
@@ -121,21 +121,21 @@ public class ConnectorIT {
     assertNotNull(job2);
     assertEquals("JS_SUCCEEDED", job2.state, () -> "job failed: " + job2.message);
 
-    var catId = catalogs.getByName(tenantId.getId(), "cat-e2e").orElseThrow().getResourceId();
+    var catId = catalogs.getByName(accountId.getId(), "cat-e2e").orElseThrow().getResourceId();
 
-    assertEquals(3, namespaces.count(tenantId.getId(), catId.getId(), List.of()));
+    assertEquals(3, namespaces.count(accountId.getId(), catId.getId(), List.of()));
 
-    var dbNsId = namespaces.getByPath(tenantId.getId(), catId.getId(), List.of("db")).orElseThrow();
+    var dbNsId = namespaces.getByPath(accountId.getId(), catId.getId(), List.of("db")).orElseThrow();
     var anaNsId =
         namespaces
-            .getByPath(tenantId.getId(), catId.getId(), List.of("analytics", "sales"))
+            .getByPath(accountId.getId(), catId.getId(), List.of("analytics", "sales"))
             .orElseThrow();
 
     assertEquals(
         2,
         tables
             .list(
-                tenantId.getId(),
+                accountId.getId(),
                 catId.getId(),
                 dbNsId.getResourceId().getId(),
                 50,
@@ -146,7 +146,7 @@ public class ConnectorIT {
         1,
         tables
             .list(
-                tenantId.getId(),
+                accountId.getId(),
                 catId.getId(),
                 anaNsId.getResourceId().getId(),
                 50,
@@ -157,7 +157,7 @@ public class ConnectorIT {
     var anyTable =
         tables
             .list(
-                tenantId.getId(),
+                accountId.getId(),
                 catId.getId(),
                 dbNsId.getResourceId().getId(),
                 50,
@@ -176,7 +176,7 @@ public class ConnectorIT {
 
   @Test
   void dummyConnectorStatsRoundTrip() throws Exception {
-    var tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
+    var accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
     TestSupport.createCatalog(catalogService, "cat-stats", "");
 
     var conn =
@@ -195,14 +195,14 @@ public class ConnectorIT {
     assertNotNull(job);
     assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
 
-    var catId = catalogs.getByName(tenantId.getId(), "cat-stats").orElseThrow().getResourceId();
+    var catId = catalogs.getByName(accountId.getId(), "cat-stats").orElseThrow().getResourceId();
 
-    var dbNsId = namespaces.getByPath(tenantId.getId(), catId.getId(), List.of("db")).orElseThrow();
+    var dbNsId = namespaces.getByPath(accountId.getId(), catId.getId(), List.of("db")).orElseThrow();
 
     var tbl =
         tables
             .list(
-                tenantId.getId(),
+                accountId.getId(),
                 catId.getId(),
                 dbNsId.getResourceId().getId(),
                 50,
@@ -238,7 +238,7 @@ public class ConnectorIT {
 
   @Test
   void dummyConnectorRespectsDestinationTableDisplayName() throws Exception {
-    var tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
+    var accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
     TestSupport.createCatalog(catalogService, "cat-dest-table", "");
 
     var dest =
@@ -272,16 +272,16 @@ public class ConnectorIT {
     assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
 
     var catId =
-        catalogs.getByName(tenantId.getId(), "cat-dest-table").orElseThrow().getResourceId();
+        catalogs.getByName(accountId.getId(), "cat-dest-table").orElseThrow().getResourceId();
 
     var ns =
         namespaces
-            .getByPath(tenantId.getId(), catId.getId(), List.of("analytics", "sales"))
+            .getByPath(accountId.getId(), catId.getId(), List.of("analytics", "sales"))
             .orElseThrow();
 
     var outTables =
         tables.list(
-            tenantId.getId(),
+            accountId.getId(),
             catId.getId(),
             ns.getResourceId().getId(),
             50,
@@ -300,7 +300,7 @@ public class ConnectorIT {
             .orElse(false);
     Assumptions.assumeTrue(enabled, "Disabled by test.glue.enabled=false");
 
-    var tenantId = TestSupport.createTenantId(TestSupport.DEFAULT_SEED_TENANT);
+    var accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
 
     TestSupport.createCatalog(catalogService, "glue-iceberg-rest", "");
 
@@ -322,20 +322,20 @@ public class ConnectorIT {
     assertEquals("JS_SUCCEEDED", job.state);
 
     var catId =
-        catalogs.getByName(tenantId.getId(), "glue-iceberg-rest").orElseThrow().getResourceId();
+        catalogs.getByName(accountId.getId(), "glue-iceberg-rest").orElseThrow().getResourceId();
 
-    assertEquals(1, namespaces.count(tenantId.getId(), catId.getId(), List.of()));
+    assertEquals(1, namespaces.count(accountId.getId(), catId.getId(), List.of()));
 
     var tpcdsNsId =
         namespaces
-            .getByPath(tenantId.getId(), catId.getId(), List.of("tpcds_iceberg"))
+            .getByPath(accountId.getId(), catId.getId(), List.of("tpcds_iceberg"))
             .orElseThrow();
 
     assertEquals(
         24,
         tables
             .list(
-                tenantId.getId(),
+                accountId.getId(),
                 catId.getId(),
                 tpcdsNsId.getResourceId().getId(),
                 50,
@@ -394,7 +394,7 @@ public class ConnectorIT {
               "db",
               "events",
               ResourceId.newBuilder()
-                  .setTenantId("t")
+                  .setAccountId("t")
                   .setId("tbl")
                   .setKind(ResourceKind.RK_TABLE)
                   .build(),
@@ -414,7 +414,7 @@ public class ConnectorIT {
               "db",
               "events",
               ResourceId.newBuilder()
-                  .setTenantId("t")
+                  .setAccountId("t")
                   .setId("tbl")
                   .setKind(ResourceKind.RK_TABLE)
                   .build(),
@@ -434,7 +434,7 @@ public class ConnectorIT {
               "db",
               "events",
               ResourceId.newBuilder()
-                  .setTenantId("t")
+                  .setAccountId("t")
                   .setId("tbl")
                   .setKind(ResourceKind.RK_TABLE)
                   .build(),
@@ -454,7 +454,7 @@ public class ConnectorIT {
               "db",
               "events",
               ResourceId.newBuilder()
-                  .setTenantId("t")
+                  .setAccountId("t")
                   .setId("tbl")
                   .setKind(ResourceKind.RK_TABLE)
                   .build(),
@@ -494,7 +494,7 @@ public class ConnectorIT {
   void getConnectorNotFound() {
     var badRid =
         ResourceId.newBuilder()
-            .setTenantId(TestSupport.DEFAULT_SEED_TENANT)
+            .setAccountId(TestSupport.DEFAULT_SEED_ACCOUNT)
             .setId("nope")
             .setKind(ResourceKind.RK_CONNECTOR)
             .build();
@@ -654,7 +654,7 @@ public class ConnectorIT {
   void triggerReconcileNotFound() throws Exception {
     var rid =
         ResourceId.newBuilder()
-            .setTenantId(TestSupport.DEFAULT_SEED_TENANT)
+            .setAccountId(TestSupport.DEFAULT_SEED_ACCOUNT)
             .setId("missing")
             .setKind(ResourceKind.RK_CONNECTOR)
             .build();

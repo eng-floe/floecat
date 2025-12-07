@@ -10,11 +10,11 @@ component-specific documentation lives under [`docs/`](docs); see the [Documenta
 
 ## System Overview
 
-Floecat tracks a resource graph anchored at Tenants and spanning Catalogs, Namespaces, Tables,
+Floecat tracks a resource graph anchored at Accounts and spanning Catalogs, Namespaces, Tables,
 Views, Snapshots, statistics, and query-lifecycle artifacts.
 
 ```
-Tenant
+Account
  └── Catalog (logical catalog-of-catalogs)
       └── Namespace (hierarchical path)
            ├── Table (Iceberg/Delta metadata, upstream reference)
@@ -28,7 +28,7 @@ Two storage primitives underpin every service:
   `snapshots/{snapshot_id}/stats/table.pb`. Blobs are content-addressed via SHA256 ETAGs.
 - **PointerStore** – versioned key→blob indirection to support atomic compare-and-set (CAS),
   hierarchical listing, and name→ID lookups. Keys use deterministic prefixes:
-  `/tenants/{tenant_id}/catalogs/by-name/{name}`, `/tables/{table_id}/snapshots/{id}`, etc.
+  `/accounts/{account_id}/catalogs/by-name/{name}`, `/tables/{table_id}/snapshots/{id}`, etc.
 
 The gRPC service (Quarkus) enforces tenancy, authorization, and idempotency while orchestrating
 connectors that ingest upstream metadata, reconciling it into the canonical blob/pointer stores, and
@@ -76,22 +76,22 @@ history in blobs while enabling fast name-based resolution via pointers.
 Blobs follow deterministic prefixes:
 
 ```
-/tenants/{tenant_id}
-/tenants/{tenant_id}/catalogs/{catalog_id}
-/tenants/{tenant_id}/namespaces/{namespace_id}
-/tenants/{tenant_id}/tables/{table_id}/snapshots/{snapshot_id}
-/tenants/{tenant_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/(table|column/{column_id})
+/accounts/{account_id}
+/accounts/{account_id}/catalogs/{catalog_id}
+/accounts/{account_id}/namespaces/{namespace_id}
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/(table|column/{column_id})
 ```
 
 Pointers capture hierarchy and name lookups:
 
 ```
-/tenants/{tenant_id}/by-id/{tenant_id}
-/tenants/{tenant_id}/by-name/{tenant_name}
-/tenants/{tenant_id}/catalogs/by-id/{catalog_id}
-/tenants/{tenant_id}/catalogs/by-name/{catalog_name}
-/tenants/{tenant_id}/catalogs/{catalog_id}/namespaces/by-id/{namespace_id}
-/tenants/{tenant_id}/catalogs/{catalog_id}/namespaces/by-name/{namespace_name}
+/accounts/{account_id}/by-id/{account_id}
+/accounts/{account_id}/by-name/{account_name}
+/accounts/{account_id}/catalogs/by-id/{catalog_id}
+/accounts/{account_id}/catalogs/by-name/{catalog_name}
+/accounts/{account_id}/catalogs/{catalog_id}/namespaces/by-id/{namespace_id}
+/accounts/{account_id}/catalogs/{catalog_id}/namespaces/by-name/{namespace_name}
 ```
 
 Each pointer carries a monotonically increasing version; repositories use compare-and-set to enforce
@@ -119,7 +119,7 @@ make stop
 make logs
 ```
 
-Seed data is enabled by default (`floecat.seed.enabled=true`); the service starts with a demo tenant,
+Seed data is enabled by default (`floecat.seed.enabled=true`); the service starts with a demo account,
 catalogs, namespaces, tables, and snapshots.
 
 Testing:
@@ -157,12 +157,12 @@ grpcurl -plaintext -d '{}' \
   localhost:9100 ai.floedb.floecat.catalog.CatalogService/ListCatalogs
 
 grpcurl -plaintext -d '{
-  "catalog_id": {"tenant_id":"31a47986-efaf-35f5-b810-09ba18ca81d2",
+  "catalog_id": {"account_id":"31a47986-efaf-35f5-b810-09ba18ca81d2",
                  "id":"109c1761-323a-3f72-83da-ff4f89c3b581","kind":"RK_CATALOG"}
 }' localhost:9100 ai.floedb.floecat.catalog.NamespaceService/ListNamespaces
 
 grpcurl -plaintext -d '{
-  "namespace_id": {"tenant_id":"31a47986-efaf-35f5-b810-09ba18ca81d2",
+  "namespace_id": {"account_id":"31a47986-efaf-35f5-b810-09ba18ca81d2",
                    "id":"86853a0f-a999-3c72-9a81-6dc66d1923a2","kind":"RK_NAMESPACE"}
 }' localhost:9100 ai.floedb.floecat.catalog.TableService/ListTables
 ```
@@ -175,10 +175,10 @@ java --enable-native-access=ALL-UNNAMED \
   -jar client-cli/target/quarkus-app/quarkus-run.jar
 ```
 
-Set the tenant context first:
+Set the account context first:
 
 ```
-tenant 31a47986-efaf-35f5-b810-09ba18ca81d2
+account 31a47986-efaf-35f5-b810-09ba18ca81d2
 ```
 
 Then explore `catalog`, `namespace`, `table`, `connector`, and `query` commands. The CLI exercises
@@ -190,7 +190,7 @@ The interactive shell surfaces most service capabilities directly. Full command 
 
 ```
 Commands:
-tenant <id>
+account <id>
 catalogs
 catalog create <display_name> [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...]
 catalog get <display_name|id>
@@ -243,13 +243,13 @@ connector create <display_name> <source_type (ICEBERG|DELTA|GLUE|UNITY)> <uri> <
     [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...]
 connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
-    [--dest-tenant <tenant>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
+    [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
     [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
     [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]
 connector delete <display_name|id>  [--etag <etag>]
 connector validate <kind> <uri>
-    [--dest-tenant <tenant>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
+    [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
     [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
     [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...]

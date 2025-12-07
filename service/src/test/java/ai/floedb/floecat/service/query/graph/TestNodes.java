@@ -19,8 +19,8 @@ public final class TestNodes {
         tableId,
         1L,
         Instant.EPOCH,
-        rid(tableId.getTenantId(), "cat-" + tableId.getId()),
-        rid(tableId.getTenantId(), "ns-" + tableId.getId()),
+        rid(tableId.getAccountId(), "cat-" + tableId.getId()),
+        rid(tableId.getAccountId(), "ns-" + tableId.getId()),
         tableId.getId(),
         TableFormat.TF_ICEBERG,
         schemaJson,
@@ -35,9 +35,9 @@ public final class TestNodes {
         Map.of());
   }
 
-  static ResourceId rid(String tenantId, String id) {
+  static ResourceId rid(String accountId, String id) {
     return ResourceId.newBuilder()
-        .setTenantId(tenantId)
+        .setAccountId(accountId)
         .setId(id)
         .setKind(ResourceKind.RK_TABLE)
         .build();

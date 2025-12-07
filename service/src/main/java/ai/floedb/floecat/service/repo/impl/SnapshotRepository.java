@@ -42,22 +42,22 @@ public class SnapshotRepository {
   }
 
   public boolean delete(ResourceId tableId, long snapshotId) {
-    return repo.delete(new SnapshotKey(tableId.getTenantId(), tableId.getId(), snapshotId));
+    return repo.delete(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
   }
 
   public boolean deleteWithPrecondition(
       ResourceId tableId, long snapshotId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
-        new SnapshotKey(tableId.getTenantId(), tableId.getId(), snapshotId),
+        new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId),
         expectedPointerVersion);
   }
 
   public Optional<Snapshot> getById(ResourceId tableId, long snapshotId) {
-    return repo.getByKey(new SnapshotKey(tableId.getTenantId(), tableId.getId(), snapshotId));
+    return repo.getByKey(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
   }
 
   public Optional<Snapshot> getCurrentSnapshot(ResourceId tableId) {
-    String prefix = Keys.snapshotPointerByTimePrefix(tableId.getTenantId(), tableId.getId());
+    String prefix = Keys.snapshotPointerByTimePrefix(tableId.getAccountId(), tableId.getId());
     StringBuilder next = new StringBuilder();
     List<Snapshot> page = repo.listByPrefix(prefix, 1, "", next);
     if (page.isEmpty()) {
@@ -67,7 +67,7 @@ public class SnapshotRepository {
   }
 
   public Optional<Snapshot> getAsOf(ResourceId tableId, Timestamp asOf) {
-    String prefix = Keys.snapshotPointerByTimePrefix(tableId.getTenantId(), tableId.getId());
+    String prefix = Keys.snapshotPointerByTimePrefix(tableId.getAccountId(), tableId.getId());
     long asOfMs = Timestamps.toMillis(asOf);
 
     String token = "";
@@ -89,24 +89,24 @@ public class SnapshotRepository {
 
   public List<Snapshot> list(
       ResourceId tableId, int limit, String pageToken, StringBuilder nextOut) {
-    String prefix = Keys.snapshotPointerByIdPrefix(tableId.getTenantId(), tableId.getId());
+    String prefix = Keys.snapshotPointerByIdPrefix(tableId.getAccountId(), tableId.getId());
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
   public int count(ResourceId tableId) {
-    String prefix = Keys.snapshotPointerByIdPrefix(tableId.getTenantId(), tableId.getId());
+    String prefix = Keys.snapshotPointerByIdPrefix(tableId.getAccountId(), tableId.getId());
     return repo.countByPrefix(prefix);
   }
 
   public MutationMeta metaFor(ResourceId tableId, long snapshotId) {
-    return repo.metaFor(new SnapshotKey(tableId.getTenantId(), tableId.getId(), snapshotId));
+    return repo.metaFor(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
   }
 
   public MutationMeta metaFor(ResourceId tableId, long snapshotId, Timestamp nowTs) {
-    return repo.metaFor(new SnapshotKey(tableId.getTenantId(), tableId.getId(), snapshotId), nowTs);
+    return repo.metaFor(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId), nowTs);
   }
 
   public MutationMeta metaForSafe(ResourceId tableId, long snapshotId) {
-    return repo.metaForSafe(new SnapshotKey(tableId.getTenantId(), tableId.getId(), snapshotId));
+    return repo.metaForSafe(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
   }
 }

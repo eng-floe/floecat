@@ -189,7 +189,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
             runWithRetry(
                 () -> {
                   var pc = principal.get();
-                  var tenantId = pc.getTenantId();
+                  var accountId = pc.getAccountId();
                   var corr = pc.getCorrelationId();
 
                   authz.require(pc, "table.write");
@@ -265,7 +265,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
                   var result =
                       MutationOps.createProto(
-                          tenantId,
+                          accountId,
                           "CreateSnapshot",
                           idempotencyKey,
                           () -> fingerprint,
