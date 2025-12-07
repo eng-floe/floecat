@@ -12,7 +12,7 @@ DynamoDB tables exist before the service starts.
   Implements compare-and-set using conditional expressions, handles pagination via DynamoDB queries,
   and supports TTL fields using native DynamoDB TTL attributes.
 - **`DynamoPointerTableBootstrap`** – Optional bootstrapper that creates the pointer table if missing
-  when `metacat.kv.auto-create=true`. Configures throughput, TTL, and key schema.
+  when `floecat.kv.auto-create=true`. Configures throughput, TTL, and key schema.
 - **`S3BlobStore`** – Stores protobuf blobs inside an S3 bucket. `put` writes objects with
   server-side encryption (if configured) and stores metadata (ETag, content-type). `head` uses
   `HeadObject` to fetch metadata and returns `BlobHeader`.
@@ -31,7 +31,7 @@ Implements `PointerStore` and `BlobStore` exactly as defined in the SPI. Additio
 - **Data integrity** – `S3BlobStore.put` calculates SHA256 locally, compares it against the returned
   ETag (or `x-amz-meta-sha256`), and throws `StorageAbortRetryableException` on mismatch, allowing
   `BaseServiceImpl.runWithRetry` to reattempt.
-- **Bootstrap** – `DynamoPointerTableBootstrap` checks `metacat.kv.auto-create` and `metacat.kv.table`.
+- **Bootstrap** – `DynamoPointerTableBootstrap` checks `floecat.kv.auto-create` and `floecat.kv.table`.
   When enabled, it creates the table with TTL support (`expires_at`).
 
 ## Data Flow & Lifecycle
@@ -44,9 +44,9 @@ GC → DynamoPointerStore.listPointersByPrefix (Query) → deleteByPrefix (Batch
 
 ## Configuration & Extensibility
 Key properties (see `service/application.properties` for defaults):
-- `metacat.kv=dynamodb`, `metacat.kv.table=<tableName>`, `metacat.kv.auto-create=true|false`,
-  `metacat.kv.ttl-enabled=true|false`.
-- `metacat.blob=s3`, `metacat.blob.s3.bucket=<bucket>`, `aws.region=<region>`.
+- `floecat.kv=dynamodb`, `floecat.kv.table=<tableName>`, `floecat.kv.auto-create=true|false`,
+  `floecat.kv.ttl-enabled=true|false`.
+- `floecat.blob=s3`, `floecat.blob.s3.bucket=<bucket>`, `aws.region=<region>`.
 - Provide AWS credentials via the default SDK provider chain (env vars, profiles, IAM roles) or
   override the client builders inside `AwsClients`.
 
@@ -57,7 +57,7 @@ Extensibility:
   tags.
 
 ## Examples & Scenarios
-- **Production deployment** – Set `metacat.kv=dynamodb`, `metacat.blob=s3`, supply the DynamoDB table
+- **Production deployment** – Set `floecat.kv=dynamodb`, `floecat.blob=s3`, supply the DynamoDB table
   name and S3 bucket. On startup, `AwsClients` initialises AWS SDK clients and repositories begin
   writing to DynamoDB/S3. Stats ingestion and scan bundles now persist durably.
 - **Disaster recovery** – Because blobs are immutable and pointers encode versions, restoring a table

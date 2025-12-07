@@ -1,7 +1,7 @@
 syntax = "proto3";
-package ai.floedb.metacat.connector;
+package ai.floedb.floecat.connector;
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.connector.rpc";
+option java_package = "ai.floedb.floecat.connector.rpc";
 
 import "common/common.proto";
 
@@ -29,23 +29,23 @@ message SourceSelector {
 
 message DestinationTarget {
   oneof catalog_ref {
-    ai.floedb.metacat.common.ResourceId catalog_id = 1;
+    ai.floedb.floecat.common.ResourceId catalog_id = 1;
     string catalog_display_name = 2;
   }
 
   oneof namespace_ref {
-    ai.floedb.metacat.common.ResourceId namespace_id = 10;
+    ai.floedb.floecat.common.ResourceId namespace_id = 10;
     NamespacePath namespace = 11;
   }
 
   oneof table_ref {
-    ai.floedb.metacat.common.ResourceId table_id = 20;
+    ai.floedb.floecat.common.ResourceId table_id = 20;
     string table_display_name = 21;
   }
 }
 
 message Connector {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  ai.floedb.floecat.common.ResourceId resource_id = 1;
   string display_name = 2;
   optional string description = 3;
   ConnectorKind kind = 4;
@@ -95,46 +95,46 @@ message ConnectorSpec {
 
 message CreateConnectorRequest {
   ConnectorSpec spec = 1;
-  ai.floedb.metacat.common.IdempotencyKey idempotency = 2;
+  ai.floedb.floecat.common.IdempotencyKey idempotency = 2;
 }
 message CreateConnectorResponse {
   Connector connector = 1;
-  ai.floedb.metacat.common.MutationMeta meta = 2;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
 message GetConnectorRequest {
-  ai.floedb.metacat.common.ResourceId connector_id = 1;
+  ai.floedb.floecat.common.ResourceId connector_id = 1;
 }
 message GetConnectorResponse {
   Connector connector = 1;
 }
 
 message ListConnectorsRequest {
-  ai.floedb.metacat.common.PageRequest page = 1;
+  ai.floedb.floecat.common.PageRequest page = 1;
   string kind = 3;
 }
 message ListConnectorsResponse {
   repeated Connector connectors = 1;
-  ai.floedb.metacat.common.PageResponse page = 2;
+  ai.floedb.floecat.common.PageResponse page = 2;
 }
 
 message UpdateConnectorRequest {
-  ai.floedb.metacat.common.ResourceId connector_id = 1;
+  ai.floedb.floecat.common.ResourceId connector_id = 1;
   ConnectorSpec spec = 2;
-  ai.floedb.metacat.common.Precondition precondition = 3;
+  ai.floedb.floecat.common.Precondition precondition = 3;
   google.protobuf.FieldMask update_mask = 4;
 }
 message UpdateConnectorResponse {
   Connector connector = 1;
-  ai.floedb.metacat.common.MutationMeta meta = 2;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
 message DeleteConnectorRequest {
-  ai.floedb.metacat.common.ResourceId connector_id = 1;
-  ai.floedb.metacat.common.Precondition precondition = 2;
+  ai.floedb.floecat.common.ResourceId connector_id = 1;
+  ai.floedb.floecat.common.Precondition precondition = 2;
 }
 message DeleteConnectorResponse {
-  ai.floedb.metacat.common.MutationMeta meta = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 1;
 }
 
 message ValidateConnectorRequest {
@@ -147,7 +147,7 @@ message ValidateConnectorResponse {
 }
 
 message SyncCaptureRequest {
-  ai.floedb.metacat.common.ResourceId connector_id = 1;
+  ai.floedb.floecat.common.ResourceId connector_id = 1;
   repeated NamespacePath destination_namespace_paths = 2;
   string destination_table_display_name = 3;
   repeated string destination_table_columns = 4;
@@ -161,7 +161,7 @@ message SyncCaptureResponse {
 }
 
 message TriggerReconcileRequest {
-  ai.floedb.metacat.common.ResourceId connector_id = 1;
+  ai.floedb.floecat.common.ResourceId connector_id = 1;
   bool full_rescan = 2;
   repeated NamespacePath destination_namespace_paths = 3;
   string destination_table_display_name = 4;

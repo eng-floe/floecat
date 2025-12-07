@@ -3,18 +3,18 @@
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
 
   <parent>
-    <groupId>ai.floedb.metacat</groupId>
-    <artifactId>metacat</artifactId>
+    <groupId>ai.floedb.floecat</groupId>
+    <artifactId>floecat</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <relativePath>../../..</relativePath>
   </parent>
 
   <modelVersion>4.0.0</modelVersion>
-  <groupId>ai.floedb.metacat</groupId>
-  <artifactId>trino-metacat-connector</artifactId>
+  <groupId>ai.floedb.floecat</groupId>
+  <artifactId>trino-floecat-connector</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <packaging>jar</packaging>
-  <name>trino-metacat-connector</name>
+  <name>trino-floecat-connector</name>
 
   <properties>
     <maven.compiler.source>21</maven.compiler.source>

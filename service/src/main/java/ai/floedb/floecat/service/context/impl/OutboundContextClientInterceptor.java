@@ -1,0 +1,64 @@
+package ai.floedb.floecat.service.context.impl;
+
+import io.grpc.CallOptions;
+import io.grpc.Channel;
+import io.grpc.ClientCall;
+import io.grpc.ForwardingClientCall;
+import io.grpc.Metadata;
+import io.grpc.MethodDescriptor;
+import io.opentelemetry.api.baggage.Baggage;
+import io.quarkus.grpc.GlobalInterceptor;
+import jakarta.enterprise.context.ApplicationScoped;
+import java.util.Optional;
+
+@ApplicationScoped
+@GlobalInterceptor
+public class OutboundContextClientInterceptor implements io.grpc.ClientInterceptor {
+  private static final Metadata.Key<byte[]> PRINC_BIN =
+      Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
+  private static final Metadata.Key<String> QUERY_ID =
+      Metadata.Key.of("x-query-id", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ENGINE_VERSION =
+      Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> CORR =
+      Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
+
+  @Override
+  public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
+      MethodDescriptor<ReqT, RespT> method, CallOptions callOptions, Channel next) {
+
+    return new ForwardingClientCall.SimpleForwardingClientCall<>(
+        next.newCall(method, callOptions)) {
+
+      @Override
+      public void start(Listener<RespT> reponseListener, Metadata headers) {
+        var principalContext = InboundContextInterceptor.PC_KEY.get();
+        var queryId =
+            Optional.ofNullable(InboundContextInterceptor.QUERY_KEY.get())
+                .orElseGet(() -> Baggage.current().getEntryValue("query_id"));
+        var engineVersion =
+            Optional.ofNullable(InboundContextInterceptor.ENGINE_VERSION_KEY.get())
+                .orElseGet(() -> Baggage.current().getEntryValue("engine_version"));
+        var correlationId =
+            Optional.ofNullable(InboundContextInterceptor.CORR_KEY.get())
+                .orElseGet(() -> Baggage.current().getEntryValue("correlation_id"));
+
+        if (principalContext != null) {
+          headers.put(PRINC_BIN, principalContext.toByteArray());
+        }
+
+        if (queryId != null && !queryId.isBlank()) {
+          headers.put(QUERY_ID, queryId);
+        }
+        if (engineVersion != null && !engineVersion.isBlank()) {
+          headers.put(ENGINE_VERSION, engineVersion);
+        }
+
+        if (correlationId != null && !correlationId.isBlank()) {
+          headers.put(CORR, correlationId);
+        }
+        super.start(reponseListener, headers);
+      }
+    };
+  }
+}

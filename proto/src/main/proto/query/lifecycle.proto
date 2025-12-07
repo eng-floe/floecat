@@ -1,9 +1,9 @@
 syntax = "proto3";
 
-package ai.floedb.metacat.query;
+package ai.floedb.floecat.query;
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.query.rpc";
+option java_package = "ai.floedb.floecat.query.rpc";
 option java_outer_classname = "QueryLifecycleProto";
 
 import "common/common.proto";
@@ -35,13 +35,13 @@ import "google/protobuf/timestamp.proto";
 message QueryInput {
   // A referenced table or view.
   oneof target {
-    ai.floedb.metacat.common.NameRef name = 1;
-    ai.floedb.metacat.common.ResourceId table_id = 2;
-    ai.floedb.metacat.common.ResourceId view_id = 3;
+    ai.floedb.floecat.common.NameRef name = 1;
+    ai.floedb.floecat.common.ResourceId table_id = 2;
+    ai.floedb.floecat.common.ResourceId view_id = 3;
   }
 
   // Optional: per-input snapshot override.
-  ai.floedb.metacat.common.SnapshotRef snapshot = 10;
+  ai.floedb.floecat.common.SnapshotRef snapshot = 10;
 }
 
 enum QueryStatus {
@@ -54,7 +54,7 @@ enum QueryStatus {
  * A single pinned snapshot resulting from BeginQuery().
  */
 message SnapshotPin {
-  ai.floedb.metacat.common.ResourceId table_id = 1;
+  ai.floedb.floecat.common.ResourceId table_id = 1;
 
   oneof which {
     int64 snapshot_id = 2;
@@ -74,22 +74,22 @@ message SnapshotSet {
  */
 message ExpansionMap {
   message ExpandedView {
-    ai.floedb.metacat.common.ResourceId view_id = 1;
+    ai.floedb.floecat.common.ResourceId view_id = 1;
     string canonical_sql = 2;
-    repeated ai.floedb.metacat.common.ResourceId base_table_ids = 3;
+    repeated ai.floedb.floecat.common.ResourceId base_table_ids = 3;
   }
 
   repeated ExpandedView views = 1;
 
   // Tables actually read but referenced via a view.
-  repeated ai.floedb.metacat.common.ResourceId read_via_view_tables = 2;
+  repeated ai.floedb.floecat.common.ResourceId read_via_view_tables = 2;
 }
 
 /**
  * Governance obligations applied to tables.
  */
 message TableObligations {
-  ai.floedb.metacat.common.ResourceId table_id = 1;
+  ai.floedb.floecat.common.ResourceId table_id = 1;
 
   message ColumnMask {
     string column = 1;          // logical column name
@@ -111,7 +111,7 @@ message TableObligations {
  */
 message QueryDescriptor {
   string query_id = 1;
-  string tenant_id = 2;
+  string account_id = 2;
 
   QueryStatus query_status = 3;
   google.protobuf.Timestamp created_at = 4;

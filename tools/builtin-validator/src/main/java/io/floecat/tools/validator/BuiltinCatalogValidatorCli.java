@@ -1,9 +1,9 @@
 package io.floecat.tools.validator;
 
-import ai.floedb.metacat.catalog.builtin.BuiltinCatalogData;
-import ai.floedb.metacat.catalog.builtin.BuiltinCatalogProtoMapper;
-import ai.floedb.metacat.catalog.builtin.BuiltinCatalogValidator;
-import ai.floedb.metacat.query.rpc.BuiltinRegistry;
+import ai.floedb.floecat.catalog.builtin.BuiltinCatalogData;
+import ai.floedb.floecat.catalog.builtin.BuiltinCatalogProtoMapper;
+import ai.floedb.floecat.catalog.builtin.BuiltinCatalogValidator;
+import ai.floedb.floecat.query.rpc.BuiltinRegistry;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.TextFormat;
 import java.io.IOException;
@@ -18,7 +18,7 @@ import java.util.Objects;
 
 /**
  * Standalone command line validator for builtin catalog protobuf files. The CLI intentionally
- * depends only on the shared builtin catalog module so it can run without the rest of the Metacat
+ * depends only on the shared builtin catalog module so it can run without the rest of the Floecat
  * runtime.
  */
 public final class BuiltinCatalogValidatorCli {

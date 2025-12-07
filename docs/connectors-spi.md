@@ -6,11 +6,11 @@ SPI abstracts discovery of namespaces/tables, enumeration of snapshots with stat
 column, and file-level), enumeration of physical files for a snapshot, and authentication adapters. It
 also packages shared tooling for column statistics, file statistics, and NDV estimation.
 
-Connectors implement `MetacatConnector` and typically wrap an upstream catalog API (Iceberg REST,
-Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Metacat protobufs.
+Connectors implement `FloecatConnector` and typically wrap an upstream catalog API (Iceberg REST,
+Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Floecat protobufs.
 
 ## Architecture & Responsibilities
-- **`MetacatConnector`** – Primary interface (extends `Closeable`). Methods:
+- **`FloecatConnector`** – Primary interface (extends `Closeable`). Methods:
   - `id()` → stable connector identifier.
   - `format()` → `ConnectorFormat` (ICEBERG, DELTA, etc.).
   - `listNamespaces()`.
@@ -35,7 +35,7 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Metac
 ## Public API / Surface Area
 The SPI is intentionally small:
 ```java
-interface MetacatConnector extends Closeable {
+interface FloecatConnector extends Closeable {
   String id();
   ConnectorFormat format();
   List<String> listNamespaces();
@@ -72,7 +72,7 @@ maps so downstream APIs can mirror Iceberg’s REST contract.
 ## Data Flow & Lifecycle
 ```
 ConnectorFactory.create(ConnectorConfig)
-  → MetacatConnector (opens upstream clients, auth providers)
+  → FloecatConnector (opens upstream clients, auth providers)
       → listNamespaces/listTables → service repo ensures namespace/table existence
       → describe → Table specs persisted with upstream references
       → enumerateSnapshotsWithStats → StatsRepository writes Table/Column/File stats per snapshot
@@ -83,7 +83,7 @@ reconciler (long-running); connectors must tolerate repeated instantiation and r
 `close()`.
 
 ## Configuration & Extensibility
-- To add a new connector type, implement `MetacatConnector` plus a factory and annotate it so CDI can
+- To add a new connector type, implement `FloecatConnector` plus a factory and annotate it so CDI can
   expose it via `ConnectorProvider`. Map new SPI kinds to RPC `ConnectorKind` values.
 - Implement custom `AuthProvider`s when upstream APIs need bespoke headers or token exchanges.
 - Extend stats support by creating a new `NdvProvider` or `StatsEngine` – `GenericStatsEngine`

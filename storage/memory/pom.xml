@@ -3,13 +3,13 @@
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
-    <groupId>ai.floedb.metacat</groupId>
-    <artifactId>metacat</artifactId>
+    <groupId>ai.floedb.floecat</groupId>
+    <artifactId>floecat</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <relativePath>../..</relativePath>
   </parent>
 
-  <artifactId>metacat-storage-memory</artifactId>
+  <artifactId>floecat-storage-memory</artifactId>
 
   <dependencyManagement>
     <dependencies>
@@ -25,8 +25,8 @@
 
   <dependencies>
     <dependency>
-      <groupId>ai.floedb.metacat</groupId>
-      <artifactId>metacat-storage-spi</artifactId>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-storage-spi</artifactId>
       <version>${project.version}</version>
     </dependency>
 

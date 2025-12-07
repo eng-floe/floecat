@@ -1,18 +1,18 @@
 syntax = "proto3";
 
-package ai.floedb.metacat.common;
+package ai.floedb.floecat.common;
 
 import "google/protobuf/timestamp.proto";
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.common.rpc";
+option java_package = "ai.floedb.floecat.common.rpc";
 option java_outer_classname = "CommonProto";
 
 // ----- Resource identity -----
 
 enum ResourceKind {
   RK_UNSPECIFIED = 0;
-  RK_TENANT = 1;
+  RK_ACCOUNT = 1;
   RK_CATALOG = 2;
   RK_NAMESPACE = 3;
   RK_TABLE = 4;
@@ -29,7 +29,7 @@ enum ResourceKind {
 }
 
 message ResourceId {
-  string tenant_id = 1;
+  string account_id = 1;
   string id = 2;
   ResourceKind kind = 3;
 }
@@ -81,7 +81,7 @@ message Tag {
 // ----- Auth: Principal context carried on internal gRPC -----
 
 message PrincipalContext {
-  string tenant_id = 1;
+  string account_id = 1;
   string subject = 2;
   string client_id = 3;
   repeated string groups = 4;

@@ -1,8 +1,8 @@
 syntax = "proto3";
-package ai.floedb.metacat.catalog;
+package ai.floedb.floecat.catalog;
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.catalog.rpc";
+option java_package = "ai.floedb.floecat.catalog.rpc";
 
 import "common/common.proto";
 import "google/protobuf/timestamp.proto";
@@ -11,11 +11,11 @@ import "google/protobuf/field_mask.proto";
 // ----- Namespace -----
 
 message Namespace {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
+  ai.floedb.floecat.common.ResourceId resource_id = 1;
   string display_name = 2;
   repeated string parents = 3;
   optional string description = 4;
-  ai.floedb.metacat.common.ResourceId catalog_id = 5;
+  ai.floedb.floecat.common.ResourceId catalog_id = 5;
   optional string policy_ref = 6;
   google.protobuf.Timestamp created_at = 20;
   map<string,string> properties = 99;
@@ -23,29 +23,29 @@ message Namespace {
 
 message ListNamespacesRequest {
   oneof parent {
-    ai.floedb.metacat.common.ResourceId catalog_id = 1;
-    ai.floedb.metacat.common.ResourceId namespace_id = 2;
+    ai.floedb.floecat.common.ResourceId catalog_id = 1;
+    ai.floedb.floecat.common.ResourceId namespace_id = 2;
   }
   repeated string path = 4;
   bool children_only = 5;
   bool recursive = 6;
   string name_prefix = 7; 
-  ai.floedb.metacat.common.PageRequest page = 8;
+  ai.floedb.floecat.common.PageRequest page = 8;
 }
 message ListNamespacesResponse {
   repeated Namespace namespaces = 1;
-  ai.floedb.metacat.common.PageResponse page = 2;
+  ai.floedb.floecat.common.PageResponse page = 2;
 }
 
 message GetNamespaceRequest {
-  ai.floedb.metacat.common.ResourceId namespace_id = 1;
+  ai.floedb.floecat.common.ResourceId namespace_id = 1;
 }
 message GetNamespaceResponse {
   Namespace namespace = 1;
 }
 
 message NamespaceSpec {
-  ai.floedb.metacat.common.ResourceId catalog_id = 1;
+  ai.floedb.floecat.common.ResourceId catalog_id = 1;
   optional string display_name = 2;
   optional string description = 3;
   repeated string path = 4;
@@ -55,31 +55,31 @@ message NamespaceSpec {
 
 message CreateNamespaceRequest {
   NamespaceSpec spec = 1;
-  ai.floedb.metacat.common.IdempotencyKey idempotency = 2;
+  ai.floedb.floecat.common.IdempotencyKey idempotency = 2;
 }
 message CreateNamespaceResponse {
   Namespace namespace = 1;
-  ai.floedb.metacat.common.MutationMeta meta = 2;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
 message UpdateNamespaceRequest {
-  ai.floedb.metacat.common.ResourceId namespace_id = 1;
+  ai.floedb.floecat.common.ResourceId namespace_id = 1;
   NamespaceSpec spec = 2;
-  ai.floedb.metacat.common.Precondition precondition = 3;
+  ai.floedb.floecat.common.Precondition precondition = 3;
   google.protobuf.FieldMask update_mask = 4;
 }
 message UpdateNamespaceResponse {
   Namespace namespace = 1;
-  ai.floedb.metacat.common.MutationMeta meta = 2;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
 message DeleteNamespaceRequest {
-  ai.floedb.metacat.common.ResourceId namespace_id = 1;
+  ai.floedb.floecat.common.ResourceId namespace_id = 1;
   bool require_empty = 2;
-  ai.floedb.metacat.common.Precondition precondition = 3;
+  ai.floedb.floecat.common.Precondition precondition = 3;
 }
 message DeleteNamespaceResponse {
-  ai.floedb.metacat.common.MutationMeta meta = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 1;
 }
 
 // ----- Services -----

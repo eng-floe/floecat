@@ -1,9 +1,9 @@
 syntax = "proto3";
 
-package ai.floedb.metacat.execution;
+package ai.floedb.floecat.execution;
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.execution.rpc";
+option java_package = "ai.floedb.floecat.execution.rpc";
 option java_outer_classname = "ExecutionScanProto";
 
 import "catalog/stats.proto";
@@ -52,7 +52,7 @@ message ScanFile {
   ScanFileContent file_content = 5;
 
   // Optional per-column min/max stats for pruning.
-  repeated ai.floedb.metacat.catalog.ColumnStats columns = 6;
+  repeated ai.floedb.floecat.catalog.ColumnStats columns = 6;
 
   // JSON-encoded structured representation of Iceberg partition values.
   string partition_data_json = 7;

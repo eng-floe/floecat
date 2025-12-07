@@ -1,4 +1,4 @@
-# -------- Metacat Makefile (Quarkus + gRPC) --------
+# -------- Floecat Makefile (Quarkus + gRPC) --------
 # Quick refs – build & tests:
 #   make / make build            # build proto + all modules (skip tests)
 #   make build-all               # build all modules only (skip tests)
@@ -72,7 +72,7 @@ VERSION := $(shell sed -n 's:.*<version>\(.*\)</version>.*:\1:p' pom.xml | head 
 ifeq ($(strip $(VERSION)),)
   VERSION := 0.1.0-SNAPSHOT
 endif
-PROTO_JAR := proto/target/metacat-proto-$(VERSION).jar
+PROTO_JAR := proto/target/floecat-proto-$(VERSION).jar
 
 # ---------- CLI isolation toggle ----------
 CLI_ISOLATED ?= 1

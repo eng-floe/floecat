@@ -1,15 +1,15 @@
 # Service Runtime
 
 ## Overview
-The `service/` module is the authoritative runtime for Metacat. It hosts the Quarkus gRPC server,
-implements every public API from [`proto/`](proto.md), manages multi-tenant security contexts,
+The `service/` module is the authoritative runtime for Floecat. It hosts the Quarkus gRPC server,
+implements every public API from [`proto/`](proto.md), manages multi-account security contexts,
 translates requests into pointer/blob mutations, assembles execution scan bundles, and operates background
 tasks such as idempotency GC and repository seeding.
 
 It is structured for testability: each gRPC service delegates to repository abstractions, which in
 turn encapsulate storage backends. Tests such as
-`service/src/test/java/ai/floedb/metacat/service/repo/impl/TableRepositoryTest.java` and
-`service/src/test/java/ai/floedb/metacat/service/it/QueryServiceIT.java` probe repository semantics and
+`service/src/test/java/ai/floedb/floecat/service/repo/impl/TableRepositoryTest.java` and
+`service/src/test/java/ai/floedb/floecat/service/it/QueryServiceIT.java` probe repository semantics and
 query lifecycle / scan bundle logic.
 
 ## Architecture & Responsibilities
@@ -18,12 +18,12 @@ query lifecycle / scan bundle logic.
 │ Quarkus runtime                                                            │
 │  ├─ Interceptors (context, localization, metering)                         │
 │  ├─ Security (PrincipalProvider, Authorizer)                               │
-│  ├─ Services (Catalog, Namespace, Table, View, Snapshot, Tenant,           │
+│  ├─ Services (Catalog, Namespace, Table, View, Snapshot, Account,           │
 │  │            Directory, Statistics, Connectors, QueryService)             │
 │  ├─ QueryService (QueryContextStore, QueryServiceImpl)                     │
 │  ├─ Repositories (CatalogRepository, NamespaceRepository, TableRepository, │
 │  │                ViewRepository, SnapshotRepository, StatsRepository,     │
-│  │                ConnectorRepository, TenantRepository,                   │
+│  │                ConnectorRepository, AccountRepository,                   │
 │  │                IdempotencyRepositoryImpl)                               │
 │  └─ GC & Bootstrap (IdempotencyGc, SeedRunner)                             │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -38,7 +38,7 @@ query lifecycle / scan bundle logic.
   production identity providers.
 - `service/repo` – Resource repositories layering pointer/blob stores and parsing protobuf payloads;
   includes key generation utilities (`Keys`, `ResourceKey`) and value normalizers.
-- `service/catalog` / `directory` / `tenant` / `statistics` / `connector` – gRPC service
+- `service/catalog` / `directory` / `account` / `statistics` / `connector` – gRPC service
   implementations.
 - `catalog/builtin` – Shared builtin catalog data model, validator, and loader helpers.
 - `service/query` – Query lifecycle management (`QueryContext`, `QueryContextStore`,
@@ -46,7 +46,7 @@ query lifecycle / scan bundle logic.
 - `service/query/graph` – MetadataGraph cache + immutable node models shared by planners/executors
   (see [`docs/metadata-graph.md`](metadata-graph.md)).
 - `service/gc` – Scheduled cleanup of stale idempotency entries.
-- `service/bootstrap` – Optional seeding of demo tenants and catalog data.
+- `service/bootstrap` – Optional seeding of demo accounts and catalog data.
 - `service/metrics` – `MeteringInterceptor` + `StorageUsageMetrics` for Micrometer integration.
 
 ## Public API / Surface Area
@@ -67,7 +67,7 @@ helpers like `deterministicUuid`. Highlights:
   `PutColumnStats`/`PutFileColumnStats` to batch writes per stream.
 - **DirectoryServiceImpl** – Provides fast name↔ID lookup via `MetadataGraph` (Resolve*/Lookup*) and
   reuses the graph’s ResolveFQ helpers for list/prefix pagination.
-- **TenantServiceImpl** – Administers tenants and enforces conventional permissions.
+- **AccountServiceImpl** – Administers accounts and enforces conventional permissions.
 - **ConnectorsImpl** – Manages connector lifecycle, validates `ConnectorSpec` via SPI factories,
   wires reconciliation job submission, and exposes `ValidateConnector` + `TriggerReconcile`.
 - **QueryServiceImpl** – Administers query leases (`BeginQuery`, `RenewQuery`, `EndQuery`,
@@ -96,7 +96,7 @@ implementations.
 
 ### Security and Context
 `InboundContextInterceptor` reads `x-principal-bin`, `x-query-id`, `x-engine-version`, and `x-correlation-id` headers,
-validates tenant membership, hydrates MDC/OpenTelemetry attributes, and falls back to a development
+validates account membership, hydrates MDC/OpenTelemetry attributes, and falls back to a development
 principal (full permissions) if no credentials exist. `OutboundContextClientInterceptor` mirrors the
 same headers for internal gRPC calls (service-to-service).
 
@@ -118,9 +118,9 @@ configured location, caches them by engine kind, and exposes them through
 `x-engine-version`; the RPC always returns the filtered builtin bundle for the requested engine.
 
 ### GC and Bootstrap
-`IdempotencyGc` runs on a configurable cadence (see `metacat.gc.*` config) and sweeps expired
+`IdempotencyGc` runs on a configurable cadence (see `floecat.gc.*` config) and sweeps expired
 idempotency records in slices to avoid starvation. `SeedRunner` populates demo data when
-`metacat.seed.enabled=true`.
+`floecat.seed.enabled=true`.
 
 ### Statistics streaming semantics
 `TableStatisticsServiceImpl` enforces a single `table_id` + `snapshot_id` per streamed call to
@@ -146,12 +146,12 @@ Notable `application.properties` keys:
 | Property | Purpose |
 |----------|---------|
 | `quarkus.grpc.server.*` | Port, HTTP2, plaintext/reflection toggles. |
-| `quarkus.grpc.clients.metacat.*` | Loopback client config for internal RPC calls. |
-| `metacat.seed.enabled` | Enable demo data seeding. |
-| `metacat.kv` / `metacat.blob` | Select pointer/blob store implementation (`memory`, `dynamodb`, `s3`). |
-| `metacat.query.*` | Default TTL, grace period, max cache size, safety expiry for query contexts. |
-| `metacat.builtins.location` | Filesystem or classpath location for builtin catalog files (default `classpath:builtins`). |
-| `metacat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for GC. |
+| `quarkus.grpc.clients.floecat.*` | Loopback client config for internal RPC calls. |
+| `floecat.seed.enabled` | Enable demo data seeding. |
+| `floecat.kv` / `floecat.blob` | Select pointer/blob store implementation (`memory`, `dynamodb`, `s3`). |
+| `floecat.query.*` | Default TTL, grace period, max cache size, safety expiry for query contexts. |
+| `floecat.builtins.location` | Filesystem or classpath location for builtin catalog files (default `classpath:builtins`). |
+| `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for GC. |
 | `quarkus.log.*` | JSON logging, file rotation, audit handlers per RPC package. |
 | `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters. |
 
@@ -164,7 +164,7 @@ Extension points:
 
 ## Examples & Scenarios
 - **Create Catalog** – `CatalogServiceImpl.createCatalog` canonicalises `display_name`, generates a
-  deterministic UUID from the fingerprint, reserves `/tenants/{tenant}/catalogs/by-name/{name}` and
+  deterministic UUID from the fingerprint, reserves `/accounts/{account}/catalogs/by-name/{name}` and
   `/by-id/{uuid}` pointer keys, writes the `catalog.pb` blob, and returns `MutationMeta`. If the
   caller supplies an `IdempotencyKey`, the repository short-circuits duplicates.
 - **Delete Namespace** – Namespace deletions with `require_empty=true` check child counts via

@@ -51,7 +51,7 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
 ```
 Connector TriggerReconcile → ReconcileJobStore.enqueue
   → ReconcilerScheduler.pollOnce
-      → jobs.leaseNext (returns tenant + connector IDs)
+      → jobs.leaseNext (returns account + connector IDs)
       → markRunning
       → ReconcilerService.reconcile
           → Connectors.GetConnector → ConnectorConfig

@@ -2,20 +2,20 @@
 
 ## Overview
 `connectors/catalogs/iceberg/` implements the SPI for Iceberg catalogs exposed via the Iceberg REST API and
-AWS Glue. It enables Metacat to ingest schema metadata, partition specs, snapshots, statistics, and
+AWS Glue. It enables Floecat to ingest schema metadata, partition specs, snapshots, statistics, and
 file manifests from Iceberg tables stored in S3.
 
 The implementation centres on `IcebergConnector`, which instantiates an Iceberg `RESTCatalog`, wraps
 AWS Glue lookups, and optionally captures NDV sketches from Parquet files.
 
 ## Architecture & Responsibilities
-- **`IcebergConnector`** – Concrete `MetacatConnector` implementation. Creates a RESTCatalog client,
+- **`IcebergConnector`** – Concrete `FloecatConnector` implementation. Creates a RESTCatalog client,
   an optional `GlueIcebergFilter` for filtering non-Iceberg Glue entries, and NDV providers.
 - **`IcebergConnectorProvider`** – Exposes the connector via CDI so the service can instantiate it
   using URIs from `ConnectorSpec`.
 - **`IcebergPlanner`** – Implements `connector/common/Planner`, translating Iceberg `TableScan`
   results into `ScanFile` entries (data/delete files, column stats, formats).
-- **`IcebergTypeMapper`** – Converts Iceberg Types into Metacat logical types when reporting stats
+- **`IcebergTypeMapper`** – Converts Iceberg Types into Floecat logical types when reporting stats
   or planner column metadata.
 - **`GlueIcebergFilter`** – Uses AWS Glue to quickly enumerate only those tables registered as
   Iceberg, preventing needless REST calls.
@@ -88,7 +88,7 @@ To extend behaviour:
   ```
   `ConnectorsImpl` validates it by creating an `IcebergConnector` and calling `listNamespaces()`.
 - **Reconciliation** – `ReconcilerService` iterates Iceberg tables, uses `describe` to create or
-  update Metacat Table records (storing schema JSON + upstream ref), then calls
+  update Floecat Table records (storing schema JSON + upstream ref), then calls
   `enumerateSnapshotsWithStats` to ingest snapshots and `plan` when acquiring scan bundles.
 
 ## Cross-References

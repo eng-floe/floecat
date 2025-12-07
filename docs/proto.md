@@ -1,13 +1,13 @@
 # Protobuf & RPC Contracts
 
 ## Overview
-Metacat's public surface is entirely gRPC. The `proto/` module defines canonical protobuf
+Floecat's public surface is entirely gRPC. The `proto/` module defines canonical protobuf
 structures for resource identifiers, catalog services, query lifecycle metadata, connectors, statistics, and
 helper schemas. Every other module depends on these contracts for serialization, validation, and
 compatibility.
 
 The contract files are organised by domain (`common/`, `catalog/`, `query/`, `execution/`,
-`connector/`, `tenant/`, `types/`, `statistics/`). Generated Java stubs live under the `ai.floedb.metacat.*.rpc`
+`connector/`, `account/`, `types/`, `statistics/`). Generated Java stubs live under the `ai.floedb.floecat.*.rpc`
 packages and are consumed by the Quarkus service, connectors, CLI, and reconciler.
 
 ## Architecture & Responsibilities
@@ -27,7 +27,7 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
   connectors and consumed at execution time.
 - **`types/types.proto`** – Logical type registry (Boolean/Decimal/etc.) and scalar encodings used by
   statistics and bundles.
-- **`tenant/tenant.proto`** – Tenant CRUD service for multi-tenancy bootstrap.
+- **`account/account.proto`** – Account CRUD service for multi-tenancy bootstrap.
 - **`statistics/statistics.proto`** – Staging schema for alternative stats pipelines (mirrors
   `catalog/stats.proto` but with different versioning).
 
@@ -42,12 +42,12 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 | `SnapshotService` | `ListSnapshots`, `GetSnapshot`, `CreateSnapshot`, `DeleteSnapshot` | Pins upstream checkpoints and timestamps. |
 | `TableStatisticsService` | `GetTableStats`, `ListColumnStats`, `ListFileColumnStats`, `PutTableStats`, client-streaming `PutColumnStats` + `PutFileColumnStats` | Accepts per-snapshot NDV/histogram payloads and per-file column stats; streaming RPCs collapse multiple batches into a single call. |
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
-| `TenantService` | Tenant CRUD. |
+| `AccountService` | Account CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `TriggerReconcile`, `GetReconcileJob`. |
 | `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`, `FetchScanBundle`. |
 | `BuiltinCatalogService` | `GetBuiltinCatalog` | Returns the builtin catalog filtered by the `x-engine-kind` / `x-engine-version` headers supplied with the request. |
 
-Each RPC requires a populated `tenant_id` within the `ResourceId`s; the Quarkus service checks this
+Each RPC requires a populated `account_id` within the `ResourceId`s; the Quarkus service checks this
 before hitting repository storage.
 
 ### Planner Lifecycle & Execution Scan Schemas
@@ -122,19 +122,19 @@ _State diagram for the query lease protocol:_
 ```bash
 grpcurl -plaintext -d '{
   "spec": {
-    "catalog_id": {"tenant_id":"T","id":"C","kind":"RK_CATALOG"},
-    "namespace_id": {"tenant_id":"T","id":"N","kind":"RK_NAMESPACE"},
+    "catalog_id": {"account_id":"T","id":"C","kind":"RK_CATALOG"},
+    "namespace_id": {"account_id":"T","id":"N","kind":"RK_NAMESPACE"},
     "display_name": "events",
     "schema_json": "{...Iceberg schema...}",
     "upstream": {
-      "connector_id": {"tenant_id":"T","id":"conn","kind":"RK_CONNECTOR"},
+      "connector_id": {"account_id":"T","id":"conn","kind":"RK_CONNECTOR"},
       "uri": "s3://warehouse",
       "namespace_path": ["prod"],
       "table_display_name": "events"
     }
   },
   "idempotency": {"key": "create-events"}
-}' localhost:9100 ai.floedb.metacat.catalog.TableService/CreateTable
+}' localhost:9100 ai.floedb.floecat.catalog.TableService/CreateTable
 ```
 
 ### Beginning a query lifecycle lease
@@ -143,7 +143,7 @@ grpcurl -plaintext -d '{
   "inputs": [
     {"name": {"catalog":"demo","path":["sales"],"name":"events"}}
   ]
-}' localhost:9100 ai.floedb.metacat.query.QueryService/BeginQuery
+}' localhost:9100 ai.floedb.floecat.query.QueryService/BeginQuery
 ```
 
 ## Cross-References

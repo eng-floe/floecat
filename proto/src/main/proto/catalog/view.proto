@@ -1,8 +1,8 @@
 syntax = "proto3";
-package ai.floedb.metacat.catalog;
+package ai.floedb.floecat.catalog;
 
 option java_multiple_files = true;
-option java_package = "ai.floedb.metacat.catalog.rpc";
+option java_package = "ai.floedb.floecat.catalog.rpc";
 
 import "common/common.proto";
 import "google/protobuf/timestamp.proto";
@@ -11,9 +11,9 @@ import "google/protobuf/field_mask.proto";
 // ----- VIEW -----
 
 message View {
-  ai.floedb.metacat.common.ResourceId resource_id = 1;
-  ai.floedb.metacat.common.ResourceId catalog_id = 2;
-  ai.floedb.metacat.common.ResourceId namespace_id = 3;
+  ai.floedb.floecat.common.ResourceId resource_id = 1;
+  ai.floedb.floecat.common.ResourceId catalog_id = 2;
+  ai.floedb.floecat.common.ResourceId namespace_id = 3;
   string display_name = 4;
   optional string description = 5;
   string sql = 6;
@@ -22,24 +22,24 @@ message View {
 }
 
 message ListViewsRequest {
-  ai.floedb.metacat.common.ResourceId namespace_id = 1;
-  ai.floedb.metacat.common.PageRequest page = 2;
+  ai.floedb.floecat.common.ResourceId namespace_id = 1;
+  ai.floedb.floecat.common.PageRequest page = 2;
 }
 message ListViewsResponse {
   repeated View views = 1;
-  ai.floedb.metacat.common.PageResponse page = 2;
+  ai.floedb.floecat.common.PageResponse page = 2;
 }
 
 message GetViewRequest {
-  ai.floedb.metacat.common.ResourceId view_id = 1;
+  ai.floedb.floecat.common.ResourceId view_id = 1;
 }
 message GetViewResponse {
   View view = 1;
 }
 
 message ViewSpec {
-  ai.floedb.metacat.common.ResourceId catalog_id = 1;
-  ai.floedb.metacat.common.ResourceId namespace_id = 2;
+  ai.floedb.floecat.common.ResourceId catalog_id = 1;
+  ai.floedb.floecat.common.ResourceId namespace_id = 2;
   optional string display_name = 3;
   optional string description = 4;
   optional string sql = 5;
@@ -48,30 +48,30 @@ message ViewSpec {
 
 message CreateViewRequest {
   ViewSpec spec = 1;
-  ai.floedb.metacat.common.IdempotencyKey idempotency = 2;
+  ai.floedb.floecat.common.IdempotencyKey idempotency = 2;
 }
 message CreateViewResponse {
   View view = 1;
-  ai.floedb.metacat.common.MutationMeta meta = 2;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
 message UpdateViewRequest {
-  ai.floedb.metacat.common.ResourceId view_id = 1;
+  ai.floedb.floecat.common.ResourceId view_id = 1;
   ViewSpec spec = 2;
-  ai.floedb.metacat.common.Precondition precondition = 3;
+  ai.floedb.floecat.common.Precondition precondition = 3;
   google.protobuf.FieldMask update_mask = 4;
 }
 message UpdateViewResponse {
   View view = 1;
-  ai.floedb.metacat.common.MutationMeta meta = 2;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
 message DeleteViewRequest {
-  ai.floedb.metacat.common.ResourceId view_id = 1;
-  ai.floedb.metacat.common.Precondition precondition = 4;
+  ai.floedb.floecat.common.ResourceId view_id = 1;
+  ai.floedb.floecat.common.Precondition precondition = 4;
 }
 message DeleteViewResponse {
-  ai.floedb.metacat.common.MutationMeta meta = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 1;
 }
 
 // ----- Services -----
