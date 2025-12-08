@@ -2,9 +2,13 @@ package ai.floedb.floecat.service.metagraph;
 
 import ai.floedb.floecat.catalog.builtin.graph.BuiltinNodeRegistry;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc.SnapshotServiceBlockingStub;
+import ai.floedb.floecat.catalog.system_objects.registry.SystemObjectDefinition;
+import ai.floedb.floecat.catalog.system_objects.registry.SystemObjectNodeFactory;
+import ai.floedb.floecat.catalog.system_objects.registry.SystemObjectRegistry;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
@@ -15,6 +19,7 @@ import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.service.context.impl.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.cache.GraphCacheManager;
 import ai.floedb.floecat.service.metagraph.hint.EngineHintManager;
@@ -54,6 +59,8 @@ import org.jboss.logging.Logger;
 public class MetadataGraph {
 
   private static final Logger LOG = Logger.getLogger(MetadataGraph.class);
+  private static final SystemObjectNodeFactory SYSTEM_OBJECT_FACTORY =
+      new SystemObjectNodeFactory();
 
   private final GraphCacheManager cacheManager;
   private final NodeLoader nodeLoader;
@@ -61,9 +68,11 @@ public class MetadataGraph {
   private final FullyQualifiedResolver fqResolver;
   private final SnapshotHelper snapshotHelper;
   private final EngineHintManager engineHintManager;
-  private final BuiltinNodeRegistry builtinNodeRegistry;
-  private PrincipalProvider principalProvider;
   private final MeterRegistry meterRegistry;
+  private BuiltinNodeRegistry builtinNodeRegistry;
+  private SystemObjectRegistry systemObjectRegistry;
+  private EngineContextProvider engineCtx;
+  private PrincipalProvider principalProvider;
   private Timer loadTimer;
 
   public MetadataGraph(
@@ -83,6 +92,8 @@ public class MetadataGraph {
         null,
         50_000L,
         null,
+        null,
+        null,
         null);
   }
 
@@ -99,7 +110,9 @@ public class MetadataGraph {
       @ConfigProperty(name = "floecat.metadata.graph.cache-max-size", defaultValue = "50000")
           long cacheMaxSize,
       EngineHintManager engineHintManager,
-      BuiltinNodeRegistry builtinNodeRegistry) {
+      BuiltinNodeRegistry builtinNodeRegistry,
+      SystemObjectRegistry systemObjectRegistry,
+      EngineContextProvider engineCtx) {
     this.meterRegistry = meterRegistry;
     this.cacheManager = new GraphCacheManager(cacheMaxSize > 0, cacheMaxSize, meterRegistry);
     this.nodeLoader =
@@ -113,6 +126,8 @@ public class MetadataGraph {
     this.engineHintManager = engineHintManager;
     this.builtinNodeRegistry = builtinNodeRegistry;
     this.principalProvider = principalProvider;
+    this.systemObjectRegistry = systemObjectRegistry;
+    this.engineCtx = engineCtx;
   }
 
   @PostConstruct
@@ -129,6 +144,26 @@ public class MetadataGraph {
    * @return optional node (empty when resource is missing or not yet supported)
    */
   public Optional<RelationNode> resolve(ResourceId id) {
+
+    /* Special path for system objects as they are not part of the metacache */
+    if (id.getKind() == ResourceKind.RK_SYSTEM_OBJECT) {
+      String engineKind = engineCtx.engineKind();
+      String engineVersion = engineCtx.engineVersion();
+
+      Optional<SystemObjectDefinition> def =
+          systemObjectRegistry.definitionsFor(engineKind, engineVersion).values().stream()
+              .filter(
+                  d -> {
+                    ResourceId rid =
+                        SystemObjectRegistry.resourceId(engineKind, id.getKind(), d.name());
+                    return rid.getId().equals(id.getId());
+                  })
+              .findFirst();
+
+      return def.map(d -> SYSTEM_OBJECT_FACTORY.build(d, engineKind, engineVersion));
+    }
+
+    /* Regular nodes */
     Optional<MutationMeta> metaOpt = nodeLoader.mutationMeta(id);
     if (metaOpt.isEmpty()) {
       return Optional.empty();
@@ -221,6 +256,18 @@ public class MetadataGraph {
     this.principalProvider = provider;
   }
 
+  void setEngineContextProvider(EngineContextProvider engineCtx) {
+    this.engineCtx = engineCtx;
+  }
+
+  void setSystemObjectRegistry(SystemObjectRegistry reg) {
+    this.systemObjectRegistry = reg;
+  }
+
+  void setBuiltinNodeRegistry(BuiltinNodeRegistry reg) {
+    this.builtinNodeRegistry = reg;
+  }
+
   /** Resolves a {@link NameRef} into a {@link ResourceId}, mirroring DirectoryService semantics. */
   public ResourceId resolveName(String correlationId, NameRef ref) {
     validateNameRef(correlationId, ref);
@@ -230,6 +277,14 @@ public class MetadataGraph {
     }
 
     String accountId = requireAccountId(correlationId);
+    String engineKind = engineCtx.engineKind();
+    String engineVersion = engineCtx.engineVersion();
+
+    Optional<SystemObjectDefinition> systemObjectResolved =
+        systemObjectRegistry.resolveDefinition(ref, engineKind, engineVersion);
+    if (systemObjectResolved.isPresent()) {
+      return SystemObjectRegistry.resourceId(engineKind, ResourceKind.RK_SYSTEM_OBJECT, ref);
+    }
 
     Optional<ResolvedRelation> tableResolved = nameResolver.resolveTableRelation(accountId, ref);
     Optional<ResolvedRelation> viewResolved = nameResolver.resolveViewRelation(accountId, ref);

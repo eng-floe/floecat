@@ -12,6 +12,8 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.catalog.system_objects.registry.SystemObjectDefinition;
+import ai.floedb.floecat.catalog.system_objects.registry.SystemObjectRegistry;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -24,6 +26,7 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.service.context.impl.EngineContextProvider;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
@@ -56,6 +59,7 @@ class MetadataGraphTest {
   FakeViewRepository viewRepository;
   FakeSnapshotClient snapshotClient;
   FakePrincipalProvider principalProvider;
+  FakeEngineContextProvider engineContextProvider;
   MetadataGraph graph;
 
   @BeforeEach
@@ -74,8 +78,14 @@ class MetadataGraphTest {
             viewRepository);
     snapshotClient = new FakeSnapshotClient();
     graph.setSnapshotClient(snapshotClient);
+
     principalProvider = new FakePrincipalProvider("account");
     graph.setPrincipalProvider(principalProvider);
+
+    engineContextProvider = new FakeEngineContextProvider("floe-demo", "16.0");
+    graph.setEngineContextProvider(engineContextProvider);
+
+    graph.setSystemObjectRegistry(new FakeSystemObjectRegistry());
   }
 
   @Test
@@ -234,6 +244,8 @@ class MetadataGraphTest {
             principalProvider,
             42L,
             null,
+            null,
+            null,
             null);
     instrumentedGraph.setSnapshotClient(snapshotClient);
 
@@ -257,6 +269,8 @@ class MetadataGraphTest {
             registry,
             principalProvider,
             0L,
+            null,
+            null,
             null,
             null);
     instrumentedGraph.setSnapshotClient(snapshotClient);
@@ -1193,6 +1207,39 @@ class MetadataGraphTest {
     @Override
     public PrincipalContext get() {
       return ctx;
+    }
+  }
+
+  static final class FakeEngineContextProvider extends EngineContextProvider {
+    private final String engineKind;
+    private final String engineVersion;
+
+    FakeEngineContextProvider(String engineKind, String engineVersion) {
+      this.engineKind = engineKind;
+      this.engineVersion = engineVersion;
+    }
+
+    @Override
+    public String engineKind() {
+      return engineKind;
+    }
+
+    @Override
+    public String engineVersion() {
+      return engineVersion;
+    }
+  }
+
+  static final class FakeSystemObjectRegistry extends SystemObjectRegistry {
+
+    FakeSystemObjectRegistry() {
+      super(java.util.Collections.emptyList());
+    }
+
+    @Override
+    public Optional<SystemObjectDefinition> resolveDefinition(
+        NameRef ref, String engineKind, String engineVersion) {
+      return Optional.empty();
     }
   }
 }
