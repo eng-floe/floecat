@@ -51,6 +51,7 @@ The following modules compose the system (see linked docs for deep dives):
 | [`storage/memory/`](docs/storage-memory.md) | In-memory dev/test stores (CAS semantics maintained). |
 | [`storage/aws/`](docs/storage-aws.md) | Production DynamoDB pointer store + S3 blob store. |
 | [`types/`](docs/types.md) | Logical type system utilities, coercions, min/max encoding. |
+| [`extensions/builtin/`](docs/builtin-catalog.md) | Plugin architecture for engine-specific builtin catalogs (functions, operators, types, etc.). |
 | [`log/`](docs/log.md) | Runtime log directory layout (service log + audit channel). |
 
 ### Data & Control Flow

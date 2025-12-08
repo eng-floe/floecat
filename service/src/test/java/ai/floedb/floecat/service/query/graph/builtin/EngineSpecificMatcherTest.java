@@ -15,11 +15,7 @@ class EngineSpecificMatcherTest {
         kind == null ? "" : kind,
         min == null ? "" : min,
         max == null ? "" : max,
-        null,
-        null,
-        null,
-        null,
-        null,
+        "",
         null,
         Map.of());
   }

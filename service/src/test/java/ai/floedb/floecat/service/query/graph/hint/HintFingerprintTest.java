@@ -3,7 +3,6 @@ package ai.floedb.floecat.service.query.graph.hint;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.catalog.builtin.*;
-import ai.floedb.floecat.query.rpc.FloeFunctionSpecific;
 import ai.floedb.floecat.service.query.graph.model.EngineKey;
 import java.util.List;
 import java.util.Map;
@@ -18,29 +17,11 @@ class HintFingerprintTest {
 
     var ruleA =
         new EngineSpecificRule(
-            ENGINE,
-            "16.0",
-            "",
-            FloeFunctionSpecific.newBuilder().setPronamespace(1).build(),
-            null,
-            null,
-            null,
-            null,
-            null,
-            Map.of("oid", "1000"));
+            ENGINE, "16.0", "", "json", null, Map.of("oid", "1000", "pronamespace", "1"));
 
     var ruleB =
         new EngineSpecificRule(
-            ENGINE,
-            "16.0",
-            "",
-            FloeFunctionSpecific.newBuilder().setPronamespace(1).build(),
-            null,
-            null,
-            null,
-            null,
-            null,
-            Map.of("oid", "2000"));
+            ENGINE, "16.0", "", "json", null, Map.of("oid", "2000", "pronamespace", "2"));
 
     var catalogA =
         new BuiltinCatalogData(

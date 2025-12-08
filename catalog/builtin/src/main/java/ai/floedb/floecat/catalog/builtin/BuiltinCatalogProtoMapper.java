@@ -2,6 +2,7 @@ package ai.floedb.floecat.catalog.builtin;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.*;
+import com.google.protobuf.ByteString;
 import java.util.Objects;
 
 /**
@@ -229,30 +230,33 @@ public final class BuiltinCatalogProtoMapper {
   // =========================================================================
 
   private static EngineSpecific toProtoRule(EngineSpecificRule rule) {
-    var builder = EngineSpecific.newBuilder();
+    var builder =
+        EngineSpecific.newBuilder()
+            .setEngineKind(rule.engineKind())
+            .setMinVersion(rule.minVersion())
+            .setMaxVersion(rule.maxVersion())
+            .putAllProperties(rule.properties());
 
-    if (rule.floeFunction() != null) builder.setFloeFunction(rule.floeFunction());
-    if (rule.floeOperator() != null) builder.setFloeOperator(rule.floeOperator());
-    if (rule.floeCast() != null) builder.setFloeCast(rule.floeCast());
-    if (rule.floeType() != null) builder.setFloeType(rule.floeType());
-    if (rule.floeAggregate() != null) builder.setFloeAggregate(rule.floeAggregate());
-    if (rule.floeCollation() != null) builder.setFloeCollation(rule.floeCollation());
+    if (rule.hasExtensionPayload()) {
+      builder
+          .setPayloadType(rule.payloadType())
+          .setPayload(ByteString.copyFrom(rule.extensionPayload()));
+    }
 
-    builder.putAllProperties(rule.properties());
     return builder.build();
   }
 
   private static EngineSpecificRule fromProtoRule(EngineSpecific proto, String defaultEngineKind) {
+    String engineKind = proto.getEngineKind().isBlank() ? defaultEngineKind : proto.getEngineKind();
+
+    byte[] payload = proto.getPayload().isEmpty() ? new byte[0] : proto.getPayload().toByteArray();
+
     return new EngineSpecificRule(
-        proto.getEngineKind().isBlank() ? defaultEngineKind : proto.getEngineKind(),
+        engineKind,
         proto.getMinVersion(),
         proto.getMaxVersion(),
-        proto.hasFloeFunction() ? proto.getFloeFunction() : null,
-        proto.hasFloeOperator() ? proto.getFloeOperator() : null,
-        proto.hasFloeCast() ? proto.getFloeCast() : null,
-        proto.hasFloeType() ? proto.getFloeType() : null,
-        proto.hasFloeAggregate() ? proto.getFloeAggregate() : null,
-        proto.hasFloeCollation() ? proto.getFloeCollation() : null,
+        proto.getPayloadType(),
+        payload,
         proto.getPropertiesMap());
   }
 }

@@ -15,9 +15,7 @@ class OperatorHintProviderTest {
   @Test
   void matchesOperatorSignature() {
 
-    var ruleLt =
-        new EngineSpecificRule(
-            ENGINE, "16.0", "", null, null, null, null, null, null, Map.of("oid", "9001"));
+    var ruleLt = new EngineSpecificRule(ENGINE, "16.0", "", "", null, Map.of("oid", "9001"));
 
     var catalog =
         new BuiltinCatalogData(
@@ -41,9 +39,9 @@ class OperatorHintProviderTest {
 
     var node = BuiltinTestSupport.operatorNode(ENGINE, "pg.<", "pg.int4", "pg.int4", "pg.bool");
 
-    assertThat(
-            BuiltinTestSupport.json(
-                provider.compute(node, key, BuiltinCatalogHintProvider.HINT_TYPE, "cid")))
-        .contains("\"oid\":\"9001\"");
+    var result = provider.compute(node, key, BuiltinCatalogHintProvider.HINT_TYPE, "cid");
+    assertThat(result.contentType()).contains("");
+    assertThat(result.payload()).isEmpty();
+    assertThat(result.metadata()).containsEntry("oid", "9001");
   }
 }

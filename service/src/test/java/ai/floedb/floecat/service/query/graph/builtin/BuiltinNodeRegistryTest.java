@@ -120,15 +120,15 @@ class BuiltinNodeRegistryTest {
 
   @Test
   void buildsFunctionNodeWithCorrectResourceIds() {
-    var rule =
-        new EngineSpecificRule(FLOE_KIND, "1.0", "", null, null, null, null, null, null, Map.of());
+    var rule = new EngineSpecificRule(FLOE_KIND, "1.0", "", "", new byte[0], Map.of());
     var fn =
         new BuiltinFunctionDef(
             nr("pg.abs"), List.of(nr("pg.int4")), nr("pg.int4"), false, false, List.of(rule));
 
     var catalog =
         new BuiltinCatalogData(List.of(fn), List.of(), List.of(), List.of(), List.of(), List.of());
-    var registry = new BuiltinDefinitionRegistry(new StaticLoader(Map.of(FLOE_KIND, catalog)));
+    var registry =
+        new BuiltinDefinitionRegistry(new StaticBuiltinCatalogProvider(Map.of(FLOE_KIND, catalog)));
     var nodes = new BuiltinNodeRegistry(registry).nodesFor(FLOE_KIND, "1.0");
 
     var built = nodes.functions().get(0);
@@ -143,17 +143,13 @@ class BuiltinNodeRegistryTest {
   // -----------------------------------------------------
   private static BuiltinDefinitionRegistry registryWithCatalogs() {
 
-    var sharedRule =
-        new EngineSpecificRule("", "", "", null, null, null, null, null, null, Map.of());
+    var sharedRule = new EngineSpecificRule("", "", "", "", new byte[0], Map.of());
 
-    var floeRule =
-        new EngineSpecificRule(FLOE_KIND, "16.0", "", null, null, null, null, null, null, Map.of());
+    var floeRule = new EngineSpecificRule(FLOE_KIND, "16.0", "", "", new byte[0], Map.of());
 
-    var floeLegacyRule =
-        new EngineSpecificRule(FLOE_KIND, "", "15.0", null, null, null, null, null, null, Map.of());
+    var floeLegacyRule = new EngineSpecificRule(FLOE_KIND, "", "15.0", "", new byte[0], Map.of());
 
-    var pgRule =
-        new EngineSpecificRule(PG_KIND, "", "", null, null, null, null, null, null, Map.of());
+    var pgRule = new EngineSpecificRule(PG_KIND, "", "", "", new byte[0], Map.of());
 
     // TYPE
     var int4Name = nr("pg_catalog.int4");
@@ -180,29 +176,10 @@ class BuiltinNodeRegistryTest {
         new BuiltinCatalogData(
             functions, List.of(), List.of(int4), List.of(), List.of(), List.of());
 
-    var loader =
-        new StaticLoader(
+    return new BuiltinDefinitionRegistry(
+        new StaticBuiltinCatalogProvider(
             Map.of(
                 FLOE_KIND, catalog,
-                PG_KIND, catalog));
-
-    return new BuiltinDefinitionRegistry(loader);
-  }
-
-  private static final class StaticLoader extends BuiltinCatalogLoader {
-    private final Map<String, BuiltinCatalogData> catalogs;
-
-    private StaticLoader(Map<String, BuiltinCatalogData> catalogs) {
-      this.catalogs = catalogs;
-    }
-
-    @Override
-    public BuiltinCatalogData getCatalog(String engineKind) {
-      BuiltinCatalogData data = catalogs.get(engineKind);
-      if (data == null) {
-        throw new BuiltinCatalogNotFoundException(engineKind);
-      }
-      return data;
-    }
+                PG_KIND, catalog)));
   }
 }

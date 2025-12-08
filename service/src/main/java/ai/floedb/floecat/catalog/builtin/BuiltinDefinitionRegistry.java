@@ -2,41 +2,36 @@ package ai.floedb.floecat.catalog.builtin;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * Loads builtin catalog bundles per engine kind and exposes indexed {@link BuiltinEngineCatalog}
- * snapshots. The data is cached in memory because builtin objects are immutable for a given engine
- * release.
+ * Provides cached access to builtin catalogs for each engine kind. Delegates loading to a
+ * BuiltinCatalogProvider.
  */
 @ApplicationScoped
-public class BuiltinDefinitionRegistry {
+public final class BuiltinDefinitionRegistry {
 
-  private final BuiltinCatalogLoader loader;
+  private final BuiltinCatalogProvider provider;
   private final ConcurrentMap<String, BuiltinEngineCatalog> cache = new ConcurrentHashMap<>();
 
   @Inject
-  public BuiltinDefinitionRegistry(BuiltinCatalogLoader loader) {
-    this.loader = Objects.requireNonNull(loader, "loader");
+  public BuiltinDefinitionRegistry(BuiltinCatalogProvider provider) {
+    this.provider = Objects.requireNonNull(provider);
   }
 
-  /** Returns the builtin catalog for the provided engine kind, loading it once if necessary. */
   public BuiltinEngineCatalog catalog(String engineKind) {
     if (engineKind == null || engineKind.isBlank()) {
       throw new IllegalArgumentException("engine_kind must be provided");
     }
-    return cache.computeIfAbsent(engineKind, this::loadCatalog);
+    String key = engineKind.toLowerCase(Locale.ROOT);
+    return cache.computeIfAbsent(key, provider::load);
   }
 
-  /** Test-only hook to drop cached catalogs so subsequent calls reload from disk. */
-  void clear() {
+  /** Test-only: clears catalog cache. */
+  public void clear() {
     cache.clear();
-  }
-
-  private BuiltinEngineCatalog loadCatalog(String engineKind) {
-    var data = loader.getCatalog(engineKind);
-    return BuiltinEngineCatalog.from(engineKind, data);
   }
 }

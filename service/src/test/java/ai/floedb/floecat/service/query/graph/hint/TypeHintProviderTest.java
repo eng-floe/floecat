@@ -3,7 +3,6 @@ package ai.floedb.floecat.service.query.graph.hint;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.catalog.builtin.*;
-import ai.floedb.floecat.query.rpc.FloeTypeSpecific;
 import ai.floedb.floecat.service.query.graph.model.EngineKey;
 import java.util.List;
 import java.util.Map;
@@ -18,16 +17,7 @@ class TypeHintProviderTest {
 
     var rule =
         new EngineSpecificRule(
-            ENGINE,
-            "16.0",
-            "",
-            null,
-            null,
-            null,
-            FloeTypeSpecific.newBuilder().setTypmodin("12").build(),
-            null,
-            null,
-            Map.of("oid", "1616"));
+            ENGINE, "16.0", "", "", null, Map.of("oid", "1616", "typmodin", "12"));
 
     var catalog =
         new BuiltinCatalogData(
@@ -45,10 +35,9 @@ class TypeHintProviderTest {
 
     var node = BuiltinTestSupport.typeNode(ENGINE, "pg.int4");
 
-    assertThat(
-            BuiltinTestSupport.json(
-                provider.compute(node, key, BuiltinCatalogHintProvider.HINT_TYPE, "cid")))
-        .contains("\"oid\":\"1616\"")
-        .contains("\"typmodin\":\"12\"");
+    var result = provider.compute(node, key, BuiltinCatalogHintProvider.HINT_TYPE, "cid");
+    assertThat(result.contentType()).contains("");
+    assertThat(result.payload()).isEmpty();
+    assertThat(result.metadata()).containsEntry("oid", "1616");
   }
 }

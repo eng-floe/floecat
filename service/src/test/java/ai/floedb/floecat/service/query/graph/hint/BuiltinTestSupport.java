@@ -20,7 +20,8 @@ final class BuiltinTestSupport {
   }
 
   static BuiltinCatalogHintProvider providerFrom(String engine, BuiltinCatalogData data) {
-    var registry = new BuiltinDefinitionRegistry(new StaticLoader(Map.of(engine, data)));
+    var registry =
+        new BuiltinDefinitionRegistry(new StaticBuiltinCatalogProvider(Map.of(engine, data)));
     var nodeRegistry = new BuiltinNodeRegistry(registry);
     return new BuiltinCatalogHintProvider(nodeRegistry);
   }
@@ -137,22 +138,5 @@ final class BuiltinTestSupport {
         BuiltinNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, nr("state")),
         BuiltinNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, nr(ret)),
         Map.of());
-  }
-
-  // --- Static test loader ---------------------------------------------------
-
-  static final class StaticLoader extends BuiltinCatalogLoader {
-    private final Map<String, BuiltinCatalogData> m;
-
-    StaticLoader(Map<String, BuiltinCatalogData> m) {
-      this.m = m;
-    }
-
-    @Override
-    public BuiltinCatalogData getCatalog(String engineKind) {
-      var d = m.get(engineKind);
-      if (d == null) throw new IllegalArgumentException("missing catalog");
-      return d;
-    }
   }
 }

@@ -3,7 +3,6 @@ package ai.floedb.floecat.service.query.graph.hint;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.catalog.builtin.*;
-import ai.floedb.floecat.query.rpc.FloeCollationSpecific;
 import ai.floedb.floecat.service.query.graph.model.EngineKey;
 import java.util.List;
 import java.util.Map;
@@ -18,16 +17,7 @@ class CollationHintProviderTest {
 
     var rule =
         new EngineSpecificRule(
-            ENGINE,
-            "16.0",
-            "",
-            null,
-            null,
-            null,
-            null,
-            null,
-            FloeCollationSpecific.newBuilder().setCollcollate("blah").build(),
-            Map.of("oid", "4141"));
+            ENGINE, "16.0", "", "", null, Map.of("collcollate", "blah", "oid", "4141"));
 
     var catalog =
         new BuiltinCatalogData(
@@ -44,10 +34,9 @@ class CollationHintProviderTest {
 
     var node = BuiltinTestSupport.collationNode(ENGINE, "pg.en_US");
 
-    assertThat(
-            BuiltinTestSupport.json(
-                provider.compute(node, key, BuiltinCatalogHintProvider.HINT_TYPE, "cid")))
-        .contains("\"oid\":\"4141\"")
-        .contains("\"collcollate\":\"blah\"");
+    var result = provider.compute(node, key, BuiltinCatalogHintProvider.HINT_TYPE, "cid");
+    assertThat(result.contentType()).contains("");
+    assertThat(result.payload()).isEmpty();
+    assertThat(result.metadata()).containsEntry("oid", "4141");
   }
 }

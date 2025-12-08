@@ -150,7 +150,6 @@ Notable `application.properties` keys:
 | `floecat.seed.enabled` | Enable demo data seeding. |
 | `floecat.kv` / `floecat.blob` | Select pointer/blob store implementation (`memory`, `dynamodb`, `s3`). |
 | `floecat.query.*` | Default TTL, grace period, max cache size, safety expiry for query contexts. |
-| `floecat.builtins.location` | Filesystem or classpath location for builtin catalog files (default `classpath:builtins`). |
 | `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for GC. |
 | `quarkus.log.*` | JSON logging, file rotation, audit handlers per RPC package. |
 | `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters. |
