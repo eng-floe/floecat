@@ -43,12 +43,13 @@ The following modules compose the system (see linked docs for deep dives):
 | [`proto/`](docs/proto.md) | All protobuf/gRPC contracts (catalog, query lifecycle, execution scans, connectors, statistics, types). |
 | [`service/`](docs/service.md) | Quarkus runtime, resource repositories, query lifecycle service, GC, security, metrics. |
 | [`client-cli/`](docs/client-cli.md) | Interactive shell for humans; exercises every public RPC. |
-| [`connectors/catalogs/spi/`](docs/connectors-spi.md) | Connector interfaces, stats engines, NDV helpers, auth shims. |
+| [`core/connectors/spi/`](docs/connectors-spi.md) | Connector interfaces, stats engines, NDV helpers, auth shims. |
 | [`connectors/catalogs/iceberg/`](docs/connectors-iceberg.md) | Iceberg REST + AWS Glue connector implementation. |
 | [`connectors/catalogs/delta/`](docs/connectors-delta.md) | Unity Catalog/Delta Lake connector using Delta Kernel + Databricks APIs. |
+| [`core/connectors/common/`](docs/connectors-common.md) | Shared connector utilities (Parquet stats, NDV sketches, planners). |
 | [`reconciler/`](docs/reconciler.md) | Connector scheduler/worker, reconciliation orchestration, job store. |
-| [`storage/spi/`](docs/storage-spi.md) | Blob/pointer persistence contracts shared by service and GC. |
-| [`storage/memory/`](docs/storage-memory.md) | In-memory dev/test stores (CAS semantics maintained). |
+| [`core/storage/spi/`](docs/storage-spi.md) | Blob/pointer persistence contracts shared by service and GC. |
+| [`core/storage/memory/`](docs/storage-memory.md) | In-memory dev/test stores (CAS semantics maintained). |
 | [`storage/aws/`](docs/storage-aws.md) | Production DynamoDB pointer store + S3 blob store. |
 | [`types/`](docs/types.md) | Logical type system utilities, coercions, min/max encoding. |
 | [`extensions/builtin/`](docs/builtin-catalog.md) | Plugin architecture for engine-specific builtin catalogs (functions, operators, types, etc.). |

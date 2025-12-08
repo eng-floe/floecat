@@ -1,8 +1,8 @@
 package ai.floedb.floecat.extensions.floedb;
 
-import ai.floedb.floecat.catalog.builtin.BuiltinCatalogData;
-import ai.floedb.floecat.catalog.builtin.BuiltinCatalogProtoMapper;
-import ai.floedb.floecat.extensions.builtin.spi.EngineBuiltinExtension;
+import ai.floedb.floecat.catalog.builtin.registry.BuiltinCatalogData;
+import ai.floedb.floecat.catalog.builtin.registry.BuiltinCatalogProtoMapper;
+import ai.floedb.floecat.catalog.builtin.spi.EngineBuiltinExtension;
 import ai.floedb.floecat.extensions.floedb.proto.*;
 import ai.floedb.floecat.query.rpc.*;
 import com.google.protobuf.ByteString;

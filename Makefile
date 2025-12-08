@@ -72,7 +72,7 @@ VERSION := $(shell sed -n 's:.*<version>\(.*\)</version>.*:\1:p' pom.xml | head 
 ifeq ($(strip $(VERSION)),)
   VERSION := 0.1.0-SNAPSHOT
 endif
-PROTO_JAR := proto/target/floecat-proto-$(VERSION).jar
+PROTO_JAR := core/proto/target/floecat-proto-$(VERSION).jar
 
 # ---------- CLI isolation toggle ----------
 CLI_ISOLATED ?= 1
@@ -107,9 +107,9 @@ build-all:
 .PHONY: proto
 proto: $(PROTO_JAR)
 
-$(PROTO_JAR): proto/pom.xml $(shell find proto -type f -name '*.proto' -o -name 'pom.xml')
+$(PROTO_JAR): core/proto/pom.xml $(shell find core/proto -type f -name '*.proto' -o -name 'pom.xml')
 	@echo "==> [PROTO] package generated stubs ($(VERSION))"
-	$(MVN) -q -f proto/pom.xml -DskipTests install
+	$(MVN) -q -f core/proto/pom.xml -DskipTests install
 	@test -f "$@" || { echo "ERROR: expected $@ not found"; exit 1; }
 
 # ===================================================

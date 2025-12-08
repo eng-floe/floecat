@@ -1,8 +1,8 @@
 package io.floecat.tools.validator;
 
-import ai.floedb.floecat.catalog.builtin.BuiltinCatalogData;
-import ai.floedb.floecat.catalog.builtin.BuiltinCatalogProtoMapper;
-import ai.floedb.floecat.catalog.builtin.BuiltinCatalogValidator;
+import ai.floedb.floecat.catalog.builtin.registry.BuiltinCatalogData;
+import ai.floedb.floecat.catalog.builtin.registry.BuiltinCatalogProtoMapper;
+import ai.floedb.floecat.catalog.builtin.registry.BuiltinCatalogValidator;
 import ai.floedb.floecat.query.rpc.BuiltinRegistry;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.TextFormat;
