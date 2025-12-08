@@ -157,12 +157,12 @@ grpcurl -plaintext -d '{}' \
   localhost:9100 ai.floedb.floecat.catalog.CatalogService/ListCatalogs
 
 grpcurl -plaintext -d '{
-  "catalog_id": {"account_id":"31a47986-efaf-35f5-b810-09ba18ca81d2",
+  "catalog_id": {"account_id":"5eaa9cd5-7d08-3750-9457-cfe800b0b9d2",
                  "id":"109c1761-323a-3f72-83da-ff4f89c3b581","kind":"RK_CATALOG"}
 }' localhost:9100 ai.floedb.floecat.catalog.NamespaceService/ListNamespaces
 
 grpcurl -plaintext -d '{
-  "namespace_id": {"account_id":"31a47986-efaf-35f5-b810-09ba18ca81d2",
+  "namespace_id": {"account_id":"5eaa9cd5-7d08-3750-9457-cfe800b0b9d2",
                    "id":"86853a0f-a999-3c72-9a81-6dc66d1923a2","kind":"RK_NAMESPACE"}
 }' localhost:9100 ai.floedb.floecat.catalog.TableService/ListTables
 ```
