@@ -1,7 +1,7 @@
 # Type System Utilities
 
 ## Overview
-The `types/` module implements Floecat’s logical type system. It bridges the logical types declared
+The `core/types/` module implements Floecat’s logical type system. It bridges the logical types declared
 in protobuf (`types/types.proto`) with Java helpers used by connectors, statistics engines, and the
 execution scan bundle assembler.
 

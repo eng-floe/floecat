@@ -1,7 +1,7 @@
 # Protobuf & RPC Contracts
 
 ## Overview
-Floecat's public surface is entirely gRPC. The `proto/` module defines canonical protobuf
+Floecat's public surface is entirely gRPC. The `core/proto/` module defines canonical protobuf
 structures for resource identifiers, catalog services, query lifecycle metadata, connectors, statistics, and
 helper schemas. Every other module depends on these contracts for serialization, validation, and
 compatibility.

@@ -7,8 +7,8 @@
     <relativePath>../../pom.xml</relativePath>
   </parent>
   <modelVersion>4.0.0</modelVersion>
-  <artifactId>builtin-validator</artifactId>
-  <name>builtin-validator</name>
+  <artifactId>floecat-builtin-validator</artifactId>
+  <name>floecat-builtin-validator</name>
   <build>
     <plugins>
       <plugin>
@@ -21,7 +21,7 @@
               <goal>shade</goal>
             </goals>
             <configuration>
-              <finalName>builtin-validator</finalName>
+              <finalName>floecat-builtin-validator</finalName>
               <transformers>
                 <transformer>
                   <mainClass>io.floecat.tools.validator.BuiltinCatalogValidatorCli</mainClass>

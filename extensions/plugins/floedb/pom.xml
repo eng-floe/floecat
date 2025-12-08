@@ -14,7 +14,6 @@
 
     <artifactId>floecat-extension-floedb-builtin</artifactId>
     <packaging>jar</packaging>
-    <name>Floecat Builtin Plugin – FloeDB</name>
 
     <!-- ================================================================ -->
     <!-- Properties                                                       -->
@@ -35,17 +34,10 @@
     <!-- ================================================================ -->
     <dependencies>
 
-        <!-- SPI: the plugin interface -->
+        <!-- Builtin catalog model & SPI -->
         <dependency>
             <groupId>ai.floedb.floecat</groupId>
-            <artifactId>floecat-extensions-builtin-spi</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-
-        <!-- Builtin catalog model -->
-        <dependency>
-            <groupId>ai.floedb.floecat</groupId>
-            <artifactId>floecat-catalog-builtin</artifactId>
+            <artifactId>floecat-catalog</artifactId>
             <version>${project.version}</version>
         </dependency>
 
@@ -117,7 +109,7 @@
 
                     <!-- Include shared proto directory from core proto module -->
                     <additionalProtoPathElements>
-                        <additionalProtoPathElement>${project.basedir}/../../../proto/src/main/proto</additionalProtoPathElement>
+                        <additionalProtoPathElement>${project.basedir}/../../../core/proto/src/main/proto</additionalProtoPathElement>
                     </additionalProtoPathElements>
 
                     <!-- Floe plugin's local proto directory -->

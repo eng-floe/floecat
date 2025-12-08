@@ -1,6 +1,6 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
-import ai.floedb.floecat.connector.auth.NoAuthProvider;
+import ai.floedb.floecat.connector.common.auth.NoAuthProvider;
 import ai.floedb.floecat.connector.spi.AuthProvider;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import java.util.Map;

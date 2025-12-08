@@ -1,7 +1,7 @@
 package ai.floedb.floecat.extensions.floedb;
 
-import ai.floedb.floecat.catalog.builtin.BuiltinCatalogData;
-import ai.floedb.floecat.catalog.builtin.BuiltinCatalogValidator;
+import ai.floedb.floecat.catalog.builtin.registry.BuiltinCatalogData;
+import ai.floedb.floecat.catalog.builtin.registry.BuiltinCatalogValidator;
 import ai.floedb.floecat.query.rpc.BuiltinRegistry;
 import ai.floedb.floecat.query.rpc.EngineSpecific;
 import org.junit.jupiter.api.Test;

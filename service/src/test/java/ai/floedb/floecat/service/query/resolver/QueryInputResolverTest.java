@@ -11,7 +11,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.query.rpc.QueryInput;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.service.query.graph.MetadataGraph;
+import ai.floedb.floecat.service.metagraph.MetadataGraph;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;

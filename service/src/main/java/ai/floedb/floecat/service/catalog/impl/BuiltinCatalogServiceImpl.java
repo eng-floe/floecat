@@ -1,7 +1,7 @@
 package ai.floedb.floecat.service.catalog.impl;
 
-import ai.floedb.floecat.catalog.builtin.BuiltinCatalogProtoMapper;
-import ai.floedb.floecat.catalog.builtin.BuiltinDefinitionRegistry;
+import ai.floedb.floecat.catalog.builtin.graph.BuiltinNodeRegistry.BuiltinNodes;
+import ai.floedb.floecat.catalog.builtin.registry.BuiltinCatalogProtoMapper;
 import ai.floedb.floecat.query.rpc.BuiltinCatalogService;
 import ai.floedb.floecat.query.rpc.BuiltinRegistry;
 import ai.floedb.floecat.query.rpc.GetBuiltinCatalogRequest;
@@ -9,8 +9,7 @@ import ai.floedb.floecat.query.rpc.GetBuiltinCatalogResponse;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.query.graph.MetadataGraph;
-import ai.floedb.floecat.service.query.graph.builtin.BuiltinNodeRegistry.BuiltinNodes;
+import ai.floedb.floecat.service.metagraph.MetadataGraph;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
