@@ -29,6 +29,7 @@ import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.support.CatalogResolver;
+import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -109,11 +110,7 @@ public class TableGatewaySupport {
   }
 
   public void addMetadataLocationProperties(TableSpec.Builder spec, String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return;
-    }
-    spec.putProperties("metadata-location", metadataLocation);
-    spec.putProperties("metadata_location", metadataLocation);
+    MetadataLocationUtil.setMetadataLocation(spec::putProperties, metadataLocation);
   }
 
   public String metadataLocationFromCreate(TableRequests.Create req) {

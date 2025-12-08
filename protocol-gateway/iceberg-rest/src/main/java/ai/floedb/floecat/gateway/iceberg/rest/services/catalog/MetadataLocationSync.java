@@ -39,8 +39,7 @@ public final class MetadataLocationSync {
     if (tableSupport != null) {
       tableSupport.addMetadataLocationProperties(spec, desiredLocation);
     } else {
-      spec.putProperties(MetadataLocationUtil.PRIMARY_KEY, desiredLocation);
-      spec.putProperties(MetadataLocationUtil.LEGACY_KEY, desiredLocation);
+      MetadataLocationUtil.setMetadataLocation(spec::putProperties, desiredLocation);
     }
     return lifecycleService.updateTable(
         UpdateTableRequest.newBuilder()

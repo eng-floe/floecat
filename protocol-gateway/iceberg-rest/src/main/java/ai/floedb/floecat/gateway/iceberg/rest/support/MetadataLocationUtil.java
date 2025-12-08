@@ -1,6 +1,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.support;
 
 import java.util.Map;
+import java.util.function.BiConsumer;
 
 public final class MetadataLocationUtil {
 
@@ -21,11 +22,19 @@ public final class MetadataLocationUtil {
   }
 
   public static void setMetadataLocation(Map<String, String> props, String metadataLocation) {
-    if (props == null || metadataLocation == null || metadataLocation.isBlank()) {
+    if (props == null) {
       return;
     }
-    props.put(PRIMARY_KEY, metadataLocation);
-    props.put(LEGACY_KEY, metadataLocation);
+    setMetadataLocation(props::put, metadataLocation);
+  }
+
+  public static void setMetadataLocation(
+      BiConsumer<String, String> setter, String metadataLocation) {
+    if (setter == null || metadataLocation == null || metadataLocation.isBlank()) {
+      return;
+    }
+    setter.accept(PRIMARY_KEY, metadataLocation);
+    setter.accept(LEGACY_KEY, metadataLocation);
   }
 
   public static boolean updateMetadataLocation(Map<String, String> props, String metadataLocation) {
