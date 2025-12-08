@@ -22,7 +22,7 @@
     <trino.version>476</trino.version>
     <trino.grpc.version>1.54.1</trino.grpc.version>
     <protobuf.version>4.32.1</protobuf.version>
-    <proto.source.dir>${project.basedir}/../../../proto/src/main/proto</proto.source.dir>
+    <proto.source.dir>${project.basedir}/../../../core/proto/src/main/proto</proto.source.dir>
   </properties>
 
   <dependencies>

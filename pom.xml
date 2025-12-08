@@ -22,20 +22,39 @@
   </properties>
 
   <modules>
-    <module>proto</module>
-    <module>types</module>
-    <module>client-cli</module>
-    <module>storage/spi</module>
-    <module>storage/memory</module>
-    <module>storage/aws</module>
-    <module>reconciler</module>
-    <module>connectors/catalogs/spi</module>
-    <module>connectors/catalogs/iceberg</module>
-    <module>connectors/catalogs/delta</module>
-    <module>catalog/builtin</module>
-    <module>service</module>
-    <module>tools/builtin-validator</module>
-    <module>protocol-gateway</module>
+      <!-- Core -->
+      <module>core/proto</module>
+      <module>core/types</module>
+      <module>core/catalog</module>
+      <module>core/metagraph</module>
+      <module>core/connectors/spi</module>
+      <module>core/connectors/common</module>
+      <module>core/storage-spi</module>
+
+      <!-- Connectors -->
+      <module>connectors/catalogs/iceberg</module>
+      <module>connectors/catalogs/delta</module>
+
+      <!-- Storage -->
+      <module>storage/memory</module>
+      <module>storage/aws</module>
+
+      <!-- Extensions -->
+      <module>extensions/builtin</module>
+      <module>extensions/plugins/floedb</module>
+
+      <!-- Tools -->
+      <module>tools/builtin-validator</module>
+
+      <!-- Service -->
+      <module>service</module>
+
+      <!-- CLI -->
+      <module>client-cli</module>
+      
+      <!-- Other -->
+      <module>reconciler</module>
+      <module>protocol-gateway</module>
   </modules>
 
   <profiles>

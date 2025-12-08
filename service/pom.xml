@@ -98,9 +98,10 @@
       <artifactId>floecat-connectors-spi</artifactId>
       <version>${project.version}</version>
     </dependency>
+    
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-catalog-builtin</artifactId>
+      <artifactId>floecat-catalog</artifactId>
       <version>${project.version}</version>
     </dependency>
 
@@ -133,6 +134,31 @@
       <artifactId>floecat-storage-aws</artifactId>
       <version>${project.version}</version>
     </dependency>
+    
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-metagraph</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-catalog</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-extensions-builtin</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-extension-floedb-builtin</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
 
     <dependency>
       <groupId>org.jboss.logmanager</groupId>

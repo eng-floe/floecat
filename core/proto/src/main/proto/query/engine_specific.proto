@@ -1,0 +1,28 @@
+syntax = "proto2";
+package ai.floedb.floecat.query;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.query.rpc";
+
+/**
+ * Engine-specific rule metadata.
+ *
+ * For all engines (Floe, Postgres, Trino, Spark, …), the payload is opaque:
+ * Floecat never interprets it.
+ */
+message EngineSpecific {
+  // Allow PBtxt readable extension blocks 
+  extensions 1 to 99;
+
+  // --- Applicability rules (PBtxt only) ---
+  optional string engine_kind = 100;
+  optional string min_version = 101;
+  optional string max_version = 102;
+
+  // --- Payload for engine-specific data ---
+  optional string payload_type = 200;
+  optional bytes  payload      = 201;
+
+  // --- Generic metadata ---
+  map<string,string> properties = 300;
+}

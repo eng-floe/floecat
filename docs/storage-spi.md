@@ -10,7 +10,7 @@ Two interfaces power the system:
 - `BlobStore` – Byte-addressable storage for protobuf payloads.
 - `PointerStore` – Versioned key/value metadata for name and hierarchy indexes.
 
-Both live in `storage/spi/src/main/java/ai/floedb/floecat/storage`.
+Both live under `core/storage/spi/src/main/java/ai/floedb/floecat/storage`.
 
 ## Architecture & Responsibilities
 - **BlobStore** responsibilities:
