@@ -13,7 +13,6 @@ import ai.floedb.floecat.catalog.builtin.EngineSpecificRule;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.service.query.graph.builtin.BuiltinNodeRegistry.BuiltinNodes;
 import ai.floedb.floecat.service.query.graph.model.BuiltinAggregateNode;
 import ai.floedb.floecat.service.query.graph.model.BuiltinCastNode;
 import ai.floedb.floecat.service.query.graph.model.BuiltinCollationNode;

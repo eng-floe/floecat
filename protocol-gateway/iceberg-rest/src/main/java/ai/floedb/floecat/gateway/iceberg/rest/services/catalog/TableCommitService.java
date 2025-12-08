@@ -1,8 +1,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
-import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
-import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
@@ -12,9 +10,9 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitProcessor.StageCommitResult;
+import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.support.mapper.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -23,9 +21,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.function.Supplier;
-import java.util.stream.Collectors;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -185,7 +181,8 @@ public class TableCommitService {
     if (mask.getPathsCount() == 0) {
       Table current = tableSupplier.get();
       IcebergMetadata metadata = tableSupport.loadCurrentMetadata(current);
-      List<Snapshot> snapshotList = fetchSnapshots(tableId, SnapshotMode.ALL, metadata);
+      List<Snapshot> snapshotList =
+          SnapshotLister.fetchSnapshots(grpc, tableId, SnapshotLister.Mode.ALL, metadata);
       CommitTableResponseDto initialResponse =
           TableResponseMapper.toCommitResponse(table, current, metadata, snapshotList);
       var sideEffects =
@@ -231,7 +228,8 @@ public class TableCommitService {
         UpdateTableRequest.newBuilder().setTableId(tableId).setSpec(spec).setUpdateMask(mask);
     Table updated = tableLifecycleService.updateTable(updateRequest.build());
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(updated);
-    List<Snapshot> snapshotList = fetchSnapshots(tableId, SnapshotMode.ALL, metadata);
+    List<Snapshot> snapshotList =
+        SnapshotLister.fetchSnapshots(grpc, tableId, SnapshotLister.Mode.ALL, metadata);
     CommitTableResponseDto initialResponse =
         TableResponseMapper.toCommitResponse(table, updated, metadata, snapshotList);
     boolean skipMaterialization = snapshotContext.hasMaterializedMetadata();
@@ -339,32 +337,6 @@ public class TableCommitService {
     }
   }
 
-  public List<Snapshot> fetchSnapshots(
-      ResourceId tableId, SnapshotMode mode, IcebergMetadata metadata) {
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub =
-        grpc.withHeaders(grpc.raw().snapshot());
-    try {
-      var resp =
-          snapshotStub.listSnapshots(ListSnapshotsRequest.newBuilder().setTableId(tableId).build());
-      List<Snapshot> snapshots = resp.getSnapshotsList();
-      if (mode == SnapshotMode.REFS) {
-        if (metadata == null || metadata.getRefsCount() == 0) {
-          return List.of();
-        }
-        Set<Long> refIds =
-            metadata.getRefsMap().values().stream()
-                .map(IcebergRef::getSnapshotId)
-                .collect(Collectors.toSet());
-        return snapshots.stream()
-            .filter(s -> refIds.contains(s.getSnapshotId()))
-            .collect(Collectors.toList());
-      }
-      return snapshots;
-    } catch (io.grpc.StatusRuntimeException e) {
-      return List.of();
-    }
-  }
-
   private String unsupportedUpdateAction(TableRequests.Commit req) {
     if (req == null || req.updates() == null) {
       return null;
@@ -441,7 +413,8 @@ public class TableCommitService {
       return null;
     }
     Table tableForMetadata = tableWithPropertyOverrides(tableSupplier, mergedProps);
-    List<Snapshot> snapshotList = fetchSnapshots(tableId, SnapshotMode.ALL, snapshotMetadata);
+    List<Snapshot> snapshotList =
+        SnapshotLister.fetchSnapshots(grpc, tableId, SnapshotLister.Mode.ALL, snapshotMetadata);
     CommitTableResponseDto pendingResponse =
         TableResponseMapper.toCommitResponse(
             tableName, tableForMetadata, snapshotMetadata, snapshotList);
@@ -486,8 +459,7 @@ public class TableCommitService {
               ? new LinkedHashMap<>(pendingMetadata.properties())
               : propsForMaterialization;
       if (updatedProps != null && resolvedLocation != null && !resolvedLocation.isBlank()) {
-        updatedProps.put("metadata-location", resolvedLocation);
-        updatedProps.put("metadata_location", resolvedLocation);
+        MetadataLocationUtil.setMetadataLocation(updatedProps, resolvedLocation);
         snapshotContext.materializedMetadataLocation = resolvedLocation;
       }
       return updatedProps;
@@ -529,10 +501,5 @@ public class TableCommitService {
 
   private static String nonBlank(String primary, String fallback) {
     return primary != null && !primary.isBlank() ? primary : fallback;
-  }
-
-  public enum SnapshotMode {
-    ALL,
-    REFS
   }
 }

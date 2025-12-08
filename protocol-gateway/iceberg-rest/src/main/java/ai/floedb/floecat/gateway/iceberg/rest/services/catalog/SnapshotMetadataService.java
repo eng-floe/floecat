@@ -15,6 +15,9 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedSnapshot;
+import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergBlobMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergEncryptedKey;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
@@ -29,6 +32,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
+import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
@@ -40,9 +44,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class SnapshotMetadataService {
+
+  private static final Logger LOG = Logger.getLogger(SnapshotMetadataService.class);
 
   @Inject GrpcWithHeaders grpc;
   @Inject ObjectMapper mapper;
@@ -327,6 +334,108 @@ public class SnapshotMetadataService {
     return null;
   }
 
+  public Response ensureImportedCurrentSnapshot(
+      TableGatewaySupport tableSupport,
+      ResourceId tableId,
+      List<String> namespacePath,
+      String tableName,
+      Supplier<Table> tableSupplier,
+      ImportedMetadata importedMetadata,
+      String idempotencyKey) {
+    if (tableId == null || importedMetadata == null) {
+      return null;
+    }
+    SnapshotServiceGrpc.SnapshotServiceBlockingStub stub = grpc.withHeaders(grpc.raw().snapshot());
+    java.util.List<ImportedSnapshot> importedSnapshots = importedMetadata.snapshots();
+    if (importedSnapshots != null && !importedSnapshots.isEmpty()) {
+      for (ImportedSnapshot snapshot : importedSnapshots) {
+        Response err =
+            ensureSnapshotExists(
+                tableSupport,
+                stub,
+                tableId,
+                namespacePath,
+                tableName,
+                tableSupplier,
+                snapshot,
+                idempotencyKey);
+        if (err != null) {
+          return err;
+        }
+      }
+    } else {
+      ImportedSnapshot snapshot = importedMetadata.currentSnapshot();
+      if (snapshot != null) {
+        Response err =
+            ensureSnapshotExists(
+                tableSupport,
+                stub,
+                tableId,
+                namespacePath,
+                tableName,
+                tableSupplier,
+                snapshot,
+                idempotencyKey);
+        if (err != null) {
+          return err;
+        }
+      }
+    }
+    ImportedSnapshot currentSnapshot = importedMetadata.currentSnapshot();
+    Map<String, String> props = importedMetadata.properties();
+    String metadataLocation =
+        props == null
+            ? null
+            : props.getOrDefault("metadata-location", props.get("metadata_location"));
+    if (currentSnapshot != null) {
+      updateSnapshotMetadataLocation(tableId, currentSnapshot.snapshotId(), metadataLocation);
+    }
+    return null;
+  }
+
+  private Response ensureSnapshotExists(
+      TableGatewaySupport tableSupport,
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub stub,
+      ResourceId tableId,
+      List<String> namespacePath,
+      String tableName,
+      Supplier<Table> tableSupplier,
+      ImportedSnapshot snapshot,
+      String idempotencyKey) {
+    Long snapshotId = snapshot == null ? null : snapshot.snapshotId();
+    if (snapshotId == null || snapshotId <= 0) {
+      return null;
+    }
+    if (snapshotExists(stub, tableId, snapshotId)) {
+      return null;
+    }
+    Table table = tableSupplier.get();
+    if (table == null) {
+      return validationError("table not found for snapshot bootstrap");
+    }
+    Map<String, Object> snapshotMap = importedSnapshotMap(snapshot);
+    return createSnapshotPlaceholder(
+        tableSupport, tableId, namespacePath, tableName, table, snapshotMap, idempotencyKey);
+  }
+
+  private boolean snapshotExists(
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub stub, ResourceId tableId, Long snapshotId) {
+    if (snapshotId == null || snapshotId <= 0) {
+      return false;
+    }
+    try {
+      var response =
+          stub.getSnapshot(
+              GetSnapshotRequest.newBuilder()
+                  .setTableId(tableId)
+                  .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
+                  .build());
+      return response != null && response.hasSnapshot();
+    } catch (io.grpc.StatusRuntimeException ignored) {
+      return false;
+    }
+  }
+
   private Response createSnapshotPlaceholder(
       TableGatewaySupport tableSupport,
       ResourceId tableId,
@@ -388,6 +497,11 @@ public class SnapshotMetadataService {
     }
     if (schemaJson != null && !schemaJson.isBlank()) {
       spec.setSchemaJson(schemaJson);
+    }
+    IcebergMetadata snapshotIceberg =
+        snapshotIcebergMetadata(metadata, existing, snapshotId, sequenceNumber);
+    if (snapshotIceberg != null) {
+      spec.setIceberg(snapshotIceberg);
     }
     CreateSnapshotRequest.Builder request =
         CreateSnapshotRequest.newBuilder().setSpec(spec.build());
@@ -984,6 +1098,172 @@ public class SnapshotMetadataService {
 
   private static Object firstNonNull(Object first, Object second) {
     return first != null ? first : second;
+  }
+
+  public void updateSnapshotMetadataLocation(
+      ResourceId tableId, Long snapshotId, String metadataLocation) {
+    if (tableId == null || snapshotId == null || snapshotId <= 0) {
+      return;
+    }
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return;
+    }
+    SnapshotServiceGrpc.SnapshotServiceBlockingStub stub = grpc.withHeaders(grpc.raw().snapshot());
+    Snapshot snapshot;
+    try {
+      snapshot =
+          stub.getSnapshot(
+                  GetSnapshotRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
+                      .build())
+              .getSnapshot();
+    } catch (StatusRuntimeException e) {
+      LOG.debugf(
+          e,
+          "Failed to load snapshot %s for metadata-location update (tableId=%s)",
+          snapshotId,
+          tableId == null ? "<null>" : tableId.getId());
+      return;
+    }
+    if (snapshot == null) {
+      return;
+    }
+    IcebergMetadata.Builder iceberg =
+        snapshot.hasIceberg() ? snapshot.getIceberg().toBuilder() : IcebergMetadata.newBuilder();
+    iceberg.setMetadataLocation(metadataLocation);
+    SnapshotSpec spec =
+        SnapshotSpec.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .setIceberg(iceberg)
+            .build();
+    FieldMask mask = FieldMask.newBuilder().addPaths("iceberg").build();
+    try {
+      stub.updateSnapshot(
+          UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build());
+    } catch (StatusRuntimeException e) {
+      LOG.debugf(
+          e,
+          "Failed to update snapshot metadata-location tableId=%s snapshotId=%s",
+          tableId.getId(),
+          snapshotId);
+    }
+  }
+
+  private IcebergMetadata snapshotIcebergMetadata(
+      IcebergMetadata currentMetadata, Table table, Long snapshotId, Long sequenceNumber) {
+    IcebergMetadata.Builder builder =
+        currentMetadata != null ? currentMetadata.toBuilder() : metadataFromTable(table);
+    if (builder == null) {
+      builder = IcebergMetadata.newBuilder();
+    }
+    String metadataLocation = metadataLocationFrom(table);
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      builder.setMetadataLocation(metadataLocation);
+    }
+    if (snapshotId != null && snapshotId > 0) {
+      builder.setCurrentSnapshotId(snapshotId);
+    }
+    if (sequenceNumber != null && sequenceNumber > 0) {
+      builder.setLastSequenceNumber(sequenceNumber);
+    }
+    return builder.build();
+  }
+
+  private IcebergMetadata.Builder metadataFromTable(Table table) {
+    if (table == null) {
+      return null;
+    }
+    Map<String, String> props = table.getPropertiesMap();
+    if (props == null) {
+      props = Map.of();
+    }
+    IcebergMetadata.Builder builder = IcebergMetadata.newBuilder();
+    String tableUuid = props.get("table-uuid");
+    if (tableUuid != null && !tableUuid.isBlank()) {
+      builder.setTableUuid(tableUuid);
+    }
+    Integer formatVersion = propertyInt(props, "format-version");
+    if (formatVersion != null && formatVersion > 0) {
+      builder.setFormatVersion(formatVersion);
+    }
+    String metadataLocation = MetadataLocationUtil.metadataLocation(props);
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      builder.setMetadataLocation(metadataLocation);
+    }
+    Long lastUpdated = propertyLong(props, "last-updated-ms");
+    if (lastUpdated != null && lastUpdated > 0) {
+      builder.setLastUpdatedMs(lastUpdated);
+    }
+    Integer lastColumnId = propertyInt(props, "last-column-id");
+    if (lastColumnId != null && lastColumnId >= 0) {
+      builder.setLastColumnId(lastColumnId);
+    }
+    Integer currentSchemaId = propertyInt(props, "current-schema-id");
+    if (currentSchemaId != null && currentSchemaId >= 0) {
+      builder.setCurrentSchemaId(currentSchemaId);
+    }
+    Integer defaultSpecId = propertyInt(props, "default-spec-id");
+    if (defaultSpecId != null && defaultSpecId >= 0) {
+      builder.setDefaultSpecId(defaultSpecId);
+    }
+    Integer lastPartitionId = propertyInt(props, "last-partition-id");
+    if (lastPartitionId != null && lastPartitionId >= 0) {
+      builder.setLastPartitionId(lastPartitionId);
+    }
+    Integer defaultSortId = propertyInt(props, "default-sort-order-id");
+    if (defaultSortId != null && defaultSortId >= 0) {
+      builder.setDefaultSortOrderId(defaultSortId);
+    }
+    Long currentSnapshotId = propertyLong(props, "current-snapshot-id");
+    if (currentSnapshotId != null && currentSnapshotId > 0) {
+      builder.setCurrentSnapshotId(currentSnapshotId);
+    }
+    Long lastSequenceNumber = propertyLong(props, "last-sequence-number");
+    if (lastSequenceNumber != null && lastSequenceNumber >= 0) {
+      builder.setLastSequenceNumber(lastSequenceNumber);
+    }
+    return builder;
+  }
+
+  private Map<String, Object> importedSnapshotMap(ImportedSnapshot snapshot) {
+    Map<String, Object> map = new LinkedHashMap<>();
+    map.put("snapshot-id", snapshot.snapshotId());
+    if (snapshot.parentSnapshotId() != null && snapshot.parentSnapshotId() > 0) {
+      map.put("parent-snapshot-id", snapshot.parentSnapshotId());
+    }
+    if (snapshot.sequenceNumber() != null && snapshot.sequenceNumber() > 0) {
+      map.put("sequence-number", snapshot.sequenceNumber());
+    }
+    if (snapshot.timestampMs() != null && snapshot.timestampMs() > 0) {
+      map.put("timestamp-ms", snapshot.timestampMs());
+    }
+    if (snapshot.manifestList() != null && !snapshot.manifestList().isBlank()) {
+      map.put("manifest-list", snapshot.manifestList());
+    }
+    if (snapshot.summary() != null && !snapshot.summary().isEmpty()) {
+      map.put("summary", snapshot.summary());
+    }
+    if (snapshot.schemaId() != null) {
+      map.put("schema-id", snapshot.schemaId());
+    }
+    return map;
+  }
+
+  private String metadataLocationFrom(Table table) {
+    if (table == null) {
+      return null;
+    }
+    Map<String, String> props = table.getPropertiesMap();
+    if (props == null || props.isEmpty()) {
+      return null;
+    }
+    String location = props.get("metadata-location");
+    if (location == null || location.isBlank()) {
+      location = props.get("metadata_location");
+    }
+    return (location == null || location.isBlank()) ? null : location;
   }
 
   private String schemaJsonFromMetadata(IcebergMetadata metadata, Integer schemaId) {

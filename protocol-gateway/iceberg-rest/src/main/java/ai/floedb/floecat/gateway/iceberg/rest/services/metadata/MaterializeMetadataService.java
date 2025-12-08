@@ -2,6 +2,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
+import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -27,9 +28,6 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class MaterializeMetadataService {
   private static final Logger LOG = Logger.getLogger(MaterializeMetadataService.class);
-  private static final String DEFAULT_IO_IMPL = "org.apache.iceberg.aws.s3.S3FileIO";
-  private static final Set<String> IO_PROP_PREFIXES =
-      Set.of("s3.", "s3a.", "s3n.", "fs.", "client.", "aws.", "hadoop.");
   private static final Set<String> SKIPPED_SCHEMES = Set.of("floecat");
 
   @Inject ObjectMapper mapper;
@@ -63,7 +61,7 @@ public class MaterializeMetadataService {
     FileIO fileIO = null;
     try {
       Map<String, String> props = sanitizeProperties(metadata.properties());
-      fileIO = instantiateFileIO(props);
+      fileIO = FileIoFactory.createFileIo(props, config, true);
       resolvedLocation = resolveVersionedLocation(fileIO, requestedLocation, metadata);
       if (resolvedLocation == null || resolvedLocation.isBlank()) {
         LOG.debugf(
@@ -112,51 +110,6 @@ public class MaterializeMetadataService {
 
   public void setConfig(IcebergGatewayConfig config) {
     this.config = config;
-  }
-
-  private FileIO instantiateFileIO(Map<String, String> props) {
-    Map<String, String> enriched = props == null ? new LinkedHashMap<>() : new LinkedHashMap<>(props);
-    if (config != null) {
-      config.metadataFileIoRoot().ifPresent(root -> enriched.put("fs.floecat.test-root", root));
-    }
-    String impl =
-        (config != null
-                ? config.metadataFileIo().orElse(enriched.getOrDefault("io-impl", DEFAULT_IO_IMPL))
-                : enriched.getOrDefault("io-impl", DEFAULT_IO_IMPL))
-            .trim();
-    try {
-      Class<?> clazz = Class.forName(impl);
-      Object instance = clazz.getDeclaredConstructor().newInstance();
-      if (!(instance instanceof FileIO fileIO)) {
-        throw new MaterializeMetadataException(impl + " does not implement FileIO");
-      }
-      fileIO.initialize(filterIoProperties(enriched));
-      return fileIO;
-    } catch (MaterializeMetadataException e) {
-      throw e;
-    } catch (Exception e) {
-      throw new MaterializeMetadataException("Unable to instantiate FileIO " + impl, e);
-    }
-  }
-
-  private Map<String, String> filterIoProperties(Map<String, String> props) {
-    if (props == null || props.isEmpty()) {
-      return Map.of();
-    }
-    Map<String, String> filtered = new LinkedHashMap<>();
-    props.forEach(
-        (key, value) -> {
-          if (key == null || value == null) {
-            return;
-          }
-          for (String prefix : IO_PROP_PREFIXES) {
-            if (key.startsWith(prefix)) {
-              filtered.put(key, value);
-              return;
-            }
-          }
-        });
-    return filtered;
   }
 
   private String canonicalMetadataJson(TableMetadataView metadata, String metadataLocation) {
@@ -240,12 +193,7 @@ public class MaterializeMetadataService {
   }
 
   private boolean isPointerLocation(String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return false;
-    }
-    int slash = metadataLocation.lastIndexOf('/');
-    String file = slash >= 0 ? metadataLocation.substring(slash + 1) : metadataLocation;
-    return "metadata.json".equals(file);
+    return MetadataLocationUtil.isPointer(metadataLocation);
   }
 
   private String directoryOf(String metadataLocation) {

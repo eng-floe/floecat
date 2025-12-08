@@ -178,10 +178,6 @@ public class TableGatewaySupport {
     return dir + String.format("%05d-%s.metadata.json", 0, UUID.randomUUID());
   }
 
-  private static String nonBlank(String primary, String fallback) {
-    return primary != null && !primary.isBlank() ? primary : fallback;
-  }
-
   public boolean connectorIntegrationEnabled() {
     return config.connectorIntegrationEnabled();
   }
@@ -223,15 +219,6 @@ public class TableGatewaySupport {
     } catch (StatusRuntimeException e) {
       LOG.warnf(e, "Failed to delete connector %s", connectorId.getId());
     }
-  }
-
-  private static boolean looksLikePointer(String location) {
-    if (location == null || location.isBlank()) {
-      return false;
-    }
-    int slash = location.lastIndexOf('/');
-    String file = slash >= 0 ? location.substring(slash + 1) : location;
-    return "metadata.json".equalsIgnoreCase(file);
   }
 
   public Map<String, String> defaultTableConfig() {
@@ -307,29 +294,50 @@ public class TableGatewaySupport {
         return null;
       }
       var snapshot = response.getSnapshot();
+      Long propertySnapshotId = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
+      if (propertySnapshotId != null
+          && propertySnapshotId > 0
+          && snapshot.getSnapshotId() != propertySnapshotId) {
+        return loadSnapshotById(snapshotStub, table.getResourceId(), propertySnapshotId);
+      }
       return snapshot.hasIceberg() ? snapshot.getIceberg() : null;
     } catch (StatusRuntimeException primaryFailure) {
-      Long snapshotId = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
-      if (snapshotId == null || snapshotId <= 0) {
-        return null;
-      }
-      try {
-        SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSnapshotId(snapshotId);
-        var response =
-            snapshotStub.getSnapshot(
-                ai.floedb.floecat.catalog.rpc.GetSnapshotRequest.newBuilder()
-                    .setTableId(table.getResourceId())
-                    .setSnapshot(ref)
-                    .build());
-        if (response == null || !response.hasSnapshot()) {
-          return null;
-        }
-        var snapshot = response.getSnapshot();
-        return snapshot.hasIceberg() ? snapshot.getIceberg() : null;
-      } catch (StatusRuntimeException ignored) {
-        return null;
-      }
+      return loadSnapshotByProperty(snapshotStub, table);
     }
+  }
+
+  private IcebergMetadata loadSnapshotByProperty(
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub, Table table) {
+    Long snapshotId = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
+    if (snapshotId == null || snapshotId <= 0) {
+      return null;
+    }
+    try {
+      return loadSnapshotById(snapshotStub, table.getResourceId(), snapshotId);
+    } catch (StatusRuntimeException ignored) {
+      return null;
+    }
+  }
+
+  private IcebergMetadata loadSnapshotById(
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub,
+      ResourceId tableId,
+      Long snapshotId) {
+    if (snapshotId == null || snapshotId <= 0) {
+      return null;
+    }
+    SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSnapshotId(snapshotId);
+    var response =
+        snapshotStub.getSnapshot(
+            ai.floedb.floecat.catalog.rpc.GetSnapshotRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(ref)
+                .build());
+    if (response == null || !response.hasSnapshot()) {
+      return null;
+    }
+    var snapshot = response.getSnapshot();
+    return snapshot.hasIceberg() ? snapshot.getIceberg() : null;
   }
 
   public IcebergGatewayConfig.RegisterConnectorTemplate connectorTemplateFor(String prefix) {

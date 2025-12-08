@@ -7,6 +7,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.support.mapper.table.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import java.util.LinkedHashMap;
@@ -59,7 +60,7 @@ public final class TableResponseMapper {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return originalConfig;
     }
-    String directory = metadataDirectory(metadataLocation);
+    String directory = MetadataLocationUtil.metadataDirectory(metadataLocation);
     if (directory == null || directory.isBlank()) {
       return originalConfig;
     }
@@ -69,17 +70,5 @@ public final class TableResponseMapper {
             : new java.util.LinkedHashMap<>(originalConfig);
     updated.put("write.metadata.path", directory);
     return Map.copyOf(updated);
-  }
-
-  private static String metadataDirectory(String metadataLocation) {
-    int slash = metadataLocation.lastIndexOf('/');
-    if (slash < 0) {
-      return null;
-    }
-    String file = metadataLocation.substring(slash + 1);
-    if ("metadata.json".equalsIgnoreCase(file)) {
-      return null;
-    }
-    return metadataLocation.substring(0, slash);
   }
 }

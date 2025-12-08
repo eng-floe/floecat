@@ -6,6 +6,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
@@ -107,6 +108,41 @@ class SnapshotMetadataServiceTest {
         (ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortOrder) method.invoke(service, order);
     Assertions.assertEquals(3, sortOrder.getSortOrderId());
     Assertions.assertEquals(0, sortOrder.getFieldsCount());
+  }
+
+  @Test
+  void snapshotMetadataSynthesizesFromTablePropertiesWhenMissing() throws Exception {
+    Table table =
+        Table.newBuilder()
+            .putProperties("metadata-location", "s3://bucket/orders/metadata/00000.metadata.json")
+            .putProperties("table-uuid", "uuid")
+            .putProperties("format-version", "2")
+            .putProperties("current-schema-id", "1")
+            .putProperties("last-column-id", "10")
+            .putProperties("default-spec-id", "3")
+            .putProperties("last-partition-id", "4")
+            .putProperties("default-sort-order-id", "5")
+            .putProperties("current-snapshot-id", "6")
+            .putProperties("last-sequence-number", "7")
+            .build();
+    var method =
+        SnapshotMetadataService.class.getDeclaredMethod(
+            "snapshotIcebergMetadata",
+            ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata.class,
+            Table.class,
+            Long.class,
+            Long.class);
+    method.setAccessible(true);
+
+    ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata metadata =
+        (ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata)
+            method.invoke(service, null, table, 9L, 11L);
+
+    assertEquals("s3://bucket/orders/metadata/00000.metadata.json", metadata.getMetadataLocation());
+    assertEquals(9L, metadata.getCurrentSnapshotId());
+    assertEquals(11L, metadata.getLastSequenceNumber());
+    assertEquals(2, metadata.getFormatVersion());
+    assertEquals("uuid", metadata.getTableUuid());
   }
 
   private Supplier<ai.floedb.floecat.catalog.rpc.Table> neverInvokedTableSupplier() {

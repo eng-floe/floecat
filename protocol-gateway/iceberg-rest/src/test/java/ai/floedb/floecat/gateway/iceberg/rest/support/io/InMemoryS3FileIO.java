@@ -12,7 +12,6 @@ import java.util.Collections;
 import java.util.Map;
 import org.apache.iceberg.exceptions.NotFoundException;
 import org.apache.iceberg.io.FileIO;
-import org.apache.iceberg.io.FileInfo;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;
@@ -235,14 +234,6 @@ public final class InMemoryS3FileIO implements FileIO {
     @Override
     public InputFile toInputFile() {
       return new LocalInputFile(location, path);
-    }
-
-    public void delete() {
-      try {
-        Files.deleteIfExists(path);
-      } catch (IOException e) {
-        throw new RuntimeException("Failed to delete " + location, e);
-      }
     }
   }
 }

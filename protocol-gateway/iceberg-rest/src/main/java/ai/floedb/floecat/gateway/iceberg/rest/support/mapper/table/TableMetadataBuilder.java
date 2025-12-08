@@ -29,6 +29,7 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -189,7 +190,8 @@ public final class TableMetadataBuilder {
       currentSnapshotId = snapshots.get(0).getSnapshotId();
     }
     syncProperty(props, "table-uuid", tableUuid);
-    syncDualProperty(props, "metadata-location", metadataLocation);
+    MetadataLocationUtil.setMetadataLocation(props, metadataLocation);
+    syncWriteMetadataPath(props, metadataLocation);
     syncProperty(props, "current-snapshot-id", currentSnapshotId);
     syncProperty(props, "last-sequence-number", lastSequenceNumber);
     syncProperty(props, "current-schema-id", currentSchemaId);
@@ -230,8 +232,8 @@ public final class TableMetadataBuilder {
       List<Snapshot> snapshots) {
     String resolvedMetadata =
         resolveInitialMetadataLocation(tableName, table, props, metadataLocation);
-    props.put("metadata-location", resolvedMetadata);
-    props.put("metadata_location", resolvedMetadata);
+    MetadataLocationUtil.setMetadataLocation(props, resolvedMetadata);
+    syncWriteMetadataPath(props, resolvedMetadata);
     Map<String, Object> schema = schemaFromTable(table);
     Integer schemaId = asInteger(schema.get("schema-id"));
     Integer lastColumnId = asInteger(schema.get("last-column-id"));
@@ -317,8 +319,8 @@ public final class TableMetadataBuilder {
     if (metadataLoc == null || metadataLoc.isBlank()) {
       metadataLoc = defaultMetadataLocation(table, tableName);
     }
-    props.put("metadata-location", metadataLoc);
-    props.put("metadata_location", metadataLoc);
+    MetadataLocationUtil.setMetadataLocation(props, metadataLoc);
+    syncWriteMetadataPath(props, metadataLoc);
     final String metadataLocation = metadataLoc;
     String location =
         Optional.ofNullable(request.location())
@@ -394,10 +396,16 @@ public final class TableMetadataBuilder {
 
   private static String resolveMetadataLocation(
       Map<String, String> props, IcebergMetadata metadata) {
+    String propertyLocation = MetadataLocationUtil.metadataLocation(props);
+    if (propertyLocation != null
+        && !propertyLocation.isBlank()
+        && !MetadataLocationUtil.isPointer(propertyLocation)) {
+      return propertyLocation;
+    }
     if (metadata != null && !metadata.getMetadataLocation().isBlank()) {
       return metadata.getMetadataLocation();
     }
-    return props.getOrDefault("metadata-location", props.get("metadata_location"));
+    return propertyLocation;
   }
 
   private static String resolveInitialMetadataLocation(
@@ -486,21 +494,19 @@ public final class TableMetadataBuilder {
     return metadataLocation;
   }
 
-  private static void syncDualProperty(Map<String, String> props, String key, Object value) {
-    if (key == null) {
-      return;
-    }
-    syncProperty(props, key, value);
-    if (key.indexOf('-') >= 0) {
-      syncProperty(props, key.replace('-', '_'), value);
-    }
-  }
-
   private static void syncProperty(Map<String, String> props, String key, Object value) {
     if (props == null || key == null || value == null) {
       return;
     }
     props.put(key, value.toString());
+  }
+
+  private static void syncWriteMetadataPath(Map<String, String> props, String metadataLocation) {
+    String directory = MetadataLocationUtil.metadataDirectory(metadataLocation);
+    if (directory == null || directory.isBlank()) {
+      return;
+    }
+    props.put("write.metadata.path", directory);
   }
 
   private static String nextMetadataFileName() {

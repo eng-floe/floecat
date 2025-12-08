@@ -6,7 +6,6 @@ import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.hasKey;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.startsWith;
-import static org.hamcrest.Matchers.startsWith;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -227,7 +226,11 @@ class RestResourceTest {
                 }
               }
               return new ImportedMetadata(
-                  "{\"type\":\"struct\",\"fields\":[]}", Map.of(), tableLocation);
+                  "{\"type\":\"struct\",\"fields\":[]}",
+                  Map.of(),
+                  tableLocation,
+                  null,
+                  java.util.List.of());
             });
     ResourceId catalogId = ResourceId.newBuilder().setId("cat:default").build();
     when(directoryStub.resolveCatalog(any()))
@@ -924,7 +927,7 @@ class RestResourceTest {
         .get("/v1/foo/namespaces/db/tables/orders/snapshots?pageSize=5")
         .then()
         .statusCode(200)
-        .body("snapshots[0].snapshotId", equalTo(42))
+        .body("snapshots[0].'snapshot-id'", equalTo(42))
         .body("snapshots[0].parentSnapshotId", equalTo(7))
         .body("snapshots[0].schemaJson", equalTo("{\"type\":\"struct\"}"))
         .body("snapshots[0].partitionSpec.specId", equalTo(1))
@@ -942,7 +945,7 @@ class RestResourceTest {
         .get("/v1/foo/namespaces/db/tables/orders/snapshots/42")
         .then()
         .statusCode(200)
-        .body("snapshotId", equalTo(42))
+        .body("'snapshot-id'", equalTo(42))
         .body("upstreamCreatedAt", equalTo("2023-11-14T22:13:20Z"))
         .body("ingestedAt", equalTo("2023-11-14T22:13:21Z"))
         .body("partitionSpec.specName", equalTo("iceberg-spec"));
@@ -954,13 +957,13 @@ class RestResourceTest {
                 .build());
 
     given()
-        .body("{\"snapshotId\":43,\"parentSnapshotId\":42}")
+        .body("{\"snapshot-id\":43,\"parentSnapshotId\":42}")
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders/snapshots")
         .then()
         .statusCode(201)
-        .body("snapshotId", equalTo(42));
+        .body("'snapshot-id'", equalTo(42));
 
     given()
         .when()

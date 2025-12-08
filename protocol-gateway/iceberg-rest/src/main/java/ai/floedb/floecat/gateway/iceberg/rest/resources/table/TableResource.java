@@ -1,8 +1,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest.resources.table;
 
-import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
-import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
@@ -25,6 +23,9 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.support.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.support.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.MaterializeMetadataResult;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.MetadataLocationSync;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableCommitService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
@@ -37,9 +38,9 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
+import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.support.mapper.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;
@@ -63,9 +64,8 @@ import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
+import java.util.function.Supplier;
 import org.eclipse.microprofile.config.Config;
 import org.jboss.logging.Logger;
 
@@ -88,6 +88,7 @@ public class TableResource {
   @Inject TablePlanService tablePlanService;
   @Inject PlanTaskManager planTaskManager;
   @Inject TableMetadataImportService tableMetadataImportService;
+  @Inject SnapshotMetadataService snapshotMetadataService;
 
   private TableGatewaySupport tableSupport;
 
@@ -199,15 +200,14 @@ public class TableResource {
     String responseMetadataLocation =
         nonBlank(materializationResult.metadataLocation(), loadResult.metadataLocation());
     String preferredMetadataLocation =
-        req != null && tableSupport.metadataLocationFromCreate(req) != null
-            ? tableSupport.metadataLocationFromCreate(req)
-            : metadataLocation(created, metadata);
+        nonBlank(
+            req == null ? null : tableSupport.metadataLocationFromCreate(req),
+            metadataLocation(created, metadata));
     if (preferredMetadataLocation != null && !preferredMetadataLocation.isBlank()) {
-      responseMetadata =
-          responseMetadata != null
-              ? responseMetadata.withMetadataLocation(preferredMetadataLocation)
-              : null;
       responseMetadataLocation = preferredMetadataLocation;
+    }
+    if (responseMetadata != null && responseMetadataLocation != null) {
+      responseMetadata = responseMetadata.withMetadataLocation(responseMetadataLocation);
     }
     loadResult =
         new LoadTableResultDto(
@@ -359,14 +359,15 @@ public class TableResource {
     String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId tableId = tableLifecycleService.resolveTableId(catalogName, namespace, table);
     Table tableRecord = tableLifecycleService.getTable(tableId);
-    SnapshotMode snapshotMode;
+    SnapshotLister.Mode snapshotMode;
     try {
       snapshotMode = parseSnapshotMode(snapshots);
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(tableRecord);
-    List<Snapshot> snapshotList = fetchSnapshots(tableId, snapshotMode, metadata);
+    List<Snapshot> snapshotList =
+        SnapshotLister.fetchSnapshots(grpc, tableId, snapshotMode, metadata);
     String etagValue = metadataLocation(tableRecord, metadata);
     if (etagMatches(etagValue, ifNoneMatch)) {
       return Response.status(Response.Status.NOT_MODIFIED).tag(etagValue).build();
@@ -690,6 +691,30 @@ public class TableResource {
       }
       throw e;
     }
+    final Table initialCreated = created;
+    Supplier<Table> createdSupplier = () -> initialCreated;
+    Response snapshotBootstrap =
+        snapshotMetadataService.ensureImportedCurrentSnapshot(
+            tableSupport,
+            created.getResourceId(),
+            namespacePath,
+            tableName,
+            createdSupplier,
+            importedMetadata,
+            idempotencyKey);
+    if (snapshotBootstrap != null) {
+      return snapshotBootstrap;
+    }
+    Table ensuredCreated =
+        MetadataLocationSync.ensureMetadataLocation(
+            tableLifecycleService,
+            tableSupport,
+            initialCreated.getResourceId(),
+            initialCreated,
+            metadataLocation);
+    if (ensuredCreated != null) {
+      created = ensuredCreated;
+    }
 
     var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
     ResourceId connectorId;
@@ -770,9 +795,16 @@ public class TableResource {
 
     Map<String, String> props =
         mergeImportedProperties(existing.getPropertiesMap(), importedMetadata, metadataLocation);
+    LOG.infof(
+        "Register overwrite merged metadata namespace=%s.%s merged=%s imported=%s",
+        String.join(".", namespacePath),
+        tableName,
+        props.get("metadata-location"),
+        metadataLocation);
 
     FieldMask.Builder mask = FieldMask.newBuilder().addPaths("properties");
     TableSpec.Builder updateSpec = TableSpec.newBuilder().putAllProperties(props);
+    tableSupport.addMetadataLocationProperties(updateSpec, metadataLocation);
     if (importedMetadata != null
         && importedMetadata.schemaJson() != null
         && !importedMetadata.schemaJson().isBlank()) {
@@ -786,6 +818,36 @@ public class TableResource {
                 .setSpec(updateSpec)
                 .setUpdateMask(mask)
                 .build());
+    LOG.infof(
+        "Register overwrite update response namespace=%s.%s metadata=%s",
+        String.join(".", namespacePath),
+        tableName,
+        updated.getPropertiesMap().get("metadata-location"));
+    Long currentSnapshotId = propertyLong(props, "current-snapshot-id");
+    if (currentSnapshotId != null && currentSnapshotId > 0) {
+      snapshotMetadataService.updateSnapshotMetadataLocation(
+          tableId, currentSnapshotId, metadataLocation);
+    }
+
+    Table snapshotTable = updated;
+    Response snapshotBootstrap =
+        snapshotMetadataService.ensureImportedCurrentSnapshot(
+            tableSupport,
+            tableId,
+            namespacePath,
+            tableName,
+            () -> snapshotTable,
+            importedMetadata,
+            idempotencyKey);
+    if (snapshotBootstrap != null) {
+      return snapshotBootstrap;
+    }
+    Table ensuredUpdated =
+        MetadataLocationSync.ensureMetadataLocation(
+            tableLifecycleService, tableSupport, tableId, updated, metadataLocation);
+    if (ensuredUpdated != null) {
+      updated = ensuredUpdated;
+    }
 
     ResourceId connectorId =
         existing.hasUpstream() && existing.getUpstream().hasConnectorId()
@@ -872,47 +934,18 @@ public class TableResource {
         && !importedMetadata.tableLocation().isBlank()) {
       merged.put("location", importedMetadata.tableLocation());
     }
-    if (metadataLocation != null && !metadataLocation.isBlank()) {
-      merged.put("metadata-location", metadataLocation);
-      merged.put("metadata_location", metadataLocation);
-    }
+    MetadataLocationUtil.setMetadataLocation(merged, metadataLocation);
     return merged;
   }
 
-  private SnapshotMode parseSnapshotMode(String raw) {
+  private SnapshotLister.Mode parseSnapshotMode(String raw) {
     if (raw == null || raw.isBlank() || raw.equalsIgnoreCase("all")) {
-      return SnapshotMode.ALL;
+      return SnapshotLister.Mode.ALL;
     }
     if ("refs".equalsIgnoreCase(raw)) {
-      return SnapshotMode.REFS;
+      return SnapshotLister.Mode.REFS;
     }
     throw new IllegalArgumentException("snapshots must be one of [all, refs]");
-  }
-
-  private List<Snapshot> fetchSnapshots(
-      ResourceId tableId, SnapshotMode mode, IcebergMetadata metadata) {
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub =
-        grpc.withHeaders(grpc.raw().snapshot());
-    try {
-      var resp =
-          snapshotStub.listSnapshots(ListSnapshotsRequest.newBuilder().setTableId(tableId).build());
-      List<Snapshot> snapshots = resp.getSnapshotsList();
-      if (mode == SnapshotMode.REFS) {
-        if (metadata == null || metadata.getRefsCount() == 0) {
-          return List.of();
-        }
-        Set<Long> refIds =
-            metadata.getRefsMap().values().stream()
-                .map(IcebergRef::getSnapshotId)
-                .collect(Collectors.toSet());
-        return snapshots.stream()
-            .filter(s -> refIds.contains(s.getSnapshotId()))
-            .collect(Collectors.toList());
-      }
-      return snapshots;
-    } catch (StatusRuntimeException e) {
-      return List.of();
-    }
   }
 
   private boolean etagMatches(String etagValue, String ifNoneMatch) {
@@ -927,22 +960,23 @@ public class TableResource {
   }
 
   private String metadataLocation(Table table, IcebergMetadata metadata) {
+    Map<String, String> props =
+        table == null || table.getPropertiesMap() == null ? Map.of() : table.getPropertiesMap();
+    String propertyLocation = MetadataLocationUtil.metadataLocation(props);
+    if (propertyLocation != null
+        && !propertyLocation.isBlank()
+        && !MetadataLocationUtil.isPointer(propertyLocation)) {
+      return propertyLocation;
+    }
     if (metadata != null
         && metadata.getMetadataLocation() != null
         && !metadata.getMetadataLocation().isBlank()) {
       return metadata.getMetadataLocation();
     }
-    Map<String, String> props = table.getPropertiesMap();
-    String location = props.getOrDefault("metadata-location", props.get("metadata_location"));
-    if (location != null && !location.isBlank()) {
-      return location;
+    if (propertyLocation != null && !propertyLocation.isBlank()) {
+      return propertyLocation;
     }
-    return table.hasResourceId() ? table.getResourceId().getId() : null;
-  }
-
-  private enum SnapshotMode {
-    ALL,
-    REFS
+    return table != null && table.hasResourceId() ? table.getResourceId().getId() : null;
   }
 
   private static String nonBlank(String primary, String fallback) {
@@ -1033,5 +1067,20 @@ public class TableResource {
       trimmed = trimmed.substring(0, trimmed.length() - 1);
     }
     return trimmed;
+  }
+
+  private Long propertyLong(Map<String, String> props, String key) {
+    if (props == null || props.isEmpty()) {
+      return null;
+    }
+    String value = props.get(key);
+    if (value == null || value.isBlank()) {
+      return null;
+    }
+    try {
+      return Long.parseLong(value);
+    } catch (NumberFormatException ignored) {
+      return null;
+    }
   }
 }

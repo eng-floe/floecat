@@ -8,6 +8,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -222,8 +223,7 @@ public class TableCommitSideEffectService {
       }
     }
     if (resolvedLocation != null && !resolvedLocation.isBlank()) {
-      mutated |= putIfChanged(props, "metadata-location", resolvedLocation);
-      mutated |= putIfChanged(props, "metadata_location", resolvedLocation);
+      mutated |= MetadataLocationUtil.updateMetadataLocation(props, resolvedLocation);
     }
     if (!mutated) {
       return;

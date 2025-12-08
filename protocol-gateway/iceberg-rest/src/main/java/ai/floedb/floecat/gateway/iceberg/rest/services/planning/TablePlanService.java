@@ -503,33 +503,7 @@ public class TablePlanService {
       List<String> statsFields,
       Boolean useSnapshotSchema,
       Boolean caseSensitive,
-      Long minRowsRequested) {
-    PlanContext withSnapshot(Long snapshot) {
-      return new PlanContext(
-          tableId,
-          requiredColumns,
-          startSnapshotId,
-          snapshot,
-          predicates,
-          statsFields,
-          useSnapshotSchema,
-          caseSensitive,
-          minRowsRequested);
-    }
-
-    PlanContext withTableId(ResourceId id) {
-      return new PlanContext(
-          id,
-          requiredColumns,
-          startSnapshotId,
-          snapshotId,
-          predicates,
-          statsFields,
-          useSnapshotSchema,
-          caseSensitive,
-          minRowsRequested);
-    }
-  }
+      Long minRowsRequested) {}
 
   public record PlanHandle(String queryId, Long snapshotId, Long startSnapshotId) {}
 }
