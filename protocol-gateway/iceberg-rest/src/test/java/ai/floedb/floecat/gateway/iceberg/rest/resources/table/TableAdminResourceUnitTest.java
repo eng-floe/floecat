@@ -86,6 +86,6 @@ class TableAdminResourceUnitTest {
             null);
 
     var response = resource.commitTransaction("foo", null, null, request);
-    assertEquals(200, response.getStatus());
+    assertEquals(204, response.getStatus());
   }
 }

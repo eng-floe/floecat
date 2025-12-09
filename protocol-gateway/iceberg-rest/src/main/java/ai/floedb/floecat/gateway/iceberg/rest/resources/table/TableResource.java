@@ -127,33 +127,34 @@ public class TableResource {
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       @HeaderParam("Iceberg-Transaction-Id") String transactionId,
       TableRequests.Create req) {
+    if (req == null) {
+      return IcebergErrorResponses.validation("Request body is required");
+    }
+    if (req.name() == null || req.name().isBlank()) {
+      return IcebergErrorResponses.validation("name is required");
+    }
+    if (!hasSchema(req)) {
+      return IcebergErrorResponses.validation("schema is required");
+    }
     String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId catalogId = CatalogResolver.resolveCatalogId(grpc, config, prefix);
     List<String> namespacePath = NamespacePaths.split(namespace);
     ResourceId namespaceId = tableLifecycleService.resolveNamespaceId(catalogName, namespacePath);
 
-    String tableName = req != null && req.name() != null ? req.name() : "table";
-    TableRequests.Create effectiveReq = req;
-    if (effectiveReq != null) {
-      try {
-        System.out.println(
-            "CreateTable request payload: " + mapper.writeValueAsString(effectiveReq));
-      } catch (JsonProcessingException ignored) {
-        System.out.println("CreateTable request payload: " + effectiveReq);
-      }
-      effectiveReq = applyDefaultLocationIfMissing(prefix, namespacePath, tableName, effectiveReq);
-      if (Boolean.TRUE.equals(effectiveReq.stageCreate())) {
-        return handleStageCreate(
-            prefix,
-            catalogName,
-            catalogId,
-            namespaceId,
-            namespacePath,
-            tableName,
-            effectiveReq,
-            transactionId,
-            idempotencyKey);
-      }
+    String tableName = req.name().trim();
+    TableRequests.Create effectiveReq =
+        applyDefaultLocationIfMissing(prefix, namespacePath, tableName, req);
+    if (Boolean.TRUE.equals(effectiveReq.stageCreate())) {
+      return handleStageCreate(
+          prefix,
+          catalogName,
+          catalogId,
+          namespaceId,
+          namespacePath,
+          tableName,
+          effectiveReq,
+          transactionId,
+          idempotencyKey);
     }
 
     TableSpec.Builder spec;
@@ -422,7 +423,8 @@ public class TableResource {
   public Response delete(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
-      @PathParam("table") String table) {
+      @PathParam("table") String table,
+      @QueryParam("purgeRequested") Boolean purgeRequested) {
     String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     List<String> namespacePath = NamespacePaths.split(namespace);
     ResourceId tableId = tableLifecycleService.resolveTableId(catalogName, namespacePath, table);
@@ -437,7 +439,8 @@ public class TableResource {
         throw e;
       }
     }
-    tableLifecycleService.deleteTable(tableId);
+    boolean purge = Boolean.TRUE.equals(purgeRequested);
+    tableLifecycleService.deleteTable(tableId, purge);
     if (connectorId != null) {
       tableSupport.deleteConnector(connectorId);
     }
@@ -513,22 +516,24 @@ public class TableResource {
               request.minRowsRequested());
       PlanResponseDto planned =
           tablePlanService.fetchPlan(handle.queryId(), tableSupport.defaultCredentials());
+      List<FileScanTaskDto> fileScanTasks = copyOfOrEmpty(planned.fileScanTasks());
+      List<ContentFileDto> deleteFiles = copyOfOrEmptyContent(planned.deleteFiles());
       PlanTaskManager.PlanDescriptor descriptor =
           planTaskManager.registerCompletedPlan(
               handle.queryId(),
               namespace,
               table,
-              copyOfOrEmpty(planned.fileScanTasks()),
-              copyOfOrEmptyContent(planned.deleteFiles()),
+              fileScanTasks,
+              deleteFiles,
               planned.storageCredentials());
       return Response.ok(
               new PlanResponseDto(
                   descriptor.status().value(),
                   descriptor.planId(),
                   descriptor.planTasks(),
-                  null,
-                  null,
-                  planned.storageCredentials()))
+                  fileScanTasks,
+                  deleteFiles,
+                  descriptor.credentials()))
           .build();
     } catch (IllegalArgumentException ex) {
       return IcebergErrorResponses.validation(ex.getMessage());
@@ -553,8 +558,8 @@ public class TableResource {
                             descriptor.status().value(),
                             descriptor.planId(),
                             descriptor.planTasks(),
-                            null,
-                            null,
+                            descriptor.fileScanTasks(),
+                            descriptor.deleteFiles(),
                             descriptor.credentials()))
                     .build())
         .orElseGet(() -> IcebergErrorResponses.notFound("plan " + planId + " not found"));
@@ -1082,5 +1087,15 @@ public class TableResource {
     } catch (NumberFormatException ignored) {
       return null;
     }
+  }
+
+  private boolean hasSchema(TableRequests.Create req) {
+    if (req == null) {
+      return false;
+    }
+    if (req.schemaJson() != null && !req.schemaJson().isBlank()) {
+      return true;
+    }
+    return req.schema() != null && !req.schema().isNull();
   }
 }

@@ -459,6 +459,8 @@ public class TableGatewaySupport {
             .putProperties("external.table-name", tableName)
             .putProperties("external.namespace", namespaceFq)
             .putProperties(CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(true));
+    config.metadataFileIo().ifPresent(ioImpl -> spec.putProperties("io-impl", ioImpl));
+    config.metadataFileIoRoot().ifPresent(root -> spec.putProperties("fs.floecat.test-root", root));
 
     CreateConnectorRequest.Builder request =
         CreateConnectorRequest.newBuilder().setSpec(spec.build());

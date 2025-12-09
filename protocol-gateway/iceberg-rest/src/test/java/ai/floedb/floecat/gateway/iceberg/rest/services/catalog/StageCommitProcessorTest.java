@@ -12,10 +12,7 @@ class StageCommitProcessorTest {
   private final StageCommitProcessor processor = new StageCommitProcessor();
 
   @BeforeEach
-  void setUp() {
-    // No-op: validateStageRequirements does not require initialized dependencies when
-    // tableExists=true, but the setup hook makes future extensions easier.
-  }
+  void setUp() {}
 
   @Test
   void assertCreateRequirementFailsWhenTableExists() {

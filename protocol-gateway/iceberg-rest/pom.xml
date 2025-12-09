@@ -35,7 +35,6 @@
 
   <properties>
     <quarkus-plugin.version>${quarkus.platform.version}</quarkus-plugin.version>
-    <iceberg.version>1.10.0</iceberg.version>
     <aws.sdk.version>2.39.5</aws.sdk.version>
   </properties>
 
@@ -96,6 +95,12 @@
       <artifactId>sts</artifactId>
     </dependency>
 
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-protocol-gateway-common-test</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-junit5</artifactId>

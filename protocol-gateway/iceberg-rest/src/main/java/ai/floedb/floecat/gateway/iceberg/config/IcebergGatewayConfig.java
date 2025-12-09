@@ -57,6 +57,9 @@ public interface IcebergGatewayConfig {
   @WithDefault("128")
   int planTaskFilesPerTask();
 
+  @WithDefault("PT30M")
+  Duration idempotencyKeyLifetime();
+
   interface RegisterConnectorTemplate {
     String uri();
 

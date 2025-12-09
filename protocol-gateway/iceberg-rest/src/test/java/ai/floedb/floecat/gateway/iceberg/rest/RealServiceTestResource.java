@@ -1,5 +1,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest;
 
+import ai.floedb.floecat.gateway.iceberg.rest.support.TestS3Fixtures;
 import io.quarkus.test.common.QuarkusTestResourceLifecycleManager;
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -13,6 +14,10 @@ import java.util.List;
 import java.util.Map;
 
 public class RealServiceTestResource implements QuarkusTestResourceLifecycleManager {
+  private static final String TEST_GRPC_PORT_PROPERTY = "floecat.test.upstream-grpc-port";
+  private static final String TEST_S3_ROOT =
+      TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString();
+  private static final String LOOPBACK_HOST = "127.0.0.1";
   private Process serviceProcess;
   private int httpPort;
   private int managementPort;
@@ -24,6 +29,7 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
 
       httpPort = findFreePort();
       managementPort = findFreePort();
+      System.setProperty(TEST_GRPC_PORT_PROPERTY, Integer.toString(httpPort));
 
       Path runnerJar = serviceRunnerJar();
 
@@ -38,15 +44,25 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
 
       List<String> command = new ArrayList<>();
       command.add(javaBin());
+      command.add("-Dquarkus.http.host=" + LOOPBACK_HOST);
       command.add("-Dquarkus.http.port=" + httpPort);
       command.add("-Dquarkus.grpc.server.use-separate-server=false");
+      command.add("-Dquarkus.grpc.server.host=" + LOOPBACK_HOST);
       command.add("-Dquarkus.grpc.server.port=" + httpPort);
       command.add("-Dquarkus.grpc.server.plain-text=true");
+      command.add("-Dquarkus.grpc.clients.floecat.host=" + LOOPBACK_HOST);
+      command.add("-Dquarkus.grpc.clients.floecat.port=" + httpPort);
+      command.add("-Dquarkus.grpc.clients.floecat.plain-text=true");
       command.add("-Dquarkus.management.enabled=true");
+      command.add("-Dquarkus.management.host=" + LOOPBACK_HOST);
       command.add("-Dquarkus.management.port=" + managementPort);
       command.add("-Dquarkus.profile=test");
       command.add("-jar");
       command.add(runnerJar.toString());
+
+      System.out.printf(
+          "RealServiceTestResource launching Floecat service http/grpc port=%d management=%d log=%s%n",
+          httpPort, managementPort, logFile);
 
       serviceProcess =
           new ProcessBuilder(command)
@@ -56,6 +72,9 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
               .start();
 
       waitForPortOpen(Duration.ofSeconds(60));
+      System.out.printf(
+          "RealServiceTestResource Floecat service ready http/grpc port=%d management=%d%n",
+          httpPort, managementPort);
 
     } catch (IOException e) {
       throw new RuntimeException("Failed to start Floecat service", e);
@@ -63,19 +82,22 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
 
     return Map.of(
         "floecat.gateway.upstream-target",
-        "localhost:" + httpPort,
+        LOOPBACK_HOST + ":" + httpPort,
         "floecat.gateway.upstream-plaintext",
         "true",
         "floecat.gateway.metadata-file-io",
         "ai.floedb.floecat.gateway.iceberg.rest.support.io.InMemoryS3FileIO",
         "floecat.gateway.metadata-file-io-root",
-        "target/test-fake-s3",
+        TEST_S3_ROOT,
         "floecat.gateway.connector-integration-enabled",
-        "false");
+        "true",
+        TEST_GRPC_PORT_PROPERTY,
+        Integer.toString(httpPort));
   }
 
   @Override
   public void stop() {
+    System.clearProperty(TEST_GRPC_PORT_PROPERTY);
     if (serviceProcess != null) {
       serviceProcess.destroy();
       try {

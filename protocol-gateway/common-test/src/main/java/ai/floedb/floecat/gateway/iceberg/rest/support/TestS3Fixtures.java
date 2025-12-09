@@ -12,16 +12,27 @@ public final class TestS3Fixtures {
   private static final Path FIXTURE_ROOT =
       MODULE_ROOT.resolve(Path.of("src", "test", "resources", "iceberg-fixtures"));
   private static final Path TARGET_ROOT = MODULE_ROOT.resolve(Path.of("target", "test-fake-s3"));
-  private static final String BUCKET = "test-bucket";
+  private static final Path STAGE_ROOT = TARGET_ROOT.resolve("staged-fixtures");
+  private static final String BUCKET = "yb-iceberg-tpcds";
+  private static final String PREFIX = "trino_test";
 
   private TestS3Fixtures() {}
 
   public static String bucketUri(String relativePath) {
-    return "s3://" + BUCKET + "/" + relativePath;
+    String suffix = relativePath == null ? "" : relativePath.replaceFirst("^/", "");
+    return "s3://" + BUCKET + "/" + PREFIX + (suffix.isEmpty() ? "" : "/" + suffix);
   }
 
   public static Path bucketPath() {
     return TARGET_ROOT.resolve(BUCKET);
+  }
+
+  public static Path prefixPath() {
+    return bucketPath().resolve(PREFIX);
+  }
+
+  public static Path stageBucketPath() {
+    return STAGE_ROOT;
   }
 
   public static void seedFixtures() {
@@ -30,11 +41,36 @@ public final class TestS3Fixtures {
       if (Files.exists(bucket)) {
         deleteRecursive(bucket);
       }
-      Files.createDirectories(bucket);
-      copyRecursive(FIXTURE_ROOT, bucket);
+      Path prefixRoot = prefixPath();
+      Files.createDirectories(prefixRoot);
+      copyRecursive(FIXTURE_ROOT, prefixRoot);
+      Files.createDirectories(stageBucketPath());
     } catch (IOException e) {
       throw new UncheckedIOException("Failed to seed fixture bucket", e);
     }
+  }
+
+  public static void seedStageTable(String namespace, String table) {
+    Path stageRoot = stageBucketPath().resolve(Path.of(namespace, table));
+    try {
+      if (Files.exists(stageRoot)) {
+        deleteRecursive(stageRoot);
+      }
+      Path stageMetadata = stageRoot.resolve("metadata");
+      Path stageData = stageRoot.resolve("data");
+      Files.createDirectories(stageMetadata);
+      Files.createDirectories(stageData);
+      copyRecursive(FIXTURE_ROOT.resolve("metadata"), stageMetadata);
+      copyRecursive(FIXTURE_ROOT.resolve("data"), stageData);
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to seed staged table " + namespace + "." + table, e);
+    }
+  }
+
+  public static String stageTableUri(String namespace, String table, String relativePath) {
+    String normalized = relativePath == null ? "" : relativePath.replaceFirst("^/", "");
+    String suffix = normalized.isEmpty() ? "" : "/" + normalized;
+    return "s3://staged-fixtures/" + namespace + "/" + table + suffix;
   }
 
   private static void copyRecursive(Path source, Path dest) throws IOException {

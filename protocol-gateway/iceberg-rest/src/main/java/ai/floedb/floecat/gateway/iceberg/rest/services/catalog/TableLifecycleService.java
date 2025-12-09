@@ -101,16 +101,30 @@ public class TableLifecycleService {
   }
 
   public void deleteTable(String catalogName, String namespace, String tableName) {
+    deleteTable(catalogName, namespace, tableName, false);
+  }
+
+  public void deleteTable(
+      String catalogName, String namespace, String tableName, boolean purgeRequested) {
     ResourceId tableId = resolveTableId(catalogName, namespace, tableName);
-    deleteTable(tableId);
+    deleteTable(tableId, purgeRequested);
   }
 
   public void deleteTable(ResourceId tableId) {
+    deleteTable(tableId, false);
+  }
+
+  public void deleteTable(ResourceId tableId, boolean purgeRequested) {
     if (tableId == null) {
       return;
     }
     TableServiceGrpc.TableServiceBlockingStub stub = grpc.withHeaders(grpc.raw().table());
-    stub.deleteTable(DeleteTableRequest.newBuilder().setTableId(tableId).build());
+    DeleteTableRequest.Builder request =
+        DeleteTableRequest.newBuilder()
+            .setTableId(tableId)
+            .setPurgeStats(purgeRequested)
+            .setPurgeSnapshots(purgeRequested);
+    stub.deleteTable(request.build());
   }
 
   public ResourceId resolveCatalogId(String catalogName) {

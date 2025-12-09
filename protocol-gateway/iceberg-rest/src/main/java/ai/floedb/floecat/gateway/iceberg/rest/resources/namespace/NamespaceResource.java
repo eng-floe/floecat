@@ -136,7 +136,7 @@ public class NamespaceResource {
     NamespaceServiceGrpc.NamespaceServiceBlockingStub stub =
         grpc.withHeaders(grpc.raw().namespace());
     stub.getNamespace(GetNamespaceRequest.newBuilder().setNamespaceId(namespaceId).build());
-    return Response.ok().build();
+    return Response.noContent().build();
   }
 
   @POST

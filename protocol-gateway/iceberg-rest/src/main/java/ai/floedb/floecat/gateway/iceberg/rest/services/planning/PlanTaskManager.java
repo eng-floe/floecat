@@ -54,9 +54,6 @@ public class PlanTaskManager {
       List<StorageCredentialDto> credentials) {
     expire();
     Objects.requireNonNull(planId, "planId is required");
-    PlanEntry entry =
-        new PlanEntry(
-            planId, namespace, table, credentials == null ? List.of() : List.copyOf(credentials));
     List<FileScanTaskDto> files =
         fileScanTasks == null
             ? List.of()
@@ -65,6 +62,14 @@ public class PlanTaskManager {
         deleteFiles == null
             ? List.of()
             : Collections.unmodifiableList(new ArrayList<>(deleteFiles));
+    PlanEntry entry =
+        new PlanEntry(
+            planId,
+            namespace,
+            table,
+            credentials == null ? List.of() : List.copyOf(credentials),
+            files,
+            deletes);
     if (!files.isEmpty()) {
       int chunkSize = Math.max(1, filesPerTask);
       for (int offset = 0; offset < files.size(); offset += chunkSize) {
@@ -157,23 +162,34 @@ public class PlanTaskManager {
       String table,
       PlanStatus status,
       List<String> planTasks,
-      List<StorageCredentialDto> credentials) {}
+      List<StorageCredentialDto> credentials,
+      List<FileScanTaskDto> fileScanTasks,
+      List<ContentFileDto> deleteFiles) {}
 
   private static final class PlanEntry {
     private final String planId;
     private final String namespace;
     private final String table;
     private final List<StorageCredentialDto> credentials;
+    private final List<FileScanTaskDto> fileScanTasks;
+    private final List<ContentFileDto> deleteFiles;
     private final CopyOnWriteArrayList<String> taskIds = new CopyOnWriteArrayList<>();
     private volatile PlanStatus status = PlanStatus.COMPLETED;
     private volatile Instant updatedAt = Instant.now();
 
     PlanEntry(
-        String planId, String namespace, String table, List<StorageCredentialDto> credentials) {
+        String planId,
+        String namespace,
+        String table,
+        List<StorageCredentialDto> credentials,
+        List<FileScanTaskDto> fileScanTasks,
+        List<ContentFileDto> deleteFiles) {
       this.planId = planId;
       this.namespace = namespace;
       this.table = table;
       this.credentials = credentials;
+      this.fileScanTasks = fileScanTasks;
+      this.deleteFiles = deleteFiles;
     }
 
     void addTask(String taskId) {
@@ -209,7 +225,8 @@ public class PlanTaskManager {
     }
 
     PlanDescriptor toDescriptor() {
-      return new PlanDescriptor(planId, namespace, table, status, planTaskIds(), credentials);
+      return new PlanDescriptor(
+          planId, namespace, table, status, planTaskIds(), credentials, fileScanTasks, deleteFiles);
     }
 
     private void touch() {

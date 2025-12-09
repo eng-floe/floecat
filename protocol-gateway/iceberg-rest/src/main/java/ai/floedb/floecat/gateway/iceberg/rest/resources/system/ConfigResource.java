@@ -65,7 +65,8 @@ public class ConfigResource {
             "HEAD /v1/{prefix}/namespaces/{namespace}/views/{view}",
             "POST /v1/{prefix}/views/rename");
 
-    String idempotencyLifetime = null;
+    String idempotencyLifetime =
+        config.idempotencyKeyLifetime() == null ? null : config.idempotencyKeyLifetime().toString();
 
     CatalogConfigDto payload =
         new CatalogConfigDto(defaults, overrides, endpoints, idempotencyLifetime);

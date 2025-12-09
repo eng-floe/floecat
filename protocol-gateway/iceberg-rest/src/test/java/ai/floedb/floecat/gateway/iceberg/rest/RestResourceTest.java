@@ -3,8 +3,6 @@ package ai.floedb.floecat.gateway.iceberg.rest;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItems;
-import static org.hamcrest.Matchers.hasKey;
-import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.startsWith;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -749,7 +747,7 @@ class RestResourceTest {
     when(namespaceStub.getNamespace(any()))
         .thenReturn(GetNamespaceResponse.newBuilder().setNamespace(ns).build());
 
-    given().when().head("/v1/foo/namespaces/analytics").then().statusCode(200);
+    given().when().head("/v1/foo/namespaces/analytics").then().statusCode(204);
 
     ArgumentCaptor<GetNamespaceRequest> req = ArgumentCaptor.forClass(GetNamespaceRequest.class);
     verify(namespaceStub).getNamespace(req.capture());
@@ -1199,6 +1197,79 @@ class RestResourceTest {
   }
 
   @Test
+  void createTableRequiresName() {
+    given()
+        .body(
+            """
+            {
+              "schema":{
+                "schema-id":1,
+                "last-column-id":1,
+                "type":"struct",
+                "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
+              }
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(400)
+        .body("error.type", equalTo("ValidationException"));
+
+    verify(tableStub, never()).createTable(any());
+  }
+
+  @Test
+  void createTableRequiresSchema() {
+    given()
+        .body(
+            """
+            {
+              "name":"orders",
+              "properties":{"io-impl":"org.apache.iceberg.inmemory.InMemoryFileIO"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(400)
+        .body("error.type", equalTo("ValidationException"));
+
+    verify(tableStub, never()).createTable(any());
+  }
+
+  @Test
+  void deleteTableHonorsPurgeRequestedFlag() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(ResourceId.newBuilder().setId("cat"))
+            .setNamespaceId(nsId)
+            .build();
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
+
+    given()
+        .when()
+        .delete("/v1/foo/namespaces/db/tables/orders?purgeRequested=true")
+        .then()
+        .statusCode(204);
+
+    ArgumentCaptor<DeleteTableRequest> deleteCaptor =
+        ArgumentCaptor.forClass(DeleteTableRequest.class);
+    verify(tableStub).deleteTable(deleteCaptor.capture());
+    DeleteTableRequest sent = deleteCaptor.getValue();
+    assertTrue(sent.getPurgeStats());
+    assertTrue(sent.getPurgeSnapshots());
+  }
+
+  @Test
   void stageCreatePersistsMetadataWithoutRpc() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     when(directoryStub.resolveNamespace(any()))
@@ -1305,10 +1376,7 @@ class RestResourceTest {
         .when()
         .post("/v1/foo/transactions/commit")
         .then()
-        .statusCode(200)
-        .body("results[0].table.name", equalTo("orders"))
-        .body("results[0].stage-id", equalTo("stage-commit"))
-        .body("results[0].metadata-location", equalTo("s3://bucket/orders/metadata.json"));
+        .statusCode(204);
 
     StagedTableKey key =
         new StagedTableKey("account1", "foo", List.of("db"), "orders", "stage-commit");
@@ -2165,7 +2233,9 @@ class RestResourceTest {
         .body("'plan-id'", equalTo("plan-1"))
         .body("'plan-tasks'.size()", equalTo(1))
         .body("'plan-tasks'[0]", equalTo("plan-1-task-0"))
-        .body("$", not(hasKey("file-scan-tasks")));
+        .body("'file-scan-tasks'.size()", equalTo(1))
+        .body("'file-scan-tasks'[0].'data-file'.'file-path'", equalTo("s3://bucket/file.parquet"))
+        .body("'delete-files'.size()", equalTo(0));
 
     ArgumentCaptor<BeginQueryRequest> req = ArgumentCaptor.forClass(BeginQueryRequest.class);
     verify(queryStub).beginQuery(req.capture());
@@ -2216,7 +2286,9 @@ class RestResourceTest {
         .body("status", equalTo("completed"))
         .body("'plan-tasks'.size()", equalTo(1))
         .body("'plan-tasks'[0]", equalTo("plan-1-task-0"))
-        .body("$", not(hasKey("file-scan-tasks")));
+        .body("'file-scan-tasks'.size()", equalTo(1))
+        .body("'file-scan-tasks'[0].'data-file'.'file-path'", equalTo("s3://bucket/file.parquet"))
+        .body("'delete-files'.size()", equalTo(0));
 
     ArgumentCaptor<FetchScanBundleRequest> fetch =
         ArgumentCaptor.forClass(FetchScanBundleRequest.class);

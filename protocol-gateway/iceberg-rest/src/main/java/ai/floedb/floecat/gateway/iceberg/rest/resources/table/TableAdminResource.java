@@ -6,8 +6,6 @@ import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
-import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
-import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TransactionCommitResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.RenameRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
@@ -107,7 +105,6 @@ public class TableAdminResource {
     }
     String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     ResourceId catalogId = CatalogResolver.resolveCatalogId(grpc, config, prefix);
-    List<TransactionCommitResponse.TransactionCommitResult> results = new java.util.ArrayList<>();
     for (TransactionCommitRequest.TableChange change : changes) {
       var identifier = change.identifier();
       if (identifier == null || identifier.name() == null || identifier.name().isBlank()) {
@@ -143,18 +140,8 @@ public class TableAdminResource {
       if (tableResponse.getStatus() >= 400) {
         return tableResponse;
       }
-      CommitTableResponseDto commitBody =
-          tableResponse.hasEntity() ? (CommitTableResponseDto) tableResponse.getEntity() : null;
-      results.add(
-          new TransactionCommitResponse.TransactionCommitResult(
-              identifier,
-              change.stageId(),
-              commitBody == null ? null : commitBody.metadataLocation(),
-              commitBody == null ? null : commitBody.metadata(),
-              tableSupport.defaultTableConfig(),
-              tableSupport.defaultCredentials()));
     }
-    return Response.ok(new TransactionCommitResponse(results)).build();
+    return Response.noContent().build();
   }
 
   private static String nonBlank(String primary, String fallback) {
