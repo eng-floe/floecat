@@ -61,4 +61,20 @@ public final class NameRefUtil {
   public static NameRef name(String schema, String table) {
     return NameRef.newBuilder().addPath(schema).setName(table).build();
   }
+
+  /**
+   * Creates a NameRef from an arbitrary number of path segments.
+   *
+   * <p>The last element is treated as the object name; everything before that becomes the path.
+   */
+  public static NameRef name(String... parts) {
+    if (parts == null || parts.length == 0) {
+      return NameRef.getDefaultInstance();
+    }
+    NameRef.Builder b = NameRef.newBuilder().setName(parts[parts.length - 1]);
+    for (int i = 0; i < parts.length - 1; i++) {
+      b.addPath(parts[i]);
+    }
+    return b.build();
+  }
 }

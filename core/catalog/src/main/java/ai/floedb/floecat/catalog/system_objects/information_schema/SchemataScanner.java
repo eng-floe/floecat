@@ -11,15 +11,15 @@ public final class SchemataScanner implements SystemObjectScanner {
   public static final SchemaColumn[] SCHEMA =
       new SchemaColumn[] {
         SchemaColumn.newBuilder()
-            .setName("schema_name")
-            .setLogicalType("VARCHAR")
-            .setFieldId(0)
-            .setNullable(false)
-            .build(),
-        SchemaColumn.newBuilder()
             .setName("catalog_name")
             .setLogicalType("VARCHAR")
             .setFieldId(1)
+            .setNullable(false)
+            .build(),
+        SchemaColumn.newBuilder()
+            .setName("schema_name")
+            .setLogicalType("VARCHAR")
+            .setFieldId(0)
             .setNullable(false)
             .build()
       };
@@ -37,7 +37,7 @@ public final class SchemataScanner implements SystemObjectScanner {
             ns ->
                 new SystemObjectRow(
                     new Object[] {
-                      ns.displayName(), ((CatalogNode) ctx.resolve(ns.catalogId())).displayName()
+                      ((CatalogNode) ctx.resolve(ns.catalogId())).displayName(), ns.displayName(),
                     }));
   }
 }

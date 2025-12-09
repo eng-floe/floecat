@@ -1,16 +1,25 @@
-package ai.floedb.floecat.service.query.graph.hint;
+package ai.floedb.floecat.catalog.utils;
 
-import ai.floedb.floecat.catalog.builtin.*;
+import ai.floedb.floecat.catalog.builtin.graph.BuiltinNodeRegistry;
+import ai.floedb.floecat.catalog.builtin.graph.model.BuiltinAggregateNode;
+import ai.floedb.floecat.catalog.builtin.graph.model.BuiltinCastNode;
+import ai.floedb.floecat.catalog.builtin.graph.model.BuiltinCollationNode;
+import ai.floedb.floecat.catalog.builtin.graph.model.BuiltinFunctionNode;
+import ai.floedb.floecat.catalog.builtin.graph.model.BuiltinOperatorNode;
+import ai.floedb.floecat.catalog.builtin.graph.model.BuiltinTypeNode;
+import ai.floedb.floecat.catalog.builtin.hint.BuiltinCatalogHintProvider;
+import ai.floedb.floecat.catalog.builtin.provider.StaticBuiltinCatalogProvider;
+import ai.floedb.floecat.catalog.builtin.registry.BuiltinCatalogData;
+import ai.floedb.floecat.catalog.builtin.registry.BuiltinDefinitionRegistry;
 import ai.floedb.floecat.common.rpc.*;
-import ai.floedb.floecat.service.query.graph.builtin.BuiltinNodeRegistry;
-import ai.floedb.floecat.catalog.builtin.graph.model.*;
+import ai.floedb.floecat.metagraph.model.EngineHint;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
 
-final class BuiltinTestSupport {
+public final class BuiltinTestSupport {
 
-  static NameRef nr(String full) {
+  public static NameRef nr(String full) {
     int idx = full.indexOf('.');
     if (idx < 0) return NameRef.newBuilder().setName(full).build();
     return NameRef.newBuilder()
@@ -19,20 +28,20 @@ final class BuiltinTestSupport {
         .build();
   }
 
-  static BuiltinCatalogHintProvider providerFrom(String engine, BuiltinCatalogData data) {
+  public static BuiltinCatalogHintProvider providerFrom(String engine, BuiltinCatalogData data) {
     var registry =
         new BuiltinDefinitionRegistry(new StaticBuiltinCatalogProvider(Map.of(engine, data)));
     var nodeRegistry = new BuiltinNodeRegistry(registry);
     return new BuiltinCatalogHintProvider(nodeRegistry);
   }
 
-  static String json(EngineHint h) {
+  public static String json(EngineHint h) {
     return new String(h.payload(), StandardCharsets.UTF_8);
   }
 
   // --- Build function nodes ------------------------------------------------
 
-  static BuiltinFunctionNode functionNode(
+  public static BuiltinFunctionNode functionNode(
       String engine, List<String> argTypes, String retType, String fullname) {
 
     List<ResourceId> argIds =
@@ -57,7 +66,7 @@ final class BuiltinTestSupport {
 
   // --- Build operator nodes -----------------------------------------------
 
-  static BuiltinOperatorNode operatorNode(
+  public static BuiltinOperatorNode operatorNode(
       String engine, String name, String left, String right, String ret) {
 
     return new BuiltinOperatorNode(
@@ -76,7 +85,7 @@ final class BuiltinTestSupport {
 
   // --- Build cast nodes ----------------------------------------------------
 
-  static BuiltinCastNode castNode(
+  public static BuiltinCastNode castNode(
       String engine, String name, String srcType, String dstType, String method) {
 
     return new BuiltinCastNode(
@@ -92,7 +101,7 @@ final class BuiltinTestSupport {
 
   // --- Build type nodes ----------------------------------------------------
 
-  static BuiltinTypeNode typeNode(String engine, String name) {
+  public static BuiltinTypeNode typeNode(String engine, String name) {
     return new BuiltinTypeNode(
         BuiltinNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, nr(name)),
         1L,
@@ -107,7 +116,7 @@ final class BuiltinTestSupport {
 
   // --- Build collation nodes ----------------------------------------------
 
-  static BuiltinCollationNode collationNode(String engine, String name) {
+  public static BuiltinCollationNode collationNode(String engine, String name) {
     return new BuiltinCollationNode(
         BuiltinNodeRegistry.resourceId(engine, ResourceKind.RK_COLLATION, nr(name)),
         1L,
@@ -120,7 +129,7 @@ final class BuiltinTestSupport {
 
   // --- Build aggregate nodes ----------------------------------------------
 
-  static BuiltinAggregateNode aggregateNode(
+  public static BuiltinAggregateNode aggregateNode(
       String engine, String name, List<String> args, String ret) {
 
     List<ResourceId> argIds =

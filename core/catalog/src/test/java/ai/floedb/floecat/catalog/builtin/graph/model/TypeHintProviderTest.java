@@ -1,9 +1,13 @@
-package ai.floedb.floecat.service.query.graph.hint;
+package ai.floedb.floecat.catalog.builtin.graph.model;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import ai.floedb.floecat.catalog.builtin.*;
-import ai.floedb.floecat.catalog.builtin.graph.model.EngineKey;
+import ai.floedb.floecat.catalog.builtin.def.BuiltinTypeDef;
+import ai.floedb.floecat.catalog.builtin.hint.BuiltinCatalogHintProvider;
+import ai.floedb.floecat.catalog.builtin.registry.BuiltinCatalogData;
+import ai.floedb.floecat.catalog.common.engine.EngineSpecificRule;
+import ai.floedb.floecat.catalog.utils.BuiltinTestSupport;
+import ai.floedb.floecat.metagraph.model.EngineKey;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;

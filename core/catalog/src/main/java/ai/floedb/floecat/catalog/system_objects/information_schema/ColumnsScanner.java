@@ -10,33 +10,39 @@ public final class ColumnsScanner implements SystemObjectScanner {
   public static final SchemaColumn[] SCHEMA =
       new SchemaColumn[] {
         SchemaColumn.newBuilder()
-            .setName("table_schema")
+            .setName("table_catalog")
             .setLogicalType("VARCHAR")
             .setFieldId(0)
-            .setNullable(false)
+            .setNullable(true)
+            .build(),
+        SchemaColumn.newBuilder()
+            .setName("table_schema")
+            .setLogicalType("VARCHAR")
+            .setFieldId(1)
+            .setNullable(true)
             .build(),
         SchemaColumn.newBuilder()
             .setName("table_name")
-            .setLogicalType("VARCHAR")
-            .setFieldId(1)
-            .setNullable(false)
-            .build(),
-        SchemaColumn.newBuilder()
-            .setName("column_name")
             .setLogicalType("VARCHAR")
             .setFieldId(2)
             .setNullable(false)
             .build(),
         SchemaColumn.newBuilder()
-            .setName("data_type")
+            .setName("column_name")
             .setLogicalType("VARCHAR")
             .setFieldId(3)
             .setNullable(false)
             .build(),
         SchemaColumn.newBuilder()
+            .setName("data_type")
+            .setLogicalType("VARCHAR")
+            .setFieldId(4)
+            .setNullable(false)
+            .build(),
+        SchemaColumn.newBuilder()
             .setName("ordinal_position")
             .setLogicalType("INT")
-            .setFieldId(4)
+            .setFieldId(5)
             .setNullable(false)
             .build()
       };

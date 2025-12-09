@@ -1,8 +1,15 @@
-package ai.floedb.floecat.catalog.builtin;
+package ai.floedb.floecat.catalog.builtin.registry;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.builtin.def.BuiltinAggregateDef;
+import ai.floedb.floecat.catalog.builtin.def.BuiltinCastDef;
+import ai.floedb.floecat.catalog.builtin.def.BuiltinCastMethod;
+import ai.floedb.floecat.catalog.builtin.def.BuiltinCollationDef;
+import ai.floedb.floecat.catalog.builtin.def.BuiltinFunctionDef;
+import ai.floedb.floecat.catalog.builtin.def.BuiltinOperatorDef;
+import ai.floedb.floecat.catalog.builtin.def.BuiltinTypeDef;
 import ai.floedb.floecat.common.rpc.NameRef;
 import java.util.ArrayList;
 import java.util.List;

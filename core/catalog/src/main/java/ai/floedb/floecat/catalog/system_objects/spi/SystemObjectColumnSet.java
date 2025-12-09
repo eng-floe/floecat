@@ -9,6 +9,11 @@ public record SystemObjectColumnSet(SchemaColumn[] columns) {
     columns = columns.clone(); // defensive copy
   }
 
+  @Override
+  public SchemaColumn[] columns() {
+    return columns.clone();
+  }
+
   public int size() {
     return columns.length;
   }

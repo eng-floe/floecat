@@ -1,8 +1,7 @@
-package ai.floedb.floecat.service.query.graph.builtin;
+package ai.floedb.floecat.catalog.common.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import ai.floedb.floecat.catalog.builtin.EngineSpecificRule;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;

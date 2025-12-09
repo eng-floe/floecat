@@ -1,4 +1,4 @@
-package ai.floedb.floecat.catalog.system_objects.util;
+package ai.floedb.floecat.catalog.system_objects.utils;
 
 import ai.floedb.floecat.catalog.system_objects.spi.SystemObjectRow;
 import org.apache.arrow.vector.VectorSchemaRoot;

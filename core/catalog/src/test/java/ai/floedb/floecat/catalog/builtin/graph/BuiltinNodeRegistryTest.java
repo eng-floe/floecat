@@ -1,8 +1,13 @@
-package ai.floedb.floecat.service.query.graph.builtin;
+package ai.floedb.floecat.catalog.builtin.graph;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import ai.floedb.floecat.catalog.builtin.*;
+import ai.floedb.floecat.catalog.builtin.def.BuiltinFunctionDef;
+import ai.floedb.floecat.catalog.builtin.def.BuiltinTypeDef;
+import ai.floedb.floecat.catalog.builtin.provider.StaticBuiltinCatalogProvider;
+import ai.floedb.floecat.catalog.builtin.registry.BuiltinCatalogData;
+import ai.floedb.floecat.catalog.builtin.registry.BuiltinDefinitionRegistry;
+import ai.floedb.floecat.catalog.common.engine.EngineSpecificRule;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import java.util.List;
