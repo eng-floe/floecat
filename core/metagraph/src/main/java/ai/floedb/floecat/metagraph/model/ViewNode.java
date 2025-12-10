@@ -11,7 +11,7 @@ import java.util.Optional;
  * Immutable view node encapsulating SQL definition and dependency references.
  *
  * <p>The node stores base relation IDs only; traversal APIs resolve them to aligned {@link
- * RelationNode}s so callers always see a consistent tree.
+ * GraphNode}s so callers always see a consistent tree.
  */
 public record ViewNode(
     ResourceId id,
@@ -28,7 +28,7 @@ public record ViewNode(
     Map<String, String> properties,
     Optional<String> owner,
     Map<EngineKey, EngineHint> engineHints)
-    implements RelationNode {
+    implements GraphNode {
 
   public ViewNode {
     outputColumns = List.copyOf(outputColumns);
@@ -40,7 +40,7 @@ public record ViewNode(
   }
 
   @Override
-  public RelationNodeKind kind() {
-    return RelationNodeKind.VIEW;
+  public GraphNodeKind kind() {
+    return GraphNodeKind.VIEW;
   }
 }

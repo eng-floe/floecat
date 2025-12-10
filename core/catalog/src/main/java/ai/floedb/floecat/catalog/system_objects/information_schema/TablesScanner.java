@@ -1,8 +1,13 @@
 package ai.floedb.floecat.catalog.system_objects.information_schema;
 
 import ai.floedb.floecat.catalog.system_objects.spi.*;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /** information_schema.tables */
@@ -39,15 +44,26 @@ public final class TablesScanner implements SystemObjectScanner {
 
   @Override
   public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx) {
+    Map<ResourceId, String> schemaByNamespace =
+        ctx.listNamespaces(ctx.catalogId()).stream()
+            .collect(Collectors.toMap(NamespaceNode::id, TablesScanner::schemaName));
 
     return ctx.listTables(ctx.catalogId()).stream()
         .map(
             t ->
                 new SystemObjectRow(
                     new Object[] {
-                      ((NamespaceNode) ctx.resolve(t.namespaceId())).displayName(),
+                      schemaByNamespace.getOrDefault(t.namespaceId(), ""),
                       t.displayName(),
                       BASE_TABLE
                     }));
+  }
+
+  private static String schemaName(NamespaceNode namespace) {
+    List<String> segments = new ArrayList<>(namespace.pathSegments());
+    if (!namespace.displayName().isBlank()) {
+      segments.add(namespace.displayName());
+    }
+    return String.join(".", segments);
   }
 }

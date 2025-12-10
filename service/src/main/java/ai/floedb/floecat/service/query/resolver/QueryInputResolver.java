@@ -7,7 +7,7 @@ import ai.floedb.floecat.query.rpc.QueryInput;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.MetadataGraph;
+import ai.floedb.floecat.service.metagraph.MetadataGraphClient;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -47,7 +47,7 @@ import java.util.Optional;
 @ApplicationScoped
 public class QueryInputResolver {
 
-  @Inject MetadataGraph metadataGraph;
+  @Inject MetadataGraphClient metadataGraph;
 
   // =============================================================================
   // Result container

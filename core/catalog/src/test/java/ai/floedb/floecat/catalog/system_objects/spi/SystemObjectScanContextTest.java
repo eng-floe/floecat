@@ -3,6 +3,7 @@ package ai.floedb.floecat.catalog.system_objects.spi;
 import static org.assertj.core.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.system_objects.registry.SystemObjectGraphView;
+import ai.floedb.floecat.catalog.utils.TestGraphView;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.*;
@@ -16,28 +17,7 @@ class SystemObjectScanContextTest {
 
   @Test
   void resolve_throws_whenMissing() {
-    SystemObjectGraphView view =
-        new SystemObjectGraphView() {
-          @Override
-          public Optional<RelationNode> resolve(ResourceId id) {
-            return Optional.empty();
-          }
-
-          @Override
-          public List<TableNode> listTables(ResourceId c) {
-            return List.of();
-          }
-
-          @Override
-          public List<ViewNode> listViews(ResourceId c) {
-            return List.of();
-          }
-
-          @Override
-          public List<NamespaceNode> listNamespaces(ResourceId c) {
-            return List.of();
-          }
-        };
+    SystemObjectGraphView view = new TestGraphView();
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
@@ -54,28 +34,7 @@ class SystemObjectScanContextTest {
 
   @Test
   void tryResolve_returnsEmptyWhenMissing() {
-    SystemObjectGraphView view =
-        new SystemObjectGraphView() {
-          @Override
-          public Optional<RelationNode> resolve(ResourceId id) {
-            return Optional.empty();
-          }
-
-          @Override
-          public List<TableNode> listTables(ResourceId c) {
-            return List.of();
-          }
-
-          @Override
-          public List<ViewNode> listViews(ResourceId c) {
-            return List.of();
-          }
-
-          @Override
-          public List<NamespaceNode> listNamespaces(ResourceId c) {
-            return List.of();
-          }
-        };
+    SystemObjectGraphView view = new TestGraphView();
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
@@ -91,7 +50,7 @@ class SystemObjectScanContextTest {
 
   @Test
   void resolve_returnsNodeWhenPresent() {
-    RelationNode node =
+    GraphNode node =
         new TableNode(
             ResourceId.getDefaultInstance(),
             0L,
@@ -112,25 +71,10 @@ class SystemObjectScanContextTest {
             Map.of()); // engineHints
 
     SystemObjectGraphView view =
-        new SystemObjectGraphView() {
+        new TestGraphView() {
           @Override
-          public Optional<RelationNode> resolve(ResourceId id) {
+          public Optional<GraphNode> resolve(ResourceId id) {
             return Optional.of(node);
-          }
-
-          @Override
-          public List<TableNode> listTables(ResourceId c) {
-            return List.of();
-          }
-
-          @Override
-          public List<ViewNode> listViews(ResourceId c) {
-            return List.of();
-          }
-
-          @Override
-          public List<NamespaceNode> listNamespaces(ResourceId c) {
-            return List.of();
           }
         };
 
@@ -169,25 +113,10 @@ class SystemObjectScanContextTest {
             Map.of());
 
     SystemObjectGraphView view =
-        new SystemObjectGraphView() {
-          @Override
-          public Optional<RelationNode> resolve(ResourceId id) {
-            return Optional.empty();
-          }
-
+        new TestGraphView() {
           @Override
           public List<TableNode> listTables(ResourceId c) {
             return List.of(t);
-          }
-
-          @Override
-          public List<ViewNode> listViews(ResourceId c) {
-            return List.of();
-          }
-
-          @Override
-          public List<NamespaceNode> listNamespaces(ResourceId c) {
-            return List.of();
           }
         };
 
@@ -223,25 +152,10 @@ class SystemObjectScanContextTest {
             Map.of()); // engineHints
 
     SystemObjectGraphView view =
-        new SystemObjectGraphView() {
-          @Override
-          public Optional<RelationNode> resolve(ResourceId id) {
-            return Optional.empty();
-          }
-
-          @Override
-          public List<TableNode> listTables(ResourceId c) {
-            return List.of();
-          }
-
+        new TestGraphView() {
           @Override
           public List<ViewNode> listViews(ResourceId c) {
             return List.of(v);
-          }
-
-          @Override
-          public List<NamespaceNode> listNamespaces(ResourceId c) {
-            return List.of();
           }
         };
 
@@ -272,22 +186,7 @@ class SystemObjectScanContextTest {
             Map.of()); // engineHints
 
     SystemObjectGraphView view =
-        new SystemObjectGraphView() {
-          @Override
-          public Optional<RelationNode> resolve(ResourceId id) {
-            return Optional.empty();
-          }
-
-          @Override
-          public List<TableNode> listTables(ResourceId c) {
-            return List.of();
-          }
-
-          @Override
-          public List<ViewNode> listViews(ResourceId c) {
-            return List.of();
-          }
-
+        new TestGraphView() {
           @Override
           public List<NamespaceNode> listNamespaces(ResourceId c) {
             return List.of(n);
@@ -313,33 +212,7 @@ class SystemObjectScanContextTest {
     ResourceId ns = ResourceId.newBuilder().setId("ns").build();
 
     SystemObjectScanContext ctx =
-        new SystemObjectScanContext(
-            new SystemObjectGraphView() {
-              @Override
-              public Optional<RelationNode> resolve(ResourceId id) {
-                return Optional.empty();
-              }
-
-              @Override
-              public List<TableNode> listTables(ResourceId c) {
-                return List.of();
-              }
-
-              @Override
-              public List<ViewNode> listViews(ResourceId c) {
-                return List.of();
-              }
-
-              @Override
-              public List<NamespaceNode> listNamespaces(ResourceId c) {
-                return List.of();
-              }
-            },
-            name,
-            "spark",
-            "3.5.0",
-            catalog,
-            ns);
+        new SystemObjectScanContext(new TestGraphView(), name, "spark", "3.5.0", catalog, ns);
 
     assertThat(ctx.name()).isEqualTo(name);
     assertThat(ctx.catalogId()).isEqualTo(catalog);

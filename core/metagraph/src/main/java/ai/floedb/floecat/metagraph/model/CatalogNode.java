@@ -22,7 +22,7 @@ public record CatalogNode(
     Optional<String> policyRef,
     Optional<List<ResourceId>> namespaceIds,
     Map<EngineKey, EngineHint> engineHints)
-    implements RelationNode {
+    implements GraphNode {
 
   public CatalogNode {
     properties = Map.copyOf(properties);
@@ -34,7 +34,7 @@ public record CatalogNode(
   }
 
   @Override
-  public RelationNodeKind kind() {
-    return RelationNodeKind.CATALOG;
+  public GraphNodeKind kind() {
+    return GraphNodeKind.CATALOG;
   }
 }

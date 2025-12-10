@@ -15,14 +15,14 @@ public record BuiltinCastNode(
     ResourceId targetType,
     String method,
     Map<EngineKey, EngineHint> engineHints)
-    implements RelationNode {
+    implements GraphNode {
 
   public BuiltinCastNode {
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
   }
 
   @Override
-  public RelationNodeKind kind() {
-    return RelationNodeKind.BUILTIN_CAST;
+  public GraphNodeKind kind() {
+    return GraphNodeKind.BUILTIN_CAST;
   }
 }

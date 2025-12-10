@@ -7,8 +7,6 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.MetadataGraph.QualifiedRelation;
-import ai.floedb.floecat.service.metagraph.MetadataGraph.ResolveResult;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -18,10 +16,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Implements the Directory ResolveFQ semantics for tables and views.
+ * Implements directory-style fully-qualified resolution semantics used by MetadataGraph.
  *
- * <p>The resolver handles both list selectors (no pagination) and namespace prefix selectors
- * (pagination tokens / counts). MetadataGraph uses this helper so the public façade stays small.
+ * <p>This class: - resolves table/view lists without pagination (ResolveFQ list) - resolves
+ * tables/views under a namespace prefix (ResolveFQ prefix) - never touches the metadata graph or
+ * nodes; purely repository-driven
+ *
+ * <p>MetadataGraph depends on this for consistent resolver behavior.
  */
 public class FullyQualifiedResolver {
 
@@ -35,225 +36,259 @@ public class FullyQualifiedResolver {
       NamespaceRepository namespaceRepository,
       TableRepository tableRepository,
       ViewRepository viewRepository) {
+
     this.catalogRepository = catalogRepository;
     this.namespaceRepository = namespaceRepository;
     this.tableRepository = tableRepository;
     this.viewRepository = viewRepository;
   }
 
+  // ----------------------------------------------------------------------
+  // Table/View lists (no pagination)
+  // ----------------------------------------------------------------------
+
   public ResolveResult resolveTableList(
-      String correlationId, String accountId, List<NameRef> names, int limit, String pageToken) {
-    validateListToken(correlationId, pageToken);
+      String cid, String accountId, List<NameRef> names, int limit, String pageToken) {
+
+    validateListToken(cid, pageToken);
+
     if (names == null || names.isEmpty()) {
       return new ResolveResult(List.of(), 0, "");
     }
-    int normalizedLimit = normalizeLimit(limit);
-    int end = Math.min(names.size(), normalizedLimit);
-    List<QualifiedRelation> relations = new ArrayList<>(end);
-    for (int i = 0; i < end; i++) {
-      relations.add(resolveTableEntry(correlationId, accountId, names.get(i)));
+
+    int max = Math.min(names.size(), normalizeLimit(limit));
+    List<QualifiedRelation> out = new ArrayList<>(max);
+
+    for (int i = 0; i < max; i++) {
+      out.add(resolveTableEntry(cid, accountId, names.get(i)));
     }
-    return new ResolveResult(relations, names.size(), "");
+
+    return new ResolveResult(out, names.size(), "");
   }
 
   public ResolveResult resolveViewList(
-      String correlationId, String accountId, List<NameRef> names, int limit, String pageToken) {
-    validateListToken(correlationId, pageToken);
+      String cid, String accountId, List<NameRef> names, int limit, String pageToken) {
+
+    validateListToken(cid, pageToken);
+
     if (names == null || names.isEmpty()) {
       return new ResolveResult(List.of(), 0, "");
     }
-    int normalizedLimit = normalizeLimit(limit);
-    int end = Math.min(names.size(), normalizedLimit);
-    List<QualifiedRelation> relations = new ArrayList<>(end);
-    for (int i = 0; i < end; i++) {
-      relations.add(resolveViewEntry(correlationId, accountId, names.get(i)));
+
+    int max = Math.min(names.size(), normalizeLimit(limit));
+    List<QualifiedRelation> out = new ArrayList<>(max);
+
+    for (int i = 0; i < max; i++) {
+      out.add(resolveViewEntry(cid, accountId, names.get(i)));
     }
-    return new ResolveResult(relations, names.size(), "");
+
+    return new ResolveResult(out, names.size(), "");
   }
 
-  public ResolveResult resolveTablesByPrefix(
-      String correlationId, String accountId, NameRef prefix, int limit, String token) {
-    Catalog catalog = catalogByName(correlationId, accountId, prefix.getCatalog());
-    List<String> namespacePath = namespacePathSegments(prefix);
-    Namespace namespace = namespaceByPath(correlationId, accountId, catalog, namespacePath);
+  // ----------------------------------------------------------------------
+  // Prefix resolution: list tables/views under a namespace prefix
+  // ----------------------------------------------------------------------
 
-    StringBuilder nextOut = new StringBuilder();
-    List<Table> entries =
-        listTables(correlationId, accountId, catalog, namespace, limit, token, nextOut);
+  public ResolveResult resolveTablesByPrefix(
+      String cid, String accountId, NameRef prefix, int limit, String token) {
+
+    Catalog catalog = catalogByName(cid, accountId, prefix.getCatalog());
+    List<String> nsPath = namespacePath(prefix);
+    Namespace ns = namespaceByPath(cid, accountId, catalog, nsPath);
+
+    StringBuilder next = new StringBuilder();
+
+    List<Table> entries = listTables(cid, accountId, catalog, ns, limit, token, next);
     int total =
         tableRepository.count(
-            accountId, catalog.getResourceId().getId(), namespace.getResourceId().getId());
+            accountId, catalog.getResourceId().getId(), ns.getResourceId().getId());
 
-    List<QualifiedRelation> relations = new ArrayList<>(entries.size());
-    for (Table table : entries) {
-      NameRef name =
+    List<QualifiedRelation> out = new ArrayList<>(entries.size());
+
+    for (Table t : entries) {
+      NameRef fq =
           NameRef.newBuilder()
               .setCatalog(catalog.getDisplayName())
-              .addAllPath(namespacePath)
-              .setName(table.getDisplayName())
-              .setResourceId(table.getResourceId())
+              .addAllPath(nsPath)
+              .setName(t.getDisplayName())
+              .setResourceId(t.getResourceId())
               .build();
-      relations.add(new QualifiedRelation(name, table.getResourceId()));
+      out.add(new QualifiedRelation(fq, t.getResourceId()));
     }
 
-    return new ResolveResult(relations, total, nextOut.toString());
+    return new ResolveResult(out, total, next.toString());
   }
 
   public ResolveResult resolveViewsByPrefix(
-      String correlationId, String accountId, NameRef prefix, int limit, String token) {
-    Catalog catalog = catalogByName(correlationId, accountId, prefix.getCatalog());
-    List<String> namespacePath = namespacePathSegments(prefix);
-    Namespace namespace = namespaceByPath(correlationId, accountId, catalog, namespacePath);
+      String cid, String accountId, NameRef prefix, int limit, String token) {
 
-    StringBuilder nextOut = new StringBuilder();
-    List<View> entries =
-        listViews(correlationId, accountId, catalog, namespace, limit, token, nextOut);
+    Catalog catalog = catalogByName(cid, accountId, prefix.getCatalog());
+    List<String> nsPath = namespacePath(prefix);
+    Namespace ns = namespaceByPath(cid, accountId, catalog, nsPath);
+
+    StringBuilder next = new StringBuilder();
+
+    List<View> entries = listViews(cid, accountId, catalog, ns, limit, token, next);
     int total =
         viewRepository.count(
-            accountId, catalog.getResourceId().getId(), namespace.getResourceId().getId());
+            accountId, catalog.getResourceId().getId(), ns.getResourceId().getId());
 
-    List<QualifiedRelation> relations = new ArrayList<>(entries.size());
-    for (View view : entries) {
-      NameRef name =
+    List<QualifiedRelation> out = new ArrayList<>(entries.size());
+
+    for (View v : entries) {
+      NameRef fq =
           NameRef.newBuilder()
               .setCatalog(catalog.getDisplayName())
-              .addAllPath(namespacePath)
-              .setName(view.getDisplayName())
-              .setResourceId(view.getResourceId())
+              .addAllPath(nsPath)
+              .setName(v.getDisplayName())
+              .setResourceId(v.getResourceId())
               .build();
-      relations.add(new QualifiedRelation(name, view.getResourceId()));
+      out.add(new QualifiedRelation(fq, v.getResourceId()));
     }
 
-    return new ResolveResult(relations, total, nextOut.toString());
+    return new ResolveResult(out, total, next.toString());
   }
 
-  private QualifiedRelation resolveTableEntry(String correlationId, String accountId, NameRef ref) {
+  // ----------------------------------------------------------------------
+  // Internal helpers (canonical entry resolution)
+  // ----------------------------------------------------------------------
+
+  private QualifiedRelation resolveTableEntry(String cid, String accountId, NameRef ref) {
+
     try {
-      validateNameRef(correlationId, ref);
-      validateRelationName(correlationId, ref, "table");
-      Catalog catalog = catalogByName(correlationId, accountId, ref.getCatalog());
-      Namespace namespace = namespaceByPath(correlationId, accountId, catalog, ref.getPathList());
+      validateNameRef(cid, ref);
+      validateRelationName(cid, ref, "table");
+
+      Catalog catalog = catalogByName(cid, accountId, ref.getCatalog());
+      Namespace ns = namespaceByPath(cid, accountId, catalog, ref.getPathList());
+
       return tableRepository
           .getByName(
-              accountId,
-              catalog.getResourceId().getId(),
-              namespace.getResourceId().getId(),
-              ref.getName())
+              accountId, catalog.getResourceId().getId(), ns.getResourceId().getId(), ref.getName())
           .map(
-              table -> {
+              t -> {
                 NameRef canonical =
                     NameRef.newBuilder()
                         .setCatalog(catalog.getDisplayName())
-                        .addAllPath(namespacePathSegments(namespace))
-                        .setName(table.getDisplayName())
-                        .setResourceId(table.getResourceId())
+                        .addAllPath(namespacePath(ns))
+                        .setName(t.getDisplayName())
+                        .setResourceId(t.getResourceId())
                         .build();
-                return new QualifiedRelation(canonical, table.getResourceId());
+                return new QualifiedRelation(canonical, t.getResourceId());
               })
           .orElseGet(() -> new QualifiedRelation(ref, ResourceId.getDefaultInstance()));
-    } catch (Throwable t) {
+
+    } catch (Throwable ignore) {
       return new QualifiedRelation(ref, ResourceId.getDefaultInstance());
     }
   }
 
-  private QualifiedRelation resolveViewEntry(String correlationId, String accountId, NameRef ref) {
+  private QualifiedRelation resolveViewEntry(String cid, String accountId, NameRef ref) {
+
     try {
-      validateNameRef(correlationId, ref);
-      validateRelationName(correlationId, ref, "view");
-      Catalog catalog = catalogByName(correlationId, accountId, ref.getCatalog());
-      Namespace namespace = namespaceByPath(correlationId, accountId, catalog, ref.getPathList());
+      validateNameRef(cid, ref);
+      validateRelationName(cid, ref, "view");
+
+      Catalog catalog = catalogByName(cid, accountId, ref.getCatalog());
+      Namespace ns = namespaceByPath(cid, accountId, catalog, ref.getPathList());
+
       return viewRepository
           .getByName(
-              accountId,
-              catalog.getResourceId().getId(),
-              namespace.getResourceId().getId(),
-              ref.getName())
+              accountId, catalog.getResourceId().getId(), ns.getResourceId().getId(), ref.getName())
           .map(
-              view -> {
+              v -> {
                 NameRef canonical =
                     NameRef.newBuilder()
                         .setCatalog(catalog.getDisplayName())
-                        .addAllPath(namespacePathSegments(namespace))
-                        .setName(view.getDisplayName())
-                        .setResourceId(view.getResourceId())
+                        .addAllPath(namespacePath(ns))
+                        .setName(v.getDisplayName())
+                        .setResourceId(v.getResourceId())
                         .build();
-                return new QualifiedRelation(canonical, view.getResourceId());
+                return new QualifiedRelation(canonical, v.getResourceId());
               })
           .orElseGet(() -> new QualifiedRelation(ref, ResourceId.getDefaultInstance()));
-    } catch (Throwable t) {
+
+    } catch (Throwable ignore) {
       return new QualifiedRelation(ref, ResourceId.getDefaultInstance());
     }
+  }
+
+  // ----------------------------------------------------------------------
+  // Repository calls
+  // ----------------------------------------------------------------------
+
+  private Catalog catalogByName(String cid, String accountId, String name) {
+    return catalogRepository
+        .getByName(accountId, name)
+        .orElseThrow(() -> GrpcErrors.notFound(cid, "catalog", Map.of("id", name)));
+  }
+
+  private Namespace namespaceByPath(
+      String cid, String accountId, Catalog catalog, List<String> path) {
+
+    return namespaceRepository
+        .getByPath(accountId, catalog.getResourceId().getId(), path)
+        .orElseThrow(
+            () ->
+                GrpcErrors.notFound(
+                    cid,
+                    "namespace.by_path_missing",
+                    Map.of(
+                        "catalog_id", catalog.getResourceId().getId(),
+                        "path", String.join(".", path))));
   }
 
   private List<Table> listTables(
-      String correlationId,
+      String cid,
       String accountId,
       Catalog catalog,
-      Namespace namespace,
+      Namespace ns,
       int limit,
       String token,
       StringBuilder nextOut) {
+
     try {
       return tableRepository.list(
           accountId,
           catalog.getResourceId().getId(),
-          namespace.getResourceId().getId(),
-          Math.max(1, limit),
+          ns.getResourceId().getId(),
+          normalizeLimit(limit),
           token,
           nextOut);
-    } catch (IllegalArgumentException badToken) {
-      throw GrpcErrors.invalidArgument(
-          correlationId, "page_token.invalid", Map.of("page_token", token));
+    } catch (IllegalArgumentException ex) {
+      throw GrpcErrors.invalidArgument(cid, "page_token.invalid", Map.of("page_token", token));
     }
   }
 
   private List<View> listViews(
-      String correlationId,
+      String cid,
       String accountId,
       Catalog catalog,
-      Namespace namespace,
+      Namespace ns,
       int limit,
       String token,
       StringBuilder nextOut) {
+
     try {
       return viewRepository.list(
           accountId,
           catalog.getResourceId().getId(),
-          namespace.getResourceId().getId(),
-          Math.max(1, limit),
+          ns.getResourceId().getId(),
+          normalizeLimit(limit),
           token,
           nextOut);
-    } catch (IllegalArgumentException badToken) {
-      throw GrpcErrors.invalidArgument(
-          correlationId, "page_token.invalid", Map.of("page_token", token));
+    } catch (IllegalArgumentException ex) {
+      throw GrpcErrors.invalidArgument(cid, "page_token.invalid", Map.of("page_token", token));
     }
   }
 
-  private Catalog catalogByName(String correlationId, String accountId, String catalogName) {
-    return catalogRepository
-        .getByName(accountId, catalogName)
-        .orElseThrow(
-            () -> GrpcErrors.notFound(correlationId, "catalog", Map.of("id", catalogName)));
-  }
+  // ----------------------------------------------------------------------
+  // Validation helpers
+  // ----------------------------------------------------------------------
 
-  private Namespace namespaceByPath(
-      String correlationId, String accountId, Catalog catalog, List<String> pathSegments) {
-    return namespaceRepository
-        .getByPath(accountId, catalog.getResourceId().getId(), pathSegments)
-        .orElseThrow(
-            () ->
-                GrpcErrors.notFound(
-                    correlationId,
-                    "namespace.by_path_missing",
-                    Map.of(
-                        "catalog_id", catalog.getResourceId().getId(),
-                        "path", String.join(".", pathSegments))));
-  }
-
-  private void validateListToken(String correlationId, String token) {
+  private void validateListToken(String cid, String token) {
     if (token != null && !token.isBlank()) {
-      throw GrpcErrors.invalidArgument(
-          correlationId, "page_token.invalid", Map.of("page_token", token));
+      throw GrpcErrors.invalidArgument(cid, "page_token.invalid", Map.of("page_token", token));
     }
   }
 
@@ -261,32 +296,41 @@ public class FullyQualifiedResolver {
     return Math.max(1, limit > 0 ? limit : 50);
   }
 
-  private void validateNameRef(String correlationId, NameRef ref) {
+  private void validateNameRef(String cid, NameRef ref) {
     if (ref == null || ref.getCatalog().isBlank()) {
-      throw GrpcErrors.invalidArgument(correlationId, "catalog.missing", Map.of());
+      throw GrpcErrors.invalidArgument(cid, "catalog.missing", Map.of());
     }
   }
 
-  private void validateRelationName(String correlationId, NameRef ref, String type) {
+  private void validateRelationName(String cid, NameRef ref, String type) {
     if (ref.getName().isBlank()) {
-      throw GrpcErrors.invalidArgument(
-          correlationId, type + ".name.missing", Map.of("name", ref.getName()));
+      throw GrpcErrors.invalidArgument(cid, type + ".name.missing", Map.of("name", ref.getName()));
     }
   }
 
-  private List<String> namespacePathSegments(NameRef ref) {
-    List<String> segments = new ArrayList<>(ref.getPathList());
+  // ----------------------------------------------------------------------
+  // Path helpers
+  // ----------------------------------------------------------------------
+
+  private List<String> namespacePath(NameRef ref) {
+    List<String> out = new ArrayList<>(ref.getPathList());
     if (ref.getName() != null && !ref.getName().isBlank()) {
-      segments.add(ref.getName());
+      if (out.isEmpty() || !out.get(out.size() - 1).equals(ref.getName())) {
+        out.add(ref.getName());
+      }
     }
-    return segments;
+    return out;
   }
 
-  private List<String> namespacePathSegments(Namespace namespace) {
-    List<String> segments = new ArrayList<>(namespace.getParentsList());
-    if (!namespace.getDisplayName().isBlank()) {
-      segments.add(namespace.getDisplayName());
+  private List<String> namespacePath(Namespace ns) {
+    List<String> out = new ArrayList<>(ns.getParentsList());
+    if (!ns.getDisplayName().isBlank()) {
+      out.add(ns.getDisplayName());
     }
-    return segments;
+    return out;
   }
+
+  public record QualifiedRelation(NameRef name, ResourceId resourceId) {}
+
+  public record ResolveResult(List<QualifiedRelation> relations, int totalSize, String nextToken) {}
 }

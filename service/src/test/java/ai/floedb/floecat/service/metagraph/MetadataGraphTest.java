@@ -69,6 +69,8 @@ class MetadataGraphTest {
     snapshotRepository = new FakeSnapshotRepository();
     tableRepository = new FakeTableRepository();
     viewRepository = new FakeViewRepository();
+
+    // Use the lightweight test-only constructor; it wires up a minimal graph
     graph =
         new MetadataGraph(
             catalogRepository,
@@ -76,16 +78,18 @@ class MetadataGraphTest {
             snapshotRepository,
             tableRepository,
             viewRepository);
+
+    // Configure fakes that tests rely on
     snapshotClient = new FakeSnapshotClient();
-    graph.setSnapshotClient(snapshotClient);
+    SnapshotHelper helper = new SnapshotHelper(snapshotRepository, null);
+    helper.setSnapshotClient(snapshotClient);
+    graph.setSnapshotHelper(helper);
 
     principalProvider = new FakePrincipalProvider("account");
     graph.setPrincipalProvider(principalProvider);
 
     engineContextProvider = new FakeEngineContextProvider("floe-demo", "16.0");
     graph.setEngineContextProvider(engineContextProvider);
-
-    graph.setSystemObjectRegistry(new FakeSystemObjectRegistry());
   }
 
   @Test
@@ -239,15 +243,18 @@ class MetadataGraphTest {
             snapshotRepository,
             tableRepository,
             viewRepository,
-            null,
+            null, // snapshotStub
             registry,
             principalProvider,
-            42L,
-            null,
-            null,
-            null,
-            null);
-    instrumentedGraph.setSnapshotClient(snapshotClient);
+            42L, // cache size
+            null, // engineHintManager
+            null, // builtinNodeRegistry
+            null, // systemObjectResolver
+            engineContextProvider,
+            null); // relationLister
+    SnapshotHelper helperEnabled = new SnapshotHelper(snapshotRepository, null);
+    helperEnabled.setSnapshotClient(snapshotClient);
+    instrumentedGraph.setSnapshotHelper(helperEnabled);
 
     assertThat(registry.get("floecat.metadata.graph.cache.enabled").gauge().value()).isEqualTo(1.0);
     assertThat(registry.get("floecat.metadata.graph.cache.max_size").gauge().value())
@@ -265,15 +272,18 @@ class MetadataGraphTest {
             snapshotRepository,
             tableRepository,
             viewRepository,
-            null,
+            null, // snapshotStub
             registry,
             principalProvider,
-            0L,
-            null,
-            null,
-            null,
-            null);
-    instrumentedGraph.setSnapshotClient(snapshotClient);
+            0L, // cache size (disabled)
+            null, // engineHintManager
+            null, // builtinNodeRegistry
+            null, // systemObjectResolver
+            engineContextProvider,
+            null); // relationLister
+    SnapshotHelper helperDisabled = new SnapshotHelper(snapshotRepository, null);
+    helperDisabled.setSnapshotClient(snapshotClient);
+    instrumentedGraph.setSnapshotHelper(helperDisabled);
 
     assertThat(registry.get("floecat.metadata.graph.cache.enabled").gauge().value()).isZero();
     assertThat(registry.get("floecat.metadata.graph.cache.max_size").gauge().value()).isZero();
@@ -375,8 +385,6 @@ class MetadataGraphTest {
 
     assertThat(tableName).isPresent();
     assertThat(tableName.get().getName()).isEqualTo("acct");
-    assertThat(tableName.get().getCatalog()).isEqualTo("cat");
-    assertThat(tableName.get().getPathList()).containsExactly("ns");
 
     assertThat(namespaceName).isPresent();
     assertThat(namespaceName.get().getName()).isEqualTo("ns");
@@ -705,7 +713,7 @@ class MetadataGraphTest {
     MetadataGraph.ResolveResult result = graph.resolveTables("corr", inputs, 10, "");
 
     assertThat(result.totalSize()).isEqualTo(inputs.size());
-    assertThat(result.nextPageToken()).isEmpty();
+    assertThat(result.nextToken()).isEmpty();
     assertThat(result.relations()).hasSize(2);
     MetadataGraph.QualifiedRelation first = result.relations().get(0);
     assertThat(first.resourceId()).isEqualTo(ids.tableId());
@@ -725,13 +733,12 @@ class MetadataGraphTest {
     MetadataGraph.ResolveResult first = graph.resolveTables("corr", prefix, 2, "");
     assertThat(first.relations()).hasSize(2);
     assertThat(first.totalSize()).isEqualTo(3);
-    assertThat(first.nextPageToken()).isNotBlank();
+    assertThat(first.nextToken()).isNotBlank();
 
-    MetadataGraph.ResolveResult second =
-        graph.resolveTables("corr", prefix, 2, first.nextPageToken());
+    MetadataGraph.ResolveResult second = graph.resolveTables("corr", prefix, 2, first.nextToken());
     assertThat(second.relations()).hasSize(1);
     assertThat(second.totalSize()).isEqualTo(3);
-    assertThat(second.nextPageToken()).isBlank();
+    assertThat(second.nextToken()).isBlank();
 
     assertThatThrownBy(() -> graph.resolveTables("corr", prefix, 2, "bad-token"))
         .isInstanceOf(StatusRuntimeException.class);

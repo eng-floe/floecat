@@ -2,10 +2,11 @@ package ai.floedb.floecat.catalog.system_objects.information_schema;
 
 import static org.assertj.core.api.Assertions.*;
 
-import ai.floedb.floecat.catalog.system_objects.registry.SystemObjectGraphView;
 import ai.floedb.floecat.catalog.system_objects.spi.*;
+import ai.floedb.floecat.catalog.utils.TestGraphView;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.*;
 import java.time.Instant;
 import java.util.List;
@@ -51,32 +52,22 @@ class TablesScannerTest {
             1L,
             Instant.EPOCH,
             ResourceId.getDefaultInstance(),
-            List.of("public"),
+            List.of(),
             "public",
             Map.of(),
             Optional.empty(),
             Map.of());
 
-    SystemObjectGraphView view =
-        new SystemObjectGraphView() {
+    TestGraphView view =
+        new TestGraphView() {
           @Override
-          public Optional<RelationNode> resolve(ResourceId id) {
-            return Optional.of(ns);
-          }
-
-          @Override
-          public List<TableNode> listTables(ResourceId c) {
+          public List<TableNode> listTables(ResourceId ns) {
             return List.of(t);
           }
 
           @Override
-          public List<ViewNode> listViews(ResourceId c) {
-            return List.of();
-          }
-
-          @Override
-          public List<NamespaceNode> listNamespaces(ResourceId c) {
-            return List.of();
+          public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
+            return List.of(ns);
           }
         };
 
@@ -93,5 +84,75 @@ class TablesScannerTest {
 
     assertThat(rows).hasSize(1);
     assertThat(rows.get(0)).containsExactly("public", "mytable", "BASE TABLE");
+  }
+
+  @Test
+  void scan_usesCanonicalSchemaPathForNestedNamespaces() {
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("account")
+            .setId("cat")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("account")
+            .setId("ns-nested")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+
+    TableNode t =
+        new TableNode(
+            ResourceId.getDefaultInstance(),
+            1L,
+            Instant.EPOCH,
+            catalogId,
+            namespaceId,
+            "nested_table",
+            null,
+            "{}",
+            Map.of(),
+            List.of(),
+            Map.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            List.of(),
+            Map.of());
+
+    NamespaceNode nestedNs =
+        new NamespaceNode(
+            namespaceId,
+            1L,
+            Instant.EPOCH,
+            catalogId,
+            List.of("finance"),
+            "sales",
+            Map.of(),
+            Optional.empty(),
+            Map.of());
+
+    TestGraphView view =
+        new TestGraphView() {
+          @Override
+          public List<TableNode> listTables(ResourceId ns) {
+            return List.of(t);
+          }
+
+          @Override
+          public List<NamespaceNode> listNamespaces(ResourceId catalog) {
+            return List.of(nestedNs);
+          }
+        };
+
+    SystemObjectScanContext ctx =
+        new SystemObjectScanContext(
+            view, NameRef.getDefaultInstance(), "spark", "3.5.0", catalogId, namespaceId);
+
+    var rows = new TablesScanner().scan(ctx).map(r -> r.values()).toList();
+
+    assertThat(rows).hasSize(1);
+    assertThat(rows.get(0)).containsExactly("finance.sales", "nested_table", "BASE TABLE");
   }
 }

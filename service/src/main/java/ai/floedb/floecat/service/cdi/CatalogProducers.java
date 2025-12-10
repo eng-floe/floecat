@@ -7,6 +7,7 @@ import ai.floedb.floecat.catalog.builtin.provider.ServiceLoaderBuiltinCatalogPro
 import ai.floedb.floecat.catalog.builtin.registry.BuiltinDefinitionRegistry;
 import ai.floedb.floecat.catalog.system_objects.provider.ServiceLoaderSystemObjectProvider;
 import ai.floedb.floecat.catalog.system_objects.registry.SystemObjectRegistry;
+import ai.floedb.floecat.catalog.system_objects.registry.SystemObjectResolver;
 import ai.floedb.floecat.catalog.system_objects.spi.SystemObjectProvider;
 import ai.floedb.floecat.metagraph.hint.EngineHintProvider;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -51,5 +52,11 @@ public class CatalogProducers {
   @ApplicationScoped
   public SystemObjectRegistry produceSystemObjectRegistry(List<SystemObjectProvider> providers) {
     return new SystemObjectRegistry(providers);
+  }
+
+  @Produces
+  @ApplicationScoped
+  public SystemObjectResolver produceSystemObjectResolver() {
+    return new SystemObjectResolver();
   }
 }

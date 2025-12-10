@@ -22,7 +22,7 @@ public record NamespaceNode(
     Map<String, String> properties,
     Optional<List<ResourceId>> relationIds,
     Map<EngineKey, EngineHint> engineHints)
-    implements RelationNode {
+    implements GraphNode {
 
   public NamespaceNode {
     pathSegments = List.copyOf(pathSegments);
@@ -33,7 +33,7 @@ public record NamespaceNode(
   }
 
   @Override
-  public RelationNodeKind kind() {
-    return RelationNodeKind.NAMESPACE;
+  public GraphNodeKind kind() {
+    return GraphNodeKind.NAMESPACE;
   }
 }

@@ -6,8 +6,8 @@ import java.util.stream.Stream;
 /**
  * Scanner for system objects (information_schema, floecat.system.*, plugin-provided).
  *
- * <p>Performance constraints: • Must be lazy • Must avoid allocations • Must avoid boxing in the
- * hot path • Must match SchemaColumn[] exactly on every scan
+ * <p>Performance constraints: - Must be lazy - Must avoid allocations - Must avoid boxing in the
+ * hot path - Must match SchemaColumn[] exactly on every scan
  */
 public interface SystemObjectScanner {
 

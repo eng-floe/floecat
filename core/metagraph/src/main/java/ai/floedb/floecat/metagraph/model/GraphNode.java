@@ -13,7 +13,7 @@ import java.util.Optional;
  * so cache invalidation is deterministic, while {@link EngineHint} payloads allow planner-specific
  * extensions without mutating the core structure.
  */
-public interface RelationNode {
+public interface GraphNode {
 
   /** Stable identifier (account + kind + UUID) for the node. */
   ResourceId id();
@@ -30,7 +30,7 @@ public interface RelationNode {
   Instant metadataUpdatedAt();
 
   /** Logical kind returned to planners. */
-  RelationNodeKind kind();
+  GraphNodeKind kind();
 
   /**
    * Engine-specific hint map keyed by kind/version.

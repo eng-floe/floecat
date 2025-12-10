@@ -24,22 +24,22 @@ The architecture is **plugin-based**: each engine implements a builtin catalog p
                    ▼
 ┌─────────────────────────────────────────────────────────┐
 │      BuiltinCatalogServiceImpl (service/)                │
-│  • Validates engine_kind & version headers              │
-│  • Delegates to BuiltinDefinitionRegistry               │
+│  - Validates engine_kind & version headers              │
+│  - Delegates to BuiltinDefinitionRegistry               │
 └──────────────────┬──────────────────────────────────────┘
                    │
                    ▼
 ┌─────────────────────────────────────────────────────────┐
 │   BuiltinDefinitionRegistry (service/)                  │
-│  • Caches catalogs by engine_kind                       │
-│  • Delegates to BuiltinCatalogProvider                  │
+│  - Caches catalogs by engine_kind                       │
+│  - Delegates to BuiltinCatalogProvider                  │
 └──────────────────┬──────────────────────────────────────┘
                    │
                    ▼
 ┌─────────────────────────────────────────────────────────┐
 │  ServiceLoaderBuiltinCatalogProvider (service/)         │
-│  • Uses Java ServiceLoader to discover plugins          │
-│  • Returns EngineBuiltinExtension implementations       │
+│  - Uses Java ServiceLoader to discover plugins          │
+│  - Returns EngineBuiltinExtension implementations       │
 └──────────────────┬──────────────────────────────────────┘
                    │
         ┌──────────┴──────────┐

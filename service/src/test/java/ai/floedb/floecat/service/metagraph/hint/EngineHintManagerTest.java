@@ -9,8 +9,8 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.hint.EngineHintProvider;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineKey;
-import ai.floedb.floecat.metagraph.model.RelationNode;
-import ai.floedb.floecat.metagraph.model.RelationNodeKind;
+import ai.floedb.floecat.metagraph.model.GraphNode;
+import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
@@ -93,7 +93,7 @@ class EngineHintManagerTest {
     var provider =
         new TestProvider() {
           @Override
-          public String fingerprint(RelationNode node, EngineKey key, String hintType) {
+          public String fingerprint(GraphNode node, EngineKey key, String hintType) {
             return computeCount.get() == 0 ? "fp1" : "fp2";
           }
         };
@@ -135,7 +135,7 @@ class EngineHintManagerTest {
     var provider =
         new TestProvider() {
           @Override
-          public EngineHint compute(RelationNode node, EngineKey k, String h, String c) {
+          public EngineHint compute(GraphNode node, EngineKey k, String h, String c) {
             computeCount.incrementAndGet();
             return new EngineHint("t", new byte[512]); // heavy
           }
@@ -179,7 +179,7 @@ class EngineHintManagerTest {
     EngineHintProvider bad =
         new EngineHintProvider() {
           @Override
-          public boolean supports(RelationNodeKind k, String h) {
+          public boolean supports(GraphNodeKind k, String h) {
             return true;
           }
 
@@ -189,12 +189,12 @@ class EngineHintManagerTest {
           }
 
           @Override
-          public String fingerprint(RelationNode n, EngineKey k, String h) {
+          public String fingerprint(GraphNode n, EngineKey k, String h) {
             return "x";
           }
 
           @Override
-          public EngineHint compute(RelationNode n, EngineKey k, String h, String c) {
+          public EngineHint compute(GraphNode n, EngineKey k, String h, String c) {
             throw new RuntimeException("boom");
           }
         };
@@ -212,8 +212,8 @@ class EngineHintManagerTest {
     protected final AtomicInteger computeCount = new AtomicInteger();
 
     @Override
-    public boolean supports(RelationNodeKind kind, String hintType) {
-      return kind == RelationNodeKind.TABLE && hintType.equals("test");
+    public boolean supports(GraphNodeKind kind, String hintType) {
+      return kind == GraphNodeKind.TABLE && hintType.equals("test");
     }
 
     @Override
@@ -222,13 +222,13 @@ class EngineHintManagerTest {
     }
 
     @Override
-    public String fingerprint(RelationNode node, EngineKey engineKey, String hintType) {
+    public String fingerprint(GraphNode node, EngineKey engineKey, String hintType) {
       return node.version() + "-fp";
     }
 
     @Override
     public EngineHint compute(
-        RelationNode node, EngineKey engineKey, String hintType, String correlationId) {
+        GraphNode node, EngineKey engineKey, String hintType, String correlationId) {
       computeCount.incrementAndGet();
       return new EngineHint("application/test", new byte[] {1, 2, 3});
     }

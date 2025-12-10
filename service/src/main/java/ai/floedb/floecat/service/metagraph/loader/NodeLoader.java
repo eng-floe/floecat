@@ -13,8 +13,8 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineKey;
+import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
-import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
@@ -24,6 +24,8 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import com.google.protobuf.Timestamp;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -35,6 +37,7 @@ import java.util.Optional;
  * <p>MetadataGraph relies on this helper for both pointer metadata (`metaForSafe`) and the actual
  * protobuf → node conversions.
  */
+@ApplicationScoped
 public class NodeLoader {
 
   private static final Map<EngineKey, EngineHint> NO_ENGINE_HINTS = Map.of();
@@ -44,6 +47,7 @@ public class NodeLoader {
   private final TableRepository tableRepository;
   private final ViewRepository viewRepository;
 
+  @Inject
   public NodeLoader(
       CatalogRepository catalogRepository,
       NamespaceRepository namespaceRepository,
@@ -53,6 +57,27 @@ public class NodeLoader {
     this.namespaceRepository = namespaceRepository;
     this.tableRepository = tableRepository;
     this.viewRepository = viewRepository;
+  }
+
+  public List<ResourceId> listCatalogIds(String accountId) {
+    return catalogRepository.listIds(accountId);
+  }
+
+  public Optional<NamespaceNode> namespace(ResourceId id) {
+    if (id.getKind() != ResourceKind.RK_NAMESPACE) return Optional.empty();
+    return namespaceRepository
+        .getById(id)
+        .map(ns -> toNamespaceNode(ns, namespaceRepository.metaForSafe(id)));
+  }
+
+  public Optional<TableNode> table(ResourceId id) {
+    if (id.getKind() != ResourceKind.RK_TABLE) return Optional.empty();
+    return tableRepository.getById(id).map(t -> toTableNode(t, tableRepository.metaForSafe(id)));
+  }
+
+  public Optional<ViewNode> view(ResourceId id) {
+    if (id.getKind() != ResourceKind.RK_VIEW) return Optional.empty();
+    return viewRepository.getById(id).map(v -> toViewNode(v, viewRepository.metaForSafe(id)));
   }
 
   /** Loads the mutation metadata for the provided resource. */
@@ -72,7 +97,7 @@ public class NodeLoader {
   }
 
   /** Rehydrates the relation node for the provided metadata snapshot. */
-  public Optional<RelationNode> load(ResourceId id, MutationMeta meta) {
+  public Optional<GraphNode> load(ResourceId id, MutationMeta meta) {
     return switch (id.getKind()) {
       case RK_CATALOG -> catalogRepository.getById(id).map(catalog -> toCatalogNode(catalog, meta));
       case RK_NAMESPACE ->

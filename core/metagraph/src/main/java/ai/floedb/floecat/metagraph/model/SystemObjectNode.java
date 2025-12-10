@@ -12,8 +12,8 @@ import java.util.Map;
  * instead sourced from the SystemObjectRegistry and lifted into the metagraph so resolution is
  * unified and downstream planners do not need a separate codepath.
  *
- * <p>Nodes are immutable and behave exactly like any RelationNode: - stable ResourceId - version =
- * 0 (static definition) - metadataUpdatedAt = service startup instant
+ * <p>Nodes are immutable and behave exactly like any GraphNode: - stable ResourceId - version = 0
+ * (static definition) - metadataUpdatedAt = service startup instant
  *
  * <p>Row generation logic is NOT stored inside the node. It is looked up in SystemObjectRegistry
  * using the node's scannerId.
@@ -28,7 +28,7 @@ public record SystemObjectNode(
     SchemaColumn[] columns,
     String scannerId,
     Map<EngineKey, EngineHint> engineHints)
-    implements RelationNode {
+    implements GraphNode {
 
   public SystemObjectNode {
     columns = columns == null ? new SchemaColumn[0] : columns.clone();
@@ -37,7 +37,7 @@ public record SystemObjectNode(
   }
 
   @Override
-  public RelationNodeKind kind() {
-    return RelationNodeKind.SYSTEM_OBJECT;
+  public GraphNodeKind kind() {
+    return GraphNodeKind.SYSTEM_OBJECT;
   }
 }

@@ -2,7 +2,7 @@ package ai.floedb.floecat.service.metagraph.cache;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
-import ai.floedb.floecat.metagraph.model.RelationNode;
+import ai.floedb.floecat.metagraph.model.GraphNode;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import io.micrometer.core.instrument.Counter;
@@ -13,7 +13,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * Per-account cache manager for {@link RelationNode}s.
+ * Per-account cache manager for {@link GraphNode}s.
  *
  * <p>This manager keeps a dedicated Caffeine cache for each account so eviction pressure is
  * isolated between accounts while sharing the common configuration knobs (enable flag, max size,
@@ -25,7 +25,7 @@ public class GraphCacheManager {
   private final boolean cacheEnabled;
   private final long cacheMaxSize;
   private final MeterRegistry meterRegistry;
-  private final ConcurrentMap<String, Cache<GraphCacheKey, RelationNode>> accountCaches =
+  private final ConcurrentMap<String, Cache<GraphCacheKey, GraphNode>> accountCaches =
       new ConcurrentHashMap<>();
   private final ConcurrentMap<String, Counter> accountHitCounters = new ConcurrentHashMap<>();
   private final ConcurrentMap<String, Counter> accountMissCounters = new ConcurrentHashMap<>();
@@ -57,25 +57,25 @@ public class GraphCacheManager {
    * Returns the cached node for the provided resource, or {@code null} when caching is disabled or
    * the entry is missing.
    */
-  public RelationNode get(ResourceId id, GraphCacheKey key) {
+  public GraphNode get(ResourceId id, GraphCacheKey key) {
     if (!cacheEnabled) {
       return null;
     }
-    Cache<GraphCacheKey, RelationNode> cache = accountCache(id.getAccountId());
+    Cache<GraphCacheKey, GraphNode> cache = accountCache(id.getAccountId());
     if (cache == null) {
       return null;
     }
-    RelationNode node = cache.getIfPresent(key);
+    GraphNode node = cache.getIfPresent(key);
     incrementCounter(id.getAccountId(), node != null);
     return node;
   }
 
   /** Stores the resolved node inside the account cache. */
-  public void put(ResourceId id, GraphCacheKey key, RelationNode node) {
+  public void put(ResourceId id, GraphCacheKey key, GraphNode node) {
     if (!cacheEnabled || node == null) {
       return;
     }
-    Cache<GraphCacheKey, RelationNode> cache = accountCache(id.getAccountId());
+    Cache<GraphCacheKey, GraphNode> cache = accountCache(id.getAccountId());
     if (cache != null) {
       cache.put(key, node);
     }
@@ -86,7 +86,7 @@ public class GraphCacheManager {
     if (!cacheEnabled) {
       return;
     }
-    Cache<GraphCacheKey, RelationNode> cache = accountCaches.get(id.getAccountId());
+    Cache<GraphCacheKey, GraphNode> cache = accountCaches.get(id.getAccountId());
     if (cache != null) {
       cache.asMap().keySet().removeIf(key -> key.id().equals(id));
       if (cache.estimatedSize() == 0) {
@@ -95,7 +95,11 @@ public class GraphCacheManager {
     }
   }
 
-  private Cache<GraphCacheKey, RelationNode> accountCache(String accountId) {
+  public MeterRegistry meterRegistry() {
+    return meterRegistry;
+  }
+
+  private Cache<GraphCacheKey, GraphNode> accountCache(String accountId) {
     if (accountId == null || accountId.isBlank()) {
       return null;
     }
