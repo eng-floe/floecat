@@ -29,9 +29,12 @@ import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
 import org.eclipse.microprofile.config.Config;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class StageCommitProcessor {
+  private static final Logger LOG = Logger.getLogger(StageCommitProcessor.class);
+
   @Inject GrpcWithHeaders grpc;
   @Inject IcebergGatewayConfig config;
   @Inject ObjectMapper mapper;
@@ -74,6 +77,13 @@ public class StageCommitProcessor {
     if (entry.state() == StageState.ABORTED) {
       throw StageCommitException.conflict("stage " + stageId + " was aborted");
     }
+    String stagedMetadata =
+        entry.request().properties() == null
+            ? null
+            : entry.request().properties().get("metadata-location");
+    LOG.infof(
+        "Processing staged payload stageId=%s namespace=%s table=%s metadata=%s",
+        stageId, namespacePath, tableName, stagedMetadata);
 
     TableServiceGrpc.TableServiceBlockingStub tableStub = grpc.withHeaders(grpc.raw().table());
     Table existing = null;
@@ -101,6 +111,13 @@ public class StageCommitProcessor {
       tableRecord = tableStub.createTable(createRequest.build()).getTable();
     }
     LoadTableResultDto loadResult = toLoadResult(tableName, entry, tableRecord);
+    LOG.infof(
+        "Stage commit load result stageId=%s metadataLocation=%s tableId=%s",
+        stageId,
+        loadResult.metadataLocation(),
+        tableRecord != null && tableRecord.hasResourceId()
+            ? tableRecord.getResourceId().getId()
+            : "<missing>");
     stagedTableService.deleteStage(key);
     return new StageCommitResult(tableRecord, loadResult);
   }

@@ -105,6 +105,9 @@ public class TableCommitSideEffectService {
     if (effectiveMetadata == null || effectiveMetadata.isBlank()) {
       return resolveConnectorId(tableRecord);
     }
+    LOG.infof(
+        "Synchronizing connector metadata namespace=%s table=%s metadata=%s",
+        namespacePath, table, effectiveMetadata);
     ResourceId connectorId = resolveConnectorId(tableRecord);
     if (connectorId == null) {
       var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
@@ -131,6 +134,9 @@ public class TableCommitSideEffectService {
         String baseLocation = tableLocation(tableRecord);
         String resolvedLocation =
             tableSupport.resolveTableLocation(baseLocation, effectiveMetadata);
+        LOG.infof(
+            "Creating external connector namespace=%s table=%s metadata=%s resolvedLocation=%s",
+            namespacePath, table, effectiveMetadata, resolvedLocation);
         connectorId =
             tableSupport.createExternalConnector(
                 prefix,
@@ -149,6 +155,9 @@ public class TableCommitSideEffectService {
       }
     } else {
       tableSupport.updateConnectorMetadata(connectorId, effectiveMetadata);
+      LOG.infof(
+          "Updated connector metadata connectorId=%s namespace=%s table=%s metadata=%s",
+          connectorId.getId(), namespacePath, table, effectiveMetadata);
     }
     return connectorId;
   }

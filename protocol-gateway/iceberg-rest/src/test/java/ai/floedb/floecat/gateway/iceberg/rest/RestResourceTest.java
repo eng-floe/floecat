@@ -5,6 +5,7 @@ import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItems;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -120,6 +121,8 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.RestAssured;
 import io.restassured.builder.RequestSpecBuilder;
+import io.restassured.response.ExtractableResponse;
+import io.restassured.response.Response;
 import io.restassured.specification.RequestSpecification;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.MediaType;
@@ -1029,21 +1032,31 @@ class RestResourceTest {
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
 
-    given()
-        .body(stageCreateRequestWithoutLocation("ducktab"))
-        .header("Iceberg-Transaction-Id", "stage-default")
-        .contentType(MediaType.APPLICATION_JSON)
-        .when()
-        .post("/v1/foo/namespaces/db/tables")
-        .then()
-        .statusCode(200)
-        .body("stage-id", equalTo("stage-default"));
+    ExtractableResponse<Response> response =
+        given()
+            .body(stageCreateRequestWithoutLocation("ducktab"))
+            .header("Iceberg-Transaction-Id", "stage-default")
+            .contentType(MediaType.APPLICATION_JSON)
+            .when()
+            .post("/v1/foo/namespaces/db/tables")
+            .then()
+            .statusCode(200)
+            .body("stage-id", equalTo("stage-default"))
+            .extract();
+
+    String responseMetadataLocation = response.path("metadata-location");
+    assertNotNull(responseMetadataLocation);
+    assertTrue(
+        responseMetadataLocation.startsWith("s3://warehouse/default/foo/db/ducktab/metadata/"));
 
     verify(tableStub, never()).createTable(any());
     StagedTableKey key =
         new StagedTableKey("account1", "foo", List.of("db"), "ducktab", "stage-default");
     StagedTableEntry entry = stageRepository.get(key).orElseThrow();
     assertEquals("s3://warehouse/default/foo/db/ducktab", entry.request().location());
+    assertEquals(responseMetadataLocation, entry.request().properties().get("metadata-location"));
+    assertEquals(
+        responseMetadataLocation, entry.spec().getPropertiesMap().get("metadata-location"));
   }
 
   @Test
@@ -1114,7 +1127,12 @@ class RestResourceTest {
         new StagedTableKey("account1", "foo", List.of("db"), "orders", "stage-commit");
     assertTrue(stageRepository.get(key).isEmpty());
     verify(tableStub, times(1)).createTable(any());
-    verify(connectorsStub, times(1)).createConnector(any());
+    ArgumentCaptor<CreateConnectorRequest> connectorReq =
+        ArgumentCaptor.forClass(CreateConnectorRequest.class);
+    verify(connectorsStub, times(1)).createConnector(connectorReq.capture());
+    assertEquals(
+        "s3://bucket/orders/metadata.json",
+        connectorReq.getValue().getSpec().getPropertiesMap().get("external.metadata-location"));
   }
 
   @Test

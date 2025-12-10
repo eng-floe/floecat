@@ -30,6 +30,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.support.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.support.MirrorLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -153,14 +154,14 @@ public class TableGatewaySupport {
       return null;
     }
     int idx = metadataLocation.indexOf("/metadata/");
+    String base;
     if (idx > 0) {
-      return metadataLocation.substring(0, idx);
+      base = metadataLocation.substring(0, idx);
+    } else {
+      int slash = metadataLocation.lastIndexOf('/');
+      base = slash > 0 ? metadataLocation.substring(0, slash) : metadataLocation;
     }
-    int slash = metadataLocation.lastIndexOf('/');
-    if (slash > 0) {
-      return metadataLocation.substring(0, slash);
-    }
-    return metadataLocation;
+    return stripMetadataMirrorPrefix(base);
   }
 
   private String metadataLocationFromTableLocation(String tableLocation) {
@@ -594,6 +595,18 @@ public class TableGatewaySupport {
       }
     }
     return out;
+  }
+
+  public String mirrorMetadataLocation(String metadataLocation) {
+    return MirrorLocationUtil.mirrorMetadataLocation(metadataLocation);
+  }
+
+  public boolean isMirrorMetadataLocation(String metadataLocation) {
+    return MirrorLocationUtil.isMirrorMetadataLocation(metadataLocation);
+  }
+
+  public String stripMetadataMirrorPrefix(String location) {
+    return MirrorLocationUtil.stripMetadataMirrorPrefix(location);
   }
 
   private static Long propertyLong(Map<String, String> props, String key) {

@@ -7,12 +7,13 @@ import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitProcessor.StageCommitResult;
-import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.support.mapper.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -21,6 +22,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Supplier;
 import org.jboss.logging.Logger;
 
@@ -103,7 +105,6 @@ public class TableCommitService {
 
     TableSpec.Builder spec = TableSpec.newBuilder();
     FieldMask.Builder mask = FieldMask.newBuilder();
-    SnapshotUpdateContext snapshotContext = new SnapshotUpdateContext();
     if (req != null) {
       Response requirementError =
           commitRequirementService.validateRequirements(
@@ -164,93 +165,45 @@ public class TableCommitService {
               table,
               tableSupplier,
               req.updates(),
-              idempotencyKey,
-              snapshotContext);
+              idempotencyKey);
       if (snapshotError != null) {
         return snapshotError;
       }
-      mergedProps =
-          materializePendingSnapshotMetadataIfNeeded(
-              namespace, table, tableId, tableSupplier, mergedProps, snapshotContext);
       if (mergedProps != null) {
         spec.clearProperties().putAllProperties(mergedProps);
         mask.addPaths("properties");
       }
     }
 
+    Table committedTable;
     if (mask.getPathsCount() == 0) {
-      Table current = tableSupplier.get();
-      IcebergMetadata metadata = tableSupport.loadCurrentMetadata(current);
-      List<Snapshot> snapshotList =
-          SnapshotLister.fetchSnapshots(grpc, tableId, SnapshotLister.Mode.ALL, metadata);
-      CommitTableResponseDto initialResponse =
-          TableResponseMapper.toCommitResponse(table, current, metadata, snapshotList);
-      var sideEffects =
-          sideEffectService.finalizeCommitResponse(
-              namespace,
-              table,
-              tableId,
-              current,
-              initialResponse,
-              false,
-              tableSupport,
-              prefix,
-              namespacePath,
-              namespaceId,
-              catalogId,
-              idempotencyKey);
-      if (sideEffects.hasError()) {
-        return sideEffects.error();
-      }
-      CommitTableResponseDto responseDto = sideEffects.response();
-      Response.ResponseBuilder builder = Response.ok(responseDto);
-      LOG.infof(
-          "Commit response for %s.%s tableId=%s currentSnapshot=%s snapshotCount=%d",
-          namespace,
-          table,
-          current.hasResourceId() ? current.getResourceId().getId() : "<missing>",
-          metadata != null ? metadata.getCurrentSnapshotId() : "<null>",
-          snapshotList == null ? 0 : snapshotList.size());
-      if (responseDto != null && responseDto.metadataLocation() != null) {
-        builder.tag(responseDto.metadataLocation());
-      }
-      logStageCommit(
-          stageMaterialization,
-          nonBlank(materializedStageId, resolveStageId(req, transactionId)),
-          namespace,
-          table,
-          responseDto == null ? null : responseDto.metadata());
-      runConnectorSync(tableSupport, sideEffects.connectorId(), namespacePath, namespace, table);
-      return builder.build();
+      committedTable = tableSupplier.get();
+    } else {
+      UpdateTableRequest.Builder updateRequest =
+          UpdateTableRequest.newBuilder().setTableId(tableId).setSpec(spec).setUpdateMask(mask);
+      committedTable = tableLifecycleService.updateTable(updateRequest.build());
     }
 
-    UpdateTableRequest.Builder updateRequest =
-        UpdateTableRequest.newBuilder().setTableId(tableId).setSpec(spec).setUpdateMask(mask);
-    Table updated = tableLifecycleService.updateTable(updateRequest.build());
-    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(updated);
+    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(committedTable);
+    String requestedMetadataOverride = resolveRequestedMetadataLocation(req);
     List<Snapshot> snapshotList =
         SnapshotLister.fetchSnapshots(grpc, tableId, SnapshotLister.Mode.ALL, metadata);
     CommitTableResponseDto initialResponse =
-        TableResponseMapper.toCommitResponse(table, updated, metadata, snapshotList);
-    boolean skipMaterialization = snapshotContext.hasMaterializedMetadata();
-    CommitTableResponseDto responseDto = initialResponse;
-    if (skipMaterialization) {
-      String location = snapshotContext.materializedMetadataLocation;
-      responseDto =
-          new CommitTableResponseDto(
-              location,
-              responseDto.metadata() == null
-                  ? null
-                  : responseDto.metadata().withMetadataLocation(location));
-    }
+        TableResponseMapper.toCommitResponse(table, committedTable, metadata, snapshotList);
+    CommitTableResponseDto stageAwareResponse =
+        preferStageMetadata(initialResponse, stageMaterialization);
+    stageAwareResponse =
+        normalizeMetadataLocation(tableSupport, committedTable, stageAwareResponse);
+    stageAwareResponse =
+        preferRequestedMetadata(tableSupport, stageAwareResponse, requestedMetadataOverride);
     var sideEffects =
         sideEffectService.finalizeCommitResponse(
             namespace,
             table,
             tableId,
-            updated,
-            responseDto,
-            skipMaterialization,
+            committedTable,
+            stageAwareResponse,
+            false,
             tableSupport,
             prefix,
             namespacePath,
@@ -260,13 +213,14 @@ public class TableCommitService {
     if (sideEffects.hasError()) {
       return sideEffects.error();
     }
-    responseDto = sideEffects.response();
+    CommitTableResponseDto responseDto =
+        preferStageMetadata(sideEffects.response(), stageMaterialization);
     Response.ResponseBuilder builder = Response.ok(responseDto);
     LOG.infof(
         "Commit response for %s.%s tableId=%s currentSnapshot=%s snapshotCount=%d",
         namespace,
         table,
-        updated.hasResourceId() ? updated.getResourceId().getId() : "<missing>",
+        committedTable.hasResourceId() ? committedTable.getResourceId().getId() : "<missing>",
         metadata != null ? metadata.getCurrentSnapshotId() : "<null>",
         snapshotList == null ? 0 : snapshotList.size());
     if (responseDto != null && responseDto.metadataLocation() != null) {
@@ -318,6 +272,81 @@ public class TableCommitService {
   private Table tableWithPropertyOverrides(
       Supplier<Table> tableSupplier, Map<String, String> propertyOverrides) {
     return tablePropertyService.tableWithPropertyOverrides(tableSupplier, propertyOverrides);
+  }
+
+  private CommitTableResponseDto preferStageMetadata(
+      CommitTableResponseDto response, StageCommitResult stageMaterialization) {
+    if (stageMaterialization == null || stageMaterialization.loadResult() == null) {
+      return response;
+    }
+    LoadTableResultDto staged = stageMaterialization.loadResult();
+    TableMetadataView stagedMetadata = staged.metadata();
+    String stagedLocation = staged.metadataLocation();
+    if ((stagedLocation == null || stagedLocation.isBlank())
+        && stagedMetadata != null
+        && stagedMetadata.metadataLocation() != null
+        && !stagedMetadata.metadataLocation().isBlank()) {
+      stagedLocation = stagedMetadata.metadataLocation();
+    }
+    if (stagedLocation == null || stagedLocation.isBlank()) {
+      return response;
+    }
+    String originalLocation = response == null ? "<null>" : response.metadataLocation();
+    LOG.infof(
+        "Stage metadata evaluation stagedLocation=%s originalLocation=%s",
+        stagedLocation, originalLocation);
+    if (stagedMetadata != null) {
+      stagedMetadata = stagedMetadata.withMetadataLocation(stagedLocation);
+    }
+    if (response != null
+        && stagedLocation.equals(response.metadataLocation())
+        && Objects.equals(stagedMetadata, response.metadata())) {
+      return response;
+    }
+    LOG.infof(
+        "Preferring staged metadata location %s over %s",
+        stagedLocation, originalLocation);
+    return new CommitTableResponseDto(stagedLocation, stagedMetadata);
+  }
+
+  private CommitTableResponseDto preferRequestedMetadata(
+      TableGatewaySupport tableSupport,
+      CommitTableResponseDto response,
+      String requestedMetadataLocation) {
+    if (requestedMetadataLocation == null || requestedMetadataLocation.isBlank()) {
+      return response;
+    }
+    String resolved = tableSupport.stripMetadataMirrorPrefix(requestedMetadataLocation);
+    if (resolved == null || resolved.isBlank()) {
+      return response;
+    }
+    TableMetadataView metadata = response == null ? null : response.metadata();
+    if (metadata != null) {
+      metadata = metadata.withMetadataLocation(resolved);
+    }
+    if (response != null && resolved.equals(response.metadataLocation())) {
+      if (Objects.equals(metadata, response.metadata())) {
+        return response;
+      }
+    }
+    return new CommitTableResponseDto(resolved, metadata);
+  }
+
+  private CommitTableResponseDto normalizeMetadataLocation(
+      TableGatewaySupport tableSupport, Table tableRecord, CommitTableResponseDto response) {
+    if (response == null || response.metadataLocation() == null) {
+      return response;
+    }
+    String metadataLocation = response.metadataLocation();
+    if (!tableSupport.isMirrorMetadataLocation(metadataLocation)) {
+      return response;
+    }
+    String resolvedLocation = tableSupport.stripMetadataMirrorPrefix(metadataLocation);
+    TableMetadataView metadata = response.metadata();
+    if (metadata != null) {
+      metadata = metadata.withMetadataLocation(resolvedLocation);
+    }
+    return new CommitTableResponseDto(resolvedLocation, metadata);
   }
 
   private void runConnectorSync(
@@ -379,6 +408,57 @@ public class TableCommitService {
     return value == null ? null : String.valueOf(value);
   }
 
+  private String resolveRequestedMetadataLocation(TableRequests.Commit req) {
+    if (req == null) {
+      return null;
+    }
+    String location = MetadataLocationUtil.metadataLocation(req.properties());
+    String updateLocation = metadataLocationFromUpdates(req.updates());
+    return nonBlank(updateLocation, location);
+  }
+
+  private String metadataLocationFromUpdates(List<Map<String, Object>> updates) {
+    if (updates == null || updates.isEmpty()) {
+      return null;
+    }
+    String location = null;
+    for (Map<String, Object> update : updates) {
+      if (update == null) {
+        continue;
+      }
+      String action = asString(update.get("action"));
+      if (!"set-properties".equals(action)) {
+        continue;
+      }
+      Map<String, String> toSet = asStringMap(update.get("updates"));
+      if (toSet.isEmpty()) {
+        continue;
+      }
+      String candidate = MetadataLocationUtil.metadataLocation(toSet);
+      if (candidate != null && !candidate.isBlank()) {
+        location = candidate;
+      }
+    }
+    return location;
+  }
+
+  @SuppressWarnings("unchecked")
+  private Map<String, String> asStringMap(Object value) {
+    if (!(value instanceof Map<?, ?> map) || map.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, String> converted = new LinkedHashMap<>();
+    map.forEach(
+        (k, v) -> {
+          String key = asString(k);
+          String strValue = asString(v);
+          if (key != null && strValue != null) {
+            converted.put(key, strValue);
+          }
+        });
+    return converted;
+  }
+
   private Response validationError(String message) {
     return Response.status(Response.Status.BAD_REQUEST)
         .entity(
@@ -395,76 +475,6 @@ public class TableCommitService {
                 new ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError(
                     message, "CommitFailedException", 409)))
         .build();
-  }
-
-  private MaterializeMetadataResult materializePendingSnapshotMetadata(
-      String namespace,
-      String tableName,
-      ResourceId tableId,
-      Supplier<Table> tableSupplier,
-      Map<String, String> mergedProps,
-      Long snapshotIdForMaterialization) {
-    if (snapshotIdForMaterialization == null) {
-      return null;
-    }
-    IcebergMetadata snapshotMetadata =
-        snapshotMetadataService.loadSnapshotMetadata(tableId, snapshotIdForMaterialization);
-    if (snapshotMetadata == null) {
-      return null;
-    }
-    Table tableForMetadata = tableWithPropertyOverrides(tableSupplier, mergedProps);
-    List<Snapshot> snapshotList =
-        SnapshotLister.fetchSnapshots(grpc, tableId, SnapshotLister.Mode.ALL, snapshotMetadata);
-    CommitTableResponseDto pendingResponse =
-        TableResponseMapper.toCommitResponse(
-            tableName, tableForMetadata, snapshotMetadata, snapshotList);
-    return sideEffectService.materializeMetadata(
-        namespace,
-        null,
-        tableName,
-        tableForMetadata,
-        pendingResponse.metadata(),
-        pendingResponse.metadataLocation());
-  }
-
-  private Map<String, String> materializePendingSnapshotMetadataIfNeeded(
-      String namespace,
-      String tableName,
-      ResourceId tableId,
-      Supplier<Table> tableSupplier,
-      Map<String, String> mergedProps,
-      SnapshotUpdateContext snapshotContext) {
-    if (snapshotContext == null || snapshotContext.lastSnapshotId == null) {
-      return mergedProps;
-    }
-    Map<String, String> propsForMaterialization =
-        tablePropertyService.ensurePropertyMap(tableSupplier, mergedProps);
-    MaterializeMetadataResult pendingMaterialization =
-        materializePendingSnapshotMetadata(
-            namespace,
-            tableName,
-            tableId,
-            tableSupplier,
-            propsForMaterialization,
-            snapshotContext.lastSnapshotId);
-    if (pendingMaterialization != null) {
-      TableMetadataView pendingMetadata =
-          pendingMaterialization.metadata() != null ? pendingMaterialization.metadata() : null;
-      String resolvedLocation =
-          nonBlank(
-              pendingMaterialization.metadataLocation(),
-              pendingMetadata != null ? pendingMetadata.metadataLocation() : null);
-      Map<String, String> updatedProps =
-          pendingMetadata != null && pendingMetadata.properties() != null
-              ? new LinkedHashMap<>(pendingMetadata.properties())
-              : propsForMaterialization;
-      if (updatedProps != null && resolvedLocation != null && !resolvedLocation.isBlank()) {
-        MetadataLocationUtil.setMetadataLocation(updatedProps, resolvedLocation);
-        snapshotContext.materializedMetadataLocation = resolvedLocation;
-      }
-      return updatedProps;
-    }
-    return mergedProps;
   }
 
   public MaterializeMetadataResult materializeMetadata(

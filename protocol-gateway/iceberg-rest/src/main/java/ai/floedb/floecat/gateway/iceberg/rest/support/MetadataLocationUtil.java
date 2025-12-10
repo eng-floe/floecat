@@ -1,5 +1,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest.support;
 
+import ai.floedb.floecat.gateway.iceberg.rest.support.MirrorLocationUtil;
 import java.util.Map;
 import java.util.function.BiConsumer;
 
@@ -63,6 +64,14 @@ public final class MetadataLocationUtil {
       return null;
     }
     return trimmed.substring(0, slash);
+  }
+
+  public static String canonicalMetadataDirectory(String metadataLocation) {
+    String directory = metadataDirectory(metadataLocation);
+    if (directory == null || directory.isBlank()) {
+      return directory;
+    }
+    return MirrorLocationUtil.stripMetadataMirrorPrefix(directory);
   }
 
   public static boolean isPointer(String metadataLocation) {

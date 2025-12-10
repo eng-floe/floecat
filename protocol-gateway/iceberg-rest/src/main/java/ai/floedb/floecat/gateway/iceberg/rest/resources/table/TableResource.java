@@ -165,6 +165,14 @@ public class TableResource {
     } catch (IllegalArgumentException | JsonProcessingException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
+    String specMetadataLocation =
+        MetadataLocationUtil.metadataLocation(spec.getPropertiesMap());
+    String stagedMetadataLocation = tableSupport.mirrorMetadataLocation(specMetadataLocation);
+    if (stagedMetadataLocation != null && !stagedMetadataLocation.equals(specMetadataLocation)) {
+      MetadataLocationUtil.setMetadataLocation(spec::putProperties, stagedMetadataLocation);
+      specMetadataLocation = stagedMetadataLocation;
+    }
+    effectiveReq = ensureMetadataLocation(effectiveReq, specMetadataLocation);
 
     Table created = tableLifecycleService.createTable(spec, idempotencyKey);
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
@@ -175,7 +183,7 @@ public class TableResource {
       try {
         loadResult =
             TableResponseMapper.toLoadResultFromCreate(
-                tableName, created, req, tableConfig, credentials);
+                tableName, created, effectiveReq, tableConfig, credentials);
       } catch (IllegalArgumentException e) {
         return IcebergErrorResponses.validation(e.getMessage());
       }
@@ -202,38 +210,53 @@ public class TableResource {
             : loadResult.metadata();
     String responseMetadataLocation =
         nonBlank(materializationResult.metadataLocation(), loadResult.metadataLocation());
-    String preferredMetadataLocation =
-        nonBlank(
-            req == null ? null : tableSupport.metadataLocationFromCreate(req),
-            metadataLocation(created, metadata));
-    if (preferredMetadataLocation != null && !preferredMetadataLocation.isBlank()) {
-      responseMetadataLocation = preferredMetadataLocation;
-    }
     if (responseMetadata != null && responseMetadataLocation != null) {
       responseMetadata = responseMetadata.withMetadataLocation(responseMetadataLocation);
+    }
+    Map<String, String> responseConfig =
+        loadResult.config() == null
+            ? new LinkedHashMap<>()
+            : new LinkedHashMap<>(loadResult.config());
+    String metadataDirectory =
+        MetadataLocationUtil.canonicalMetadataDirectory(responseMetadataLocation);
+    if (metadataDirectory != null && !metadataDirectory.isBlank()) {
+      responseConfig.put("write.metadata.path", metadataDirectory);
     }
     loadResult =
         new LoadTableResultDto(
             responseMetadataLocation,
             responseMetadata,
-            loadResult.config(),
+            Map.copyOf(responseConfig),
             loadResult.storageCredentials());
-
-    String requestedLocation = req != null ? req.location() : null;
-    String metadataForLocation =
-        nonBlank(loadResult.metadataLocation(), tableSupport.metadataLocationFromCreate(req));
-    String externalUri = tableSupport.resolveTableLocation(requestedLocation, metadataForLocation);
-    configureConnectorAndSync(
-        prefix,
+    LOG.infof(
+        "Create table response namespace=%s table=%s metadata=%s location=%s configKeys=%s",
         namespacePath,
-        namespaceId,
-        catalogId,
         tableName,
-        created.getResourceId(),
-        metadataForLocation,
-        externalUri,
-        null,
-        idempotencyKey);
+        responseMetadata == null ? "<null>" : responseMetadata.metadataLocation(),
+        responseMetadataLocation,
+        loadResult.config().keySet());
+
+    String requestedLocation = effectiveReq != null ? effectiveReq.location() : null;
+    String metadataForLocation = loadResult.metadataLocation();
+    String resolvedLocation =
+        tableSupport.resolveTableLocation(requestedLocation, metadataForLocation);
+    String existingUpstreamUri =
+        created.hasUpstream() && created.getUpstream().getUri() != null
+            ? created.getUpstream().getUri()
+            : null;
+    ResourceId connectorId =
+        configureConnector(
+            prefix,
+            namespacePath,
+            namespaceId,
+            catalogId,
+            tableName,
+            created.getResourceId(),
+            metadataForLocation,
+            resolvedLocation,
+            existingUpstreamUri,
+            idempotencyKey);
+    tableCommitService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
 
     Response.ResponseBuilder builder = Response.ok(loadResult);
     String etagValue = metadataLocation(created, metadata);
@@ -273,15 +296,29 @@ public class TableResource {
             ? UUID.randomUUID().toString()
             : transactionId.trim();
     try {
-      TableSpec.Builder spec =
+      LOG.infof(
+          "Stage-create request payload prefix=%s namespace=%s table=%s stageId=%s location=%s"
+              + " properties=%s",
+          prefix,
+          namespacePath,
+          tableName,
+          stageId,
+          effectiveReq.location(),
+          effectiveReq.properties());
+      TableSpec.Builder specBuilder =
           tableSupport.buildCreateSpec(catalogId, namespaceId, tableName, effectiveReq);
+      TableSpec spec = specBuilder.build();
+      String stagedMetadataLocation =
+          MetadataLocationUtil.metadataLocation(spec.getPropertiesMap());
+      TableRequests.Create normalizedReq =
+          ensureMetadataLocation(effectiveReq, stagedMetadataLocation);
       StagedTableEntry entry =
           new StagedTableEntry(
               new StagedTableKey(accountId, catalogName, namespacePath, tableName, stageId),
               catalogId,
               namespaceId,
-              effectiveReq,
-              spec.build(),
+              normalizedReq,
+              spec,
               STAGE_CREATE_REQUIREMENTS,
               StageState.STAGED,
               null,
@@ -307,9 +344,21 @@ public class TableResource {
           TableResponseMapper.toLoadResultFromCreate(
               tableName,
               stubTable,
-              effectiveReq,
+              normalizedReq,
               tableSupport.defaultTableConfig(),
               tableSupport.defaultCredentials());
+      LOG.infof(
+          "Stage-create metadata resolved stageId=%s location=%s requestProperty=%s",
+          stored.key().stageId(),
+          loadResult.metadataLocation(),
+          normalizedReq.properties() == null
+              ? "<none>"
+              : normalizedReq.properties().get("metadata-location"));
+      LOG.infof(
+          "Stage-create response stageId=%s metadataLocation=%s configKeys=%s",
+          stored.key().stageId(),
+          loadResult.metadataLocation(),
+          loadResult.config().keySet());
       return Response.ok(
               new StageCreateResponseDto(
                   loadResult.metadataLocation(),
@@ -684,17 +733,19 @@ public class TableResource {
     String resolvedLocation =
         tableSupport.resolveTableLocation(
             importedMetadata != null ? importedMetadata.tableLocation() : null, metadataLocation);
-    configureConnectorAndSync(
-        prefix,
-        namespacePath,
-        namespaceId,
-        catalogId,
-        tableName,
-        created.getResourceId(),
-        metadataLocation,
-        resolvedLocation,
-        null,
-        idempotencyKey);
+    ResourceId connectorId =
+        configureConnector(
+            prefix,
+            namespacePath,
+            namespaceId,
+            catalogId,
+            tableName,
+            created.getResourceId(),
+            metadataLocation,
+            resolvedLocation,
+            null,
+            idempotencyKey);
+    tableCommitService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
 
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
     Response.ResponseBuilder builder =
@@ -800,17 +851,19 @@ public class TableResource {
         tableSupport.resolveTableLocation(
             importedMetadata != null ? importedMetadata.tableLocation() : null, metadataLocation);
     if (connectorId == null) {
-      configureConnectorAndSync(
-          prefix,
-          namespacePath,
-          namespaceId,
-          catalogId,
-          tableName,
-          tableId,
-          metadataLocation,
-          resolvedLocation,
-          null,
-          idempotencyKey);
+      connectorId =
+          configureConnector(
+              prefix,
+              namespacePath,
+              namespaceId,
+              catalogId,
+              tableName,
+              tableId,
+              metadataLocation,
+              resolvedLocation,
+              null,
+              idempotencyKey);
+      tableCommitService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
     } else {
       tableSupport.updateConnectorMetadata(connectorId, metadataLocation);
       String existingUri =
@@ -842,7 +895,7 @@ public class TableResource {
     return builder.build();
   }
 
-  private void configureConnectorAndSync(
+  private ResourceId configureConnector(
       String prefix,
       List<String> namespacePath,
       ResourceId namespaceId,
@@ -884,12 +937,12 @@ public class TableResource {
       upstreamUri = resolvedTableLocation;
     }
     if (connectorId == null || upstreamUri == null || upstreamUri.isBlank()) {
-      return;
+      return null;
     }
     if (existingUpstreamUri == null || !existingUpstreamUri.equals(upstreamUri)) {
       tableSupport.updateTableUpstream(tableId, namespacePath, tableName, connectorId, upstreamUri);
     }
-    tableCommitService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
+    return connectorId;
   }
 
   private Map<String, String> mergeImportedProperties(
@@ -1039,6 +1092,30 @@ public class TableResource {
       trimmed = trimmed.substring(0, trimmed.length() - 1);
     }
     return trimmed;
+  }
+
+  private static TableRequests.Create ensureMetadataLocation(
+      TableRequests.Create req, String metadataLocation) {
+    if (req == null || metadataLocation == null || metadataLocation.isBlank()) {
+      return req;
+    }
+    Map<String, String> props = req.properties();
+    String existing = MetadataLocationUtil.metadataLocation(props);
+    if (metadataLocation.equals(existing)) {
+      return req;
+    }
+    Map<String, String> updated =
+        props == null || props.isEmpty() ? new LinkedHashMap<>() : new LinkedHashMap<>(props);
+    MetadataLocationUtil.setMetadataLocation(updated, metadataLocation);
+    return new TableRequests.Create(
+        req.name(),
+        req.schemaJson(),
+        req.schema(),
+        req.location(),
+        Map.copyOf(updated),
+        req.partitionSpec(),
+        req.writeOrder(),
+        req.stageCreate());
   }
 
   private Long propertyLong(Map<String, String> props, String key) {

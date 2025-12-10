@@ -98,8 +98,7 @@ public class SnapshotMetadataService {
       String tableName,
       Supplier<Table> tableSupplier,
       List<Map<String, Object>> updates,
-      String idempotencyKey,
-      SnapshotUpdateContext snapshotContext) {
+      String idempotencyKey) {
     if (updates == null || updates.isEmpty()) {
       return null;
     }
@@ -136,9 +135,6 @@ public class SnapshotMetadataService {
         Long snapshotId = asLong(snapshot.get("snapshot-id"));
         if (snapshotId != null) {
           lastSnapshotId = snapshotId;
-          if (snapshotContext != null) {
-            snapshotContext.lastSnapshotId = snapshotId;
-          }
         }
       } else if ("remove-snapshots".equals(action)) {
         List<Long> ids = asLongList(update.get("snapshot-ids"));

@@ -2,10 +2,15 @@ package ai.floedb.floecat.gateway.iceberg.rest;
 
 import ai.floedb.floecat.gateway.iceberg.rest.support.TestS3Fixtures;
 import io.quarkus.test.common.QuarkusTestResourceLifecycleManager;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.ServerSocket;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -69,8 +74,8 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
           new ProcessBuilder(command)
               .directory(repoRoot().resolve("service").toFile())
               .redirectErrorStream(true)
-              .redirectOutput(logFile.toFile())
               .start();
+      startLogRelay(serviceProcess, logFile);
 
       waitForPortOpen(Duration.ofSeconds(60));
       System.out.printf(
@@ -157,6 +162,35 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
     try (ServerSocket socket = new ServerSocket(0)) {
       return socket.getLocalPort();
     }
+  }
+
+  private void startLogRelay(Process process, Path logFile) {
+    Thread relay =
+        new Thread(
+            () -> {
+              try (BufferedReader reader =
+                      new BufferedReader(
+                          new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
+                  BufferedWriter writer =
+                      Files.newBufferedWriter(
+                          logFile,
+                          StandardOpenOption.CREATE,
+                          StandardOpenOption.APPEND,
+                          StandardOpenOption.WRITE)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                  writer.write(line);
+                  writer.newLine();
+                  writer.flush();
+                  System.out.printf("[FloecatService] %s%n", line);
+                }
+              } catch (IOException e) {
+                System.err.printf("Failed to relay Floecat service logs: %s%n", e.getMessage());
+              }
+            },
+            "FloecatServiceLogRelay");
+    relay.setDaemon(true);
+    relay.start();
   }
 
   private static Path repoRoot() {

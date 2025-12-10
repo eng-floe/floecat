@@ -13,8 +13,10 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.jboss.logging.Logger;
 
 public final class TableResponseMapper {
+  private static final Logger LOG = Logger.getLogger(TableResponseMapper.class);
   private TableResponseMapper() {}
 
   public static LoadTableResultDto toLoadResult(
@@ -24,6 +26,12 @@ public final class TableResponseMapper {
       List<Snapshot> snapshots,
       Map<String, String> configOverrides,
       List<StorageCredentialDto> storageCredentials) {
+    LOG.debugf(
+        "Mapping load result from catalog table=%s metadataLocation=%s configKeys=%s requestProps=%s",
+        tableName,
+        metadata == null ? "<null>" : metadata.getMetadataLocation(),
+        configOverrides.keySet(),
+        table.getPropertiesMap());
     Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
     TableMetadataView metadataView =
         TableMetadataBuilder.fromCatalog(tableName, table, props, metadata, snapshots);
@@ -47,6 +55,13 @@ public final class TableResponseMapper {
       TableRequests.Create request,
       Map<String, String> configOverrides,
       List<StorageCredentialDto> storageCredentials) {
+    LOG.debugf(
+        "Mapping load result from create table=%s metadataLocation=%s configKeys=%s",
+        tableName,
+        request == null
+            ? "<null>"
+            : MetadataLocationUtil.metadataLocation(request.properties()),
+        configOverrides.keySet());
     TableMetadataView metadataView =
         TableMetadataBuilder.fromCreateRequest(tableName, table, request);
     Map<String, String> effectiveConfig =
@@ -60,7 +75,7 @@ public final class TableResponseMapper {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return originalConfig;
     }
-    String directory = MetadataLocationUtil.metadataDirectory(metadataLocation);
+    String directory = MetadataLocationUtil.canonicalMetadataDirectory(metadataLocation);
     if (directory == null || directory.isBlank()) {
       return originalConfig;
     }

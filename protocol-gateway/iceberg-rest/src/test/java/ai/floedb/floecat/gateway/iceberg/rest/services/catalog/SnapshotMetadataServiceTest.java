@@ -54,8 +54,7 @@ class SnapshotMetadataServiceTest {
             "orders",
             neverInvokedTableSupplier(),
             List.of(Map.of("action", "remove-snapshots")),
-            "commit-key",
-            new SnapshotUpdateContext());
+            "commit-key");
 
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = (IcebergErrorResponse) response.getEntity();
@@ -73,8 +72,7 @@ class SnapshotMetadataServiceTest {
             "orders",
             neverInvokedTableSupplier(),
             List.of(Map.of("action", "set-snapshot-ref")),
-            "commit-key",
-            new SnapshotUpdateContext());
+            "commit-key");
 
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = (IcebergErrorResponse) response.getEntity();

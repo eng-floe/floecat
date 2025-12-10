@@ -396,16 +396,45 @@ public final class TableMetadataBuilder {
 
   private static String resolveMetadataLocation(
       Map<String, String> props, IcebergMetadata metadata) {
+    String metadataLocation = metadataLocationFromMetadataLog(metadata);
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      metadataLocation = metadataLocationFromField(metadata);
+    }
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      return metadataLocation;
+    }
     String propertyLocation = MetadataLocationUtil.metadataLocation(props);
     if (propertyLocation != null
         && !propertyLocation.isBlank()
         && !MetadataLocationUtil.isPointer(propertyLocation)) {
       return propertyLocation;
     }
-    if (metadata != null && !metadata.getMetadataLocation().isBlank()) {
-      return metadata.getMetadataLocation();
-    }
     return propertyLocation;
+  }
+
+  private static String metadataLocationFromField(IcebergMetadata metadata) {
+    if (metadata == null) {
+      return null;
+    }
+    String directLocation = metadata.getMetadataLocation();
+    if (directLocation != null && !directLocation.isBlank()) {
+      return directLocation;
+    }
+    return null;
+  }
+
+  private static String metadataLocationFromMetadataLog(IcebergMetadata metadata) {
+    if (metadata == null || metadata.getMetadataLogCount() == 0) {
+      return null;
+    }
+    var entries = metadata.getMetadataLogList();
+    for (int idx = entries.size() - 1; idx >= 0; idx--) {
+      String candidate = entries.get(idx).getFile();
+      if (candidate != null && !candidate.isBlank()) {
+        return candidate;
+      }
+    }
+    return null;
   }
 
   private static String resolveInitialMetadataLocation(
@@ -502,7 +531,7 @@ public final class TableMetadataBuilder {
   }
 
   private static void syncWriteMetadataPath(Map<String, String> props, String metadataLocation) {
-    String directory = MetadataLocationUtil.metadataDirectory(metadataLocation);
+    String directory = MetadataLocationUtil.canonicalMetadataDirectory(metadataLocation);
     if (directory == null || directory.isBlank()) {
       return;
     }
