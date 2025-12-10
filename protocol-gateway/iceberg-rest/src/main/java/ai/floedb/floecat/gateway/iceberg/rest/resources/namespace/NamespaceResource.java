@@ -190,45 +190,6 @@ public class NamespaceResource {
   }
 
   @Path("/{namespace}")
-  @PUT
-  public Response update(
-      @PathParam("prefix") String prefix,
-      @PathParam("namespace") String namespace,
-      NamespaceRequests.Update req) {
-    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
-    ResourceId namespaceId =
-        NameResolution.resolveNamespace(grpc, catalogName, NamespacePaths.split(namespace));
-
-    NamespaceSpec.Builder spec = NamespaceSpec.newBuilder();
-    FieldMask.Builder mask = FieldMask.newBuilder();
-    if (req != null) {
-      if (req.description() != null) {
-        spec.setDescription(req.description());
-        mask.addPaths("description");
-      }
-      if (req.policyRef() != null) {
-        spec.setPolicyRef(req.policyRef());
-        mask.addPaths("policy_ref");
-      }
-      if (req.properties() != null && !req.properties().isEmpty()) {
-        spec.putAllProperties(req.properties());
-        mask.addPaths("properties");
-      }
-    }
-
-    NamespaceServiceGrpc.NamespaceServiceBlockingStub stub =
-        grpc.withHeaders(grpc.raw().namespace());
-    var resp =
-        stub.updateNamespace(
-            UpdateNamespaceRequest.newBuilder()
-                .setNamespaceId(namespaceId)
-                .setSpec(spec)
-                .setUpdateMask(mask)
-                .build());
-    return Response.ok(toInfo(resp.getNamespace())).build();
-  }
-
-  @Path("/{namespace}")
   @DELETE
   public Response delete(
       @PathParam("prefix") String prefix,

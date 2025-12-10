@@ -40,6 +40,7 @@ public class ConfigResource {
             "GET /v1/{prefix}/namespaces",
             "POST /v1/{prefix}/namespaces",
             "GET /v1/{prefix}/namespaces/{namespace}",
+            "HEAD /v1/{prefix}/namespaces/{namespace}",
             "DELETE /v1/{prefix}/namespaces/{namespace}",
             "POST /v1/{prefix}/namespaces/{namespace}/properties",
             "GET /v1/{prefix}/namespaces/{namespace}/tables",

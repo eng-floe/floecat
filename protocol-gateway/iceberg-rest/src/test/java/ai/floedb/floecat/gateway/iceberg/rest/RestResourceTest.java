@@ -3,7 +3,6 @@ package ai.floedb.floecat.gateway.iceberg.rest;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItems;
-import static org.hamcrest.Matchers.startsWith;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -112,7 +111,6 @@ import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.Timestamp;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.test.InjectMock;
@@ -769,37 +767,10 @@ class RestResourceTest {
   }
 
   @Test
-  void updatesAndDeletesView() {
+  void deletesView() {
     ResourceId viewId = ResourceId.newBuilder().setId("cat:db:reports").build();
     when(directoryStub.resolveView(any()))
         .thenReturn(ResolveViewResponse.newBuilder().setResourceId(viewId).build());
-
-    View existing =
-        View.newBuilder()
-            .setResourceId(viewId)
-            .setDisplayName("reports")
-            .setSql("select 0")
-            .build();
-    when(viewStub.getView(any()))
-        .thenReturn(GetViewResponse.newBuilder().setView(existing).build());
-
-    View updated =
-        View.newBuilder()
-            .setResourceId(viewId)
-            .setDisplayName("reports_new")
-            .setSql("select 1")
-            .build();
-    when(viewStub.updateView(any()))
-        .thenReturn(UpdateViewResponse.newBuilder().setView(updated).build());
-
-    given()
-        .body("{\"name\":\"reports_new\",\"sql\":\"select 1\"}")
-        .header("Content-Type", "application/json")
-        .when()
-        .put("/v1/foo/namespaces/db/views/reports")
-        .then()
-        .statusCode(200)
-        .body("metadata.versions[0].representations[0].sql", equalTo("select 1"));
 
     given().when().delete("/v1/foo/namespaces/db/views/reports").then().statusCode(204);
 
@@ -884,242 +855,7 @@ class RestResourceTest {
   }
 
   @Test
-  void listsSnapshots() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    when(directoryStub.resolveTable(any()))
-        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-
-    Timestamp upstream = Timestamp.newBuilder().setSeconds(1700000000L).build();
-    Timestamp ingested = Timestamp.newBuilder().setSeconds(1700000001L).build();
-    PartitionSpecInfo partitionSpec =
-        PartitionSpecInfo.newBuilder()
-            .setSpecId(1)
-            .setSpecName("iceberg-spec")
-            .addFields(
-                PartitionField.newBuilder()
-                    .setFieldId(99)
-                    .setName("pcol")
-                    .setTransform("identity")
-                    .build())
-            .build();
-    Snapshot snapshot =
-        Snapshot.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(42L)
-            .setParentSnapshotId(7L)
-            .setSchemaJson("{\"type\":\"struct\"}")
-            .setUpstreamCreatedAt(upstream)
-            .setIngestedAt(ingested)
-            .setPartitionSpec(partitionSpec)
-            .build();
-    PageResponse page = PageResponse.newBuilder().setTotalSize(1).build();
-    when(snapshotStub.listSnapshots(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse.newBuilder()
-                .addSnapshots(snapshot)
-                .setPage(page)
-                .build());
-
-    given()
-        .when()
-        .get("/v1/foo/namespaces/db/tables/orders/snapshots?pageSize=5")
-        .then()
-        .statusCode(200)
-        .body("snapshots[0].'snapshot-id'", equalTo(42))
-        .body("snapshots[0].parentSnapshotId", equalTo(7))
-        .body("snapshots[0].schemaJson", equalTo("{\"type\":\"struct\"}"))
-        .body("snapshots[0].partitionSpec.specId", equalTo(1))
-        .body("snapshots[0].partitionSpec.fields[0].name", equalTo("pcol"))
-        .body("page.totalSize", equalTo(1));
-
-    when(snapshotStub.getSnapshot(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.GetSnapshotResponse.newBuilder()
-                .setSnapshot(snapshot)
-                .build());
-
-    given()
-        .when()
-        .get("/v1/foo/namespaces/db/tables/orders/snapshots/42")
-        .then()
-        .statusCode(200)
-        .body("'snapshot-id'", equalTo(42))
-        .body("upstreamCreatedAt", equalTo("2023-11-14T22:13:20Z"))
-        .body("ingestedAt", equalTo("2023-11-14T22:13:21Z"))
-        .body("partitionSpec.specName", equalTo("iceberg-spec"));
-
-    when(snapshotStub.createSnapshot(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.CreateSnapshotResponse.newBuilder()
-                .setSnapshot(snapshot)
-                .build());
-
-    given()
-        .body("{\"snapshot-id\":43,\"parentSnapshotId\":42}")
-        .header("Content-Type", "application/json")
-        .when()
-        .post("/v1/foo/namespaces/db/tables/orders/snapshots")
-        .then()
-        .statusCode(201)
-        .body("'snapshot-id'", equalTo(42));
-
-    given()
-        .when()
-        .post("/v1/foo/namespaces/db/tables/orders/snapshots/42/rollback")
-        .then()
-        .statusCode(501)
-        .body("error.code", equalTo(501))
-        .body("error.type", equalTo("UnsupportedOperationException"));
-
-    given()
-        .when()
-        .delete("/v1/foo/namespaces/db/tables/orders/snapshots/42")
-        .then()
-        .statusCode(204);
-  }
-
-  @Test
-  void listsSchemas() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    when(directoryStub.resolveTable(any()))
-        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-
-    Timestamp upstream = Timestamp.newBuilder().setSeconds(1700000000L).build();
-    Timestamp ingested = Timestamp.newBuilder().setSeconds(1700000001L).build();
-    Snapshot snapshot =
-        Snapshot.newBuilder()
-            .setSnapshotId(43L)
-            .setSchemaJson("{\"type\":\"struct\"}")
-            .setUpstreamCreatedAt(upstream)
-            .setIngestedAt(ingested)
-            .build();
-    PageResponse page = PageResponse.newBuilder().setNextPageToken("tok").setTotalSize(1).build();
-    when(snapshotStub.listSnapshots(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse.newBuilder()
-                .addSnapshots(snapshot)
-                .setPage(page)
-                .build());
-
-    given()
-        .when()
-        .get("/v1/foo/namespaces/db/tables/orders/schemas?pageSize=3")
-        .then()
-        .statusCode(200)
-        .body("schemas[0].schemaJson", equalTo("{\"type\":\"struct\"}"))
-        .body("schemas[0].upstreamCreatedAt", equalTo("2023-11-14T22:13:20Z"))
-        .body("schemas[0].ingestedAt", equalTo("2023-11-14T22:13:21Z"))
-        .body("page.totalSize", equalTo(1));
-  }
-
-  @Test
-  void listsPartitionSpecs() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    when(directoryStub.resolveTable(any()))
-        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-
-    PartitionSpecInfo spec =
-        PartitionSpecInfo.newBuilder()
-            .setSpecId(2)
-            .setSpecName("delta-spec")
-            .addFields(
-                PartitionField.newBuilder()
-                    .setFieldId(1)
-                    .setName("bucket")
-                    .setTransform("identity")
-                    .build())
-            .build();
-    Timestamp upstream = Timestamp.newBuilder().setSeconds(1700000000L).build();
-    Timestamp ingested = Timestamp.newBuilder().setSeconds(1700000001L).build();
-    Snapshot snapshot =
-        Snapshot.newBuilder()
-            .setSnapshotId(44L)
-            .setPartitionSpec(spec)
-            .setUpstreamCreatedAt(upstream)
-            .setIngestedAt(ingested)
-            .build();
-    PageResponse page = PageResponse.newBuilder().setTotalSize(1).build();
-    when(snapshotStub.listSnapshots(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse.newBuilder()
-                .addSnapshots(snapshot)
-                .setPage(page)
-                .build());
-
-    given()
-        .when()
-        .get("/v1/foo/namespaces/db/tables/orders/partition-specs?pageToken=tok")
-        .then()
-        .statusCode(200)
-        .body("specs[0].partitionSpec.specId", equalTo(2))
-        .body("specs[0].partitionSpec.fields[0].fieldId", equalTo(1))
-        .body("specs[0].upstreamCreatedAt", equalTo("2023-11-14T22:13:20Z"))
-        .body("page.totalSize", equalTo(1));
-  }
-
-  @Test
-  void fetchesStats() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    when(directoryStub.resolveTable(any()))
-        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-
-    var stats =
-        ai.floedb.floecat.catalog.rpc.TableStats.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(42)
-            .setRowCount(100)
-            .setDataFileCount(1)
-            .setTotalSizeBytes(64)
-            .build();
-    when(statsStub.getTableStats(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.GetTableStatsResponse.newBuilder()
-                .setStats(stats)
-                .build());
-
-    var column =
-        ai.floedb.floecat.catalog.rpc.ColumnStats.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(42)
-            .setColumnId("c1")
-            .setColumnName("col")
-            .setLogicalType("string")
-            .setValueCount(100)
-            .build();
-    when(statsStub.listColumnStats(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.ListColumnStatsResponse.newBuilder()
-                .addColumns(column)
-                .build());
-
-    var file =
-        ai.floedb.floecat.catalog.rpc.FileColumnStats.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(42)
-            .setFilePath("file")
-            .setRowCount(100)
-            .setSizeBytes(64)
-            .setPartitionSpecId(0)
-            .addColumns(column)
-            .build();
-    when(statsStub.listFileColumnStats(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.ListFileColumnStatsResponse.newBuilder()
-                .addFileColumns(file)
-                .build());
-
-    given()
-        .when()
-        .get("/v1/foo/namespaces/db/tables/orders/snapshots/42/stats")
-        .then()
-        .statusCode(200)
-        .body("table.rowCount", equalTo(100))
-        .body("columns[0].columnName", equalTo("col"))
-        .body("files[0].filePath", equalTo("file"));
-  }
-
-  @Test
-  void createsUpdatesAndDeletesTable() {
+  void createsAndDeletesTable() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     ResourceId connectorId = ResourceId.newBuilder().setId("conn-1").build();
@@ -1163,32 +899,12 @@ class RestResourceTest {
         .body("'metadata-location'", equalTo("s3://bucket/path/metadata.json"))
         .body("metadata.properties.'metadata-location'", equalTo("s3://bucket/path/metadata.json"));
 
-    Table updated =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setDisplayName("orders_new")
-            .setCatalogId(ResourceId.newBuilder().setId("cat"))
-            .setNamespaceId(nsId)
-            .putProperties("metadata-location", "s3://bucket/path/metadata2.json")
-            .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
-            .build();
-    when(tableStub.updateTable(any()))
-        .thenReturn(UpdateTableResponse.newBuilder().setTable(updated).build());
-    Table updatedWithUpstream =
-        updated.toBuilder()
+    Table existing =
+        created.toBuilder()
             .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
             .build();
     when(tableStub.getTable(any()))
-        .thenReturn(GetTableResponse.newBuilder().setTable(updatedWithUpstream).build());
-
-    given()
-        .body("{\"name\":\"orders_new\",\"schemaJson\":\"{}\"}")
-        .header("Content-Type", "application/json")
-        .when()
-        .put("/v1/foo/namespaces/db/tables/orders")
-        .then()
-        .statusCode(200)
-        .body("'metadata-location'", startsWith("s3://bucket/path/"));
+        .thenReturn(GetTableResponse.newBuilder().setTable(existing).build());
 
     given().when().delete("/v1/foo/namespaces/db/tables/orders").then().statusCode(204);
 

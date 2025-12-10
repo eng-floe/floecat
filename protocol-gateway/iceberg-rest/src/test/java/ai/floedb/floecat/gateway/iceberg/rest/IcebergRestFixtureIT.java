@@ -536,12 +536,19 @@ class IcebergRestFixtureIT {
     return given()
         .spec(spec)
         .when()
-        .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table + "/snapshots")
+        .get(
+            "/v1/"
+                + CATALOG
+                + "/namespaces/"
+                + namespace
+                + "/tables/"
+                + table
+                + "?snapshots=all")
         .then()
         .statusCode(200)
         .extract()
         .jsonPath()
-        .getList("entries.snapshot-id", Long.class);
+        .getList("metadata.snapshots.'snapshot-id'", Long.class);
   }
 
   private Path localS3Path(String location) {

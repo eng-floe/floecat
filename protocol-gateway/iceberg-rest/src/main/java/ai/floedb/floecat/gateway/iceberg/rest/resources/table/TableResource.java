@@ -217,48 +217,21 @@ public class TableResource {
             loadResult.config(),
             loadResult.storageCredentials());
 
-    var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
-    ResourceId connectorId = null;
-    String upstreamUri = null;
     String requestedLocation = req != null ? req.location() : null;
     String metadataForLocation =
         nonBlank(loadResult.metadataLocation(), tableSupport.metadataLocationFromCreate(req));
     String externalUri = tableSupport.resolveTableLocation(requestedLocation, metadataForLocation);
-
-    if (connectorTemplate != null && connectorTemplate.uri() != null) {
-      connectorId =
-          tableSupport.createTemplateConnector(
-              prefix,
-              namespacePath,
-              namespaceId,
-              catalogId,
-              tableName,
-              created.getResourceId(),
-              connectorTemplate,
-              idempotencyKey);
-      upstreamUri = connectorTemplate.uri();
-    } else {
-      if (externalUri != null && !externalUri.isBlank()) {
-        connectorId =
-            tableSupport.createExternalConnector(
-                prefix,
-                namespacePath,
-                namespaceId,
-                catalogId,
-                tableName,
-                created.getResourceId(),
-                loadResult.metadataLocation(),
-                externalUri,
-                idempotencyKey);
-        upstreamUri = externalUri;
-      }
-    }
-
-    if (connectorId != null) {
-      tableSupport.updateTableUpstream(
-          created.getResourceId(), namespacePath, tableName, connectorId, upstreamUri);
-      tableCommitService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
-    }
+    configureConnectorAndSync(
+        prefix,
+        namespacePath,
+        namespaceId,
+        catalogId,
+        tableName,
+        created.getResourceId(),
+        metadataForLocation,
+        externalUri,
+        null,
+        idempotencyKey);
 
     Response.ResponseBuilder builder = Response.ok(loadResult);
     String etagValue = metadataLocation(created, metadata);
@@ -397,25 +370,6 @@ public class TableResource {
     String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     tableLifecycleService.resolveTableId(catalogName, namespace, table);
     return Response.noContent().build();
-  }
-
-  @Path("/tables/{table}")
-  @PUT
-  public Response update(
-      @PathParam("prefix") String prefix,
-      @PathParam("namespace") String namespace,
-      @PathParam("table") String table,
-      TableRequests.Update req) {
-    return commit(
-        prefix,
-        namespace,
-        table,
-        null,
-        null,
-        req == null
-            ? null
-            : new TableRequests.Commit(
-                req.name(), req.namespace(), req.schemaJson(), req.properties(), null, null, null));
   }
 
   @Path("/tables/{table}")
@@ -721,42 +675,20 @@ public class TableResource {
       created = ensuredCreated;
     }
 
-    var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
-    ResourceId connectorId;
-    String upstreamUri;
-    if (connectorTemplate != null && connectorTemplate.uri() != null) {
-      connectorId =
-          tableSupport.createTemplateConnector(
-              prefix,
-              namespacePath,
-              namespaceId,
-              catalogId,
-              tableName,
-              created.getResourceId(),
-              connectorTemplate,
-              idempotencyKey);
-      upstreamUri = connectorTemplate.uri();
-    } else {
-      String resolvedLocation =
-          tableSupport.resolveTableLocation(
-              importedMetadata != null ? importedMetadata.tableLocation() : null, metadataLocation);
-      connectorId =
-          tableSupport.createExternalConnector(
-              prefix,
-              namespacePath,
-              namespaceId,
-              catalogId,
-              tableName,
-              created.getResourceId(),
-              metadataLocation,
-              resolvedLocation,
-              idempotencyKey);
-      upstreamUri = resolvedLocation;
-    }
-
-    tableSupport.updateTableUpstream(
-        created.getResourceId(), namespacePath, tableName, connectorId, upstreamUri);
-    tableCommitService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
+    String resolvedLocation =
+        tableSupport.resolveTableLocation(
+            importedMetadata != null ? importedMetadata.tableLocation() : null, metadataLocation);
+    configureConnectorAndSync(
+        prefix,
+        namespacePath,
+        namespaceId,
+        catalogId,
+        tableName,
+        created.getResourceId(),
+        metadataLocation,
+        resolvedLocation,
+        null,
+        idempotencyKey);
 
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
     Response.ResponseBuilder builder =
@@ -862,38 +794,17 @@ public class TableResource {
         tableSupport.resolveTableLocation(
             importedMetadata != null ? importedMetadata.tableLocation() : null, metadataLocation);
     if (connectorId == null) {
-      var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
-      String upstreamUri;
-      if (connectorTemplate != null && connectorTemplate.uri() != null) {
-        connectorId =
-            tableSupport.createTemplateConnector(
-                prefix,
-                namespacePath,
-                namespaceId,
-                catalogId,
-                tableName,
-                tableId,
-                connectorTemplate,
-                idempotencyKey);
-        upstreamUri = connectorTemplate.uri();
-      } else {
-        connectorId =
-            tableSupport.createExternalConnector(
-                prefix,
-                namespacePath,
-                namespaceId,
-                catalogId,
-                tableName,
-                tableId,
-                metadataLocation,
-                resolvedLocation,
-                idempotencyKey);
-        upstreamUri = resolvedLocation;
-      }
-      if (connectorId != null) {
-        tableSupport.updateTableUpstream(
-            tableId, namespacePath, tableName, connectorId, upstreamUri);
-      }
+      configureConnectorAndSync(
+          prefix,
+          namespacePath,
+          namespaceId,
+          catalogId,
+          tableName,
+          tableId,
+          metadataLocation,
+          resolvedLocation,
+          null,
+          idempotencyKey);
     } else {
       tableSupport.updateConnectorMetadata(connectorId, metadataLocation);
       String existingUri =
@@ -905,8 +816,8 @@ public class TableResource {
         tableSupport.updateTableUpstream(
             tableId, namespacePath, tableName, connectorId, resolvedLocation);
       }
+      tableCommitService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
     }
-    tableCommitService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
 
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(updated);
     Response.ResponseBuilder builder =
@@ -923,6 +834,56 @@ public class TableResource {
       builder.tag(etagValue);
     }
     return builder.build();
+  }
+
+  private void configureConnectorAndSync(
+      String prefix,
+      List<String> namespacePath,
+      ResourceId namespaceId,
+      ResourceId catalogId,
+      String tableName,
+      ResourceId tableId,
+      String metadataLocation,
+      String resolvedTableLocation,
+      String existingUpstreamUri,
+      String idempotencyKey) {
+    var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
+    ResourceId connectorId = null;
+    String upstreamUri = null;
+    if (connectorTemplate != null && connectorTemplate.uri() != null) {
+      connectorId =
+          tableSupport.createTemplateConnector(
+              prefix,
+              namespacePath,
+              namespaceId,
+              catalogId,
+              tableName,
+              tableId,
+              connectorTemplate,
+              idempotencyKey);
+      upstreamUri = connectorTemplate.uri();
+    } else if (resolvedTableLocation != null && !resolvedTableLocation.isBlank()) {
+      String metadata = nonBlank(metadataLocation, resolvedTableLocation);
+      connectorId =
+          tableSupport.createExternalConnector(
+              prefix,
+              namespacePath,
+              namespaceId,
+              catalogId,
+              tableName,
+              tableId,
+              metadata,
+              resolvedTableLocation,
+              idempotencyKey);
+      upstreamUri = resolvedTableLocation;
+    }
+    if (connectorId == null || upstreamUri == null || upstreamUri.isBlank()) {
+      return;
+    }
+    if (existingUpstreamUri == null || !existingUpstreamUri.equals(upstreamUri)) {
+      tableSupport.updateTableUpstream(tableId, namespacePath, tableName, connectorId, upstreamUri);
+    }
+    tableCommitService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
   }
 
   private Map<String, String> mergeImportedProperties(
