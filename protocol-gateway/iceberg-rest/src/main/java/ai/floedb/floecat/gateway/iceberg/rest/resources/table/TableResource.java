@@ -27,6 +27,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.MetadataLocationS
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableCommitService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableDropCleanupService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
@@ -84,6 +85,7 @@ public class TableResource {
   @Inject StagedTableService stagedTableService;
   @Inject AccountContext accountContext;
   @Inject TableLifecycleService tableLifecycleService;
+  @Inject TableDropCleanupService tableDropCleanupService;
   @Inject TableCommitService tableCommitService;
   @Inject TablePlanService tablePlanService;
   @Inject PlanTaskManager planTaskManager;
@@ -383,8 +385,9 @@ public class TableResource {
     List<String> namespacePath = NamespacePaths.split(namespace);
     ResourceId tableId = tableLifecycleService.resolveTableId(catalogName, namespacePath, table);
     ResourceId connectorId = null;
+    Table existing = null;
     try {
-      Table existing = tableLifecycleService.getTable(tableId);
+      existing = tableLifecycleService.getTable(tableId);
       if (existing.hasUpstream() && existing.getUpstream().hasConnectorId()) {
         connectorId = existing.getUpstream().getConnectorId();
       }
@@ -394,6 +397,9 @@ public class TableResource {
       }
     }
     boolean purge = Boolean.TRUE.equals(purgeRequested);
+    if (purge) {
+      tableDropCleanupService.purgeTableData(catalogName, namespace, table, existing);
+    }
     tableLifecycleService.deleteTable(tableId, purge);
     if (connectorId != null) {
       tableSupport.deleteConnector(connectorId);

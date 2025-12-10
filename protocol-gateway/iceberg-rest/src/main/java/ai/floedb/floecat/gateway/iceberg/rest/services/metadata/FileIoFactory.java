@@ -6,14 +6,14 @@ import java.util.Map;
 import java.util.Set;
 import org.apache.iceberg.io.FileIO;
 
-final class FileIoFactory {
+public final class FileIoFactory {
   private static final String DEFAULT_IO_IMPL = "org.apache.iceberg.aws.s3.S3FileIO";
   private static final Set<String> IO_PROP_PREFIXES =
       Set.of("s3.", "s3a.", "s3n.", "fs.", "client.", "aws.", "hadoop.");
 
   private FileIoFactory() {}
 
-  static FileIO createFileIo(
+  public static FileIO createFileIo(
       Map<String, String> props, IcebergGatewayConfig config, boolean allowConfigOverrides) {
     Map<String, String> normalized =
         props == null ? new LinkedHashMap<>() : new LinkedHashMap<>(props);

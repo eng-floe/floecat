@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
@@ -81,6 +82,7 @@ import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableDropCleanupService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
@@ -133,6 +135,7 @@ class RestResourceTest {
   @InjectMock GrpcWithHeaders grpc;
   @InjectMock GrpcClients clients;
   @InjectMock TableMetadataImportService metadataImportService;
+  @InjectMock TableDropCleanupService tableDropCleanupService;
   @Inject StagedTableRepository stageRepository;
   @Inject ViewMetadataService viewMetadataService;
 
@@ -983,6 +986,19 @@ class RestResourceTest {
     DeleteTableRequest sent = deleteCaptor.getValue();
     assertTrue(sent.getPurgeStats());
     assertTrue(sent.getPurgeSnapshots());
+    verify(tableDropCleanupService).purgeTableData(eq("foo"), eq("db"), eq("orders"), eq(table));
+  }
+
+  @Test
+  void oauthTokensEndpointNotSupported() {
+    given()
+        .body("{\"grant_type\":\"client_credentials\"}")
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/oauth/tokens")
+        .then()
+        .statusCode(501)
+        .body("error.type", equalTo("UnsupportedOperationException"));
   }
 
   @Test

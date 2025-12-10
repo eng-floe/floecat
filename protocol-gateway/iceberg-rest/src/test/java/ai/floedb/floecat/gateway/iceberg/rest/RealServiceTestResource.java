@@ -61,7 +61,8 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
       command.add(runnerJar.toString());
 
       System.out.printf(
-          "RealServiceTestResource launching Floecat service http/grpc port=%d management=%d log=%s%n",
+          "RealServiceTestResource launching Floecat service http/grpc port=%d management=%d"
+              + " log=%s%n",
           httpPort, managementPort, logFile);
 
       serviceProcess =

@@ -283,6 +283,10 @@ class IcebergRestFixtureIT {
 
     String purgeTable = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
     registerTable(namespace, purgeTable, METADATA_V3, false);
+    Path metadataPath = localS3Path(TestS3Fixtures.bucketUri(METADATA_V3));
+    Assertions.assertTrue(
+        Files.exists(metadataPath),
+        "Fixture metadata should exist before issuing purge delete request");
 
     given()
         .spec(spec)
@@ -304,6 +308,16 @@ class IcebergRestFixtureIT {
         .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + purgeTable)
         .then()
         .statusCode(404);
+    Assertions.assertTrue(
+        Files.notExists(metadataPath),
+        "metadata file should be deleted when purgeRequested=true");
+    fixtureManifestLists.values().forEach(
+        relative -> {
+          Path manifestPath = localS3Path(TestS3Fixtures.bucketUri(relative));
+          Assertions.assertTrue(
+              Files.notExists(manifestPath),
+              () -> "manifest file should be deleted when purgeRequested=true: " + manifestPath);
+        });
   }
 
   private static List<Long> parseSnapshotIds(String relativeMetadataPath) throws IOException {
@@ -375,6 +389,7 @@ class IcebergRestFixtureIT {
 
   @BeforeEach
   void setUp() {
+    TestS3Fixtures.seedFixtures();
     spec =
         new RequestSpecBuilder()
             .addHeader("x-tenant-id", DEFAULT_ACCOUNT)
