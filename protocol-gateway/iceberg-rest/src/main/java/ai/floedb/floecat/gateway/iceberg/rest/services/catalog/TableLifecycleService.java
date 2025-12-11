@@ -5,14 +5,13 @@ import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.ListTablesRequest;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NamespacePaths;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -22,7 +21,8 @@ import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class TableLifecycleService {
-  @Inject GrpcWithHeaders grpc;
+  @Inject ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders grpc;
+  @Inject TableClient tableClient;
 
   public record ListTablesResult(List<TableIdentifierDto> identifiers, String nextPageToken) {}
 
@@ -43,8 +43,7 @@ public class TableLifecycleService {
       request.setPage(page);
     }
 
-    TableServiceGrpc.TableServiceBlockingStub stub = grpc.withHeaders(grpc.raw().table());
-    var resp = stub.listTables(request.build());
+    var resp = tableClient.listTables(request.build());
     if (resp == null) {
       resp = ai.floedb.floecat.catalog.rpc.ListTablesResponse.getDefaultInstance();
     }
@@ -52,16 +51,14 @@ public class TableLifecycleService {
         resp.getTablesList().stream()
             .map(table -> new TableIdentifierDto(namespacePath, table.getDisplayName()))
             .collect(Collectors.toList());
-    String nextToken = flattenPageToken(resp.getPage());
-    return new ListTablesResult(identifiers, nextToken);
-  }
-
-  private String flattenPageToken(ai.floedb.floecat.common.rpc.PageResponse page) {
-    if (page == null) {
-      return null;
+    String nextToken = null;
+    if (resp.hasPage()) {
+      String token = resp.getPage().getNextPageToken();
+      if (token != null && !token.isBlank()) {
+        nextToken = token;
+      }
     }
-    String token = page.getNextPageToken();
-    return (token == null || token.isBlank()) ? null : token;
+    return new ListTablesResult(identifiers, nextToken);
   }
 
   public ResourceId resolveNamespaceId(String catalogName, String namespace) {
@@ -82,35 +79,47 @@ public class TableLifecycleService {
   }
 
   public Table createTable(TableSpec.Builder spec, String idempotencyKey) {
-    TableServiceGrpc.TableServiceBlockingStub stub = grpc.withHeaders(grpc.raw().table());
     CreateTableRequest.Builder request = CreateTableRequest.newBuilder().setSpec(spec);
     if (idempotencyKey != null && !idempotencyKey.isBlank()) {
       request.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey));
     }
-    return stub.createTable(request.build()).getTable();
+    return tableClient.createTable(request.build()).getTable();
   }
 
   public Table getTable(ResourceId tableId) {
-    TableServiceGrpc.TableServiceBlockingStub stub = grpc.withHeaders(grpc.raw().table());
-    return stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
+    return tableClient
+        .getTable(GetTableRequest.newBuilder().setTableId(tableId).build())
+        .getTable();
   }
 
   public Table updateTable(UpdateTableRequest request) {
-    TableServiceGrpc.TableServiceBlockingStub stub = grpc.withHeaders(grpc.raw().table());
-    return stub.updateTable(request).getTable();
+    return tableClient.updateTable(request).getTable();
   }
 
   public void deleteTable(String catalogName, String namespace, String tableName) {
+    deleteTable(catalogName, namespace, tableName, false);
+  }
+
+  public void deleteTable(
+      String catalogName, String namespace, String tableName, boolean purgeRequested) {
     ResourceId tableId = resolveTableId(catalogName, namespace, tableName);
-    deleteTable(tableId);
+    deleteTable(tableId, purgeRequested);
   }
 
   public void deleteTable(ResourceId tableId) {
+    deleteTable(tableId, false);
+  }
+
+  public void deleteTable(ResourceId tableId, boolean purgeRequested) {
     if (tableId == null) {
       return;
     }
-    TableServiceGrpc.TableServiceBlockingStub stub = grpc.withHeaders(grpc.raw().table());
-    stub.deleteTable(DeleteTableRequest.newBuilder().setTableId(tableId).build());
+    DeleteTableRequest.Builder request =
+        DeleteTableRequest.newBuilder()
+            .setTableId(tableId)
+            .setPurgeStats(purgeRequested)
+            .setPurgeSnapshots(purgeRequested);
+    tableClient.deleteTable(request.build());
   }
 
   public ResourceId resolveCatalogId(String catalogName) {

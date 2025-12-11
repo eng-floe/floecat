@@ -1,6 +1,8 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
+import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -17,7 +19,6 @@ import java.util.Set;
 import java.util.UUID;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
-import org.apache.iceberg.exceptions.NotFoundException;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;
@@ -26,12 +27,10 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class MaterializeMetadataService {
   private static final Logger LOG = Logger.getLogger(MaterializeMetadataService.class);
-  private static final String DEFAULT_IO_IMPL = "org.apache.iceberg.aws.s3.S3FileIO";
-  private static final Set<String> IO_PROP_PREFIXES =
-      Set.of("s3.", "s3a.", "s3n.", "fs.", "client.", "aws.", "hadoop.");
   private static final Set<String> SKIPPED_SCHEMES = Set.of("floecat");
 
   @Inject ObjectMapper mapper;
+  @Inject IcebergGatewayConfig config;
 
   public void setMapper(ObjectMapper mapper) {
     this.mapper = mapper;
@@ -61,7 +60,7 @@ public class MaterializeMetadataService {
     FileIO fileIO = null;
     try {
       Map<String, String> props = sanitizeProperties(metadata.properties());
-      fileIO = instantiateFileIO(props);
+      fileIO = newFileIo(props);
       resolvedLocation = resolveVersionedLocation(fileIO, requestedLocation, metadata);
       if (resolvedLocation == null || resolvedLocation.isBlank()) {
         LOG.debugf(
@@ -86,11 +85,12 @@ public class MaterializeMetadataService {
     }
   }
 
+  protected FileIO newFileIo(Map<String, String> props) {
+    return FileIoFactory.createFileIo(props, config, true);
+  }
+
   private boolean shouldMaterialize(String metadataLocation) {
     if (metadataLocation == null || metadataLocation.isBlank()) {
-      return false;
-    }
-    if (isPointerLocation(metadataLocation)) {
       return false;
     }
     try {
@@ -108,41 +108,8 @@ public class MaterializeMetadataService {
     }
   }
 
-  private FileIO instantiateFileIO(Map<String, String> props) {
-    String impl = props.getOrDefault("io-impl", DEFAULT_IO_IMPL).trim();
-    try {
-      Class<?> clazz = Class.forName(impl);
-      Object instance = clazz.getDeclaredConstructor().newInstance();
-      if (!(instance instanceof FileIO fileIO)) {
-        throw new MaterializeMetadataException(impl + " does not implement FileIO");
-      }
-      fileIO.initialize(filterIoProperties(props));
-      return fileIO;
-    } catch (MaterializeMetadataException e) {
-      throw e;
-    } catch (Exception e) {
-      throw new MaterializeMetadataException("Unable to instantiate FileIO " + impl, e);
-    }
-  }
-
-  private Map<String, String> filterIoProperties(Map<String, String> props) {
-    if (props == null || props.isEmpty()) {
-      return Map.of();
-    }
-    Map<String, String> filtered = new LinkedHashMap<>();
-    props.forEach(
-        (key, value) -> {
-          if (key == null || value == null) {
-            return;
-          }
-          for (String prefix : IO_PROP_PREFIXES) {
-            if (key.startsWith(prefix)) {
-              filtered.put(key, value);
-              return;
-            }
-          }
-        });
-    return filtered;
+  public void setConfig(IcebergGatewayConfig config) {
+    this.config = config;
   }
 
   private String canonicalMetadataJson(TableMetadataView metadata, String metadataLocation) {
@@ -204,13 +171,6 @@ public class MaterializeMetadataService {
 
   private String resolveVersionedLocation(
       FileIO fileIO, String metadataLocation, TableMetadataView metadata) {
-    if (metadataLocation != null
-        && !metadataLocation.isBlank()
-        && !isPointerLocation(metadataLocation)
-        && (metadata.metadataLog() == null || metadata.metadataLog().isEmpty())
-        && !fileExists(fileIO, metadataLocation)) {
-      return metadataLocation;
-    }
     String directory = metadataLocation != null ? directoryOf(metadataLocation) : null;
     if (directory == null) {
       directory = metadataDirectory(metadata);
@@ -222,16 +182,11 @@ public class MaterializeMetadataService {
     if (!directory.endsWith("/")) {
       directory = directory + "/";
     }
-    return directory + nextMetadataFileName(metadataLocation, metadata);
+    return directory + nextMetadataFileName(fileIO, directory, metadata);
   }
 
   private boolean isPointerLocation(String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return false;
-    }
-    int slash = metadataLocation.lastIndexOf('/');
-    String file = slash >= 0 ? metadataLocation.substring(slash + 1) : metadataLocation;
-    return "metadata.json".equals(file);
+    return MetadataLocationUtil.isPointer(metadataLocation);
   }
 
   private String directoryOf(String metadataLocation) {
@@ -300,13 +255,13 @@ public class MaterializeMetadataService {
     return null;
   }
 
-  private String nextMetadataFileName(String currentLocation, TableMetadataView metadata) {
-    long nextVersion = nextMetadataVersion(currentLocation, metadata);
+  private String nextMetadataFileName(FileIO fileIO, String directory, TableMetadataView metadata) {
+    long nextVersion = nextMetadataVersion(fileIO, directory, metadata);
     return String.format("%05d-%s.metadata.json", nextVersion, UUID.randomUUID());
   }
 
-  private long nextMetadataVersion(String currentLocation, TableMetadataView metadata) {
-    long max = parseVersion(currentLocation);
+  private long nextMetadataVersion(FileIO fileIO, String directory, TableMetadataView metadata) {
+    long max = parseExistingFiles(fileIO, directory);
     if (metadata != null && metadata.metadataLog() != null) {
       List<Map<String, Object>> entries = metadata.metadataLog();
       for (Map<String, Object> entry : entries) {
@@ -320,6 +275,27 @@ public class MaterializeMetadataService {
       }
     }
     return max < 0 ? 0 : max + 1;
+  }
+
+  private long parseExistingFiles(FileIO fileIO, String directory) {
+    if (!(fileIO instanceof org.apache.iceberg.io.SupportsPrefixOperations prefixOps)) {
+      return -1;
+    }
+    long max = -1;
+    try {
+      for (org.apache.iceberg.io.FileInfo info : prefixOps.listPrefix(directory)) {
+        String location = info.location();
+        if (location != null && location.endsWith(".metadata.json")) {
+          long parsed = parseVersion(location);
+          if (parsed > max) {
+            max = parsed;
+          }
+        }
+      }
+    } catch (UnsupportedOperationException e) {
+      return -1;
+    }
+    return max;
   }
 
   private long parseVersion(String file) {
@@ -336,19 +312,6 @@ public class MaterializeMetadataService {
       return Long.parseLong(name.substring(0, dash));
     } catch (NumberFormatException e) {
       return -1;
-    }
-  }
-
-  private boolean fileExists(FileIO fileIO, String location) {
-    if (fileIO == null || location == null || location.isBlank()) {
-      return false;
-    }
-    try {
-      return fileIO.newInputFile(location).exists();
-    } catch (UnsupportedOperationException | NotFoundException e) {
-      return false;
-    } catch (RuntimeException e) {
-      return false;
     }
   }
 

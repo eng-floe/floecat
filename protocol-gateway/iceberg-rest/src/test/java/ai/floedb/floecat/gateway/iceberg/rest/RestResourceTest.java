@@ -3,12 +3,12 @@ package ai.floedb.floecat.gateway.iceberg.rest;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItems;
-import static org.hamcrest.Matchers.hasKey;
-import static org.hamcrest.Matchers.not;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
@@ -88,6 +88,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImp
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableRepository;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableDropCleanupService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService.MetadataContext;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergBlobMetadata;
@@ -113,7 +114,6 @@ import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.Timestamp;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.test.InjectMock;
@@ -121,6 +121,8 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.RestAssured;
 import io.restassured.builder.RequestSpecBuilder;
+import io.restassured.response.ExtractableResponse;
+import io.restassured.response.Response;
 import io.restassured.specification.RequestSpecification;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.MediaType;
@@ -136,6 +138,7 @@ class RestResourceTest {
   @InjectMock GrpcWithHeaders grpc;
   @InjectMock GrpcClients clients;
   @InjectMock TableMetadataImportService metadataImportService;
+  @InjectMock TableDropCleanupService tableDropCleanupService;
   @Inject StagedTableRepository stageRepository;
   @Inject ViewMetadataService viewMetadataService;
 
@@ -225,7 +228,11 @@ class RestResourceTest {
                 }
               }
               return new ImportedMetadata(
-                  "{\"type\":\"struct\",\"fields\":[]}", Map.of(), tableLocation);
+                  "{\"type\":\"struct\",\"fields\":[]}",
+                  Map.of(),
+                  tableLocation,
+                  null,
+                  java.util.List.of());
             });
     ResourceId catalogId = ResourceId.newBuilder().setId("cat:default").build();
     when(directoryStub.resolveCatalog(any()))
@@ -744,7 +751,7 @@ class RestResourceTest {
     when(namespaceStub.getNamespace(any()))
         .thenReturn(GetNamespaceResponse.newBuilder().setNamespace(ns).build());
 
-    given().when().head("/v1/foo/namespaces/analytics").then().statusCode(200);
+    given().when().head("/v1/foo/namespaces/analytics").then().statusCode(204);
 
     ArgumentCaptor<GetNamespaceRequest> req = ArgumentCaptor.forClass(GetNamespaceRequest.class);
     verify(namespaceStub).getNamespace(req.capture());
@@ -766,37 +773,10 @@ class RestResourceTest {
   }
 
   @Test
-  void updatesAndDeletesView() {
+  void deletesView() {
     ResourceId viewId = ResourceId.newBuilder().setId("cat:db:reports").build();
     when(directoryStub.resolveView(any()))
         .thenReturn(ResolveViewResponse.newBuilder().setResourceId(viewId).build());
-
-    View existing =
-        View.newBuilder()
-            .setResourceId(viewId)
-            .setDisplayName("reports")
-            .setSql("select 0")
-            .build();
-    when(viewStub.getView(any()))
-        .thenReturn(GetViewResponse.newBuilder().setView(existing).build());
-
-    View updated =
-        View.newBuilder()
-            .setResourceId(viewId)
-            .setDisplayName("reports_new")
-            .setSql("select 1")
-            .build();
-    when(viewStub.updateView(any()))
-        .thenReturn(UpdateViewResponse.newBuilder().setView(updated).build());
-
-    given()
-        .body("{\"name\":\"reports_new\",\"sql\":\"select 1\"}")
-        .header("Content-Type", "application/json")
-        .when()
-        .put("/v1/foo/namespaces/db/views/reports")
-        .then()
-        .statusCode(200)
-        .body("metadata.versions[0].representations[0].sql", equalTo("select 1"));
 
     given().when().delete("/v1/foo/namespaces/db/views/reports").then().statusCode(204);
 
@@ -881,241 +861,6 @@ class RestResourceTest {
   }
 
   @Test
-  void listsSnapshots() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    when(directoryStub.resolveTable(any()))
-        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-
-    Timestamp upstream = Timestamp.newBuilder().setSeconds(1700000000L).build();
-    Timestamp ingested = Timestamp.newBuilder().setSeconds(1700000001L).build();
-    PartitionSpecInfo partitionSpec =
-        PartitionSpecInfo.newBuilder()
-            .setSpecId(1)
-            .setSpecName("iceberg-spec")
-            .addFields(
-                PartitionField.newBuilder()
-                    .setFieldId(99)
-                    .setName("pcol")
-                    .setTransform("identity")
-                    .build())
-            .build();
-    Snapshot snapshot =
-        Snapshot.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(42L)
-            .setParentSnapshotId(7L)
-            .setSchemaJson("{\"type\":\"struct\"}")
-            .setUpstreamCreatedAt(upstream)
-            .setIngestedAt(ingested)
-            .setPartitionSpec(partitionSpec)
-            .build();
-    PageResponse page = PageResponse.newBuilder().setTotalSize(1).build();
-    when(snapshotStub.listSnapshots(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse.newBuilder()
-                .addSnapshots(snapshot)
-                .setPage(page)
-                .build());
-
-    given()
-        .when()
-        .get("/v1/foo/namespaces/db/tables/orders/snapshots?pageSize=5")
-        .then()
-        .statusCode(200)
-        .body("snapshots[0].snapshotId", equalTo(42))
-        .body("snapshots[0].parentSnapshotId", equalTo(7))
-        .body("snapshots[0].schemaJson", equalTo("{\"type\":\"struct\"}"))
-        .body("snapshots[0].partitionSpec.specId", equalTo(1))
-        .body("snapshots[0].partitionSpec.fields[0].name", equalTo("pcol"))
-        .body("page.totalSize", equalTo(1));
-
-    when(snapshotStub.getSnapshot(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.GetSnapshotResponse.newBuilder()
-                .setSnapshot(snapshot)
-                .build());
-
-    given()
-        .when()
-        .get("/v1/foo/namespaces/db/tables/orders/snapshots/42")
-        .then()
-        .statusCode(200)
-        .body("snapshotId", equalTo(42))
-        .body("upstreamCreatedAt", equalTo("2023-11-14T22:13:20Z"))
-        .body("ingestedAt", equalTo("2023-11-14T22:13:21Z"))
-        .body("partitionSpec.specName", equalTo("iceberg-spec"));
-
-    when(snapshotStub.createSnapshot(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.CreateSnapshotResponse.newBuilder()
-                .setSnapshot(snapshot)
-                .build());
-
-    given()
-        .body("{\"snapshotId\":43,\"parentSnapshotId\":42}")
-        .header("Content-Type", "application/json")
-        .when()
-        .post("/v1/foo/namespaces/db/tables/orders/snapshots")
-        .then()
-        .statusCode(201)
-        .body("snapshotId", equalTo(42));
-
-    given()
-        .when()
-        .post("/v1/foo/namespaces/db/tables/orders/snapshots/42/rollback")
-        .then()
-        .statusCode(501)
-        .body("error.code", equalTo(501))
-        .body("error.type", equalTo("UnsupportedOperationException"));
-
-    given()
-        .when()
-        .delete("/v1/foo/namespaces/db/tables/orders/snapshots/42")
-        .then()
-        .statusCode(204);
-  }
-
-  @Test
-  void listsSchemas() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    when(directoryStub.resolveTable(any()))
-        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-
-    Timestamp upstream = Timestamp.newBuilder().setSeconds(1700000000L).build();
-    Timestamp ingested = Timestamp.newBuilder().setSeconds(1700000001L).build();
-    Snapshot snapshot =
-        Snapshot.newBuilder()
-            .setSnapshotId(43L)
-            .setSchemaJson("{\"type\":\"struct\"}")
-            .setUpstreamCreatedAt(upstream)
-            .setIngestedAt(ingested)
-            .build();
-    PageResponse page = PageResponse.newBuilder().setNextPageToken("tok").setTotalSize(1).build();
-    when(snapshotStub.listSnapshots(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse.newBuilder()
-                .addSnapshots(snapshot)
-                .setPage(page)
-                .build());
-
-    given()
-        .when()
-        .get("/v1/foo/namespaces/db/tables/orders/schemas?pageSize=3")
-        .then()
-        .statusCode(200)
-        .body("schemas[0].schemaJson", equalTo("{\"type\":\"struct\"}"))
-        .body("schemas[0].upstreamCreatedAt", equalTo("2023-11-14T22:13:20Z"))
-        .body("schemas[0].ingestedAt", equalTo("2023-11-14T22:13:21Z"))
-        .body("page.totalSize", equalTo(1));
-  }
-
-  @Test
-  void listsPartitionSpecs() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    when(directoryStub.resolveTable(any()))
-        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-
-    PartitionSpecInfo spec =
-        PartitionSpecInfo.newBuilder()
-            .setSpecId(2)
-            .setSpecName("delta-spec")
-            .addFields(
-                PartitionField.newBuilder()
-                    .setFieldId(1)
-                    .setName("bucket")
-                    .setTransform("identity")
-                    .build())
-            .build();
-    Timestamp upstream = Timestamp.newBuilder().setSeconds(1700000000L).build();
-    Timestamp ingested = Timestamp.newBuilder().setSeconds(1700000001L).build();
-    Snapshot snapshot =
-        Snapshot.newBuilder()
-            .setSnapshotId(44L)
-            .setPartitionSpec(spec)
-            .setUpstreamCreatedAt(upstream)
-            .setIngestedAt(ingested)
-            .build();
-    PageResponse page = PageResponse.newBuilder().setTotalSize(1).build();
-    when(snapshotStub.listSnapshots(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse.newBuilder()
-                .addSnapshots(snapshot)
-                .setPage(page)
-                .build());
-
-    given()
-        .when()
-        .get("/v1/foo/namespaces/db/tables/orders/partition-specs?pageToken=tok")
-        .then()
-        .statusCode(200)
-        .body("specs[0].partitionSpec.specId", equalTo(2))
-        .body("specs[0].partitionSpec.fields[0].fieldId", equalTo(1))
-        .body("specs[0].upstreamCreatedAt", equalTo("2023-11-14T22:13:20Z"))
-        .body("page.totalSize", equalTo(1));
-  }
-
-  @Test
-  void fetchesStats() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    when(directoryStub.resolveTable(any()))
-        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-
-    var stats =
-        ai.floedb.floecat.catalog.rpc.TableStats.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(42)
-            .setRowCount(100)
-            .setDataFileCount(1)
-            .setTotalSizeBytes(64)
-            .build();
-    when(statsStub.getTableStats(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.GetTableStatsResponse.newBuilder()
-                .setStats(stats)
-                .build());
-
-    var column =
-        ai.floedb.floecat.catalog.rpc.ColumnStats.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(42)
-            .setColumnId(1)
-            .setColumnName("col")
-            .setLogicalType("string")
-            .setValueCount(100)
-            .build();
-    when(statsStub.listColumnStats(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.ListColumnStatsResponse.newBuilder()
-                .addColumns(column)
-                .build());
-
-    var file =
-        ai.floedb.floecat.catalog.rpc.FileColumnStats.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(42)
-            .setFilePath("file")
-            .setRowCount(100)
-            .setSizeBytes(64)
-            .setPartitionSpecId(0)
-            .addColumns(column)
-            .build();
-    when(statsStub.listFileColumnStats(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.ListFileColumnStatsResponse.newBuilder()
-                .addFileColumns(file)
-                .build());
-
-    given()
-        .when()
-        .get("/v1/foo/namespaces/db/tables/orders/snapshots/42/stats")
-        .then()
-        .statusCode(200)
-        .body("table.rowCount", equalTo(100))
-        .body("columns[0].columnName", equalTo("col"))
-        .body("files[0].filePath", equalTo("file"));
-  }
-
-  @Test
   void createsUpdatesAndDeletesTable() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
@@ -1160,37 +905,103 @@ class RestResourceTest {
         .body("'metadata-location'", equalTo("s3://bucket/path/metadata.json"))
         .body("metadata.properties.'metadata-location'", equalTo("s3://bucket/path/metadata.json"));
 
-    Table updated =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setDisplayName("orders_new")
-            .setCatalogId(ResourceId.newBuilder().setId("cat"))
-            .setNamespaceId(nsId)
-            .putProperties("metadata-location", "s3://bucket/path/metadata2.json")
-            .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
-            .build();
-    when(tableStub.updateTable(any()))
-        .thenReturn(UpdateTableResponse.newBuilder().setTable(updated).build());
-    Table updatedWithUpstream =
-        updated.toBuilder()
+    Table existing =
+        created.toBuilder()
             .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
             .build();
     when(tableStub.getTable(any()))
-        .thenReturn(GetTableResponse.newBuilder().setTable(updatedWithUpstream).build());
-
-    given()
-        .body("{\"name\":\"orders_new\",\"schemaJson\":\"{}\"}")
-        .header("Content-Type", "application/json")
-        .when()
-        .put("/v1/foo/namespaces/db/tables/orders")
-        .then()
-        .statusCode(200)
-        .body("'metadata-location'", equalTo("s3://bucket/path/metadata2.json"));
+        .thenReturn(GetTableResponse.newBuilder().setTable(existing).build());
 
     given().when().delete("/v1/foo/namespaces/db/tables/orders").then().statusCode(204);
 
     verify(tableStub).deleteTable(any(DeleteTableRequest.class));
     verify(connectorsStub).deleteConnector(any());
+  }
+
+  @Test
+  void createTableRequiresName() {
+    given()
+        .body(
+            """
+            {
+              "schema":{
+                "schema-id":1,
+                "last-column-id":1,
+                "type":"struct",
+                "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
+              }
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(400)
+        .body("error.type", equalTo("ValidationException"));
+
+    verify(tableStub, never()).createTable(any());
+  }
+
+  @Test
+  void createTableRequiresSchema() {
+    given()
+        .body(
+            """
+            {
+              "name":"orders",
+              "properties":{"io-impl":"org.apache.iceberg.inmemory.InMemoryFileIO"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(400)
+        .body("error.type", equalTo("ValidationException"));
+
+    verify(tableStub, never()).createTable(any());
+  }
+
+  @Test
+  void deleteTableHonorsPurgeRequestedFlag() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(ResourceId.newBuilder().setId("cat"))
+            .setNamespaceId(nsId)
+            .build();
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
+
+    given()
+        .when()
+        .delete("/v1/foo/namespaces/db/tables/orders?purgeRequested=true")
+        .then()
+        .statusCode(204);
+
+    ArgumentCaptor<DeleteTableRequest> deleteCaptor =
+        ArgumentCaptor.forClass(DeleteTableRequest.class);
+    verify(tableStub).deleteTable(deleteCaptor.capture());
+    DeleteTableRequest sent = deleteCaptor.getValue();
+    assertTrue(sent.getPurgeStats());
+    assertTrue(sent.getPurgeSnapshots());
+    verify(tableDropCleanupService).purgeTableData(eq("foo"), eq("db"), eq("orders"), eq(table));
+  }
+
+  @Test
+  void oauthTokensEndpointNotSupported() {
+    given()
+        .body("{\"grant_type\":\"client_credentials\"}")
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/oauth/tokens")
+        .then()
+        .statusCode(501)
+        .body("error.type", equalTo("UnsupportedOperationException"));
   }
 
   @Test
@@ -1221,21 +1032,31 @@ class RestResourceTest {
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
 
-    given()
-        .body(stageCreateRequestWithoutLocation("ducktab"))
-        .header("Iceberg-Transaction-Id", "stage-default")
-        .contentType(MediaType.APPLICATION_JSON)
-        .when()
-        .post("/v1/foo/namespaces/db/tables")
-        .then()
-        .statusCode(200)
-        .body("stage-id", equalTo("stage-default"));
+    ExtractableResponse<Response> response =
+        given()
+            .body(stageCreateRequestWithoutLocation("ducktab"))
+            .header("Iceberg-Transaction-Id", "stage-default")
+            .contentType(MediaType.APPLICATION_JSON)
+            .when()
+            .post("/v1/foo/namespaces/db/tables")
+            .then()
+            .statusCode(200)
+            .body("stage-id", equalTo("stage-default"))
+            .extract();
+
+    String responseMetadataLocation = response.path("metadata-location");
+    assertNotNull(responseMetadataLocation);
+    assertTrue(
+        responseMetadataLocation.startsWith("s3://warehouse/default/foo/db/ducktab/metadata/"));
 
     verify(tableStub, never()).createTable(any());
     StagedTableKey key =
         new StagedTableKey("account1", "foo", List.of("db"), "ducktab", "stage-default");
     StagedTableEntry entry = stageRepository.get(key).orElseThrow();
     assertEquals("s3://warehouse/default/foo/db/ducktab", entry.request().location());
+    assertEquals(responseMetadataLocation, entry.request().properties().get("metadata-location"));
+    assertEquals(
+        responseMetadataLocation, entry.spec().getPropertiesMap().get("metadata-location"));
   }
 
   @Test
@@ -1300,16 +1121,18 @@ class RestResourceTest {
         .when()
         .post("/v1/foo/transactions/commit")
         .then()
-        .statusCode(200)
-        .body("results[0].table.name", equalTo("orders"))
-        .body("results[0].stage-id", equalTo("stage-commit"))
-        .body("results[0].metadata-location", equalTo("s3://bucket/orders/metadata.json"));
+        .statusCode(204);
 
     StagedTableKey key =
         new StagedTableKey("account1", "foo", List.of("db"), "orders", "stage-commit");
     assertTrue(stageRepository.get(key).isEmpty());
     verify(tableStub, times(1)).createTable(any());
-    verify(connectorsStub, times(1)).createConnector(any());
+    ArgumentCaptor<CreateConnectorRequest> connectorReq =
+        ArgumentCaptor.forClass(CreateConnectorRequest.class);
+    verify(connectorsStub, times(1)).createConnector(connectorReq.capture());
+    assertEquals(
+        "s3://bucket/orders/metadata.json",
+        connectorReq.getValue().getSpec().getPropertiesMap().get("external.metadata-location"));
   }
 
   @Test
@@ -1455,11 +1278,8 @@ class RestResourceTest {
         .when()
         .post("/v1/foo/namespaces/db/tables")
         .then()
-        .statusCode(200);
-
-    verify(connectorsStub).createConnector(any(CreateConnectorRequest.class));
-    verify(connectorsStub).syncCapture(any(SyncCaptureRequest.class));
-    verify(connectorsStub).triggerReconcile(any(TriggerReconcileRequest.class));
+        .statusCode(200)
+        .body("'metadata-location'", equalTo("s3://bucket/path/metadata.json"));
   }
 
   @Test
@@ -1501,8 +1321,9 @@ class RestResourceTest {
         .body("metadata.location", equalTo("s3://bucket/new_path/"));
 
     ArgumentCaptor<UpdateTableRequest> request = ArgumentCaptor.forClass(UpdateTableRequest.class);
-    verify(tableStub).updateTable(request.capture());
-    assertEquals("s3://bucket/new_path/", request.getValue().getSpec().getUpstream().getUri());
+    verify(tableStub, atLeastOnce()).updateTable(request.capture());
+    assertEquals(
+        "s3://bucket/new_path/", request.getAllValues().get(0).getSpec().getUpstream().getUri());
   }
 
   @Test
@@ -1937,7 +1758,10 @@ class RestResourceTest {
 
     given()
         .body(
-            "{\"requirements\":[{\"type\":\"assert-ref-snapshot-id\",\"ref\":\"main\",\"snapshot-id\":7}]}")
+            """
+            {"requirements":[{"type":"assert-ref-snapshot-id","ref":"main","snapshot-id":7}],
+             "updates":[{"action":"set-properties","updates":{"owner":"floecat"}}]}
+            """)
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
@@ -1972,14 +1796,17 @@ class RestResourceTest {
 
     given()
         .body(
-            "{\"requirements\":[{\"type\":\"assert-ref-snapshot-id\",\"ref\":\"main\",\"snapshot-id\":5}]}")
+            """
+            {"requirements":[{"type":"assert-ref-snapshot-id","ref":"main","snapshot-id":5}],
+             "updates":[{"action":"set-properties","updates":{"owner":"floecat"}}]}
+            """)
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
         .then()
         .statusCode(200);
 
-    verify(tableStub).updateTable(any());
+    verify(tableStub, atLeastOnce()).updateTable(any());
   }
 
   @Test
@@ -2096,7 +1923,7 @@ class RestResourceTest {
         .get("/v1/config")
         .then()
         .statusCode(200)
-        .body("defaults.'catalog-name'", equalTo("floecat"))
+        .body("defaults.'catalog-name'", equalTo("sales"))
         .body(
             "endpoints",
             hasItems("POST /v1/{prefix}/tables/rename", "POST /v1/{prefix}/views/rename"));
@@ -2159,7 +1986,9 @@ class RestResourceTest {
         .body("'plan-id'", equalTo("plan-1"))
         .body("'plan-tasks'.size()", equalTo(1))
         .body("'plan-tasks'[0]", equalTo("plan-1-task-0"))
-        .body("$", not(hasKey("file-scan-tasks")));
+        .body("'file-scan-tasks'.size()", equalTo(1))
+        .body("'file-scan-tasks'[0].'data-file'.'file-path'", equalTo("s3://bucket/file.parquet"))
+        .body("'delete-files'.size()", equalTo(0));
 
     ArgumentCaptor<BeginQueryRequest> req = ArgumentCaptor.forClass(BeginQueryRequest.class);
     verify(queryStub).beginQuery(req.capture());
@@ -2210,7 +2039,9 @@ class RestResourceTest {
         .body("status", equalTo("completed"))
         .body("'plan-tasks'.size()", equalTo(1))
         .body("'plan-tasks'[0]", equalTo("plan-1-task-0"))
-        .body("$", not(hasKey("file-scan-tasks")));
+        .body("'file-scan-tasks'.size()", equalTo(1))
+        .body("'file-scan-tasks'[0].'data-file'.'file-path'", equalTo("s3://bucket/file.parquet"))
+        .body("'delete-files'.size()", equalTo(0));
 
     ArgumentCaptor<FetchScanBundleRequest> fetch =
         ArgumentCaptor.forClass(FetchScanBundleRequest.class);

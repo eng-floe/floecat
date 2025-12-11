@@ -9,8 +9,9 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.support.mapper.TableResponseMapper;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadataLogEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergStatisticsFile;
 import java.util.List;
 import java.util.Map;
@@ -39,11 +40,36 @@ class TableResponseMapperTest {
 
     assertNotNull(result.metadata());
     assertEquals("s3://bucket/orders/metadata", result.config().get("write.metadata.path"));
-    assertFalse(result.metadata().properties().containsKey("write.metadata.path"));
+    assertEquals(
+        "s3://bucket/orders/metadata", result.metadata().properties().get("write.metadata.path"));
     List<Map<String, Object>> schemas = result.metadata().schemas();
     assertFalse(schemas.isEmpty(), "Expected at least one schema");
     Object fields = schemas.get(0).get("fields");
     assertTrue(fields instanceof List<?> list && !list.isEmpty(), "Expected placeholder fields");
+  }
+
+  @Test
+  void writeMetadataPathStripsMirrorPrefix() {
+    Table table =
+        Table.newBuilder()
+            .setDisplayName("orders")
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .putProperties(
+                "metadata-location",
+                "s3://bucket/.floecat-metadata/orders/metadata/00000.metadata.json")
+            .build();
+    IcebergMetadata metadata =
+        IcebergMetadata.newBuilder()
+            .setMetadataLocation(
+                "s3://bucket/.floecat-metadata/orders/metadata/00000.metadata.json")
+            .build();
+
+    LoadTableResultDto result =
+        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+
+    assertEquals("s3://bucket/orders/metadata", result.config().get("write.metadata.path"));
+    assertEquals(
+        "s3://bucket/orders/metadata", result.metadata().properties().get("write.metadata.path"));
   }
 
   @Test
@@ -62,11 +88,133 @@ class TableResponseMapperTest {
         TableResponseMapper.toLoadResultFromCreate("orders", table, request, Map.of(), List.of());
 
     assertEquals("s3://bucket/orders/metadata", loadResult.config().get("write.metadata.path"));
-    assertFalse(loadResult.metadata().properties().containsKey("write.metadata.path"));
+    assertEquals(
+        "s3://bucket/orders/metadata",
+        loadResult.metadata().properties().get("write.metadata.path"));
     List<Map<String, Object>> schemas = loadResult.metadata().schemas();
     assertFalse(schemas.isEmpty(), "schema list should not be empty");
     Object fields = schemas.get(0).get("fields");
     assertTrue(fields instanceof List<?> list && !list.isEmpty(), "Expected placeholder fields");
+  }
+
+  @Test
+  void metadataLocationPrefersIcebergMetadataWhenPropertyIsPointer() {
+    Table table =
+        Table.newBuilder()
+            .setDisplayName("orders")
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .putProperties("location", "s3://bucket/orders")
+            .putProperties("metadata-location", "s3://bucket/orders/metadata.json")
+            .build();
+    IcebergMetadata metadata =
+        IcebergMetadata.newBuilder()
+            .setMetadataLocation("s3://bucket/orders/metadata/00001-abc.metadata.json")
+            .build();
+
+    LoadTableResultDto result =
+        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+
+    assertEquals("s3://bucket/orders/metadata", result.config().get("write.metadata.path"));
+    assertEquals(
+        "s3://bucket/orders/metadata", result.metadata().properties().get("write.metadata.path"));
+  }
+
+  @Test
+  void metadataLocationUsesIcebergMetadataWhenTablePropertyDiffers() {
+    Table table =
+        Table.newBuilder()
+            .setDisplayName("orders")
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .putProperties("location", "s3://bucket/orders")
+            .putProperties(
+                "metadata-location", "s3://bucket/orders/metadata/00002-new.metadata.json")
+            .build();
+    IcebergMetadata metadata =
+        IcebergMetadata.newBuilder()
+            .setMetadataLocation("s3://bucket/orders/metadata/00001-old.metadata.json")
+            .build();
+
+    LoadTableResultDto result =
+        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+
+    assertEquals("s3://bucket/orders/metadata/00001-old.metadata.json", result.metadataLocation());
+    assertEquals("s3://bucket/orders/metadata", result.config().get("write.metadata.path"));
+  }
+
+  @Test
+  void metadataLocationFallsBackToLatestMetadataLogEntry() {
+    Table table =
+        Table.newBuilder()
+            .setDisplayName("orders")
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .putProperties("location", "s3://bucket/orders")
+            .putProperties(
+                "metadata-location", "s3://bucket/orders/metadata/00000-old.metadata.json")
+            .build();
+    IcebergMetadata metadata =
+        IcebergMetadata.newBuilder()
+            .addMetadataLog(
+                IcebergMetadataLogEntry.newBuilder()
+                    .setFile("s3://bucket/orders/metadata/00000-old.metadata.json")
+                    .build())
+            .addMetadataLog(
+                IcebergMetadataLogEntry.newBuilder()
+                    .setFile("s3://bucket/orders/metadata/00001-new.metadata.json")
+                    .build())
+            .build();
+
+    LoadTableResultDto result =
+        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+
+    assertEquals("s3://bucket/orders/metadata/00001-new.metadata.json", result.metadataLocation());
+    assertEquals(
+        "s3://bucket/orders/metadata", result.metadata().properties().get("write.metadata.path"));
+  }
+
+  @Test
+  void metadataLocationPrefersMetadataLogOverStaleMetadataLocationField() {
+    Table table =
+        Table.newBuilder()
+            .setDisplayName("orders")
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .putProperties("location", "s3://bucket/orders")
+            .build();
+    IcebergMetadata metadata =
+        IcebergMetadata.newBuilder()
+            .setMetadataLocation("s3://bucket/orders/metadata/00000-old.metadata.json")
+            .addMetadataLog(
+                IcebergMetadataLogEntry.newBuilder()
+                    .setFile("s3://bucket/orders/metadata/00000-old.metadata.json")
+                    .build())
+            .addMetadataLog(
+                IcebergMetadataLogEntry.newBuilder()
+                    .setFile("s3://bucket/orders/metadata/00001-new.metadata.json")
+                    .build())
+            .build();
+
+    LoadTableResultDto result =
+        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+
+    assertEquals("s3://bucket/orders/metadata/00001-new.metadata.json", result.metadataLocation());
+  }
+
+  @Test
+  void metadataJsonPointerStillProducesMetadataDirectory() {
+    Table table =
+        Table.newBuilder()
+            .setDisplayName("orders")
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .putProperties("location", "s3://bucket/orders")
+            .build();
+    IcebergMetadata metadata =
+        IcebergMetadata.newBuilder()
+            .setMetadataLocation("s3://bucket/orders/metadata/metadata.json")
+            .build();
+
+    LoadTableResultDto result =
+        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+
+    assertEquals("s3://bucket/orders/metadata", result.config().get("write.metadata.path"));
   }
 
   @Test

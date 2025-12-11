@@ -46,6 +46,8 @@ class TableLifecycleServiceTest {
   @BeforeEach
   void setUp() {
     service.grpc = grpc;
+    service.tableClient =
+        new ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient(grpc);
     when(grpc.raw()).thenReturn(clients);
     when(clients.table()).thenReturn(tableStub);
     when(clients.directory()).thenReturn(directoryStub);
@@ -139,6 +141,23 @@ class TableLifecycleServiceTest {
         ArgumentCaptor.forClass(DeleteTableRequest.class);
     verify(tableStub).deleteTable(deleteCaptor.capture());
     assertEquals(tableId, deleteCaptor.getValue().getTableId());
+    assertEquals(false, deleteCaptor.getValue().getPurgeStats());
+    assertEquals(false, deleteCaptor.getValue().getPurgeSnapshots());
+  }
+
+  @Test
+  void deleteTableHonorsPurgeRequest() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+
+    service.deleteTable(tableId, true);
+
+    ArgumentCaptor<DeleteTableRequest> deleteCaptor =
+        ArgumentCaptor.forClass(DeleteTableRequest.class);
+    verify(tableStub).deleteTable(deleteCaptor.capture());
+    DeleteTableRequest sent = deleteCaptor.getValue();
+    assertEquals(tableId, sent.getTableId());
+    assertEquals(true, sent.getPurgeStats());
+    assertEquals(true, sent.getPurgeSnapshots());
   }
 
   @Test

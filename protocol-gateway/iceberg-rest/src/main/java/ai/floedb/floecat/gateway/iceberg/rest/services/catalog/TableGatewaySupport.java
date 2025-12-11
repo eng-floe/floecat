@@ -1,9 +1,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
-import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
-import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
@@ -14,7 +12,6 @@ import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
-import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
@@ -28,7 +25,11 @@ import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.support.CatalogResolver;
+import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -52,16 +53,28 @@ public class TableGatewaySupport {
   private final IcebergGatewayConfig config;
   private final ObjectMapper mapper;
   private final Config mpConfig;
+  private final TableClient tableClient;
+  private final SnapshotClient snapshotClient;
+  private final ConnectorClient connectorClient;
 
   private volatile Map<String, String> tableConfigCache;
   private volatile List<StorageCredentialDto> storageCredentialCache;
 
   public TableGatewaySupport(
-      GrpcWithHeaders grpc, IcebergGatewayConfig config, ObjectMapper mapper, Config mpConfig) {
+      GrpcWithHeaders grpc,
+      IcebergGatewayConfig config,
+      ObjectMapper mapper,
+      Config mpConfig,
+      TableClient tableClient,
+      SnapshotClient snapshotClient,
+      ConnectorClient connectorClient) {
     this.grpc = grpc;
     this.config = config;
     this.mapper = mapper;
     this.mpConfig = mpConfig;
+    this.tableClient = tableClient;
+    this.snapshotClient = snapshotClient;
+    this.connectorClient = connectorClient;
   }
 
   public TableSpec.Builder buildCreateSpec(
@@ -109,11 +122,7 @@ public class TableGatewaySupport {
   }
 
   public void addMetadataLocationProperties(TableSpec.Builder spec, String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return;
-    }
-    spec.putProperties("metadata-location", metadataLocation);
-    spec.putProperties("metadata_location", metadataLocation);
+    MetadataLocationUtil.setMetadataLocation(spec::putProperties, metadataLocation);
   }
 
   public String metadataLocationFromCreate(TableRequests.Create req) {
@@ -156,14 +165,14 @@ public class TableGatewaySupport {
       return null;
     }
     int idx = metadataLocation.indexOf("/metadata/");
+    String base;
     if (idx > 0) {
-      return metadataLocation.substring(0, idx);
+      base = metadataLocation.substring(0, idx);
+    } else {
+      int slash = metadataLocation.lastIndexOf('/');
+      base = slash > 0 ? metadataLocation.substring(0, slash) : metadataLocation;
     }
-    int slash = metadataLocation.lastIndexOf('/');
-    if (slash > 0) {
-      return metadataLocation.substring(0, slash);
-    }
-    return metadataLocation;
+    return stripMetadataMirrorPrefix(base);
   }
 
   private String metadataLocationFromTableLocation(String tableLocation) {
@@ -178,8 +187,8 @@ public class TableGatewaySupport {
     return dir + String.format("%05d-%s.metadata.json", 0, UUID.randomUUID());
   }
 
-  private static String nonBlank(String primary, String fallback) {
-    return primary != null && !primary.isBlank() ? primary : fallback;
+  public boolean connectorIntegrationEnabled() {
+    return config.connectorIntegrationEnabled();
   }
 
   public void updateConnectorMetadata(ResourceId connectorId, String metadataLocation) {
@@ -187,9 +196,9 @@ public class TableGatewaySupport {
       return;
     }
     try {
-      ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
       var response =
-          stub.getConnector(GetConnectorRequest.newBuilder().setConnectorId(connectorId).build());
+          connectorClient.getConnector(
+              GetConnectorRequest.newBuilder().setConnectorId(connectorId).build());
       if (response == null || !response.hasConnector()) {
         LOG.warnf("Connector lookup returned empty response for %s", connectorId.getId());
         return;
@@ -198,7 +207,7 @@ public class TableGatewaySupport {
       Map<String, String> props = new LinkedHashMap<>(existing.getPropertiesMap());
       props.put("external.metadata-location", metadataLocation);
       ConnectorSpec spec = ConnectorSpec.newBuilder().putAllProperties(props).build();
-      stub.updateConnector(
+      connectorClient.updateConnector(
           UpdateConnectorRequest.newBuilder()
               .setConnectorId(connectorId)
               .setSpec(spec)
@@ -214,20 +223,11 @@ public class TableGatewaySupport {
       return;
     }
     try {
-      ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
-      stub.deleteConnector(DeleteConnectorRequest.newBuilder().setConnectorId(connectorId).build());
+      connectorClient.deleteConnector(
+          DeleteConnectorRequest.newBuilder().setConnectorId(connectorId).build());
     } catch (StatusRuntimeException e) {
       LOG.warnf(e, "Failed to delete connector %s", connectorId.getId());
     }
-  }
-
-  private static boolean looksLikePointer(String location) {
-    if (location == null || location.isBlank()) {
-      return false;
-    }
-    int slash = location.lastIndexOf('/');
-    String file = slash >= 0 ? location.substring(slash + 1) : location;
-    return "metadata.json".equalsIgnoreCase(file);
   }
 
   public Map<String, String> defaultTableConfig() {
@@ -290,42 +290,57 @@ public class TableGatewaySupport {
     if (table == null || !table.hasResourceId()) {
       return null;
     }
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub =
-        grpc.withHeaders(grpc.raw().snapshot());
     try {
       SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT);
       var requestBuilder =
           ai.floedb.floecat.catalog.rpc.GetSnapshotRequest.newBuilder()
               .setTableId(table.getResourceId())
               .setSnapshot(ref);
-      var response = snapshotStub.getSnapshot(requestBuilder.build());
+      var response = snapshotClient.getSnapshot(requestBuilder.build());
       if (response == null || !response.hasSnapshot()) {
         return null;
       }
       var snapshot = response.getSnapshot();
+      Long propertySnapshotId = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
+      if (propertySnapshotId != null
+          && propertySnapshotId > 0
+          && snapshot.getSnapshotId() != propertySnapshotId) {
+        return loadSnapshotById(table.getResourceId(), propertySnapshotId);
+      }
       return snapshot.hasIceberg() ? snapshot.getIceberg() : null;
     } catch (StatusRuntimeException primaryFailure) {
-      Long snapshotId = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
-      if (snapshotId == null || snapshotId <= 0) {
-        return null;
-      }
-      try {
-        SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSnapshotId(snapshotId);
-        var response =
-            snapshotStub.getSnapshot(
-                ai.floedb.floecat.catalog.rpc.GetSnapshotRequest.newBuilder()
-                    .setTableId(table.getResourceId())
-                    .setSnapshot(ref)
-                    .build());
-        if (response == null || !response.hasSnapshot()) {
-          return null;
-        }
-        var snapshot = response.getSnapshot();
-        return snapshot.hasIceberg() ? snapshot.getIceberg() : null;
-      } catch (StatusRuntimeException ignored) {
-        return null;
-      }
+      return loadSnapshotByProperty(table);
     }
+  }
+
+  private IcebergMetadata loadSnapshotByProperty(Table table) {
+    Long snapshotId = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
+    if (snapshotId == null || snapshotId <= 0) {
+      return null;
+    }
+    try {
+      return loadSnapshotById(table.getResourceId(), snapshotId);
+    } catch (StatusRuntimeException ignored) {
+      return null;
+    }
+  }
+
+  private IcebergMetadata loadSnapshotById(ResourceId tableId, Long snapshotId) {
+    if (snapshotId == null || snapshotId <= 0) {
+      return null;
+    }
+    SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSnapshotId(snapshotId);
+    var response =
+        snapshotClient.getSnapshot(
+            ai.floedb.floecat.catalog.rpc.GetSnapshotRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(ref)
+                .build());
+    if (response == null || !response.hasSnapshot()) {
+      return null;
+    }
+    var snapshot = response.getSnapshot();
+    return snapshot.hasIceberg() ? snapshot.getIceberg() : null;
   }
 
   public IcebergGatewayConfig.RegisterConnectorTemplate connectorTemplateFor(String prefix) {
@@ -351,7 +366,6 @@ public class TableGatewaySupport {
       ResourceId tableId,
       IcebergGatewayConfig.RegisterConnectorTemplate template,
       String idempotencyKey) {
-    ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
     NamespacePath nsPath = NamespacePath.newBuilder().addAllSegments(namespacePath).build();
     SourceSelector source =
         SourceSelector.newBuilder().setNamespace(nsPath).setTable(tableName).build();
@@ -400,7 +414,7 @@ public class TableGatewaySupport {
       request.setIdempotency(
           IdempotencyKey.newBuilder().setKey(idempotencyKey + ":connector").build());
     }
-    CreateConnectorResponse response = stub.createConnector(request.build());
+    CreateConnectorResponse response = connectorClient.createConnector(request.build());
     if (response == null || !response.hasConnector()) {
       LOG.warnf(
           "Connector service returned empty response for template register %s.%s",
@@ -420,7 +434,6 @@ public class TableGatewaySupport {
       String metadataLocation,
       String tableLocation,
       String idempotencyKey) {
-    ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
     NamespacePath nsPath = NamespacePath.newBuilder().addAllSegments(namespacePath).build();
     SourceSelector source =
         SourceSelector.newBuilder().setNamespace(nsPath).setTable(tableName).build();
@@ -450,6 +463,8 @@ public class TableGatewaySupport {
             .putProperties("external.table-name", tableName)
             .putProperties("external.namespace", namespaceFq)
             .putProperties(CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(true));
+    config.metadataFileIo().ifPresent(ioImpl -> spec.putProperties("io-impl", ioImpl));
+    config.metadataFileIoRoot().ifPresent(root -> spec.putProperties("fs.floecat.test-root", root));
 
     CreateConnectorRequest.Builder request =
         CreateConnectorRequest.newBuilder().setSpec(spec.build());
@@ -457,7 +472,7 @@ public class TableGatewaySupport {
       request.setIdempotency(
           IdempotencyKey.newBuilder().setKey(idempotencyKey + ":connector").build());
     }
-    CreateConnectorResponse response = stub.createConnector(request.build());
+    CreateConnectorResponse response = connectorClient.createConnector(request.build());
     if (response == null || !response.hasConnector()) {
       LOG.warnf(
           "Connector service returned empty response for external connector %s.%s",
@@ -473,7 +488,6 @@ public class TableGatewaySupport {
       String tableName,
       ResourceId connectorId,
       String connectorUri) {
-    TableServiceGrpc.TableServiceBlockingStub tableStub = grpc.withHeaders(grpc.raw().table());
     UpstreamRef.Builder upstream =
         UpstreamRef.newBuilder()
             .setFormat(TableFormat.TF_ICEBERG)
@@ -489,7 +503,7 @@ public class TableGatewaySupport {
             .setSpec(TableSpec.newBuilder().setUpstream(upstream).build())
             .setUpdateMask(com.google.protobuf.FieldMask.newBuilder().addPaths("upstream").build())
             .build();
-    tableStub.updateTable(request);
+    tableClient.updateTable(request);
   }
 
   public void runSyncMetadataCapture(
@@ -500,7 +514,6 @@ public class TableGatewaySupport {
     String namespaceFq =
         namespacePath == null || namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
     try {
-      ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
       SyncCaptureRequest.Builder request =
           SyncCaptureRequest.newBuilder()
               .setConnectorId(connectorId)
@@ -510,7 +523,7 @@ public class TableGatewaySupport {
         request.addDestinationNamespacePaths(
             NamespacePath.newBuilder().addAllSegments(namespacePath).build());
       }
-      var response = stub.syncCapture(request.build());
+      var response = connectorClient.syncCapture(request.build());
       LOG.infof(
           "Triggered sync metadata capture connector=%s namespace=%s table=%s scanned=%d changed=%d"
               + " errors=%d",
@@ -534,7 +547,6 @@ public class TableGatewaySupport {
     String namespaceFq =
         namespacePath == null || namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
     try {
-      ConnectorsGrpc.ConnectorsBlockingStub stub = grpc.withHeaders(grpc.raw().connectors());
       TriggerReconcileRequest.Builder request =
           TriggerReconcileRequest.newBuilder()
               .setConnectorId(connectorId)
@@ -544,7 +556,7 @@ public class TableGatewaySupport {
         request.addDestinationNamespacePaths(
             NamespacePath.newBuilder().addAllSegments(namespacePath).build());
       }
-      var response = stub.triggerReconcile(request.build());
+      var response = connectorClient.triggerReconcile(request.build());
       LOG.infof(
           "Triggered reconcile job connector=%s namespace=%s table=%s jobId=%s",
           connectorId == null ? "<missing>" : connectorId.getId(),
@@ -583,6 +595,14 @@ public class TableGatewaySupport {
       }
     }
     return out;
+  }
+
+  public boolean isMirrorMetadataLocation(String metadataLocation) {
+    return MetadataLocationUtil.isMirrorMetadataLocation(metadataLocation);
+  }
+
+  public String stripMetadataMirrorPrefix(String location) {
+    return MetadataLocationUtil.stripMetadataMirrorPrefix(location);
   }
 
   private static Long propertyLong(Map<String, String> props, String key) {

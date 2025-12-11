@@ -19,9 +19,6 @@ import org.jboss.logging.Logger;
 @Produces(MediaType.APPLICATION_JSON)
 public class ConfigResource {
   private static final Logger LOG = Logger.getLogger(ConfigResource.class);
-  private static final List<String> SUPPORTED_FORMATS = List.of("ICEBERG");
-  private static final List<String> SUPPORTED_AUTH_TYPES = List.of("none", "bearer");
-
   @Inject IcebergGatewayConfig config;
   @Inject ObjectMapper mapper;
 
@@ -31,7 +28,7 @@ public class ConfigResource {
         Map.of(
             "client.poll-interval-ms", "100",
             "client.retry.initial-timeout-ms", "200",
-            "catalog-name", resolveCatalogName(warehouse));
+            "catalog-name", resolvePrefix(warehouse));
 
     Map<String, String> overrides = Map.of("prefix", resolvePrefix(warehouse));
 
@@ -40,6 +37,7 @@ public class ConfigResource {
             "GET /v1/{prefix}/namespaces",
             "POST /v1/{prefix}/namespaces",
             "GET /v1/{prefix}/namespaces/{namespace}",
+            "HEAD /v1/{prefix}/namespaces/{namespace}",
             "DELETE /v1/{prefix}/namespaces/{namespace}",
             "POST /v1/{prefix}/namespaces/{namespace}/properties",
             "GET /v1/{prefix}/namespaces/{namespace}/tables",
@@ -63,9 +61,11 @@ public class ConfigResource {
             "POST /v1/{prefix}/namespaces/{namespace}/views/{view}",
             "DELETE /v1/{prefix}/namespaces/{namespace}/views/{view}",
             "HEAD /v1/{prefix}/namespaces/{namespace}/views/{view}",
-            "POST /v1/{prefix}/views/rename");
+            "POST /v1/{prefix}/views/rename",
+            "POST /v1/oauth/tokens");
 
-    String idempotencyLifetime = null;
+    String idempotencyLifetime =
+        config.idempotencyKeyLifetime() == null ? null : config.idempotencyKeyLifetime().toString();
 
     CatalogConfigDto payload =
         new CatalogConfigDto(defaults, overrides, endpoints, idempotencyLifetime);
@@ -74,11 +74,7 @@ public class ConfigResource {
   }
 
   private String resolvePrefix(String warehouse) {
-    return (warehouse == null || warehouse.isBlank()) ? "floecat" : warehouse;
-  }
-
-  private String resolveCatalogName(String warehouse) {
-    return resolvePrefix(warehouse);
+    return config.defaultPrefix().filter(p -> p != null && !p.isBlank()).orElse("floecat");
   }
 
   private void logResponse(CatalogConfigDto payload) {

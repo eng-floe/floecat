@@ -86,7 +86,7 @@ reconciliation) show job IDs that can be polled via `connector job <id>`.
 - **Provisioning a catalog and namespace**
 
   ```
-  account 31a47986-efaf-35f5-b810-09ba18ca81d2
+  account 5eaa9cd5-7d08-3750-9457-cfe800b0b9d2
   catalog create demo --desc "Demo catalog"
   namespace create demo.sales --desc "Sales sandbox" --props owner=analyst
   ```

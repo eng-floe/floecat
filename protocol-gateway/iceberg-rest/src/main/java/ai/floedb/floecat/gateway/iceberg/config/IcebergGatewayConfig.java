@@ -36,6 +36,10 @@ public interface IcebergGatewayConfig {
 
   Optional<StorageCredentialConfig> storageCredential();
 
+  Optional<String> metadataFileIo();
+
+  Optional<String> metadataFileIoRoot();
+
   interface StorageCredentialConfig {
     Optional<String> scope();
 
@@ -44,11 +48,17 @@ public interface IcebergGatewayConfig {
 
   Map<String, RegisterConnectorTemplate> registerConnectors();
 
+  @WithDefault("true")
+  boolean connectorIntegrationEnabled();
+
   @WithDefault("PT10M")
   Duration planTaskTtl();
 
   @WithDefault("128")
   int planTaskFilesPerTask();
+
+  @WithDefault("PT30M")
+  Duration idempotencyKeyLifetime();
 
   interface RegisterConnectorTemplate {
     String uri();

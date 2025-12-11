@@ -10,8 +10,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
+import ai.floedb.floecat.gateway.iceberg.rest.common.AccountHeaderFilter;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
-import ai.floedb.floecat.gateway.iceberg.rest.support.filter.AccountHeaderFilter;
 import jakarta.enterprise.inject.Instance;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.core.MultivaluedHashMap;

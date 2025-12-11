@@ -3,8 +3,8 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.planning;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ContentFileDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FileScanTaskDto;
-import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ScanTasksResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanTasksResponseDto;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Duration;
@@ -54,9 +54,6 @@ public class PlanTaskManager {
       List<StorageCredentialDto> credentials) {
     expire();
     Objects.requireNonNull(planId, "planId is required");
-    PlanEntry entry =
-        new PlanEntry(
-            planId, namespace, table, credentials == null ? List.of() : List.copyOf(credentials));
     List<FileScanTaskDto> files =
         fileScanTasks == null
             ? List.of()
@@ -65,12 +62,21 @@ public class PlanTaskManager {
         deleteFiles == null
             ? List.of()
             : Collections.unmodifiableList(new ArrayList<>(deleteFiles));
+    PlanEntry entry =
+        new PlanEntry(
+            planId,
+            namespace,
+            table,
+            credentials == null ? List.of() : List.copyOf(credentials),
+            files,
+            deletes);
     if (!files.isEmpty()) {
       int chunkSize = Math.max(1, filesPerTask);
       for (int offset = 0; offset < files.size(); offset += chunkSize) {
         int end = Math.min(files.size(), offset + chunkSize);
         List<FileScanTaskDto> chunk = files.subList(offset, end);
-        ScanTasksResponseDto payload = new ScanTasksResponseDto(null, List.copyOf(chunk), deletes);
+        TablePlanTasksResponseDto payload =
+            new TablePlanTasksResponseDto(null, List.copyOf(chunk), deletes);
         String taskId = planId + "-task-" + offset / chunkSize;
         entry.addTask(taskId);
         planTasks.put(taskId, new PlanTaskPayload(taskId, planId, namespace, table, payload));
@@ -86,7 +92,7 @@ public class PlanTaskManager {
     return entry == null ? Optional.empty() : Optional.of(entry.toDescriptor());
   }
 
-  public Optional<ScanTasksResponseDto> consumeTask(
+  public Optional<TablePlanTasksResponseDto> consumeTask(
       String namespace, String table, String planTaskId) {
     expire();
     PlanTaskPayload payload = planTasks.remove(planTaskId);
@@ -157,23 +163,34 @@ public class PlanTaskManager {
       String table,
       PlanStatus status,
       List<String> planTasks,
-      List<StorageCredentialDto> credentials) {}
+      List<StorageCredentialDto> credentials,
+      List<FileScanTaskDto> fileScanTasks,
+      List<ContentFileDto> deleteFiles) {}
 
   private static final class PlanEntry {
     private final String planId;
     private final String namespace;
     private final String table;
     private final List<StorageCredentialDto> credentials;
+    private final List<FileScanTaskDto> fileScanTasks;
+    private final List<ContentFileDto> deleteFiles;
     private final CopyOnWriteArrayList<String> taskIds = new CopyOnWriteArrayList<>();
     private volatile PlanStatus status = PlanStatus.COMPLETED;
     private volatile Instant updatedAt = Instant.now();
 
     PlanEntry(
-        String planId, String namespace, String table, List<StorageCredentialDto> credentials) {
+        String planId,
+        String namespace,
+        String table,
+        List<StorageCredentialDto> credentials,
+        List<FileScanTaskDto> fileScanTasks,
+        List<ContentFileDto> deleteFiles) {
       this.planId = planId;
       this.namespace = namespace;
       this.table = table;
       this.credentials = credentials;
+      this.fileScanTasks = fileScanTasks;
+      this.deleteFiles = deleteFiles;
     }
 
     void addTask(String taskId) {
@@ -209,7 +226,8 @@ public class PlanTaskManager {
     }
 
     PlanDescriptor toDescriptor() {
-      return new PlanDescriptor(planId, namespace, table, status, planTaskIds(), credentials);
+      return new PlanDescriptor(
+          planId, namespace, table, status, planTaskIds(), credentials, fileScanTasks, deleteFiles);
     }
 
     private void touch() {
@@ -222,14 +240,14 @@ public class PlanTaskManager {
       String planId,
       String namespace,
       String table,
-      ScanTasksResponseDto payload,
+      TablePlanTasksResponseDto payload,
       Instant createdAt) {
     PlanTaskPayload(
         String planTaskId,
         String planId,
         String namespace,
         String table,
-        ScanTasksResponseDto payload) {
+        TablePlanTasksResponseDto payload) {
       this(planTaskId, planId, namespace, table, payload, Instant.now());
     }
   }

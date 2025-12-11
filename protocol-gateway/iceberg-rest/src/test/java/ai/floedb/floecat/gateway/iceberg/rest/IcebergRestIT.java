@@ -8,6 +8,7 @@ import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 
+import ai.floedb.floecat.gateway.iceberg.rest.common.RealServiceTestResource;
 import io.quarkus.test.common.QuarkusTestResource;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.builder.RequestSpecBuilder;
@@ -23,7 +24,7 @@ import org.junit.jupiter.api.Test;
 @QuarkusTestResource(value = RealServiceTestResource.class, restrictToAnnotatedClass = true)
 class IcebergRestIT {
 
-  private static final String DEFAULT_ACCOUNT = "31a47986-efaf-35f5-b810-09ba18ca81d2";
+  private static final String DEFAULT_ACCOUNT = "5eaa9cd5-7d08-3750-9457-cfe800b0b9d2";
   private static final String EMPTY_SCHEMA_JSON = "{\"type\":\"struct\",\"fields\":[]}";
 
   private RequestSpecification spec;

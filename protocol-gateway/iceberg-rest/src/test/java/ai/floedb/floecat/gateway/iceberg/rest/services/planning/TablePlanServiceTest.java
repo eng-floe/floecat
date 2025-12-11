@@ -16,9 +16,9 @@ import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
-import ai.floedb.floecat.gateway.iceberg.rest.api.dto.PlanResponseDto;
-import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ScanTasksResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanResponseDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanTasksResponseDto;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
@@ -49,8 +49,11 @@ class TablePlanServiceTest {
 
   @BeforeEach
   void setUp() {
-    service.grpc = grpc;
     service.mapper = new ObjectMapper();
+    service.queryClient =
+        new ai.floedb.floecat.gateway.iceberg.rest.services.client.QueryClient(grpc);
+    service.querySchemaClient =
+        new ai.floedb.floecat.gateway.iceberg.rest.services.client.QuerySchemaClient(grpc);
     when(grpc.raw()).thenReturn(clients);
     when(clients.query()).thenReturn(queryStub);
     when(clients.queryScan()).thenReturn(scanStub);
@@ -138,7 +141,7 @@ class TablePlanServiceTest {
 
     List<StorageCredentialDto> credentials =
         List.of(new StorageCredentialDto("s3", Map.of("role", "arn:aws:iam::123:role/Test")));
-    PlanResponseDto response = service.fetchPlan("plan-2", credentials);
+    TablePlanResponseDto response = service.fetchPlan("plan-2", credentials);
 
     assertEquals("completed", response.status());
     assertEquals("plan-2", response.planId());
@@ -172,7 +175,7 @@ class TablePlanServiceTest {
     when(scanStub.fetchScanBundle(any()))
         .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
 
-    ScanTasksResponseDto tasks = service.fetchTasks("plan-3");
+    TablePlanTasksResponseDto tasks = service.fetchTasks("plan-3");
     assertTrue(tasks.fileScanTasks().isEmpty());
 
     assertThrows(IllegalArgumentException.class, () -> service.fetchTasks("plan-3"));

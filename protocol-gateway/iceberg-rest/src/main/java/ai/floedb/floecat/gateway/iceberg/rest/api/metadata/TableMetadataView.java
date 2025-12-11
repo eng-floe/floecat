@@ -1,5 +1,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest.api.metadata;
 
+import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
@@ -38,8 +39,7 @@ public record TableMetadataView(
         properties == null
             ? new java.util.LinkedHashMap<>()
             : new java.util.LinkedHashMap<>(properties);
-    updatedProps.put("metadata-location", newLocation);
-    updatedProps.put("metadata_location", newLocation);
+    MetadataLocationUtil.setMetadataLocation(updatedProps, newLocation);
     return new TableMetadataView(
         formatVersion,
         tableUuid,

@@ -1,8 +1,8 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
+import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.TableMetadata;
@@ -13,12 +13,22 @@ import org.jboss.logging.Logger;
 @jakarta.enterprise.context.ApplicationScoped
 public class TableMetadataImportService {
   private static final Logger LOG = Logger.getLogger(TableMetadataImportService.class);
-  private static final String DEFAULT_IO_IMPL = "org.apache.iceberg.aws.s3.S3FileIO";
-  private static final Set<String> IO_PROP_PREFIXES =
-      Set.of("s3.", "s3a.", "s3n.", "fs.", "client.", "aws.", "hadoop.");
 
   public record ImportedMetadata(
-      String schemaJson, Map<String, String> properties, String tableLocation) {}
+      String schemaJson,
+      Map<String, String> properties,
+      String tableLocation,
+      ImportedSnapshot currentSnapshot,
+      java.util.List<ImportedSnapshot> snapshots) {}
+
+  public record ImportedSnapshot(
+      Long snapshotId,
+      Long parentSnapshotId,
+      Long sequenceNumber,
+      Long timestampMs,
+      String manifestList,
+      Map<String, String> summary,
+      Integer schemaId) {}
 
   public ImportedMetadata importMetadata(
       String metadataLocation, Map<String, String> ioProperties) {
@@ -27,12 +37,11 @@ public class TableMetadataImportService {
     }
     FileIO fileIO = null;
     try {
-      fileIO = instantiateFileIO(ioProperties);
+      fileIO = FileIoFactory.createFileIo(ioProperties, null, false);
       TableMetadata metadata = TableMetadataParser.read(fileIO, metadataLocation);
       String schemaJson = SchemaParser.toJson(metadata.schema());
       Map<String, String> props = new LinkedHashMap<>(metadata.properties());
-      props.put("metadata-location", metadataLocation);
-      props.put("metadata_location", metadataLocation);
+      MetadataLocationUtil.setMetadataLocation(props, metadataLocation);
       props.putIfAbsent("table-uuid", metadata.uuid());
       if (metadata.location() != null && !metadata.location().isBlank()) {
         props.put("location", metadata.location());
@@ -45,10 +54,45 @@ public class TableMetadataImportService {
       putInt(props, "default-sort-order-id", metadata.defaultSortOrderId());
       putLong(props, "last-sequence-number", metadata.lastSequenceNumber());
       Snapshot current = metadata.currentSnapshot();
+      ImportedSnapshot importedSnapshot = null;
       if (current != null) {
         putLong(props, "current-snapshot-id", current.snapshotId());
+        Map<String, String> summary =
+            current.summary() == null || current.summary().isEmpty()
+                ? Map.of()
+                : Map.copyOf(current.summary());
+        importedSnapshot =
+            new ImportedSnapshot(
+                current.snapshotId(),
+                current.parentId(),
+                current.sequenceNumber(),
+                current.timestampMillis(),
+                current.manifestListLocation(),
+                summary,
+                current.schemaId());
       }
-      return new ImportedMetadata(schemaJson, props, metadata.location());
+      java.util.List<ImportedSnapshot> snapshotList = new java.util.ArrayList<>();
+      for (Snapshot snapshot : metadata.snapshots()) {
+        Map<String, String> summary =
+            snapshot.summary() == null || snapshot.summary().isEmpty()
+                ? Map.of()
+                : Map.copyOf(snapshot.summary());
+        snapshotList.add(
+            new ImportedSnapshot(
+                snapshot.snapshotId(),
+                snapshot.parentId(),
+                snapshot.sequenceNumber(),
+                snapshot.timestampMillis(),
+                snapshot.manifestListLocation(),
+                summary,
+                snapshot.schemaId()));
+      }
+      return new ImportedMetadata(
+          schemaJson,
+          props,
+          metadata.location(),
+          importedSnapshot,
+          java.util.List.copyOf(snapshotList));
     } catch (IllegalArgumentException e) {
       throw e;
     } catch (Exception e) {
@@ -58,47 +102,6 @@ public class TableMetadataImportService {
     } finally {
       closeQuietly(fileIO);
     }
-  }
-
-  private FileIO instantiateFileIO(Map<String, String> props) {
-    Map<String, String> normalized = props == null ? Map.of() : new LinkedHashMap<>(props);
-    String impl = normalized.getOrDefault("io-impl", DEFAULT_IO_IMPL).trim();
-    try {
-      Class<?> clazz = Class.forName(impl);
-      Object instance = clazz.getDeclaredConstructor().newInstance();
-      if (!(instance instanceof FileIO fileIO)) {
-        throw new IllegalArgumentException(impl + " does not implement FileIO");
-      }
-      fileIO.initialize(filterIoProperties(normalized));
-      return fileIO;
-    } catch (IllegalArgumentException e) {
-      throw e;
-    } catch (Exception e) {
-      throw new IllegalArgumentException("Unable to instantiate FileIO " + impl, e);
-    }
-  }
-
-  private Map<String, String> filterIoProperties(Map<String, String> props) {
-    if (props == null || props.isEmpty()) {
-      return Map.of();
-    }
-    Map<String, String> filtered = new LinkedHashMap<>();
-    props.forEach(
-        (key, value) -> {
-          if (key == null || value == null) {
-            return;
-          }
-          for (String prefix : IO_PROP_PREFIXES) {
-            if (key.startsWith(prefix)) {
-              filtered.put(key, value);
-              return;
-            }
-          }
-          if ("io-impl".equals(key)) {
-            filtered.put(key, value);
-          }
-        });
-    return filtered;
   }
 
   private void closeQuietly(FileIO fileIO) {
