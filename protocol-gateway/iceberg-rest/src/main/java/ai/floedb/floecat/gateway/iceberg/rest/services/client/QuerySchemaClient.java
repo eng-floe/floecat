@@ -1,9 +1,9 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.client;
 
+import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
-import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 

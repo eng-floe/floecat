@@ -52,7 +52,10 @@ public class ViewCreateService {
         viewMetadataService.fromView(namespacePath, viewName, created.getView());
     return Response.ok(
             ViewResponseMapper.toLoadResult(
-                namespaceContext.namespace(), viewName, created.getView(), responseContext.metadata()))
+                namespaceContext.namespace(),
+                viewName,
+                created.getView(),
+                responseContext.metadata()))
         .build();
   }
 }

@@ -22,7 +22,11 @@ public class ViewCommitService {
   @Inject ViewMetadataService viewMetadataService;
 
   public Response commit(
-      ViewRequestContext viewContext, List<String> namespacePath, String namespace, String viewName, ViewRequests.Commit req) {
+      ViewRequestContext viewContext,
+      List<String> namespacePath,
+      String namespace,
+      String viewName,
+      ViewRequests.Commit req) {
     View current =
         viewClient
             .getView(GetViewRequest.newBuilder().setViewId(viewContext.viewId()).build())

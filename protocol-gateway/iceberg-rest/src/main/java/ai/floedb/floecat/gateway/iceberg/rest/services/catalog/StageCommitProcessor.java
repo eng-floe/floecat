@@ -49,7 +49,8 @@ public class StageCommitProcessor {
   @PostConstruct
   void initSupport() {
     this.tableSupport =
-        new TableGatewaySupport(grpc, config, mapper, mpConfig, tableClient, snapshotClient, connectorClient);
+        new TableGatewaySupport(
+            grpc, config, mapper, mpConfig, tableClient, snapshotClient, connectorClient);
   }
 
   public StageCommitResult commitStage(
@@ -94,8 +95,7 @@ public class StageCommitProcessor {
     try {
       ResourceId existingId =
           NameResolution.resolveTable(grpc, catalogName, namespacePath, tableName);
-      var resp =
-          tableClient.getTable(GetTableRequest.newBuilder().setTableId(existingId).build());
+      var resp = tableClient.getTable(GetTableRequest.newBuilder().setTableId(existingId).build());
       existing = resp.getTable();
       tableExists = true;
     } catch (StatusRuntimeException e) {

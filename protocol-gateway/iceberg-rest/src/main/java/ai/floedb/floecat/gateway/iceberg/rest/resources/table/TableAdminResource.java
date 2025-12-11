@@ -5,14 +5,16 @@ import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.RenameRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableRenameService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TransactionCommitService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import jakarta.inject.Inject;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
 import jakarta.ws.rs.HeaderParam;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
@@ -39,7 +41,8 @@ public class TableAdminResource {
   @PostConstruct
   void initSupport() {
     this.tableSupport =
-        new TableGatewaySupport(grpc, config, mapper, mpConfig, tableClient, snapshotClient, connectorClient);
+        new TableGatewaySupport(
+            grpc, config, mapper, mpConfig, tableClient, snapshotClient, connectorClient);
   }
 
   @Path("/tables/rename")
@@ -47,7 +50,7 @@ public class TableAdminResource {
   public Response rename(
       @PathParam("prefix") String prefix,
       @HeaderParam("Idempotency-Key") String idempotencyKey,
-      RenameRequest request) {
+      @NotNull @Valid RenameRequest request) {
     return tableRenameService.rename(prefix, request);
   }
 
@@ -57,7 +60,7 @@ public class TableAdminResource {
       @PathParam("prefix") String prefix,
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       @HeaderParam("Iceberg-Transaction-Id") String transactionId,
-      TransactionCommitRequest request) {
+      @NotNull @Valid TransactionCommitRequest request) {
     return transactionCommitService.commit(
         prefix, idempotencyKey, transactionId, request, tableSupport);
   }

@@ -27,8 +27,7 @@ public class RequestContextFactory {
     List<String> namespacePath = List.copyOf(NamespacePaths.split(namespace));
     ResourceId namespaceId =
         tableLifecycleService.resolveNamespaceId(catalogContext.catalogName(), namespacePath);
-    return new NamespaceRequestContext(
-        catalogContext, namespace, namespacePath, namespaceId);
+    return new NamespaceRequestContext(catalogContext, namespace, namespacePath, namespaceId);
   }
 
   public TableRequestContext table(String prefix, String namespace, String table) {
@@ -50,8 +49,8 @@ public class RequestContextFactory {
 
   public ViewRequestContext view(NamespaceRequestContext namespaceContext, String view) {
     ResourceId viewId =
-      NameResolution.resolveView(
-          grpc, namespaceContext.catalogName(), namespaceContext.namespacePath(), view);
+        NameResolution.resolveView(
+            grpc, namespaceContext.catalogName(), namespaceContext.namespacePath(), view);
     return new ViewRequestContext(namespaceContext, view, viewId);
   }
 }

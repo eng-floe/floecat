@@ -5,7 +5,6 @@ import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.RenameRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.support.CatalogRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.support.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.support.RequestContextFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
@@ -21,15 +20,6 @@ public class TableRenameService {
   @Inject TableClient tableClient;
 
   public Response rename(String prefix, RenameRequest request) {
-    if (request == null || request.source() == null || request.destination() == null) {
-      return IcebergErrorResponses.validation("source and destination are required");
-    }
-    if (request.source().namespace() == null
-        || request.source().name() == null
-        || request.destination().namespace() == null
-        || request.destination().name() == null) {
-      return IcebergErrorResponses.validation("namespace and name must be provided");
-    }
     CatalogRequestContext catalogContext = requestContextFactory.catalog(prefix);
     String catalogName = catalogContext.catalogName();
     var sourcePath = request.source().namespace();

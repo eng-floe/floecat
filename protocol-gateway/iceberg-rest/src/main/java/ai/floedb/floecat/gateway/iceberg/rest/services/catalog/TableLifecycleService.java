@@ -87,7 +87,9 @@ public class TableLifecycleService {
   }
 
   public Table getTable(ResourceId tableId) {
-    return tableClient.getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
+    return tableClient
+        .getTable(GetTableRequest.newBuilder().setTableId(tableId).build())
+        .getTable();
   }
 
   public Table updateTable(UpdateTableRequest request) {

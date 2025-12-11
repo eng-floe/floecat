@@ -45,8 +45,7 @@ public class NamespaceListService {
         resp.getNamespacesList().stream()
             .map(NamespaceResponseMapper::toPath)
             .collect(Collectors.toList());
-    String nextToken =
-        resp.hasPage() ? normalizeToken(resp.getPage().getNextPageToken()) : null;
+    String nextToken = resp.hasPage() ? normalizeToken(resp.getPage().getNextPageToken()) : null;
     return Response.ok(new NamespaceListResponse(namespaces, nextToken)).build();
   }
 

@@ -3,11 +3,11 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.support.TableRequestContext;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
-import io.grpc.Status;
-import io.grpc.StatusRuntimeException;
 
 @ApplicationScoped
 public class TableDeleteService {

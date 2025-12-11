@@ -51,8 +51,7 @@ public final class NameResolution {
       DirectoryClient client, String catalogName, List<String> path, String tableName) {
     NameRef ref =
         NameRef.newBuilder().setCatalog(catalogName).addAllPath(path).setName(tableName).build();
-    var response =
-        client.resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build());
+    var response = client.resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build());
     return coalesceId(
         response == null ? null : response.getResourceId(),
         syntheticId(ResourceKind.RK_TABLE, catalogName, path, tableName));
@@ -67,8 +66,7 @@ public final class NameResolution {
       DirectoryClient client, String catalogName, List<String> path, String viewName) {
     NameRef ref =
         NameRef.newBuilder().setCatalog(catalogName).addAllPath(path).setName(viewName).build();
-    var response =
-        client.resolveView(ResolveViewRequest.newBuilder().setRef(ref).build());
+    var response = client.resolveView(ResolveViewRequest.newBuilder().setRef(ref).build());
     return coalesceId(
         response == null ? null : response.getResourceId(),
         syntheticId(ResourceKind.RK_VIEW, catalogName, path, viewName));

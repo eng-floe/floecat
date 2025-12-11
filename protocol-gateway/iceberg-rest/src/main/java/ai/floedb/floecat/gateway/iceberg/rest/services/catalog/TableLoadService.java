@@ -33,7 +33,8 @@ public class TableLoadService {
     }
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(tableRecord);
     List<Snapshot> snapshotList =
-        SnapshotLister.fetchSnapshots(snapshotClient, tableContext.tableId(), snapshotMode, metadata);
+        SnapshotLister.fetchSnapshots(
+            snapshotClient, tableContext.tableId(), snapshotMode, metadata);
     String etagValue = metadataLocation(tableRecord, metadata);
     if (etagMatches(etagValue, ifNoneMatch)) {
       return Response.status(Response.Status.NOT_MODIFIED).tag(etagValue).build();
@@ -76,7 +77,9 @@ public class TableLoadService {
 
   private String metadataLocation(Table table, IcebergMetadata metadata) {
     var props =
-        table == null || table.getPropertiesMap() == null ? java.util.Map.<String, String>of() : table.getPropertiesMap();
+        table == null || table.getPropertiesMap() == null
+            ? java.util.Map.<String, String>of()
+            : table.getPropertiesMap();
     String propertyLocation = MetadataLocationUtil.metadataLocation(props);
     if (propertyLocation != null
         && !propertyLocation.isBlank()

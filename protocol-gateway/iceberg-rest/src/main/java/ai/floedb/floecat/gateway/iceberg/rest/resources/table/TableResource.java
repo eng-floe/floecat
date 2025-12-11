@@ -20,8 +20,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleSer
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLoadService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableMetricsService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableRegisterService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.planning.TablePlanOrchestrationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -68,7 +68,8 @@ public class TableResource {
   @PostConstruct
   void initSupport() {
     this.tableSupport =
-        new TableGatewaySupport(grpc, config, mapper, mpConfig, tableClient, snapshotClient, connectorClient);
+        new TableGatewaySupport(
+            grpc, config, mapper, mpConfig, tableClient, snapshotClient, connectorClient);
   }
 
   @GET

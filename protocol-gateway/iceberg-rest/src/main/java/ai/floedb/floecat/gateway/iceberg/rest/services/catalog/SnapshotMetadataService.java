@@ -527,7 +527,8 @@ public class SnapshotMetadataService {
     if (targetSnapshotId == null) {
       try {
         snapshot =
-            snapshotClient.getSnapshot(
+            snapshotClient
+                .getSnapshot(
                     GetSnapshotRequest.newBuilder()
                         .setTableId(tableId)
                         .setSnapshot(
@@ -550,7 +551,8 @@ public class SnapshotMetadataService {
 
     if (snapshot == null) {
       snapshot =
-          snapshotClient.getSnapshot(
+          snapshotClient
+              .getSnapshot(
                   GetSnapshotRequest.newBuilder()
                       .setTableId(tableId)
                       .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(targetSnapshotId))
@@ -1098,7 +1100,8 @@ public class SnapshotMetadataService {
     Snapshot snapshot;
     try {
       snapshot =
-          snapshotClient.getSnapshot(
+          snapshotClient
+              .getSnapshot(
                   GetSnapshotRequest.newBuilder()
                       .setTableId(tableId)
                       .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))

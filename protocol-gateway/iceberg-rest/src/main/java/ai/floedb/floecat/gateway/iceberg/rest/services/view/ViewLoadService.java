@@ -16,12 +16,16 @@ public class ViewLoadService {
   @Inject ViewMetadataService viewMetadataService;
 
   public Response get(
-      ViewRequestContext viewContext, String namespace, String viewName, List<String> namespacePath) {
+      ViewRequestContext viewContext,
+      String namespace,
+      String viewName,
+      List<String> namespacePath) {
     var resp =
         viewClient.getView(GetViewRequest.newBuilder().setViewId(viewContext.viewId()).build());
     MetadataContext context = viewMetadataService.fromView(namespacePath, viewName, resp.getView());
     return Response.ok(
-            ViewResponseMapper.toLoadResult(namespace, viewName, resp.getView(), context.metadata()))
+            ViewResponseMapper.toLoadResult(
+                namespace, viewName, resp.getView(), context.metadata()))
         .build();
   }
 

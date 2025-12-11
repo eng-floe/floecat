@@ -30,9 +30,7 @@ public class ViewListService {
     var resp = viewClient.listViews(req.build());
     List<TableIdentifierDto> identifiers =
         resp.getViewsList().stream()
-            .map(
-                v ->
-                    new TableIdentifierDto(namespaceContext.namespacePath(), v.getDisplayName()))
+            .map(v -> new TableIdentifierDto(namespaceContext.namespacePath(), v.getDisplayName()))
             .collect(Collectors.toList());
     return Response.ok(new ViewListResponse(identifiers, flattenPageToken(resp.getPage()))).build();
   }
