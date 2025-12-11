@@ -14,16 +14,16 @@ This document describes the Iceberg REST protocol gateway that fronts Floecat an
 
 | Iceberg REST surface | Floecat gRPC | Notes |
 | --- | --- | --- |
-| `/v1/config` | `CatalogService` + gateway config | Build response from catalog metadata and static mappings (warehouse/prefix → catalog_id). |
+| `/v1/config` | Gateway config only | Response is synthesized from Quarkus config (no live catalog RPCs). |
 | Namespace list/load/create/update/delete | `NamespaceService` | Supports properties + field masks. Exists/HEAD via Get. |
 | Table list/load/create/delete | `TableService` | CRUD covered. |
 | Table rename/move | `TableService.UpdateTable` | Supported via `display_name` and `namespace_id` masks; see `TableMutationIT.tableMove`. |
 | View list/load/create/update/delete | `ViewService` | CRUD covered. |
 | View rename/move | `ViewService.UpdateView` | Cross-namespace/name via `display_name` and `namespace_id` masks (integration tests exist). |
 | Snapshots/history | `SnapshotService` | List/Get/Create/Delete snapshots; includes schema_json and the new partition spec metadata that backs schema/partition history endpoints. |
-| Schema fetch | `SchemaService.GetSchema` | Can back Iceberg schema responses. |
+| Schema fetch | _Not yet exposed_ | The blocking stub exists but no REST endpoint currently calls it. |
 | Table/view directory resolution | `DirectoryService` | For name → id resolution; used internally by gateway. |
-| Stats | `TableStatisticsService` | Can expose optional stats endpoints if desired. |
+| Stats | _Not yet exposed_ | `/metrics` only logs payloads; the TableStatistics RPC is unused today. |
 | Commit/transactions | `TableService` + `SnapshotService` + staging store | Stage-create, per-table commit, and `/transactions/commit` realized via a staged metadata store plus existing RPCs. Multi-table atomicity beyond staged payload replay is not yet supported. |
 | Scan planning | `QueryService` | Gateway calls `BeginQuery`/`FetchScanBundle`, then `PlanTaskManager` persists the result, chunks files into task IDs (`{plan-id}-task-{n}`), and serves them via `/plan` + `/tasks`. Status remains “completed”; async planners are not yet wired. |
 | Scan/plan manifests, streaming tasks | Missing | Need planner RPCs that page plan-tasks or serve manifests incrementally. |
@@ -35,6 +35,7 @@ This document describes the Iceberg REST protocol gateway that fronts Floecat an
 - **Metrics persistence** – `/tables/{table}/metrics` only logs the payload. Persisting into `TableStatisticsService` or Micrometer/OTel needs additional plumbing.
 - **Multi-table transactions** – `/v1/{prefix}/transactions/commit` replays staged payloads one table at a time. There’s no ACID guarantee across tables or catalogs.
 - **Manifest/file serving** – not modeled; may require signed URL service or storage gateway.
+- **Schema/partition history endpoints** – `/schemas` and `/partition-specs` are still TODO; the current REST surface does not expose those Iceberg APIs.
 
 ## Module layout (`protocol-gateway/iceberg-rest`)
 
@@ -67,7 +68,7 @@ This document describes the Iceberg REST protocol gateway that fronts Floecat an
 4. Hands the completed bundle plus credentials to `PlanTaskManager`, which:
    - Stores `{planId → namespace/table}` metadata with a configurable TTL (default 5 minutes).
    - Chunks data files into tasks of `planTaskFilesPerTask` (default 128) and registers `{planId}-task-{n}` entries.
-   - Serves `/plan` responses with only status + plan/task IDs while `/tasks` returns the actual `file-scan-tasks` payloads.
+   - Includes both the aggregated `file-scan-tasks` payload and the chunked `plan-task` identifiers in the `/plan` response; `/tasks` lets clients re-fetch an individual chunk when they only want a single task.
 5. `/plan/{planId}` simply reflects the cached descriptor, `/plan/{planId}` `DELETE` cancels both the cached entry and the underlying query, and `/tasks` consumes a task exactly once per namespace/table.
 
 Current limitations: plans are always returned as `"completed"` and there is no paging between `submitted/completed`, so extremely large scans still require the backends to stream data files quickly.
@@ -111,7 +112,7 @@ This section summarizes how the gateway mirrors Iceberg’s two-phase workflow s
    - Validates requirements (e.g., assert-create) against actual table existence.
    - Materializes or updates the table using the same logic as `/tables/{table}` commit.
 3. Requirements in the payload (assert-current-schema, assert-ref-snapshot-id, etc.) are reevaluated using the freshly loaded metadata/snapshots.
-4. After all stages succeed, the gateway triggers connector reconcile/sync tasks and deletes the staged entries. On failures, stages are marked aborted for observability.
+4. After all stages succeed, the gateway triggers connector reconcile/sync tasks and deletes the staged entries. (Stages are simply deleted; there is not yet an `ABORTED` marker for failed transactions.)
 5. The response mirrors Iceberg’s `CommitTableResponse` with metadata location, metadata view, config overrides, and storage credentials.
 
 ### Snapshot handling
@@ -134,9 +135,9 @@ This section summarizes how the gateway mirrors Iceberg’s two-phase workflow s
 - View operations: `ViewService`; rename/move via `update_mask`; SQL passthrough.
 - Plan endpoints: `/tables/{table}/plan` resolves the table, validates snapshot filters, invokes `TablePlanService`, and surfaces only plan metadata. `/tables/{table}/tasks` consumes plan-task IDs stored in `PlanTaskManager` and returns the file/delete payload chunk referenced by that task.
 - Snapshot/history: `SnapshotService`; map snapshot_id, parent_id, timestamps, schema_json, and partition-spec metadata to Iceberg history responses. Snapshots now embed `schemaJson` plus `PartitionSpecInfo` (specId, specName, partition field `fieldId/name/transform`) sourced from connectors.
-- Schema history: `/v1/{prefix}/namespaces/{namespace}/tables/{table}/schemas` replays each snapshot's `schemaJson` along with its snapshotId, `upstreamCreatedAt`, and `ingestedAt`.
-- Partition spec history: `/v1/{prefix}/namespaces/{namespace}/tables/{table}/partition-specs` replays each snapshot's `PartitionSpecInfo` so clients can inspect how partition layouts evolved.
-- Schema fetch: `SchemaService` to build Iceberg schema response.
+- Schema history: _future work_ – endpoint not implemented yet; clients must infer from snapshots.
+- Partition spec history: _future work_ – endpoint not implemented yet.
+- Schema fetch: _future work_ – `SchemaService` is wired but unused until the endpoint lands.
 - Metrics: `/tables/{table}/metrics` enforces the request schema and logs the payload for now; it becomes a no-op until the stats service integration lands.
 
 ## DuckDB quick start
