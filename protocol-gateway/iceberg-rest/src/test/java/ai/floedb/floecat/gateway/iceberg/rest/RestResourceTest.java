@@ -114,7 +114,6 @@ import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.Timestamp;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.test.InjectMock;
@@ -860,7 +859,6 @@ class RestResourceTest {
         .body("metadata.versions.size()", equalTo(2))
         .body("metadata.versions[1].representations[0].sql", equalTo("select 2"));
   }
-
 
   @Test
   void createsUpdatesAndDeletesTable() {
