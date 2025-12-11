@@ -16,7 +16,7 @@ public record StatsDto(
       NdvDto ndv) {}
 
   public record ColumnStatsDto(
-      String columnId,
+      int columnId,
       String columnName,
       String logicalType,
       long valueCount,

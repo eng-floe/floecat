@@ -408,7 +408,7 @@ public class ConnectorIT {
       var names1 =
           cs1.stream().map(ColumnStats::getColumnName).collect(java.util.stream.Collectors.toSet());
 
-      assertEquals(Set.of("1", "4", "9"), ids1);
+      assertEquals(Set.of(1, 4, 9), ids1);
       assertEquals(Set.of("id", "user.id", "items.element.qty"), names1);
 
       var onlyNames =
@@ -428,7 +428,7 @@ public class ConnectorIT {
       var names2 =
           cs2.stream().map(ColumnStats::getColumnName).collect(java.util.stream.Collectors.toSet());
 
-      assertEquals(Set.of("5", "12"), ids2);
+      assertEquals(Set.of(5, 12), ids2);
       assertEquals(Set.of("user.name", "attrs.value"), names2);
 
       var mixed =
@@ -448,7 +448,7 @@ public class ConnectorIT {
       var names3 =
           cs3.stream().map(ColumnStats::getColumnName).collect(java.util.stream.Collectors.toSet());
 
-      assertEquals(Set.of("2", "8"), ids3);
+      assertEquals(Set.of(2, 8), ids3);
       assertEquals(Set.of("ts", "items.element.sku"), names3);
 
       var allCols =

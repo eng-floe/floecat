@@ -340,6 +340,7 @@ public final class IcebergConnector implements FloecatConnector, IcebergSnapshot
                   var f = table.schema().findField((Integer) id);
                   return f == null ? "" : f.name();
                 },
+                id -> (Integer) id,
                 id -> {
                   var f = table.schema().findField((Integer) id);
                   return f == null ? null : IcebergTypeMapper.toLogical(f.type());
@@ -356,6 +357,7 @@ public final class IcebergConnector implements FloecatConnector, IcebergSnapshot
                   var f = table.schema().findField((Integer) id);
                   return f == null ? "" : f.name();
                 },
+                id -> (Integer) id,
                 id -> {
                   var f = table.schema().findField((Integer) id);
                   return f == null ? null : IcebergTypeMapper.toLogical(f.type());
