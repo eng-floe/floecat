@@ -56,7 +56,13 @@ public final class ViewResponseMapper {
             "sql", view.getSql(), props.getOrDefault("dialect", "ansi"));
     ViewMetadataView.ViewVersion version =
         new ViewMetadataView.ViewVersion(
-            0, timestamp, 0, Map.of("operation", "sql"), List.of(representation), namespace);
+            0,
+            timestamp,
+            0,
+            Map.of("operation", "sql"),
+            List.of(representation),
+            namespace,
+            props.get("default-catalog"));
     ViewMetadataView.ViewHistoryEntry history = new ViewMetadataView.ViewHistoryEntry(0, timestamp);
     ViewMetadataView.SchemaSummary schema =
         new ViewMetadataView.SchemaSummary(0, "struct", List.of(), List.of());

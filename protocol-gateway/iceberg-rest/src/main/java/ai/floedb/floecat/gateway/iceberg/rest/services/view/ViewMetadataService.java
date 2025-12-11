@@ -283,7 +283,8 @@ public class ViewMetadataService {
         0,
         Map.of("operation", "unknown"),
         List.of(representation),
-        namespacePath);
+        namespacePath,
+        null);
   }
 
   private ViewMetadataView.ViewVersion toMetadataVersion(
@@ -322,8 +323,15 @@ public class ViewMetadataService {
         version.defaultNamespace() == null || version.defaultNamespace().isEmpty()
             ? namespacePath
             : version.defaultNamespace();
+    String defaultCatalog = nonBlank(version.defaultCatalog(), null);
     return new ViewMetadataView.ViewVersion(
-        versionId, timestamp, resolvedSchemaId, summary, metadataReps, defaultNamespace);
+        versionId,
+        timestamp,
+        resolvedSchemaId,
+        summary,
+        metadataReps,
+        defaultNamespace,
+        defaultCatalog);
   }
 
   private ViewMetadataView.SchemaSummary parseSchema(JsonNode schemaNode) {
@@ -390,7 +398,8 @@ public class ViewMetadataService {
             0,
             Map.of("operation", "unknown"),
             List.of(representation),
-            namespacePath);
+            namespacePath,
+            null);
     ViewMetadataView.ViewHistoryEntry history = new ViewMetadataView.ViewHistoryEntry(0, timestamp);
     ViewMetadataView.SchemaSummary schema =
         new ViewMetadataView.SchemaSummary(0, "struct", List.of(), List.of());
@@ -416,7 +425,8 @@ public class ViewMetadataService {
               0,
               Map.of("operation", "update"),
               List.of(new ViewMetadataView.ViewRepresentation("sql", sql, "ansi")),
-              List.of()));
+              List.of(),
+              null));
     } else {
       int idx = versions.size() - 1;
       for (int i = 0; i < versions.size(); i++) {
@@ -445,7 +455,8 @@ public class ViewMetadataService {
               target.schemaId(),
               target.summary(),
               List.copyOf(reps),
-              target.defaultNamespace()));
+              target.defaultNamespace(),
+              target.defaultCatalog()));
     }
     return new ViewMetadataView(
         metadata.viewUuid(),

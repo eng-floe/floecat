@@ -23,7 +23,8 @@ public record ViewMetadataView(
       @JsonProperty("schema-id") Integer schemaId,
       @JsonProperty("summary") Map<String, String> summary,
       @JsonProperty("representations") List<ViewRepresentation> representations,
-      @JsonProperty("default-namespace") List<String> defaultNamespace) {}
+      @JsonProperty("default-namespace") List<String> defaultNamespace,
+      @JsonProperty("default-catalog") String defaultCatalog) {}
 
   @JsonInclude(JsonInclude.Include.NON_NULL)
   public record ViewHistoryEntry(
