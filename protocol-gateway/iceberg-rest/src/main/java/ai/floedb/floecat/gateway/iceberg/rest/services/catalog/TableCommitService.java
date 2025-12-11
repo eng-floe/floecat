@@ -5,7 +5,6 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
@@ -29,7 +28,8 @@ import org.jboss.logging.Logger;
 public class TableCommitService {
   private static final Logger LOG = Logger.getLogger(TableCommitService.class);
 
-  @Inject GrpcWithHeaders grpc;
+  @Inject ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders grpc;
+  @Inject ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient snapshotClient;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableCommitSideEffectService sideEffectService;
   @Inject StageMaterializationService stageMaterializationService;
@@ -41,7 +41,6 @@ public class TableCommitService {
     String namespace = command.namespace();
     List<String> namespacePath = command.namespacePath();
     String table = command.table();
-    String catalogName = command.catalogName();
     ResourceId catalogId = command.catalogId();
     ResourceId namespaceId = command.namespaceId();
     String idempotencyKey = command.idempotencyKey();
@@ -68,7 +67,7 @@ public class TableCommitService {
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(committedTable);
     String requestedMetadataOverride = resolveRequestedMetadataLocation(req);
     List<Snapshot> snapshotList =
-        SnapshotLister.fetchSnapshots(grpc, tableId, SnapshotLister.Mode.ALL, metadata);
+        SnapshotLister.fetchSnapshots(snapshotClient, tableId, SnapshotLister.Mode.ALL, metadata);
     CommitTableResponseDto initialResponse =
         TableResponseMapper.toCommitResponse(table, committedTable, metadata, snapshotList);
     CommitTableResponseDto stageAwareResponse =
@@ -83,8 +82,7 @@ public class TableCommitService {
     if (sideEffects.hasError()) {
       return sideEffects.error();
     }
-    CommitTableResponseDto responseDto =
-        preferStageMetadata(sideEffects.response(), stageMaterialization);
+    CommitTableResponseDto responseDto = sideEffects.response();
     Response.ResponseBuilder builder = Response.ok(responseDto);
     LOG.infof(
         "Commit response for %s.%s tableId=%s currentSnapshot=%s snapshotCount=%d",
@@ -139,7 +137,8 @@ public class TableCommitService {
     int snapshotCount =
         metadata == null || metadata.snapshots() == null ? 0 : metadata.snapshots().size();
     LOG.infof(
-        "Stage commit satisfied for %s.%s tableId=%s stageId=%s currentSnapshot=%s snapshotCount=%d",
+        "Stage commit satisfied for %s.%s tableId=%s stageId=%s currentSnapshot=%s"
+            + " snapshotCount=%d",
         namespace, table, tableId, stageId, snapshotStr, snapshotCount);
   }
 
@@ -214,44 +213,6 @@ public class TableCommitService {
       metadata = metadata.withMetadataLocation(resolvedLocation);
     }
     return new CommitTableResponseDto(resolvedLocation, metadata);
-  }
-
-  private String unsupportedUpdateAction(TableRequests.Commit req) {
-    if (req == null || req.updates() == null) {
-      return null;
-    }
-    for (Map<String, Object> update : req.updates()) {
-      String action = asString(update == null ? null : update.get("action"));
-      if (action == null) {
-        continue;
-      }
-      if (!"set-properties".equals(action)
-          && !"remove-properties".equals(action)
-          && !"set-location".equals(action)
-          && !"add-snapshot".equals(action)
-          && !"remove-snapshots".equals(action)
-          && !"set-snapshot-ref".equals(action)
-          && !"remove-snapshot-ref".equals(action)
-          && !"assign-uuid".equals(action)
-          && !"upgrade-format-version".equals(action)
-          && !"add-schema".equals(action)
-          && !"set-current-schema".equals(action)
-          && !"add-spec".equals(action)
-          && !"set-default-spec".equals(action)
-          && !"add-sort-order".equals(action)
-          && !"set-default-sort-order".equals(action)
-          && !"remove-partition-specs".equals(action)
-          && !"remove-schemas".equals(action)
-          && !"set-statistics".equals(action)
-          && !"remove-statistics".equals(action)
-          && !"set-partition-statistics".equals(action)
-          && !"remove-partition-statistics".equals(action)
-          && !"add-encryption-key".equals(action)
-          && !"remove-encryption-key".equals(action)) {
-        return action;
-      }
-    }
-    return null;
   }
 
   private static String asString(Object value) {

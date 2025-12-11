@@ -53,6 +53,8 @@ class TableCommitServiceTest {
   @BeforeEach
   void setUp() {
     service.grpc = grpc;
+    service.snapshotClient =
+        new ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient(grpc);
     service.tableLifecycleService = tableLifecycleService;
     service.sideEffectService = sideEffectService;
     service.stageMaterializationService = stageMaterializationService;

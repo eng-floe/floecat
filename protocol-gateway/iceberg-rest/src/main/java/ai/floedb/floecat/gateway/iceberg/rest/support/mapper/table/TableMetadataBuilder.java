@@ -109,21 +109,6 @@ public final class TableMetadataBuilder {
             ? metadata.getTableUuid()
             : Optional.ofNullable(props.get("table-uuid"))
                 .orElseGet(() -> table.hasResourceId() ? table.getResourceId().getId() : tableName);
-    if (lastColumnId == null) {
-      lastColumnId = 0;
-    }
-    if (currentSchemaId == null) {
-      currentSchemaId = 0;
-    }
-    if (defaultSpecId == null) {
-      defaultSpecId = 0;
-    }
-    if (lastPartitionId == null) {
-      lastPartitionId = 0;
-    }
-    if (defaultSortOrderId == null) {
-      defaultSortOrderId = 0;
-    }
     if (lastSequenceNumber == null) {
       lastSequenceNumber = 0L;
     }

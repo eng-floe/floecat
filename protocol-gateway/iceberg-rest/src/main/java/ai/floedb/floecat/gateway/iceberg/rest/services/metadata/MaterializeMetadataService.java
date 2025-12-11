@@ -93,9 +93,6 @@ public class MaterializeMetadataService {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return false;
     }
-    if (isPointerLocation(metadataLocation)) {
-      return false;
-    }
     try {
       URI uri = URI.create(metadataLocation);
       String scheme = uri.getScheme();

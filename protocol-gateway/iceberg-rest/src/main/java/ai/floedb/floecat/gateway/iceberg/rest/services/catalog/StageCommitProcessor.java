@@ -4,15 +4,15 @@ import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
-import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
@@ -40,12 +40,16 @@ public class StageCommitProcessor {
   @Inject ObjectMapper mapper;
   @Inject Config mpConfig;
   @Inject StagedTableService stagedTableService;
+  @Inject TableClient tableClient;
+  @Inject SnapshotClient snapshotClient;
+  @Inject ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient connectorClient;
 
   private TableGatewaySupport tableSupport;
 
   @PostConstruct
   void initSupport() {
-    this.tableSupport = new TableGatewaySupport(grpc, config, mapper, mpConfig);
+    this.tableSupport =
+        new TableGatewaySupport(grpc, config, mapper, mpConfig, tableClient, snapshotClient, connectorClient);
   }
 
   public StageCommitResult commitStage(
@@ -85,13 +89,13 @@ public class StageCommitProcessor {
         "Processing staged payload stageId=%s namespace=%s table=%s metadata=%s",
         stageId, namespacePath, tableName, stagedMetadata);
 
-    TableServiceGrpc.TableServiceBlockingStub tableStub = grpc.withHeaders(grpc.raw().table());
     Table existing = null;
     boolean tableExists = false;
     try {
       ResourceId existingId =
           NameResolution.resolveTable(grpc, catalogName, namespacePath, tableName);
-      var resp = tableStub.getTable(GetTableRequest.newBuilder().setTableId(existingId).build());
+      var resp =
+          tableClient.getTable(GetTableRequest.newBuilder().setTableId(existingId).build());
       existing = resp.getTable();
       tableExists = true;
     } catch (StatusRuntimeException e) {
@@ -108,7 +112,7 @@ public class StageCommitProcessor {
       if (entry.idempotencyKey() != null && !entry.idempotencyKey().isBlank()) {
         createRequest.setIdempotency(IdempotencyKey.newBuilder().setKey(entry.idempotencyKey()));
       }
-      tableRecord = tableStub.createTable(createRequest.build()).getTable();
+      tableRecord = tableClient.createTable(createRequest.build()).getTable();
     }
     LoadTableResultDto loadResult = toLoadResult(tableName, entry, tableRecord);
     LOG.infof(
@@ -137,10 +141,8 @@ public class StageCommitProcessor {
   }
 
   private List<Snapshot> loadSnapshots(ResourceId tableId) {
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub =
-        grpc.withHeaders(grpc.raw().snapshot());
     try {
-      return snapshotStub
+      return snapshotClient
           .listSnapshots(ListSnapshotsRequest.newBuilder().setTableId(tableId).build())
           .getSnapshotsList();
     } catch (StatusRuntimeException e) {

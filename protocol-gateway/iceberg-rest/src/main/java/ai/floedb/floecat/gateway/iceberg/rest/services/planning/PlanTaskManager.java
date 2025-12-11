@@ -3,7 +3,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.planning;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ContentFileDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FileScanTaskDto;
-import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ScanTasksResponseDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanTasksResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -75,7 +75,8 @@ public class PlanTaskManager {
       for (int offset = 0; offset < files.size(); offset += chunkSize) {
         int end = Math.min(files.size(), offset + chunkSize);
         List<FileScanTaskDto> chunk = files.subList(offset, end);
-        ScanTasksResponseDto payload = new ScanTasksResponseDto(null, List.copyOf(chunk), deletes);
+        TablePlanTasksResponseDto payload =
+            new TablePlanTasksResponseDto(null, List.copyOf(chunk), deletes);
         String taskId = planId + "-task-" + offset / chunkSize;
         entry.addTask(taskId);
         planTasks.put(taskId, new PlanTaskPayload(taskId, planId, namespace, table, payload));
@@ -91,7 +92,7 @@ public class PlanTaskManager {
     return entry == null ? Optional.empty() : Optional.of(entry.toDescriptor());
   }
 
-  public Optional<ScanTasksResponseDto> consumeTask(
+  public Optional<TablePlanTasksResponseDto> consumeTask(
       String namespace, String table, String planTaskId) {
     expire();
     PlanTaskPayload payload = planTasks.remove(planTaskId);
@@ -239,14 +240,14 @@ public class PlanTaskManager {
       String planId,
       String namespace,
       String table,
-      ScanTasksResponseDto payload,
+      TablePlanTasksResponseDto payload,
       Instant createdAt) {
     PlanTaskPayload(
         String planTaskId,
         String planId,
         String namespace,
         String table,
-        ScanTasksResponseDto payload) {
+        TablePlanTasksResponseDto payload) {
       this(planTaskId, planId, namespace, table, payload, Instant.now());
     }
   }

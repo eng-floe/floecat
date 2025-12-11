@@ -6,7 +6,6 @@ import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.PartitionField;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
-import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
@@ -15,6 +14,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedSnapshot;
 import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
@@ -53,6 +53,7 @@ public class SnapshotMetadataService {
 
   @Inject GrpcWithHeaders grpc;
   @Inject ObjectMapper mapper;
+  @Inject SnapshotClient snapshotClient;
 
   public List<Map<String, Object>> snapshotAdditions(List<Map<String, Object>> updates) {
     if (updates == null || updates.isEmpty()) {
@@ -69,11 +70,9 @@ public class SnapshotMetadataService {
   }
 
   public IcebergMetadata loadSnapshotMetadata(ResourceId tableId, long snapshotId) {
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub =
-        grpc.withHeaders(grpc.raw().snapshot());
     try {
       var resp =
-          snapshotStub.getSnapshot(
+          snapshotClient.getSnapshot(
               GetSnapshotRequest.newBuilder()
                   .setTableId(tableId)
                   .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
@@ -341,14 +340,12 @@ public class SnapshotMetadataService {
     if (tableId == null || importedMetadata == null) {
       return null;
     }
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub stub = grpc.withHeaders(grpc.raw().snapshot());
     java.util.List<ImportedSnapshot> importedSnapshots = importedMetadata.snapshots();
     if (importedSnapshots != null && !importedSnapshots.isEmpty()) {
       for (ImportedSnapshot snapshot : importedSnapshots) {
         Response err =
             ensureSnapshotExists(
                 tableSupport,
-                stub,
                 tableId,
                 namespacePath,
                 tableName,
@@ -365,7 +362,6 @@ public class SnapshotMetadataService {
         Response err =
             ensureSnapshotExists(
                 tableSupport,
-                stub,
                 tableId,
                 namespacePath,
                 tableName,
@@ -391,7 +387,6 @@ public class SnapshotMetadataService {
 
   private Response ensureSnapshotExists(
       TableGatewaySupport tableSupport,
-      SnapshotServiceGrpc.SnapshotServiceBlockingStub stub,
       ResourceId tableId,
       List<String> namespacePath,
       String tableName,
@@ -402,7 +397,7 @@ public class SnapshotMetadataService {
     if (snapshotId == null || snapshotId <= 0) {
       return null;
     }
-    if (snapshotExists(stub, tableId, snapshotId)) {
+    if (snapshotExists(tableId, snapshotId)) {
       return null;
     }
     Table table = tableSupplier.get();
@@ -414,14 +409,13 @@ public class SnapshotMetadataService {
         tableSupport, tableId, namespacePath, tableName, table, snapshotMap, idempotencyKey);
   }
 
-  private boolean snapshotExists(
-      SnapshotServiceGrpc.SnapshotServiceBlockingStub stub, ResourceId tableId, Long snapshotId) {
+  private boolean snapshotExists(ResourceId tableId, Long snapshotId) {
     if (snapshotId == null || snapshotId <= 0) {
       return false;
     }
     try {
       var response =
-          stub.getSnapshot(
+          snapshotClient.getSnapshot(
               GetSnapshotRequest.newBuilder()
                   .setTableId(tableId)
                   .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
@@ -444,7 +438,6 @@ public class SnapshotMetadataService {
     if (snapshotId == null) {
       return validationError("add-snapshot requires snapshot.snapshot-id");
     }
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub stub = grpc.withHeaders(grpc.raw().snapshot());
     SnapshotSpec.Builder spec =
         SnapshotSpec.newBuilder().setTableId(tableId).setSnapshotId(snapshotId);
     Long upstreamCreated = asLong(snapshot.get("timestamp-ms"));
@@ -505,17 +498,16 @@ public class SnapshotMetadataService {
       request.setIdempotency(
           IdempotencyKey.newBuilder().setKey(idempotencyKey + ":snapshot:" + snapshotId).build());
     }
-    stub.createSnapshot(request.build());
+    snapshotClient.createSnapshot(request.build());
     return null;
   }
 
   private void deleteSnapshots(ResourceId tableId, List<Long> snapshotIds) {
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub stub = grpc.withHeaders(grpc.raw().snapshot());
     for (Long id : snapshotIds) {
       if (id == null) {
         continue;
       }
-      stub.deleteSnapshot(
+      snapshotClient.deleteSnapshot(
           DeleteSnapshotRequest.newBuilder().setTableId(tableId).setSnapshotId(id).build());
     }
   }
@@ -530,13 +522,12 @@ public class SnapshotMetadataService {
       return null;
     }
     Table table = existingTable != null ? existingTable : tableSupplier.get();
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub stub = grpc.withHeaders(grpc.raw().snapshot());
     Snapshot snapshot;
     Long targetSnapshotId = preferredSnapshotId;
     if (targetSnapshotId == null) {
       try {
         snapshot =
-            stub.getSnapshot(
+            snapshotClient.getSnapshot(
                     GetSnapshotRequest.newBuilder()
                         .setTableId(tableId)
                         .setSnapshot(
@@ -559,7 +550,7 @@ public class SnapshotMetadataService {
 
     if (snapshot == null) {
       snapshot =
-          stub.getSnapshot(
+          snapshotClient.getSnapshot(
                   GetSnapshotRequest.newBuilder()
                       .setTableId(tableId)
                       .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(targetSnapshotId))
@@ -744,7 +735,7 @@ public class SnapshotMetadataService {
             .setIceberg(iceberg);
     FieldMask mask = FieldMask.newBuilder().addPaths("iceberg").build();
 
-    stub.updateSnapshot(
+    snapshotClient.updateSnapshot(
         UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build());
     return null;
   }
@@ -1104,11 +1095,10 @@ public class SnapshotMetadataService {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return;
     }
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub stub = grpc.withHeaders(grpc.raw().snapshot());
     Snapshot snapshot;
     try {
       snapshot =
-          stub.getSnapshot(
+          snapshotClient.getSnapshot(
                   GetSnapshotRequest.newBuilder()
                       .setTableId(tableId)
                       .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
@@ -1136,7 +1126,7 @@ public class SnapshotMetadataService {
             .build();
     FieldMask mask = FieldMask.newBuilder().addPaths("iceberg").build();
     try {
-      stub.updateSnapshot(
+      snapshotClient.updateSnapshot(
           UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build());
     } catch (StatusRuntimeException e) {
       LOG.debugf(

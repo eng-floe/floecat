@@ -530,14 +530,6 @@ class IcebergRestFixtureIT {
     return responseLocation;
   }
 
-  private void verifyMetadataLocation(String namespace, String table, String relativePath) {
-    String actual = fetchMetadataLocation(namespace, table);
-    System.out.printf(
-        "FixtureIT metadata-location namespace=%s table=%s actual=%s expected=%s%n",
-        namespace, table, actual, TestS3Fixtures.bucketUri(relativePath));
-    Assertions.assertEquals(TestS3Fixtures.bucketUri(relativePath), actual);
-  }
-
   private String fetchMetadataLocation(String namespace, String table) {
     return given()
         .spec(spec)

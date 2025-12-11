@@ -5,7 +5,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public record PlanResponseDto(
+public record TablePlanResponseDto(
     String status,
     @JsonProperty("plan-id") String planId,
     @JsonProperty("plan-tasks") List<String> planTasks,

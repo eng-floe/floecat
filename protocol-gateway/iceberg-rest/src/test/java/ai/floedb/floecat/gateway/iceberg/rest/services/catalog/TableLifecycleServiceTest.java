@@ -46,6 +46,7 @@ class TableLifecycleServiceTest {
   @BeforeEach
   void setUp() {
     service.grpc = grpc;
+    service.tableClient = new ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient(grpc);
     when(grpc.raw()).thenReturn(clients);
     when(clients.table()).thenReturn(tableStub);
     when(clients.directory()).thenReturn(directoryStub);

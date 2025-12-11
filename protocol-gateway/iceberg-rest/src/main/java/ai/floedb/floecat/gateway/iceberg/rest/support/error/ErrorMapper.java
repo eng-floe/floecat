@@ -5,7 +5,6 @@ import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import com.google.protobuf.Any;
-import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
@@ -56,7 +55,6 @@ public class ErrorMapper implements ExceptionMapper<StatusRuntimeException> {
   }
 
   private Error unpackMcError(StatusRuntimeException ex) {
-    Metadata trailers = ex.getTrailers();
     var st = StatusProto.fromThrowable(ex);
     if (st == null) {
       return null;

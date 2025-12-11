@@ -6,12 +6,13 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.execution.rpc.ScanFileContent;
-import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ContentFileDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FileScanTaskDto;
-import ai.floedb.floecat.gateway.iceberg.rest.api.dto.PlanResponseDto;
-import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ScanTasksResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanResponseDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanTasksResponseDto;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.QueryClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.QuerySchemaClient;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
@@ -21,9 +22,6 @@ import ai.floedb.floecat.query.rpc.Operator;
 import ai.floedb.floecat.query.rpc.Predicate;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
 import ai.floedb.floecat.query.rpc.QueryInput;
-import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
-import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
-import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -40,7 +38,8 @@ import java.util.concurrent.ConcurrentMap;
 public class TablePlanService {
   private final ConcurrentMap<String, PlanContext> planContexts = new ConcurrentHashMap<>();
 
-  @Inject GrpcWithHeaders grpc;
+  @Inject QueryClient queryClient;
+  @Inject QuerySchemaClient querySchemaClient;
   @Inject ObjectMapper mapper;
 
   public PlanHandle startPlan(
@@ -58,8 +57,7 @@ public class TablePlanService {
     Long resolvedSnapshot = endSnapshotId != null ? endSnapshotId : snapshotId;
     List<Predicate> predicates = buildPredicates(filter, caseSensitive);
 
-    QueryServiceGrpc.QueryServiceBlockingStub queryStub = grpc.withHeaders(grpc.raw().query());
-    var begin = queryStub.beginQuery(BeginQueryRequest.newBuilder().build());
+    var begin = queryClient.beginQuery(BeginQueryRequest.newBuilder().build());
     String queryId = begin.getQuery().getQueryId();
 
     planContexts.put(
@@ -78,26 +76,23 @@ public class TablePlanService {
     return new PlanHandle(queryId, resolvedSnapshot, startSnapshotId);
   }
 
-  public PlanResponseDto fetchPlan(String planId, List<StorageCredentialDto> credentials) {
+  public TablePlanResponseDto fetchPlan(String planId, List<StorageCredentialDto> credentials) {
     PlanContext ctx = planContexts.remove(planId);
     if (ctx == null) {
       throw new IllegalArgumentException("unknown plan id " + planId);
     }
-    QueryServiceGrpc.QueryServiceBlockingStub queryStub = grpc.withHeaders(grpc.raw().query());
-    var resp = queryStub.getQuery(GetQueryRequest.newBuilder().setQueryId(planId).build());
+    var resp = queryClient.getQuery(GetQueryRequest.newBuilder().setQueryId(planId).build());
     QueryDescriptor query = resp.getQuery();
 
-    QueryScanServiceGrpc.QueryScanServiceBlockingStub scanStub =
-        grpc.withHeaders(grpc.raw().queryScan());
-    ScanBundle bundle = fetchScanBundle(scanStub, ctx, query.getQueryId());
-    ScanTasksResponseDto scanTasks = toScanTasksDto(bundle);
+    ScanBundle bundle = fetchScanBundle(ctx, query.getQueryId());
+    TablePlanTasksResponseDto scanTasks = toScanTasksDto(bundle);
     String resolvedPlanId =
         (query.getQueryId() == null || query.getQueryId().isBlank()) ? planId : query.getQueryId();
     List<String> planTasks =
         (scanTasks.fileScanTasks() == null || scanTasks.fileScanTasks().isEmpty())
             ? List.of()
             : List.of(resolvedPlanId);
-    return new PlanResponseDto(
+    return new TablePlanResponseDto(
         "completed",
         resolvedPlanId,
         planTasks,
@@ -107,25 +102,21 @@ public class TablePlanService {
   }
 
   public void cancelPlan(String planId) {
-    QueryServiceGrpc.QueryServiceBlockingStub queryStub = grpc.withHeaders(grpc.raw().query());
-    queryStub.endQuery(EndQueryRequest.newBuilder().setQueryId(planId).setCommit(false).build());
+    queryClient.endQuery(EndQueryRequest.newBuilder().setQueryId(planId).setCommit(false).build());
     planContexts.remove(planId);
   }
 
-  public ScanTasksResponseDto fetchTasks(String planId) {
+  public TablePlanTasksResponseDto fetchTasks(String planId) {
     PlanContext ctx = planContexts.get(planId);
     if (ctx == null) {
       throw new IllegalArgumentException("unknown plan id " + planId);
     }
-    QueryScanServiceGrpc.QueryScanServiceBlockingStub scanStub =
-        grpc.withHeaders(grpc.raw().queryScan());
-    ScanBundle bundle = fetchScanBundle(scanStub, ctx, planId);
+    ScanBundle bundle = fetchScanBundle(ctx, planId);
     planContexts.remove(planId);
     return toScanTasksDto(bundle);
   }
 
-  private ScanBundle fetchScanBundle(
-      QueryScanServiceGrpc.QueryScanServiceBlockingStub stub, PlanContext ctx, String queryId) {
+  private ScanBundle fetchScanBundle(PlanContext ctx, String queryId) {
     FetchScanBundleRequest.Builder builder =
         FetchScanBundleRequest.newBuilder().setQueryId(queryId).setTableId(ctx.tableId());
     if (ctx.requiredColumns() != null && !ctx.requiredColumns().isEmpty()) {
@@ -134,10 +125,10 @@ public class TablePlanService {
     if (ctx.predicates() != null && !ctx.predicates().isEmpty()) {
       builder.addAllPredicates(ctx.predicates());
     }
-    return stub.fetchScanBundle(builder.build()).getBundle();
+    return queryClient.fetchScanBundle(builder.build()).getBundle();
   }
 
-  private ScanTasksResponseDto toScanTasksDto(ScanBundle bundle) {
+  private TablePlanTasksResponseDto toScanTasksDto(ScanBundle bundle) {
     List<ContentFileDto> deleteFiles = new ArrayList<>();
     List<FileScanTaskDto> tasks = new ArrayList<>();
     if (bundle != null) {
@@ -148,7 +139,7 @@ public class TablePlanService {
         tasks.add(new FileScanTaskDto(toContentFile(file), List.of(), null));
       }
     }
-    return new ScanTasksResponseDto(List.of(), tasks, deleteFiles);
+    return new TablePlanTasksResponseDto(List.of(), tasks, deleteFiles);
   }
 
   private ContentFileDto toContentFile(ScanFile file) {
@@ -178,9 +169,7 @@ public class TablePlanService {
   }
 
   private void registerPlanInput(String queryId, ResourceId tableId, Long snapshotId) {
-    QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schemaStub =
-        grpc.withHeaders(grpc.raw().querySchema());
-    schemaStub.describeInputs(
+    querySchemaClient.describeInputs(
         DescribeInputsRequest.newBuilder()
             .setQueryId(queryId)
             .addInputs(buildPlanInput(tableId, snapshotId))

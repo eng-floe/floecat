@@ -2,9 +2,8 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
-import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import java.util.List;
@@ -21,12 +20,11 @@ public final class SnapshotLister {
   }
 
   public static List<Snapshot> fetchSnapshots(
-      GrpcWithHeaders grpc, ResourceId tableId, Mode mode, IcebergMetadata metadata) {
-    SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub =
-        grpc.withHeaders(grpc.raw().snapshot());
+      SnapshotClient snapshotClient, ResourceId tableId, Mode mode, IcebergMetadata metadata) {
     try {
       var resp =
-          snapshotStub.listSnapshots(ListSnapshotsRequest.newBuilder().setTableId(tableId).build());
+          snapshotClient.listSnapshots(
+              ListSnapshotsRequest.newBuilder().setTableId(tableId).build());
       List<Snapshot> snapshots = resp.getSnapshotsList();
       if (mode == Mode.REFS) {
         if (metadata == null || metadata.getRefsCount() == 0) {
