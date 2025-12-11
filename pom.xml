@@ -40,8 +40,7 @@
       <module>storage/aws</module>
 
       <!-- Extensions -->
-      <module>extensions/builtin</module>
-      <module>extensions/plugins/floedb</module>
+      <module>extensions/floedb</module>
 
       <!-- Tools -->
       <module>tools/builtin-validator</module>
