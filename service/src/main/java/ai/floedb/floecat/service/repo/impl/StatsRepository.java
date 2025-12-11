@@ -75,8 +75,7 @@ public class StatsRepository {
     columnStatsRepo.create(value);
   }
 
-  public Optional<ColumnStats> getColumnStats(
-      ResourceId tableId, long snapshotId, int columnId) {
+  public Optional<ColumnStats> getColumnStats(ResourceId tableId, long snapshotId, int columnId) {
     return columnStatsRepo.getByKey(
         new ColumnStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, columnId, ""));
   }
