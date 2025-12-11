@@ -9,7 +9,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.support.mapper.TableResponseMapper;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadataLogEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergStatisticsFile;

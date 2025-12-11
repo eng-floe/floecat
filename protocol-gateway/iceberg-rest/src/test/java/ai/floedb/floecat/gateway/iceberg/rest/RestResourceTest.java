@@ -83,12 +83,12 @@ import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableDropCleanupService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableRepository;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableDropCleanupService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService.MetadataContext;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergBlobMetadata;
@@ -1758,7 +1758,10 @@ class RestResourceTest {
 
     given()
         .body(
-            "{\"requirements\":[{\"type\":\"assert-ref-snapshot-id\",\"ref\":\"main\",\"snapshot-id\":7}]}")
+            """
+            {"requirements":[{"type":"assert-ref-snapshot-id","ref":"main","snapshot-id":7}],
+             "updates":[{"action":"set-properties","updates":{"owner":"floecat"}}]}
+            """)
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
@@ -1793,14 +1796,17 @@ class RestResourceTest {
 
     given()
         .body(
-            "{\"requirements\":[{\"type\":\"assert-ref-snapshot-id\",\"ref\":\"main\",\"snapshot-id\":5}]}")
+            """
+            {"requirements":[{"type":"assert-ref-snapshot-id","ref":"main","snapshot-id":5}],
+             "updates":[{"action":"set-properties","updates":{"owner":"floecat"}}]}
+            """)
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
         .then()
         .statusCode(200);
 
-    verify(tableStub).updateTable(any());
+    verify(tableStub, atLeastOnce()).updateTable(any());
   }
 
   @Test

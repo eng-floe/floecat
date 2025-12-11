@@ -1,6 +1,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest.api.request;
 
-import ai.floedb.floecat.gateway.iceberg.rest.support.serialization.NamespaceListDeserializer;
+import ai.floedb.floecat.gateway.iceberg.rest.common.NamespaceListDeserializer;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;

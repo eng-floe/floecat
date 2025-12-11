@@ -8,7 +8,9 @@ import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
 import ai.floedb.floecat.connector.rpc.SyncCaptureRequest;
-import ai.floedb.floecat.gateway.iceberg.rest.support.TestS3Fixtures;
+import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
+import ai.floedb.floecat.gateway.iceberg.rest.common.RealServiceTestResource;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.ManagedChannel;
@@ -443,9 +445,7 @@ class IcebergRestFixtureIT {
             Map.of("order-id", 0, "fields", List.of(Map.of("source-id", 1))),
             "properties",
             Map.ofEntries(
-                Map.entry(
-                    "io-impl",
-                    "ai.floedb.floecat.gateway.iceberg.rest.support.io.InMemoryS3FileIO"),
+                Map.entry("io-impl", InMemoryS3FileIO.class.getName()),
                 Map.entry("fs.floecat.test-root", TEST_S3_ROOT.toAbsolutePath().toString()),
                 Map.entry("metadata-location", stageMetadataLocation)),
             "location",
@@ -508,7 +508,7 @@ class IcebergRestFixtureIT {
             "properties",
             Map.of(
                 "io-impl",
-                "ai.floedb.floecat.gateway.iceberg.rest.support.io.InMemoryS3FileIO",
+                InMemoryS3FileIO.class.getName(),
                 "fs.floecat.test-root",
                 TestS3Fixtures.bucketPath().getParent().toString()));
     System.out.printf(
@@ -594,7 +594,7 @@ class IcebergRestFixtureIT {
             "metadata-location",
             stagedMetadataLocation,
             "io-impl",
-            "ai.floedb.floecat.gateway.iceberg.rest.support.io.InMemoryS3FileIO",
+            InMemoryS3FileIO.class.getName(),
             "fs.floecat.test-root",
             TEST_S3_ROOT.toAbsolutePath().toString()),
         "location",

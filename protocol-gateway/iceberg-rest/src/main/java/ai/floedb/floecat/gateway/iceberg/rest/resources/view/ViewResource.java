@@ -1,9 +1,9 @@
 package ai.floedb.floecat.gateway.iceberg.rest.resources.view;
 
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.support.NamespaceRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.support.RequestContextFactory;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.support.ViewRequestContext;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFactory;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.ViewRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewCommitService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewCreateService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewDeleteService;

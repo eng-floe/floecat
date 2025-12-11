@@ -1,7 +1,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.view;
 
 import ai.floedb.floecat.catalog.rpc.DeleteViewRequest;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.support.ViewRequestContext;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.ViewRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.ViewClient;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;

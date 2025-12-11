@@ -1,10 +1,10 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.view;
 
 import ai.floedb.floecat.catalog.rpc.GetViewRequest;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.support.ViewRequestContext;
+import ai.floedb.floecat.gateway.iceberg.rest.common.ViewResponseMapper;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.ViewRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.ViewClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService.MetadataContext;
-import ai.floedb.floecat.gateway.iceberg.rest.support.mapper.ViewResponseMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;

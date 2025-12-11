@@ -1,5 +1,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest;
 
+import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import java.util.Map;
 
@@ -24,7 +25,7 @@ public class RestResourceTestProfile implements QuarkusTestProfile {
         "floecat.gateway.storage-credential.properties.s3.region",
         "us-east-1",
         "floecat.gateway.metadata-file-io",
-        "ai.floedb.floecat.gateway.iceberg.rest.support.io.InMemoryS3FileIO",
+        InMemoryS3FileIO.class.getName(),
         "floecat.gateway.metadata-file-io-root",
         "target/test-fake-s3");
   }

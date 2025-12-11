@@ -11,6 +11,7 @@ import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.TablePropertyService;
 import com.google.protobuf.FieldMask;
 import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;

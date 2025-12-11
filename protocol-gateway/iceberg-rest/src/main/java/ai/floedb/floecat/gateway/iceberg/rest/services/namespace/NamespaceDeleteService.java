@@ -1,7 +1,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.namespace;
 
 import ai.floedb.floecat.catalog.rpc.DeleteNamespaceRequest;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.support.NamespaceRequestContext;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.NamespaceClient;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;

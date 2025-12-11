@@ -1,6 +1,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
-import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.apache.iceberg.SchemaParser;

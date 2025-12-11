@@ -2,9 +2,9 @@ package ai.floedb.floecat.gateway.iceberg.rest.resources.namespace;
 
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.NamespacePropertiesRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.NamespaceRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.support.CatalogRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.support.NamespaceRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.support.RequestContextFactory;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.namespace.NamespaceCreateService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.namespace.NamespaceDeleteService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.namespace.NamespaceInfoService;

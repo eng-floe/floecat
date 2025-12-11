@@ -6,7 +6,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.RenameRequest;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.support.CatalogResolver;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.ViewClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
 import com.google.protobuf.FieldMask;

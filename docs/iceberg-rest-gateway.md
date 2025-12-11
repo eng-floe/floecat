@@ -1,148 +1,145 @@
-# Iceberg REST Gateway for Floecat
+# Iceberg REST Gateway (Floecat)
 
-This document describes the Iceberg REST protocol gateway that fronts Floecat and delegates to existing gRPC services.
+This module (`protocol-gateway/iceberg-rest`) implements the Apache Iceberg REST catalog contract on top of Floecat’s gRPC services. The gateway translates HTTP requests into the existing table, namespace, view, snapshot, planning, and connector APIs so Iceberg clients (Trino, DuckDB, Spark, custom services) can manage Floecat tables without native gRPC bindings.
 
-## Scope
+---
 
-- Exposes the Iceberg REST Catalog API backed by Floecat gRPC (`protocol-gateway/iceberg-rest`).
-- Keeps protocol handling isolated so other protocols can plug in later.
-- Reuses Floecat auth/tenancy, logging, metrics; persisted state lives in existing services (tables, snapshots, staged tables via the catalog DB).
-- Implements the full single-catalog write path expected by Iceberg REST clients: stage-create, transaction commit, per-table commit (updates, snapshots, refs), metrics ingestion, and reconcile triggers.
-- Current non-goals: multi-catalog transactions and inline manifest serving. `/plan` now materializes a full plan, registers task chunks, and surfaces them via `/tasks`, but asynchronous planner RPCs and streaming manifests remain out of scope.
+## Scope and Goals
 
-## Floecat gRPC coverage vs Iceberg REST
+- **Protocol adapter:** expose the official Iceberg REST catalog surface while reusing Floecat’s authentication, tenancy, logging, and connector infrastructure.
+- **Parity with Iceberg REST spec:** support namespace CRUD, table CRUD/commit/register, view CRUD/commit, scan planning (`/plan` + `/tasks`), table-level credentials, and transactional commit via staged payloads.
+- **Single catalog focus:** one Floecat catalog per REST prefix (multi-catalog ACID transactions remain out of scope).
+- **Reusability:** keep Iceberg-specific plumbing isolated, allowing additional protocols to reuse the same staging, metadata, and connector services.
 
-| Iceberg REST surface | Floecat gRPC | Notes |
+Non-goals for the current release:
+
+- Serving manifests/files directly from the gateway.
+- Async/streaming scan planning.
+- Stats persistence (metrics payloads are validated and logged, not stored).
+
+---
+
+## REST Surface vs Floecat gRPC
+
+| Iceberg REST surface | Floecat service(s) | Notes |
 | --- | --- | --- |
-| `/v1/config` | Gateway config only | Response is synthesized from Quarkus config (no live catalog RPCs). |
-| Namespace list/load/create/update/delete | `NamespaceService` | Supports properties + field masks. Exists/HEAD via Get. |
-| Table list/load/create/delete | `TableService` | CRUD covered. |
-| Table rename/move | `TableService.UpdateTable` | Supported via `display_name` and `namespace_id` masks; see `TableMutationIT.tableMove`. |
-| View list/load/create/update/delete | `ViewService` | CRUD covered. |
-| View rename/move | `ViewService.UpdateView` | Cross-namespace/name via `display_name` and `namespace_id` masks (integration tests exist). |
-| Snapshots/history | `SnapshotService` | List/Get/Create/Delete snapshots; includes schema_json and the new partition spec metadata that backs schema/partition history endpoints. |
-| Schema fetch | _Not yet exposed_ | The blocking stub exists but no REST endpoint currently calls it. |
-| Table/view directory resolution | `DirectoryService` | For name → id resolution; used internally by gateway. |
-| Stats | _Not yet exposed_ | `/metrics` only logs payloads; the TableStatistics RPC is unused today. |
-| Commit/transactions | `TableService` + `SnapshotService` + staging store | Stage-create, per-table commit, and `/transactions/commit` realized via a staged metadata store plus existing RPCs. Multi-table atomicity beyond staged payload replay is not yet supported. |
-| Scan planning | `QueryService` | Gateway calls `BeginQuery`/`FetchScanBundle`, then `PlanTaskManager` persists the result, chunks files into task IDs (`{plan-id}-task-{n}`), and serves them via `/plan` + `/tasks`. Status remains “completed”; async planners are not yet wired. |
-| Scan/plan manifests, streaming tasks | Missing | Need planner RPCs that page plan-tasks or serve manifests incrementally. |
-| Table metrics | Logging only today | `/metrics` validates payloads and logs them. Hooking into `TableStatisticsService` is a follow-up. |
-| View rename endpoints (Iceberg) | Map to `UpdateView` | REST rename path maps to update with mask; `ViewMetadataService` enforces Iceberg schema/version semantics. |
+| `/v1/config` | Gateway config only | Synthesizes prefixes, warehouses, default properties, supported endpoints. |
+| Namespace CRUD | `NamespaceService` | Includes property mutation and existence checks (HEAD). |
+| Table CRUD, commit, register | `TableService`, `SnapshotService`, connector services | Stage-create/commit leverage staged metadata plus `TableService`. Register imports Iceberg metadata via `TableMetadataImportService`. |
+| Table rename/move | `TableService.UpdateTable` | Uses field masks for namespace + display name changes. |
+| `/tables/{table}/plan`, `/tasks` | `QueryService`, `PlanTaskManager` | Runs synchronous planning, persists result, and exposes per-task payloads. |
+| `/tables/{table}/credentials` | `ConnectorClient` + gateway defaults | Returns storage credentials from connector templates or static config. |
+| `/tables/{table}/metrics` | Logging only | Validates payloads; wiring to `TableStatisticsService` is future work (spec has no stats surface). |
+| `/tables/rename`, `/transactions/commit` | Table services + staging store | Replays staged payloads per Iceberg semantics; no cross-table ACID. |
+| View CRUD/commit/rename | `ViewService` + `ViewMetadataService` | Maintains Iceberg view schemas, versions, and summaries. |
+| `/oauth/tokens` | Disabled | Floecat uses existing auth headers; REST OAuth endpoints are stubbed out. |
+| Snapshots/history endpoints | Not in OpenAPI | Snapshot metadata is surfaced via table load/commit responses; gRPC snapshot APIs are used internally for writes. |
+| Schema fetch endpoints | Not in OpenAPI | Schema gRPC stubs exist but no REST endpoint calls them today. |
 
-## Gap list
-- **Load credentials** – `/tables/{table}/credentials` still returns static defaults; implementing a `LoadCredentials` RPC (or storage signing service) remains open.
-- **Metrics persistence** – `/tables/{table}/metrics` only logs the payload. Persisting into `TableStatisticsService` or Micrometer/OTel needs additional plumbing.
-- **Multi-table transactions** – `/v1/{prefix}/transactions/commit` replays staged payloads one table at a time. There’s no ACID guarantee across tables or catalogs.
-- **Manifest/file serving** – not modeled; may require signed URL service or storage gateway.
-- **Schema/partition history endpoints** – `/schemas` and `/partition-specs` are still TODO; the current REST surface does not expose those Iceberg APIs.
+---
 
-## Module layout (`protocol-gateway/iceberg-rest`)
+## Module & Package Layout
 
-- `src/main/java` – REST resources, DTOs, and service adapters that translate Iceberg requests into Floecat gRPC calls (tables, namespaces, views, planning, staging, metadata import, etc.).
-- `src/main/resources` – Quarkus config (`application.properties`) for HTTP port, plan chunk sizing/TTL, and account defaults.
-- `src/test/java` – RestAssured-based contract tests (`RestResourceTest`), real-service smoke tests, and helper fakes for staging/planning services.
-- `pom.xml` – module dependencies (Quarkus, RestAssured, Micrometer, Apache Iceberg for metadata import).
+```
+protocol-gateway/iceberg-rest/
+├── src/main/java/ai/floedb/floecat/gateway/iceberg/rest
+│   ├── api/              # Request/response DTOs & serializers
+│   ├── common/           # Cross-cutting helpers (context factory, filters, error mappers, metadata utils)
+│   ├── resources/        # JAX-RS controllers (config, namespace, table, view, system)
+│   └── services/         # Adapters and workflows (accounts, catalog, table, metadata, planning, staging, clients)
+└── src/test/java/...     # RestAssured tests, unit tests mirroring the same package structure
+```
 
-## Implementation architecture
+Key packages under `services`:
 
-- Quarkus REST controllers cover each Iceberg resource (Config, Namespace, Table, View, Snapshot, Stats). Planning and rename endpoints live with the table/view controllers, while `/transactions/*` is handled by the table resource.
-- Each controller injects `GrpcWithHeaders` clients for the underlying Floecat services (Catalog, Namespace, Table, View, Snapshot, Schema, Directory, TableStatistics, Query) so requests stay in-process and follow account context.
-- Stage storage: `StagedTableRepository` records create/commit payloads keyed by account/catalog/namespace/table + stage-id; `StagedTableService` keeps the payload lifecycle and TTL enforcement.
-- External table import: `TableMetadataImportService` can ingest an Iceberg `metadata.json` (S3, etc.) using Apache Iceberg parsers, extract schema/properties, and feed register operations so Floecat can reference existing tables without recreating them.
-- Snapshot handling: `SnapshotMetadataService` directly rewrites Iceberg metadata/snapshot APIs, while `TableCommitService` materializes Iceberg metadata files (via `MaterializeMetadataService`) into the table's canonical metadata directory so each commit produces the next `00000-*.metadata.json` version before updating `TableService`.
-- Response mappers/DTOs (`LoadTableResultDto`, `CommitTableResponseDto`, `TableMetadataView`) synthesize the Iceberg spec from catalog metadata and snapshot refs; field masks drive partial updates (rename/move/props) and connectors use the resolved metadata location.
-- Connector wiring: `TableCommitSideEffectService` creates or updates connectors, updates table upstreams, and runs metadata capture/reconcile after commits. REST helpers mirror this path when staging or admin operations materialize metadata and return credentials/config.
-- Plan/task lifecycle: `TablePlanService` issues `BeginQuery`, builds predicates, and fetches scan bundles via `QueryScanService`. `PlanTaskManager` caches the result (with TTL + configurable chunk size), generates deterministic task IDs, and enforces namespace/table scoping when `/tasks` consumes them.
-- View metadata: `ViewMetadataService` maps Iceberg view schemas, versions, requirements, and summaries onto Floecat’s `ViewService`. REST view DTOs now mirror Iceberg’s OpenAPI contract (schemas, version-logs, operations).
-- Auth/config: `AccountHeaderFilter` propagates account headers and `IcebergGatewayConfig` + catalog mappings resolve prefixes/catalog IDs and runtime overrides for metadata copying or connector creation.
-- Prefix compatibility: `floecat.gateway.default-prefix` optionally rewrites legacy prefix-less paths (e.g., `/v1/namespaces`) to `/v1/{prefix}/...`, which is useful for clients like DuckDB that ignore the catalog name returned from `/v1/config`.
+- `services.catalog` – low-level helpers (table lifecycle, connector wiring, requirement enforcement, metadata sync).
+- `services.table` / `services.view` / `services.namespace` – high-level use cases (create, commit, register, delete, property updates, rename).
+- `services.metadata` – metadata import/materialization (Iceberg metadata files, snapshot transforms).
+- `services.planning` – scan planning orchestration plus `PlanTaskManager`.
+- `services.staging` – staged payload repository and TTL management.
+- `services.client` – typed gRPC clients (TableClient, NamespaceClient, ViewClient, SnapshotClient, QueryClient, ConnectorClient, etc.).
 
-## Scan planning implementation
+Tests mirror this layout so package-private collaborators (e.g., staged table repositories, planners) are still accessible without widening visibility.
 
-`POST /tables/{table}/plan` immediately runs the scan through `TablePlanService`. The service:
+---
 
-1. Resolves the Floecat table ID via `DirectoryService`.
-2. Calls `BeginQuery` and registers snapshot inputs with `QuerySchemaService` so enforcement and lineage understand the plan.
-3. Builds `FetchScanBundleRequest` predicates from Iceberg filter expressions (case-sensitive configurable) and fetches the bundle from `QueryScanService`.
-4. Hands the completed bundle plus credentials to `PlanTaskManager`, which:
-   - Stores `{planId → namespace/table}` metadata with a configurable TTL (default 5 minutes).
-   - Chunks data files into tasks of `planTaskFilesPerTask` (default 128) and registers `{planId}-task-{n}` entries.
-   - Includes both the aggregated `file-scan-tasks` payload and the chunked `plan-task` identifiers in the `/plan` response; `/tasks` lets clients re-fetch an individual chunk when they only want a single task.
-5. `/plan/{planId}` simply reflects the cached descriptor, `/plan/{planId}` `DELETE` cancels both the cached entry and the underlying query, and `/tasks` consumes a task exactly once per namespace/table.
+## Runtime Architecture Overview
 
-Current limitations: plans are always returned as `"completed"` and there is no paging between `submitted/completed`, so extremely large scans still require the backends to stream data files quickly.
+1. **Request entry:** Quarkus REST controllers receive Iceberg REST requests. `AccountHeaderFilter` enforces tenant/auth headers and optionally rewrites “prefix-less” paths to a configured default.
+2. **Context resolution:** `RequestContextFactory` resolves catalog prefixes, namespace paths, and table IDs by calling Floecat’s `DirectoryService` and `TableLifecycleService`. Context records travel with each request.
+3. **Service orchestration:** Controllers delegate to `services.table/*`, `services.view/*`, `services.namespace/*`, etc. These orchestrators build gRPC requests, enforce requirements, and interact with staging, metadata, connectors, or planning as needed.
+4. **gRPC translation:** Typed clients (`TableClient`, `SnapshotClient`, `ViewClient`, etc.) wrap `GrpcWithHeaders` so every call inherits Floecat’s auth context and telemetry.
+5. **Response mapping:** `TableResponseMapper`, `ViewResponseMapper`, `NamespaceResponseMapper`, and metadata builders synthesize the Iceberg contract (schemas, specs, refs, history) from Floecat responses. They also inject config overrides (e.g., `write.metadata.path`, storage credentials).
+6. **Connectors & credentials:** `TableCommitSideEffectService` updates connector records, triggers metadata capture/reconcile, and resolves storage credentials returned to clients.
+7. **Plan/task caching:** `PlanTaskManager` persists planning results with TTL and chunk size limits, exposing read-once task IDs for `/tasks`.
 
-## External table registration and lifecycle
+---
 
-- `POST /register` accepts Iceberg metadata locations plus optional IO properties. `TableMetadataImportService` reads the referenced `metadata.json`, extracts schema/properties/table location, and feeds a synthetic create request into the existing commit path so the table is tracked inside Floecat without rewriting manifests.
-- The gateway creates a connector per registered table so downstream services (Trino, ingestion jobs) can locate the data.
-- `DELETE /tables/{table}` now also tears down the connector if the table’s upstream contained one, preventing orphaned connectors when tables are dropped or re-registered.
+## Stage-create & Commit Flow
 
-## View semantics
+### Stage-create (`POST /v1/{prefix}/namespaces/{namespace}/tables` with `stage-create=true`)
+1. Validate schema, spec, write order, and properties. Normalize namespace/table identifiers.
+2. Compute metadata location, connector configuration, and default storage credentials.
+3. Persist a `StagedTableEntry` keyed by account + catalog + namespace + table + stage-id (client-provided or generated). `StagedTableService` enforces TTL and idempotency.
+4. Return `StageCreateResponse` (stage-id, requirements, config overrides, storage credentials). No catalog mutation occurs yet.
 
-- REST view DTOs (`CreateViewRequest`, `UpdateViewRequest`, etc.) now mirror Iceberg’s OpenAPI schema, including schema JSON, metadata references, version logs, and requirements/updates.
-- `ViewMetadataService` persists Iceberg view metadata blobs inside Floecat, mediates requirements (assert-current-schema, etc.), and reconstructs responses so Trino or other Iceberg clients see canonical history.
-- The CLI (`client-cli/Shell`) exposes `view list/get/create/update/delete` commands, making it easy to inspect stored view metadata and validate payloads end-to-end.
-
-
-## Write path and transaction flow
-
-This section summarizes how the gateway mirrors Iceberg’s two-phase workflow so Trino and other REST clients can stage metadata before committing.
-
-### Stage-create (`POST /tables` with `stage-create=true`)
-
-1. Gateway validates the `CreateTableRequest`, normalizes schema/spec/order, and derives connector metadata (location, properties, requirements).
-2. A `StagedTableEntry` is stored via `StagedTableService.saveStage`, keyed by account/catalog/namespace/table + a generated stage-id (or a client-supplied `Iceberg-Transaction-Id`).
-3. The response returns `StageCreateResponse` fields (stage-id, requirements, config overrides, storage credentials). No table is materialized yet, and **clients must persist that stage-id** for the eventual commit.
-4. Idempotency: issuing the same stage-create (same composite key + stage-id) returns the cached entry instead of overwriting metadata.
-
-### Commit (`POST /tables/{table}`) without direct stage reference
-
-1. Gateway resolves the table. If it does not exist and the request does not reference a staged create (via `stage-id` in the body or `Iceberg-Transaction-Id` header), the request fails with 404 unless **exactly one** staged payload exists for that account/catalog/table, in which case the gateway reuses that lone stage-id.
-2. If the table is missing and a unique stage-id is known (either provided explicitly or inferred from the single staged payload), `StageCommitProcessor` materializes the table through `TableService.createTable`, wires connectors, and deletes the staged record. Missing stage-ids with multiple staged entries (or none at all) result in a `400 ValidationException` so the client can retry with the correct id.
-3. Snapshot/metadata updates (add/remove snapshot, refs, schemas/specs, statistics, location) are replayed using `SnapshotService`, `TableService.updateTable`, and helper methods to mutate Iceberg metadata blobs.
-4. The response uses `TableResponseMapper.toCommitResponse`, which always includes the latest snapshots referenced by `current-snapshot-id` and `refs`, ensuring Iceberg clients can deserialize the metadata.
+### Commit (`POST /tables/{table}`)
+1. Resolve catalog/table IDs. If table is missing but exactly one staged entry exists, implicitly use that stage-id; otherwise require the client to provide `stage-id` or `Iceberg-Transaction-Id`.
+2. `CommitStageResolver` fetches/validates the staged payload (assert-create, assert-current-schema, etc.) and either returns a resolved table ID or synthesizes a new table via `StageCommitProcessor`.
+3. `TableUpdatePlanner` diff’s the incoming requirements/updates against the current table metadata, building a `TableSpec` + `FieldMask` for catalog updates. Snapshot changes fan out through `SnapshotMetadataService`.
+4. `TableCommitService` sends the update, materializes metadata files via `MaterializeMetadataService`, tags the commit with the final metadata location, and logs stage outcomes.
+5. `TableCommitSideEffectService` syncs connector metadata (create/update external connectors, update table upstream, run capture & reconcile).
+6. Response: `CommitTableResponseDto` containing the resolved metadata location, metadata view, config overrides, and storage credentials. ETags are set to the metadata location so clients can cache responses.
 
 ### `/transactions/commit`
 
-1. The endpoint receives Iceberg’s commit payload (list of staged references + requirements + update list).
-2. For each staged reference the gateway:
-   - Loads the staged entry from `StagedTableService`.
-   - Validates requirements (e.g., assert-create) against actual table existence.
-   - Materializes or updates the table using the same logic as `/tables/{table}` commit.
-3. Requirements in the payload (assert-current-schema, assert-ref-snapshot-id, etc.) are reevaluated using the freshly loaded metadata/snapshots.
-4. After all stages succeed, the gateway triggers connector reconcile/sync tasks and deletes the staged entries. (Stages are simply deleted; there is not yet an `ABORTED` marker for failed transactions.)
-5. The response mirrors Iceberg’s `CommitTableResponse` with metadata location, metadata view, config overrides, and storage credentials.
+Receives Iceberg’s transaction payload (list of table changes referencing stage-ids). The gateway replays each staged change sequentially using the same path as per-table commits. Requirements (assert stage, schema, snapshot refs, etc.) are enforced per change. The endpoint is idempotent but **does not** offer multi-table ACID guarantees beyond staged payload replay.
 
-### Snapshot handling
+---
 
-- Snapshot placeholders (add/remove) leverage `SnapshotService` RPCs so Floecat remains the source of truth for manifests, refs, and history.
-- `TableResponseMapper` synthesizes missing schema/spec/order data, aligns refs with actual snapshots, and bumps `last-sequence-number` to the highest known snapshot sequence.
-- Metadata files (`metadata-location`) remain inside Floecat’s storage (e.g., `floecat:///tables/<id>`). Client table locations only contain Iceberg manifests/data; JSON metadata is retrieved via the gateway.
+## Scan Planning & Task Consumption
 
-### Housekeeping & resilience
+1. `TablePlanService` resolves the table ID, applies snapshot filters (start/end snapshot, stats fields, filter expressions), and issues `BeginQuery` + `FetchScanBundle` against Floecat’s `QueryService`.
+2. The resulting plan bundle is immediately completed (no async state today). `PlanTaskManager` registers the descriptor (plan-id, namespace, table, credentials, delete files) and chunks file scan tasks into deterministic task IDs (`{planId}-task-{n}`) based on configured chunk size.
+3. `/tables/{table}/plan` returns the plan descriptor, aggregated file scan tasks, delete files, storage credentials, and the list of `planTasks`.
+4. `/tables/{table}/tasks` accepts a `planTask` ID and consumes it exactly once, returning only the payload for that task. Invalid/consumed IDs return Iceberg-style 404 responses.
+5. `/tables/{table}/plan/{planId}` GET/DELETE expose cached descriptors and allow clients to cancel a plan (which also cancels the underlying query if still open).
 
-- `StagedTableService.expireStages` is invoked periodically to remove stale entries based on configurable TTLs.
-- Operations are idempotent: stage-create uses deterministic keys, snapshot creates leverage per-snapshot idempotency keys, and commit replays tolerate retries.
-- Logging/metrics: TableResource logs stage usage, stage commit outcomes, and snapshot counts to help trace stage→commit flows end-to-end.
+Limits/Follow-ups:
+- Plans are always returned as `"completed"`; async planner status codes (`submitted`, `failed`, `cancelled`) are placeholders.
+- TTL (default 5 minutes) and chunk size (default 128 files per task) are configurable via `application.properties`.
 
-## Endpoint mapping highlights
+---
 
-- Config (`/v1/config`): build endpoints and default properties from gateway config + Floecat catalog properties; expose the Iceberg configuration map clients expect.
-- Namespace operations: direct `NamespaceService`; map properties and parents/path to Iceberg namespace parts.
-- Table operations: `TableService`; ensure upstream format = ICEBERG; translate schema_json; rename/move via `update_mask` on `namespace_id` and `display_name`; stage-create/commit leverage the staging store described above.
-- View operations: `ViewService`; rename/move via `update_mask`; SQL passthrough.
-- Plan endpoints: `/tables/{table}/plan` resolves the table, validates snapshot filters, invokes `TablePlanService`, and surfaces only plan metadata. `/tables/{table}/tasks` consumes plan-task IDs stored in `PlanTaskManager` and returns the file/delete payload chunk referenced by that task.
-- Snapshot/history: `SnapshotService`; map snapshot_id, parent_id, timestamps, schema_json, and partition-spec metadata to Iceberg history responses. Snapshots now embed `schemaJson` plus `PartitionSpecInfo` (specId, specName, partition field `fieldId/name/transform`) sourced from connectors.
-- Schema history: _future work_ – endpoint not implemented yet; clients must infer from snapshots.
-- Partition spec history: _future work_ – endpoint not implemented yet.
-- Schema fetch: _future work_ – `SchemaService` is wired but unused until the endpoint lands.
-- Metrics: `/tables/{table}/metrics` enforces the request schema and logs the payload for now; it becomes a no-op until the stats service integration lands.
+## View Semantics
 
-## DuckDB quick start
+- `ViewMetadataService` builds Iceberg-compatible view metadata blobs (schemas, versions, version logs, representations) and stores them along with user properties.
+- REST view requests/responses mirror the OpenAPI contract (SQL text, schema JSON, properties, requirements/updates).
+- View rename/move paths map to `ViewService.UpdateView` by updating `namespace_id` + `display_name`.
 
-DuckDB needs the HTTP, AWS, and Iceberg extensions plus a catalog attachment that points at the gateway. After configuring `application.properties` with `floecat.gateway.default-warehouse-path`, `floecat.gateway.default-region`, and storage credentials, you can read/write via DuckDB as follows:
+---
+
+## Testing
+
+- **REST contract tests:** `RestResourceTest` (RestAssured) validates namespace/table/view endpoints against mocked services.
+- **Integration tests:** `IcebergRestFixtureIT` boots real services (via `RealServiceTestResource`) and exercises stage-create, commit, plan, and view flows end-to-end.
+- **Unit tests:** live under `src/test/java/.../services/*` mirroring the main packages so service collaborators (planners, staged repositories, metadata builders) can be verified with Mockito.
+
+---
+
+## Operational Notes & Current Limitations
+
+- **Credentials:** `/tables/{table}/credentials` returns static connector credentials; per-request storage signing is not yet implemented.
+- **Metrics persistence:** `/tables/{table}/metrics` validates and logs payloads but does not persist them to `TableStatisticsService`.
+- **Async planning:** plans are synchronous/completed only; streaming manifests and async planning (`/plans/{id}`) are future work.
+- **Multi-table ACID:** `/transactions/commit` replays staged changes sequentially without cross-table rollback.
+- **Manifest/file serving:** the gateway does not serve manifests or data files directly; clients access storage through the credentials/config returned in REST responses.
+
+---
+
+## Client Quick Start
+
+### DuckDB
 
 ```sql
 INSTALL httpfs;
@@ -152,21 +149,21 @@ LOAD aws;
 INSTALL iceberg;
 LOAD iceberg;
 
--- Attach an Iceberg catalog that points at the gateway host/port.
 ATTACH 'analytics' AS iceberg_floecat
-  (TYPE iceberg, ENDPOINT 'http://localhost:9200/', AUTHORIZATION_TYPE none);
+  (TYPE iceberg,
+   ENDPOINT 'http://localhost:9200/',
+   AUTHORIZATION_TYPE none);
 
--- Create and populate a table in namespace analytics.sales.
 CREATE TABLE iceberg_floecat.sales.quark_events (event_id INTEGER);
 INSERT INTO iceberg_floecat.sales.quark_events VALUES (1), (2), (3), (4);
 SELECT * FROM iceberg_floecat.sales.quark_events;
 ```
 
-Use `analytics`/`sales`/`quark_events` (or your own catalog/namespace/table identifiers) consistently; the gateway’s `/v1/config` response advertises the prefix (`analytics` in the example). The region, bucket, and credentials are injected into load/create responses via the config/credential maps, allowing DuckDB to PUT both Parquet and manifest files into the same S3 path without additional client-side configuration.
+Ensure `application.properties` provides `floecat.gateway.default-prefix`, storage location, region, and credentials. The gateway injects matching `write.metadata.path`/credentials into load responses so DuckDB reads/writes manifests to the same bucket.
 
-## Trino quick start
+### Trino
 
-Trino connects via a catalog properties file (e.g., `etc/catalog/analytics_rest.properties`). Use identifiers that match your gateway prefix/namespace and reuse the same S3 bucket/region and static credentials configured in `application.properties`.
+`etc/catalog/analytics_rest.properties`:
 
 ```
 connector.name=iceberg
@@ -176,18 +173,13 @@ iceberg.rest-catalog.uri=http://host.docker.internal:9200
 iceberg.rest-catalog.warehouse=s3://my-warehouse/
 iceberg.rest-catalog.view-endpoints-enabled=false
 
-iceberg.file-format=parquet
-iceberg.max-partitions-per-writer=1000
-iceberg.table-statistics-enabled=true
-iceberg.extended-statistics.enabled=true
-
 fs.native-s3.enabled=true
 s3.aws-access-key=<access-key>
 s3.aws-secret-key=<secret-key>
 s3.region=<AWS region>
 ```
 
-Restart Trino (or refresh the catalog), then issue standard Iceberg DDL:
+Restart Trino and run:
 
 ```sql
 CREATE TABLE analytics.sales.stream_orders (
@@ -202,4 +194,12 @@ INSERT INTO analytics.sales.stream_orders VALUES (1, 'east'), (2, 'west');
 SELECT * FROM analytics.sales.stream_orders;
 ```
 
-Trino reads prefix/warehouse/region from the catalog properties, while the gateway injects matching `write.metadata.path` and storage credentials in the REST responses so manifest and data writes target identical S3 paths.
+Trino picks up the REST prefix/warehouse from the catalog properties, while the gateway injects consistent metadata paths and credentials.
+
+---
+
+## References
+
+- [Iceberg REST catalog spec](https://github.com/apache/iceberg/blob/master/open-api/rest-catalog-open-api.yaml)
+- Floecat module: `protocol-gateway/iceberg-rest`
+- Configuration: `protocol-gateway/iceberg-rest/src/main/resources/application.properties`
