@@ -1078,7 +1078,7 @@ class RestResourceTest {
         ai.floedb.floecat.catalog.rpc.ColumnStats.newBuilder()
             .setTableId(tableId)
             .setSnapshotId(42)
-            .setColumnId("c1")
+            .setColumnId(1)
             .setColumnName("col")
             .setLogicalType("string")
             .setValueCount(100)

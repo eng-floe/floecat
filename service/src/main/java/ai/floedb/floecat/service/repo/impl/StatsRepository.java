@@ -76,7 +76,7 @@ public class StatsRepository {
   }
 
   public Optional<ColumnStats> getColumnStats(
-      ResourceId tableId, long snapshotId, String columnId) {
+      ResourceId tableId, long snapshotId, int columnId) {
     return columnStatsRepo.getByKey(
         new ColumnStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, columnId, ""));
   }
@@ -218,19 +218,19 @@ public class StatsRepository {
         new TableStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, ""));
   }
 
-  public MutationMeta metaForColumnStats(ResourceId tableId, long snapshotId, String columnId) {
+  public MutationMeta metaForColumnStats(ResourceId tableId, long snapshotId, int columnId) {
     return columnStatsRepo.metaFor(
         new ColumnStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, columnId, ""));
   }
 
   public MutationMeta metaForColumnStats(
-      ResourceId tableId, long snapshotId, String columnId, Timestamp nowTs) {
+      ResourceId tableId, long snapshotId, int columnId, Timestamp nowTs) {
     return columnStatsRepo.metaFor(
         new ColumnStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, columnId, ""),
         nowTs);
   }
 
-  public MutationMeta metaForColumnStatsSafe(ResourceId tableId, long snapshotId, String columnId) {
+  public MutationMeta metaForColumnStatsSafe(ResourceId tableId, long snapshotId, int columnId) {
     return columnStatsRepo.metaForSafe(
         new ColumnStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, columnId, ""));
   }

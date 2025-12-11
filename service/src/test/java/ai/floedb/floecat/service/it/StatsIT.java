@@ -125,7 +125,7 @@ class StatsIT {
         ColumnStats.newBuilder()
             .setTableId(tblId)
             .setSnapshotId(snapOld)
-            .setColumnId("id")
+            .setColumnId(1)
             .setColumnName("id")
             .setLogicalType("int")
             .setNullCount(0)
@@ -139,7 +139,7 @@ class StatsIT {
         ColumnStats.newBuilder()
             .setTableId(tblId)
             .setSnapshotId(snapOld)
-            .setColumnId("ts")
+            .setColumnId(2)
             .setColumnName("ts")
             .setLogicalType("timestamp")
             .setNullCount(10)
@@ -181,7 +181,7 @@ class StatsIT {
                 .setPage(PageRequest.newBuilder().setPageSize(100).build())
                 .build());
     assertEquals(2, listColsOld.getColumnsCount());
-    assertEquals("id", listColsOld.getColumns(0).getColumnId());
+    assertEquals(1, listColsOld.getColumns(0).getColumnId());
 
     var tableStatsNew =
         tableStatsOld.toBuilder()

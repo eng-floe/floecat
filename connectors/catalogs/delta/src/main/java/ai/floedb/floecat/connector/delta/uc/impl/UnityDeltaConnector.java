@@ -265,6 +265,12 @@ public final class UnityDeltaConnector implements FloecatConnector {
         ProtoStatsBuilder.toTableStats(
             destinationTableId, version, createdMs, TableFormat.TF_DELTA, result);
 
+    var positions = new LinkedHashMap<String, Integer>();
+    var fields = kernelSchema.fields();
+    for (int i = 0; i < fields.size(); i++) {
+      positions.put(fields.get(i).getName(), i + 1);
+    }
+
     var cStats =
         ProtoStatsBuilder.toColumnStats(
             destinationTableId,
@@ -272,6 +278,7 @@ public final class UnityDeltaConnector implements FloecatConnector {
             TableFormat.TF_DELTA,
             result.columns(),
             name -> name,
+            positions::get,
             nameToType::get,
             createdMs,
             result.totalRowCount());
@@ -283,6 +290,7 @@ public final class UnityDeltaConnector implements FloecatConnector {
             TableFormat.TF_DELTA,
             result.files(),
             name -> name,
+            positions::get,
             nameToType::get,
             createdMs);
 
@@ -302,14 +310,13 @@ public final class UnityDeltaConnector implements FloecatConnector {
               .build());
     }
 
-    var normCols = normalizeColumnStats(cStats, kernelSchema);
     return List.of(
         new SnapshotBundle(
             version,
             parent,
             createdMs,
             tStats,
-            normCols,
+            cStats,
             fileStats,
             schemaJson,
             partitionSpec,
@@ -398,29 +405,6 @@ public final class UnityDeltaConnector implements FloecatConnector {
     } catch (Exception e) {
       throw new RuntimeException("Delta stats compute failed (version " + version + ")", e);
     }
-  }
-
-  private static List<ColumnStats> normalizeColumnStats(
-      List<ColumnStats> in, StructType kernelSchema) {
-    var pos = new LinkedHashMap<String, Integer>();
-    var fields = kernelSchema.fields();
-    for (int i = 0; i < fields.size(); i++) {
-      pos.put(fields.get(i).getName(), i + 1);
-    }
-
-    var byName = new LinkedHashMap<String, ColumnStats>();
-    for (var c : in) {
-      String name = c.getColumnName();
-      Integer p = pos.get(name);
-      if (p == null) {
-        continue;
-      }
-      String newCid = Integer.toString(p);
-      var normalized = c.toBuilder().setColumnId(newCid).build();
-      byName.put(name, normalized);
-    }
-
-    return new ArrayList<>(byName.values());
   }
 
   private Snapshot resolveSnapshot(Table table, long snapshotId, long asOfTime) {

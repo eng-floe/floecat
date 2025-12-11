@@ -65,7 +65,7 @@ message TableStats {
 message ColumnStats {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   int64 snapshot_id = 2;
-  string column_id = 3;
+  int32 column_id = 3;
   string column_name = 4;
   string logical_type = 5;
   UpstreamStamp upstream = 6;

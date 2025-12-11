@@ -17,11 +17,11 @@ public final class DummyConnector implements FloecatConnector {
   private final String id;
 
   private static final class Col {
-    final String colId;
+    final int colId;
     final String name;
     final String logical;
 
-    Col(String colId, String name, String logical) {
+    Col(int colId, String name, String logical) {
       this.colId = colId;
       this.name = name;
       this.logical = logical;
@@ -30,17 +30,17 @@ public final class DummyConnector implements FloecatConnector {
 
   private static final List<Col> LEAF_COLS =
       List.of(
-          new Col("1", "id", "INT64"),
-          new Col("2", "ts", "TIMESTAMP"),
+          new Col(1, "id", "INT64"),
+          new Col(2, "ts", "TIMESTAMP"),
           // struct user (3) -> id(4), name(5)
-          new Col("4", "user.id", "INT64"),
-          new Col("5", "user.name", "STRING"),
+          new Col(4, "user.id", "INT64"),
+          new Col(5, "user.name", "STRING"),
           // list items (6) -> element(7 struct) -> sku(8), qty(9)
-          new Col("8", "items.element.sku", "STRING"),
-          new Col("9", "items.element.qty", "INT32"),
+          new Col(8, "items.element.sku", "STRING"),
+          new Col(9, "items.element.qty", "INT32"),
           // map attrs (10) -> key(11), value(12)
-          new Col("11", "attrs.key", "STRING"),
-          new Col("12", "attrs.value", "STRING"));
+          new Col(11, "attrs.key", "STRING"),
+          new Col(12, "attrs.value", "STRING"));
 
   private DummyConnector(String id) {
     this.id = id;
