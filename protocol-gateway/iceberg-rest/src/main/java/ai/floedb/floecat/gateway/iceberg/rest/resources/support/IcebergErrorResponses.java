@@ -9,15 +9,15 @@ public final class IcebergErrorResponses {
   private IcebergErrorResponses() {}
 
   public static Response validation(String message) {
-    return error(message, "ValidationException", Response.Status.BAD_REQUEST);
+    return error(message, "ValidationException", Response.Status.BAD_REQUEST.getStatusCode());
   }
 
   public static Response conflict(String message) {
-    return error(message, "CommitFailedException", Response.Status.CONFLICT);
+    return error(message, "CommitFailedException", Response.Status.CONFLICT.getStatusCode());
   }
 
   public static Response notFound(String message) {
-    return error(message, "NotFoundException", Response.Status.NOT_FOUND);
+    return error(message, "NotFoundException", Response.Status.NOT_FOUND.getStatusCode());
   }
 
   public static Response unprocessable(String message) {
@@ -25,11 +25,12 @@ public final class IcebergErrorResponses {
   }
 
   public static Response unsupported(String message) {
-    return error(message, "UnsupportedOperationException", Response.Status.NOT_IMPLEMENTED);
+    return error(
+        message, "UnsupportedOperationException", Response.Status.NOT_IMPLEMENTED.getStatusCode());
   }
 
   public static Response failure(String message, String type, Response.Status status) {
-    return error(message, type, status);
+    return error(message, type, status.getStatusCode());
   }
 
   public static Response grpcError(StatusRuntimeException exception) {
@@ -60,11 +61,7 @@ public final class IcebergErrorResponses {
     }
     String message =
         status.getDescription() == null ? status.getCode().name() : status.getDescription();
-    return error(message, type, httpStatus);
-  }
-
-  private static Response error(String message, String type, Response.Status status) {
-    return error(message, type, status.getStatusCode());
+    return error(message, type, httpStatus.getStatusCode());
   }
 
   private static Response error(String message, String type, int statusCode) {

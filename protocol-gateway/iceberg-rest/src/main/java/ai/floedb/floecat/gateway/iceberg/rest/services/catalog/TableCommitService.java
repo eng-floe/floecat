@@ -85,13 +85,7 @@ public class TableCommitService {
             tableId,
             committedTable,
             stageAwareResponse,
-            false,
-            tableSupport,
-            prefix,
-            namespacePath,
-            namespaceId,
-            catalogId,
-            idempotencyKey);
+            false);
     if (sideEffects.hasError()) {
       return sideEffects.error();
     }
@@ -116,7 +110,19 @@ public class TableCommitService {
         namespace,
         table,
         responseDto == null ? null : responseDto.metadata());
-    runConnectorSync(tableSupport, sideEffects.connectorId(), namespacePath, table);
+    ResourceId connectorId =
+        sideEffectService.synchronizeConnector(
+            tableSupport,
+            prefix,
+            namespacePath,
+            namespaceId,
+            catalogId,
+            table,
+            committedTable,
+            responseDto == null ? null : responseDto.metadata(),
+            responseDto == null ? null : responseDto.metadataLocation(),
+            idempotencyKey);
+    runConnectorSync(tableSupport, connectorId, namespacePath, table);
     return builder.build();
   }
 

@@ -18,8 +18,4 @@ public final class PageRequestHelper {
     }
     return builder;
   }
-
-  public static boolean hasPaging(PageRequest.Builder builder) {
-    return builder != null;
-  }
 }

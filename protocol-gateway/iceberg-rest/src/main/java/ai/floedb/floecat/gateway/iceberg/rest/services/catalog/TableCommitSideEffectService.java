@@ -300,15 +300,9 @@ public class TableCommitSideEffectService {
       ResourceId tableId,
       Table tableRecord,
       CommitTableResponseDto responseDto,
-      boolean skipMaterialization,
-      TableGatewaySupport tableSupport,
-      String prefix,
-      List<String> namespacePath,
-      ResourceId namespaceId,
-      ResourceId catalogId,
-      String idempotencyKey) {
+      boolean skipMaterialization) {
     if (responseDto == null) {
-      return PostCommitResult.success(null, null);
+      return PostCommitResult.success(null);
     }
     CommitTableResponseDto resolvedResponse = responseDto;
     if (!skipMaterialization) {
@@ -325,29 +319,16 @@ public class TableCommitSideEffectService {
       }
       resolvedResponse = applyMaterializationResult(responseDto, materializationResult);
     }
-    ResourceId connectorId =
-        synchronizeConnector(
-            tableSupport,
-            prefix,
-            namespacePath,
-            namespaceId,
-            catalogId,
-            tableName,
-            tableRecord,
-            resolvedResponse.metadata(),
-            resolvedResponse.metadataLocation(),
-            idempotencyKey);
-    return PostCommitResult.success(resolvedResponse, connectorId);
+    return PostCommitResult.success(resolvedResponse);
   }
 
-  public record PostCommitResult(
-      Response error, CommitTableResponseDto response, ResourceId connectorId) {
-    static PostCommitResult success(CommitTableResponseDto response, ResourceId connectorId) {
-      return new PostCommitResult(null, response, connectorId);
+  public record PostCommitResult(Response error, CommitTableResponseDto response) {
+    static PostCommitResult success(CommitTableResponseDto response) {
+      return new PostCommitResult(null, response);
     }
 
     static PostCommitResult failure(Response error) {
-      return new PostCommitResult(error, null, null);
+      return new PostCommitResult(error, null);
     }
 
     boolean hasError() {

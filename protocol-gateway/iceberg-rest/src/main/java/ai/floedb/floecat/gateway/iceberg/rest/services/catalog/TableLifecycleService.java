@@ -52,16 +52,14 @@ public class TableLifecycleService {
         resp.getTablesList().stream()
             .map(table -> new TableIdentifierDto(namespacePath, table.getDisplayName()))
             .collect(Collectors.toList());
-    String nextToken = flattenPageToken(resp.getPage());
-    return new ListTablesResult(identifiers, nextToken);
-  }
-
-  private String flattenPageToken(ai.floedb.floecat.common.rpc.PageResponse page) {
-    if (page == null) {
-      return null;
+    String nextToken = null;
+    if (resp.hasPage()) {
+      String token = resp.getPage().getNextPageToken();
+      if (token != null && !token.isBlank()) {
+        nextToken = token;
+      }
     }
-    String token = page.getNextPageToken();
-    return (token == null || token.isBlank()) ? null : token;
+    return new ListTablesResult(identifiers, nextToken);
   }
 
   public ResourceId resolveNamespaceId(String catalogName, String namespace) {

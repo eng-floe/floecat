@@ -189,6 +189,10 @@ public class TableResource {
 
     TableMetadataView responseMetadata = loadResult.metadata();
     String responseMetadataLocation = loadResult.metadataLocation();
+    String actualMetadataLocation = metadataLocation(created, metadata);
+    if (actualMetadataLocation != null && !actualMetadataLocation.isBlank()) {
+      responseMetadataLocation = actualMetadataLocation;
+    }
     if (responseMetadata != null && responseMetadataLocation != null) {
       responseMetadata = responseMetadata.withMetadataLocation(responseMetadataLocation);
     }
@@ -196,10 +200,12 @@ public class TableResource {
         loadResult.config() == null
             ? new LinkedHashMap<>()
             : new LinkedHashMap<>(loadResult.config());
-    String metadataDirectory =
-        MetadataLocationUtil.canonicalMetadataDirectory(responseMetadataLocation);
-    if (metadataDirectory != null && !metadataDirectory.isBlank()) {
-      responseConfig.put("write.metadata.path", metadataDirectory);
+    if (responseMetadataLocation != null && !responseMetadataLocation.isBlank()) {
+      String metadataDirectory =
+          MetadataLocationUtil.canonicalMetadataDirectory(responseMetadataLocation);
+      if (metadataDirectory != null && !metadataDirectory.isBlank()) {
+        responseConfig.put("write.metadata.path", metadataDirectory);
+      }
     }
     loadResult =
         new LoadTableResultDto(
@@ -215,30 +221,11 @@ public class TableResource {
         responseMetadataLocation,
         loadResult.config().keySet());
 
-    String requestedLocation = effectiveReq != null ? effectiveReq.location() : null;
-    String metadataForLocation = loadResult.metadataLocation();
-    String resolvedLocation =
-        tableSupport.resolveTableLocation(requestedLocation, metadataForLocation);
-    String existingUpstreamUri =
-        created.hasUpstream() && created.getUpstream().getUri() != null
-            ? created.getUpstream().getUri()
-            : null;
-    ResourceId connectorId =
-        configureConnector(
-            prefix,
-            namespacePath,
-            namespaceId,
-            catalogId,
-            tableName,
-            created.getResourceId(),
-            metadataForLocation,
-            resolvedLocation,
-            existingUpstreamUri,
-            idempotencyKey);
-    tableCommitService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
-
     Response.ResponseBuilder builder = Response.ok(loadResult);
-    String etagValue = metadataLocation(created, metadata);
+    String etagValue =
+        responseMetadataLocation != null && !responseMetadataLocation.isBlank()
+            ? responseMetadataLocation
+            : metadataLocation(created, metadata);
     if (etagValue != null) {
       builder.tag(etagValue);
     }
@@ -505,7 +492,7 @@ public class TableResource {
       PlanResponseDto planned =
           tablePlanService.fetchPlan(handle.queryId(), tableSupport.defaultCredentials());
       List<FileScanTaskDto> fileScanTasks = copyOfOrEmpty(planned.fileScanTasks());
-      List<ContentFileDto> deleteFiles = copyOfOrEmptyContent(planned.deleteFiles());
+      List<ContentFileDto> deleteFiles = copyOfOrEmpty(planned.deleteFiles());
       PlanTaskManager.PlanDescriptor descriptor =
           planTaskManager.registerCompletedPlan(
               handle.queryId(),
@@ -901,7 +888,10 @@ public class TableResource {
               idempotencyKey);
       upstreamUri = connectorTemplate.uri();
     } else if (resolvedTableLocation != null && !resolvedTableLocation.isBlank()) {
-      String metadata = nonBlank(metadataLocation, resolvedTableLocation);
+      String metadata =
+          metadataLocation != null && !metadataLocation.isBlank()
+              ? metadataLocation
+              : resolvedTableLocation;
       connectorId =
           tableSupport.createExternalConnector(
               prefix,
@@ -983,10 +973,6 @@ public class TableResource {
     return table != null && table.hasResourceId() ? table.getResourceId().getId() : null;
   }
 
-  private static String nonBlank(String primary, String fallback) {
-    return primary != null && !primary.isBlank() ? primary : fallback;
-  }
-
   private String safeSerializeCreate(TableRequests.Create req) {
     if (req == null) {
       return "<null>";
@@ -1005,14 +991,7 @@ public class TableResource {
     return List.copyOf(values);
   }
 
-  private static List<FileScanTaskDto> copyOfOrEmpty(List<FileScanTaskDto> values) {
-    if (values == null || values.isEmpty()) {
-      return List.of();
-    }
-    return List.copyOf(values);
-  }
-
-  private static List<ContentFileDto> copyOfOrEmptyContent(List<ContentFileDto> values) {
+  private static <T> List<T> copyOfOrEmpty(List<T> values) {
     if (values == null || values.isEmpty()) {
       return List.of();
     }

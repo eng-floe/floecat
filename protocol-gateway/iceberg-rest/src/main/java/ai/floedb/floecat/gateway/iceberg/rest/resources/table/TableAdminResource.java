@@ -143,8 +143,4 @@ public class TableAdminResource {
     }
     return Response.noContent().build();
   }
-
-  private static String nonBlank(String primary, String fallback) {
-    return primary != null && !primary.isBlank() ? primary : fallback;
-  }
 }

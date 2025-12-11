@@ -9,7 +9,6 @@ import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.floecat.common.rpc.PageRequest;
-import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
@@ -105,8 +104,8 @@ public class NamespaceResource {
             .collect(Collectors.toList());
     Map<String, Object> body = new LinkedHashMap<>();
     body.put("namespaces", namespaces);
-    String nextToken = flattenPageToken(resp.getPage());
-    if (nextToken != null) {
+    String nextToken = resp.getPage().getNextPageToken();
+    if (nextToken != null && !nextToken.isBlank()) {
       body.put("next-page-token", nextToken);
     }
     return Response.ok(body).build();
@@ -294,10 +293,5 @@ public class NamespaceResource {
     }
 
     return new NamespaceInfoDto(path, Map.copyOf(props));
-  }
-
-  private String flattenPageToken(PageResponse page) {
-    String token = page.getNextPageToken();
-    return token == null || token.isBlank() ? null : token;
   }
 }

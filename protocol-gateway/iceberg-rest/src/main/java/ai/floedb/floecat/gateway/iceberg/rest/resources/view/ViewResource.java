@@ -9,7 +9,6 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.PageRequest;
-import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
@@ -31,7 +30,6 @@ import jakarta.ws.rs.GET;
 import jakarta.ws.rs.HEAD;
 import jakarta.ws.rs.HeaderParam;
 import jakarta.ws.rs.POST;
-import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
@@ -58,7 +56,6 @@ public class ViewResource {
       @QueryParam("pageToken") String pageToken,
       @QueryParam("pageSize") Integer pageSize) {
     String catalogName = CatalogResolver.resolveCatalog(config, prefix);
-    ResourceId catalogId = CatalogResolver.resolveCatalogId(grpc, config, prefix);
     ResourceId namespaceId =
         NameResolution.resolveNamespace(grpc, catalogName, NamespacePaths.split(namespace));
 
@@ -77,8 +74,8 @@ public class ViewResource {
     Map<String, Object> body = new LinkedHashMap<>();
     body.put("identifiers", identifiers);
 
-    String nextToken = flattenPageToken(resp.getPage());
-    if (nextToken != null) {
+    String nextToken = resp.getPage().getNextPageToken();
+    if (nextToken != null && !nextToken.isBlank()) {
       body.put("next-page-token", nextToken);
     }
     return Response.ok(body).build();
@@ -215,10 +212,5 @@ public class ViewResource {
             ViewResponseMapper.toLoadResult(
                 namespace, view, resp.getView(), responseContext.metadata()))
         .build();
-  }
-
-  private String flattenPageToken(PageResponse page) {
-    String token = page.getNextPageToken();
-    return token == null || token.isBlank() ? null : token;
   }
 }
