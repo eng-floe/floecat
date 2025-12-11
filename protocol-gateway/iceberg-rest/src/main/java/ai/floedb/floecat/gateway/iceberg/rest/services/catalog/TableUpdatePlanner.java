@@ -10,7 +10,6 @@ import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 
@@ -23,9 +22,7 @@ public class TableUpdatePlanner {
   @Inject SnapshotMetadataService snapshotMetadataService;
 
   public UpdatePlan planUpdates(
-      TableCommitService.CommitCommand command,
-      Supplier<Table> tableSupplier,
-      ResourceId tableId) {
+      TableCommitService.CommitCommand command, Supplier<Table> tableSupplier, ResourceId tableId) {
     TableRequests.Commit req = command.request();
     TableSpec.Builder spec = TableSpec.newBuilder();
     FieldMask.Builder mask = FieldMask.newBuilder();
@@ -69,8 +66,7 @@ public class TableUpdatePlanner {
       if (mergedProps == null) {
         mergedProps = new LinkedHashMap<>(tableSupplier.get().getPropertiesMap());
       }
-      Response updateError =
-          tablePropertyService.applyPropertyUpdates(mergedProps, req.updates());
+      Response updateError = tablePropertyService.applyPropertyUpdates(mergedProps, req.updates());
       if (updateError != null) {
         return UpdatePlan.failure(spec, mask, updateError);
       }

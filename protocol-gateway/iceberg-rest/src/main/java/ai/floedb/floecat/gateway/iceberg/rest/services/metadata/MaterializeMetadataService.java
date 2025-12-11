@@ -258,8 +258,7 @@ public class MaterializeMetadataService {
     return null;
   }
 
-  private String nextMetadataFileName(
-      FileIO fileIO, String directory, TableMetadataView metadata) {
+  private String nextMetadataFileName(FileIO fileIO, String directory, TableMetadataView metadata) {
     long nextVersion = nextMetadataVersion(fileIO, directory, metadata);
     return String.format("%05d-%s.metadata.json", nextVersion, UUID.randomUUID());
   }

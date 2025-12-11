@@ -69,8 +69,7 @@ class TableResponseMapperTest {
 
     assertEquals("s3://bucket/orders/metadata", result.config().get("write.metadata.path"));
     assertEquals(
-        "s3://bucket/orders/metadata",
-        result.metadata().properties().get("write.metadata.path"));
+        "s3://bucket/orders/metadata", result.metadata().properties().get("write.metadata.path"));
   }
 
   @Test
@@ -149,7 +148,8 @@ class TableResponseMapperTest {
             .setDisplayName("orders")
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
             .putProperties("location", "s3://bucket/orders")
-            .putProperties("metadata-location", "s3://bucket/orders/metadata/00000-old.metadata.json")
+            .putProperties(
+                "metadata-location", "s3://bucket/orders/metadata/00000-old.metadata.json")
             .build();
     IcebergMetadata metadata =
         IcebergMetadata.newBuilder()

@@ -68,13 +68,17 @@ public class TableDropCleanupService {
       LOG.warnf(
           e,
           "Failed to purge Iceberg metadata/data for %s.%s in catalog %s (metadata=%s)",
-          namespace, tableName, catalogName, metadataLocation);
+          namespace,
+          tableName,
+          catalogName,
+          metadataLocation);
     } finally {
       closeQuietly(fileIO);
     }
   }
 
-  private String resolveMetadataLocation(FileIO fileIO, String metadataLocation) throws IOException {
+  private String resolveMetadataLocation(FileIO fileIO, String metadataLocation)
+      throws IOException {
     if (fileIO == null || metadataLocation == null || metadataLocation.isBlank()) {
       return metadataLocation;
     }

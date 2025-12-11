@@ -309,15 +309,17 @@ class IcebergRestFixtureIT {
         .then()
         .statusCode(404);
     Assertions.assertTrue(
-        Files.notExists(metadataPath),
-        "metadata file should be deleted when purgeRequested=true");
-    fixtureManifestLists.values().forEach(
-        relative -> {
-          Path manifestPath = localS3Path(TestS3Fixtures.bucketUri(relative));
-          Assertions.assertTrue(
-              Files.notExists(manifestPath),
-              () -> "manifest file should be deleted when purgeRequested=true: " + manifestPath);
-        });
+        Files.notExists(metadataPath), "metadata file should be deleted when purgeRequested=true");
+    fixtureManifestLists
+        .values()
+        .forEach(
+            relative -> {
+              Path manifestPath = localS3Path(TestS3Fixtures.bucketUri(relative));
+              Assertions.assertTrue(
+                  Files.notExists(manifestPath),
+                  () ->
+                      "manifest file should be deleted when purgeRequested=true: " + manifestPath);
+            });
   }
 
   private static List<Long> parseSnapshotIds(String relativeMetadataPath) throws IOException {
@@ -551,14 +553,7 @@ class IcebergRestFixtureIT {
     return given()
         .spec(spec)
         .when()
-        .get(
-            "/v1/"
-                + CATALOG
-                + "/namespaces/"
-                + namespace
-                + "/tables/"
-                + table
-                + "?snapshots=all")
+        .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table + "?snapshots=all")
         .then()
         .statusCode(200)
         .extract()

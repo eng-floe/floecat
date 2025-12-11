@@ -69,8 +69,7 @@ class TableUpdatePlannerTest {
     when(propertyService.applyLocationUpdate(any(), any(), any(), any())).thenReturn(null);
     when(snapshotService.applySnapshotUpdates(any(), any(), any(), any(), any(), any(), any()))
         .thenReturn(null);
-    ResourceId targetNamespace =
-        ResourceId.newBuilder().setId("cat:analytics.canary").build();
+    ResourceId targetNamespace = ResourceId.newBuilder().setId("cat:analytics.canary").build();
     when(lifecycle.resolveNamespaceId(eq("catalog"), any(ArrayList.class)))
         .thenReturn(targetNamespace);
 
@@ -126,10 +125,8 @@ class TableUpdatePlannerTest {
 
   @Test
   void planUpdatesPropagatesRequirementErrors() {
-    Response failure =
-        Response.status(Response.Status.CONFLICT).entity("conflict").build();
-    when(requirements.validateRequirements(any(), any(), any(), any(), any()))
-        .thenReturn(failure);
+    Response failure = Response.status(Response.Status.CONFLICT).entity("conflict").build();
+    when(requirements.validateRequirements(any(), any(), any(), any(), any())).thenReturn(failure);
 
     TableUpdatePlanner.UpdatePlan plan =
         planner.planUpdates(

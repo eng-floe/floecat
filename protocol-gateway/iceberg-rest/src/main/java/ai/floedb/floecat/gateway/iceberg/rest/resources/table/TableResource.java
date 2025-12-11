@@ -54,7 +54,6 @@ import jakarta.ws.rs.GET;
 import jakarta.ws.rs.HEAD;
 import jakarta.ws.rs.HeaderParam;
 import jakarta.ws.rs.POST;
-import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
@@ -164,8 +163,7 @@ public class TableResource {
     } catch (IllegalArgumentException | JsonProcessingException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
-    String specMetadataLocation =
-        MetadataLocationUtil.metadataLocation(spec.getPropertiesMap());
+    String specMetadataLocation = MetadataLocationUtil.metadataLocation(spec.getPropertiesMap());
     effectiveReq = ensureMetadataLocation(effectiveReq, specMetadataLocation);
 
     Table created = tableLifecycleService.createTable(spec, idempotencyKey);
@@ -322,9 +320,7 @@ public class TableResource {
               : normalizedReq.properties().get("metadata-location"));
       LOG.infof(
           "Stage-create response stageId=%s metadataLocation=%s configKeys=%s",
-          stored.key().stageId(),
-          loadResult.metadataLocation(),
-          loadResult.config().keySet());
+          stored.key().stageId(), loadResult.metadataLocation(), loadResult.config().keySet());
       return Response.ok(
               new StageCreateResponseDto(
                   loadResult.metadataLocation(),

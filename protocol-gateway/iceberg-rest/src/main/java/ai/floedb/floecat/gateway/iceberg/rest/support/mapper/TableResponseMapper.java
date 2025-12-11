@@ -17,6 +17,7 @@ import org.jboss.logging.Logger;
 
 public final class TableResponseMapper {
   private static final Logger LOG = Logger.getLogger(TableResponseMapper.class);
+
   private TableResponseMapper() {}
 
   public static LoadTableResultDto toLoadResult(
@@ -58,9 +59,7 @@ public final class TableResponseMapper {
     LOG.debugf(
         "Mapping load result from create table=%s metadataLocation=%s configKeys=%s",
         tableName,
-        request == null
-            ? "<null>"
-            : MetadataLocationUtil.metadataLocation(request.properties()),
+        request == null ? "<null>" : MetadataLocationUtil.metadataLocation(request.properties()),
         configOverrides.keySet());
     TableMetadataView metadataView =
         TableMetadataBuilder.fromCreateRequest(tableName, table, request);

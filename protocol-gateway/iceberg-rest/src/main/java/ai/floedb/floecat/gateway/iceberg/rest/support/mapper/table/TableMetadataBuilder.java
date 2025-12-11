@@ -537,8 +537,7 @@ public final class TableMetadataBuilder {
     return metadataLocation;
   }
 
-  private static Map<String, Object> ensureMainRef(
-      Map<String, Object> refs, long snapshotId) {
+  private static Map<String, Object> ensureMainRef(Map<String, Object> refs, long snapshotId) {
     Map<String, Object> updated =
         (refs == null || refs.isEmpty()) ? new LinkedHashMap<>() : new LinkedHashMap<>(refs);
     Map<String, Object> mainRef = asObjectMap(updated.get("main"));

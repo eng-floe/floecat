@@ -66,12 +66,9 @@ class TableCommitServiceTest {
     when(tableSupport.stripMetadataMirrorPrefix(any())).thenAnswer(inv -> inv.getArgument(0));
     when(tableSupport.isMirrorMetadataLocation(any())).thenReturn(false);
     when(stageMaterializationService.resolveStageId(any(), any())).thenReturn(null);
-    when(sideEffectService.finalizeCommitResponse(
-            any(), any(), any(), any(), any(), anyBoolean()))
+    when(sideEffectService.finalizeCommitResponse(any(), any(), any(), any(), any(), anyBoolean()))
         .thenAnswer(inv -> PostCommitResult.success(inv.getArgument(4)));
-    doNothing()
-        .when(sideEffectService)
-        .runConnectorSync(any(), any(), any(), any());
+    doNothing().when(sideEffectService).runConnectorSync(any(), any(), any(), any());
   }
 
   @Test
@@ -111,10 +108,7 @@ class TableCommitServiceTest {
         new StageCommitResult(
             stagedTable,
             new LoadTableResultDto(
-                stageMetadataLocation,
-                metadataView(stageMetadataLocation),
-                Map.of(),
-                List.of()));
+                stageMetadataLocation, metadataView(stageMetadataLocation), Map.of(), List.of()));
     ResourceId tableId = stagedTable.getResourceId();
     CommitStageResolver.StageResolution resolution =
         CommitStageResolver.StageResolution.success(tableId, stageResult, "stage-1");
@@ -150,7 +144,8 @@ class TableCommitServiceTest {
     assertEquals(stageMetadataLocation, dto.metadataLocation());
     ArgumentCaptor<ResourceId> connectorCaptor = ArgumentCaptor.forClass(ResourceId.class);
     verify(sideEffectService)
-        .runConnectorSync(eq(tableSupport), connectorCaptor.capture(), eq(List.of("db")), eq("orders"));
+        .runConnectorSync(
+            eq(tableSupport), connectorCaptor.capture(), eq(List.of("db")), eq("orders"));
     assertEquals("connector-1", connectorCaptor.getValue().getId());
   }
 
@@ -160,8 +155,7 @@ class TableCommitServiceTest {
         CommitStageResolver.StageResolution.success(
             ResourceId.newBuilder().setId("cat:db:orders").build(), null, null);
     when(stageResolver.resolve(any())).thenReturn(resolution);
-    Table table =
-        tableRecord("cat:db:orders", "s3://warehouse/orders/metadata/00000.json");
+    Table table = tableRecord("cat:db:orders", "s3://warehouse/orders/metadata/00000.json");
     when(tableLifecycleService.getTable(any())).thenReturn(table);
     TableUpdatePlanner.UpdatePlan successPlan =
         TableUpdatePlanner.UpdatePlan.success(TableSpec.newBuilder(), FieldMask.newBuilder());
@@ -171,7 +165,8 @@ class TableCommitServiceTest {
             .setMetadataLocation("s3://warehouse/orders/metadata/00000.json")
             .build();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
-    when(sideEffectService.synchronizeConnector(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+    when(sideEffectService.synchronizeConnector(
+            any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
         .thenReturn(null);
 
     String requested = "s3://requested/orders/metadata.json";

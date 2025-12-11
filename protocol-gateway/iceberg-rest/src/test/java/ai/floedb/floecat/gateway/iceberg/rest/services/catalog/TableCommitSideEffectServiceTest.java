@@ -43,7 +43,8 @@ class TableCommitSideEffectServiceTest {
   void materializeMetadataUpdatesTableProperties() throws Exception {
     TableMetadataView metadata = metadata("s3://warehouse/tables/orders/metadata.json");
     TableMetadataView materialized =
-        metadata.withMetadataLocation("s3://warehouse/tables/orders/metadata/00001-abc.metadata.json");
+        metadata.withMetadataLocation(
+            "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json");
     when(materializeMetadataService.materialize(
             "cat.db", "orders", metadata, "s3://warehouse/tables/orders/metadata.json"))
         .thenReturn(
@@ -72,8 +73,7 @@ class TableCommitSideEffectServiceTest {
     assertNull(result.error());
     assertSame(materialized, result.metadata());
     assertEquals(
-        "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json",
-        result.metadataLocation());
+        "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json", result.metadataLocation());
 
     ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
     verify(tableLifecycleService).updateTable(captor.capture());
@@ -197,7 +197,8 @@ class TableCommitSideEffectServiceTest {
             "cat.db", "orders", table.getResourceId(), table, response, false);
 
     assertNull(result.error());
-    assertEquals("s3://orig/metadata/00001-new.metadata.json", result.response().metadataLocation());
+    assertEquals(
+        "s3://orig/metadata/00001-new.metadata.json", result.response().metadataLocation());
   }
 
   @Test
@@ -205,10 +206,7 @@ class TableCommitSideEffectServiceTest {
     Table table =
         Table.newBuilder()
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
-            .setUpstream(
-                UpstreamRef.newBuilder()
-                    .setFormat(TableFormat.TF_ICEBERG)
-                    .build())
+            .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).build())
             .build();
     TableMetadataView metadata = metadata("s3://orig/location");
     CommitTableResponseDto response = new CommitTableResponseDto("s3://orig/location", metadata);

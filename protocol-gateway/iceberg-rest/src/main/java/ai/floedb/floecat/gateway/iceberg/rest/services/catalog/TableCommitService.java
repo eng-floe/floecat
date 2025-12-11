@@ -11,9 +11,9 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitProcessor.StageCommitResult;
+import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.support.mapper.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -54,8 +54,7 @@ public class TableCommitService {
       return stageResolution.error();
     }
     ResourceId tableId = stageResolution.tableId();
-    Supplier<Table> tableSupplier =
-        createTableSupplier(stageResolution.stagedTable(), tableId);
+    Supplier<Table> tableSupplier = createTableSupplier(stageResolution.stagedTable(), tableId);
 
     TableUpdatePlanner.UpdatePlan updatePlan =
         tableUpdatePlanner.planUpdates(command, tableSupplier, tableId);
@@ -80,12 +79,7 @@ public class TableCommitService {
         preferRequestedMetadata(tableSupport, stageAwareResponse, requestedMetadataOverride);
     var sideEffects =
         sideEffectService.finalizeCommitResponse(
-            namespace,
-            table,
-            tableId,
-            committedTable,
-            stageAwareResponse,
-            false);
+            namespace, table, tableId, committedTable, stageAwareResponse, false);
     if (sideEffects.hasError()) {
       return sideEffects.error();
     }
@@ -178,9 +172,7 @@ public class TableCommitService {
         && Objects.equals(stagedMetadata, response.metadata())) {
       return response;
     }
-    LOG.infof(
-        "Preferring staged metadata location %s over %s",
-        stagedLocation, originalLocation);
+    LOG.infof("Preferring staged metadata location %s over %s", stagedLocation, originalLocation);
     return new CommitTableResponseDto(stagedLocation, stagedMetadata);
   }
 
@@ -384,10 +376,7 @@ public class TableCommitService {
       return tableSupplier.get();
     }
     UpdateTableRequest.Builder updateRequest =
-        UpdateTableRequest.newBuilder()
-            .setTableId(tableId)
-            .setSpec(spec)
-            .setUpdateMask(mask);
+        UpdateTableRequest.newBuilder().setTableId(tableId).setSpec(spec).setUpdateMask(mask);
     return tableLifecycleService.updateTable(updateRequest.build());
   }
 
