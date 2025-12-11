@@ -43,6 +43,12 @@
       <version>${arrow.version}</version>
     </dependency>
 
+    <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-memory-unsafe</artifactId>
+      <version>${arrow.version}</version>
+    </dependency>
+
     <!-- JUnit for tests -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>

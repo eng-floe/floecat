@@ -93,7 +93,12 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.4</version>
         <configuration>
-          <argLine> -Dcom.google.protobuf.useUnsafe=false -Dio.netty.noUnsafe=true -Djava.util.logging.manager=org.jboss.logmanager.LogManager
+          <argLine>
+            --add-opens=java.base/java.nio=ALL-UNNAMED
+            --add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED
+            -Dcom.google.protobuf.useUnsafe=false
+            -Dio.netty.noUnsafe=true
+            -Djava.util.logging.manager=org.jboss.logmanager.LogManager
           </argLine>
         </configuration>
       </plugin>
@@ -103,7 +108,12 @@
         <artifactId>maven-failsafe-plugin</artifactId>
         <version>3.5.4</version>
         <configuration>
-          <argLine> -Dcom.google.protobuf.useUnsafe=false -Dio.netty.noUnsafe=true -Djava.util.logging.manager=org.jboss.logmanager.LogManager
+          <argLine>
+            --add-opens=java.base/java.nio=ALL-UNNAMED
+            --add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED
+            -Dcom.google.protobuf.useUnsafe=false
+            -Dio.netty.noUnsafe=true
+            -Djava.util.logging.manager=org.jboss.logmanager.LogManager
           </argLine>
         </configuration>
       </plugin>
