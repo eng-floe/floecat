@@ -24,7 +24,7 @@ This setup keeps the core module free of editor or Quarkus dependencies while le
 1. **Implement `SystemObjectProvider`** for addon tables. Provide definitions for all `NameRef`/`column set` pairs, return the matching scanner from `provide(...)`, and respect `supports(...)` so you can override builtins.
 2. **Optional: implement `EngineSystemTablesExtension`** if you want engine-specific overrides; the provided `ServiceLoaderSystemObjectProvider` merges builtin and plugin providers, so the extra interface simply marks that your provider should load after the builtins.
 3. **Emit rows with `SystemObjectRow`**. Use `SystemObjectScanContext` for every graph lookup (catalog, namespace, table, schema). The context caches `listNamespaces`, `listTables`, and `columnTypes`, so keep your scanner short and rely on provided helpers rather than your own caches.
-4. **Register via `META-INF/services/ai.floedb.floecat.catalog.system_objects.spi.SystemObjectProvider`** (and/or the `EngineSystemTablesExtension` variant) inside your plugin jar. Plugins can commit a single jar that bundles connectors, system tables, and builtin extensions just by shipping this service file.
+4. **Register via `META-INF/services/ai.floedb.floecat.catalog.systemobjects.spi.SystemObjectProvider`** (and/or the `EngineSystemTablesExtension` variant) inside your plugin jar. Plugins can commit a single jar that bundles connectors, system tables, and builtin extensions just by shipping this service file.
 
 ### Performance & scalability notes
 

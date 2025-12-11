@@ -1,6 +1,6 @@
 package ai.floedb.floecat.catalog.utils;
 
-import ai.floedb.floecat.catalog.system_objects.registry.SystemObjectGraphView;
+import ai.floedb.floecat.catalog.systemobjects.registry.SystemObjectGraphView;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.*;
 import java.util.List;

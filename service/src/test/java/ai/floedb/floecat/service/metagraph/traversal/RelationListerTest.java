@@ -8,7 +8,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
-import ai.floedb.floecat.catalog.system_objects.registry.SystemObjectResolver;
+import ai.floedb.floecat.catalog.systemobjects.registry.SystemObjectResolver;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.GraphNode;

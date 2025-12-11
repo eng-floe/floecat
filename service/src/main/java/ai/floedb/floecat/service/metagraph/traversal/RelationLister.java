@@ -1,7 +1,7 @@
 package ai.floedb.floecat.service.metagraph.traversal;
 
-import ai.floedb.floecat.catalog.system_objects.registry.SystemObjectDefinition;
-import ai.floedb.floecat.catalog.system_objects.registry.SystemObjectResolver;
+import ai.floedb.floecat.catalog.systemobjects.registry.SystemObjectDefinition;
+import ai.floedb.floecat.catalog.systemobjects.registry.SystemObjectResolver;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.service.metagraph.loader.NodeLoader;
