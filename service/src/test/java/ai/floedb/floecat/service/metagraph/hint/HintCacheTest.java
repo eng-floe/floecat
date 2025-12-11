@@ -7,8 +7,8 @@ import ai.floedb.floecat.common.rpc.*;
 import ai.floedb.floecat.metagraph.hint.EngineHintProvider;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineKey;
-import ai.floedb.floecat.metagraph.model.RelationNode;
-import ai.floedb.floecat.metagraph.model.RelationNodeKind;
+import ai.floedb.floecat.metagraph.model.GraphNode;
+import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
@@ -71,8 +71,8 @@ class HintCacheTest {
     AtomicInteger calls = new AtomicInteger();
 
     @Override
-    public boolean supports(RelationNodeKind k, String h) {
-      return k == RelationNodeKind.TABLE && h.equals("test");
+    public boolean supports(GraphNodeKind k, String h) {
+      return k == GraphNodeKind.TABLE && h.equals("test");
     }
 
     @Override
@@ -81,12 +81,12 @@ class HintCacheTest {
     }
 
     @Override
-    public String fingerprint(RelationNode n, EngineKey k, String h) {
+    public String fingerprint(GraphNode n, EngineKey k, String h) {
       return n.version() + "";
     }
 
     @Override
-    public EngineHint compute(RelationNode n, EngineKey k, String h, String c) {
+    public EngineHint compute(GraphNode n, EngineKey k, String h, String c) {
       calls.incrementAndGet();
       return new EngineHint("application/test", new byte[] {1, 2, 3});
     }

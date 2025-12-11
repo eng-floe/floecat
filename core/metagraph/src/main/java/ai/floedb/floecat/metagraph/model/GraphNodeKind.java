@@ -1,0 +1,21 @@
+package ai.floedb.floecat.metagraph.model;
+
+/**
+ * Local classification of graph nodes.
+ *
+ * <p>Using an internal enum avoids leaking proto dependencies into the cache layer while still
+ * allowing RPC mappers to translate into protobuf enums when needed.
+ */
+public enum GraphNodeKind {
+  CATALOG,
+  NAMESPACE,
+  TABLE,
+  VIEW,
+  SYSTEM_OBJECT,
+  BUILTIN_FUNCTION,
+  BUILTIN_OPERATOR,
+  BUILTIN_TYPE,
+  BUILTIN_CAST,
+  BUILTIN_COLLATION,
+  BUILTIN_AGGREGATE
+}

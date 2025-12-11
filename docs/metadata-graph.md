@@ -26,7 +26,7 @@ or views. The graph provides:
 The `service/query/graph` package is split into a few focused modules:
 
 - `model/` – Immutable node records (`CatalogNode`, `NamespaceNode`, `TableNode`, `ViewNode`,
-  `SystemViewNode`) plus shared enums (`RelationNodeKind`, `EngineKey`, `EngineHint`, etc.).
+  `SystemViewNode`) plus shared enums (`GraphNodeKind`, `EngineKey`, `EngineHint`, etc.).
 - `cache/` – `GraphCacheManager` + `GraphCacheKey` implement the per-account cache-of-caches and
   expose meters for hit/miss counts, account count, and total entries.
 - `loader/` – `NodeLoader` wraps the catalog/namespace/table/view repositories to hydrate immutable
@@ -39,7 +39,7 @@ The `service/query/graph` package is split into a few focused modules:
   by DirectoryService, QueryInputResolver, SchemaService, etc.
 
 ## Node Model
-Nodes live under `service/query/graph` and each implements `RelationNode`. They are Java records with
+Nodes live under `service/query/graph` and each implements `GraphNode`. They are Java records with
 defensive copies to guarantee immutability.
 
 - `CatalogNode` – Lightweight display + connector/policy metadata. Optionally exposes namespace IDs
@@ -127,7 +127,7 @@ metadata is not reused beyond its boundary conditions.
 
 | Method | Purpose |
 |--------|---------|
-| `Optional<RelationNode> resolve(ResourceId)` | Loads a node from cache or repository by ID/kind. |
+| `Optional<GraphNode> resolve(ResourceId)` | Loads a node from cache or repository by ID/kind. |
 | `Optional<CatalogNode> catalog(...)` / `namespace` / `table` / `view` | Typed convenience wrappers around `resolve`. |
 | `ResourceId resolveName(String cid, NameRef ref)` | Mirrors DirectoryService semantics for planner RPCs (NameRef → ID). |
 | `ResolveResult resolveTables(String cid, List<NameRef> list, int limit, String token)` | Resolves explicit table names (DirectoryService parity) with best-effort semantics. |

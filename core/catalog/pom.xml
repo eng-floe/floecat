@@ -11,7 +11,11 @@
     <version>0.1.0-SNAPSHOT</version>
     <relativePath>../..</relativePath>
   </parent>
-
+  
+  <properties>
+    <arrow.version>18.3.0</arrow.version>
+  </properties>
+  
   <!-- Updated artifact name -->
   <artifactId>floecat-catalog</artifactId>
   <name>floecat-catalog</name>
@@ -31,6 +35,19 @@
       <artifactId>floecat-proto</artifactId>
       <version>${project.version}</version>
     </dependency>
+    
+    <!-- Apache Arrow for in-memory columnar data representation -->
+    <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-vector</artifactId>
+      <version>${arrow.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-memory-unsafe</artifactId>
+      <version>${arrow.version}</version>
+    </dependency>
 
     <!-- JUnit for tests -->
     <dependency>
@@ -44,6 +61,13 @@
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-engine</artifactId>
       <version>5.13.4</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- AssertJ for fluent assertions -->
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <version>3.26.3</version>
       <scope>test</scope>
     </dependency>
   </dependencies>

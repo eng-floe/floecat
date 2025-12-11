@@ -100,7 +100,7 @@ class FullyQualifiedResolverTest {
     NameRef prefix = NameRef.newBuilder().setCatalog("cat").addPath("ns").build();
 
     var page1 = resolver.resolveTablesByPrefix("corr", "account", prefix, 1, "");
-    var page2 = resolver.resolveTablesByPrefix("corr", "account", prefix, 1, page1.nextPageToken());
+    var page2 = resolver.resolveTablesByPrefix("corr", "account", prefix, 1, page1.nextToken());
 
     assertThat(page1.relations()).hasSize(1);
     assertThat(page2.relations()).hasSize(1);

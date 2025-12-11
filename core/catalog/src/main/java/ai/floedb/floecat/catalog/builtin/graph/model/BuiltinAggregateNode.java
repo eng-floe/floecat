@@ -17,7 +17,7 @@ public record BuiltinAggregateNode(
     ResourceId stateType,
     ResourceId returnType,
     Map<EngineKey, EngineHint> engineHints)
-    implements RelationNode {
+    implements GraphNode {
 
   public BuiltinAggregateNode {
     argumentTypes = List.copyOf(argumentTypes == null ? List.of() : argumentTypes);
@@ -25,7 +25,7 @@ public record BuiltinAggregateNode(
   }
 
   @Override
-  public RelationNodeKind kind() {
-    return RelationNodeKind.BUILTIN_AGGREGATE;
+  public GraphNodeKind kind() {
+    return GraphNodeKind.BUILTIN_AGGREGATE;
   }
 }

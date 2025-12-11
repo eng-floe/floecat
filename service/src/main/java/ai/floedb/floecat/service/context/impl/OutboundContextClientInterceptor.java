@@ -18,6 +18,8 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
       Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
   private static final Metadata.Key<String> QUERY_ID =
       Metadata.Key.of("x-query-id", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ENGINE_KIND =
+      Metadata.Key.of("x-engine-kind", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> ENGINE_VERSION =
       Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORR =
@@ -36,6 +38,10 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
         var queryId =
             Optional.ofNullable(InboundContextInterceptor.QUERY_KEY.get())
                 .orElseGet(() -> Baggage.current().getEntryValue("query_id"));
+        var engineKind =
+            Optional.ofNullable(InboundContextInterceptor.ENGINE_KIND_KEY.get())
+                .orElseGet(() -> Baggage.current().getEntryValue("engine_kind"));
+
         var engineVersion =
             Optional.ofNullable(InboundContextInterceptor.ENGINE_VERSION_KEY.get())
                 .orElseGet(() -> Baggage.current().getEntryValue("engine_version"));
@@ -50,6 +56,11 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
         if (queryId != null && !queryId.isBlank()) {
           headers.put(QUERY_ID, queryId);
         }
+
+        if (engineKind != null && !engineKind.isBlank()) {
+          headers.put(ENGINE_KIND, engineKind);
+        }
+
         if (engineVersion != null && !engineVersion.isBlank()) {
           headers.put(ENGINE_VERSION, engineVersion);
         }

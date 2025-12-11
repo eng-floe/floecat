@@ -1,0 +1,156 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Inherit version + dependency management from root -->
+    <parent>
+        <groupId>ai.floedb.floecat</groupId>
+        <artifactId>floecat</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../..</relativePath>
+    </parent>
+
+    <artifactId>floecat-extension-floedb</artifactId>
+    <packaging>jar</packaging>
+
+    <!-- ================================================================ -->
+    <!-- Properties                                                       -->
+    <!-- ================================================================ -->
+    <properties>
+        <!-- Canonical protobuf version used for both protoc + runtime -->
+        <protobuf.version>4.32.1</protobuf.version>
+
+        <!-- Java version inherited from parent -->
+        <maven.compiler.source>${proto.compiler.release}</maven.compiler.source>
+        <maven.compiler.target>${proto.compiler.release}</maven.compiler.target>
+
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <!-- ================================================================ -->
+    <!-- Dependencies                                                     -->
+    <!-- ================================================================ -->
+    <dependencies>
+
+        <!-- Builtin catalog model & SPI -->
+        <dependency>
+            <groupId>ai.floedb.floecat</groupId>
+            <artifactId>floecat-catalog</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Shared Floecat protobuf classes -->
+        <dependency>
+            <groupId>ai.floedb.floecat</groupId>
+            <artifactId>floecat-proto</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Google Protobuf runtime (matching core protobuf 4.32.1) -->
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>${protobuf.version}</version>
+        </dependency>
+
+        <!-- Test dependencies -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>5.13.4</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <version>5.13.4</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>3.26.3</version>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <!-- ================================================================ -->
+    <!-- Build                                                            -->
+    <!-- ================================================================ -->
+    <build>
+
+        <extensions>
+            <!-- Enables ${os.detected.classifier} -->
+            <extension>
+                <groupId>kr.motd.maven</groupId>
+                <artifactId>os-maven-plugin</artifactId>
+                <version>1.7.1</version>
+            </extension>
+        </extensions>
+
+        <plugins>
+
+            <!-- Compile Floe-specific proto definitions -->
+            <plugin>
+                <groupId>org.xolstice.maven.plugins</groupId>
+                <artifactId>protobuf-maven-plugin</artifactId>
+                <version>0.6.1</version>
+
+                <configuration>
+                    <!-- Use protobuf 4.x (proto2 for extensions) -->
+                    <protocArtifact>
+                        com.google.protobuf:protoc:${protobuf.version}:exe:${os.detected.classifier}
+                    </protocArtifact>
+
+                    <!-- Include shared proto directory from core proto module -->
+                    <additionalProtoPathElements>
+                        <additionalProtoPathElement>${project.basedir}/../../core/proto/src/main/proto</additionalProtoPathElement>
+                    </additionalProtoPathElements>
+
+                    <!-- Floe plugin's local proto directory -->
+                    <protoSourceRoot>src/main/proto</protoSourceRoot>
+                </configuration>
+
+                <executions>
+                    <execution>
+                        <id>compile-floe-protos</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                    </execution>
+                </executions>
+
+            </plugin>
+
+            <!-- Package plugin with META-INF/services -->
+            <plugin>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.3.0</version>
+                <configuration>
+                    <archive>
+                        <manifestEntries>
+                            <Automatic-Module-Name>
+                                ai.floedb.floecat.extensions.floedb
+                            </Automatic-Module-Name>
+                        </manifestEntries>
+                    </archive>
+                </configuration>
+            </plugin>
+
+            <!-- Run unit tests -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.0.0</version>
+            </plugin>
+
+        </plugins>
+    </build>
+
+</project>

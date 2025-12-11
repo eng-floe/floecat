@@ -78,6 +78,18 @@ public class NamespaceRepository {
     return repo.countByPrefix(prefix);
   }
 
+  public List<ResourceId> listIds(String accountId, String catalogId) {
+    // empty parent path -> all namespaces in catalog
+    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, List.of());
+    List<Namespace> namespaces =
+        repo.listByPrefix(prefix, Integer.MAX_VALUE, "", new StringBuilder());
+    List<ResourceId> ids = new java.util.ArrayList<>(namespaces.size());
+    for (Namespace ns : namespaces) {
+      ids.add(ns.getResourceId());
+    }
+    return ids;
+  }
+
   public MutationMeta metaFor(ResourceId namespaceResourceId) {
     return repo.metaFor(
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));

@@ -11,7 +11,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.query.rpc.QueryInput;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.service.metagraph.MetadataGraph;
+import ai.floedb.floecat.service.metagraph.MetadataGraphClient;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
@@ -412,35 +412,19 @@ public class QueryInputResolverTest {
   }
 
   // ----------------------------------------------------------------------
-  // Helpers / test doubles
+  // Helpers / test doubles (Composition, not inheritance)
   // ----------------------------------------------------------------------
 
-  static final class FakeGraph extends MetadataGraph {
+  static final class FakeGraph implements MetadataGraphClient {
 
     private final Map<NameRef, ResourceId> nameBindings = new HashMap<>();
     private final Map<NameRef, RuntimeException> failures = new HashMap<>();
     private final Map<String, Long> currentSnapshots = new HashMap<>();
     private final List<PinCall> pinCalls = new ArrayList<>();
 
-    FakeGraph() {
-      super(null, null, null, null, null);
-    }
+    FakeGraph() {}
 
-    void bind(NameRef ref, ResourceId id) {
-      nameBindings.put(ref, id);
-    }
-
-    void fail(NameRef ref, RuntimeException ex) {
-      failures.put(ref, ex);
-    }
-
-    void setCurrentSnapshot(ResourceId id, long snapshotId) {
-      currentSnapshots.put(id.getId(), snapshotId);
-    }
-
-    List<PinCall> pinCalls() {
-      return pinCalls;
-    }
+    // MIMIC MetadataGraph API ---------------------------------------------
 
     @Override
     public ResourceId resolveName(String correlationId, NameRef ref) {
@@ -464,8 +448,11 @@ public class QueryInputResolverTest {
         ResourceId tableId,
         SnapshotRef override,
         Optional<Timestamp> asOfDefault) {
+
       pinCalls.add(new PinCall(correlationId, tableId, override, asOfDefault));
+
       SnapshotPin.Builder builder = SnapshotPin.newBuilder().setTableId(tableId);
+
       if (override != null && override.hasSnapshotId()) {
         builder.setSnapshotId(override.getSnapshotId());
       } else if (override != null && override.hasAsOf()) {
@@ -474,11 +461,28 @@ public class QueryInputResolverTest {
         builder.setAsOf(asOfDefault.get());
       } else {
         long snapshot = currentSnapshots.getOrDefault(tableId.getId(), 0L);
-        if (snapshot > 0) {
-          builder.setSnapshotId(snapshot);
-        }
+        if (snapshot > 0) builder.setSnapshotId(snapshot);
       }
+
       return builder.build();
+    }
+
+    // Helpers --------------------------------------------------------------
+
+    void bind(NameRef ref, ResourceId id) {
+      nameBindings.put(ref, id);
+    }
+
+    void fail(NameRef ref, RuntimeException ex) {
+      failures.put(ref, ex);
+    }
+
+    void setCurrentSnapshot(ResourceId id, long snapshotId) {
+      currentSnapshots.put(id.getId(), snapshotId);
+    }
+
+    List<PinCall> pinCalls() {
+      return pinCalls;
     }
 
     record PinCall(

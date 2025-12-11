@@ -14,14 +14,14 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
 
   public static final String HINT_TYPE = "builtin.catalog.properties";
 
-  private static final Set<RelationNodeKind> SUPPORTED_KINDS =
+  private static final Set<GraphNodeKind> SUPPORTED_KINDS =
       EnumSet.of(
-          RelationNodeKind.BUILTIN_FUNCTION,
-          RelationNodeKind.BUILTIN_OPERATOR,
-          RelationNodeKind.BUILTIN_TYPE,
-          RelationNodeKind.BUILTIN_CAST,
-          RelationNodeKind.BUILTIN_COLLATION,
-          RelationNodeKind.BUILTIN_AGGREGATE);
+          GraphNodeKind.BUILTIN_FUNCTION,
+          GraphNodeKind.BUILTIN_OPERATOR,
+          GraphNodeKind.BUILTIN_TYPE,
+          GraphNodeKind.BUILTIN_CAST,
+          GraphNodeKind.BUILTIN_COLLATION,
+          GraphNodeKind.BUILTIN_AGGREGATE);
 
   private final BuiltinNodeRegistry nodeRegistry;
 
@@ -30,7 +30,7 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
   }
 
   @Override
-  public boolean supports(RelationNodeKind kind, String hintType) {
+  public boolean supports(GraphNodeKind kind, String hintType) {
     return HINT_TYPE.equals(hintType) && SUPPORTED_KINDS.contains(kind);
   }
 
@@ -42,7 +42,7 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
   }
 
   @Override
-  public String fingerprint(RelationNode node, EngineKey engineKey, String hintType) {
+  public String fingerprint(GraphNode node, EngineKey engineKey, String hintType) {
     EngineSpecificRule r = matchedRule(node, engineKey);
 
     String base =
@@ -59,7 +59,7 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
 
   @Override
   public EngineHint compute(
-      RelationNode node, EngineKey engineKey, String hintType, String correlationId) {
+      GraphNode node, EngineKey engineKey, String hintType, String correlationId) {
     EngineSpecificRule rule = matchedRule(node, engineKey);
 
     if (rule == null) {
@@ -83,7 +83,7 @@ public class BuiltinCatalogHintProvider implements EngineHintProvider {
   }
 
   /** Determines the matching rule for the provided node. */
-  private EngineSpecificRule matchedRule(RelationNode node, EngineKey engineKey) {
+  private EngineSpecificRule matchedRule(GraphNode node, EngineKey engineKey) {
     if (!SUPPORTED_KINDS.contains(node.kind())) {
       return null;
     }
