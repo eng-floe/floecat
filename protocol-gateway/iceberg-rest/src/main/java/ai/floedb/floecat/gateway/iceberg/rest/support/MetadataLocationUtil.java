@@ -1,6 +1,5 @@
 package ai.floedb.floecat.gateway.iceberg.rest.support;
 
-import ai.floedb.floecat.gateway.iceberg.rest.support.MirrorLocationUtil;
 import java.util.Map;
 import java.util.function.BiConsumer;
 
@@ -8,6 +7,7 @@ public final class MetadataLocationUtil {
 
   public static final String PRIMARY_KEY = "metadata-location";
   public static final String LEGACY_KEY = "metadata_location";
+  private static final String METADATA_MIRROR_SEGMENT = "/.floecat-metadata";
 
   private MetadataLocationUtil() {}
 
@@ -71,7 +71,7 @@ public final class MetadataLocationUtil {
     if (directory == null || directory.isBlank()) {
       return directory;
     }
-    return MirrorLocationUtil.stripMetadataMirrorPrefix(directory);
+    return stripMetadataMirrorPrefix(directory);
   }
 
   public static boolean isPointer(String metadataLocation) {
@@ -81,5 +81,44 @@ public final class MetadataLocationUtil {
     int slash = metadataLocation.lastIndexOf('/');
     String file = slash >= 0 ? metadataLocation.substring(slash + 1) : metadataLocation;
     return "metadata.json".equalsIgnoreCase(file);
+  }
+
+  public static boolean isMirrorMetadataLocation(String metadataLocation) {
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return false;
+    }
+    try {
+      java.net.URI uri = java.net.URI.create(metadataLocation);
+      String path = uri.getPath();
+      return path != null && path.startsWith(METADATA_MIRROR_SEGMENT + "/");
+    } catch (IllegalArgumentException e) {
+      return metadataLocation.startsWith(METADATA_MIRROR_SEGMENT + "/");
+    }
+  }
+
+  public static String stripMetadataMirrorPrefix(String location) {
+    if (location == null || location.isBlank()) {
+      return location;
+    }
+    try {
+      java.net.URI uri = java.net.URI.create(location);
+      if (uri.getScheme() != null && uri.getAuthority() != null) {
+        String path = uri.getPath();
+        if (path != null && path.startsWith(METADATA_MIRROR_SEGMENT)) {
+          String stripped = path.substring(METADATA_MIRROR_SEGMENT.length());
+          if (stripped.isBlank()) {
+            stripped = "/";
+          }
+          return uri.getScheme() + "://" + uri.getAuthority() + stripped;
+        }
+        return location;
+      }
+    } catch (IllegalArgumentException e) {
+      // ignore; handle raw path below
+    }
+    if (location.startsWith(METADATA_MIRROR_SEGMENT + "/")) {
+      return location.substring(METADATA_MIRROR_SEGMENT.length());
+    }
+    return location;
   }
 }

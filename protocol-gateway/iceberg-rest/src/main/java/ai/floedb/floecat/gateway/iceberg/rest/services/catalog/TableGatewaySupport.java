@@ -30,7 +30,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.support.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
-import ai.floedb.floecat.gateway.iceberg.rest.support.MirrorLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -598,11 +597,11 @@ public class TableGatewaySupport {
   }
 
   public boolean isMirrorMetadataLocation(String metadataLocation) {
-    return MirrorLocationUtil.isMirrorMetadataLocation(metadataLocation);
+    return MetadataLocationUtil.isMirrorMetadataLocation(metadataLocation);
   }
 
   public String stripMetadataMirrorPrefix(String location) {
-    return MirrorLocationUtil.stripMetadataMirrorPrefix(location);
+    return MetadataLocationUtil.stripMetadataMirrorPrefix(location);
   }
 
   private static Long propertyLong(Map<String, String> props, String key) {
