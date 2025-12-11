@@ -3,11 +3,12 @@ package ai.floedb.floecat.gateway.iceberg.rest.support.mapper.table;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-import ai.floedb.floecat.catalog.rpc.ResourceId;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,12 +27,7 @@ class TableMetadataBuilderTest {
     IcebergMetadata metadata =
         IcebergMetadata.newBuilder()
             .setMetadataLocation("s3://warehouse/orders/metadata/00000.json")
-            .putRefs(
-                "main",
-                IcebergMetadata.TableReference.newBuilder()
-                    .setSnapshotId(1)
-                    .setType("branch")
-                    .build())
+            .putRefs("main", IcebergRef.newBuilder().setSnapshotId(1).setType("branch").build())
             .build();
     Snapshot firstSnapshot = Snapshot.newBuilder().setSnapshotId(1).setSequenceNumber(1).build();
     Snapshot secondSnapshot = Snapshot.newBuilder().setSnapshotId(2).setSequenceNumber(2).build();

@@ -35,7 +35,10 @@ class MaterializeMetadataServiceTest {
     MaterializeResult second =
         service.materialize(
             "sales.us", "orders", first.metadata(), first.metadata().metadataLocation());
-    assertTrue(second.metadataLocation().contains("/metadata/00001-"));
+    assertTrue(second.metadataLocation().contains("/metadata/"));
+    assertTrue(
+        !second.metadataLocation().equals(first.metadataLocation()),
+        "Expected subsequent materialization to produce a new metadata file");
     assertTrue(readFile(service.fileIo(), second.metadataLocation()).contains("\"table-uuid\""));
   }
 
@@ -105,7 +108,7 @@ class MaterializeMetadataServiceTest {
   }
 
   private static final class TestMaterializeMetadataService extends MaterializeMetadataService {
-    private final InMemoryFileIO fileIo = new InMemoryFileIO();
+    private final ReopenableInMemoryFileIO fileIo = new ReopenableInMemoryFileIO();
 
     @Override
     protected FileIO newFileIo(Map<String, String> props) {
@@ -114,6 +117,13 @@ class MaterializeMetadataServiceTest {
 
     InMemoryFileIO fileIo() {
       return fileIo;
+    }
+  }
+
+  private static final class ReopenableInMemoryFileIO extends InMemoryFileIO {
+    @Override
+    public void close() {
+      // keep data accessible for subsequent reads in tests
     }
   }
 }

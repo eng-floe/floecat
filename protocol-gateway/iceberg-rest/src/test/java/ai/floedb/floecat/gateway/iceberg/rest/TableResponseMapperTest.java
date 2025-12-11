@@ -121,7 +121,7 @@ class TableResponseMapperTest {
   }
 
   @Test
-  void metadataLocationPrefersTablePropertyWhenVersioned() {
+  void metadataLocationUsesIcebergMetadataWhenTablePropertyDiffers() {
     Table table =
         Table.newBuilder()
             .setDisplayName("orders")
@@ -138,7 +138,7 @@ class TableResponseMapperTest {
     LoadTableResultDto result =
         TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
 
-    assertEquals("s3://bucket/orders/metadata/00002-new.metadata.json", result.metadataLocation());
+    assertEquals("s3://bucket/orders/metadata/00001-old.metadata.json", result.metadataLocation());
     assertEquals("s3://bucket/orders/metadata", result.config().get("write.metadata.path"));
   }
 

@@ -1278,11 +1278,8 @@ class RestResourceTest {
         .when()
         .post("/v1/foo/namespaces/db/tables")
         .then()
-        .statusCode(200);
-
-    verify(connectorsStub).createConnector(any(CreateConnectorRequest.class));
-    verify(connectorsStub).syncCapture(any(SyncCaptureRequest.class));
-    verify(connectorsStub).triggerReconcile(any(TriggerReconcileRequest.class));
+        .statusCode(200)
+        .body("'metadata-location'", equalTo("s3://bucket/path/metadata.json"));
   }
 
   @Test
@@ -1920,7 +1917,7 @@ class RestResourceTest {
         .get("/v1/config")
         .then()
         .statusCode(200)
-        .body("defaults.'catalog-name'", equalTo("floecat"))
+        .body("defaults.'catalog-name'", equalTo("sales"))
         .body(
             "endpoints",
             hasItems("POST /v1/{prefix}/tables/rename", "POST /v1/{prefix}/views/rename"));

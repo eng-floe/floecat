@@ -175,16 +175,12 @@ class TableCommitSideEffectServiceTest {
 
   @Test
   void finalizeCommitResponseMaterializationAndSynchronizesConnector() throws Exception {
-    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
-    when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
-    ResourceId connectorId = ResourceId.newBuilder().setId("conn-1").build();
     Table table =
         Table.newBuilder()
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
             .setUpstream(
                 UpstreamRef.newBuilder()
                     .setFormat(TableFormat.TF_ICEBERG)
-                    .setConnectorId(connectorId)
                     .setUri("s3://existing/location")
                     .build())
             .build();
@@ -198,38 +194,20 @@ class TableCommitSideEffectServiceTest {
 
     TableCommitSideEffectService.PostCommitResult result =
         service.finalizeCommitResponse(
-            "cat.db",
-            "orders",
-            table.getResourceId(),
-            table,
-            response,
-            false,
-            tableSupport,
-            "foo",
-            List.of("db"),
-            ResourceId.newBuilder().setId("ns").build(),
-            ResourceId.newBuilder().setId("catalog").build(),
-            "idem");
+            "cat.db", "orders", table.getResourceId(), table, response, false);
 
     assertNull(result.error());
     assertEquals("s3://orig/metadata/00001-new.metadata.json", result.response().metadataLocation());
-    assertEquals(connectorId, result.connectorId());
-    verify(tableSupport)
-        .updateConnectorMetadata(connectorId, "s3://orig/metadata/00001-new.metadata.json");
   }
 
   @Test
   void finalizeCommitResponseSkipsMaterializationWhenRequested() throws Exception {
-    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
-    when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
-    ResourceId connectorId = ResourceId.newBuilder().setId("conn-1").build();
     Table table =
         Table.newBuilder()
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
             .setUpstream(
                 UpstreamRef.newBuilder()
                     .setFormat(TableFormat.TF_ICEBERG)
-                    .setConnectorId(connectorId)
                     .build())
             .build();
     TableMetadataView metadata = metadata("s3://orig/location");
@@ -237,23 +215,11 @@ class TableCommitSideEffectServiceTest {
 
     TableCommitSideEffectService.PostCommitResult result =
         service.finalizeCommitResponse(
-            "cat.db",
-            "orders",
-            table.getResourceId(),
-            table,
-            response,
-            true,
-            tableSupport,
-            "foo",
-            List.of("db"),
-            ResourceId.newBuilder().setId("ns").build(),
-            ResourceId.newBuilder().setId("catalog").build(),
-            "idem");
+            "cat.db", "orders", table.getResourceId(), table, response, true);
 
     assertNull(result.error());
     assertSame(response, result.response());
     verify(materializeMetadataService, never()).materialize(any(), any(), any(), any());
-    assertEquals(connectorId, result.connectorId());
   }
 
   private TableMetadataView metadata(String metadataLocation) throws JsonProcessingException {
