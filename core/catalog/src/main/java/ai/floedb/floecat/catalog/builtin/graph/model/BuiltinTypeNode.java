@@ -16,14 +16,14 @@ public record BuiltinTypeNode(
     boolean array,
     ResourceId elementType,
     Map<EngineKey, EngineHint> engineHints)
-    implements RelationNode {
+    implements GraphNode {
 
   public BuiltinTypeNode {
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
   }
 
   @Override
-  public RelationNodeKind kind() {
-    return RelationNodeKind.BUILTIN_TYPE;
+  public GraphNodeKind kind() {
+    return GraphNodeKind.BUILTIN_TYPE;
   }
 }

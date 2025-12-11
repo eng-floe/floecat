@@ -107,6 +107,12 @@
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-extension-floedb</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-connectors-iceberg</artifactId>
       <version>${project.version}</version>
     </dependency>
@@ -149,22 +155,9 @@
     
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-extensions-builtin</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-extension-floedb-builtin</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-protocol-gateway-common-test</artifactId>
       <version>${project.version}</version>
     </dependency>
-
 
     <dependency>
       <groupId>org.jboss.logmanager</groupId>

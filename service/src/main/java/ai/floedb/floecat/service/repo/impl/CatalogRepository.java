@@ -81,4 +81,14 @@ public class CatalogRepository {
     return repo.metaForSafe(
         new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
+
+  public List<ResourceId> listIds(String accountId) {
+    String prefix = Keys.catalogPointerByNamePrefix(accountId);
+    List<Catalog> catalogs = repo.listByPrefix(prefix, Integer.MAX_VALUE, "", new StringBuilder());
+    List<ResourceId> ids = new java.util.ArrayList<>(catalogs.size());
+    for (Catalog c : catalogs) {
+      ids.add(c.getResourceId());
+    }
+    return ids;
+  }
 }

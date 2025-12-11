@@ -131,7 +131,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   authz.require(principalContext, "catalog.read");
 
                   var namespaceName = metadataGraph.namespaceName(request.getResourceId());
-                  if (namespaceName.isEmpty()) {
+                  if (namespaceName == null || namespaceName.isEmpty()) {
                     return LookupNamespaceResponse.newBuilder().build();
                   }
 
@@ -182,7 +182,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   authz.require(principalContext, List.of("catalog.read", "table.read"));
 
                   var tableName = metadataGraph.tableName(request.getResourceId());
-                  if (tableName.isEmpty()) {
+                  if (tableName == null || tableName.isEmpty()) {
                     return LookupTableResponse.newBuilder().build();
                   }
 
@@ -233,7 +233,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   authz.require(principalContext, List.of("catalog.read", "view.read"));
 
                   var viewName = metadataGraph.viewName(request.getResourceId());
-                  if (viewName.isEmpty()) {
+                  if (viewName == null || viewName.isEmpty()) {
                     return LookupViewResponse.newBuilder().build();
                   }
 
@@ -281,7 +281,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                     builder.setPage(
                         PageResponse.newBuilder()
                             .setTotalSize(result.totalSize())
-                            .setNextPageToken(result.nextPageToken()));
+                            .setNextPageToken(result.nextToken()));
 
                     return builder.build();
                   }
@@ -303,7 +303,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                     builder.setPage(
                         PageResponse.newBuilder()
                             .setTotalSize(result.totalSize())
-                            .setNextPageToken(result.nextPageToken()));
+                            .setNextPageToken(result.nextToken()));
                     return builder.build();
                   }
 
@@ -351,7 +351,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                     builder.setPage(
                         PageResponse.newBuilder()
                             .setTotalSize(result.totalSize())
-                            .setNextPageToken(result.nextPageToken()));
+                            .setNextPageToken(result.nextToken()));
 
                     return builder.build();
                   }
@@ -373,7 +373,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                     builder.setPage(
                         PageResponse.newBuilder()
                             .setTotalSize(result.totalSize())
-                            .setNextPageToken(result.nextPageToken()));
+                            .setNextPageToken(result.nextToken()));
                     return builder.build();
                   }
 

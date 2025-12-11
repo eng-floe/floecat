@@ -32,7 +32,7 @@ public record TableNode(
     Optional<TableStatsSummary> statsSummary,
     List<ResourceId> dependentViews,
     Map<EngineKey, EngineHint> engineHints)
-    implements RelationNode {
+    implements GraphNode {
 
   public TableNode {
     properties = Map.copyOf(properties);
@@ -47,7 +47,7 @@ public record TableNode(
   }
 
   @Override
-  public RelationNodeKind kind() {
-    return RelationNodeKind.TABLE;
+  public GraphNodeKind kind() {
+    return GraphNodeKind.TABLE;
   }
 }

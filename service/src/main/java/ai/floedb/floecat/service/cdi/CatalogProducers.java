@@ -5,10 +5,16 @@ import ai.floedb.floecat.catalog.builtin.hint.BuiltinCatalogHintProvider;
 import ai.floedb.floecat.catalog.builtin.provider.BuiltinCatalogProvider;
 import ai.floedb.floecat.catalog.builtin.provider.ServiceLoaderBuiltinCatalogProvider;
 import ai.floedb.floecat.catalog.builtin.registry.BuiltinDefinitionRegistry;
+import ai.floedb.floecat.catalog.systemobjects.provider.ServiceLoaderSystemObjectProvider;
+import ai.floedb.floecat.catalog.systemobjects.registry.SystemObjectRegistry;
+import ai.floedb.floecat.catalog.systemobjects.registry.SystemObjectResolver;
+import ai.floedb.floecat.catalog.systemobjects.spi.SystemObjectProvider;
 import ai.floedb.floecat.metagraph.hint.EngineHintProvider;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
+import java.util.List;
 
+/* CDI producers for catalog-related components */
 @ApplicationScoped
 public class CatalogProducers {
 
@@ -34,5 +40,23 @@ public class CatalogProducers {
   @ApplicationScoped
   public EngineHintProvider produceBuiltinCatalogHintProvider(BuiltinNodeRegistry registry) {
     return new BuiltinCatalogHintProvider(registry);
+  }
+
+  @Produces
+  @ApplicationScoped
+  public List<SystemObjectProvider> produceSystemObjectProviders() {
+    return new ServiceLoaderSystemObjectProvider().providers();
+  }
+
+  @Produces
+  @ApplicationScoped
+  public SystemObjectRegistry produceSystemObjectRegistry(List<SystemObjectProvider> providers) {
+    return new SystemObjectRegistry(providers);
+  }
+
+  @Produces
+  @ApplicationScoped
+  public SystemObjectResolver produceSystemObjectResolver() {
+    return new SystemObjectResolver();
   }
 }

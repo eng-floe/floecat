@@ -18,7 +18,7 @@ public record BuiltinFunctionNode(
     boolean aggregate,
     boolean window,
     Map<EngineKey, EngineHint> engineHints)
-    implements RelationNode {
+    implements GraphNode {
 
   public BuiltinFunctionNode {
     argumentTypes = List.copyOf(argumentTypes == null ? List.of() : argumentTypes);
@@ -26,7 +26,7 @@ public record BuiltinFunctionNode(
   }
 
   @Override
-  public RelationNodeKind kind() {
-    return RelationNodeKind.BUILTIN_FUNCTION;
+  public GraphNodeKind kind() {
+    return GraphNodeKind.BUILTIN_FUNCTION;
   }
 }

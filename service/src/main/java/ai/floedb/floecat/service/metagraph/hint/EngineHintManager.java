@@ -4,7 +4,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.hint.EngineHintProvider;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineKey;
-import ai.floedb.floecat.metagraph.model.RelationNode;
+import ai.floedb.floecat.metagraph.model.GraphNode;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.Weigher;
@@ -100,7 +100,7 @@ public class EngineHintManager {
 
   /** Retrieves (or computes) the hint for the request, returning empty when no provider applies. */
   public Optional<EngineHint> get(
-      RelationNode node, EngineKey engineKey, String hintType, String correlationId) {
+      GraphNode node, EngineKey engineKey, String hintType, String correlationId) {
     Objects.requireNonNull(node, "node");
     Objects.requireNonNull(engineKey, "engineKey");
     Objects.requireNonNull(hintType, "hintType");
@@ -146,7 +146,7 @@ public class EngineHintManager {
   }
 
   private Optional<EngineHintProvider> selectProvider(
-      RelationNode node, String hintType, EngineKey engineKey) {
+      GraphNode node, String hintType, EngineKey engineKey) {
     return providers.stream()
         .filter(p -> p.supports(node.kind(), hintType) && p.isAvailable(engineKey))
         .findFirst();

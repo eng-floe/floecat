@@ -4,7 +4,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Engine-specific payload attached to a {@link RelationNode}.
+ * Engine-specific payload attached to a {@link GraphNode}.
  *
  * <p>Hints carry opaque binary blobs plus optional metadata describing the payload. Engine kind /
  * version scoping is handled outside the hint object (via {@link EngineKey}).

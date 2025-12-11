@@ -28,6 +28,10 @@ public record EngineSpecificRule(
     properties = Map.copyOf(properties == null ? Map.of() : properties);
   }
 
+  public static EngineSpecificRule exact(String engine, String version) {
+    return new EngineSpecificRule(engine, version, version, "", null, Map.of());
+  }
+
   public boolean hasEngineKind() {
     return !engineKind.isBlank();
   }

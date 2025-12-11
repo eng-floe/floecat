@@ -18,14 +18,14 @@ public record BuiltinOperatorNode(
     boolean commutative,
     boolean associative,
     Map<EngineKey, EngineHint> engineHints)
-    implements RelationNode {
+    implements GraphNode {
 
   public BuiltinOperatorNode {
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
   }
 
   @Override
-  public RelationNodeKind kind() {
-    return RelationNodeKind.BUILTIN_OPERATOR;
+  public GraphNodeKind kind() {
+    return GraphNodeKind.BUILTIN_OPERATOR;
   }
 }

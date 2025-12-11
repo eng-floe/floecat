@@ -1,7 +1,7 @@
 package ai.floedb.floecat.catalog.builtin.registry;
 
 import ai.floedb.floecat.catalog.builtin.def.*;
-import ai.floedb.floecat.catalog.builtin.util.BuiltinNameUtil;
+import ai.floedb.floecat.catalog.common.util.NameRefUtil;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -83,17 +83,17 @@ public final class BuiltinEngineCatalog {
         engineKind,
         fingerprint,
         functions,
-        indexMulti(functions, f -> BuiltinNameUtil.canonical(f.name())),
+        indexMulti(functions, f -> NameRefUtil.canonical(f.name())),
         operators,
-        indexUnique(operators, o -> BuiltinNameUtil.canonical(o.name())),
+        indexUnique(operators, o -> NameRefUtil.canonical(o.name())),
         types,
-        indexUnique(types, t -> BuiltinNameUtil.canonical(t.name())),
+        indexUnique(types, t -> NameRefUtil.canonical(t.name())),
         casts,
-        indexUnique(casts, c -> BuiltinNameUtil.canonical(c.name())),
+        indexUnique(casts, c -> NameRefUtil.canonical(c.name())),
         collations,
-        indexUnique(collations, c -> BuiltinNameUtil.canonical(c.name())),
+        indexUnique(collations, c -> NameRefUtil.canonical(c.name())),
         aggregates,
-        indexUnique(aggregates, a -> BuiltinNameUtil.canonical(a.name())));
+        indexUnique(aggregates, a -> NameRefUtil.canonical(a.name())));
   }
 
   public String engineKind() {

@@ -14,14 +14,14 @@ public record BuiltinCollationNode(
     String displayName,
     String locale,
     Map<EngineKey, EngineHint> engineHints)
-    implements RelationNode {
+    implements GraphNode {
 
   public BuiltinCollationNode {
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
   }
 
   @Override
-  public RelationNodeKind kind() {
-    return RelationNodeKind.BUILTIN_COLLATION;
+  public GraphNodeKind kind() {
+    return GraphNodeKind.BUILTIN_COLLATION;
   }
 }
