@@ -52,6 +52,7 @@ public final class ProtoStatsBuilder {
       TableFormat format,
       Map<K, StatsEngine.ColumnAgg> columns,
       Function<K, String> nameOf,
+      Function<K, Integer> idOf,
       Function<K, LogicalType> typeOf,
       long upstreamCreatedAtMs,
       long tableTotalRows) {
@@ -65,10 +66,11 @@ public final class ProtoStatsBuilder {
 
     List<ColumnStats> list = new ArrayList<>(columns.size());
     for (var columnAgg : columns.entrySet()) {
-      K id = columnAgg.getKey();
+      K key = columnAgg.getKey();
       var agg = columnAgg.getValue();
-      var name = nameOf.apply(id);
-      var logicalType = typeOf.apply(id);
+      var name = nameOf.apply(key);
+      var columnId = idOf.apply(key);
+      var logicalType = typeOf.apply(key);
 
       boolean wroteNdv = false;
 
@@ -76,7 +78,7 @@ public final class ProtoStatsBuilder {
           ColumnStats.newBuilder()
               .setTableId(tableId)
               .setSnapshotId(snapshotId)
-              .setColumnId(String.valueOf(id))
+              .setColumnId(columnId)
               .setColumnName(name == null ? "" : name)
               .setUpstream(commonUpstream);
 
@@ -195,6 +197,7 @@ public final class ProtoStatsBuilder {
       TableFormat format,
       List<StatsEngine.FileAgg<K>> files,
       Function<K, String> nameOf,
+      Function<K, Integer> idOf,
       Function<K, LogicalType> typeOf,
       long upstreamCreatedAtMs) {
 
@@ -220,13 +223,14 @@ public final class ProtoStatsBuilder {
         StatsEngine.ColumnAgg agg = entry.getValue();
 
         String name = nameOf.apply(colKey);
+        Integer columnId = idOf.apply(colKey);
         LogicalType logicalType = typeOf.apply(colKey);
 
         var colBuilder =
             ColumnStats.newBuilder()
                 .setTableId(tableId)
                 .setSnapshotId(snapshotId)
-                .setColumnId(String.valueOf(colKey))
+                .setColumnId(columnId)
                 .setColumnName(name == null ? "" : name)
                 .setUpstream(commonUpstream);
 

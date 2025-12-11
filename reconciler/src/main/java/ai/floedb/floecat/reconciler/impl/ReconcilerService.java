@@ -637,7 +637,7 @@ public class ReconcilerService {
       return true;
     }
 
-    if (!c.getColumnId().isBlank() && selectors.contains("#" + c.getColumnId())) {
+    if (selectors.contains("#" + c.getColumnId())) {
       return true;
     }
 

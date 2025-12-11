@@ -53,13 +53,8 @@ public final class Keys {
     return String.join("/", enc);
   }
 
-  private static String normalizeColumnId(String columnId) {
-    String id = req("column_id", columnId);
-    if (id.matches("^(0|[1-9]\\d*)$")) {
-      long v = Long.parseLong(id);
-      return String.format("%019d", v);
-    }
-    return id;
+  private static String normalizeColumnId(int columnId) {
+    return String.format("%019d", columnId);
   }
 
   // ===== Account =====
@@ -264,7 +259,7 @@ public final class Keys {
   }
 
   public static String snapshotColumnStatsPointer(
-      String accountId, String tableId, long snapshotId, String columnId) {
+      String accountId, String tableId, long snapshotId, int columnId) {
     String cid = normalizeColumnId(columnId);
     return snapshotColumnStatsDirectoryPointer(accountId, tableId, snapshotId) + encode(cid);
   }
@@ -277,7 +272,7 @@ public final class Keys {
   }
 
   public static String snapshotColumnStatsBlobUri(
-      String accountId, String tableId, String columnId, String sha256) {
+      String accountId, String tableId, int columnId, String sha256) {
     String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     String cid = normalizeColumnId(columnId);
