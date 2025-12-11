@@ -40,12 +40,15 @@ class TableCommitSideEffectServiceTest {
   }
 
   @Test
-  void mirrorMetadataUpdatesTableProperties() throws Exception {
+  void materializeMetadataUpdatesTableProperties() throws Exception {
     TableMetadataView metadata = metadata("s3://warehouse/tables/orders/metadata.json");
-    TableMetadataView mirrored = metadata.withMetadataLocation("s3://mirror/orders/v2.json");
+    TableMetadataView materialized =
+        metadata.withMetadataLocation("s3://warehouse/tables/orders/metadata/00001-abc.metadata.json");
     when(materializeMetadataService.materialize(
             "cat.db", "orders", metadata, "s3://warehouse/tables/orders/metadata.json"))
-        .thenReturn(new MaterializeResult("s3://mirror/orders/v2.json", mirrored));
+        .thenReturn(
+            new MaterializeResult(
+                "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json", materialized));
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
 
     Table table =
@@ -67,22 +70,43 @@ class TableCommitSideEffectServiceTest {
             "s3://warehouse/tables/orders/metadata.json");
 
     assertNull(result.error());
-    assertSame(mirrored, result.metadata());
-    assertEquals("s3://mirror/orders/v2.json", result.metadataLocation());
+    assertSame(materialized, result.metadata());
+    assertEquals(
+        "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json",
+        result.metadataLocation());
 
     ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
     verify(tableLifecycleService).updateTable(captor.capture());
     UpdateTableRequest request = captor.getValue();
     assertEquals(tableId, request.getTableId());
     assertEquals(
-        "s3://mirror/orders/v2.json", request.getSpec().getPropertiesOrThrow("metadata-location"));
+        "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json",
+        request.getSpec().getPropertiesOrThrow("metadata-location"));
+  }
+
+  @Test
+  void materializeMetadataReturnsOriginalWhenMetadataMissing() throws Exception {
+    MaterializeMetadataResult result =
+        service.materializeMetadata(
+            "cat.db",
+            ResourceId.getDefaultInstance(),
+            "orders",
+            null,
+            null,
+            "s3://warehouse/tables/orders/metadata.json");
+
+    assertNull(result.error());
+    assertNull(result.metadata());
+    assertEquals("s3://warehouse/tables/orders/metadata.json", result.metadataLocation());
+    verify(materializeMetadataService, never()).materialize(any(), any(), any(), any());
+    verify(tableLifecycleService, never()).updateTable(any());
   }
 
   @Test
   void materializeMetadataFallsBackWhenMaterializationFails() throws Exception {
     TableMetadataView metadata = metadata("s3://warehouse/tables/orders/metadata.json");
     when(materializeMetadataService.materialize(any(), any(), any(), any()))
-        .thenThrow(new MaterializeMetadataException("mirror failed", new RuntimeException()));
+        .thenThrow(new MaterializeMetadataException("boom"));
 
     MaterializeMetadataResult result =
         service.materializeMetadata(
@@ -95,8 +119,7 @@ class TableCommitSideEffectServiceTest {
 
     assertNull(result.error());
     assertSame(metadata, result.metadata());
-    assertEquals("s3://warehouse/tables/orders/metadata.json", result.metadataLocation());
-    verify(tableLifecycleService, never()).updateTable(any());
+    assertEquals(metadata.metadataLocation(), result.metadataLocation());
   }
 
   @Test
@@ -166,10 +189,12 @@ class TableCommitSideEffectServiceTest {
                     .build())
             .build();
     TableMetadataView metadata = metadata("s3://orig/location");
-    TableMetadataView mirrored = metadata.withMetadataLocation("s3://mirror/location");
-    CommitTableResponseDto response = new CommitTableResponseDto("s3://orig/location", metadata);
+    TableMetadataView materialized =
+        metadata.withMetadataLocation("s3://orig/metadata/00001-new.metadata.json");
     when(materializeMetadataService.materialize("cat.db", "orders", metadata, "s3://orig/location"))
-        .thenReturn(new MaterializeResult("s3://mirror/location", mirrored));
+        .thenReturn(
+            new MaterializeResult("s3://orig/metadata/00001-new.metadata.json", materialized));
+    CommitTableResponseDto response = new CommitTableResponseDto("s3://orig/location", metadata);
 
     TableCommitSideEffectService.PostCommitResult result =
         service.finalizeCommitResponse(
@@ -187,9 +212,10 @@ class TableCommitSideEffectServiceTest {
             "idem");
 
     assertNull(result.error());
-    assertEquals("s3://mirror/location", result.response().metadataLocation());
+    assertEquals("s3://orig/metadata/00001-new.metadata.json", result.response().metadataLocation());
     assertEquals(connectorId, result.connectorId());
-    verify(tableSupport).updateConnectorMetadata(connectorId, "s3://mirror/location");
+    verify(tableSupport)
+        .updateConnectorMetadata(connectorId, "s3://orig/metadata/00001-new.metadata.json");
   }
 
   @Test

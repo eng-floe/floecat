@@ -7,23 +7,6 @@ public final class MirrorLocationUtil {
 
   private MirrorLocationUtil() {}
 
-  public static String mirrorMetadataLocation(String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return null;
-    }
-    try {
-      URI uri = URI.create(metadataLocation);
-      if (uri.getScheme() == null || uri.getAuthority() == null) {
-        return null;
-      }
-      String path = uri.getPath();
-      String normalized = path == null ? "" : (path.startsWith("/") ? path : "/" + path);
-      return uri.getScheme() + "://" + uri.getAuthority() + METADATA_MIRROR_SEGMENT + normalized;
-    } catch (IllegalArgumentException e) {
-      return null;
-    }
-  }
-
   public static boolean isMirrorMetadataLocation(String metadataLocation) {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return false;

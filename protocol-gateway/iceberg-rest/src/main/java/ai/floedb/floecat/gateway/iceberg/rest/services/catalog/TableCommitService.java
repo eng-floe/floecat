@@ -51,139 +51,23 @@ public class TableCommitService {
     TableRequests.Commit req = command.request();
     TableGatewaySupport tableSupport = command.tableSupport();
 
-    final Table[] stagedTableHolder = new Table[1];
-    StageCommitResult stageMaterialization = null;
-    String materializedStageId = null;
-
-    ResourceId resolvedTableId = null;
-    try {
-      resolvedTableId = tableLifecycleService.resolveTableId(catalogName, namespacePath, table);
-      StageMaterializationService.StageMaterializationResult explicitStage =
-          stageMaterializationService.materializeExplicitStage(
-              prefix, catalogName, namespacePath, table, req, transactionId);
-      if (explicitStage != null) {
-        stageMaterialization = explicitStage.result();
-        materializedStageId = explicitStage.stageId();
-        stagedTableHolder[0] = explicitStage.table();
-        resolvedTableId = explicitStage.table().getResourceId();
-      }
-    } catch (io.grpc.StatusRuntimeException e) {
-      StageMaterializationService.StageMaterializationResult materialization;
-      try {
-        materialization =
-            stageMaterializationService.materializeIfTableMissing(
-                e, prefix, catalogName, namespacePath, table, req, transactionId);
-      } catch (StageCommitException sce) {
-        return sce.toResponse();
-      }
-      if (materialization != null) {
-        stageMaterialization = materialization.result();
-        materializedStageId = materialization.stageId();
-        stagedTableHolder[0] = stageMaterialization.table();
-        resolvedTableId = stageMaterialization.table().getResourceId();
-      } else {
-        throw e;
-      }
+    StageResolution stageResolution = resolveStageResolution(command);
+    if (stageResolution.hasError()) {
+      return stageResolution.error();
     }
-
-    if (resolvedTableId == null) {
-      throw new IllegalStateException("table resolution failed");
-    }
-    final ResourceId tableId = resolvedTableId;
+    ResourceId tableId = stageResolution.tableId();
     Supplier<Table> tableSupplier =
-        new Supplier<>() {
-          private Table cached = stagedTableHolder[0];
+        createTableSupplier(stageResolution.stagedTable(), tableId);
 
-          @Override
-          public Table get() {
-            if (cached == null) {
-              cached = tableLifecycleService.getTable(tableId);
-            }
-            return cached;
-          }
-        };
-
-    TableSpec.Builder spec = TableSpec.newBuilder();
-    FieldMask.Builder mask = FieldMask.newBuilder();
-    if (req != null) {
-      Response requirementError =
-          commitRequirementService.validateRequirements(
-              tableSupport,
-              req.requirements(),
-              tableSupplier,
-              this::validationError,
-              this::conflictError);
-      if (requirementError != null) {
-        return requirementError;
-      }
-      if (req.name() != null) {
-        spec.setDisplayName(req.name());
-        mask.addPaths("display_name");
-      }
-      if (req.namespace() != null && !req.namespace().isEmpty()) {
-        var targetNs =
-            tableLifecycleService.resolveNamespaceId(catalogName, new ArrayList<>(req.namespace()));
-        spec.setNamespaceId(targetNs);
-        mask.addPaths("namespace_id");
-      }
-      if (req.schemaJson() != null && !req.schemaJson().isBlank()) {
-        spec.setSchemaJson(req.schemaJson());
-        mask.addPaths("schema_json");
-      }
-      Map<String, String> mergedProps = null;
-      if (req.properties() != null && !req.properties().isEmpty()) {
-        mergedProps = new LinkedHashMap<>(req.properties());
-        tablePropertyService.stripMetadataLocation(mergedProps);
-        if (mergedProps.isEmpty()) {
-          mergedProps = null;
-        }
-      }
-      if (tablePropertyService.hasPropertyUpdates(req)) {
-        if (mergedProps == null) {
-          mergedProps = new LinkedHashMap<>(tableSupplier.get().getPropertiesMap());
-        }
-        Response updateError =
-            tablePropertyService.applyPropertyUpdates(mergedProps, req.updates());
-        if (updateError != null) {
-          return updateError;
-        }
-      }
-      Response locationError =
-          tablePropertyService.applyLocationUpdate(spec, mask, tableSupplier, req.updates());
-      if (locationError != null) {
-        return locationError;
-      }
-      String unsupported = unsupportedUpdateAction(req);
-      if (unsupported != null) {
-        return validationError("unsupported commit update action: " + unsupported);
-      }
-      Response snapshotError =
-          snapshotMetadataService.applySnapshotUpdates(
-              tableSupport,
-              tableId,
-              namespacePath,
-              table,
-              tableSupplier,
-              req.updates(),
-              idempotencyKey);
-      if (snapshotError != null) {
-        return snapshotError;
-      }
-      if (mergedProps != null) {
-        spec.clearProperties().putAllProperties(mergedProps);
-        mask.addPaths("properties");
-      }
+    UpdatePreparation updatePreparation =
+        prepareUpdateSpec(command, tableSupplier, tableId);
+    if (updatePreparation.hasError()) {
+      return updatePreparation.error();
     }
 
-    Table committedTable;
-    if (mask.getPathsCount() == 0) {
-      committedTable = tableSupplier.get();
-    } else {
-      UpdateTableRequest.Builder updateRequest =
-          UpdateTableRequest.newBuilder().setTableId(tableId).setSpec(spec).setUpdateMask(mask);
-      committedTable = tableLifecycleService.updateTable(updateRequest.build());
-    }
-
+    Table committedTable =
+        applyTableUpdates(tableSupplier, tableId, updatePreparation);
+    StageCommitResult stageMaterialization = stageResolution.stageCommitResult();
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(committedTable);
     String requestedMetadataOverride = resolveRequestedMetadataLocation(req);
     List<Snapshot> snapshotList =
@@ -228,11 +112,13 @@ public class TableCommitService {
     }
     logStageCommit(
         stageMaterialization,
-        nonBlank(materializedStageId, resolveStageId(req, transactionId)),
+        nonBlank(
+            stageResolution.materializedStageId(),
+            stageMaterializationService.resolveStageId(req, transactionId)),
         namespace,
         table,
         responseDto == null ? null : responseDto.metadata());
-    runConnectorSync(tableSupport, sideEffects.connectorId(), namespacePath, namespace, table);
+    runConnectorSync(tableSupport, sideEffects.connectorId(), namespacePath, table);
     return builder.build();
   }
 
@@ -257,21 +143,6 @@ public class TableCommitService {
     LOG.infof(
         "Stage commit satisfied for %s.%s tableId=%s stageId=%s currentSnapshot=%s snapshotCount=%d",
         namespace, table, tableId, stageId, snapshotStr, snapshotCount);
-  }
-
-  private String resolveStageId(TableRequests.Commit req, String headerStageId) {
-    if (req != null && req.stageId() != null && !req.stageId().isBlank()) {
-      return req.stageId();
-    }
-    if (headerStageId != null && !headerStageId.isBlank()) {
-      return headerStageId;
-    }
-    return null;
-  }
-
-  private Table tableWithPropertyOverrides(
-      Supplier<Table> tableSupplier, Map<String, String> propertyOverrides) {
-    return tablePropertyService.tableWithPropertyOverrides(tableSupplier, propertyOverrides);
   }
 
   private CommitTableResponseDto preferStageMetadata(
@@ -347,23 +218,6 @@ public class TableCommitService {
       metadata = metadata.withMetadataLocation(resolvedLocation);
     }
     return new CommitTableResponseDto(resolvedLocation, metadata);
-  }
-
-  private void runConnectorSync(
-      TableGatewaySupport tableSupport,
-      ResourceId connectorId,
-      List<String> namespacePath,
-      String namespace,
-      String tableName) {
-    try {
-      sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
-    } catch (Throwable e) {
-      LOG.warnf(
-          e,
-          "Post-commit connector sync failed for %s.%s",
-          namespace == null ? "<missing>" : namespace,
-          tableName == null ? "<missing>" : tableName);
-    }
   }
 
   private String unsupportedUpdateAction(TableRequests.Commit req) {
@@ -493,7 +347,19 @@ public class TableCommitService {
       ResourceId connectorId,
       List<String> namespacePath,
       String tableName) {
-    sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
+    try {
+      sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
+    } catch (Throwable e) {
+      String namespace =
+          namespacePath == null
+              ? "<missing>"
+              : (namespacePath.isEmpty() ? "<empty>" : String.join(".", namespacePath));
+      LOG.warnf(
+          e,
+          "Post-commit connector sync failed for %s.%s",
+          namespace,
+          tableName == null ? "<missing>" : tableName);
+    }
   }
 
   public record CommitCommand(
@@ -508,6 +374,198 @@ public class TableCommitService {
       String transactionId,
       TableRequests.Commit request,
       TableGatewaySupport tableSupport) {}
+
+  private Supplier<Table> createTableSupplier(Table stagedTable, ResourceId tableId) {
+    return new Supplier<>() {
+      private Table cached = stagedTable;
+
+      @Override
+      public Table get() {
+        if (cached == null) {
+          cached = tableLifecycleService.getTable(tableId);
+        }
+        return cached;
+      }
+    };
+  }
+
+  private Table applyTableUpdates(
+      Supplier<Table> tableSupplier, ResourceId tableId, UpdatePreparation updatePreparation) {
+    FieldMask.Builder mask = updatePreparation.mask();
+    if (mask.getPathsCount() == 0) {
+      return tableSupplier.get();
+    }
+    UpdateTableRequest.Builder updateRequest =
+        UpdateTableRequest.newBuilder()
+            .setTableId(tableId)
+            .setSpec(updatePreparation.spec())
+            .setUpdateMask(mask);
+    return tableLifecycleService.updateTable(updateRequest.build());
+  }
+
+  private UpdatePreparation prepareUpdateSpec(
+      CommitCommand command, Supplier<Table> tableSupplier, ResourceId tableId) {
+    TableRequests.Commit req = command.request();
+    TableSpec.Builder spec = TableSpec.newBuilder();
+    FieldMask.Builder mask = FieldMask.newBuilder();
+    if (req == null) {
+      return UpdatePreparation.success(spec, mask);
+    }
+    Response requirementError =
+        commitRequirementService.validateRequirements(
+            command.tableSupport(),
+            req.requirements(),
+            tableSupplier,
+            this::validationError,
+            this::conflictError);
+    if (requirementError != null) {
+      return UpdatePreparation.failure(spec, mask, requirementError);
+    }
+    if (req.name() != null) {
+      spec.setDisplayName(req.name());
+      mask.addPaths("display_name");
+    }
+    if (req.namespace() != null && !req.namespace().isEmpty()) {
+      var targetNs =
+          tableLifecycleService.resolveNamespaceId(
+              command.catalogName(), new ArrayList<>(req.namespace()));
+      spec.setNamespaceId(targetNs);
+      mask.addPaths("namespace_id");
+    }
+    if (req.schemaJson() != null && !req.schemaJson().isBlank()) {
+      spec.setSchemaJson(req.schemaJson());
+      mask.addPaths("schema_json");
+    }
+    Map<String, String> mergedProps = null;
+    if (req.properties() != null && !req.properties().isEmpty()) {
+      mergedProps = new LinkedHashMap<>(req.properties());
+      tablePropertyService.stripMetadataLocation(mergedProps);
+      if (mergedProps.isEmpty()) {
+        mergedProps = null;
+      }
+    }
+    if (tablePropertyService.hasPropertyUpdates(req)) {
+      if (mergedProps == null) {
+        mergedProps = new LinkedHashMap<>(tableSupplier.get().getPropertiesMap());
+      }
+      Response updateError =
+          tablePropertyService.applyPropertyUpdates(mergedProps, req.updates());
+      if (updateError != null) {
+        return UpdatePreparation.failure(spec, mask, updateError);
+      }
+    }
+    Response locationError =
+        tablePropertyService.applyLocationUpdate(spec, mask, tableSupplier, req.updates());
+    if (locationError != null) {
+      return UpdatePreparation.failure(spec, mask, locationError);
+    }
+    String unsupported = unsupportedUpdateAction(req);
+    if (unsupported != null) {
+      return UpdatePreparation.failure(
+          spec, mask, validationError("unsupported commit update action: " + unsupported));
+    }
+    Response snapshotError =
+        snapshotMetadataService.applySnapshotUpdates(
+            command.tableSupport(),
+            tableId,
+            command.namespacePath(),
+            command.table(),
+            tableSupplier,
+            req.updates(),
+            command.idempotencyKey());
+    if (snapshotError != null) {
+      return UpdatePreparation.failure(spec, mask, snapshotError);
+    }
+    if (mergedProps != null) {
+      spec.clearProperties().putAllProperties(mergedProps);
+      mask.addPaths("properties");
+    }
+    return UpdatePreparation.success(spec, mask);
+  }
+
+  private StageResolution resolveStageResolution(CommitCommand command) {
+    String prefix = command.prefix();
+    String catalogName = command.catalogName();
+    List<String> namespacePath = command.namespacePath();
+    String table = command.table();
+    TableRequests.Commit req = command.request();
+    String transactionId = command.transactionId();
+    StageCommitResult stageMaterialization = null;
+    String materializedStageId = null;
+
+    ResourceId resolvedTableId = null;
+    try {
+      resolvedTableId = tableLifecycleService.resolveTableId(catalogName, namespacePath, table);
+      StageMaterializationService.StageMaterializationResult explicitStage =
+          stageMaterializationService.materializeExplicitStage(
+              prefix, catalogName, namespacePath, table, req, transactionId);
+      if (explicitStage != null) {
+        stageMaterialization = explicitStage.result();
+        materializedStageId = explicitStage.stageId();
+        resolvedTableId = explicitStage.table().getResourceId();
+      }
+    } catch (io.grpc.StatusRuntimeException e) {
+      StageMaterializationService.StageMaterializationResult materialization;
+      try {
+        materialization =
+            stageMaterializationService.materializeIfTableMissing(
+                e, prefix, catalogName, namespacePath, table, req, transactionId);
+      } catch (StageCommitException sce) {
+        return StageResolution.failure(sce.toResponse());
+      }
+      if (materialization != null) {
+        stageMaterialization = materialization.result();
+        materializedStageId = materialization.stageId();
+        resolvedTableId = stageMaterialization.table().getResourceId();
+      } else {
+        throw e;
+      }
+    }
+
+    if (resolvedTableId == null) {
+      throw new IllegalStateException("table resolution failed");
+    }
+    return StageResolution.success(resolvedTableId, stageMaterialization, materializedStageId);
+  }
+
+  private record StageResolution(
+      ResourceId tableId,
+      StageCommitResult stageCommitResult,
+      String materializedStageId,
+      Response error) {
+    static StageResolution success(
+        ResourceId tableId, StageCommitResult stageCommitResult, String stageId) {
+      return new StageResolution(tableId, stageCommitResult, stageId, null);
+    }
+
+    static StageResolution failure(Response error) {
+      return new StageResolution(null, null, null, error);
+    }
+
+    boolean hasError() {
+      return error != null;
+    }
+
+    Table stagedTable() {
+      return stageCommitResult == null ? null : stageCommitResult.table();
+    }
+  }
+
+  private record UpdatePreparation(
+      TableSpec.Builder spec, FieldMask.Builder mask, Response error) {
+    static UpdatePreparation success(TableSpec.Builder spec, FieldMask.Builder mask) {
+      return new UpdatePreparation(spec, mask, null);
+    }
+
+    static UpdatePreparation failure(
+        TableSpec.Builder spec, FieldMask.Builder mask, Response error) {
+      return new UpdatePreparation(spec, mask, error);
+    }
+
+    boolean hasError() {
+      return error != null;
+    }
+  }
 
   private static String nonBlank(String primary, String fallback) {
     return primary != null && !primary.isBlank() ? primary : fallback;

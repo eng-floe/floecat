@@ -597,10 +597,6 @@ public class TableGatewaySupport {
     return out;
   }
 
-  public String mirrorMetadataLocation(String metadataLocation) {
-    return MirrorLocationUtil.mirrorMetadataLocation(metadataLocation);
-  }
-
   public boolean isMirrorMetadataLocation(String metadataLocation) {
     return MirrorLocationUtil.isMirrorMetadataLocation(metadataLocation);
   }

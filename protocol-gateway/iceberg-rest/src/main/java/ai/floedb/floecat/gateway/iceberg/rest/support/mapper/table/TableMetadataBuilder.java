@@ -32,9 +32,11 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -156,10 +158,16 @@ public final class TableMetadataBuilder {
     List<Map<String, Object>> statisticsList = sanitizeStatistics(statistics(metadata));
     List<Map<String, Object>> partitionStatisticsList =
         nonNullMapList(partitionStatistics(metadata));
+    Snapshot latestSnapshot = null;
     if (snapshots != null && !snapshots.isEmpty()) {
-      long maxSequence = snapshots.stream().mapToLong(Snapshot::getSequenceNumber).max().orElse(0L);
-      if (maxSequence > lastSequenceNumber) {
-        lastSequenceNumber = maxSequence;
+      latestSnapshot =
+          snapshots.stream()
+              .max(
+                  Comparator.comparingLong(Snapshot::getSequenceNumber)
+                      .thenComparingLong(Snapshot::getSnapshotId))
+              .orElse(null);
+      if (latestSnapshot != null && latestSnapshot.getSequenceNumber() > lastSequenceNumber) {
+        lastSequenceNumber = latestSnapshot.getSequenceNumber();
       }
     }
     Map<String, Object> refs = refs(metadata);
@@ -184,7 +192,13 @@ public final class TableMetadataBuilder {
         }
       }
     }
-    if ((currentSnapshotId == null || currentSnapshotId <= 0)
+    if (latestSnapshot != null) {
+      long latestSnapshotId = latestSnapshot.getSnapshotId();
+      if (latestSnapshotId > 0 && !Objects.equals(currentSnapshotId, latestSnapshotId)) {
+        currentSnapshotId = latestSnapshotId;
+        refs = ensureMainRef(refs, latestSnapshotId);
+      }
+    } else if ((currentSnapshotId == null || currentSnapshotId <= 0)
         && snapshots != null
         && !snapshots.isEmpty()) {
       currentSnapshotId = snapshots.get(0).getSnapshotId();
@@ -521,6 +535,19 @@ public final class TableMetadataBuilder {
       return metadataLocation.substring(0, slash);
     }
     return metadataLocation;
+  }
+
+  private static Map<String, Object> ensureMainRef(
+      Map<String, Object> refs, long snapshotId) {
+    Map<String, Object> updated =
+        (refs == null || refs.isEmpty()) ? new LinkedHashMap<>() : new LinkedHashMap<>(refs);
+    Map<String, Object> mainRef = asObjectMap(updated.get("main"));
+    Map<String, Object> newMain =
+        mainRef == null ? new LinkedHashMap<>() : new LinkedHashMap<>(mainRef);
+    newMain.put("snapshot-id", snapshotId);
+    newMain.putIfAbsent("type", "branch");
+    updated.put("main", newMain);
+    return updated;
   }
 
   private static void syncProperty(Map<String, String> props, String key, Object value) {

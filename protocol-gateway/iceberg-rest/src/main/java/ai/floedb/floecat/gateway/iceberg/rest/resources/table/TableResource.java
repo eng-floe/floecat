@@ -22,7 +22,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TaskRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.support.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.support.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
-import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.MetadataLocationSync;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotMetadataService;
@@ -167,11 +166,6 @@ public class TableResource {
     }
     String specMetadataLocation =
         MetadataLocationUtil.metadataLocation(spec.getPropertiesMap());
-    String stagedMetadataLocation = tableSupport.mirrorMetadataLocation(specMetadataLocation);
-    if (stagedMetadataLocation != null && !stagedMetadataLocation.equals(specMetadataLocation)) {
-      MetadataLocationUtil.setMetadataLocation(spec::putProperties, stagedMetadataLocation);
-      specMetadataLocation = stagedMetadataLocation;
-    }
     effectiveReq = ensureMetadataLocation(effectiveReq, specMetadataLocation);
 
     Table created = tableLifecycleService.createTable(spec, idempotencyKey);
@@ -193,23 +187,8 @@ public class TableResource {
               tableName, created, metadata, List.of(), tableConfig, credentials);
     }
 
-    MaterializeMetadataResult materializationResult =
-        tableCommitService.materializeMetadata(
-            namespace,
-            created.getResourceId(),
-            tableName,
-            created,
-            loadResult.metadata(),
-            loadResult.metadataLocation());
-    if (materializationResult.error() != null) {
-      return materializationResult.error();
-    }
-    TableMetadataView responseMetadata =
-        materializationResult.metadata() != null
-            ? materializationResult.metadata()
-            : loadResult.metadata();
-    String responseMetadataLocation =
-        nonBlank(materializationResult.metadataLocation(), loadResult.metadataLocation());
+    TableMetadataView responseMetadata = loadResult.metadata();
+    String responseMetadataLocation = loadResult.metadataLocation();
     if (responseMetadata != null && responseMetadataLocation != null) {
       responseMetadata = responseMetadata.withMetadataLocation(responseMetadataLocation);
     }

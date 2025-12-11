@@ -6,9 +6,9 @@ import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
+import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
-import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -46,7 +46,7 @@ public class TableCommitSideEffectService {
       }
       return MaterializeMetadataResult.success(resolvedMetadata, resolvedLocation);
     } catch (MaterializeMetadataException e) {
-      LOG.debugf(
+      LOG.warnf(
           e,
           "Failed to materialize Iceberg metadata for %s.%s to %s (serving original metadata)",
           namespace,
@@ -207,14 +207,14 @@ public class TableCommitSideEffectService {
       } catch (Exception e) {
         LOG.warnf(
             e,
-            "Failed to load table %s for metadata mirroring; skipping metadata-property update",
+            "Failed to load table %s for metadata refresh; skipping metadata-property update",
             tableId.getId());
         return;
       }
     }
     if (current == null) {
       LOG.warnf(
-          "Table %s not found for metadata mirroring; skipping metadata-property update",
+          "Table %s not found for metadata refresh; skipping metadata-property update",
           tableId.getId());
       return;
     }
