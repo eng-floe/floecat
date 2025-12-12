@@ -22,9 +22,9 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Floec
   authentication). The service uses it to validate specs and the reconciler uses it during runs.
 - **`ConnectorConfigMapper`** – Bidirectional conversion between RPC `Connector` protobufs and the
   SPI’s `ConnectorConfig` records.
-- **`IcebergSnapshotMetadataProvider`** – Optional extension that connectors can implement when they
-  need to surface full Iceberg table metadata alongside snapshot stats. The reconciler probes for
-  this interface when persisting snapshots.
+- **Snapshot bundle attachments** – `SnapshotBundle.metadata` exposes a `map<string, bytes>` that
+  connectors can use to attach format-specific payloads (for example, Iceberg metadata snapshots)
+  without changing the SPI surface.
 - **Auth providers** – `AuthProvider` + concrete implementations such as `NoAuthProvider` and
   `AwsSigV4AuthProvider` supply credentials or headers per connector.
 - **Stats helpers** – `StatsEngine`, `GenericStatsEngine`, `ProtoStatsBuilder`, and NDV utilities

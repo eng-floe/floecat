@@ -33,7 +33,9 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
+import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.StatusRuntimeException;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -48,6 +50,7 @@ public class TableGatewaySupport {
       List.of(new StorageCredentialDto("*", Map.of("type", "static")));
   private static final String CONNECTOR_CAPTURE_STATS_PROPERTY =
       "floecat.connector.capture-statistics";
+  private static final String ICEBERG_METADATA_KEY = "iceberg";
 
   private final GrpcWithHeaders grpc;
   private final IcebergGatewayConfig config;
@@ -307,7 +310,7 @@ public class TableGatewaySupport {
           && snapshot.getSnapshotId() != propertySnapshotId) {
         return loadSnapshotById(table.getResourceId(), propertySnapshotId);
       }
-      return snapshot.hasIceberg() ? snapshot.getIceberg() : null;
+      return parseSnapshotMetadata(snapshot);
     } catch (StatusRuntimeException primaryFailure) {
       return loadSnapshotByProperty(table);
     }
@@ -340,7 +343,7 @@ public class TableGatewaySupport {
       return null;
     }
     var snapshot = response.getSnapshot();
-    return snapshot.hasIceberg() ? snapshot.getIceberg() : null;
+    return parseSnapshotMetadata(snapshot);
   }
 
   public IcebergGatewayConfig.RegisterConnectorTemplate connectorTemplateFor(String prefix) {
@@ -629,6 +632,22 @@ public class TableGatewaySupport {
       return Long.parseLong(value);
     } catch (NumberFormatException e) {
       return null;
+    }
+  }
+
+  private IcebergMetadata parseSnapshotMetadata(ai.floedb.floecat.catalog.rpc.Snapshot snapshot) {
+    if (snapshot == null) {
+      return null;
+    }
+    ByteString raw = snapshot.getFormatMetadataOrDefault(ICEBERG_METADATA_KEY, ByteString.EMPTY);
+    if (raw == null || raw.isEmpty()) {
+      return null;
+    }
+    try {
+      return IcebergMetadata.parseFrom(raw);
+    } catch (InvalidProtocolBufferException e) {
+      throw new IllegalStateException(
+          "Failed to parse Iceberg metadata for snapshot " + snapshot.getSnapshotId(), e);
     }
   }
 }

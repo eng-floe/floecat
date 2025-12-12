@@ -35,8 +35,6 @@ import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
-import ai.floedb.floecat.connector.spi.IcebergSnapshotMetadataProvider;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
@@ -454,16 +452,9 @@ public class ReconcilerService {
       spec.setSchemaId(snapshotBundle.schemaId());
       mask.addPaths("schema_id");
     }
-    final IcebergMetadata[] capturedMetadata = new IcebergMetadata[1];
-    if (connector instanceof IcebergSnapshotMetadataProvider icebergProvider) {
-      icebergProvider
-          .icebergMetadata(snapshotBundle.snapshotId())
-          .ifPresent(
-              metadata -> {
-                capturedMetadata[0] = metadata;
-                spec.setIceberg(metadata);
-                mask.addPaths("iceberg");
-              });
+    if (snapshotBundle.metadata() != null && !snapshotBundle.metadata().isEmpty()) {
+      spec.putAllFormatMetadata(snapshotBundle.metadata());
+      mask.addPaths("format_metadata");
     }
     SnapshotSpec snapshotSpec = spec.build();
     boolean exists = snapshotExists(tableId, snapshotBundle.snapshotId());
@@ -480,9 +471,6 @@ public class ReconcilerService {
                 .build();
         clients.snapshot().updateSnapshot(updateReq);
       }
-    }
-    if (capturedMetadata[0] != null) {
-      updateTableFromIcebergMetadata(tableId, capturedMetadata[0]);
     }
   }
 
@@ -614,44 +602,6 @@ public class ReconcilerService {
         return false;
       }
       throw e;
-    }
-  }
-
-  private void updateTableFromIcebergMetadata(ResourceId tableId, IcebergMetadata metadata) {
-    if (metadata == null) {
-      return;
-    }
-    var props = new java.util.LinkedHashMap<String, String>();
-    if (metadata.getMetadataLocation() != null && !metadata.getMetadataLocation().isBlank()) {
-      props.put("metadata-location", metadata.getMetadataLocation());
-      props.put("metadata_location", metadata.getMetadataLocation());
-    }
-    if (metadata.getTableUuid() != null && !metadata.getTableUuid().isBlank()) {
-      props.put("table-uuid", metadata.getTableUuid());
-    }
-    if (metadata.getCurrentSnapshotId() > 0) {
-      props.put("current-snapshot-id", Long.toString(metadata.getCurrentSnapshotId()));
-    }
-    if (metadata.getLastSequenceNumber() > 0) {
-      props.put("last-sequence-number", Long.toString(metadata.getLastSequenceNumber()));
-    }
-    if (metadata.getCurrentSchemaId() >= 0) {
-      props.put("current-schema-id", Integer.toString(metadata.getCurrentSchemaId()));
-    }
-    if (metadata.getLastColumnId() >= 0) {
-      props.put("last-column-id", Integer.toString(metadata.getLastColumnId()));
-    }
-    if (metadata.getDefaultSpecId() >= 0) {
-      props.put("default-spec-id", Integer.toString(metadata.getDefaultSpecId()));
-    }
-    if (metadata.getLastPartitionId() >= 0) {
-      props.put("last-partition-id", Integer.toString(metadata.getLastPartitionId()));
-    }
-    if (metadata.getDefaultSortOrderId() >= 0) {
-      props.put("default-sort-order-id", Integer.toString(metadata.getDefaultSortOrderId()));
-    }
-    if (props.isEmpty()) {
-      return;
     }
   }
 

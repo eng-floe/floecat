@@ -114,6 +114,7 @@ import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.test.InjectMock;
@@ -320,7 +321,11 @@ class RestResourceTest {
             .putRefs("main", IcebergRef.newBuilder().setSnapshotId(5).setType("branch").build())
             .build();
     Snapshot metaSnapshot =
-        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(5).setIceberg(metadata).build();
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(5)
+            .putFormatMetadata("iceberg", metadata.toByteString())
+            .build();
     when(snapshotStub.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(metaSnapshot).build());
 
@@ -1441,12 +1446,14 @@ class RestResourceTest {
         Snapshot.newBuilder()
             .setTableId(tableId)
             .setSnapshotId(5)
-            .setIceberg(
+            .putFormatMetadata(
+                "iceberg",
                 IcebergMetadata.newBuilder()
                     .setTableUuid("uuid")
                     .putRefs(
                         "main", IcebergRef.newBuilder().setType("branch").setSnapshotId(4).build())
-                    .build())
+                    .build()
+                    .toByteString())
             .build();
     when(snapshotStub.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build());
@@ -1475,7 +1482,8 @@ class RestResourceTest {
     verify(snapshotStub).updateSnapshot(updateReq.capture());
     assertEquals(5L, updateReq.getValue().getSpec().getSnapshotId());
     assertEquals(
-        5L, updateReq.getValue().getSpec().getIceberg().getRefsOrThrow("main").getSnapshotId());
+        5L,
+        metadataFromSpec(updateReq.getValue().getSpec()).getRefsOrThrow("main").getSnapshotId());
   }
 
   @Test
@@ -1501,12 +1509,14 @@ class RestResourceTest {
         Snapshot.newBuilder()
             .setTableId(tableId)
             .setSnapshotId(9)
-            .setIceberg(
+            .putFormatMetadata(
+                "iceberg",
                 IcebergMetadata.newBuilder()
                     .setTableUuid("uuid")
                     .putRefs(
                         "dev", IcebergRef.newBuilder().setType("branch").setSnapshotId(8).build())
-                    .build())
+                    .build()
+                    .toByteString())
             .build();
     when(snapshotStub.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build());
@@ -1522,7 +1532,7 @@ class RestResourceTest {
     ArgumentCaptor<UpdateSnapshotRequest> updateReq =
         ArgumentCaptor.forClass(UpdateSnapshotRequest.class);
     verify(snapshotStub).updateSnapshot(updateReq.capture());
-    assertFalse(updateReq.getValue().getSpec().getIceberg().getRefsMap().containsKey("dev"));
+    assertFalse(metadataFromSpec(updateReq.getValue().getSpec()).getRefsMap().containsKey("dev"));
   }
 
   @Test
@@ -1548,7 +1558,8 @@ class RestResourceTest {
         Snapshot.newBuilder()
             .setTableId(tableId)
             .setSnapshotId(4)
-            .setIceberg(
+            .putFormatMetadata(
+                "iceberg",
                 IcebergMetadata.newBuilder()
                     .setTableUuid("uuid")
                     .setFormatVersion(2)
@@ -1625,7 +1636,8 @@ class RestResourceTest {
                             .setKeyId("old")
                             .setEncryptedKeyMetadata(ByteString.copyFromUtf8("old"))
                             .build())
-                    .build())
+                    .build()
+                    .toByteString())
             .build();
     when(snapshotStub.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build());
@@ -1685,7 +1697,7 @@ class RestResourceTest {
     ArgumentCaptor<UpdateSnapshotRequest> updateReq =
         ArgumentCaptor.forClass(UpdateSnapshotRequest.class);
     verify(snapshotStub).updateSnapshot(updateReq.capture());
-    IcebergMetadata updated = updateReq.getValue().getSpec().getIceberg();
+    IcebergMetadata updated = metadataFromSpec(updateReq.getValue().getSpec());
     assertEquals("new-uuid", updated.getTableUuid());
     assertEquals(3, updated.getFormatVersion());
     assertEquals(7, updated.getCurrentSchemaId());
@@ -1752,7 +1764,11 @@ class RestResourceTest {
             .putRefs("main", IcebergRef.newBuilder().setSnapshotId(5).setType("branch").build())
             .build();
     Snapshot metaSnapshot =
-        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(5).setIceberg(metadata).build();
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(5)
+            .putFormatMetadata("iceberg", metadata.toByteString())
+            .build();
     when(snapshotStub.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(metaSnapshot).build());
 
@@ -1790,7 +1806,11 @@ class RestResourceTest {
             .putRefs("main", IcebergRef.newBuilder().setSnapshotId(5).setType("branch").build())
             .build();
     Snapshot metaSnapshot =
-        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(5).setIceberg(metadata).build();
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(5)
+            .putFormatMetadata("iceberg", metadata.toByteString())
+            .build();
     when(snapshotStub.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(metaSnapshot).build());
 
@@ -2259,5 +2279,13 @@ class RestResourceTest {
     }
     """
         .formatted(tableName, tableName, tableName);
+  }
+
+  private static IcebergMetadata metadataFromSpec(ai.floedb.floecat.catalog.rpc.SnapshotSpec spec) {
+    try {
+      return IcebergMetadata.parseFrom(spec.getFormatMetadataOrThrow("iceberg"));
+    } catch (InvalidProtocolBufferException e) {
+      throw new RuntimeException("Failed to parse Iceberg metadata", e);
+    }
   }
 }

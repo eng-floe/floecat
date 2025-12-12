@@ -322,7 +322,8 @@ public final class UnityDeltaConnector implements FloecatConnector {
             0L,
             null,
             Map.of(),
-            0));
+            0,
+            Map.of()));
   }
 
   @Override
