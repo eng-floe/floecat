@@ -59,6 +59,7 @@ import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadata.MetadataLogEntry;
+import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.TableScan;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -82,9 +83,6 @@ public final class IcebergConnector implements FloecatConnector, IcebergSnapshot
   private final long ndvMaxFiles;
   private final FileIO externalFileIO;
   private final Map<Long, IcebergMetadata> snapshotMetadata = new ConcurrentHashMap<>();
-
-  private static final org.slf4j.Logger LOG =
-      org.slf4j.LoggerFactory.getLogger(IcebergConnector.class);
 
   private IcebergConnector(
       String connectorId,
@@ -616,6 +614,32 @@ public final class IcebergConnector implements FloecatConnector, IcebergSnapshot
       return null;
     }
     return hasOps.operations().current();
+  }
+
+  private TableMetadata readMetadataFromLocation(Table table) {
+    String fallbackLocation = tableMetadataLocation(table);
+    if (fallbackLocation == null || fallbackLocation.isBlank()) {
+      return null;
+    }
+    FileIO fileIO = null;
+    if (table != null) {
+      try {
+        fileIO = table.io();
+      } catch (UnsupportedOperationException ignored) {
+      }
+    }
+    if (fileIO == null) {
+      fileIO = externalFileIO;
+    }
+    if (fileIO == null) {
+      return null;
+    }
+    try {
+      TableMetadata metadata = TableMetadataParser.read(fileIO, fallbackLocation);
+      return metadata;
+    } catch (Exception e) {
+      return null;
+    }
   }
 
   private String tableMetadataLocation(Table table) {

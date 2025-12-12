@@ -463,7 +463,22 @@ public class TableGatewaySupport {
             .putProperties("external.table-name", tableName)
             .putProperties("external.namespace", namespaceFq)
             .putProperties(CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(true));
-    config.metadataFileIo().ifPresent(ioImpl -> spec.putProperties("io-impl", ioImpl));
+    String ioImpl =
+        config
+            .metadataFileIo()
+            .filter(v -> v != null && !v.isBlank())
+            .orElseGet(
+                () ->
+                    metadataLocation != null && metadataLocation.startsWith("s3://")
+                        ? "org.apache.iceberg.aws.s3.S3FileIO"
+                        : null);
+    if (ioImpl != null && !ioImpl.isBlank()) {
+      spec.putProperties("io-impl", ioImpl);
+    }
+    config
+        .defaultRegion()
+        .filter(region -> region != null && !region.isBlank())
+        .ifPresent(region -> spec.putProperties("s3.region", region));
     config.metadataFileIoRoot().ifPresent(root -> spec.putProperties("fs.floecat.test-root", root));
 
     CreateConnectorRequest.Builder request =

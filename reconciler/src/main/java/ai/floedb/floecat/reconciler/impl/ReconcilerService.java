@@ -6,6 +6,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
+import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
@@ -35,6 +36,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.IcebergSnapshotMetadataProvider;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
@@ -52,6 +54,7 @@ import java.util.Set;
 
 @ApplicationScoped
 public class ReconcilerService {
+
   public enum CaptureMode {
     METADATA_ONLY,
     METADATA_AND_STATS
@@ -451,33 +454,35 @@ public class ReconcilerService {
       spec.setSchemaId(snapshotBundle.schemaId());
       mask.addPaths("schema_id");
     }
+    final IcebergMetadata[] capturedMetadata = new IcebergMetadata[1];
     if (connector instanceof IcebergSnapshotMetadataProvider icebergProvider) {
       icebergProvider
           .icebergMetadata(snapshotBundle.snapshotId())
           .ifPresent(
               metadata -> {
+                capturedMetadata[0] = metadata;
                 spec.setIceberg(metadata);
                 mask.addPaths("iceberg");
               });
     }
     SnapshotSpec snapshotSpec = spec.build();
-    var request = CreateSnapshotRequest.newBuilder().setSpec(snapshotSpec).build();
-    try {
+    boolean exists = snapshotExists(tableId, snapshotBundle.snapshotId());
+    if (!exists) {
+      var request = CreateSnapshotRequest.newBuilder().setSpec(snapshotSpec).build();
       clients.snapshot().createSnapshot(request);
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.ALREADY_EXISTS) {
-        var updateMask = mask.build();
-        if (updateMask.getPathsCount() > 0) {
-          var updateReq =
-              UpdateSnapshotRequest.newBuilder()
-                  .setSpec(snapshotSpec)
-                  .setUpdateMask(updateMask)
-                  .build();
-          clients.snapshot().updateSnapshot(updateReq);
-        }
-        return;
+    } else {
+      var updateMask = mask.build();
+      if (updateMask.getPathsCount() > 0) {
+        var updateReq =
+            UpdateSnapshotRequest.newBuilder()
+                .setSpec(snapshotSpec)
+                .setUpdateMask(updateMask)
+                .build();
+        clients.snapshot().updateSnapshot(updateReq);
       }
-      throw e;
+    }
+    if (capturedMetadata[0] != null) {
+      updateTableFromIcebergMetadata(tableId, capturedMetadata[0]);
     }
   }
 
@@ -587,6 +592,66 @@ public class ReconcilerService {
         return false;
       }
       throw e;
+    }
+  }
+
+  private boolean snapshotExists(ResourceId tableId, long snapshotId) {
+    if (snapshotId <= 0) {
+      return false;
+    }
+    try {
+      var response =
+          clients
+              .snapshot()
+              .getSnapshot(
+                  GetSnapshotRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
+                      .build());
+      return response != null && response.hasSnapshot();
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return false;
+      }
+      throw e;
+    }
+  }
+
+  private void updateTableFromIcebergMetadata(ResourceId tableId, IcebergMetadata metadata) {
+    if (metadata == null) {
+      return;
+    }
+    var props = new java.util.LinkedHashMap<String, String>();
+    if (metadata.getMetadataLocation() != null && !metadata.getMetadataLocation().isBlank()) {
+      props.put("metadata-location", metadata.getMetadataLocation());
+      props.put("metadata_location", metadata.getMetadataLocation());
+    }
+    if (metadata.getTableUuid() != null && !metadata.getTableUuid().isBlank()) {
+      props.put("table-uuid", metadata.getTableUuid());
+    }
+    if (metadata.getCurrentSnapshotId() > 0) {
+      props.put("current-snapshot-id", Long.toString(metadata.getCurrentSnapshotId()));
+    }
+    if (metadata.getLastSequenceNumber() > 0) {
+      props.put("last-sequence-number", Long.toString(metadata.getLastSequenceNumber()));
+    }
+    if (metadata.getCurrentSchemaId() >= 0) {
+      props.put("current-schema-id", Integer.toString(metadata.getCurrentSchemaId()));
+    }
+    if (metadata.getLastColumnId() >= 0) {
+      props.put("last-column-id", Integer.toString(metadata.getLastColumnId()));
+    }
+    if (metadata.getDefaultSpecId() >= 0) {
+      props.put("default-spec-id", Integer.toString(metadata.getDefaultSpecId()));
+    }
+    if (metadata.getLastPartitionId() >= 0) {
+      props.put("last-partition-id", Integer.toString(metadata.getLastPartitionId()));
+    }
+    if (metadata.getDefaultSortOrderId() >= 0) {
+      props.put("default-sort-order-id", Integer.toString(metadata.getDefaultSortOrderId()));
+    }
+    if (props.isEmpty()) {
+      return;
     }
   }
 
