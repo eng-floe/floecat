@@ -4,9 +4,9 @@ System objects are the catalog-level tables that live alongside traditional SQL 
 
 ### Architecture overview
 
-- **`SystemObjectDefinition`** describes a single row source: the canonical `NameRef`, a `SystemObjectColumnSet`, and the scanner ID.
+- **`SystemObjectDef`** describes a single row source: the canonical `NameRef`, a `SystemObjectColumnSet`, and the scanner ID.
 - **`SystemObjectScanner`** produces `SystemObjectRow` streams when a query needs real data. The scanner receives a `SystemObjectScanContext`, which is the catalog’s only bridge to runtime metadata.
-- **`SystemObjectRegistry`** aggregates every provider discovered via `ServiceLoaderSystemObjectProvider` (builtins and plugin extensions). CDI produces the registry once per application and exposes it to the runtime metadata query path.
+- **`SystemObjectRegistry`** aggregates every provider discovered via `ServiceLoaderSystemCatalogProvider` (builtins and plugin extensions). CDI produces the registry once per application and exposes it to the runtime metadata query path.
 - **`SystemObjectGraphView` / `SystemObjectScanContext`** are deliberately thin abstractions over `MetadataGraph`. Providers rely on them for resolution, enumeration, schema JSON, and typed column maps.
 
 ### Built-in information_schema
@@ -21,10 +21,10 @@ This setup keeps the core module free of editor or Quarkus dependencies while le
 
 ### Writing your own provider
 
-1. **Implement `SystemObjectProvider`** for addon tables. Provide definitions for all `NameRef`/`column set` pairs, return the matching scanner from `provide(...)`, and respect `supports(...)` so you can override builtins.
-2. **Optional: implement `EngineSystemTablesExtension`** if you want engine-specific overrides; the provided `ServiceLoaderSystemObjectProvider` merges builtin and plugin providers, so the extra interface simply marks that your provider should load after the builtins.
+1. **Implement `SystemObjectScannerProvider`** for addon tables. Provide definitions for all `NameRef`/`column set` pairs, return the matching scanner from `provide(...)`, and respect `supports(...)` so you can override builtins.
+2. **Optional: implement `EngineSystemCatalogExtension`** (which already extends `SystemObjectScannerProvider`) if you need an engine-specific catalog + system-object bundle; the unified `ServiceLoaderSystemCatalogProvider` discovers it alongside the other providers, so the extra class just makes it easier to ship both pieces together.
 3. **Emit rows with `SystemObjectRow`**. Use `SystemObjectScanContext` for every graph lookup (catalog, namespace, table, schema). The context caches `listNamespaces`, `listTables`, and `columnTypes`, so keep your scanner short and rely on provided helpers rather than your own caches.
-4. **Register via `META-INF/services/ai.floedb.floecat.catalog.systemobjects.spi.SystemObjectProvider`** (and/or the `EngineSystemTablesExtension` variant) inside your plugin jar. Plugins can commit a single jar that bundles connectors, system tables, and builtin extensions just by shipping this service file.
+4. **Register via `META-INF/services/ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider`** inside your plugin jar. Plugins can commit a single jar that bundles connectors, system tables, and builtin extensions just by shipping this service file.
 
 ### Performance & scalability notes
 

@@ -2,7 +2,6 @@ package ai.floedb.floecat.service.metagraph.hint;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import ai.floedb.floecat.catalog.builtin.graph.model.*;
 import ai.floedb.floecat.common.rpc.*;
 import ai.floedb.floecat.metagraph.hint.EngineHintProvider;
 import ai.floedb.floecat.metagraph.model.EngineHint;

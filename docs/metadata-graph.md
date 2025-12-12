@@ -78,7 +78,7 @@ isolated across engine versions and hint revisions.
 
 ### Builtin Nodes & Engine Filtering
 Builtin SQL objects (types, functions, operators, casts, collations, aggregates) never hit the
-pointer/blob repositories. Instead, the graph delegates to `BuiltinNodeRegistry`, which loads the
+pointer/blob repositories. Instead, the graph delegates to `SystemNodeRegistry`, which loads the
 pb/pbtxt catalogs once per engine kind, materialises immutable relation nodes, and caches the
 result per `(engine_kind, engine_version)`. Catalog files live under `resources/builtins` and follow
 the `<engine_kind>.pb[pbtxt]` naming convention. Each builtin definition can declare one or more
@@ -94,16 +94,16 @@ materialises a `(engine_kind, engine_version)` bundle it drops every rule that d
 engine/version, so the filtered catalog (and `GetBuiltinCatalog` response) only contains the rules
 that apply to the caller. Pbtxt authors rarely need to repeat the engine kind in each rule; any
 `engine_specific` entry without an explicit `engine_kind` automatically inherits the file’s engine
-kind. Builtin nodes intentionally stay rule-free; the `BuiltinCatalogHintProvider` reuses the cached
+kind. Builtin nodes intentionally stay rule-free; the `SystemCatalogHintProvider` reuses the cached
 definitions and `EngineSpecificMatcher` to expose the matching rule’s properties through the
-`builtin.catalog.properties` engine hint (JSON payload).
+`builtin.systemcatalog.properties` engine hint (JSON payload).
 
 The matcher applies all engine‑specific constraints eagerly when materializing builtin bundles.
 For a given (engine_kind, engine_version) pair, only the rules that match naturally‑ordered
 version boundaries are retained. As a result, builtin nodes exposed through
 `MetadataGraph.builtinNodes` already represent the exact set applicable for that engine release.
 Rules that declare version‑scoped properties contribute those properties to the
-`builtin.catalog.properties` hint, which is computed by the BuiltinCatalogHintProvider using the
+`builtin.systemcatalog.properties` hint, which is computed by the SystemCatalogHintProvider using the
 same matching semantics.
 
 `MetadataGraph.builtinNodes(engineKind, engineVersion)` exposes the filtered bundle. `GetBuiltinCatalog`

@@ -26,7 +26,7 @@ import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.MetadataGraph;
+import ai.floedb.floecat.service.metagraph.overlay.CatalogOverlay;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcService;
@@ -40,7 +40,7 @@ import org.jboss.logging.Logger;
 public class DirectoryServiceImpl extends BaseServiceImpl implements DirectoryService {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
-  @Inject MetadataGraph metadataGraph;
+  @Inject CatalogOverlay catalogOverlay;
 
   private static final Logger LOG = Logger.getLogger(DirectoryService.class);
 
@@ -56,7 +56,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   authz.require(principalContext, "catalog.read");
 
                   var resourceId =
-                      metadataGraph.resolveCatalog(correlationId(), request.getRef().getCatalog());
+                      catalogOverlay.resolveCatalog(correlationId(), request.getRef().getCatalog());
 
                   return ResolveCatalogResponse.newBuilder().setResourceId(resourceId).build();
                 }),
@@ -78,7 +78,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   authz.require(principalContext, "catalog.read");
 
-                  var catalogNode = metadataGraph.catalog(request.getResourceId());
+                  var catalogNode = catalogOverlay.catalog(request.getResourceId());
                   if (catalogNode.isEmpty()) {
                     return LookupCatalogResponse.newBuilder().build();
                   }
@@ -108,7 +108,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   var ref = request.getRef();
                   validateNameRefOrThrow(ref);
 
-                  var namespaceId = metadataGraph.resolveNamespace(correlationId(), ref);
+                  var namespaceId = catalogOverlay.resolveNamespace(correlationId(), ref);
 
                   return ResolveNamespaceResponse.newBuilder().setResourceId(namespaceId).build();
                 }),
@@ -130,7 +130,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   authz.require(principalContext, "catalog.read");
 
-                  var namespaceName = metadataGraph.namespaceName(request.getResourceId());
+                  var namespaceName = catalogOverlay.namespaceName(request.getResourceId());
                   if (namespaceName == null || namespaceName.isEmpty()) {
                     return LookupNamespaceResponse.newBuilder().build();
                   }
@@ -159,7 +159,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   validateNameRefOrThrow(nameRef);
                   validateTableNameOrThrow(nameRef);
 
-                  var tableId = metadataGraph.resolveTable(correlationId(), nameRef);
+                  var tableId = catalogOverlay.resolveTable(correlationId(), nameRef);
 
                   return ResolveTableResponse.newBuilder().setResourceId(tableId).build();
                 }),
@@ -181,7 +181,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   authz.require(principalContext, List.of("catalog.read", "table.read"));
 
-                  var tableName = metadataGraph.tableName(request.getResourceId());
+                  var tableName = catalogOverlay.tableName(request.getResourceId());
                   if (tableName == null || tableName.isEmpty()) {
                     return LookupTableResponse.newBuilder().build();
                   }
@@ -210,7 +210,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   validateNameRefOrThrow(nameRef);
                   validateViewNameOrThrow(nameRef);
 
-                  var viewId = metadataGraph.resolveView(correlationId(), nameRef);
+                  var viewId = catalogOverlay.resolveView(correlationId(), nameRef);
 
                   return ResolveViewResponse.newBuilder().setResourceId(viewId).build();
                 }),
@@ -232,7 +232,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   authz.require(principalContext, List.of("catalog.read", "view.read"));
 
-                  var viewName = metadataGraph.viewName(request.getResourceId());
+                  var viewName = catalogOverlay.viewName(request.getResourceId());
                   if (viewName == null || viewName.isEmpty()) {
                     return LookupViewResponse.newBuilder().build();
                   }
@@ -266,7 +266,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   if (request.hasList()) {
                     var result =
-                        metadataGraph.resolveViews(
+                        catalogOverlay.resolveViews(
                             correlationId(), request.getList().getNamesList(), limit, token);
 
                     result
@@ -288,7 +288,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   if (request.hasPrefix()) {
                     var result =
-                        metadataGraph.resolveViews(
+                        catalogOverlay.resolveViews(
                             correlationId(), request.getPrefix(), limit, token);
 
                     result
@@ -336,7 +336,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   if (request.hasList()) {
                     var result =
-                        metadataGraph.resolveTables(
+                        catalogOverlay.resolveTables(
                             correlationId(), request.getList().getNamesList(), limit, token);
 
                     result
@@ -358,7 +358,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   if (request.hasPrefix()) {
                     var result =
-                        metadataGraph.resolveTables(
+                        catalogOverlay.resolveTables(
                             correlationId(), request.getPrefix(), limit, token);
 
                     result

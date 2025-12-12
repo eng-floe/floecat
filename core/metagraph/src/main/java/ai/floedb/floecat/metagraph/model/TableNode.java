@@ -50,4 +50,9 @@ public record TableNode(
   public GraphNodeKind kind() {
     return GraphNodeKind.TABLE;
   }
+
+  @Override
+  public GraphNodeOrigin origin() {
+    return GraphNodeOrigin.USER;
+  }
 }
