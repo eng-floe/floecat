@@ -7,7 +7,7 @@ import ai.floedb.floecat.systemcatalog.registry.SystemCatalogValidator;
 import org.junit.jupiter.api.Test;
 
 /** Tests for Floe builtin extension plugins: loading, parsing, and validation of .pbtxt files. */
-class FloeBuiltinExtensionTest {
+class FloeCatalogExtensionTest {
 
   @Test
   void floeDbLoadsAndValidates() {

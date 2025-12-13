@@ -9,6 +9,9 @@ public final class NameRefUtil {
    * Returns a canonical representation of a NameRef: path1.path2.name
    *
    * <p>Catalog is intentionally omitted to remain engine-neutral.
+   *
+   * <p>This canonical form lower-cases every segment so it can safely be used as a case-insensitive
+   * key when merging or overriding builtin definitions.
    */
   public static String canonical(NameRef ref) {
     if (ref == null) return "";
