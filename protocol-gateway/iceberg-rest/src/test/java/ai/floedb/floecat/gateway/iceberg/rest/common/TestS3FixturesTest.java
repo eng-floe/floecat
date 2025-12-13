@@ -14,9 +14,7 @@ class TestS3FixturesTest {
     Path missingFile =
         TestS3Fixtures.prefixPath()
             .resolve(
-                Path.of(
-                    "metadata",
-                    "00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json"));
+                Path.of("metadata", "00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json"));
     Assertions.assertTrue(
         Files.exists(missingFile), "Expected fixture metadata to exist after seedFixtures()");
 

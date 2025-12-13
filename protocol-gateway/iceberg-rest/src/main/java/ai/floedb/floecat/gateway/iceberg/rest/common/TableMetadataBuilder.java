@@ -77,6 +77,10 @@ public final class TableMetadataBuilder {
         (metadata != null && metadata.getLastUpdatedMs() > 0)
             ? Long.valueOf(metadata.getLastUpdatedMs())
             : maybeLong(props.get("last-updated-ms"));
+    // For new tables, last-updates-ms will not be set, so set it
+    if (lastUpdatedMs == null || lastUpdatedMs <= 0) {
+      lastUpdatedMs = Instant.now().toEpochMilli();
+    }
     Long currentSnapshotId =
         metadata.getCurrentSnapshotId() > 0
             ? Long.valueOf(metadata.getCurrentSnapshotId())
@@ -307,10 +311,7 @@ public final class TableMetadataBuilder {
           .properties()
           .forEach(
               (k, v) -> {
-                if (k != null
-                    && v != null
-                    && !"metadata-location".equals(k)
-                    && !"metadata_location".equals(k)) {
+                if (k != null && v != null && !"metadata-location".equals(k)) {
                   props.put(k, v);
                 }
               });
@@ -484,9 +485,6 @@ public final class TableMetadataBuilder {
       return null;
     }
     String location = request.properties().get("metadata-location");
-    if (location == null || location.isBlank()) {
-      location = request.properties().get("metadata_location");
-    }
     return (location == null || location.isBlank()) ? null : location;
   }
 

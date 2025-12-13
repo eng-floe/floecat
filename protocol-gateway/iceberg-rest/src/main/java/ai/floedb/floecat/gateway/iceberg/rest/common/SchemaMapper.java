@@ -338,8 +338,7 @@ final class SchemaMapper {
     if (value == null || value.isBlank()) {
       return "nulls-first";
     }
-    String normalized =
-        value.replace('_', '-').toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
+    String normalized = value.replace('_', '-').toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
     if ("nulls-first".equals(normalized) || "nullsfirst".equals(normalized)) {
       return "nulls-first";
     }

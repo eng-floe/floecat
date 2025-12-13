@@ -103,7 +103,7 @@ public class TableCommitSideEffectService {
     }
     if (effectiveMetadata == null || effectiveMetadata.isBlank()) {
       Map<String, String> props = tableRecord.getPropertiesMap();
-      effectiveMetadata = props.getOrDefault("metadata-location", props.get("metadata_location"));
+      effectiveMetadata = props.get("metadata-location");
     }
     if (effectiveMetadata == null || effectiveMetadata.isBlank()) {
       return resolveConnectorId(tableRecord);

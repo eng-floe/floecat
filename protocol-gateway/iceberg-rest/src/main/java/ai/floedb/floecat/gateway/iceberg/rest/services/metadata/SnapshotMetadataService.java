@@ -375,10 +375,7 @@ public class SnapshotMetadataService {
     }
     ImportedSnapshot currentSnapshot = importedMetadata.currentSnapshot();
     Map<String, String> props = importedMetadata.properties();
-    String metadataLocation =
-        props == null
-            ? null
-            : props.getOrDefault("metadata-location", props.get("metadata_location"));
+    String metadataLocation = props == null ? null : props.get("metadata-location");
     if (currentSnapshot != null) {
       updateSnapshotMetadataLocation(tableId, currentSnapshot.snapshotId(), metadataLocation);
     }
@@ -1272,9 +1269,6 @@ public class SnapshotMetadataService {
       return null;
     }
     String location = props.get("metadata-location");
-    if (location == null || location.isBlank()) {
-      location = props.get("metadata_location");
-    }
     return (location == null || location.isBlank()) ? null : location;
   }
 

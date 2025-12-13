@@ -510,7 +510,6 @@ class RestResourceTest {
     Table updated =
         existing.toBuilder()
             .putProperties("metadata-location", "s3://bucket/db/existing_table/new.metadata.json")
-            .putProperties("metadata_location", "s3://bucket/db/existing_table/new.metadata.json")
             .build();
     when(tableStub.updateTable(any()))
         .thenReturn(UpdateTableResponse.newBuilder().setTable(updated).build());

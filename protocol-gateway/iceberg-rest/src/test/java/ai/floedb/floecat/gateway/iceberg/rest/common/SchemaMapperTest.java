@@ -19,7 +19,8 @@ class SchemaMapperTest {
                 "fields",
                 List.of(
                     new LinkedHashMap<>(
-                        Map.of("source-id", 1, "transform", "identity", "null-order", "NULLS_LAST")),
+                        Map.of(
+                            "source-id", 1, "transform", "identity", "null-order", "NULLS_LAST")),
                     new LinkedHashMap<>(Map.of("source-id", 2)))));
 
     SchemaMapper.normalizeSortOrder(order);
@@ -34,7 +35,11 @@ class SchemaMapperTest {
   void normalizeSortOrderAssignsPositiveOrderIdWhenSorted() {
     Map<String, Object> order =
         new LinkedHashMap<>(
-            Map.of("sort-order-id", 0, "fields", List.of(new LinkedHashMap<>(Map.of("source-id", 3)))));
+            Map.of(
+                "sort-order-id",
+                0,
+                "fields",
+                List.of(new LinkedHashMap<>(Map.of("source-id", 3)))));
 
     SchemaMapper.normalizeSortOrder(order);
 

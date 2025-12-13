@@ -30,7 +30,7 @@ final class GlueIcebergFilter {
         if (parameters != null) {
           var tableType = parameters.get("table_type");
           if ("ICEBERG".equalsIgnoreCase(tableType)
-              || parameters.containsKey("metadata_location")) {
+              || parameters.containsKey("metadata-location")) {
             out.add(table.name());
           }
         }
@@ -58,7 +58,7 @@ final class GlueIcebergFilter {
         if (parameters != null) {
           var tableType = parameters.get("table_type");
           if ("ICEBERG".equalsIgnoreCase(tableType)
-              || parameters.containsKey("metadata_location")) {
+              || parameters.containsKey("metadata-location")) {
             return true;
           }
         }

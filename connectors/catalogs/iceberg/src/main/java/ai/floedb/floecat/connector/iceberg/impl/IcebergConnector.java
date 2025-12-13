@@ -622,11 +622,7 @@ public final class IcebergConnector implements FloecatConnector {
     if (props == null || props.isEmpty()) {
       return null;
     }
-    String loc = props.get("metadata-location");
-    if (loc == null || loc.isBlank()) {
-      loc = props.get("metadata_location");
-    }
-    return loc;
+    return props.get("metadata-location");
   }
 
   private IcebergMetadata toIcebergMetadata(TableMetadata metadata) {

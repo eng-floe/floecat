@@ -134,9 +134,6 @@ public class TableGatewaySupport {
     }
     String location = req.properties().get("metadata-location");
     if (location == null || location.isBlank()) {
-      location = req.properties().get("metadata_location");
-    }
-    if (location == null || location.isBlank()) {
       return null;
     }
     return location;
@@ -152,7 +149,7 @@ public class TableGatewaySupport {
           if (key == null || value == null) {
             return;
           }
-          if ("metadata-location".equals(key) || "metadata_location".equals(key)) {
+          if ("metadata-location".equals(key)) {
             return;
           }
           sanitized.put(key, value);

@@ -24,10 +24,9 @@ class TablePropertyServiceTest {
   private final TablePropertyService service = new TablePropertyService();
 
   @Test
-  void stripMetadataLocationRemovesBothKeyVariants() {
+  void stripMetadataLocationRemovesCanonicalKey() {
     Map<String, String> props = new LinkedHashMap<>();
     props.put("metadata-location", "a");
-    props.put("metadata_location", "b");
     props.put("other", "value");
 
     service.stripMetadataLocation(props);

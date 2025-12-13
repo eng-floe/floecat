@@ -214,15 +214,14 @@ public class TableUpdatePlanner {
         }
         Long maxSnapshotAge =
             asLong(
-                firstNonNull(
-                    update.get("max-snapshot-age-ms"), update.get("max_snapshot_age_ms")));
+                firstNonNull(update.get("max-snapshot-age-ms"), update.get("max_snapshot_age_ms")));
         if (maxSnapshotAge != null) {
           refMap.put("max-snapshot-age-ms", maxSnapshotAge);
         }
         Integer minSnapshots =
-          asInteger(
-              firstNonNull(
-                  update.get("min-snapshots-to-keep"), update.get("min_snapshots_to_keep")));
+            asInteger(
+                firstNonNull(
+                    update.get("min-snapshots-to-keep"), update.get("min_snapshots_to_keep")));
         if (minSnapshots != null) {
           refMap.put("min-snapshots-to-keep", minSnapshots);
         }
