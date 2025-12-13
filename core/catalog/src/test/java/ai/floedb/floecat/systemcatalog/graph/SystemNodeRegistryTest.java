@@ -115,6 +115,18 @@ class SystemNodeRegistryTest {
   }
 
   @Test
+  void engineKindIsLowercasedForCaching() {
+    var registry = registryWithCatalogs();
+    var nodeRegistry = new SystemNodeRegistry(registry);
+
+    var nodesLower = nodeRegistry.nodesFor("floe-demo", "16.0");
+    var nodesUpper = nodeRegistry.nodesFor("FLOE-DEMO", "16.0");
+
+    // Same logical catalog, same instance from cache
+    assertThat(nodesLower).isSameAs(nodesUpper);
+  }
+
+  @Test
   void resourceIdBuildsStableIds() {
     var id = SystemNodeRegistry.resourceId("floe", ResourceKind.RK_FUNCTION, nr("pg_catalog.abs"));
 

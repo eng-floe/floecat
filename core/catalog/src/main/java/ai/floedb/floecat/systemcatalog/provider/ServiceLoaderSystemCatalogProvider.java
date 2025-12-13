@@ -30,10 +30,16 @@ public final class ServiceLoaderSystemCatalogProvider implements SystemCatalogPr
   private final List<SystemObjectScannerProvider> providers;
 
   public ServiceLoaderSystemCatalogProvider() {
-    var engineExtensions =
-        ServiceLoader.load(EngineSystemCatalogExtension.class).stream()
-            .map(ServiceLoader.Provider::get)
-            .toList();
+    List<EngineSystemCatalogExtension> engineExtensions;
+    try {
+      engineExtensions =
+          ServiceLoader.load(EngineSystemCatalogExtension.class).stream()
+              .map(ServiceLoader.Provider::get)
+              .toList();
+    } catch (Exception e) {
+      LOG.warn("Failed to load EngineSystemCatalogExtension implementations", e);
+      engineExtensions = List.of();
+    }
     Map<String, EngineSystemCatalogExtension> tmp = new HashMap<>();
     engineExtensions.forEach(ext -> tmp.put(ext.engineKind().toLowerCase(Locale.ROOT), ext));
     this.plugins = Map.copyOf(tmp);
@@ -63,15 +69,21 @@ public final class ServiceLoaderSystemCatalogProvider implements SystemCatalogPr
     }
 
     EngineSystemCatalogExtension ext = plugins.get(engineKind.toLowerCase(Locale.ROOT));
-
+    SystemCatalogData catalog;
     if (ext == null) {
-      LOG.warn("No builtin plugin found for engine_kind=" + engineKind);
-      return SystemEngineCatalog.from(engineKind, SystemCatalogData.empty());
+      LOG.warn(
+          "No system catalog plugin found for engine_kind="
+              + engineKind
+              + ", defaulting to empty catalog");
+      catalog = SystemCatalogData.empty();
+    } else {
+      LOG.info("Loading system catalog plugin for engine_kind=" + engineKind);
+      catalog = ext.loadSystemCatalog();
     }
 
     // Merge the scanner-provided namespace/table/view defs into the base catalog snapshot before
     // materializing it so both sources share the same cache.
-    SystemCatalogData data = mergeProviderDefinitions(engineKind, ext.loadSystemCatalog());
+    SystemCatalogData data = mergeProviderDefinitions(engineKind, catalog);
     return SystemEngineCatalog.from(engineKind, data);
   }
 
@@ -84,6 +96,18 @@ public final class ServiceLoaderSystemCatalogProvider implements SystemCatalogPr
     Map<String, SystemNamespaceDef> namespaceByName = new LinkedHashMap<>();
     Map<String, SystemTableDef> tableByName = new LinkedHashMap<>();
     Map<String, SystemViewDef> viewByName = new LinkedHashMap<>();
+
+    // Seed with InformationSchemaProvider definitions always by default
+    InformationSchemaProvider infoSchemaProvider = new InformationSchemaProvider();
+    for (var def : infoSchemaProvider.definitions()) {
+      if (def instanceof SystemNamespaceDef ns) {
+        namespaceByName.put(NameRefUtil.canonical(ns.name()), ns);
+      } else if (def instanceof SystemTableDef table) {
+        tableByName.put(NameRefUtil.canonical(table.name()), table);
+      } else if (def instanceof SystemViewDef view) {
+        viewByName.put(NameRefUtil.canonical(view.name()), view);
+      }
+    }
 
     for (SystemNamespaceDef ns : base.namespaces()) {
       namespaceByName.put(NameRefUtil.canonical(ns.name()), ns);

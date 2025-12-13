@@ -13,9 +13,10 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Registers all builtin information_schema.* system objects.
+ * Baseline system catalog provider for the SQL information_schema.
  *
- * <p>Plugins may override ANY table by returning a matching definition first.
+ * <p>This provider is engine-agnostic and is always loaded by the system catalog loader unless
+ * explicitly overridden by another provider defining the same canonical object names.
  */
 public final class InformationSchemaProvider implements SystemObjectScannerProvider {
 

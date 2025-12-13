@@ -9,7 +9,6 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.service.context.impl.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.cache.GraphCacheManager;
 import ai.floedb.floecat.service.metagraph.hint.EngineHintManager;
@@ -46,7 +45,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * Resolve names + FQ prefix/list operations - Delegate enumeration / traversal to helpers below
  */
 @ApplicationScoped
-public final class UserGraph implements UserGraphClient {
+public final class UserGraph {
 
   // ----------------------------------------------------------------------
   // Dependencies (constructed once)
@@ -58,7 +57,6 @@ public final class UserGraph implements UserGraphClient {
   private final FullyQualifiedResolver fq;
   private SnapshotHelper snapshots;
   private EngineHintManager hints;
-  private EngineContextProvider engine;
   private PrincipalProvider principal;
 
   private Timer loadTimer;
@@ -79,8 +77,7 @@ public final class UserGraph implements UserGraphClient {
       PrincipalProvider principal,
       @ConfigProperty(name = "floecat.metadata.graph.cache-max-size", defaultValue = "50000")
           long cacheMaxSize,
-      EngineHintManager engineHints,
-      EngineContextProvider engineCtx) {
+      EngineHintManager engineHints) {
 
     this.cache = new GraphCacheManager(cacheMaxSize > 0, cacheMaxSize, meter);
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
@@ -88,7 +85,6 @@ public final class UserGraph implements UserGraphClient {
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.snapshots = new SnapshotHelper(snapshotRepo, snapshotStub);
     this.hints = engineHints;
-    this.engine = engineCtx;
     this.principal = principal;
   }
 
@@ -108,19 +104,6 @@ public final class UserGraph implements UserGraphClient {
     // Snapshot helper without gRPC client
     this.snapshots = new SnapshotHelper(snapshotRepo, null);
 
-    // Fake collaborators for tests
-    this.engine =
-        new EngineContextProvider() {
-          @Override
-          public String engineKind() {
-            return "test";
-          }
-
-          @Override
-          public String engineVersion() {
-            return "0.0";
-          }
-        };
     this.principal =
         new PrincipalProvider() {
           @Override
@@ -233,14 +216,12 @@ public final class UserGraph implements UserGraphClient {
   // Snapshot resolution
   // ----------------------------------------------------------------------
 
-  @Override
   public SnapshotPin snapshotPinFor(
       String cid, ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOfDefault) {
 
     return snapshots.snapshotPinFor(cid, tableId, override, asOfDefault);
   }
 
-  @Override
   public ResourceId resolveName(String cid, NameRef ref) {
     validateNameRef(cid, ref);
     String accountId = requireAccountId(cid);
@@ -480,10 +461,6 @@ public final class UserGraph implements UserGraphClient {
 
   public void setPrincipalProvider(PrincipalProvider principal) {
     this.principal = principal;
-  }
-
-  public void setEngineContextProvider(EngineContextProvider engine) {
-    this.engine = engine;
   }
 
   // ----------------------------------------------------------------------

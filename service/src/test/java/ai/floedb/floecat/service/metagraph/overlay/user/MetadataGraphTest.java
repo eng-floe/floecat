@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
-import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -14,7 +13,6 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
@@ -24,14 +22,13 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.service.context.impl.EngineContextProvider;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
-import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
-import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.testsupport.SecurityTestSupport.FakePrincipalProvider;
+import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.storage.InMemoryBlobStore;
 import ai.floedb.floecat.storage.InMemoryPointerStore;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
@@ -52,19 +49,18 @@ class MetadataGraphTest {
 
   FakeCatalogRepository catalogRepository;
   FakeNamespaceRepository namespaceRepository;
-  FakeSnapshotRepository snapshotRepository;
+  SnapshotTestSupport.FakeSnapshotRepository snapshotRepository;
   FakeTableRepository tableRepository;
   FakeViewRepository viewRepository;
-  FakeSnapshotClient snapshotClient;
+  SnapshotTestSupport.FakeSnapshotClient snapshotClient;
   FakePrincipalProvider principalProvider;
-  FakeEngineContextProvider engineContextProvider;
   UserGraph graph;
 
   @BeforeEach
   void setUp() {
     catalogRepository = new FakeCatalogRepository();
     namespaceRepository = new FakeNamespaceRepository();
-    snapshotRepository = new FakeSnapshotRepository();
+    snapshotRepository = new SnapshotTestSupport.FakeSnapshotRepository();
     tableRepository = new FakeTableRepository();
     viewRepository = new FakeViewRepository();
 
@@ -78,16 +74,13 @@ class MetadataGraphTest {
             viewRepository);
 
     // Configure fakes that tests rely on
-    snapshotClient = new FakeSnapshotClient();
+    snapshotClient = new SnapshotTestSupport.FakeSnapshotClient();
     SnapshotHelper helper = new SnapshotHelper(snapshotRepository, null);
     helper.setSnapshotClient(snapshotClient);
     graph.setSnapshotHelper(helper);
 
     principalProvider = new FakePrincipalProvider("account");
     graph.setPrincipalProvider(principalProvider);
-
-    engineContextProvider = new FakeEngineContextProvider("floe-demo", "16.0");
-    graph.setEngineContextProvider(engineContextProvider);
   }
 
   @Test
@@ -245,8 +238,8 @@ class MetadataGraphTest {
             registry,
             principalProvider,
             42L, // cache size
-            null, // engineHintManager
-            engineContextProvider);
+            null // engineHintManager
+            );
     SnapshotHelper helperEnabled = new SnapshotHelper(snapshotRepository, null);
     helperEnabled.setSnapshotClient(snapshotClient);
     instrumentedGraph.setSnapshotHelper(helperEnabled);
@@ -271,8 +264,8 @@ class MetadataGraphTest {
             registry,
             principalProvider,
             0L, // cache size (disabled)
-            null, // engineHintManager
-            engineContextProvider);
+            null // engineHintManager
+            );
     SnapshotHelper helperDisabled = new SnapshotHelper(snapshotRepository, null);
     helperDisabled.setSnapshotClient(snapshotClient);
     instrumentedGraph.setSnapshotHelper(helperDisabled);
@@ -949,41 +942,6 @@ class MetadataGraphTest {
     }
   }
 
-  static final class FakeSnapshotRepository extends SnapshotRepository {
-    private final Map<Long, Snapshot> byId = new HashMap<>();
-
-    FakeSnapshotRepository() {
-      super(new InMemoryPointerStore(), new InMemoryBlobStore());
-    }
-
-    void put(Snapshot snapshot) {
-      byId.put(snapshot.getSnapshotId(), snapshot);
-    }
-
-    @Override
-    public Optional<Snapshot> getById(ResourceId tableId, long snapshotId) {
-      return Optional.ofNullable(byId.get(snapshotId));
-    }
-
-    @Override
-    public Optional<Snapshot> getCurrentSnapshot(ResourceId tableId) {
-      return byId.values().stream().max(Comparator.comparingLong(this::createdMillis));
-    }
-
-    @Override
-    public Optional<Snapshot> getAsOf(ResourceId tableId, Timestamp asOf) {
-      long target = asOf.getSeconds() * 1000L + asOf.getNanos() / 1_000_000L;
-      return byId.values().stream()
-          .filter(s -> createdMillis(s) <= target)
-          .max(Comparator.comparingLong(this::createdMillis));
-    }
-
-    private long createdMillis(Snapshot snapshot) {
-      Timestamp ts = snapshot.getUpstreamCreatedAt();
-      return ts.getSeconds() * 1000L + ts.getNanos() / 1_000_000L;
-    }
-  }
-
   record TableIds(ResourceId catalogId, ResourceId namespaceId, ResourceId tableId) {}
 
   static final class FakeTableRepository extends TableRepository {
@@ -1175,57 +1133,6 @@ class MetadataGraphTest {
         }
       }
       throw new IllegalArgumentException("bad token");
-    }
-  }
-
-  static final class FakeSnapshotClient implements SnapshotHelper.SnapshotClient {
-    GetSnapshotResponse nextResponse;
-    GetSnapshotRequest lastRequest;
-
-    @Override
-    public GetSnapshotResponse getSnapshot(GetSnapshotRequest request) {
-      lastRequest = request;
-      if (nextResponse == null) {
-        throw new IllegalStateException("no snapshot response configured");
-      }
-      return nextResponse;
-    }
-  }
-
-  static final class FakePrincipalProvider extends PrincipalProvider {
-    private PrincipalContext ctx;
-
-    FakePrincipalProvider(String accountId) {
-      ctx = PrincipalContext.newBuilder().setAccountId(accountId).build();
-    }
-
-    void setAccount(String accountId) {
-      ctx = PrincipalContext.newBuilder().setAccountId(accountId).build();
-    }
-
-    @Override
-    public PrincipalContext get() {
-      return ctx;
-    }
-  }
-
-  static final class FakeEngineContextProvider extends EngineContextProvider {
-    private final String engineKind;
-    private final String engineVersion;
-
-    FakeEngineContextProvider(String engineKind, String engineVersion) {
-      this.engineKind = engineKind;
-      this.engineVersion = engineVersion;
-    }
-
-    @Override
-    public String engineKind() {
-      return engineKind;
-    }
-
-    @Override
-    public String engineVersion() {
-      return engineVersion;
     }
   }
 }

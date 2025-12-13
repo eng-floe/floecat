@@ -9,18 +9,18 @@ import java.util.Map;
 /** Test-only provider for supplying fixed builtin catalogs. */
 public final class StaticSystemCatalogProvider implements SystemCatalogProvider {
 
-  private final Map<String, SystemEngineCatalog> catalogs = new HashMap<>();
+  private final Map<String, SystemCatalogData> catalogs = new HashMap<>();
 
   public StaticSystemCatalogProvider(Map<String, SystemCatalogData> input) {
-    input.forEach(
-        (kind, data) ->
-            catalogs.put(kind.toLowerCase(Locale.ROOT), SystemEngineCatalog.from(kind, data)));
+    input.forEach((kind, data) -> catalogs.put(kind.toLowerCase(Locale.ROOT), data));
   }
 
   @Override
   public SystemEngineCatalog load(String engineKind) {
-    return catalogs.getOrDefault(
-        engineKind.toLowerCase(Locale.ROOT),
-        SystemEngineCatalog.from(engineKind, SystemCatalogData.empty()));
+    SystemCatalogData data = catalogs.get(engineKind.toLowerCase(Locale.ROOT));
+    if (data != null) {
+      return SystemEngineCatalog.from(engineKind, data);
+    }
+    return SystemEngineCatalog.from(engineKind, SystemCatalogData.empty());
   }
 }

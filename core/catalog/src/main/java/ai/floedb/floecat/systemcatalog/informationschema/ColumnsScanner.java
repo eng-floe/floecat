@@ -12,7 +12,6 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /** information_schema.columns */
@@ -64,19 +63,16 @@ public final class ColumnsScanner implements SystemObjectScanner {
 
   @Override
   public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx) {
-    // Cache namespace display names per catalog to avoid repeated lookups.
-    Map<ResourceId, String> schemaByNamespace =
-        ctx.listNamespaces(ctx.catalogId()).stream()
-            .collect(Collectors.toMap(NamespaceNode::id, ColumnsScanner::schemaName));
+    // Cache catalog names to avoid repeated lookups.
     Map<ResourceId, String> catalogById = new HashMap<>();
 
-    return ctx.listTables(ctx.catalogId()).stream()
+    return ctx.listTables(ctx.namespaceId()).stream()
         .flatMap(
             table -> {
               String catalogName =
                   catalogById.computeIfAbsent(
                       table.catalogId(), id -> ((CatalogNode) ctx.resolve(id)).displayName());
-              String schemaName = schemaByNamespace.getOrDefault(table.namespaceId(), "");
+              String schemaName = schemaName((NamespaceNode) ctx.resolve(table.namespaceId()));
 
               Map<String, String> columnTypes = ctx.columnTypes(table.id());
 

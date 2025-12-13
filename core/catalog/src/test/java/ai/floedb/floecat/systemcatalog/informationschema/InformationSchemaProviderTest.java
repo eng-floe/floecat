@@ -93,6 +93,17 @@ class InformationSchemaProviderTest {
     assertThat(provider.supports(ref, "spark")).isTrue();
   }
 
+  @Test
+  void supports_rejectsUnsupportedInformationSchemaObject() {
+    NameRef ref = NameRefUtil.name("information_schema", "sequences");
+    assertThat(provider.supports(ref, "spark")).isFalse();
+  }
+
+  @Test
+  void supports_returnsFalseForNullName() {
+    assertThat(provider.supports(null, "spark")).isFalse();
+  }
+
   // ------------------------------------------------------------------------
   // provide(ScannerId) logic
   // ------------------------------------------------------------------------
@@ -127,11 +138,23 @@ class InformationSchemaProviderTest {
     assertThat(scanner).isEmpty();
   }
 
+  @Test
+  void provide_returnsEmptyForNullScannerId() {
+    assertThat(provider.provide(null, "spark", "3.5.0")).isEmpty();
+  }
+
+  @Test
+  void provide_isCaseInsensitive() {
+    Optional<SystemObjectScanner> scanner = provider.provide("TaBlEs", "spark", "3.5.0");
+    assertThat(scanner).isPresent();
+    assertThat(scanner.get()).isInstanceOf(TablesScanner.class);
+  }
+
   // ------------------------------------------------------------------------
   // Provider should not care about engine kind/version
   // ------------------------------------------------------------------------
   @Test
-  void providerIgnoresEngineKindAndVersion() {
+  void supports_isEngineAgnostic() {
     NameRef ref = NameRefUtil.name("information_schema", "tables");
 
     assertThat(provider.supports(ref, "duckdb")).isTrue();

@@ -244,4 +244,9 @@ public final class SystemEngineCatalog {
       throw new IllegalStateException("Failed to compute fingerprint", e);
     }
   }
+
+  /** Returns an empty catalog snapshot for the given engine kind. */
+  public static SystemEngineCatalog empty(String engineKind) {
+    return from(engineKind, SystemCatalogData.empty());
+  }
 }

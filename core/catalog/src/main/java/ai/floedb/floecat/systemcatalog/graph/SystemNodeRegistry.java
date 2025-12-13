@@ -7,6 +7,7 @@ import ai.floedb.floecat.metagraph.model.AggregateNode;
 import ai.floedb.floecat.metagraph.model.CastNode;
 import ai.floedb.floecat.metagraph.model.CollationNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
+import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.OperatorNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
@@ -20,19 +21,40 @@ import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificMatcher;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
+/**
+ * Materializes and caches engine-specific system catalog nodes.
+ *
+ * <p>This registry takes declarative {@link SystemCatalogData} from the {@link
+ * SystemDefinitionRegistry}, filters it by engine kind and version, applies engine-specific rules,
+ * and builds immutable {@link GraphNode} instances with stable {@code _system} {@link ResourceId}s.
+ *
+ * <p>Results are cached per {@code (engineKind, engineVersion)} pair to avoid repeated filtering
+ * and node construction.
+ *
+ * <p>This registry is the authoritative source of system-level graph nodes (functions, types,
+ * operators, casts, namespaces, tables, views) used by the catalog overlay.
+ */
 public class SystemNodeRegistry {
 
   private final SystemDefinitionRegistry definitionRegistry;
+
+  /*
+   * Immutable cache of materialized system nodes.
+   * Entries are never evicted or mutated; a fresh registry instance
+   * should be created for test isolation or controlled reloads.
+   */
   private final ConcurrentMap<VersionKey, BuiltinNodes> cache = new ConcurrentHashMap<>();
 
   public SystemNodeRegistry(SystemDefinitionRegistry definitionRegistry) {
@@ -57,7 +79,8 @@ public class SystemNodeRegistry {
   public BuiltinNodes nodesFor(String engineKind, String engineVersion) {
     if (engineKind == null || engineKind.isBlank()) return EMPTY_NODES;
     if (engineVersion == null || engineVersion.isBlank()) return EMPTY_NODES;
-    VersionKey key = new VersionKey(engineKind, engineVersion);
+    String normalizedKind = engineKind.toLowerCase(Locale.ROOT);
+    VersionKey key = new VersionKey(normalizedKind, engineVersion);
     return cache.computeIfAbsent(key, k -> buildNodes(k.engineKind(), k.engineVersion()));
   }
 

@@ -1,4 +1,4 @@
-package ai.floedb.floecat.service.metagraph;
+package ai.floedb.floecat.service.testsupport;
 
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.ResourceId;

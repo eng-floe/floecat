@@ -2,17 +2,9 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 
 import static org.assertj.core.api.Assertions.*;
 
-import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.metagraph.model.*;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectGraphView;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
-import ai.floedb.floecat.systemcatalog.utils.TestGraphView;
-import java.time.Instant;
+import ai.floedb.floecat.systemcatalog.utilities.TestScanContextBuilder;
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class SchemataScannerTest {
@@ -26,77 +18,19 @@ class SchemataScannerTest {
 
   @Test
   void scan_returnsAllNamespacesInCatalog() {
-    CatalogNode catalog =
-        new CatalogNode(
-            ResourceId.getDefaultInstance(),
-            1,
-            Instant.EPOCH,
-            "main_catalog",
-            Map.of(),
-            null,
-            null,
-            null,
-            Map.of());
+    var builder =
+        TestScanContextBuilder.builder()
+            .withCatalog("main_catalog")
+            .withNamespaces(
+                List.of(
+                    TestScanContextBuilder.builder()
+                        .withCatalog("main_catalog")
+                        .newNamespace("public"),
+                    TestScanContextBuilder.builder()
+                        .withCatalog("main_catalog")
+                        .newNamespace("sales")));
 
-    NamespaceNode ns1 =
-        new NamespaceNode(
-            ResourceId.getDefaultInstance(),
-            1,
-            Instant.EPOCH,
-            catalog.id(),
-            List.of(),
-            "public",
-            GraphNodeOrigin.USER,
-            Map.of(),
-            Optional.empty(),
-            Map.of());
-
-    NamespaceNode ns2 =
-        new NamespaceNode(
-            ResourceId.getDefaultInstance(),
-            1,
-            Instant.EPOCH,
-            catalog.id(),
-            List.of(),
-            "sales",
-            GraphNodeOrigin.USER,
-            Map.of(),
-            Optional.empty(),
-            Map.of());
-
-    SystemObjectGraphView view =
-        new TestGraphView() {
-          @Override
-          public Optional<GraphNode> resolve(ResourceId id) {
-            return id.equals(catalog.id()) ? Optional.of(catalog) : Optional.empty();
-          }
-
-          @Override
-          public Optional<NamespaceNode> tryNamespace(ResourceId id) {
-            if (id.equals(ns1.id())) return Optional.of(ns1);
-            if (id.equals(ns2.id())) return Optional.of(ns2);
-            return Optional.empty();
-          }
-
-          @Override
-          public List<ResourceId> listCatalogs() {
-            return List.of(catalog.id());
-          }
-
-          @Override
-          public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
-            return List.of(ns1, ns2);
-          }
-        };
-
-    SystemObjectScanContext ctx =
-        new SystemObjectScanContext(
-            view,
-            NameRef.getDefaultInstance(),
-            "spark",
-            "3.5.0",
-            catalog.id(),
-            ResourceId.getDefaultInstance());
+    SystemObjectScanContext ctx = builder.build();
 
     var rows = new SchemataScanner().scan(ctx).map(r -> List.of(r.values())).toList();
 
@@ -107,64 +41,16 @@ class SchemataScannerTest {
 
   @Test
   void scan_usesCanonicalSchemaPathForNestedNamespaces() {
-    CatalogNode catalog =
-        new CatalogNode(
-            ResourceId.newBuilder()
-                .setAccountId("account")
-                .setId("cat")
-                .setKind(ResourceKind.RK_CATALOG)
-                .build(),
-            1,
-            Instant.EPOCH,
-            "main_catalog",
-            Map.of(),
-            null,
-            null,
-            null,
-            Map.of());
+    var builder =
+        TestScanContextBuilder.builder()
+            .withCatalog("main_catalog")
+            .withNamespaces(
+                List.of(
+                    TestScanContextBuilder.builder()
+                        .withCatalog("main_catalog")
+                        .newNamespace("finance.sales")));
 
-    ResourceId namespaceId =
-        ResourceId.newBuilder()
-            .setAccountId("account")
-            .setId("ns-nested")
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .build();
-
-    NamespaceNode nested =
-        new NamespaceNode(
-            namespaceId,
-            1,
-            Instant.EPOCH,
-            catalog.id(),
-            List.of("finance"),
-            "sales",
-            GraphNodeOrigin.USER,
-            Map.of(),
-            Optional.empty(),
-            Map.of());
-
-    SystemObjectGraphView view =
-        new TestGraphView() {
-          @Override
-          public Optional<GraphNode> resolve(ResourceId id) {
-            if (id.equals(catalog.id())) return Optional.of(catalog);
-            return Optional.empty();
-          }
-
-          @Override
-          public List<ResourceId> listCatalogs() {
-            return List.of(catalog.id());
-          }
-
-          @Override
-          public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
-            return List.of(nested);
-          }
-        };
-
-    SystemObjectScanContext ctx =
-        new SystemObjectScanContext(
-            view, NameRef.getDefaultInstance(), "spark", "3.5.0", catalog.id(), namespaceId);
+    SystemObjectScanContext ctx = builder.build();
 
     var rows = new SchemataScanner().scan(ctx).map(r -> List.of(r.values())).toList();
 

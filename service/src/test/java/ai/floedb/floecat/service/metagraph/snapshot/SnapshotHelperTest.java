@@ -3,7 +3,6 @@ package ai.floedb.floecat.service.metagraph.snapshot;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -11,15 +10,10 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.service.metagraph.TestNodes;
-import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
-import ai.floedb.floecat.storage.InMemoryBlobStore;
-import ai.floedb.floecat.storage.InMemoryPointerStore;
+import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
+import ai.floedb.floecat.service.testsupport.TestNodes;
 import com.google.protobuf.Timestamp;
 import java.time.Instant;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,14 +21,14 @@ import org.junit.jupiter.api.Test;
 class SnapshotHelperTest {
 
   private SnapshotHelper helper;
-  private FakeSnapshotRepository repository;
-  private FakeSnapshotClient snapshotClient;
+  private SnapshotTestSupport.FakeSnapshotRepository repository;
+  private SnapshotTestSupport.FakeSnapshotClient snapshotClient;
 
   @BeforeEach
   void setUp() {
-    repository = new FakeSnapshotRepository();
+    repository = new SnapshotTestSupport.FakeSnapshotRepository();
     helper = new SnapshotHelper(repository, null);
-    snapshotClient = new FakeSnapshotClient();
+    snapshotClient = new SnapshotTestSupport.FakeSnapshotClient();
     helper.setSnapshotClient(snapshotClient);
   }
 
@@ -133,49 +127,5 @@ class SnapshotHelperTest {
         .setSeconds(parsed.getEpochSecond())
         .setNanos(parsed.getNano())
         .build();
-  }
-
-  static final class FakeSnapshotRepository extends SnapshotRepository {
-    private final Map<Long, Snapshot> snapshots = new HashMap<>();
-
-    FakeSnapshotRepository() {
-      super(new InMemoryPointerStore(), new InMemoryBlobStore());
-    }
-
-    void put(ResourceId tableId, Snapshot snapshot) {
-      snapshots.put(snapshot.getSnapshotId(), snapshot);
-    }
-
-    @Override
-    public Optional<Snapshot> getById(ResourceId tableId, long snapshotId) {
-      return Optional.ofNullable(snapshots.get(snapshotId));
-    }
-
-    @Override
-    public Optional<Snapshot> getCurrentSnapshot(ResourceId tableId) {
-      return snapshots.values().stream().max(Comparator.comparingLong(Snapshot::getSnapshotId));
-    }
-
-    @Override
-    public Optional<Snapshot> getAsOf(ResourceId tableId, Timestamp asOf) {
-      long target = asOf.getSeconds();
-      return snapshots.values().stream()
-          .filter(s -> s.getUpstreamCreatedAt().getSeconds() <= target)
-          .max(Comparator.comparingLong(Snapshot::getSnapshotId));
-    }
-  }
-
-  static final class FakeSnapshotClient implements SnapshotHelper.SnapshotClient {
-    GetSnapshotResponse nextResponse;
-    GetSnapshotRequest lastRequest;
-
-    @Override
-    public GetSnapshotResponse getSnapshot(GetSnapshotRequest request) {
-      lastRequest = request;
-      if (nextResponse == null) {
-        throw new IllegalStateException("no snapshot configured");
-      }
-      return nextResponse;
-    }
   }
 }

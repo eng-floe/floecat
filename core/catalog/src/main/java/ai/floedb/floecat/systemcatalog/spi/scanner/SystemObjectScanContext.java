@@ -59,4 +59,8 @@ public record SystemObjectScanContext(
   public List<TableNode> listTables() {
     return graph.listTables(namespaceId);
   }
+
+  public List<ResourceId> listCatalogs() {
+    return graph.listCatalogs();
+  }
 }

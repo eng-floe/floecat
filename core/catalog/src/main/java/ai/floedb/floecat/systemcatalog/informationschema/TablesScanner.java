@@ -49,7 +49,7 @@ public final class TablesScanner implements SystemObjectScanner {
         ctx.listNamespaces(ctx.catalogId()).stream()
             .collect(Collectors.toMap(NamespaceNode::id, TablesScanner::schemaName));
 
-    return ctx.listTables(ctx.catalogId()).stream()
+    return ctx.listTables(ctx.namespaceId()).stream()
         .map(
             t ->
                 new SystemObjectRow(

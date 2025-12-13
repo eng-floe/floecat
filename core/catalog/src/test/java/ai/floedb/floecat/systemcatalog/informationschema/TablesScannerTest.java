@@ -2,16 +2,11 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 
 import static org.assertj.core.api.Assertions.*;
 
-import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
-import ai.floedb.floecat.systemcatalog.utils.TestGraphView;
-import java.time.Instant;
+import ai.floedb.floecat.systemcatalog.utilities.TestScanContextBuilder;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class TablesScannerTest {
@@ -25,61 +20,11 @@ class TablesScannerTest {
 
   @Test
   void scan_returnsOneRowPerTable() {
-    // mock table node
-    TableNode t =
-        new TableNode(
-            ResourceId.getDefaultInstance(),
-            1L,
-            Instant.EPOCH,
-            ResourceId.getDefaultInstance(),
-            ResourceId.getDefaultInstance(),
-            "mytable",
-            null,
-            "{}",
-            Map.of(),
-            List.of(),
-            Map.of(),
-            Optional.empty(),
-            Optional.empty(),
-            Optional.empty(),
-            Optional.empty(),
-            List.of(),
-            Map.of());
+    var builder = TestScanContextBuilder.builder().withCatalog("catalog").withNamespace("public");
 
-    NamespaceNode ns =
-        new NamespaceNode(
-            ResourceId.getDefaultInstance(),
-            1L,
-            Instant.EPOCH,
-            ResourceId.getDefaultInstance(),
-            List.of(),
-            "public",
-            GraphNodeOrigin.USER,
-            Map.of(),
-            Optional.empty(),
-            Map.of());
+    TableNode table = builder.newTable("mytable", Map.of());
 
-    TestGraphView view =
-        new TestGraphView() {
-          @Override
-          public List<TableNode> listTables(ResourceId ns) {
-            return List.of(t);
-          }
-
-          @Override
-          public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
-            return List.of(ns);
-          }
-        };
-
-    SystemObjectScanContext ctx =
-        new SystemObjectScanContext(
-            view,
-            NameRef.getDefaultInstance(),
-            "spark",
-            "3.5.0",
-            ResourceId.getDefaultInstance(),
-            ResourceId.getDefaultInstance());
+    SystemObjectScanContext ctx = builder.withTable(table).build();
 
     var rows = new TablesScanner().scan(ctx).map(r -> r.values()).toList();
 
@@ -89,68 +34,16 @@ class TablesScannerTest {
 
   @Test
   void scan_usesCanonicalSchemaPathForNestedNamespaces() {
-    ResourceId catalogId =
-        ResourceId.newBuilder()
-            .setAccountId("account")
-            .setId("cat")
-            .setKind(ResourceKind.RK_CATALOG)
-            .build();
-    ResourceId namespaceId =
-        ResourceId.newBuilder()
-            .setAccountId("account")
-            .setId("ns-nested")
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .build();
+    TestScanContextBuilder builder =
+        TestScanContextBuilder.builder().withCatalog("catalog").withNamespace("finance.sales");
 
-    TableNode t =
-        new TableNode(
-            ResourceId.getDefaultInstance(),
-            1L,
-            Instant.EPOCH,
-            catalogId,
-            namespaceId,
-            "nested_table",
-            null,
-            "{}",
-            Map.of(),
-            List.of(),
-            Map.of(),
-            Optional.empty(),
-            Optional.empty(),
-            Optional.empty(),
-            Optional.empty(),
-            List.of(),
-            Map.of());
+    NamespaceNode ns = builder.newNamespace("finance.sales");
 
-    NamespaceNode nestedNs =
-        new NamespaceNode(
-            namespaceId,
-            1L,
-            Instant.EPOCH,
-            catalogId,
-            List.of("finance"),
-            "sales",
-            GraphNodeOrigin.USER,
-            Map.of(),
-            Optional.empty(),
-            Map.of());
+    builder.withNamespaces(List.of(ns));
 
-    TestGraphView view =
-        new TestGraphView() {
-          @Override
-          public List<TableNode> listTables(ResourceId ns) {
-            return List.of(t);
-          }
+    TableNode table = builder.newTable("nested_table", Map.of());
 
-          @Override
-          public List<NamespaceNode> listNamespaces(ResourceId catalog) {
-            return List.of(nestedNs);
-          }
-        };
-
-    SystemObjectScanContext ctx =
-        new SystemObjectScanContext(
-            view, NameRef.getDefaultInstance(), "spark", "3.5.0", catalogId, namespaceId);
+    SystemObjectScanContext ctx = builder.withTable(table).build();
 
     var rows = new TablesScanner().scan(ctx).map(r -> r.values()).toList();
 

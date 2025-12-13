@@ -61,6 +61,10 @@ public final class MetaGraph implements CatalogOverlay {
   @Override
   public List<GraphNode> listRelationsInNamespace(
       ResourceId catalogId, ResourceId namespaceId, String engineKind, String engineVersion) {
+    if (isSystemAccount(catalogId)) {
+      return systemGraph.listRelationsInNamespace(
+          catalogId, namespaceId, engineKind, engineVersion);
+    }
     return metadataGraph.listRelationsInNamespace(catalogId, namespaceId);
   }
 
