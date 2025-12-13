@@ -11,7 +11,8 @@ public record TableMetadataView(
     @JsonProperty("format-version") Integer formatVersion,
     @JsonProperty("table-uuid") String tableUuid,
     @JsonProperty("location") String location,
-    @JsonProperty("metadata-location") String metadataLocation,
+    @JsonProperty(value = "metadata-location", access = JsonProperty.Access.WRITE_ONLY)
+        String metadataLocation,
     @JsonProperty("last-updated-ms") Long lastUpdatedMs,
     @JsonProperty("properties") Map<String, String> properties,
     @JsonProperty("last-column-id") Integer lastColumnId,

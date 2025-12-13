@@ -40,8 +40,9 @@ class TableResponseMapperTest {
 
     assertNotNull(result.metadata());
     assertEquals("s3://bucket/orders/metadata", result.config().get("write.metadata.path"));
-    assertEquals(
-        "s3://bucket/orders/metadata", result.metadata().properties().get("write.metadata.path"));
+    assertFalse(
+        result.metadata().properties().containsKey("write.metadata.path"),
+        "Original metadata should remain unchanged");
     List<Map<String, Object>> schemas = result.metadata().schemas();
     assertFalse(schemas.isEmpty(), "Expected at least one schema");
     Object fields = schemas.get(0).get("fields");
@@ -68,8 +69,9 @@ class TableResponseMapperTest {
         TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
 
     assertEquals("s3://bucket/orders/metadata", result.config().get("write.metadata.path"));
-    assertEquals(
-        "s3://bucket/orders/metadata", result.metadata().properties().get("write.metadata.path"));
+    assertFalse(
+        result.metadata().properties().containsKey("write.metadata.path"),
+        "Original metadata should remain unchanged");
   }
 
   @Test
@@ -115,8 +117,9 @@ class TableResponseMapperTest {
         TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
 
     assertEquals("s3://bucket/orders/metadata", result.config().get("write.metadata.path"));
-    assertEquals(
-        "s3://bucket/orders/metadata", result.metadata().properties().get("write.metadata.path"));
+    assertFalse(
+        result.metadata().properties().containsKey("write.metadata.path"),
+        "Original metadata should remain unchanged");
   }
 
   @Test
@@ -167,8 +170,6 @@ class TableResponseMapperTest {
         TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
 
     assertEquals("s3://bucket/orders/metadata/00001-new.metadata.json", result.metadataLocation());
-    assertEquals(
-        "s3://bucket/orders/metadata", result.metadata().properties().get("write.metadata.path"));
   }
 
   @Test

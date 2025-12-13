@@ -2,7 +2,6 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
-import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -183,10 +182,6 @@ public class MaterializeMetadataService {
       directory = directory + "/";
     }
     return directory + nextMetadataFileName(fileIO, directory, metadata);
-  }
-
-  private boolean isPointerLocation(String metadataLocation) {
-    return MetadataLocationUtil.isPointer(metadataLocation);
   }
 
   private String directoryOf(String metadataLocation) {

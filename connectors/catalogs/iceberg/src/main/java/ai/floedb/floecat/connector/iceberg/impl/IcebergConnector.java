@@ -392,8 +392,14 @@ public final class IcebergConnector implements FloecatConnector {
         fileStats = allFiles;
       }
 
-      Map<String, String> summary =
-          snapshot.summary() == null ? Map.of() : Map.copyOf(snapshot.summary());
+      Map<String, String> summary = snapshot.summary() == null ? Map.of() : snapshot.summary();
+      Map<String, String> summaryWithOperation =
+          summary.isEmpty() ? new LinkedHashMap<>() : new LinkedHashMap<>(summary);
+      String operation = snapshot.operation();
+      if (operation != null && !operation.isBlank()) {
+        summaryWithOperation.putIfAbsent("operation", operation);
+      }
+      summary = summaryWithOperation.isEmpty() ? Map.of() : Map.copyOf(summaryWithOperation);
       String manifestList = snapshot.manifestListLocation();
       long sequenceNumber = snapshot.sequenceNumber();
 
@@ -696,11 +702,6 @@ public final class IcebergConnector implements FloecatConnector {
               .setTimestampMs(entry.timestampMillis())
               .build());
     }
-    builder.addMetadataLog(
-        IcebergMetadataLogEntry.newBuilder()
-            .setFile(metadata.metadataFileLocation())
-            .setTimestampMs(metadata.lastUpdatedMillis())
-            .build());
 
     metadata
         .refs()

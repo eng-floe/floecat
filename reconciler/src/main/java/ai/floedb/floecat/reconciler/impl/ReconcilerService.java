@@ -15,6 +15,7 @@ import ai.floedb.floecat.catalog.rpc.PutFileColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTableStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
@@ -46,6 +47,7 @@ import jakarta.inject.Inject;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -444,8 +446,15 @@ public class ReconcilerService {
       spec.setManifestList(snapshotBundle.manifestList());
       mask.addPaths("manifest_list");
     }
+    Snapshot existingSnapshot = fetchSnapshot(tableId, snapshotBundle.snapshotId());
     if (snapshotBundle.summary() != null && !snapshotBundle.summary().isEmpty()) {
-      spec.putAllSummary(snapshotBundle.summary());
+      LinkedHashMap<String, String> mergedSummary = new LinkedHashMap<>(snapshotBundle.summary());
+      if (existingSnapshot != null && !existingSnapshot.getSummaryMap().isEmpty()) {
+        existingSnapshot
+            .getSummaryMap()
+            .forEach((key, value) -> mergedSummary.putIfAbsent(key, value));
+      }
+      spec.putAllSummary(mergedSummary);
       mask.addPaths("summary");
     }
     if (snapshotBundle.schemaId() > 0) {
@@ -457,7 +466,7 @@ public class ReconcilerService {
       mask.addPaths("format_metadata");
     }
     SnapshotSpec snapshotSpec = spec.build();
-    boolean exists = snapshotExists(tableId, snapshotBundle.snapshotId());
+    boolean exists = existingSnapshot != null;
     if (!exists) {
       var request = CreateSnapshotRequest.newBuilder().setSpec(snapshotSpec).build();
       clients.snapshot().createSnapshot(request);
@@ -583,9 +592,9 @@ public class ReconcilerService {
     }
   }
 
-  private boolean snapshotExists(ResourceId tableId, long snapshotId) {
+  private Snapshot fetchSnapshot(ResourceId tableId, long snapshotId) {
     if (snapshotId <= 0) {
-      return false;
+      return null;
     }
     try {
       var response =
@@ -596,10 +605,13 @@ public class ReconcilerService {
                       .setTableId(tableId)
                       .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
                       .build());
-      return response != null && response.hasSnapshot();
+      if (response == null || !response.hasSnapshot()) {
+        return null;
+      }
+      return response.getSnapshot();
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
-        return false;
+        return null;
       }
       throw e;
     }

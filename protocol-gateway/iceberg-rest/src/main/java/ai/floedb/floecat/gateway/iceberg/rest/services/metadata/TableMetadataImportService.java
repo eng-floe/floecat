@@ -1,7 +1,10 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.Snapshot;
@@ -57,10 +60,7 @@ public class TableMetadataImportService {
       ImportedSnapshot importedSnapshot = null;
       if (current != null) {
         putLong(props, "current-snapshot-id", current.snapshotId());
-        Map<String, String> summary =
-            current.summary() == null || current.summary().isEmpty()
-                ? Map.of()
-                : Map.copyOf(current.summary());
+        Map<String, String> summary = copySummaryWithOperation(current);
         importedSnapshot =
             new ImportedSnapshot(
                 current.snapshotId(),
@@ -71,12 +71,9 @@ public class TableMetadataImportService {
                 summary,
                 current.schemaId());
       }
-      java.util.List<ImportedSnapshot> snapshotList = new java.util.ArrayList<>();
+      List<ImportedSnapshot> snapshotList = new ArrayList<>();
       for (Snapshot snapshot : metadata.snapshots()) {
-        Map<String, String> summary =
-            snapshot.summary() == null || snapshot.summary().isEmpty()
-                ? Map.of()
-                : Map.copyOf(snapshot.summary());
+        Map<String, String> summary = copySummaryWithOperation(snapshot);
         snapshotList.add(
             new ImportedSnapshot(
                 snapshot.snapshotId(),
@@ -88,11 +85,7 @@ public class TableMetadataImportService {
                 snapshot.schemaId()));
       }
       return new ImportedMetadata(
-          schemaJson,
-          props,
-          metadata.location(),
-          importedSnapshot,
-          java.util.List.copyOf(snapshotList));
+          schemaJson, props, metadata.location(), importedSnapshot, List.copyOf(snapshotList));
     } catch (IllegalArgumentException e) {
       throw e;
     } catch (Exception e) {
@@ -118,6 +111,18 @@ public class TableMetadataImportService {
     if (value >= 0) {
       props.put(key, Integer.toString(value));
     }
+  }
+
+  private Map<String, String> copySummaryWithOperation(org.apache.iceberg.Snapshot snapshot) {
+    Map<String, String> summary = snapshot.summary() == null ? Map.of() : snapshot.summary();
+    if (summary.isEmpty() && (snapshot.operation() == null || snapshot.operation().isBlank())) {
+      return Map.of();
+    }
+    LinkedHashMap<String, String> copy = new LinkedHashMap<>(summary);
+    if (snapshot.operation() != null && !snapshot.operation().isBlank()) {
+      copy.putIfAbsent("operation", snapshot.operation());
+    }
+    return Collections.unmodifiableMap(copy);
   }
 
   private void putLong(Map<String, String> props, String key, long value) {

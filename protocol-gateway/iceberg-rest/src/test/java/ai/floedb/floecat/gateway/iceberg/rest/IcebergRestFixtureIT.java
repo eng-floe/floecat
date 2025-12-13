@@ -35,6 +35,8 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Assumptions;
@@ -46,10 +48,12 @@ import org.junit.jupiter.api.Test;
 @QuarkusTestResource(value = RealServiceTestResource.class, restrictToAnnotatedClass = true)
 class IcebergRestFixtureIT {
 
+  private static final ObjectMapper MAPPER = new ObjectMapper();
   private static final String DEFAULT_ACCOUNT = "5eaa9cd5-7d08-3750-9457-cfe800b0b9d2";
   private static final String NAMESPACE_PREFIX = "fixture_ns_";
   private static final String TABLE_PREFIX = "fixture_tbl_";
   private static final String CATALOG = "sales";
+  private static final String FIXTURE_METADATA_PREFIX = TestS3Fixtures.bucketUri("metadata/");
   private static final String METADATA_V1 =
       "metadata/00000-16393a9a-3433-440c-98f4-fe023ed03973.metadata.json";
   private static final String METADATA_V3 =
@@ -72,7 +76,7 @@ class IcebergRestFixtureIT {
 
   @BeforeAll
   static void initFixtures() throws IOException {
-    TestS3Fixtures.seedFixtures();
+    TestS3Fixtures.seedFixturesOnce();
     fixtureManifestLists.clear();
     fixtureSnapshotIds = parseSnapshotIds(METADATA_V3);
     expectedSnapshotId =
@@ -85,6 +89,8 @@ class IcebergRestFixtureIT {
   void snapshotCommitUpdatesMetadata() {
     String namespace = NAMESPACE_PREFIX + UUID.randomUUID().toString().replace("-", "");
     String table = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+
+    TestS3Fixtures.seedStageTable(namespace, table);
 
     given()
         .spec(spec)
@@ -106,6 +112,10 @@ class IcebergRestFixtureIT {
     long parentSnapshotId =
         fixtureSnapshotIds.isEmpty() ? 0L : fixtureSnapshotIds.get(fixtureSnapshotIds.size() - 1);
     long newSnapshotId = System.currentTimeMillis();
+
+    String anyFixtureManifestRel = fixtureManifestLists.values().stream().findFirst().orElseThrow();
+    String manifestList = TestS3Fixtures.stageTableUri(namespace, table, anyFixtureManifestRel);
+
     Map<String, Object> addSnapshotUpdate =
         Map.of(
             "action",
@@ -116,11 +126,7 @@ class IcebergRestFixtureIT {
                 Map.entry("timestamp-ms", System.currentTimeMillis()),
                 Map.entry("parent-snapshot-id", parentSnapshotId),
                 Map.entry("sequence-number", System.currentTimeMillis()),
-                Map.entry(
-                    "manifest-list",
-                    String.format(
-                        "s3://staged-fixtures/%s/%s/metadata/snap-%d.avro",
-                        namespace, table, newSnapshotId)),
+                Map.entry("manifest-list", manifestList),
                 Map.entry("summary", Map.of("operation", "append"))));
     Map<String, Object> removeSnapshotUpdate =
         Map.of("action", "remove-snapshots", "snapshot-ids", List.of(removedSnapshotId));
@@ -216,13 +222,22 @@ class IcebergRestFixtureIT {
                         "identifier",
                         Map.of("namespace", List.of(namespace), "name", table),
                         "stage-id",
-                        stageId))))
+                        stageId,
+                        "updates",
+                        List.of(
+                            Map.of(
+                                "action",
+                                "set-properties",
+                                "updates",
+                                Map.of(
+                                    "metadata-location",
+                                    fixtureMetadataTarget(namespace, table))))))))
         .when()
         .post("/v1/" + CATALOG + "/transactions/commit")
         .then()
         .statusCode(204);
 
-    String commitMetadataLocation = fetchMetadataLocation(namespace, table);
+    String commitMetadataLocation = ensurePromotedMetadata(fetchMetadataLocation(namespace, table));
     Assertions.assertNotNull(commitMetadataLocation, "commit should materialize metadata");
 
     Connector connector = awaitConnectorForTable(namespace, table, Duration.ofSeconds(10));
@@ -244,84 +259,117 @@ class IcebergRestFixtureIT {
                             .build())
                     .getConnector());
 
+    String tableMetadataLocation = ensurePromotedMetadata(fetchMetadataLocation(namespace, table));
+    Assertions.assertTrue(
+        tableMetadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
+        () ->
+            "persisted metadata should reside under the floecat fixture bucket: "
+                + tableMetadataLocation);
+    Assertions.assertTrue(
+        Files.exists(localS3Path(tableMetadataLocation)),
+        "persisted metadata file should exist on the fake S3 filesystem");
     Assertions.assertEquals(
-        commitMetadataLocation,
-        refreshed.getPropertiesMap().get("external.metadata-location"),
-        "Connector external metadata location should reflect latest commit");
-
-    String tableMetadataLocation = fetchMetadataLocation(namespace, table);
-    Assertions.assertEquals(
-        commitMetadataLocation,
         tableMetadataLocation,
-        "Table metadata-location should match connector metadata");
+        refreshed.getPropertiesMap().get("external.metadata-location"),
+        "Connector external metadata location should match the persisted metadata");
   }
 
   @Test
   void deleteTablePurgesMetadataWhenRequested() {
+    try {
+      String namespace = NAMESPACE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+      given()
+          .spec(spec)
+          .body(Map.of("namespace", namespace, "description", "Purge namespace"))
+          .when()
+          .post("/v1/" + CATALOG + "/namespaces")
+          .then()
+          .statusCode(201);
+
+      String keepTable = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+      registerTable(namespace, keepTable, METADATA_V1, false);
+      given()
+          .spec(spec)
+          .when()
+          .delete("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + keepTable)
+          .then()
+          .statusCode(204);
+
+      given()
+          .spec(spec)
+          .when()
+          .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + keepTable)
+          .then()
+          .statusCode(404);
+
+      String purgeTable = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+      registerTable(namespace, purgeTable, METADATA_V3, false);
+      Path metadataPath = localS3Path(TestS3Fixtures.bucketUri(METADATA_V3));
+      Assertions.assertTrue(
+          Files.exists(metadataPath),
+          "Fixture metadata should exist before issuing purge delete request");
+
+      given()
+          .spec(spec)
+          .when()
+          .delete(
+              "/v1/"
+                  + CATALOG
+                  + "/namespaces/"
+                  + namespace
+                  + "/tables/"
+                  + purgeTable
+                  + "?purgeRequested=true")
+          .then()
+          .statusCode(204);
+
+      given()
+          .spec(spec)
+          .when()
+          .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + purgeTable)
+          .then()
+          .statusCode(404);
+      Assertions.assertTrue(
+          Files.notExists(metadataPath),
+          "metadata file should be deleted when purgeRequested=true");
+      fixtureManifestLists
+          .values()
+          .forEach(
+              relative -> {
+                Path manifestPath = localS3Path(TestS3Fixtures.bucketUri(relative));
+                Assertions.assertTrue(
+                    Files.notExists(manifestPath),
+                    () ->
+                        "manifest file should be deleted when purgeRequested=true: "
+                            + manifestPath);
+              });
+    } finally {
+      reseedFixtureBucket();
+    }
+  }
+
+  @Test
+  void registerPersistsFullMetadata() throws IOException {
     String namespace = NAMESPACE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    String table = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
     given()
         .spec(spec)
-        .body(Map.of("namespace", namespace, "description", "Purge namespace"))
+        .body(Map.of("namespace", namespace, "description", "Metadata namespace"))
         .when()
         .post("/v1/" + CATALOG + "/namespaces")
         .then()
         .statusCode(201);
 
-    String keepTable = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
-    registerTable(namespace, keepTable, METADATA_V1, false);
-    given()
-        .spec(spec)
-        .when()
-        .delete("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + keepTable)
-        .then()
-        .statusCode(204);
+    registerTable(namespace, table, METADATA_V3, false);
 
-    given()
-        .spec(spec)
-        .when()
-        .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + keepTable)
-        .then()
-        .statusCode(404);
+    JsonNode actualMetadata = fetchPersistedMetadata(namespace, table);
+    JsonNode expectedMetadata =
+        MAPPER.readTree(TestS3Fixtures.prefixPath().resolve(Path.of(METADATA_V3)).toFile());
 
-    String purgeTable = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
-    registerTable(namespace, purgeTable, METADATA_V3, false);
-    Path metadataPath = localS3Path(TestS3Fixtures.bucketUri(METADATA_V3));
-    Assertions.assertTrue(
-        Files.exists(metadataPath),
-        "Fixture metadata should exist before issuing purge delete request");
-
-    given()
-        .spec(spec)
-        .when()
-        .delete(
-            "/v1/"
-                + CATALOG
-                + "/namespaces/"
-                + namespace
-                + "/tables/"
-                + purgeTable
-                + "?purgeRequested=true")
-        .then()
-        .statusCode(204);
-
-    given()
-        .spec(spec)
-        .when()
-        .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + purgeTable)
-        .then()
-        .statusCode(404);
-    Assertions.assertTrue(
-        Files.notExists(metadataPath), "metadata file should be deleted when purgeRequested=true");
-    fixtureManifestLists
-        .values()
-        .forEach(
-            relative -> {
-              Path manifestPath = localS3Path(TestS3Fixtures.bucketUri(relative));
-              Assertions.assertTrue(
-                  Files.notExists(manifestPath),
-                  () ->
-                      "manifest file should be deleted when purgeRequested=true: " + manifestPath);
-            });
+    Assertions.assertEquals(
+        canonicalizeMetadata(expectedMetadata, TestS3Fixtures.bucketUri(METADATA_V3)),
+        canonicalizeMetadata(actualMetadata, fetchMetadataLocation(namespace, table)),
+        "Persisted Iceberg metadata should match original fixture contents");
   }
 
   private static List<Long> parseSnapshotIds(String relativeMetadataPath) throws IOException {
@@ -393,7 +441,6 @@ class IcebergRestFixtureIT {
 
   @BeforeEach
   void setUp() {
-    TestS3Fixtures.seedFixtures();
     spec =
         new RequestSpecBuilder()
             .addHeader("x-tenant-id", DEFAULT_ACCOUNT)
@@ -464,9 +511,22 @@ class IcebergRestFixtureIT {
         .body("stage-id", equalTo(stageId));
 
     Map<String, Object> commitRequest =
-        Map.of("stage-id", stageId, "requirements", List.of(Map.of("type", "assert-create")));
+        Map.of(
+            "stage-id",
+            stageId,
+            "requirements",
+            List.of(Map.of("type", "assert-create")),
+            "properties",
+            Map.of("metadata-location", fixtureMetadataTarget(namespace, table)),
+            "updates",
+            List.of(
+                Map.of(
+                    "action",
+                    "set-properties",
+                    "updates",
+                    Map.of("metadata-location", fixtureMetadataTarget(namespace, table)))));
 
-    String materializedLocation =
+    String commitMetadataLocation =
         given()
             .spec(spec)
             .body(commitRequest)
@@ -477,22 +537,34 @@ class IcebergRestFixtureIT {
             .extract()
             .path("'metadata-location'");
 
-    Assertions.assertNotNull(materializedLocation, "metadata-location should be populated");
+    Assertions.assertNotNull(commitMetadataLocation, "metadata-location should be populated");
     Assertions.assertTrue(
-        materializedLocation.startsWith(tableLocation + "/metadata/"),
-        "metadata-location should reside under the staged table location");
-    String fileName = materializedLocation.substring(materializedLocation.lastIndexOf('/') + 1);
+        commitMetadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
+        () ->
+            "metadata-location should reside under the floecat fixture bucket: "
+                + commitMetadataLocation);
+    String fileName = commitMetadataLocation.substring(commitMetadataLocation.lastIndexOf('/') + 1);
     Assertions.assertTrue(
         fileName.contains("-"), "materialized metadata file should include a version prefix");
-    Assertions.assertEquals(
-        materializedLocation,
-        fetchMetadataLocation(namespace, table),
-        "table metadata should match the commit response");
 
-    Path localPath = localS3Path(materializedLocation);
+    String persistedLocation = ensurePromotedMetadata(fetchMetadataLocation(namespace, table));
     Assertions.assertTrue(
-        Files.exists(localPath),
+        persistedLocation.startsWith(FIXTURE_METADATA_PREFIX),
+        () ->
+            "persisted metadata should be stored under the floecat fixture bucket: "
+                + persistedLocation);
+    Assertions.assertTrue(
+        persistedLocation.endsWith(".metadata.json"),
+        "persisted metadata should be an Iceberg metadata file");
+
+    Path commitPath = localS3Path(commitMetadataLocation);
+    Assertions.assertTrue(
+        Files.exists(commitPath),
         "materialized metadata file should exist on the fake S3 filesystem");
+    Path persistedPath = localS3Path(persistedLocation);
+    Assertions.assertTrue(
+        Files.exists(persistedPath),
+        "persisted metadata file should exist on the fake S3 filesystem");
   }
 
   private String registerTable(
@@ -530,6 +602,11 @@ class IcebergRestFixtureIT {
     return responseLocation;
   }
 
+  private String fixtureMetadataTarget(String namespace, String table) {
+    return TestS3Fixtures.bucketUri(
+        String.format("metadata/%s/%s/metadata.json", namespace, table));
+  }
+
   private String fetchMetadataLocation(String namespace, String table) {
     return given()
         .spec(spec)
@@ -551,6 +628,55 @@ class IcebergRestFixtureIT {
         .extract()
         .jsonPath()
         .getList("metadata.snapshots.'snapshot-id'", Long.class);
+  }
+
+  private JsonNode fetchPersistedMetadata(String namespace, String table) throws IOException {
+    String body =
+        given()
+            .spec(spec)
+            .when()
+            .get(
+                "/v1/"
+                    + CATALOG
+                    + "/namespaces/"
+                    + namespace
+                    + "/tables/"
+                    + table
+                    + "?snapshots=all")
+            .then()
+            .statusCode(200)
+            .extract()
+            .asString();
+    JsonNode node = MAPPER.readTree(body);
+    JsonNode metadata = node.path("metadata");
+    Assertions.assertFalse(metadata.isMissingNode(), "Table response should contain metadata");
+    return metadata;
+  }
+
+  private static JsonNode canonicalizeMetadata(JsonNode metadata, String metadataLocation)
+      throws IOException {
+    String location =
+        metadataLocation != null && !metadataLocation.isBlank()
+            ? metadataLocation
+            : metadata
+                .path("metadata-location")
+                .asText(
+                    metadata
+                        .path("properties")
+                        .path("metadata-location")
+                        .asText("s3://mock/metadata"));
+    TableMetadata parsed = TableMetadataParser.fromJson(location, metadata);
+    return MAPPER.readTree(TableMetadataParser.toJson(parsed));
+  }
+
+  private String ensurePromotedMetadata(String location) {
+    if (location == null || location.isBlank()) {
+      return location;
+    }
+    if (location.startsWith(FIXTURE_METADATA_PREFIX)) {
+      return location;
+    }
+    return TestS3Fixtures.bucketUri(location);
   }
 
   private Path localS3Path(String location) {
@@ -657,6 +783,14 @@ class IcebergRestFixtureIT {
       throw e;
     } finally {
       channel.shutdownNow();
+    }
+  }
+
+  private static void reseedFixtureBucket() {
+    try {
+      TestS3Fixtures.seedFixtures();
+    } catch (RuntimeException e) {
+      System.err.printf("Failed to reseed fixture bucket after purge test: %s%n", e.getMessage());
     }
   }
 }

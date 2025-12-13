@@ -457,6 +457,11 @@ public class SnapshotMetadataService {
       spec.setManifestList(manifestList);
     }
     Map<String, String> summary = asStringMap(snapshot.get("summary"));
+    String op = asString(snapshot.get("operation"));
+    if (op != null && !op.isBlank() && !summary.containsKey("operation")) {
+      summary = new LinkedHashMap<>(summary);
+      summary.put("operation", op);
+    }
     if (!summary.isEmpty()) {
       spec.putAllSummary(summary);
     }
@@ -808,7 +813,7 @@ public class SnapshotMetadataService {
       }
       String nullOrder = asString(field.get("null-order"));
       if (nullOrder == null || nullOrder.isBlank()) {
-        nullOrder = "NULLS_FIRST";
+        nullOrder = "nulls-first";
       }
       builder.addFields(
           IcebergSortField.newBuilder()
@@ -1251,6 +1256,9 @@ public class SnapshotMetadataService {
     }
     if (snapshot.schemaId() != null) {
       map.put("schema-id", snapshot.schemaId());
+    }
+    if (snapshot.summary() != null && snapshot.summary().containsKey("operation")) {
+      map.put("operation", snapshot.summary().get("operation"));
     }
     return map;
   }

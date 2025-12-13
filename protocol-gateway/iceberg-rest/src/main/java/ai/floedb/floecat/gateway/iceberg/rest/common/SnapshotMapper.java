@@ -10,6 +10,7 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergStatisticsFile;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 final class SnapshotMapper {
@@ -151,7 +152,7 @@ final class SnapshotMapper {
             (name, ref) -> {
               Map<String, Object> entry = new LinkedHashMap<>();
               entry.put("snapshot-id", ref.getSnapshotId());
-              entry.put("type", ref.getType());
+              entry.put("type", ref.getType().toLowerCase(Locale.ROOT));
               if (ref.hasMaxReferenceAgeMs()) {
                 entry.put("max-reference-age-ms", ref.getMaxReferenceAgeMs());
               }

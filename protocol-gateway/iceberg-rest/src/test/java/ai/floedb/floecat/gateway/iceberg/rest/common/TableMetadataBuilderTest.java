@@ -9,6 +9,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortField;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortOrder;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,5 +44,38 @@ class TableMetadataBuilderTest {
     Map<String, Object> mainRef = (Map<String, Object>) view.refs().get("main");
     assertNotNull(mainRef);
     assertEquals(2L, mainRef.get("snapshot-id"));
+  }
+
+  @Test
+  void sortOrdersCanonicalizedFromMetadata() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("catalog:ns:widgets"))
+            .build();
+    Map<String, String> props = new LinkedHashMap<>();
+    IcebergMetadata metadata =
+        IcebergMetadata.newBuilder()
+            .setMetadataLocation("s3://warehouse/widgets/metadata/00000.json")
+            .addSortOrders(
+                IcebergSortOrder.newBuilder()
+                    .setSortOrderId(3)
+                    .addFields(
+                        IcebergSortField.newBuilder()
+                            .setSourceFieldId(5)
+                            .setDirection("ASC")
+                            .setTransform("identity")
+                            .setNullOrder("NULLS_LAST")
+                            .build())
+                    .build())
+            .build();
+
+    TableMetadataView view =
+        TableMetadataBuilder.fromCatalog("widgets", table, props, metadata, List.of());
+
+    @SuppressWarnings("unchecked")
+    Map<String, Object> order = view.sortOrders().get(0);
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> fields = (List<Map<String, Object>>) order.get("fields");
+    assertEquals("nulls-last", fields.get(0).get("null-order"));
   }
 }

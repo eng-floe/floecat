@@ -1135,9 +1135,11 @@ class RestResourceTest {
     ArgumentCaptor<CreateConnectorRequest> connectorReq =
         ArgumentCaptor.forClass(CreateConnectorRequest.class);
     verify(connectorsStub, times(1)).createConnector(connectorReq.capture());
-    assertEquals(
-        "s3://bucket/orders/metadata.json",
-        connectorReq.getValue().getSpec().getPropertiesMap().get("external.metadata-location"));
+    String metadataLocation =
+        connectorReq.getValue().getSpec().getPropertiesMap().get("external.metadata-location");
+    assertNotNull(metadataLocation);
+    assertTrue(metadataLocation.startsWith("s3://bucket/orders/"));
+    assertTrue(metadataLocation.endsWith(".metadata.json"));
   }
 
   @Test
@@ -1607,7 +1609,7 @@ class RestResourceTest {
                                     .setSourceFieldId(1)
                                     .setTransform("identity")
                                     .setDirection("ASC")
-                                    .setNullOrder("NULLS_FIRST")
+                                    .setNullOrder("nulls-first")
                                     .build())
                             .build())
                     .addStatistics(
@@ -1663,7 +1665,7 @@ class RestResourceTest {
               {"action":"remove-partition-specs","spec-ids":[1]},
               {"action":"add-sort-order","sort-order":{
                 "order-id":3,
-                "fields":[{"source-id":1,"transform":"identity","direction":"ASC","null-order":"NULLS_FIRST"}]
+                "fields":[{"source-id":1,"transform":"identity","direction":"ASC","null-order":"nulls-first"}]
               }},
               {"action":"set-default-sort-order","sort-order-id":-1},
               {"action":"set-statistics","statistics":{
