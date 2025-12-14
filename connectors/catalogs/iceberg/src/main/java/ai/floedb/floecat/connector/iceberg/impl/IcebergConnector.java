@@ -317,6 +317,9 @@ public final class IcebergConnector implements FloecatConnector {
       if (includeStatistics) {
         EngineOut engineOutput = runEngine(table, snapshotId, includeIds);
 
+        var columnNames = engineOutput.columnNames();
+        var logicalTypes = engineOutput.logicalTypes();
+
         tStats =
             ProtoStatsBuilder.toTableStats(
                 destinationTableId,
@@ -331,12 +334,20 @@ public final class IcebergConnector implements FloecatConnector {
                 TableFormat.TF_ICEBERG,
                 engineOutput.result().columns(),
                 id -> {
-                  var f = table.schema().findField((Integer) id);
+                  String name = columnNames.get(id);
+                  if (name != null && !name.isBlank()) {
+                    return name;
+                  }
+                  var f = schema.findField(id);
                   return f == null ? "" : f.name();
                 },
-                id -> (Integer) id,
+                id -> id,
                 id -> {
-                  var f = table.schema().findField((Integer) id);
+                  LogicalType lt = logicalTypes.get(id);
+                  if (lt != null) {
+                    return lt;
+                  }
+                  var f = schema.findField(id);
                   return f == null ? null : IcebergTypeMapper.toLogical(f.type());
                 },
                 createdMs,
@@ -348,12 +359,20 @@ public final class IcebergConnector implements FloecatConnector {
                 TableFormat.TF_ICEBERG,
                 engineOutput.result().files(),
                 id -> {
-                  var f = table.schema().findField((Integer) id);
+                  String name = columnNames.get(id);
+                  if (name != null && !name.isBlank()) {
+                    return name;
+                  }
+                  var f = schema.findField(id);
                   return f == null ? "" : f.name();
                 },
-                id -> (Integer) id,
+                id -> id,
                 id -> {
-                  var f = table.schema().findField((Integer) id);
+                  LogicalType lt = logicalTypes.get(id);
+                  if (lt != null) {
+                    return lt;
+                  }
+                  var f = schema.findField(id);
                   return f == null ? null : IcebergTypeMapper.toLogical(f.type());
                 },
                 createdMs);
@@ -747,7 +766,10 @@ public final class IcebergConnector implements FloecatConnector {
     }
   }
 
-  private record EngineOut(StatsEngine.Result<Integer> result) {}
+  private record EngineOut(
+      StatsEngine.Result<Integer> result,
+      Map<Integer, String> columnNames,
+      Map<Integer, LogicalType> logicalTypes) {}
 
   private EngineOut runEngine(Table table, long snapshotId, Set<Integer> colIds) {
     try (var planner = new IcebergPlanner(table, snapshotId, colIds, null)) {
@@ -760,7 +782,7 @@ public final class IcebergConnector implements FloecatConnector {
         StatsEngine<Integer> engine =
             new GenericStatsEngine<>(planner, none, null, colNames, logicalTypes);
         var result = engine.compute();
-        return new EngineOut(result);
+        return new EngineOut(result, colNames, logicalTypes);
       }
 
       Map<String, ColumnNdv> puffinMap = null;
@@ -804,7 +826,7 @@ public final class IcebergConnector implements FloecatConnector {
       var engine = new GenericStatsEngine<>(planner, perFileNdv, bootstrap, colNames, logicalTypes);
 
       var result = engine.compute();
-      return new EngineOut(result);
+      return new EngineOut(result, colNames, logicalTypes);
     } catch (Exception e) {
       throw new RuntimeException("Stats compute failed for snapshot " + snapshotId, e);
     }

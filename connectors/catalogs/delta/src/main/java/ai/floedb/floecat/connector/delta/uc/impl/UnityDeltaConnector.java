@@ -259,6 +259,7 @@ public final class UnityDeltaConnector implements FloecatConnector {
           "Delta table uses inline deletion vectors; not supported for snapshot " + version);
     }
     var result = engineOut.result();
+    var logicalTypes = engineOut.logicalTypes();
 
     var tStats =
         ProtoStatsBuilder.toTableStats(
@@ -278,7 +279,10 @@ public final class UnityDeltaConnector implements FloecatConnector {
             result.columns(),
             name -> name,
             positions::get,
-            nameToType::get,
+            name -> {
+              var lt = logicalTypes.get(name);
+              return (lt != null) ? lt : nameToType.get(name);
+            },
             createdMs,
             result.totalRowCount());
 
@@ -290,7 +294,10 @@ public final class UnityDeltaConnector implements FloecatConnector {
             result.files(),
             name -> name,
             positions::get,
-            nameToType::get,
+            name -> {
+              var lt = logicalTypes.get(name);
+              return (lt != null) ? lt : nameToType.get(name);
+            },
             createdMs);
 
     for (DeletionVectorDescriptor dv : engineOut.deletionVectors()) {
@@ -354,6 +361,7 @@ public final class UnityDeltaConnector implements FloecatConnector {
 
   private record EngineOut(
       StatsEngine.Result<String> result,
+      Map<String, LogicalType> logicalTypes,
       boolean hasDeletionVectors,
       boolean hasInlineDeletionVectors,
       List<DeletionVectorDescriptor> deletionVectors) {}
@@ -388,17 +396,16 @@ public final class UnityDeltaConnector implements FloecatConnector {
             ndvProvider,
             true)) {
 
+      var columnNames = planner.columnNamesByKey();
+      var logicalTypes = planner.logicalTypesByKey();
+
       var engine =
-          new GenericStatsEngine<>(
-              planner,
-              ndvProvider,
-              bootstrap,
-              planner.columnNamesByKey(),
-              planner.logicalTypesByKey());
+          new GenericStatsEngine<>(planner, ndvProvider, bootstrap, columnNames, logicalTypes);
 
       var result = engine.compute();
       return new EngineOut(
           result,
+          logicalTypes,
           planner.hasDeletionVectors(),
           planner.hasInlineDeletionVectors(),
           planner.deletionVectors());

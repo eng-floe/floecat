@@ -5,6 +5,7 @@ import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.UUID;
 
@@ -175,7 +176,7 @@ public final class LogicalComparators {
     }
   }
 
-  private static final class ByteArrayComparable implements Comparable<ByteArrayComparable> {
+  public static final class ByteArrayComparable implements Comparable<ByteArrayComparable> {
     private final byte[] b;
 
     ByteArrayComparable(byte[] b) {
@@ -192,6 +193,10 @@ public final class LogicalComparators {
         }
       }
       return Integer.compare(b.length, o.b.length);
+    }
+
+    public byte[] copy() {
+      return Arrays.copyOf(b, b.length);
     }
   }
 }

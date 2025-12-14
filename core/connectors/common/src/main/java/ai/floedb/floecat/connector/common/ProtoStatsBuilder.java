@@ -177,11 +177,17 @@ public final class ProtoStatsBuilder {
 
       if (logicalType != null) {
         if (agg.min() != null) {
-          columnStatBuilder.setMin(ValueEncoders.encodeToString(logicalType, agg.min()));
+          String encoded = ValueEncoders.encodeToString(logicalType, agg.min());
+          if (encoded != null) {
+            columnStatBuilder.setMin(encoded);
+          }
         }
 
         if (agg.max() != null) {
-          columnStatBuilder.setMax(ValueEncoders.encodeToString(logicalType, agg.max()));
+          String encoded = ValueEncoders.encodeToString(logicalType, agg.max());
+          if (encoded != null) {
+            columnStatBuilder.setMax(encoded);
+          }
         }
       }
 
@@ -248,10 +254,16 @@ public final class ProtoStatsBuilder {
           colBuilder.setLogicalType(LogicalTypeProtoAdapter.encodeLogicalType(logicalType));
 
           if (agg.min() != null) {
-            colBuilder.setMin(ValueEncoders.encodeToString(logicalType, agg.min()));
+            String encoded = ValueEncoders.encodeToString(logicalType, agg.min());
+            if (encoded != null) {
+              colBuilder.setMin(encoded);
+            }
           }
           if (agg.max() != null) {
-            colBuilder.setMax(ValueEncoders.encodeToString(logicalType, agg.max()));
+            String encoded = ValueEncoders.encodeToString(logicalType, agg.max());
+            if (encoded != null) {
+              colBuilder.setMax(encoded);
+            }
           }
         }
 
