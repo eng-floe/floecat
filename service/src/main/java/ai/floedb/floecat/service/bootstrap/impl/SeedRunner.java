@@ -28,6 +28,7 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import com.google.protobuf.util.Timestamps;
+import io.quarkus.runtime.LaunchMode;
 import io.quarkus.runtime.StartupEvent;
 import io.vertx.core.Vertx;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -87,6 +88,22 @@ public class SeedRunner {
               }
             },
             true);
+    if (LaunchMode.current() == LaunchMode.NORMAL) {
+      waitForSeeding(future);
+    } else {
+      LOG.infof("Seeding running asynchronously for launch mode %s", LaunchMode.current());
+      future.onComplete(
+          ar -> {
+            if (ar.succeeded()) {
+              LOG.info("Startup seeding completed successfully (async)");
+            } else {
+              LOG.error("Startup seeding failed (async)", ar.cause());
+            }
+          });
+    }
+  }
+
+  private void waitForSeeding(io.vertx.core.Future<Void> future) {
     try {
       future.toCompletionStage().toCompletableFuture().join();
       LOG.info("Startup seeding completed successfully");
