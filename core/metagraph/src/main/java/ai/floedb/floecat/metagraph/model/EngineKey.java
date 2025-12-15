@@ -14,4 +14,12 @@ public record EngineKey(String engineKind, String engineVersion) {
     Objects.requireNonNull(engineKind, "engineKind");
     Objects.requireNonNull(engineVersion, "engineVersion");
   }
+
+  public String kind() {
+    return engineKind;
+  }
+
+  public String version() {
+    return engineVersion;
+  }
 }

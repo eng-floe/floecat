@@ -16,44 +16,69 @@ The architecture is **plugin-based**: each engine implements a builtin catalog p
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│           Planner (Client)                              │
-│  Requests: (engine_kind="floe-demo", version="16.0")   │
-└──────────────────┬──────────────────────────────────────┘
-                   │ gRPC GetBuiltinCatalogRequest
-                   ▼
-┌─────────────────────────────────────────────────────────┐
-│      BuiltinCatalogServiceImpl (service/)                │
-│  - Validates engine_kind & version headers              │
-│  - Delegates to BuiltinDefinitionRegistry               │
-└──────────────────┬──────────────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────────────┐
-│   BuiltinDefinitionRegistry (service/)                  │
-│  - Caches catalogs by engine_kind                       │
-│  - Delegates to BuiltinCatalogProvider                  │
-└──────────────────┬──────────────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────────────┐
-│  ServiceLoaderBuiltinCatalogProvider (service/)         │
-│  - Uses Java ServiceLoader to discover plugins          │
-│  - Returns EngineBuiltinExtension implementations       │
-└──────────────────┬──────────────────────────────────────┘
-                   │
-        ┌──────────┴──────────┐
-        ▼                     ▼
-   ┌─────────────┐   ┌──────────────────┐
-   │ FloeDb      │   │ FloeDemo         │
-   │ ("floedb")  │   │ ("floe-demo")    │
-   └─────────────┘   └──────────────────┘
-   (Plugin)          (Plugin - Test)
+┌──────────────┐
+│ Planner      │
+│ (engine_kind,│
+│  engine_ver) │
+└──────┬───────┘
+       │ gRPC GetBuiltinCatalog
+       ▼
+┌────────────────────────────────────────────────────────────┐
+│ BuiltinCatalogServiceImpl (service)                        │
+│ - validates headers + correlation id                        │
+│ - calls SystemNodeRegistry.nodesFor(kind, version)          │
+│ - maps SystemCatalogData → BuiltinRegistry via              │
+│   SystemCatalogProtoMapper                                    │
+└──────┬──────────────────────────────────────────────────────┘
+       │
+       ▼
+┌────────────────────────────────────────────────────────────┐
+│ SystemNodeRegistry (core/catalog)                           │
+│ - caches BuiltinNodes per (engineKind, engineVersion)       │
+│ - filters SystemCatalogData with EngineSpecificMatcher       │
+│ - materialises GraphNodes + SystemTable/Table/View defs     │
+└──────┬──────────────────────────────────────────────────────┘
+       │
+       ▼
+┌────────────────────────────────────────────────────────────┐
+│ SystemDefinitionRegistry                                    │
+│ - caches SystemEngineCatalog per engine kind                │
+│ - hands off to SystemCatalogProvider                        │
+└──────┬──────────────────────────────────────────────────────┘
+       │
+       ▼
+┌────────────────────────────────────────────────────────────┐
+│ ServiceLoaderSystemCatalogProvider                          │
+│ - discovers EngineSystemCatalogExtension via ServiceLoader   │
+│ - merges SystemObjectScannerProvider definitions +          │
+│   InformationSchemaProvider entries (last-wins overlay)     │
+│ - validates/manifests catalog data, fingerprints snapshot    │
+└──────┬──────────────────────────────────────────────────────┘
+       │
+   ┌───┴───┬───────────────────────┐
+   │Plugin │InformationSchema      │
+   │Catalog│Provider → scanners     │
+   └───────┴───────────────────────┘
+       │
+       ▼
+┌────────────────────────────────────────────────────────────┐
+│ SystemCatalogData + SystemEngineCatalog (immutable snapshot)│
+└────────────────────────────────────────────────────────────┘
+       │
+       ▼
+┌────────────────────────────────────────────────────────────┐
+│ SystemGraph (service/metagraph)                             │
+│ - reuses SystemNodeRegistry nodes to build _system graph     │
+│ - snapshots per (engineKind, version) cached with LRU        │
+│ - supplies CatalogOverlay/SystemObjectGraphView             │
+└────────────────────────────────────────────────────────────┘
 ```
+
+`SystemNodeRegistry` is also the source of truth for `_system` metadata – `SystemGraph` reuses the cached `BuiltinNodes` to build a `GraphSnapshot` per version, and `MetaGraph` exposes that snapshot via `CatalogOverlay` (which implements `SystemObjectGraphView`) so system objects live alongside `MetadataGraph` nodes. That merged `_system` view (load + scan) is documented in [System objects](system-objects.md).
 
 ### Plugin Implementations
 
-Plugins inherit from the abstract `FloeBuiltinExtension` base class and provide:
+Plugins inherit from the abstract `FloeCatalogExtension` base class and provide:
 
 1. **Engine Kind** – A stable identifier (e.g., "floedb", "floe-demo")
 2. **Catalog Data** – Loads from a `.pbtxt` resource file and processes Floe-specific fields
@@ -81,107 +106,54 @@ message EngineSpecific {
 
 **Key Design**: The message is engine-agnostic. Extensions (defined by plugins) are allowed in range 1000–2000 to support rich PBtxt files during parsing.
 
-### BuiltinCatalogProvider (SPI)
+### SystemCatalogProvider (SPI)
 
 Interface for loading catalogs:
 
 ```java
-public interface BuiltinCatalogProvider {
-  BuiltinEngineCatalog load(String engineKind);
+public interface SystemCatalogProvider {
+  SystemEngineCatalog load(String engineKind);
 }
 ```
 
 **Implementations**:
-- **ServiceLoaderBuiltinCatalogProvider** – Discovers plugins via ServiceLoader
-- **StaticBuiltinCatalogProvider** – For tests; allows programmatic registration
+- **ServiceLoaderSystemCatalogProvider** – Discovers plugins via ServiceLoader and merges provider overlays
+- **StaticSystemCatalogProvider** – For tests; allows programmatic registration
 
 ### Caching Architecture
 
-The system uses **two-level caching** for efficiency:
-
-#### Layer 1: BuiltinDefinitionRegistry (Engine-Kind Cache)
-
-Caches raw catalogs by engine kind:
-
-```java
-@ApplicationScoped
-public final class BuiltinDefinitionRegistry {
-  private final BuiltinCatalogProvider provider;
-  private final ConcurrentMap<String, BuiltinEngineCatalog> cache;  // Key: engine_kind
-
-  public BuiltinEngineCatalog catalog(String engineKind) { ... }
-}
-```
-
-- **Key**: Engine kind (case-normalized), e.g., "floe-demo"
-- **Value**: `BuiltinEngineCatalog` – Raw catalog with all versions, all objects (~500-2000 objects per engine)
-- **Scope**: Application-scoped singleton, persists for service lifetime
-- **Thread-safety**: `ConcurrentHashMap` with atomic `computeIfAbsent()`
-- **Load cost**: One-time per engine kind; plugin loads `.pbtxt` from JAR, parses with TextFormat parser, rewrites unknown fields to binary payloads
-- **Hit rate**: Very high; all version-specific requests for same engine reuse this cache
-
-#### Layer 2: BuiltinNodeRegistry (Version-Specific Cache)
-
-Filters and caches catalogs per version:
-
-```java
-@ApplicationScoped
-public class BuiltinNodeRegistry {
-  private final BuiltinDefinitionRegistry definitionRegistry;
-  private final ConcurrentMap<VersionKey, BuiltinNodes> cache;  // Key: (engine_kind, version)
-
-  public BuiltinNodes nodesFor(String engineKind, String engineVersion) { ... }
-  // where VersionKey = record(engineKind, engineVersion)
-}
-```
-
-- **Key**: `VersionKey(engineKind, engineVersion)` tuple
-- **Value**: `BuiltinNodes` – Filtered & constructed graph nodes for specific version (~30-50% of raw catalog)
-- **Scope**: Application-scoped singleton
-- **Thread-safety**: `ConcurrentHashMap`
-- **Load cost**: Filters raw catalog by version range, constructs `BuiltinFunctionNode`, `BuiltinOperatorNode`, etc. with ResourceIds; zero if Layer 1 hit succeeds
-- **Hit rate**: High after planner first requests a version; subsequent requests for same version hit cache
-
-#### Layer 3: BuiltinCatalogServiceImpl (No Caching)
-
-gRPC endpoint for planners:
-
-```java
-@GrpcService
-public class BuiltinCatalogServiceImpl implements BuiltinCatalogService {
-  public Uni<GetBuiltinCatalogResponse> getBuiltinCatalog(...) { ... }
-}
-```
-
-- **Cache**: None at this layer
-- **Action**: Retrieves cached `BuiltinNodes` from Layer 2, converts to proto wire format via `BuiltinCatalogProtoMapper.toProto()`, returns response
-- **Load cost**: ~1ms proto conversion per request
-
-**Request flow with caching:**
+Builtins are cached at every stage of the pipeline:
 
 ```
-Request 1 for (floe-demo, 16.0):
-  Layer 3: No cache
-  Layer 2: MISS → Layer 1: MISS → Plugin loads floe-demo.pbtxt
-           Cache result in Layer 1
-           Filter by version 16.0, build nodes, cache in Layer 2
-  Proto conversion → response
-
-Request 2 for (floe-demo, 16.0) [identical]:
-  Layer 3: No cache
-  Layer 2: HIT → Return cached BuiltinNodes
-  Proto conversion → response (~100x faster than request 1)
-
-Request 3 for (floe-demo, 17.0) [different version]:
-  Layer 3: No cache
-  Layer 2: MISS → Layer 1: HIT (reuse cached floe-demo.pbtxt)
-           Filter by version 17.0, build nodes, cache in Layer 2
-  Proto conversion → response
+┌──────────────────────────────────┐
+│ SystemDefinitionRegistry         │
+│ key = engineKind                  │
+│ value = SystemEngineCatalog       │
+│ (raw SystemCatalogData snapshot)  │
+└──────────────────────────────────┘
+                │
+┌──────────────────────────────────┐
+│ SystemNodeRegistry               │
+│ key = (engineKind, engineVersion) │
+│ value = BuiltinNodes (GraphNodes +│
+│         filtered SystemCatalogData) │
+└──────────────────────────────────┘
+                │
+┌──────────────────────────────────┐
+│ SystemGraph snapshot cache       │
+│ key = (engineKind, engineVersion) │
+│ value = GraphSnapshot (namespace →│
+│         relations + lookup map)   │
+└──────────────────────────────────┘
 ```
 
-Planner provides headers:
-- `x-engine-kind` – engine identifier (e.g., "floe-demo")
-- `x-engine-version` – requested version (e.g., "16.0")
+1. **SystemDefinitionRegistry** – normalizes the engine kind (`Locale.ROOT`, case-insensitive) and caches the immutable `SystemEngineCatalog` produced by the `SystemCatalogProvider`. Every catalog is fingerprinted once, so subsequent requests skip parsing/POJO creation. Tests can reset this cache via `clear()`.
+
+2. **SystemNodeRegistry** – filters the cached catalog through `EngineSpecificMatcher` (per `min_version`, `max_version` rules) to materialise `FunctionNode`, `OperatorNode`, `TypeNode`, `CastNode`, `CollationNode`, `AggregateNode`, `NamespaceNode`, `SystemTableNode`, and `SystemViewNode` instances. The resulting `BuiltinNodes` record keeps copies of the filtered `SystemCatalogData` (functions, types, casts, tables, etc.), so the same snapshot serves the catalog service and the system graph. `VersionKey` is the `(engineKind, engineVersion)` tuple stored in a `ConcurrentHashMap`.
+
+3. **SystemGraph snapshot cache** – `SystemGraph` consumes `BuiltinNodes` to build a `GraphSnapshot` that buckets namespace→relations, indexes every `GraphNode` by `ResourceId`, and keeps `_system` catalog metadata ready for `CatalogOverlay`. Snapshots are stored in a synchronized `LinkedHashMap` configured by `floecat.system.graph.snapshot-cache-size` (defaults to 16) and evict the oldest entry when the cache is full.
+
+`BuiltinCatalogServiceImpl` itself stays cache-less: it simply fetches the prebuilt `BuiltinNodes`, hands the embedded `SystemCatalogData` to `SystemCatalogProtoMapper.toProto()`, and responds. Because all heavy work (parsing, filtering, node construction, snapshotting) happens before the gRPC layer, repeated requests hit the cache in <1ms.
 
 ## Plugin Architecture
 
@@ -192,20 +164,20 @@ Plugins implement this interface (defined in `extensions/builtin/spi/`):
 ```java
 public interface EngineBuiltinExtension {
   String engineKind();
-  BuiltinCatalogData loadBuiltinCatalog();
+  SystemCatalogData loadSystemCatalog();
   default void onLoadError(Exception e) { }
 }
 ```
 
-### FloeBuiltinExtension (Base Class)
+### FloeCatalogExtension (Base Class)
 
 Located in `extensions/plugins/floedb/src/main/java/`, provides shared logic:
 
 - **PBtxt Loading** – Parses human-friendly proto text format
 - **Extension Rewriting** – Extracts Floe-specific fields from `UnknownFieldSet` and converts to binary payloads
 - **Inner Classes** – Two concrete implementations:
-  - `FloeBuiltinExtension.FloeDb` – "floedb" engine
-  - `FloeBuiltinExtension.FloeDemo` – "floe-demo" engine (test/demo)
+  - `FloeCatalogExtension.FloeDb` – "floedb" engine
+  - `FloeCatalogExtension.FloeDemo` – "floe-demo" engine (test/demo)
 
 Both load from `builtins/{engineKind}.pbtxt` resources by default.
 
@@ -247,11 +219,11 @@ Floe-specific fields (like `floe_function`) are captured as unknown fields durin
 
 ### ServiceLoader Registration
 
-Each plugin registers itself in `META-INF/services/ai.floedb.floecat.extensions.builtin.spi.EngineBuiltinExtension`:
+Each plugin registers itself in `META-INF/services/ai.floedb.floecat.extensions.spi.EngineBuiltinExtension`:
 
 ```
-ai.floedb.floecat.extensions.floedb.FloeBuiltinExtension$FloeDb
-ai.floedb.floecat.extensions.floedb.FloeBuiltinExtension$FloeDemo
+ai.floedb.floecat.extensions.floedb.FloeCatalogExtension$FloeDb
+ai.floedb.floecat.extensions.floedb.FloeCatalogExtension$FloeDemo
 ```
 
 ## Data Flow
@@ -261,15 +233,20 @@ ai.floedb.floecat.extensions.floedb.FloeBuiltinExtension$FloeDemo
 1. **Planner** sends `GetBuiltinCatalogRequest` with headers:
    - `x-engine-kind: "floe-demo"`
    - `x-engine-version: "16.0"`
-2. **BuiltinCatalogServiceImpl** validates headers, calls `BuiltinDefinitionRegistry.catalog("floe-demo")`
-3. **BuiltinDefinitionRegistry** checks cache, calls provider if miss
-4. **ServiceLoaderBuiltinCatalogProvider** finds `FloeBuiltinExtension.FloeDemo` via ServiceLoader
-5. **FloeBuiltinExtension.FloeDemo** loads `floe-demo.pbtxt`, processes unknown fields, returns `BuiltinCatalogData`
-6. **BuiltinCatalogProtoMapper** converts to gRPC protobuf; response sent to planner
+2. **BuiltinCatalogServiceImpl** validates the headers and calls `SystemNodeRegistry.nodesFor("floe-demo", "16.0")`.
+3. **SystemNodeRegistry** normalizes the kind, looks up `(engineKind, engineVersion)` in its cache, and, on a miss, asks `SystemDefinitionRegistry` for the raw `SystemEngineCatalog`.
+4. **SystemDefinitionRegistry** delegates to `ServiceLoaderSystemCatalogProvider` when it needs to load a catalog for the normalized engine kind.
+5. **ServiceLoaderSystemCatalogProvider** discovers the engine plugin (`EngineSystemCatalogExtension`) via ServiceLoader, merges the `SystemCatalogData` with `SystemObjectScannerProvider` overlays (including `InformationSchemaProvider`), fingerprints the result, and returns a `SystemEngineCatalog`. If no plugin is present the result is `SystemCatalogData.empty()`.
+6. **SystemNodeRegistry** filters the catalog by version (`EngineSpecificMatcher`), applies engine-specific rules, and materialises `BuiltinNodes` (graph nodes + filtered `SystemCatalogData`). The `BuiltinNodes` instance is cached for future requests for the same version.
+7. **BuiltinCatalogServiceImpl** receives the cached `BuiltinNodes`, hands its embedded `SystemCatalogData` to `SystemCatalogProtoMapper.toProto()`, and streams the `GetBuiltinCatalogResponse` back to the planner.
+8. **SystemGraph** reuses the same `BuiltinNodes` to build `_system` catalog snapshots (namespace buckets, relation map, `SystemTableNode`s) that `MetaGraph` exposes as `CatalogOverlay`/`SystemObjectGraphView` for system object scanning.
 
-### Caching
+### SystemNodeRegistry Caching
 
-The registry caches by engine kind (case-insensitive), so repeated requests for the same engine avoid reloading.
+All caches are case-normalized and thread-safe:
+* `SystemDefinitionRegistry` keeps one `SystemEngineCatalog` per engine kind in a `ConcurrentHashMap`. Loading once per kind is enough because `SystemEngineCatalog` references a parsed `SystemCatalogData` snapshot that contains every supported version.
+* `SystemNodeRegistry` caches `BuiltinNodes` per `VersionKey(engineKind, engineVersion)` via `ConcurrentHashMap.computeIfAbsent`. The result stores stable `ResourceId`s (via `SystemNodeRegistry.resourceId`) and a copy of the filtered `SystemCatalogData`.
+* `SystemGraph` keeps a synchronized, access-ordered `LinkedHashMap` of `GraphSnapshot`s per version. Each snapshot already groups namespace relations and indexes every `GraphNode` so that `_system` list/lookups take constant time.
 
 ## Version Matching
 
@@ -284,6 +261,8 @@ EngineSpecific {
 ```
 
 The planner can filter or match rules based on the requested version. The versioning semantics are engine-defined; plugins document their version scheme in their documentation.
+
+The actual predicate is implemented by `EngineSpecificMatcher.matches(rules, engineKind, engineVersion)`, which is used by `SystemNodeRegistry` to compute exactly which objects survive the version filter.
 
 ## Scalability & Performance
 
@@ -389,10 +368,10 @@ extend ai.floedb.floecat.query.EngineSpecific {
 
 ## Validation
 
-The `BuiltinCatalogValidator` validates loaded catalogs:
+The `SystemCatalogValidator` validates loaded catalogs:
 
 ```java
-public static List<String> validate(BuiltinCatalogData catalog) { ... }
+public static List<String> validate(SystemCatalogData catalog) { ... }
 ```
 
 Checks include:
@@ -406,29 +385,33 @@ Validation errors are logged; invalid catalogs are still returned (planner must 
 
 ## Creating a New Plugin
 
-### Step 1: Implement EngineBuiltinExtension
+### Step 1: Implement EngineSystemCatalogExtension
+
+`EngineSystemCatalogExtension` lives in `ai.floedb.floecat.systemcatalog.spi` and already extends `SystemObjectScannerProvider`, so every plugin can also supply system table definitions and scanners without extra wiring.
 
 ```java
-public class MyEngineBuiltinExtension implements EngineBuiltinExtension {
+public class MyEngineCatalogExtension implements EngineSystemCatalogExtension {
   @Override
   public String engineKind() {
     return "my-engine";
   }
 
   @Override
-  public BuiltinCatalogData loadBuiltinCatalog() {
+  public SystemCatalogData loadSystemCatalog() {
     // Load and parse your catalog
-    return new BuiltinCatalogData(...);
+    return new SystemCatalogData(...);
   }
+
+  // Implement SystemObjectScannerProvider methods if you expose new rows.
 }
 ```
 
 ### Step 2: Register with ServiceLoader
 
-Create `resources/META-INF/services/ai.floedb.floecat.extensions.builtin.spi.EngineBuiltinExtension`:
+Create `resources/META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension`:
 
 ```
-com.example.MyEngineBuiltinExtension
+com.example.MyEngineCatalogExtension
 ```
 
 ### Step 3: Define Proto Extensions (Optional)
@@ -453,7 +436,7 @@ Add the plugin JAR as a runtime dependency of the service module so it's availab
 
 ### Plugin-Side Validation Tests
 
-Each plugin should validate its `.pbtxt` files using the `BuiltinCatalogValidator`:
+Each plugin should validate its `.pbtxt` files using the `SystemCatalogValidator`:
 
 **Example: FloeBuiltinExtensionTest**
 
@@ -461,20 +444,20 @@ Each plugin should validate its `.pbtxt` files using the `BuiltinCatalogValidato
 class FloeBuiltinExtensionTest {
   @Test
   void floeDbLoadsAndValidates() {
-    var extension = new FloeBuiltinExtension.FloeDb();
+    var extension = new FloeCatalogExtension.FloeDb();
     
     // Load the floedb.pbtxt file
-    BuiltinCatalogData catalog = extension.loadBuiltinCatalog();
+    SystemCatalogData catalog = extension.loadSystemCatalog();
     
     // Validate structural integrity
-    var errors = BuiltinCatalogValidator.validate(catalog);
+    var errors = SystemCatalogValidator.validate(catalog);
     assert errors.isEmpty() : "floedb.pbtxt must pass validation, got: " + errors;
   }
 
   @Test
   void catalogDataPreservesEngineSpecificRules() {
-    var extension = new FloeBuiltinExtension.FloeDb();
-    BuiltinCatalogData catalog = extension.loadBuiltinCatalog();
+    var extension = new FloeCatalogExtension.FloeDb();
+    SystemCatalogData catalog = extension.loadSystemCatalog();
 
     // Ensure Floe-specific fields were rewritten to payload bytes
     var functionsWithRules = catalog.functions().stream()
@@ -494,7 +477,7 @@ class FloeBuiltinExtensionTest {
     var extension = new TestExtensionWithMissingResource();
     
     try {
-      extension.loadBuiltinCatalog();
+      extension.loadSystemCatalog();
       assert false : "Expected IllegalStateException";
     } catch (IllegalStateException e) {
       assert e.getMessage().contains("Builtin file not found");
@@ -517,12 +500,12 @@ class FloeBuiltinExtensionTest {
 - Version filtering returns only version-matched objects
 - Missing headers trigger INVALID_ARGUMENT errors
 
-**BuiltinNodeRegistryTest** – Version-specific filtering:
+**SystemNodeRegistryTest** – Version-specific filtering:
 - Filters catalog by engine kind and version
 - Constructs ResourceIds correctly
 - Caches results per version tuple
 
-**BuiltinCatalogValidatorTest** – Structural validation:
+**SystemCatalogValidatorTest** – Structural validation:
 - Duplicate names detected
 - Type references exist
 - Required fields present
@@ -535,11 +518,11 @@ mvn -pl extensions/plugins/floedb test
 
 # Run core engine tests
 mvn -pl service test -Dtest=BuiltinCatalogServiceIT
-mvn -pl service test -Dtest=BuiltinNodeRegistryTest
-mvn -pl catalog/builtin test -Dtest=BuiltinCatalogValidator*
+mvn -pl core/catalog test -Dtest=SystemNodeRegistryTest
+mvn -pl core/catalog test -Dtest=SystemCatalogValidator*
 
-# All builtin tests
-mvn -pl service,extensions/plugins/floedb,catalog/builtin test -Dtest=Builtin*
+# All builtin/service catalogs
+mvn -pl service,extensions/floedb,core/catalog test -Dtest="Builtin*,System*"
 ```
 
 ### Key Validation Points
@@ -549,13 +532,13 @@ When adding a new plugin or modifying .pbtxt files:
 | What to Test | How | Tool |
 |-------------|-----|------|
 | `.pbtxt` parses | No TextFormat errors | FloeBuiltinExtensionTest.loads |
-| No duplicate types | Catalog validator | BuiltinCatalogValidatorTest |
-| Functions reference known types | Type resolution | BuiltinCatalogValidatorTest |
-| Operators have valid types | Type resolution | BuiltinCatalogValidatorTest |
-| Casts reference valid types | Type resolution | BuiltinCatalogValidatorTest |
+| No duplicate types | Catalog validator | SystemCatalogValidatorTest |
+| Functions reference known types | Type resolution | SystemCatalogValidatorTest |
+| Operators have valid types | Type resolution | SystemCatalogValidatorTest |
+| Casts reference valid types | Type resolution | SystemCatalogValidatorTest |
 | Engine-specific fields rewritten | Payload bytes present | FloeBuiltinExtensionTest.preservesRules |
 | ServiceLoader discovers plugin | BuiltinCatalogServiceIT | Dynamic runtime discovery |
-| Version filtering works | Version matching logic | BuiltinNodeRegistryTest |
+| Version filtering works | Version matching logic | SystemNodeRegistryTest |
 
 ## Future Enhancements
 

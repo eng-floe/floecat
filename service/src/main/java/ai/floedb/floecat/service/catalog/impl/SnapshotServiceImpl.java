@@ -1,4 +1,4 @@
-package ai.floedb.floecat.service.catalog.impl;
+package ai.floedb.floecat.service.systemcatalog.impl;
 
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotResponse;

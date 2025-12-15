@@ -9,7 +9,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.MetadataGraph.SchemaResolution;
+import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph.SchemaResolution;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import com.google.protobuf.Timestamp;
 import java.time.Instant;

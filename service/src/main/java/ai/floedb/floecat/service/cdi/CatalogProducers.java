@@ -1,15 +1,12 @@
 package ai.floedb.floecat.service.cdi;
 
-import ai.floedb.floecat.catalog.builtin.graph.BuiltinNodeRegistry;
-import ai.floedb.floecat.catalog.builtin.hint.BuiltinCatalogHintProvider;
-import ai.floedb.floecat.catalog.builtin.provider.BuiltinCatalogProvider;
-import ai.floedb.floecat.catalog.builtin.provider.ServiceLoaderBuiltinCatalogProvider;
-import ai.floedb.floecat.catalog.builtin.registry.BuiltinDefinitionRegistry;
-import ai.floedb.floecat.catalog.systemobjects.provider.ServiceLoaderSystemObjectProvider;
-import ai.floedb.floecat.catalog.systemobjects.registry.SystemObjectRegistry;
-import ai.floedb.floecat.catalog.systemobjects.registry.SystemObjectResolver;
-import ai.floedb.floecat.catalog.systemobjects.spi.SystemObjectProvider;
 import ai.floedb.floecat.metagraph.hint.EngineHintProvider;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
+import ai.floedb.floecat.systemcatalog.hint.SystemCatalogHintProvider;
+import ai.floedb.floecat.systemcatalog.provider.ServiceLoaderSystemCatalogProvider;
+import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
+import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
+import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
 import java.util.List;
@@ -20,43 +17,32 @@ public class CatalogProducers {
 
   @Produces
   @ApplicationScoped
-  public BuiltinCatalogProvider produceBuiltinCatalogProvider() {
-    return new ServiceLoaderBuiltinCatalogProvider();
+  public SystemDefinitionRegistry produceDefinitionRegistry(SystemCatalogProvider provider) {
+    return new SystemDefinitionRegistry(provider);
   }
 
   @Produces
   @ApplicationScoped
-  public BuiltinDefinitionRegistry produceDefinitionRegistry(BuiltinCatalogProvider provider) {
-    return new BuiltinDefinitionRegistry(provider);
+  public SystemNodeRegistry produceBuiltinNodeRegistry(SystemDefinitionRegistry defs) {
+    return new SystemNodeRegistry(defs);
   }
 
   @Produces
   @ApplicationScoped
-  public BuiltinNodeRegistry produceBuiltinNodeRegistry(BuiltinDefinitionRegistry defs) {
-    return new BuiltinNodeRegistry(defs);
+  public EngineHintProvider produceSystemCatalogHintProvider(SystemNodeRegistry registry) {
+    return new SystemCatalogHintProvider(registry);
   }
 
   @Produces
   @ApplicationScoped
-  public EngineHintProvider produceBuiltinCatalogHintProvider(BuiltinNodeRegistry registry) {
-    return new BuiltinCatalogHintProvider(registry);
+  public ServiceLoaderSystemCatalogProvider produceSystemCatalogLoader() {
+    return new ServiceLoaderSystemCatalogProvider();
   }
 
   @Produces
   @ApplicationScoped
-  public List<SystemObjectProvider> produceSystemObjectProviders() {
-    return new ServiceLoaderSystemObjectProvider().providers();
-  }
-
-  @Produces
-  @ApplicationScoped
-  public SystemObjectRegistry produceSystemObjectRegistry(List<SystemObjectProvider> providers) {
-    return new SystemObjectRegistry(providers);
-  }
-
-  @Produces
-  @ApplicationScoped
-  public SystemObjectResolver produceSystemObjectResolver() {
-    return new SystemObjectResolver();
+  public List<SystemObjectScannerProvider> produceSystemObjectProviders(
+      ServiceLoaderSystemCatalogProvider loader) {
+    return loader.providers();
   }
 }

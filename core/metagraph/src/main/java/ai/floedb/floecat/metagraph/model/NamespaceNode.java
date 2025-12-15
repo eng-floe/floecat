@@ -19,6 +19,7 @@ public record NamespaceNode(
     ResourceId catalogId,
     List<String> pathSegments,
     String displayName,
+    GraphNodeOrigin origin,
     Map<String, String> properties,
     Optional<List<ResourceId>> relationIds,
     Map<EngineKey, EngineHint> engineHints)
@@ -35,5 +36,10 @@ public record NamespaceNode(
   @Override
   public GraphNodeKind kind() {
     return GraphNodeKind.NAMESPACE;
+  }
+
+  @Override
+  public GraphNodeOrigin origin() {
+    return origin;
   }
 }
