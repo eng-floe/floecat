@@ -3,9 +3,11 @@ package ai.floedb.floecat.connector.iceberg.impl;
 import ai.floedb.floecat.connector.common.PlannedFile;
 import ai.floedb.floecat.connector.common.Planner;
 import ai.floedb.floecat.connector.common.ndv.NdvProvider;
+import ai.floedb.floecat.types.LogicalCoercions;
 import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -162,16 +164,23 @@ final class IcebergPlanner implements Planner<Integer> {
     for (var column : raw.entrySet()) {
       Integer id = column.getKey();
       Type type = idToIceType.get(id);
+      Object decoded = null;
       if (type != null) {
-        out.put(id, Conversions.fromByteBuffer(type, column.getValue()));
+        decoded = Conversions.fromByteBuffer(type, column.getValue());
       } else {
         ByteBuffer dup = column.getValue().duplicate();
         byte[] bytes = new byte[dup.remaining()];
         dup.get(bytes);
-        out.put(id, new String(bytes));
+        decoded = new String(bytes, StandardCharsets.UTF_8);
+      }
+      LogicalType logicalType = idToLogical.get(id);
+      Object canonical =
+          logicalType != null ? LogicalCoercions.coerceStatValue(logicalType, decoded) : decoded;
+      if (canonical != null) {
+        out.put(id, canonical);
       }
     }
-    return out;
+    return out.isEmpty() ? null : out;
   }
 
   private String partitionJson(PartitionSpec spec, StructLike partition) {

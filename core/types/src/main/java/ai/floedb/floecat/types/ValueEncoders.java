@@ -28,15 +28,70 @@ public final class ValueEncoders {
       case BOOLEAN:
         return Boolean.toString((Boolean) value);
       case INT16:
-        return Short.toString((Short) value);
+        if (value instanceof Number n) {
+          return Short.toString(n.shortValue());
+        }
+        if (value instanceof CharSequence s) {
+          String str = trimOrNull(s);
+          if (str == null) {
+            return null;
+          }
+          return Short.toString(Short.parseShort(str));
+        }
+        throw new ClassCastException(
+            "INT16 value must be Number or String but was " + value.getClass());
       case INT32:
-        return Integer.toString((Integer) value);
+        if (value instanceof Number n) {
+          return Integer.toString(n.intValue());
+        }
+        if (value instanceof CharSequence s) {
+          String str = trimOrNull(s);
+          if (str == null) {
+            return null;
+          }
+          return Integer.toString(Integer.parseInt(str));
+        }
+        throw new ClassCastException(
+            "INT32 value must be Number or String but was " + value.getClass());
       case INT64:
-        return Long.toString((Long) value);
+        if (value instanceof Number n) {
+          return Long.toString(n.longValue());
+        }
+        if (value instanceof CharSequence s) {
+          String str = trimOrNull(s);
+          if (str == null) {
+            return null;
+          }
+          return Long.toString(Long.parseLong(str));
+        }
+        throw new ClassCastException(
+            "INT64 value must be Number or String but was " + value.getClass());
       case FLOAT32:
-        return Float.toString((Float) value);
+        if (value instanceof Number n) {
+          return Float.toString(n.floatValue());
+        }
+        if (value instanceof CharSequence s) {
+          String str = trimOrNull(s);
+          if (str == null) {
+            return null;
+          }
+          return Float.toString(Float.parseFloat(str));
+        }
+        throw new ClassCastException(
+            "FLOAT32 value must be Number or String but was " + value.getClass());
       case FLOAT64:
-        return Double.toString((Double) value);
+        if (value instanceof Number n) {
+          return Double.toString(n.doubleValue());
+        }
+        if (value instanceof CharSequence s) {
+          String str = trimOrNull(s);
+          if (str == null) {
+            return null;
+          }
+          return Double.toString(Double.parseDouble(str));
+        }
+        throw new ClassCastException(
+            "FLOAT64 value must be Number or String but was " + value.getClass());
 
       case DATE:
         {
@@ -182,6 +237,10 @@ public final class ValueEncoders {
       return dst;
     }
 
+    if (v instanceof LogicalComparators.ByteArrayComparable cmp) {
+      return cmp.copy();
+    }
+
     throw new IllegalArgumentException(
         "BINARY value must be byte[] or ByteBuffer: " + v.getClass());
   }
@@ -208,6 +267,14 @@ public final class ValueEncoders {
 
     throw new IllegalArgumentException(
         "STRING value must be String, CharSequence, byte[] or ByteBuffer, not " + v.getClass());
+  }
+
+  private static String trimOrNull(CharSequence cs) {
+    if (cs == null) {
+      return null;
+    }
+    String s = cs.toString().trim();
+    return s.isEmpty() ? null : s;
   }
 
   private static Instant instantFromNumber(long v) {

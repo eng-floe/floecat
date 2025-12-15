@@ -2,6 +2,7 @@ package ai.floedb.floecat.connector.common;
 
 import ai.floedb.floecat.connector.common.ndv.ColumnNdv;
 import ai.floedb.floecat.connector.common.ndv.NdvProvider;
+import ai.floedb.floecat.types.LogicalCoercions;
 import ai.floedb.floecat.types.LogicalComparators;
 import ai.floedb.floecat.types.LogicalType;
 import java.util.ArrayList;
@@ -168,20 +169,27 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       if (value == null) {
         return;
       }
-
-      if (min == null) {
-        min = value;
+      Object normalized = canonical(value);
+      if (normalized == null) {
         return;
       }
-
+      if (min == null) {
+        min = normalized;
+        return;
+      }
+      Object current = canonical(min);
       if (type == null) {
-        if (value instanceof Comparable<?> c && min.getClass().isInstance(value)) {
+        if (normalized instanceof Comparable<?> c
+            && current != null
+            && current.getClass().isInstance(normalized)) {
           @SuppressWarnings("unchecked")
-          int cmp = ((Comparable<Object>) c).compareTo(min);
-          if (cmp < 0) min = value;
+          int cmp = ((Comparable<Object>) c).compareTo(current);
+          if (cmp < 0) {
+            min = normalized;
+          }
         }
-      } else if (LogicalComparators.compare(type, value, min) < 0) {
-        min = value;
+      } else if (LogicalComparators.compare(type, normalized, current) < 0) {
+        min = normalized;
       }
     }
 
@@ -189,20 +197,45 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       if (value == null) {
         return;
       }
-
-      if (max == null) {
-        max = value;
+      Object normalized = canonical(value);
+      if (normalized == null) {
         return;
       }
-
+      if (max == null) {
+        max = normalized;
+        return;
+      }
+      Object current = canonical(max);
       if (type == null) {
-        if (value instanceof Comparable<?> c && max.getClass().isInstance(value)) {
+        if (normalized instanceof Comparable<?> c
+            && current != null
+            && current.getClass().isInstance(normalized)) {
           @SuppressWarnings("unchecked")
-          int cmp = ((Comparable<Object>) c).compareTo(max);
-          if (cmp > 0) max = value;
+          int cmp = ((Comparable<Object>) c).compareTo(current);
+          if (cmp > 0) {
+            max = normalized;
+          }
         }
-      } else if (LogicalComparators.compare(type, value, max) > 0) {
-        max = value;
+      } else if (LogicalComparators.compare(type, normalized, current) > 0) {
+        max = normalized;
+      }
+    }
+
+    private Object canonical(Object value) {
+      if (value == null) {
+        return null;
+      }
+      if (type == null) {
+        return value;
+      }
+      try {
+        return LogicalComparators.normalize(type, value);
+      } catch (RuntimeException e) {
+        try {
+          return LogicalCoercions.coerceStatValue(type, value);
+        } catch (RuntimeException ignore) {
+          return value;
+        }
       }
     }
 
