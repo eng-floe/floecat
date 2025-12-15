@@ -43,4 +43,9 @@ public record ViewNode(
   public GraphNodeKind kind() {
     return GraphNodeKind.VIEW;
   }
+
+  @Override
+  public GraphNodeOrigin origin() {
+    return GraphNodeOrigin.USER;
+  }
 }

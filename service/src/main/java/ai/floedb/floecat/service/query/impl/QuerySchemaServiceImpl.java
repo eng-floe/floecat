@@ -2,7 +2,6 @@ package ai.floedb.floecat.service.query.impl;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
@@ -12,7 +11,7 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.MetadataGraph;
+import ai.floedb.floecat.service.metagraph.overlay.CatalogOverlay;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.service.query.resolver.ObligationsResolver;
@@ -46,7 +45,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   @Inject ObligationsResolver obligations;
   @Inject ViewExpansionResolver expansions;
   @Inject QueryContextStore queryStore;
-  @Inject MetadataGraph metadataGraph;
+  @Inject CatalogOverlay catalogOverlay;
 
   @Override
   public Uni<DescribeInputsResponse> describeInputs(DescribeInputsRequest request) {
@@ -127,23 +126,16 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   }
 
   private SchemaDescriptor describeTable(String correlationId, ResourceId rid, SnapshotPin pin) {
-    TableNode tableNode =
-        metadataGraph
-            .table(rid)
-            .orElseThrow(
-                () ->
-                    GrpcErrors.notFound(
-                        correlationId, "table", java.util.Map.of("id", rid.getId())));
-
     SnapshotRef snapshotRef = snapshotRefFrom(pin);
-    String schemaJson = metadataGraph.schemaJsonFor(correlationId, tableNode, snapshotRef);
-    return schemaMapper.map(tableNode, schemaJson);
+    CatalogOverlay.SchemaResolution resolved =
+        catalogOverlay.schemaFor(correlationId, rid, snapshotRef);
+    return schemaMapper.map(resolved.table(), resolved.schemaJson());
   }
 
   private SchemaDescriptor describeView(String correlationId, ResourceId rid) {
     ViewNode viewNode =
-        metadataGraph
-            .view(rid)
+        catalogOverlay
+            .tryView(rid)
             .orElseThrow(
                 () ->
                     GrpcErrors.notFound(

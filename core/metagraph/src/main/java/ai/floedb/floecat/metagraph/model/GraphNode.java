@@ -32,6 +32,9 @@ public interface GraphNode {
   /** Logical kind returned to planners. */
   GraphNodeKind kind();
 
+  /** Origin of the node */
+  GraphNodeOrigin origin();
+
   /**
    * Engine-specific hint map keyed by kind/version.
    *

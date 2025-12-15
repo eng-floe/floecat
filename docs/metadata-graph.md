@@ -23,23 +23,30 @@ or views. The graph provides:
 ```
 
 ### Implementation Structure
-The `service/query/graph` package is split into a few focused modules:
+Immutable node models live under `core/metagraph/model`, while the runtime helpers and
+facade sit inside `service/metagraph`. The split looks like this:
 
-- `model/` – Immutable node records (`CatalogNode`, `NamespaceNode`, `TableNode`, `ViewNode`,
-  `SystemViewNode`) plus shared enums (`GraphNodeKind`, `EngineKey`, `EngineHint`, etc.).
-- `cache/` – `GraphCacheManager` + `GraphCacheKey` implement the per-account cache-of-caches and
-  expose meters for hit/miss counts, account count, and total entries.
-- `loader/` – `NodeLoader` wraps the catalog/namespace/table/view repositories to hydrate immutable
-  nodes from protobuf metadata (`metaForSafe` + pointer fetches).
-- `resolver/` – `NameResolver` handles catalog/namespace/table/view lookups, while
+- `core/metagraph/model/` – Immutable node records (`CatalogNode`, `NamespaceNode`, `TableNode`,
+  `ViewNode`, `SystemViewNode`) plus shared enums (`GraphNodeKind`, `EngineKey`, `EngineHint`,
+  `GraphNodeOrigin`, etc.).
+- `service/metagraph/cache/` – `GraphCacheManager` + `GraphCacheKey` implement the per-account
+  cache-of-caches and expose meters for hit/miss counts, account count, and total entries.
+- `service/metagraph/loader/` – `NodeLoader` wraps the catalog/namespace/table/view repositories to
+  hydrate immutable nodes from protobuf metadata (`metaForSafe` + pointer fetches).
+- `service/metagraph/resolver/` – `NameResolver` handles catalog/namespace/table/view lookups, while
   `FullyQualifiedResolver` mirrors DirectoryService’s ResolveFQ list/prefix semantics.
-- `snapshot/` – `SnapshotHelper` encapsulates snapshot pinning and schema resolution, wrapping the
-  SnapshotService RPC stub.
-- `MetadataGraph` – Thin façade that composes the helpers above and exposes the public APIs consumed
-  by DirectoryService, QueryInputResolver, SchemaService, etc.
+- `service/metagraph/snapshot/` – `SnapshotHelper` encapsulates snapshot pinning and schema resolution,
+  wrapping the SnapshotService RPC stub.
+- `service/metagraph/hint/` – `EngineHintManager` routes registered hint providers, matches them
+  against `EngineKey`, and caches payloads so planners never race over engine versions.
+- `service/metagraph/overlay/` – `UserGraph` (the Metadata Graph façade, see
+  `service/metagraph/overlay/user/UserGraph.java`) composes the helpers above, exposes the public API,
+  and keeps a `CatalogOverlay`-friendly view via `MetaGraph`. `SystemGraph` (in
+  `overlay/systemobjects/SystemGraph.java`) consumes `SystemNodeRegistry` snapshots so pg_catalog-style
+  system tables/views merge with the user metadata when callers go through the overlay.
 
 ## Node Model
-Nodes live under `service/query/graph` and each implements `GraphNode`. They are Java records with
+Nodes live under `core/metagraph/model` and each implements `GraphNode`. They are Java records with
 defensive copies to guarantee immutability.
 
 - `CatalogNode` – Lightweight display + connector/policy metadata. Optionally exposes namespace IDs
@@ -78,39 +85,33 @@ isolated across engine versions and hint revisions.
 
 ### Builtin Nodes & Engine Filtering
 Builtin SQL objects (types, functions, operators, casts, collations, aggregates) never hit the
-pointer/blob repositories. Instead, the graph delegates to `BuiltinNodeRegistry`, which loads the
-pb/pbtxt catalogs once per engine kind, materialises immutable relation nodes, and caches the
-result per `(engine_kind, engine_version)`. Catalog files live under `resources/builtins` and follow
-the `<engine_kind>.pb[pbtxt]` naming convention. Each builtin definition can declare one or more
+pointer/blob repositories. Instead, `SystemNodeRegistry` (core/catalog) loads the pb/pbtxt catalogs once
+per engine kind, materialises immutable relation nodes, and caches the result per
+`(engine_kind, engine_version)`. Catalog files live under `resources/builtins` and follow the
+`<engine_kind>.pb[pbtxt]` naming convention. Each builtin definition can declare one or more
 `engine_specific` rules (engine kind + min/max versions + optional properties). The registry filters
-definitions using those rules so a planner calling with `x-engine-kind=postgres,
-x-engine-version=16.0` only sees builtin nodes that actually exist in that engine release. Callers
-that omit either header simply receive an empty builtin bundle; the catalog files remain untouched.
-Only `GetBuiltinCatalog` enforces the headers strictly so planners cannot accidentally rely on
-partial data.
+definitions using those rules so a planner that sets `x-engine-kind=postgres` and
+`x-engine-version=16.0` only sees builtin nodes that actually exist in that release. Callers that omit
+either header simply receive an empty builtin bundle (the catalog files stay untouched), and
+`GetBuiltinCatalog` rejects the request until both headers are provided.
 
 Each `engine_specific` block may also attach arbitrary key/value `properties`. When the registry
-materialises a `(engine_kind, engine_version)` bundle it drops every rule that does not match that
-engine/version, so the filtered catalog (and `GetBuiltinCatalog` response) only contains the rules
-that apply to the caller. Pbtxt authors rarely need to repeat the engine kind in each rule; any
-`engine_specific` entry without an explicit `engine_kind` automatically inherits the file’s engine
-kind. Builtin nodes intentionally stay rule-free; the `BuiltinCatalogHintProvider` reuses the cached
-definitions and `EngineSpecificMatcher` to expose the matching rule’s properties through the
-`builtin.catalog.properties` engine hint (JSON payload).
+materialises a `(engine_kind, engine_version)` bundle it keeps only the rules that match the requested
+engine/version, so the filtered catalog (and `GetBuiltinCatalog` response) contains exactly the
+entries that apply to the caller. Pbtxt authors rarely need to repeat the engine kind in every rule;
+entries that omit it inherit the file’s engine kind. Builtin nodes intentionally stay rule-free; the
+`SystemCatalogHintProvider` studies the cached definitions and `EngineSpecificMatcher` to expose the
+matching rules’ properties through the `builtin.systemcatalog.properties` engine hint (JSON payload).
 
-The matcher applies all engine‑specific constraints eagerly when materializing builtin bundles.
-For a given (engine_kind, engine_version) pair, only the rules that match naturally‑ordered
-version boundaries are retained. As a result, builtin nodes exposed through
-`MetadataGraph.builtinNodes` already represent the exact set applicable for that engine release.
-Rules that declare version‑scoped properties contribute those properties to the
-`builtin.catalog.properties` hint, which is computed by the BuiltinCatalogHintProvider using the
-same matching semantics.
-
-`MetadataGraph.builtinNodes(engineKind, engineVersion)` exposes the filtered bundle. `GetBuiltinCatalog`
-is currently the only caller, but the same bundle will eventually back `GetCatalogBundle` and system
-catalog streaming so builtin objects look and behave like every other relation node. Because builtin
-catalogs are immutable per engine version, the registry stores them entirely in memory and evicts
-them only when FloeCAT restarts.
+The matcher applies all engine-specific constraints eagerly when materialising builtin bundles. For a
+given `(engine_kind, engine_version)` pair, only the rules that match the naturally-ordered version
+boundaries are retained. The `BuiltinNodes` returned by `SystemNodeRegistry.nodesFor` therefore already
+represent the exact set applicable for that engine release. `SystemGraph` consumes those nodes to build
+a `_system` `GraphSnapshot` that `MetaGraph` exposes via `CatalogOverlay`, so pg_catalog-style system
+objects live alongside the user metadata when scanners run. `BuiltinCatalogServiceImpl` reuses the same
+`SystemNodeRegistry`/`SystemCatalogProtoMapper` pipeline to answer `GetBuiltinCatalog()` calls without
+recomputing the catalog data, and because builtin catalogs are immutable per engine version the registry
+keeps them entirely in memory until FloeCAT restarts.
 
 ### Deterministic Hint Caching
 The hint system used by builtin catalog providers and other planners is backed by a weight‑bounded
@@ -123,7 +124,8 @@ can invalidate old hints even when pointer versions are unchanged, ensuring stal
 metadata is not reused beyond its boundary conditions.
 
 ## Graph APIs
-`MetadataGraph` (CDI `@ApplicationScoped`) exposes the APIs that higher layers call. Key methods:
+The `UserGraph` façade (CDI `@ApplicationScoped`, see `service/metagraph/overlay/user/UserGraph.java`)
+exposes the Metadata Graph APIs that higher layers call. Key methods:
 
 | Method | Purpose |
 |--------|---------|

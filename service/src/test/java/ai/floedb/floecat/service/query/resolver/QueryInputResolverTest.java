@@ -11,7 +11,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.query.rpc.QueryInput;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.service.metagraph.MetadataGraphClient;
+import ai.floedb.floecat.service.testsupport.TestCatalogOverlay;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
@@ -415,7 +415,7 @@ public class QueryInputResolverTest {
   // Helpers / test doubles (Composition, not inheritance)
   // ----------------------------------------------------------------------
 
-  static final class FakeGraph implements MetadataGraphClient {
+  static final class FakeGraph extends TestCatalogOverlay {
 
     private final Map<NameRef, ResourceId> nameBindings = new HashMap<>();
     private final Map<NameRef, RuntimeException> failures = new HashMap<>();

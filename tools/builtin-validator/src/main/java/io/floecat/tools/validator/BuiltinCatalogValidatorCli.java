@@ -1,9 +1,9 @@
 package io.floecat.tools.validator;
 
-import ai.floedb.floecat.catalog.builtin.registry.BuiltinCatalogData;
-import ai.floedb.floecat.catalog.builtin.registry.BuiltinCatalogProtoMapper;
-import ai.floedb.floecat.catalog.builtin.registry.BuiltinCatalogValidator;
 import ai.floedb.floecat.query.rpc.BuiltinRegistry;
+import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
+import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
+import ai.floedb.floecat.systemcatalog.registry.SystemCatalogValidator;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.TextFormat;
 import java.io.IOException;
@@ -91,7 +91,7 @@ public final class BuiltinCatalogValidatorCli {
       return 1;
     }
 
-    BuiltinCatalogData catalog;
+    SystemCatalogData catalog;
     try {
       catalog = loadCatalog(options.catalogPath());
     } catch (IOException e) {
@@ -99,7 +99,7 @@ public final class BuiltinCatalogValidatorCli {
       return 1;
     }
 
-    var errors = BuiltinCatalogValidator.validate(catalog);
+    var errors = SystemCatalogValidator.validate(catalog);
     var warnings = List.<String>of();
     var stats = CatalogStats.from(catalog);
     boolean valid = errors.isEmpty() && (warnings.isEmpty() || !options.strict());
@@ -283,7 +283,7 @@ public final class BuiltinCatalogValidatorCli {
   }
 
   /** Loads either a binary or text protobuf from disk and maps it to our data record. */
-  private BuiltinCatalogData loadCatalog(Path path) throws IOException {
+  private SystemCatalogData loadCatalog(Path path) throws IOException {
     if (!Files.exists(path)) {
       throw new IOException("Catalog file does not exist: " + path);
     }
@@ -292,12 +292,12 @@ public final class BuiltinCatalogValidatorCli {
 
     try {
       byte[] bytes = Files.readAllBytes(path);
-      return BuiltinCatalogProtoMapper.fromProto(BuiltinRegistry.parseFrom(bytes), engineKind);
+      return SystemCatalogProtoMapper.fromProto(BuiltinRegistry.parseFrom(bytes), engineKind);
     } catch (InvalidProtocolBufferException binaryParseFailure) {
       var builder = BuiltinRegistry.newBuilder();
       try (var reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
         TextFormat.getParser().merge(reader, builder);
-        return BuiltinCatalogProtoMapper.fromProto(builder.build(), engineKind);
+        return SystemCatalogProtoMapper.fromProto(builder.build(), engineKind);
       } catch (TextFormat.ParseException textFailure) {
         throw new IOException(
             "Catalog file is not valid protobuf (binary or text): " + path, textFailure);
@@ -331,7 +331,7 @@ public final class BuiltinCatalogValidatorCli {
   /** Captures simple cardinality metrics for reporting and JSON output. */
   private record CatalogStats(
       int types, int functions, int operators, int casts, int collations, int aggregates) {
-    static CatalogStats from(BuiltinCatalogData data) {
+    static CatalogStats from(SystemCatalogData data) {
       return new CatalogStats(
           data.types().size(),
           data.functions().size(),

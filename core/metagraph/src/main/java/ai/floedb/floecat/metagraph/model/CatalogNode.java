@@ -37,4 +37,9 @@ public record CatalogNode(
   public GraphNodeKind kind() {
     return GraphNodeKind.CATALOG;
   }
+
+  @Override
+  public GraphNodeOrigin origin() {
+    return GraphNodeOrigin.USER;
+  }
 }

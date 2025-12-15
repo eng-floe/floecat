@@ -22,7 +22,7 @@ import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.MetadataGraph;
+import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
@@ -49,7 +49,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
-  @Inject MetadataGraph metadataGraph;
+  @Inject UserGraph metadataGraph;
 
   private static final Set<String> TABLE_MUTABLE_PATHS =
       Set.of(
