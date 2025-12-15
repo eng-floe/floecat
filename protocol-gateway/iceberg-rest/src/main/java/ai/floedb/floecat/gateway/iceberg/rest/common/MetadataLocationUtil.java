@@ -6,7 +6,6 @@ import java.util.function.BiConsumer;
 public final class MetadataLocationUtil {
 
   public static final String PRIMARY_KEY = "metadata-location";
-  public static final String LEGACY_KEY = "metadata_location";
   private static final String METADATA_MIRROR_SEGMENT = "/.floecat-metadata";
 
   private MetadataLocationUtil() {}
@@ -16,9 +15,6 @@ public final class MetadataLocationUtil {
       return null;
     }
     String location = props.get(PRIMARY_KEY);
-    if (location == null || location.isBlank()) {
-      location = props.get(LEGACY_KEY);
-    }
     return (location == null || location.isBlank()) ? null : location;
   }
 
@@ -35,7 +31,6 @@ public final class MetadataLocationUtil {
       return;
     }
     setter.accept(PRIMARY_KEY, metadataLocation);
-    setter.accept(LEGACY_KEY, metadataLocation);
   }
 
   public static boolean updateMetadataLocation(Map<String, String> props, String metadataLocation) {
@@ -44,10 +39,6 @@ public final class MetadataLocationUtil {
     }
     boolean mutated = !metadataLocation.equals(props.get(PRIMARY_KEY));
     props.put(PRIMARY_KEY, metadataLocation);
-    if (!metadataLocation.equals(props.get(LEGACY_KEY))) {
-      mutated = true;
-    }
-    props.put(LEGACY_KEY, metadataLocation);
     return mutated;
   }
 

@@ -56,7 +56,6 @@ class TableUpdatePlannerTest {
               @SuppressWarnings("unchecked")
               Map<String, String> props = inv.getArgument(0, Map.class);
               props.remove("metadata-location");
-              props.remove("metadata_location");
               return null;
             })
         .when(propertyService)

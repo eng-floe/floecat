@@ -241,8 +241,8 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   if (spec.hasSchemaId()) {
                     snapBuilder.setSchemaId(spec.getSchemaId());
                   }
-                  if (spec.hasIceberg()) {
-                    snapBuilder.setIceberg(spec.getIceberg());
+                  if (!spec.getFormatMetadataMap().isEmpty()) {
+                    snapBuilder.putAllFormatMetadata(spec.getFormatMetadataMap());
                   }
                   var snap = snapBuilder.build();
 
@@ -452,7 +452,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
           "manifest_list",
           "summary",
           "schema_id",
-          "iceberg");
+          "format_metadata");
 
   private Snapshot applySnapshotSpecPatch(
       Snapshot current, SnapshotSpec spec, FieldMask mask, String corr) {
@@ -512,11 +512,12 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
           }
           builder.setSchemaId(spec.getSchemaId());
         }
-        case "iceberg" -> {
-          if (!spec.hasIceberg()) {
+        case "format_metadata" -> {
+          if (spec.getFormatMetadataCount() == 0) {
             throw GrpcErrors.invalidArgument(corr, "snapshot.iceberg.required", Map.of());
           }
-          builder.setIceberg(spec.getIceberg());
+          builder.clearFormatMetadata();
+          builder.putAllFormatMetadata(spec.getFormatMetadataMap());
         }
         default ->
             throw GrpcErrors.invalidArgument(

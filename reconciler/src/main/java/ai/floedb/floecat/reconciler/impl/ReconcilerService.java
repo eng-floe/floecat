@@ -6,6 +6,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
+import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
@@ -14,6 +15,7 @@ import ai.floedb.floecat.catalog.rpc.PutFileColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTableStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
@@ -34,7 +36,6 @@ import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
-import ai.floedb.floecat.connector.spi.IcebergSnapshotMetadataProvider;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
@@ -46,12 +47,14 @@ import jakarta.inject.Inject;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
 @ApplicationScoped
 public class ReconcilerService {
+
   public enum CaptureMode {
     METADATA_ONLY,
     METADATA_AND_STATS
@@ -443,41 +446,40 @@ public class ReconcilerService {
       spec.setManifestList(snapshotBundle.manifestList());
       mask.addPaths("manifest_list");
     }
+    Snapshot existingSnapshot = fetchSnapshot(tableId, snapshotBundle.snapshotId());
     if (snapshotBundle.summary() != null && !snapshotBundle.summary().isEmpty()) {
-      spec.putAllSummary(snapshotBundle.summary());
+      LinkedHashMap<String, String> mergedSummary = new LinkedHashMap<>(snapshotBundle.summary());
+      if (existingSnapshot != null && !existingSnapshot.getSummaryMap().isEmpty()) {
+        existingSnapshot
+            .getSummaryMap()
+            .forEach((key, value) -> mergedSummary.putIfAbsent(key, value));
+      }
+      spec.putAllSummary(mergedSummary);
       mask.addPaths("summary");
     }
     if (snapshotBundle.schemaId() > 0) {
       spec.setSchemaId(snapshotBundle.schemaId());
       mask.addPaths("schema_id");
     }
-    if (connector instanceof IcebergSnapshotMetadataProvider icebergProvider) {
-      icebergProvider
-          .icebergMetadata(snapshotBundle.snapshotId())
-          .ifPresent(
-              metadata -> {
-                spec.setIceberg(metadata);
-                mask.addPaths("iceberg");
-              });
+    if (snapshotBundle.metadata() != null && !snapshotBundle.metadata().isEmpty()) {
+      spec.putAllFormatMetadata(snapshotBundle.metadata());
+      mask.addPaths("format_metadata");
     }
     SnapshotSpec snapshotSpec = spec.build();
-    var request = CreateSnapshotRequest.newBuilder().setSpec(snapshotSpec).build();
-    try {
+    boolean exists = existingSnapshot != null;
+    if (!exists) {
+      var request = CreateSnapshotRequest.newBuilder().setSpec(snapshotSpec).build();
       clients.snapshot().createSnapshot(request);
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.ALREADY_EXISTS) {
-        var updateMask = mask.build();
-        if (updateMask.getPathsCount() > 0) {
-          var updateReq =
-              UpdateSnapshotRequest.newBuilder()
-                  .setSpec(snapshotSpec)
-                  .setUpdateMask(updateMask)
-                  .build();
-          clients.snapshot().updateSnapshot(updateReq);
-        }
-        return;
+    } else {
+      var updateMask = mask.build();
+      if (updateMask.getPathsCount() > 0) {
+        var updateReq =
+            UpdateSnapshotRequest.newBuilder()
+                .setSpec(snapshotSpec)
+                .setUpdateMask(updateMask)
+                .build();
+        clients.snapshot().updateSnapshot(updateReq);
       }
-      throw e;
     }
   }
 
@@ -585,6 +587,31 @@ public class ReconcilerService {
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
         return false;
+      }
+      throw e;
+    }
+  }
+
+  private Snapshot fetchSnapshot(ResourceId tableId, long snapshotId) {
+    if (snapshotId <= 0) {
+      return null;
+    }
+    try {
+      var response =
+          clients
+              .snapshot()
+              .getSnapshot(
+                  GetSnapshotRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
+                      .build());
+      if (response == null || !response.hasSnapshot()) {
+        return null;
+      }
+      return response.getSnapshot();
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return null;
       }
       throw e;
     }

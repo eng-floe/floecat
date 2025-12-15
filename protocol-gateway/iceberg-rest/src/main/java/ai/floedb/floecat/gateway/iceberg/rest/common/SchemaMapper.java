@@ -18,6 +18,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 final class SchemaMapper {
@@ -173,9 +174,6 @@ final class SchemaMapper {
       if (schema.getIdentifierFieldIdsCount() > 0) {
         entry.put("identifier-field-ids", schema.getIdentifierFieldIdsList());
       }
-      if (schema.getLastColumnId() > 0) {
-        entry.put("last-column-id", schema.getLastColumnId());
-      }
       out.add(entry);
     }
     return out;
@@ -189,9 +187,6 @@ final class SchemaMapper {
     for (PartitionSpecInfo spec : metadata.getPartitionSpecsList()) {
       Map<String, Object> entry = new LinkedHashMap<>();
       entry.put("spec-id", spec.getSpecId());
-      if (!spec.getSpecName().isBlank()) {
-        entry.put("spec-name", spec.getSpecName());
-      }
       List<Map<String, Object>> fields = new ArrayList<>();
       for (PartitionField field : spec.getFieldsList()) {
         Map<String, Object> f = new LinkedHashMap<>();
@@ -296,14 +291,10 @@ final class SchemaMapper {
   }
 
   static void normalizeSortOrder(Map<String, Object> order) {
-    Integer orderId = asInteger(firstNonNull(order.get("sort-order-id"), order.get("order-id")));
-    if (orderId == null || orderId < 0) {
-      orderId = 0;
-    }
-    order.put("sort-order-id", orderId);
-    order.put("order-id", orderId);
     Object fieldsObj = order.get("fields");
     if (!(fieldsObj instanceof List<?> list)) {
+      order.put("sort-order-id", 0);
+      order.put("order-id", 0);
       order.put("fields", List.of());
       return;
     }
@@ -327,11 +318,33 @@ final class SchemaMapper {
       if (!field.containsKey("direction")) {
         field.put("direction", "ASC");
       }
-      if (!field.containsKey("null-order")) {
-        field.put("null-order", "NULLS_FIRST");
-      }
+      field.put("null-order", canonicalNullOrder(field.get("null-order")));
       normalized.add(field);
     }
     order.put("fields", normalized);
+    Integer orderId = asInteger(firstNonNull(order.get("sort-order-id"), order.get("order-id")));
+    if (orderId == null || orderId < 0) {
+      orderId = 0;
+    }
+    if (!normalized.isEmpty() && orderId <= 0) {
+      orderId = 1;
+    }
+    order.put("sort-order-id", orderId);
+    order.put("order-id", orderId);
+  }
+
+  private static String canonicalNullOrder(Object raw) {
+    String value = raw == null ? "nulls-first" : raw.toString();
+    if (value == null || value.isBlank()) {
+      return "nulls-first";
+    }
+    String normalized = value.replace('_', '-').toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
+    if ("nulls-first".equals(normalized) || "nullsfirst".equals(normalized)) {
+      return "nulls-first";
+    }
+    if ("nulls-last".equals(normalized) || "nullslast".equals(normalized)) {
+      return "nulls-last";
+    }
+    return value.toLowerCase(Locale.ROOT);
   }
 }

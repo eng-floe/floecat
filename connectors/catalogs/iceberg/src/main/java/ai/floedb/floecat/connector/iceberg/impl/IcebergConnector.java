@@ -18,7 +18,6 @@ import ai.floedb.floecat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.StaticOnceNdvProvider;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
-import ai.floedb.floecat.connector.spi.IcebergSnapshotMetadataProvider;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadataLogEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
@@ -28,6 +27,7 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortField;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortOrder;
 import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.protobuf.ByteString;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -40,7 +40,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.ContentFile;
@@ -70,7 +69,7 @@ import org.apache.iceberg.types.Types;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.glue.GlueClient;
 
-public final class IcebergConnector implements FloecatConnector, IcebergSnapshotMetadataProvider {
+public final class IcebergConnector implements FloecatConnector {
   private final String connectorId;
   private final RESTCatalog catalog;
   private final GlueIcebergFilter glueFilter;
@@ -81,10 +80,6 @@ public final class IcebergConnector implements FloecatConnector, IcebergSnapshot
   private final double ndvSampleFraction;
   private final long ndvMaxFiles;
   private final FileIO externalFileIO;
-  private final Map<Long, IcebergMetadata> snapshotMetadata = new ConcurrentHashMap<>();
-
-  private static final org.slf4j.Logger LOG =
-      org.slf4j.LoggerFactory.getLogger(IcebergConnector.class);
 
   private IcebergConnector(
       String connectorId,
@@ -288,7 +283,6 @@ public final class IcebergConnector implements FloecatConnector, IcebergSnapshot
       Set<String> includeColumns,
       boolean includeStatistics) {
     Table table = loadTable(namespaceFq, tableName);
-    snapshotMetadata.clear();
     IcebergMetadata icebergMetadata = buildIcebergMetadata(namespaceFq, tableName, table);
 
     final Set<Integer> includeIds;
@@ -398,15 +392,19 @@ public final class IcebergConnector implements FloecatConnector, IcebergSnapshot
         fileStats = allFiles;
       }
 
-      Map<String, String> summary =
-          snapshot.summary() == null ? Map.of() : Map.copyOf(snapshot.summary());
+      Map<String, String> summary = snapshot.summary() == null ? Map.of() : snapshot.summary();
+      Map<String, String> summaryWithOperation =
+          summary.isEmpty() ? new LinkedHashMap<>() : new LinkedHashMap<>(summary);
+      String operation = snapshot.operation();
+      if (operation != null && !operation.isBlank()) {
+        summaryWithOperation.putIfAbsent("operation", operation);
+      }
+      summary = summaryWithOperation.isEmpty() ? Map.of() : Map.copyOf(summaryWithOperation);
       String manifestList = snapshot.manifestListLocation();
       long sequenceNumber = snapshot.sequenceNumber();
 
-      if (icebergMetadata != null) {
-        snapshotMetadata.put(snapshotId, icebergMetadata);
-      }
-
+      Map<String, ByteString> metadataAttachments =
+          (icebergMetadata != null) ? Map.of("iceberg", icebergMetadata.toByteString()) : Map.of();
       out.add(
           new SnapshotBundle(
               snapshotId,
@@ -420,7 +418,8 @@ public final class IcebergConnector implements FloecatConnector, IcebergSnapshot
               sequenceNumber,
               manifestList,
               summary,
-              schemaId));
+              schemaId,
+              metadataAttachments));
     }
     return out;
   }
@@ -623,11 +622,7 @@ public final class IcebergConnector implements FloecatConnector, IcebergSnapshot
     if (props == null || props.isEmpty()) {
       return null;
     }
-    String loc = props.get("metadata-location");
-    if (loc == null || loc.isBlank()) {
-      loc = props.get("metadata_location");
-    }
-    return loc;
+    return props.get("metadata-location");
   }
 
   private IcebergMetadata toIcebergMetadata(TableMetadata metadata) {
@@ -703,11 +698,6 @@ public final class IcebergConnector implements FloecatConnector, IcebergSnapshot
               .setTimestampMs(entry.timestampMillis())
               .build());
     }
-    builder.addMetadataLog(
-        IcebergMetadataLogEntry.newBuilder()
-            .setFile(metadata.metadataFileLocation())
-            .setTimestampMs(metadata.lastUpdatedMillis())
-            .build());
 
     metadata
         .refs()
@@ -741,11 +731,6 @@ public final class IcebergConnector implements FloecatConnector, IcebergSnapshot
     } catch (NumberFormatException ignored) {
       return null;
     }
-  }
-
-  @Override
-  public Optional<IcebergMetadata> icebergMetadata(long snapshotId) {
-    return Optional.ofNullable(snapshotMetadata.get(snapshotId));
   }
 
   @Override

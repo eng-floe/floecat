@@ -94,9 +94,6 @@ public class TableDropCleanupService {
       byte[] payload = in.readAllBytes();
       JsonNode node = mapper.readTree(payload);
       String resolved = node.path("metadata-location").asText(null);
-      if (resolved == null || resolved.isBlank()) {
-        resolved = node.path("metadata_location").asText(null);
-      }
       return (resolved == null || resolved.isBlank()) ? metadataLocation : resolved;
     }
   }

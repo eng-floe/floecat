@@ -23,14 +23,7 @@ public class TablePropertyService {
     if (props == null || props.isEmpty()) {
       return;
     }
-    boolean removed = false;
     if (props.remove("metadata-location") != null) {
-      removed = true;
-    }
-    if (props.remove("metadata_location") != null) {
-      removed = true;
-    }
-    if (removed) {
       LOG.debug("Ignored commit metadata-location property override");
     }
   }

@@ -36,7 +36,7 @@ public final class TableResponseMapper {
     TableMetadataView metadataView =
         TableMetadataBuilder.fromCatalog(tableName, table, props, metadata, snapshots);
     Map<String, String> effectiveConfig =
-        augmentConfigWithMetadataPath(configOverrides, metadataView.metadataLocation());
+        augmentConfigWithMetadataPath(configOverrides, metadataView);
     return new LoadTableResultDto(
         metadataView.metadataLocation(), metadataView, effectiveConfig, storageCredentials);
   }
@@ -63,13 +63,17 @@ public final class TableResponseMapper {
     TableMetadataView metadataView =
         TableMetadataBuilder.fromCreateRequest(tableName, table, request);
     Map<String, String> effectiveConfig =
-        augmentConfigWithMetadataPath(configOverrides, metadataView.metadataLocation());
+        augmentConfigWithMetadataPath(configOverrides, metadataView);
     return new LoadTableResultDto(
         metadataView.metadataLocation(), metadataView, effectiveConfig, storageCredentials);
   }
 
   private static Map<String, String> augmentConfigWithMetadataPath(
-      Map<String, String> originalConfig, String metadataLocation) {
+      Map<String, String> originalConfig, TableMetadataView metadataView) {
+    String metadataLocation = metadataView.metadataLocation();
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      metadataLocation = MetadataLocationUtil.metadataLocation(metadataView.properties());
+    }
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return originalConfig;
     }

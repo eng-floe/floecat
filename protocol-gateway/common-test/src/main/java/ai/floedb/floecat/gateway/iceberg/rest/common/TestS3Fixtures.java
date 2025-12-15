@@ -2,9 +2,11 @@ package ai.floedb.floecat.gateway.iceberg.rest.common;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.UUID;
 
 public final class TestS3Fixtures {
   private static final Path MODULE_RELATIVE = Path.of("protocol-gateway", "iceberg-rest");
@@ -36,6 +38,7 @@ public final class TestS3Fixtures {
   }
 
   public static void seedFixtures() {
+    System.setProperty("fs.floecat.test-root", TARGET_ROOT.toAbsolutePath().toString());
     Path bucket = bucketPath();
     try {
       if (Files.exists(bucket)) {
@@ -50,21 +53,107 @@ public final class TestS3Fixtures {
     }
   }
 
+  public static void seedFixturesOnce() {
+    System.setProperty("fs.floecat.test-root", TARGET_ROOT.toAbsolutePath().toString());
+    Path prefixRoot = prefixPath();
+    try {
+      if (!needsReseed(prefixRoot)) {
+        return;
+      }
+      seedFixtures();
+    } catch (IOException e) {
+      throw new RuntimeException("Failed to seed fixture bucket", e);
+    }
+  }
+
+  private static boolean needsReseed(Path prefixRoot) throws IOException {
+    if (!Files.exists(prefixRoot.resolve("metadata"))
+        || !Files.exists(prefixRoot.resolve("data"))) {
+      return true;
+    }
+    try (var stream = Files.walk(FIXTURE_ROOT)) {
+      return stream
+          .filter(Files::isRegularFile)
+          .anyMatch(
+              source -> {
+                Path relative = FIXTURE_ROOT.relativize(source);
+                Path target = prefixRoot.resolve(relative);
+                try {
+                  return !Files.isRegularFile(target) || Files.size(source) != Files.size(target);
+                } catch (IOException e) {
+                  throw new UncheckedIOException(e);
+                }
+              });
+    } catch (UncheckedIOException e) {
+      throw e.getCause();
+    }
+  }
+
   public static void seedStageTable(String namespace, String table) {
     Path stageRoot = stageBucketPath().resolve(Path.of(namespace, table));
+    Path parent = stageRoot.getParent();
+    if (parent == null) {
+      throw new IllegalStateException("Stage root has no parent: " + stageRoot);
+    }
+
+    Path tmp = parent.resolve(table + ".__tmp__" + UUID.randomUUID().toString().replace("-", ""));
+
     try {
-      if (Files.exists(stageRoot)) {
-        deleteRecursive(stageRoot);
+      if (Files.exists(tmp)) {
+        deleteRecursive(tmp);
       }
-      Path stageMetadata = stageRoot.resolve("metadata");
-      Path stageData = stageRoot.resolve("data");
-      Files.createDirectories(stageMetadata);
-      Files.createDirectories(stageData);
-      copyRecursive(FIXTURE_ROOT.resolve("metadata"), stageMetadata);
-      copyRecursive(FIXTURE_ROOT.resolve("data"), stageData);
+
+      Path tmpMetadata = tmp.resolve("metadata");
+      Path tmpData = tmp.resolve("data");
+      Files.createDirectories(tmpMetadata);
+      Files.createDirectories(tmpData);
+
+      copyRecursive(FIXTURE_ROOT.resolve("metadata"), tmpMetadata);
+      copyRecursive(FIXTURE_ROOT.resolve("data"), tmpData);
+
+      Path backup =
+          parent.resolve(table + ".__old__" + UUID.randomUUID().toString().replace("-", ""));
+      boolean hadExisting = Files.exists(stageRoot);
+      if (hadExisting) {
+        try {
+          Files.move(stageRoot, backup, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+          Files.move(stageRoot, backup);
+        }
+      }
+
+      try {
+        try {
+          Files.move(tmp, stageRoot, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+          Files.move(tmp, stageRoot);
+        }
+      } catch (IOException moveNewFailed) {
+        if (hadExisting && Files.exists(backup) && !Files.exists(stageRoot)) {
+          try {
+            Files.move(backup, stageRoot);
+          } catch (IOException ignored) {
+          }
+        }
+        throw moveNewFailed;
+      }
+
+      if (Files.exists(backup)) {
+        deleteRecursive(backup);
+      }
     } catch (IOException e) {
+      try {
+        if (Files.exists(tmp)) {
+          deleteRecursive(tmp);
+        }
+      } catch (IOException ignored) {
+      }
       throw new UncheckedIOException("Failed to seed staged table " + namespace + "." + table, e);
     }
+  }
+
+  public static Path fixturePath(String relativePath) {
+    return FIXTURE_ROOT.resolve(Path.of(relativePath));
   }
 
   public static String stageTableUri(String namespace, String table, String relativePath) {

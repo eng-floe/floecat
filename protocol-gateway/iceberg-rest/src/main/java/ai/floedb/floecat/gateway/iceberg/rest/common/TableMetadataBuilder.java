@@ -3,6 +3,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.common;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.defaultPartitionSpec;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.defaultSortOrder;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.maxPartitionFieldId;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.normalizeSortOrder;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.partitionSpecFromRequest;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.partitionSpecsFromMetadata;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.schemaFromRequest;
@@ -32,6 +33,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import java.time.Instant;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -72,9 +74,13 @@ public final class TableMetadataBuilder {
     String location = table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
     location = resolveTableLocation(location, metadataLocation);
     Long lastUpdatedMs =
-        table.hasCreatedAt()
-            ? table.getCreatedAt().getSeconds() * 1000 + table.getCreatedAt().getNanos() / 1_000_000
-            : Instant.now().toEpochMilli();
+        (metadata != null && metadata.getLastUpdatedMs() > 0)
+            ? Long.valueOf(metadata.getLastUpdatedMs())
+            : maybeLong(props.get("last-updated-ms"));
+    // For new tables, last-updates-ms will not be set, so set it
+    if (lastUpdatedMs == null || lastUpdatedMs <= 0) {
+      lastUpdatedMs = Instant.now().toEpochMilli();
+    }
     Long currentSnapshotId =
         metadata.getCurrentSnapshotId() > 0
             ? Long.valueOf(metadata.getCurrentSnapshotId())
@@ -138,6 +144,8 @@ public final class TableMetadataBuilder {
       if (fallbackOrderId != null && fallbackOrderId >= 0) {
         defaultSortOrderId = fallbackOrderId;
       }
+    } else {
+      sortOrderList.forEach(order -> normalizeSortOrder(order));
     }
     List<Map<String, Object>> statisticsList = sanitizeStatistics(statistics(metadata));
     List<Map<String, Object>> partitionStatisticsList =
@@ -155,19 +163,25 @@ public final class TableMetadataBuilder {
       }
     }
     Map<String, Object> refs = refs(metadata);
+    refs = mergePropertyRefs(props, refs);
     if (metadata != null && !refs.isEmpty()) {
-      Set<Long> snapshotIds =
-          snapshots.stream().map(Snapshot::getSnapshotId).collect(Collectors.toSet());
-      refs.entrySet()
-          .removeIf(
-              entry -> {
-                Map<String, Object> refMap = asObjectMap(entry.getValue());
-                if (refMap == null) {
-                  return true;
-                }
-                Long refSnapshot = asLong(refMap.get("snapshot-id"));
-                return refSnapshot == null || !snapshotIds.contains(refSnapshot);
-              });
+      Set<Long> snapshotIds = new HashSet<>();
+      if (snapshots != null) {
+        snapshotIds.addAll(
+            snapshots.stream().map(Snapshot::getSnapshotId).collect(Collectors.toSet()));
+      }
+      if (!snapshotIds.isEmpty()) {
+        refs.entrySet()
+            .removeIf(
+                entry -> {
+                  Map<String, Object> refMap = asObjectMap(entry.getValue());
+                  if (refMap == null) {
+                    return true;
+                  }
+                  Long refSnapshot = asLong(refMap.get("snapshot-id"));
+                  return refSnapshot == null || !snapshotIds.contains(refSnapshot);
+                });
+      }
       Map<String, Object> mainRef = asObjectMap(refs.get("main"));
       if (mainRef != null) {
         Long mainSnapshot = asLong(mainRef.get("snapshot-id"));
@@ -189,7 +203,6 @@ public final class TableMetadataBuilder {
     }
     syncProperty(props, "table-uuid", tableUuid);
     MetadataLocationUtil.setMetadataLocation(props, metadataLocation);
-    syncWriteMetadataPath(props, metadataLocation);
     syncProperty(props, "current-snapshot-id", currentSnapshotId);
     syncProperty(props, "last-sequence-number", lastSequenceNumber);
     syncProperty(props, "current-schema-id", currentSchemaId);
@@ -298,10 +311,7 @@ public final class TableMetadataBuilder {
           .properties()
           .forEach(
               (k, v) -> {
-                if (k != null
-                    && v != null
-                    && !"metadata-location".equals(k)
-                    && !"metadata_location".equals(k)) {
+                if (k != null && v != null && !"metadata-location".equals(k)) {
                   props.put(k, v);
                 }
               });
@@ -475,9 +485,6 @@ public final class TableMetadataBuilder {
       return null;
     }
     String location = request.properties().get("metadata-location");
-    if (location == null || location.isBlank()) {
-      location = request.properties().get("metadata_location");
-    }
     return (location == null || location.isBlank()) ? null : location;
   }
 
@@ -519,6 +526,27 @@ public final class TableMetadataBuilder {
       return metadataLocation.substring(0, slash);
     }
     return metadataLocation;
+  }
+
+  private static Map<String, Object> mergePropertyRefs(
+      Map<String, String> props, Map<String, Object> refs) {
+    if (props == null || props.isEmpty()) {
+      return refs;
+    }
+    String encoded = props.remove(RefPropertyUtil.PROPERTY_KEY);
+    Map<String, Map<String, Object>> stored = RefPropertyUtil.decode(encoded);
+    if (stored.isEmpty()) {
+      return refs;
+    }
+    Map<String, Object> merged =
+        refs == null || refs.isEmpty() ? new LinkedHashMap<>() : new LinkedHashMap<>(refs);
+    stored.forEach(
+        (name, refMap) -> {
+          if (refMap != null && !refMap.isEmpty()) {
+            merged.put(name, new LinkedHashMap<>(refMap));
+          }
+        });
+    return merged;
   }
 
   private static Map<String, Object> ensureMainRef(Map<String, Object> refs, long snapshotId) {

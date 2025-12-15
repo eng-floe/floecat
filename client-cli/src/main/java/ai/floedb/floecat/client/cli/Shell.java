@@ -87,6 +87,7 @@ import ai.floedb.floecat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorRequest;
 import ai.floedb.floecat.execution.rpc.ScanFile;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
@@ -108,6 +109,7 @@ import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableObligations;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.Duration;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -2655,9 +2657,28 @@ public class Shell implements Runnable {
 
   private void printSnapshotDetail(Snapshot snapshot) {
     try {
-      out.println(JsonFormat.printer().includingDefaultValueFields().print(snapshot));
+      JsonFormat.Printer printer = JsonFormat.printer().includingDefaultValueFields();
+      out.println(printer.print(snapshot));
+      printDecodedFormatMetadata(snapshot, printer);
     } catch (InvalidProtocolBufferException e) {
       out.println(snapshot.toString());
+    }
+  }
+
+  private void printDecodedFormatMetadata(Snapshot snapshot, JsonFormat.Printer printer) {
+    if (snapshot == null || snapshot.getFormatMetadataCount() == 0) {
+      return;
+    }
+    ByteString icebergRaw = snapshot.getFormatMetadataOrDefault("iceberg", ByteString.EMPTY);
+    if (icebergRaw == null || icebergRaw.isEmpty()) {
+      return;
+    }
+    out.println("decoded_format_metadata:");
+    try {
+      IcebergMetadata metadata = IcebergMetadata.parseFrom(icebergRaw);
+      out.println("  iceberg: " + printer.print(metadata));
+    } catch (InvalidProtocolBufferException e) {
+      out.println("  iceberg: <failed to parse: " + e.getMessage() + ">");
     }
   }
 

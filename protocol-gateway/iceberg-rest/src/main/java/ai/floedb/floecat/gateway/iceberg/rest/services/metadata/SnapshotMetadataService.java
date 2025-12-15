@@ -32,6 +32,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
+import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -51,6 +52,7 @@ import org.jboss.logging.Logger;
 public class SnapshotMetadataService {
 
   private static final Logger LOG = Logger.getLogger(SnapshotMetadataService.class);
+  private static final String ICEBERG_METADATA_KEY = "iceberg";
 
   @Inject GrpcWithHeaders grpc;
   @Inject ObjectMapper mapper;
@@ -82,10 +84,7 @@ public class SnapshotMetadataService {
         return null;
       }
       Snapshot snapshot = resp.getSnapshot();
-      if (!snapshot.hasIceberg()) {
-        return null;
-      }
-      return snapshot.getIceberg();
+      return parseSnapshotMetadata(snapshot);
     } catch (io.grpc.StatusRuntimeException e) {
       return null;
     }
@@ -376,10 +375,7 @@ public class SnapshotMetadataService {
     }
     ImportedSnapshot currentSnapshot = importedMetadata.currentSnapshot();
     Map<String, String> props = importedMetadata.properties();
-    String metadataLocation =
-        props == null
-            ? null
-            : props.getOrDefault("metadata-location", props.get("metadata_location"));
+    String metadataLocation = props == null ? null : props.get("metadata-location");
     if (currentSnapshot != null) {
       updateSnapshotMetadataLocation(tableId, currentSnapshot.snapshotId(), metadataLocation);
     }
@@ -458,6 +454,11 @@ public class SnapshotMetadataService {
       spec.setManifestList(manifestList);
     }
     Map<String, String> summary = asStringMap(snapshot.get("summary"));
+    String op = asString(snapshot.get("operation"));
+    if (op != null && !op.isBlank() && !summary.containsKey("operation")) {
+      summary = new LinkedHashMap<>(summary);
+      summary.put("operation", op);
+    }
     if (!summary.isEmpty()) {
       spec.putAllSummary(summary);
     }
@@ -491,7 +492,7 @@ public class SnapshotMetadataService {
     IcebergMetadata snapshotIceberg =
         snapshotIcebergMetadata(metadata, existing, snapshotId, sequenceNumber);
     if (snapshotIceberg != null) {
-      spec.setIceberg(snapshotIceberg);
+      spec.putFormatMetadata(ICEBERG_METADATA_KEY, snapshotIceberg.toByteString());
     }
     CreateSnapshotRequest.Builder request =
         CreateSnapshotRequest.newBuilder().setSpec(spec.build());
@@ -561,10 +562,7 @@ public class SnapshotMetadataService {
               .getSnapshot();
     }
 
-    IcebergMetadata.Builder iceberg =
-        snapshot != null && snapshot.hasIceberg()
-            ? snapshot.getIceberg().toBuilder()
-            : IcebergMetadata.newBuilder();
+    IcebergMetadata.Builder iceberg = snapshotMetadataBuilder(snapshot);
     boolean mutated = false;
 
     if (changes.tableUuid != null) {
@@ -732,11 +730,9 @@ public class SnapshotMetadataService {
     }
 
     SnapshotSpec.Builder spec =
-        SnapshotSpec.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(targetSnapshotId)
-            .setIceberg(iceberg);
-    FieldMask mask = FieldMask.newBuilder().addPaths("iceberg").build();
+        SnapshotSpec.newBuilder().setTableId(tableId).setSnapshotId(targetSnapshotId);
+    spec.putFormatMetadata(ICEBERG_METADATA_KEY, iceberg.build().toByteString());
+    FieldMask mask = FieldMask.newBuilder().addPaths("format_metadata").build();
 
     snapshotClient.updateSnapshot(
         UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build());
@@ -814,7 +810,7 @@ public class SnapshotMetadataService {
       }
       String nullOrder = asString(field.get("null-order"));
       if (nullOrder == null || nullOrder.isBlank()) {
-        nullOrder = "NULLS_FIRST";
+        nullOrder = "nulls-first";
       }
       builder.addFields(
           IcebergSortField.newBuilder()
@@ -1119,16 +1115,15 @@ public class SnapshotMetadataService {
     if (snapshot == null) {
       return;
     }
-    IcebergMetadata.Builder iceberg =
-        snapshot.hasIceberg() ? snapshot.getIceberg().toBuilder() : IcebergMetadata.newBuilder();
+    IcebergMetadata.Builder iceberg = snapshotMetadataBuilder(snapshot);
     iceberg.setMetadataLocation(metadataLocation);
     SnapshotSpec spec =
         SnapshotSpec.newBuilder()
             .setTableId(tableId)
             .setSnapshotId(snapshotId)
-            .setIceberg(iceberg)
+            .putFormatMetadata(ICEBERG_METADATA_KEY, iceberg.build().toByteString())
             .build();
-    FieldMask mask = FieldMask.newBuilder().addPaths("iceberg").build();
+    FieldMask mask = FieldMask.newBuilder().addPaths("format_metadata").build();
     try {
       snapshotClient.updateSnapshot(
           UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build());
@@ -1139,6 +1134,27 @@ public class SnapshotMetadataService {
           tableId.getId(),
           snapshotId);
     }
+  }
+
+  private IcebergMetadata parseSnapshotMetadata(Snapshot snapshot) {
+    if (snapshot == null) {
+      return null;
+    }
+    ByteString raw = snapshot.getFormatMetadataOrDefault(ICEBERG_METADATA_KEY, ByteString.EMPTY);
+    if (raw == null || raw.isEmpty()) {
+      return null;
+    }
+    try {
+      return IcebergMetadata.parseFrom(raw);
+    } catch (InvalidProtocolBufferException e) {
+      throw new IllegalStateException(
+          "Failed to parse Iceberg metadata for snapshot " + snapshot.getSnapshotId(), e);
+    }
+  }
+
+  private IcebergMetadata.Builder snapshotMetadataBuilder(Snapshot snapshot) {
+    IcebergMetadata metadata = parseSnapshotMetadata(snapshot);
+    return metadata != null ? metadata.toBuilder() : IcebergMetadata.newBuilder();
   }
 
   private IcebergMetadata snapshotIcebergMetadata(
@@ -1238,6 +1254,9 @@ public class SnapshotMetadataService {
     if (snapshot.schemaId() != null) {
       map.put("schema-id", snapshot.schemaId());
     }
+    if (snapshot.summary() != null && snapshot.summary().containsKey("operation")) {
+      map.put("operation", snapshot.summary().get("operation"));
+    }
     return map;
   }
 
@@ -1250,9 +1269,6 @@ public class SnapshotMetadataService {
       return null;
     }
     String location = props.get("metadata-location");
-    if (location == null || location.isBlank()) {
-      location = props.get("metadata_location");
-    }
     return (location == null || location.isBlank()) ? null : location;
   }
 

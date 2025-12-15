@@ -4,6 +4,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
@@ -13,6 +14,8 @@ import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Supplier;
 
@@ -96,6 +99,7 @@ public class TableUpdatePlanner {
     if (snapshotError != null) {
       return UpdatePlan.failure(spec, mask, snapshotError);
     }
+    mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
     if (mergedProps != null) {
       spec.clearProperties().putAllProperties(mergedProps);
       mask.addPaths("properties");
@@ -175,5 +179,114 @@ public class TableUpdatePlanner {
 
   private static String asString(Object value) {
     return value == null ? null : String.valueOf(value);
+  }
+
+  private Map<String, String> applyRefPropertyUpdates(
+      Map<String, String> mergedProps,
+      Supplier<Table> tableSupplier,
+      List<Map<String, Object>> updates) {
+    if (updates == null || updates.isEmpty()) {
+      return mergedProps;
+    }
+    Map<String, Map<String, Object>> refs = loadStoredRefs(mergedProps, tableSupplier);
+    boolean mutated = false;
+    for (Map<String, Object> update : updates) {
+      if (update == null) {
+        continue;
+      }
+      String action = asString(update.get("action"));
+      if ("set-snapshot-ref".equals(action)) {
+        String refName = asString(update.get("ref-name"));
+        Long snapshotId = asLong(update.get("snapshot-id"));
+        if (refName == null || refName.isBlank() || snapshotId == null || snapshotId <= 0) {
+          continue;
+        }
+        Map<String, Object> refMap = new LinkedHashMap<>();
+        refMap.put("snapshot-id", snapshotId);
+        String type = asString(update.get("type"));
+        if (type != null && !type.isBlank()) {
+          refMap.put("type", type.toLowerCase(Locale.ROOT));
+        }
+        Long maxRefAge =
+            asLong(firstNonNull(update.get("max-ref-age-ms"), update.get("max_ref_age_ms")));
+        if (maxRefAge != null) {
+          refMap.put("max-ref-age-ms", maxRefAge);
+        }
+        Long maxSnapshotAge =
+            asLong(
+                firstNonNull(update.get("max-snapshot-age-ms"), update.get("max_snapshot_age_ms")));
+        if (maxSnapshotAge != null) {
+          refMap.put("max-snapshot-age-ms", maxSnapshotAge);
+        }
+        Integer minSnapshots =
+            asInteger(
+                firstNonNull(
+                    update.get("min-snapshots-to-keep"), update.get("min_snapshots_to_keep")));
+        if (minSnapshots != null) {
+          refMap.put("min-snapshots-to-keep", minSnapshots);
+        }
+        refs.put(refName, refMap);
+        mutated = true;
+      } else if ("remove-snapshot-ref".equals(action)) {
+        String refName = asString(update.get("ref-name"));
+        if (refName != null && refs.remove(refName) != null) {
+          mutated = true;
+        }
+      }
+    }
+    if (!mutated) {
+      return mergedProps;
+    }
+    Map<String, String> targetProps =
+        mergedProps == null
+            ? new LinkedHashMap<>(tableSupplier.get().getPropertiesMap())
+            : mergedProps;
+    if (refs.isEmpty()) {
+      targetProps.remove(RefPropertyUtil.PROPERTY_KEY);
+    } else {
+      targetProps.put(RefPropertyUtil.PROPERTY_KEY, RefPropertyUtil.encode(refs));
+    }
+    return targetProps;
+  }
+
+  private Map<String, Map<String, Object>> loadStoredRefs(
+      Map<String, String> mergedProps, Supplier<Table> tableSupplier) {
+    String encoded =
+        mergedProps != null
+            ? mergedProps.get(RefPropertyUtil.PROPERTY_KEY)
+            : tableSupplier.get().getPropertiesMap().get(RefPropertyUtil.PROPERTY_KEY);
+    return RefPropertyUtil.decode(encoded);
+  }
+
+  private static Object firstNonNull(Object first, Object second) {
+    return first != null ? first : second;
+  }
+
+  private static Long asLong(Object value) {
+    if (value instanceof Number number) {
+      return number.longValue();
+    }
+    if (value instanceof String str) {
+      try {
+        return Long.parseLong(str);
+      } catch (NumberFormatException ignored) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  private static Integer asInteger(Object value) {
+    if (value instanceof Number number) {
+      return number.intValue();
+    }
+    if (value instanceof String str) {
+      try {
+        return Integer.parseInt(str);
+      } catch (NumberFormatException ignored) {
+        return null;
+      }
+    }
+    return null;
   }
 }

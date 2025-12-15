@@ -9,10 +9,9 @@ import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.floecat.query.rpc.Operator;
 import ai.floedb.floecat.query.rpc.Predicate;
 import ai.floedb.floecat.query.rpc.QueryInput;
-import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
-
+import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import com.google.inject.Inject;
 import com.google.protobuf.Timestamp;
 import io.airlift.slice.Slice;
@@ -42,7 +41,6 @@ import org.apache.iceberg.FileContent;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.PartitionSpecParser;
-
 
 public class FloecatSplitManager implements ConnectorSplitManager {
 
@@ -98,16 +96,16 @@ public class FloecatSplitManager implements ConnectorSplitManager {
             });
     requiredColumns.addAll(floecatHandle.getProjectedColumns());
 
-    
     BeginQueryRequest beginReq = BeginQueryRequest.newBuilder().build();
 
     var beginResp = planning.beginQuery(beginReq);
     String queryId = beginResp.getQuery().getQueryId();
-    
-    var describeReq = DescribeInputsRequest.newBuilder()
-        .setQueryId(queryId)
-        .addInputs(toQueryInput(floecatHandle.getTableResourceId(), floecatHandle))
-        .build();
+
+    var describeReq =
+        DescribeInputsRequest.newBuilder()
+            .setQueryId(queryId)
+            .addInputs(toQueryInput(floecatHandle.getTableResourceId(), floecatHandle))
+            .build();
 
     schema.describeInputs(describeReq);
 

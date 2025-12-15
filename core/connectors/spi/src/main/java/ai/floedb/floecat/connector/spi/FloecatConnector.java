@@ -6,6 +6,7 @@ import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.execution.rpc.ScanFile;
+import com.google.protobuf.ByteString;
 import java.io.Closeable;
 import java.util.List;
 import java.util.Map;
@@ -60,7 +61,8 @@ public interface FloecatConnector extends Closeable {
       long sequenceNumber,
       String manifestList,
       Map<String, String> summary,
-      int schemaId) {}
+      int schemaId,
+      Map<String, ByteString> metadata) {}
 
   record ScanBundle(List<ScanFile> dataFiles, List<ScanFile> deleteFiles) {}
 }

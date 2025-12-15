@@ -2,7 +2,6 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
-import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -78,6 +77,12 @@ public class MaterializeMetadataService {
     } catch (MaterializeMetadataException e) {
       throw e;
     } catch (Exception e) {
+      LOG.warnf(
+          e,
+          "Materialize metadata failure namespace=%s table=%s target=%s",
+          namespaceFq,
+          tableName,
+          resolvedLocation == null ? requestedLocation : resolvedLocation);
       throw new MaterializeMetadataException(
           "Failed to materialize Iceberg metadata files to " + resolvedLocation, e);
     } finally {
@@ -101,7 +106,7 @@ public class MaterializeMetadataService {
       }
       return !SKIPPED_SCHEMES.contains(scheme.toLowerCase(Locale.ROOT));
     } catch (IllegalArgumentException e) {
-      LOG.debugf(
+      LOG.infof(
           "Skipping metadata materialization because metadata-location %s is invalid",
           metadataLocation);
       return false;
@@ -120,6 +125,10 @@ public class MaterializeMetadataService {
         if (snapshotId <= 0) {
           objectNode.remove("current-snapshot-id");
         }
+        long lastUpdated = objectNode.path("last-updated-ms").asLong(-1L);
+        if (lastUpdated <= 0) {
+          objectNode.put("last-updated-ms", System.currentTimeMillis());
+        }
       }
       TableMetadata parsed = TableMetadataParser.fromJson(metadataLocation, node);
       return TableMetadataParser.toJson(parsed);
@@ -131,8 +140,13 @@ public class MaterializeMetadataService {
   private void writeJson(FileIO fileIO, String location, String payload) {
     OutputFile outputFile = fileIO.newOutputFile(location);
     byte[] data = payload.getBytes(StandardCharsets.UTF_8);
+    LOG.infof(
+        "Writing Iceberg metadata file %s (%,d bytes)",
+        location == null ? "<null>" : location, data.length);
     try (PositionOutputStream stream = outputFile.createOrOverwrite()) {
       stream.write(data);
+      LOG.infof(
+          "Successfully wrote Iceberg metadata file %s", location == null ? "<null>" : location);
     } catch (IOException e) {
       throw new MaterializeMetadataException("Failed to write metadata file " + location, e);
     }
@@ -185,10 +199,6 @@ public class MaterializeMetadataService {
     return directory + nextMetadataFileName(fileIO, directory, metadata);
   }
 
-  private boolean isPointerLocation(String metadataLocation) {
-    return MetadataLocationUtil.isPointer(metadataLocation);
-  }
-
   private String directoryOf(String metadataLocation) {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return null;
@@ -216,10 +226,7 @@ public class MaterializeMetadataService {
 
     Map<String, String> props = metadata.properties();
     if (props != null && !props.isEmpty()) {
-      String candidate =
-          firstNonBlank(
-              props.get("metadata-location"),
-              firstNonBlank(props.get("metadata_location"), props.get("location")));
+      String candidate = firstNonBlank(props.get("metadata-location"), props.get("location"));
       directory = directoryOf(candidate);
       if (directory != null) {
         return directory;

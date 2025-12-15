@@ -226,7 +226,8 @@ public final class DummyConnector implements FloecatConnector {
             0L,
             null,
             Map.of(),
-            0));
+            0,
+            Map.of()));
   }
 
   @Override
