@@ -1,4 +1,4 @@
-package ai.floedb.floecat.gateway.iceberg.rest;
+package ai.floedb.floecat.gateway.iceberg.rest.resources;
 
 import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
 import io.quarkus.test.junit.QuarkusTestProfile;

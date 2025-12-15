@@ -1,4 +1,4 @@
-package ai.floedb.floecat.gateway.iceberg.rest;
+package ai.floedb.floecat.gateway.iceberg.rest.common;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -10,7 +10,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
-import ai.floedb.floecat.gateway.iceberg.rest.common.AccountHeaderFilter;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import jakarta.enterprise.inject.Instance;
 import jakarta.ws.rs.container.ContainerRequestContext;
