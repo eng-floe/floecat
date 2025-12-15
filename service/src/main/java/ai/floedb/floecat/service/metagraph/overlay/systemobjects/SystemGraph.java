@@ -464,6 +464,16 @@ public final class SystemGraph {
           id -> functionsByNamespace.computeIfAbsent(id, ignored -> new ArrayList<>()).add(fn));
     }
 
+    // Build function nodes and map them to namespaces
+    for (FunctionNode fn : nodes.functions()) {
+      Optional<ResourceId> nsId =
+          findNamespaceId(
+              fn.displayName() != null ? NameRefUtil.name(fn.displayName()) : null, namespaceIds);
+
+      nsId.ifPresent(
+          id -> functionsByNamespace.computeIfAbsent(id, ignored -> new ArrayList<>()).add(fn));
+    }
+
     return new GraphSnapshot(
         List.copyOf(namespaceNodes),
         tablesByNamespace.entrySet().stream()

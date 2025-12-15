@@ -543,6 +543,11 @@ public final class UserGraph {
     return out;
   }
 
+  public List<FunctionNode> listFunctions(ResourceId namespaceId) {
+    // User-defined functions are not yet implemented
+    return List.of();
+  }
+
   public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
     List<ResourceId> ids = names.listNamespaces(catalogId.getAccountId(), catalogId.getId());
     return ids.stream().map(this::namespace).flatMap(Optional::stream).toList();
@@ -579,13 +584,7 @@ public final class UserGraph {
             .orElseGet(List::of);
     return ids.stream().map(this::view).flatMap(Optional::stream).toList();
   }
-  
-  public List<FunctionNode> listFunctions(ResourceId namespaceId)
-  {
-    //No user functions defined yet
-    return List.of();
-  }
-  
+
   // ----------------------------------------------------------------------
   // Engine hints
   // ----------------------------------------------------------------------
