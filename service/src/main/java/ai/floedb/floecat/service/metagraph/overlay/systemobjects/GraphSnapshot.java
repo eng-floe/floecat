@@ -5,6 +5,7 @@ import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import java.util.List;
 import java.util.Map;
@@ -67,6 +68,14 @@ public final class GraphSnapshot {
   /** Returns all system namespaces in this snapshot. */
   public List<NamespaceNode> namespaces() {
     return namespaces;
+  }
+
+  /** Returns all system types in this snapshot. */
+  public List<TypeNode> types() {
+    return nodesById.values().stream()
+        .filter(TypeNode.class::isInstance)
+        .map(TypeNode.class::cast)
+        .toList();
   }
 
   /**

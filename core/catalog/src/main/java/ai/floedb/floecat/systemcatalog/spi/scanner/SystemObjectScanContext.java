@@ -6,6 +6,7 @@ import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import java.util.List;
 import java.util.Optional;
@@ -53,5 +54,9 @@ public record SystemObjectScanContext(CatalogOverlay graph, NameRef name, Resour
 
   public List<FunctionNode> listFunctions(ResourceId namespaceId) {
     return graph.listFunctions(catalogId, namespaceId);
+  }
+
+  public List<TypeNode> listTypes() {
+    return graph.listTypes(catalogId);
   }
 }

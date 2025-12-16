@@ -8,6 +8,7 @@ import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
@@ -143,14 +144,6 @@ public final class MetaGraph implements CatalogOverlay {
         () -> userGraph.listTypes(catalogId));
   }
 
-  /**
-   * Lists all namespaces in the specified catalog.
-   *
-   * <p>Merges system namespaces and user namespaces unconditionally.
-   *
-   * @param catalogId the catalog to list namespaces from
-   * @return list of all namespaces in the catalog
-   */
   @Override
   public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
     return mergeLists(

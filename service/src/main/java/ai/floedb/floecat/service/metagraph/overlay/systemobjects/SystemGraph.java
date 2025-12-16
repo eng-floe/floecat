@@ -8,6 +8,7 @@ import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
@@ -136,6 +137,16 @@ public final class SystemGraph {
       return List.of();
     }
     return snapshotFor(engineKind, engineVersion).namespaces();
+  }
+
+  public List<TypeNode> listTypes(ResourceId catalogId, String engineKind, String engineVersion) {
+
+    ResourceId expected = systemCatalogId(engineKind);
+    if (catalogId == null || !catalogId.equals(expected)) {
+      return List.of();
+    }
+
+    return registry.nodesFor(engineKind, engineVersion).types();
   }
 
   public List<ResourceId> listCatalogs() {

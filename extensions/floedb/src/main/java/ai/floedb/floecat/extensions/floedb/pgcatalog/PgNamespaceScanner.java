@@ -1,7 +1,8 @@
 package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
 import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
-import ai.floedb.floecat.metagraph.model.EngineHint;
+import ai.floedb.floecat.extensions.utils.FloePayloads;
+import ai.floedb.floecat.extensions.utils.ScannerUtils;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
@@ -27,18 +28,19 @@ public final class PgNamespaceScanner implements SystemObjectScanner {
 
   @Override
   public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx) {
-    return ctx.listNamespaces().stream().map(this::toRow);
+    return ctx.listNamespaces().stream().map(ns -> toRow(ctx, ns));
   }
 
-  private SystemObjectRow toRow(NamespaceNode ns) {
-    FloeNamespaceSpecific spec = resolveSpec(ns);
+  private SystemObjectRow toRow(SystemObjectScanContext ctx, NamespaceNode ns) {
+    var specOpt = ScannerUtils.payload(ctx, ns.id(), FloePayloads.NAMESPACE);
+    FloeNamespaceSpecific spec = specOpt.orElse(null);
 
-    int oid = spec != null && spec.hasOid() ? spec.getOid() : ScannerUtils.getNodeOid(ns);
+    int oid = spec != null && spec.hasOid() ? spec.getOid() : ScannerUtils.fallbackOid(ns.id());
 
     String name = spec != null && spec.hasNspname() ? spec.getNspname() : ns.displayName();
 
     int owner =
-        spec != null && spec.hasNspowner() ? spec.getNspowner() : ScannerUtils.defaultOwnerOid(ns);
+        spec != null && spec.hasNspowner() ? spec.getNspowner() : ScannerUtils.defaultOwnerOid();
 
     String[] acl =
         spec != null && spec.getNspaclCount() > 0
@@ -46,33 +48,5 @@ public final class PgNamespaceScanner implements SystemObjectScanner {
             : new String[0];
 
     return new SystemObjectRow(new Object[] {oid, name, owner, acl});
-  }
-
-  // ----------------------------------------------------------------------
-  // Helpers
-  // ----------------------------------------------------------------------
-
-  private static FloeNamespaceSpecific decodeSpec(EngineHint hint) {
-    if (hint == null) {
-      return null;
-    }
-    if (!"floe.namespace+proto".equals(hint.contentType())) {
-      return null;
-    }
-    try {
-      return FloeNamespaceSpecific.parseFrom(hint.payload());
-    } catch (Exception e) {
-      return null;
-    }
-  }
-
-  private static FloeNamespaceSpecific resolveSpec(NamespaceNode ns) {
-    for (EngineHint hint : ns.engineHints().values()) {
-      FloeNamespaceSpecific spec = decodeSpec(hint);
-      if (spec != null) {
-        return spec;
-      }
-    }
-    return null;
   }
 }

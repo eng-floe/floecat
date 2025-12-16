@@ -27,15 +27,16 @@ import java.util.Set;
  */
 public final class PgCatalogProvider implements SystemObjectScannerProvider {
 
+  static final int PG_CATALOG_OID = 11;
   private static final Set<String> SUPPORTED_ENGINES = Set.of("floedb", "floe-demo");
 
   private final Map<String, SystemObjectScanner> scanners =
       Map.of(
-          "pg_namespace", new PgNamespaceScanner(),
-          // "pg_class", new PgClassScanner(),
-          // "pg_attribute", new PgAttributeScanner(),
-          // "pg_type", new PgTypeScanner(),
-          "pg_proc", new PgProcScanner());
+          "pg_namespace_scanner", new PgNamespaceScanner(),
+          // "pg_class_scanner", new PgClassScanner(),
+          // "pg_attribute_scanner", new PgAttributeScanner(),
+          "pg_type_scanner", new PgTypeScanner(),
+          "pg_proc_scanner", new PgProcScanner());
 
   @Override
   public List<SystemObjectDef> definitions() {
@@ -52,7 +53,7 @@ public final class PgCatalogProvider implements SystemObjectScannerProvider {
             "pg_namespace",
             PgNamespaceScanner.SCHEMA,
             TableBackendKind.FLOECAT,
-            "pg_namespace",
+            "pg_namespace_scanner",
             List.of()),
 
         // // pg_class
@@ -61,7 +62,7 @@ public final class PgCatalogProvider implements SystemObjectScannerProvider {
         //     "pg_class",
         //     PgClassScanner.SCHEMA,
         //     TableBackendKind.FLOECAT,
-        //     "pg_class",
+        //     "pg_class_scanner",
         //     List.of()),
 
         // // pg_attribute
@@ -70,17 +71,17 @@ public final class PgCatalogProvider implements SystemObjectScannerProvider {
         //     "pg_attribute",
         //     PgAttributeScanner.SCHEMA,
         //     TableBackendKind.FLOECAT,
-        //     "pg_attribute",
+        //     "pg_attribute_scanner",
         //     List.of()),
 
-        // // pg_type
-        // new SystemTableDef(
-        //     NameRefUtil.name("pg_catalog", "pg_type"),
-        //     "pg_type",
-        //     PgTypeScanner.SCHEMA,
-        //     TableBackendKind.FLOECAT,
-        //     "pg_type",
-        //     List.of()),
+        // pg_type
+        new SystemTableDef(
+            NameRefUtil.name("pg_catalog", "pg_type"),
+            "pg_type",
+            PgTypeScanner.SCHEMA,
+            TableBackendKind.FLOECAT,
+            "pg_type_scanner",
+            List.of()),
 
         // pg_proc
         new SystemTableDef(
@@ -88,7 +89,7 @@ public final class PgCatalogProvider implements SystemObjectScannerProvider {
             "pg_proc",
             PgProcScanner.SCHEMA,
             TableBackendKind.FLOECAT,
-            "pg_proc",
+            "pg_proc_scanner",
             List.of()));
   }
 
@@ -129,7 +130,7 @@ public final class PgCatalogProvider implements SystemObjectScannerProvider {
         "",
         "floe.namespace+proto",
         FloeNamespaceSpecific.newBuilder()
-            .setOid(11)
+            .setOid(PG_CATALOG_OID)
             .setNspname("pg_catalog")
             .setNspowner(10)
             .build()

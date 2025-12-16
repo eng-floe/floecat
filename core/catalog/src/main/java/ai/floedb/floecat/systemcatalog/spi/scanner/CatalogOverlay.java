@@ -7,6 +7,7 @@ import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import com.google.protobuf.Timestamp;
@@ -43,6 +44,8 @@ public interface CatalogOverlay {
   List<GraphNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId);
 
   List<FunctionNode> listFunctions(ResourceId catalogId, ResourceId namespaceId);
+
+  List<TypeNode> listTypes(ResourceId catalogId);
 
   ResourceId resolveCatalog(String correlationId, String name);
 

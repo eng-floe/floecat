@@ -548,6 +548,11 @@ public final class UserGraph {
     return List.of();
   }
 
+  public List<TypeNode> listTypes(ResourceId catalogId) {
+    // User-defined functions are not yet implemented
+    return List.of();
+  }
+
   public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
     List<ResourceId> ids = names.listNamespaces(catalogId.getAccountId(), catalogId.getId());
     return ids.stream().map(this::namespace).flatMap(Optional::stream).toList();

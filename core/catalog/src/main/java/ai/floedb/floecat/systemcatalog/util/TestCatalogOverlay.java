@@ -7,6 +7,7 @@ import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import com.google.protobuf.Timestamp;
@@ -67,6 +68,14 @@ public class TestCatalogOverlay implements CatalogOverlay {
   @Override
   public List<FunctionNode> listFunctions(ResourceId catalogId, ResourceId namespaceId) {
     return functionsByNamespace.getOrDefault(namespaceId, List.of());
+  }
+
+  @Override
+  public List<TypeNode> listTypes(ResourceId catalogId) {
+    return nodes.values().stream()
+        .filter(TypeNode.class::isInstance)
+        .map(TypeNode.class::cast)
+        .toList();
   }
 
   @Override
