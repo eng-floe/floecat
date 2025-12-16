@@ -3,68 +3,117 @@ package ai.floedb.floecat.systemcatalog.util;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.metagraph.model.*;
+import ai.floedb.floecat.metagraph.model.CatalogNode;
+import ai.floedb.floecat.metagraph.model.FunctionNode;
+import ai.floedb.floecat.metagraph.model.GraphNode;
+import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import com.google.protobuf.Timestamp;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-/**
- * Shared minimal implementation of CatalogOverlay for tests. Tests may subclass or override
- * individual methods.
- */
+/** Shared stub implementation of {@link CatalogOverlay} for unit tests. */
 public class TestCatalogOverlay implements CatalogOverlay {
+
+  private final Map<ResourceId, GraphNode> nodes = new HashMap<>();
+  private final Map<ResourceId, List<GraphNode>> relationsByNamespace = new HashMap<>();
+  private final Map<ResourceId, List<FunctionNode>> functionsByNamespace = new HashMap<>();
+  private final Map<ResourceId, Map<String, String>> columnTypes = new HashMap<>();
+
+  // ------------------------
+  // Test helpers
+  // ------------------------
+
+  public TestCatalogOverlay addNode(GraphNode node) {
+    nodes.put(node.id(), node);
+    return this;
+  }
+
+  public TestCatalogOverlay addRelation(ResourceId namespaceId, GraphNode node) {
+    relationsByNamespace.computeIfAbsent(namespaceId, k -> new ArrayList<>()).add(node);
+    addNode(node);
+    return this;
+  }
+
+  public TestCatalogOverlay addFunction(ResourceId namespaceId, FunctionNode fn) {
+    functionsByNamespace.computeIfAbsent(namespaceId, k -> new ArrayList<>()).add(fn);
+    addNode(fn);
+    return this;
+  }
+
+  public TestCatalogOverlay setColumnTypes(ResourceId tableId, Map<String, String> types) {
+    columnTypes.put(tableId, types);
+    return this;
+  }
+
+  // ------------------------
+  // CatalogOverlay impl
+  // ------------------------
 
   @Override
   public Optional<GraphNode> resolve(ResourceId id) {
-    return Optional.empty();
-  }
-
-  @Override
-  public List<GraphNode> listRelations(ResourceId catalogId) {
-    return List.of();
-  }
-
-  @Override
-  public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
-    return List.of();
+    return Optional.ofNullable(nodes.get(id));
   }
 
   @Override
   public List<GraphNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
-    return List.of();
+    return relationsByNamespace.getOrDefault(namespaceId, List.of());
   }
 
   @Override
   public List<FunctionNode> listFunctions(ResourceId catalogId, ResourceId namespaceId) {
-    return List.of();
+    return functionsByNamespace.getOrDefault(namespaceId, List.of());
+  }
+
+  @Override
+  public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
+    return nodes.values().stream()
+        .filter(NamespaceNode.class::isInstance)
+        .map(NamespaceNode.class::cast)
+        .toList();
+  }
+
+  @Override
+  public Map<String, String> tableColumnTypes(ResourceId tableId) {
+    return columnTypes.getOrDefault(tableId, Map.of());
+  }
+
+  private static UnsupportedOperationException unsupported() {
+    return new UnsupportedOperationException("Not used in this test");
+  }
+
+  @Override
+  public List<GraphNode> listRelations(ResourceId catalogId) {
+    throw unsupported();
   }
 
   @Override
   public ResourceId resolveCatalog(String correlationId, String name) {
-    return ResourceId.getDefaultInstance();
+    throw unsupported();
   }
 
   @Override
   public ResourceId resolveNamespace(String correlationId, NameRef ref) {
-    return ResourceId.getDefaultInstance();
+    throw unsupported();
   }
 
   @Override
   public ResourceId resolveTable(String correlationId, NameRef ref) {
-    return ResourceId.getDefaultInstance();
+    throw unsupported();
   }
 
   @Override
   public ResourceId resolveView(String correlationId, NameRef ref) {
-    return ResourceId.getDefaultInstance();
+    throw unsupported();
   }
 
   @Override
   public ResourceId resolveName(String correlationId, NameRef ref) {
-    return ResourceId.getDefaultInstance();
+    throw unsupported();
   }
 
   @Override
@@ -73,60 +122,55 @@ public class TestCatalogOverlay implements CatalogOverlay {
       ResourceId tableId,
       SnapshotRef override,
       Optional<Timestamp> asOfDefault) {
-    return SnapshotPin.getDefaultInstance();
+    throw unsupported();
   }
 
   @Override
   public ResolveResult resolveTables(
       String correlationId, List<NameRef> items, int limit, String token) {
-    return new ResolveResult(List.of(), 0, "");
+    throw unsupported();
   }
 
   @Override
   public ResolveResult resolveTables(
       String correlationId, NameRef prefix, int limit, String token) {
-    return new ResolveResult(List.of(), 0, "");
+    throw unsupported();
   }
 
   @Override
   public ResolveResult resolveViews(
       String correlationId, List<NameRef> items, int limit, String token) {
-    return new ResolveResult(List.of(), 0, "");
+    throw unsupported();
   }
 
   @Override
   public ResolveResult resolveViews(String correlationId, NameRef prefix, int limit, String token) {
-    return new ResolveResult(List.of(), 0, "");
+    throw unsupported();
   }
 
   @Override
   public Optional<NameRef> namespaceName(ResourceId id) {
-    return Optional.empty();
+    throw unsupported();
   }
 
   @Override
   public Optional<NameRef> tableName(ResourceId id) {
-    return Optional.empty();
+    throw unsupported();
   }
 
   @Override
   public Optional<NameRef> viewName(ResourceId id) {
-    return Optional.empty();
+    throw unsupported();
   }
 
   @Override
   public Optional<CatalogNode> catalog(ResourceId id) {
-    return Optional.empty();
+    throw unsupported();
   }
 
   @Override
   public SchemaResolution schemaFor(
       String correlationId, ResourceId tableId, SnapshotRef snapshot) {
-    return null;
-  }
-
-  @Override
-  public Map<String, String> tableColumnTypes(ResourceId tableId) {
-    return Map.of();
+    throw unsupported();
   }
 }

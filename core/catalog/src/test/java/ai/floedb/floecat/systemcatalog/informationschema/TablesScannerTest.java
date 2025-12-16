@@ -2,10 +2,8 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 
 import static org.assertj.core.api.Assertions.*;
 
-import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
-import ai.floedb.floecat.systemcatalog.utilities.TestScanContextBuilder;
-import java.util.List;
+import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -20,11 +18,11 @@ class TablesScannerTest {
 
   @Test
   void scan_returnsOneRowPerTable() {
-    var builder = TestScanContextBuilder.builder().withCatalog("catalog").withNamespace("public");
+    var builder = TestTableScanContextBuilder.builder("catalog");
+    var ns = builder.addNamespace("public");
 
-    UserTableNode table = builder.newTable("mytable", Map.of());
-
-    SystemObjectScanContext ctx = builder.withTable(table).build();
+    builder.addTable(ns, "mytable", Map.of(), Map.of());
+    SystemObjectScanContext ctx = builder.build();
 
     var rows = new TablesScanner().scan(ctx).map(r -> r.values()).toList();
 
@@ -34,16 +32,11 @@ class TablesScannerTest {
 
   @Test
   void scan_usesCanonicalSchemaPathForNestedNamespaces() {
-    TestScanContextBuilder builder =
-        TestScanContextBuilder.builder().withCatalog("catalog").withNamespace("finance.sales");
+    var builder = TestTableScanContextBuilder.builder("catalog");
+    var ns = builder.addNamespace("finance.sales");
 
-    NamespaceNode ns = builder.newNamespace("finance.sales");
-
-    builder.withNamespaces(List.of(ns));
-
-    UserTableNode table = builder.newTable("nested_table", Map.of());
-
-    SystemObjectScanContext ctx = builder.withTable(table).build();
+    builder.addTable(ns, "nested_table", Map.of(), Map.of());
+    SystemObjectScanContext ctx = builder.build();
 
     var rows = new TablesScanner().scan(ctx).map(r -> r.values()).toList();
 

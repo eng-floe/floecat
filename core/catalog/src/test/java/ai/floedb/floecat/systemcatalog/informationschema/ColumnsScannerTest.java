@@ -4,7 +4,7 @@ import static org.assertj.core.api.Assertions.*;
 
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
-import ai.floedb.floecat.systemcatalog.utilities.TestScanContextBuilder;
+import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -26,12 +26,16 @@ class ColumnsScannerTest {
 
   @Test
   void scan_returnsOneRowPerColumn() {
-    var builder =
-        TestScanContextBuilder.builder().withCatalog("marketing").withNamespace("finance.sales");
-    var table = builder.newTable("orders", Map.of("id", 1, "stats.sales", 2));
-    builder.withColumnTypes(Map.of("id", "long", "stats.sales", "double"));
+    var builder = TestTableScanContextBuilder.builder("marketing");
+    var ns = builder.addNamespace("finance.sales");
 
-    SystemObjectScanContext ctx = builder.withTable(table).build();
+    builder.addTable(
+        ns,
+        "orders",
+        Map.of("id", 1, "stats.sales", 2),
+        Map.of("id", "long", "stats.sales", "double"));
+
+    SystemObjectScanContext ctx = builder.build();
 
     var rows = new ColumnsScanner().scan(ctx).map(r -> List.of(r.values())).toList();
 
@@ -43,11 +47,9 @@ class ColumnsScannerTest {
 
   @Test
   void scan_withNoTables_returnsNoRows() {
-    var builder = TestScanContextBuilder.builder();
-
-    SystemObjectScanContext ctx =
-        builder.withCatalog("marketing").withNamespace("finance.sales").build();
-
+    var builder = TestTableScanContextBuilder.builder("marketing");
+    var ns = builder.addNamespace("finance.sales");
+    SystemObjectScanContext ctx = builder.build();
     var rows = new ColumnsScanner().scan(ctx).toList();
 
     assertThat(rows).isEmpty();
@@ -55,13 +57,12 @@ class ColumnsScannerTest {
 
   @Test
   void scan_handlesMissingColumnTypesGracefully() {
-    var builder =
-        TestScanContextBuilder.builder().withCatalog("marketing").withNamespace("finance.sales");
+    var builder = TestTableScanContextBuilder.builder("marketing");
+    var ns = builder.addNamespace("finance.sales");
 
-    var table = builder.newTable("orders", Map.of("id", 1, "missing_col", 2));
-    builder.withColumnTypes(Map.of("id", "long"));
+    builder.addTable(ns, "orders", Map.of("id", 1, "missing_col", 2), Map.of("id", "long"));
 
-    SystemObjectScanContext ctx = builder.withTable(table).build();
+    SystemObjectScanContext ctx = builder.build();
 
     var rows = new ColumnsScanner().scan(ctx).map(r -> List.of(r.values())).toList();
 

@@ -59,13 +59,8 @@ class SystemObjectScanContextTest {
             List.of(), // dependentViews
             Map.of()); // engineHints
 
-    CatalogOverlay view =
-        new TestCatalogOverlay() {
-          @Override
-          public Optional<GraphNode> resolve(ResourceId id) {
-            return Optional.of(node);
-          }
-        };
+    TestCatalogOverlay view = new TestCatalogOverlay();
+    view.addNode(node);
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
@@ -96,13 +91,8 @@ class SystemObjectScanContextTest {
             List.of(), // dependentViews
             Map.of()); // engineHints
 
-    CatalogOverlay view =
-        new TestCatalogOverlay() {
-          @Override
-          public Optional<GraphNode> resolve(ResourceId id) {
-            return Optional.of(node);
-          }
-        };
+    TestCatalogOverlay view = new TestCatalogOverlay();
+    view.addNode(node);
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
@@ -154,14 +144,8 @@ class SystemObjectScanContextTest {
             List.of(),
             Map.of());
 
-    CatalogOverlay view =
-        new TestCatalogOverlay() {
-          @Override
-          public List<GraphNode> listRelationsInNamespace(
-              ResourceId catalogId, ResourceId namespaceId) {
-            return List.of(t);
-          }
-        };
+    TestCatalogOverlay view = new TestCatalogOverlay();
+    view.addRelation(ResourceId.getDefaultInstance(), t);
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
@@ -189,14 +173,8 @@ class SystemObjectScanContextTest {
             Optional.empty(), // owner
             Map.of()); // engineHints
 
-    CatalogOverlay view =
-        new TestCatalogOverlay() {
-          @Override
-          public List<GraphNode> listRelationsInNamespace(
-              ResourceId catalogId, ResourceId namespaceId) {
-            return List.of(v);
-          }
-        };
+    TestCatalogOverlay view = new TestCatalogOverlay();
+    view.addRelation(ResourceId.getDefaultInstance(), v);
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
@@ -220,13 +198,8 @@ class SystemObjectScanContextTest {
             Optional.empty(), // relationIds
             Map.of()); // engineHints
 
-    CatalogOverlay view =
-        new TestCatalogOverlay() {
-          @Override
-          public List<NamespaceNode> listNamespaces(ResourceId c) {
-            return List.of(n);
-          }
-        };
+    TestCatalogOverlay view = new TestCatalogOverlay();
+    view.addNode(n);
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
