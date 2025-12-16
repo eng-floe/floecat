@@ -100,7 +100,7 @@ final class PgProcScannerTest {
   }
 
   @Test
-  void scan_fallbackOidIsStable() {
+  void scan_getNodeOidIsStable() {
     SystemObjectScanContext ctx = contextWithFunctions();
 
     List<SystemObjectRow> rows1 = scanner.scan(ctx).toList();

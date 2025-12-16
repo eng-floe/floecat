@@ -6,6 +6,13 @@ option java_package = "ai.floedb.floecat.extensions.floedb.proto";
 
 import "query/engine_specific.proto";
 
+message FloeNamespaceSpecific {
+  optional int32 oid = 100;
+  optional string nspname = 101;
+  
+  optional int32 nspowner = 1;
+  repeated string nspacl = 2;
+}
 message FloeFunctionSpecific {
   optional int32  oid = 100;
   optional string proname = 101;
@@ -160,4 +167,5 @@ extend ai.floedb.floecat.query.EngineSpecific {
   optional FloeTypeSpecific floe_type = 4;
   optional FloeAggregateSpecific floe_aggregate = 5;
   optional FloeCollationSpecific floe_collation = 6;
+  optional FloeNamespaceSpecific floe_namespace = 7;
 }

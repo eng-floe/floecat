@@ -21,13 +21,13 @@ public final class PgProcScanner implements SystemObjectScanner {
 
   public static final List<SchemaColumn> SCHEMA =
       List.of(
-          col("oid", "INT"),
-          col("proname", "VARCHAR"),
-          col("pronamespace", "INT"),
-          col("prorettype", "INT"),
-          col("proargtypes", "INT[]"),
-          col("proisagg", "BOOLEAN"),
-          col("proiswindow", "BOOLEAN"));
+          ScannerUtils.col("oid", "INT"),
+          ScannerUtils.col("proname", "VARCHAR"),
+          ScannerUtils.col("pronamespace", "INT"),
+          ScannerUtils.col("prorettype", "INT"),
+          ScannerUtils.col("proargtypes", "INT[]"),
+          ScannerUtils.col("proisagg", "BOOLEAN"),
+          ScannerUtils.col("proiswindow", "BOOLEAN"));
 
   @Override
   public List<SchemaColumn> schema() {
@@ -46,7 +46,7 @@ public final class PgProcScanner implements SystemObjectScanner {
 
               FloeFunctionSpecific spec = resolveSpec(fn);
 
-              int oid = spec != null && spec.hasOid() ? spec.getOid() : fallbackOid(fn);
+              int oid = spec != null && spec.hasOid() ? spec.getOid() : ScannerUtils.getNodeOid(fn);
 
               int namespaceOid =
                   spec != null && spec.hasPronamespace()
@@ -76,15 +76,6 @@ public final class PgProcScanner implements SystemObjectScanner {
   // ----------------------------------------------------------------------
   // Helpers
   // ----------------------------------------------------------------------
-
-  private static int fallbackOid(FunctionNode fn) {
-    // TODO: improve to use Snowflake ID once available
-    return Math.abs(fn.id().hashCode());
-  }
-
-  private static SchemaColumn col(String name, String type) {
-    return SchemaColumn.newBuilder().setName(name).setLogicalType(type).setNullable(false).build();
-  }
 
   private static FloeFunctionSpecific decodeSpec(EngineHint hint) {
     if (hint == null) {
