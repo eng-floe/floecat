@@ -1,13 +1,40 @@
 package ai.floedb.floecat.gateway.iceberg.rest;
 
 import static io.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.hasItem;
+import static org.hamcrest.Matchers.hasItems;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.notNullValue;
 
+import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.GetTableRequest;
+import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
+import ai.floedb.floecat.catalog.rpc.GetTableStatsResponse;
+import ai.floedb.floecat.catalog.rpc.ListColumnStatsRequest;
+import ai.floedb.floecat.catalog.rpc.ListColumnStatsResponse;
+import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
+import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
+import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.PageRequest;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
 import ai.floedb.floecat.connector.rpc.SyncCaptureRequest;
+import ai.floedb.floecat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RealServiceTestResource;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
@@ -18,6 +45,7 @@ import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.stub.AbstractBlockingStub;
 import io.grpc.stub.MetadataUtils;
 import io.quarkus.test.common.QuarkusTestResource;
 import io.quarkus.test.junit.QuarkusTest;
@@ -29,12 +57,14 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.eclipse.microprofile.config.ConfigProvider;
@@ -50,6 +80,7 @@ class IcebergRestFixtureIT {
 
   private static final ObjectMapper MAPPER = new ObjectMapper();
   private static final String DEFAULT_ACCOUNT = "5eaa9cd5-7d08-3750-9457-cfe800b0b9d2";
+  private static final String EMPTY_SCHEMA_JSON = "{\"type\":\"struct\",\"fields\":[]}";
   private static final String NAMESPACE_PREFIX = "fixture_ns_";
   private static final String TABLE_PREFIX = "fixture_tbl_";
   private static final String CATALOG = "sales";
@@ -450,6 +481,244 @@ class IcebergRestFixtureIT {
   }
 
   @Test
+  void listsNamespacesFromSeededService() {
+    given()
+        .spec(spec)
+        .when()
+        .get("/v1/" + CATALOG + "/namespaces")
+        .then()
+        .statusCode(200)
+        .body("namespaces*.get(0)", hasItem("core"));
+  }
+
+  @Test
+  void createsAndDeletesNamespaceViaGateway() {
+    String ns = uniqueName("it_ns_");
+    Map<String, Object> payload = Map.of("namespace", ns, "description", "Integration test");
+
+    given()
+        .spec(spec)
+        .body(payload)
+        .when()
+        .post("/v1/" + CATALOG + "/namespaces")
+        .then()
+        .statusCode(201)
+        .body("namespace[0]", equalTo(ns));
+
+    given()
+        .spec(spec)
+        .when()
+        .get("/v1/" + CATALOG + "/namespaces/" + ns)
+        .then()
+        .statusCode(200)
+        .body("namespace[0]", equalTo(ns));
+
+    deleteNamespaceResource(ns);
+  }
+
+  @Test
+  void listsTablesInSeededNamespace() {
+    registerTable(
+        "core",
+        "trino_test",
+        "metadata/00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json",
+        false);
+
+    given()
+        .spec(spec)
+        .when()
+        .get("/v1/" + CATALOG + "/namespaces/core/tables")
+        .then()
+        .statusCode(200)
+        .body("identifiers.name", hasItems("trino_test"));
+
+    given()
+        .spec(spec)
+        .when()
+        .get("/v1/" + CATALOG + "/namespaces/core/tables/trino_test")
+        .then()
+        .statusCode(200)
+        .body("metadata.location", equalTo("s3://yb-iceberg-tpcds/trino_test"))
+        .body("metadata.'table-uuid'", notNullValue())
+        .body("metadata.'format-version'", equalTo(2));
+
+    if (connectorIntegrationEnabled) {
+      Connector connector = awaitConnectorForTable("core", "trino_test", Duration.ofSeconds(20));
+      Assertions.assertNotNull(connector, "Connector should be created for trino_test");
+
+      withConnectorsClient(
+          stub -> {
+            stub.syncCapture(
+                SyncCaptureRequest.newBuilder()
+                    .setConnectorId(connector.getResourceId())
+                    .setIncludeStatistics(true)
+                    .build());
+            stub.triggerReconcile(
+                TriggerReconcileRequest.newBuilder()
+                    .setConnectorId(connector.getResourceId())
+                    .setFullRescan(true)
+                    .build());
+            return null;
+          });
+
+      ResourceId tableId = resolveTableId("core", "trino_test");
+      Table tableRecord =
+          withTableClient(
+              stub ->
+                  stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build())
+                      .getTable());
+      Assertions.assertNotNull(tableRecord, "Table should be retrievable via table service");
+      String mirroredMetadata = tableRecord.getPropertiesMap().get("metadata-location");
+      Assertions.assertNotNull(mirroredMetadata, "metadata-location property should exist");
+      Assertions.assertTrue(
+          mirroredMetadata.startsWith(FIXTURE_METADATA_PREFIX),
+          () -> "metadata-location should reside under fixture bucket: " + mirroredMetadata);
+      Assertions.assertTrue(
+          tableRecord.hasUpstream() && tableRecord.getUpstream().hasConnectorId(),
+          "Upstream connector identifier must be populated");
+
+      ListSnapshotsResponse snapshots =
+          withSnapshotClient(
+              stub ->
+                  stub.listSnapshots(
+                      ListSnapshotsRequest.newBuilder().setTableId(tableId).build()));
+      List<Long> importedSnapshotIds =
+          snapshots.getSnapshotsList().stream()
+              .map(Snapshot::getSnapshotId)
+              .collect(Collectors.toList());
+      Assertions.assertTrue(
+          importedSnapshotIds.containsAll(fixtureSnapshotIds),
+          "Snapshot catalog should contain fixture snapshot ids");
+
+      SnapshotRef current = SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build();
+      TableStats stats = awaitTableStats(tableId, current, Duration.ofSeconds(30));
+      Assertions.assertTrue(
+          stats.getRowCount() > 0, "Fixture stats should report a positive row count");
+      Assertions.assertTrue(
+          stats.getTotalSizeBytes() > 0, "Fixture stats should track total bytes");
+
+      ListColumnStatsResponse columnStats =
+          awaitColumnStats(tableId, current, Duration.ofSeconds(30));
+      Assertions.assertFalse(
+          columnStats.getColumnsList().isEmpty(), "Column NDV statistics must be available");
+      columnStats
+          .getColumnsList()
+          .forEach(
+              col -> {
+                Assertions.assertNotNull(col.getColumnName(), "Column name should be set");
+                Assertions.assertFalse(col.getColumnName().isBlank(), "Column name should be set");
+                Assertions.assertFalse(
+                    col.getLogicalType().isBlank(),
+                    () -> "Logical type should be populated for " + col.getColumnName());
+                Assertions.assertTrue(
+                    col.hasNdv(), "NDV must be present for " + col.getColumnName());
+                Assertions.assertTrue(
+                    col.getNdv().hasApprox() || col.getNdv().hasExact(),
+                    () -> "NDV should contain exact or approx estimate for " + col.getColumnName());
+                if (col.getNdv().hasApprox()) {
+                  var approx = col.getNdv().getApprox();
+                  Assertions.assertTrue(
+                      approx.getEstimate() > 0.0d,
+                      () -> "Approximate NDV must be positive for " + col.getColumnName());
+                  Assertions.assertTrue(
+                      approx.getRowsSeen() > 0,
+                      () -> "rows-seen must be positive for " + col.getColumnName());
+                  Assertions.assertTrue(
+                      approx.getRowsTotal() >= approx.getRowsSeen(),
+                      () -> "rows-total must be >= rows-seen for " + col.getColumnName());
+                  Assertions.assertFalse(
+                      approx.getMethod().isBlank(),
+                      () -> "NDV method must be set for " + col.getColumnName());
+                }
+                Assertions.assertFalse(
+                    col.getNdv().getSketchesList().isEmpty(),
+                    () -> "Sketch metadata must be present for " + col.getColumnName());
+                col.getNdv()
+                    .getSketchesList()
+                    .forEach(
+                        sketch ->
+                            Assertions.assertFalse(
+                                sketch.getType().isBlank(),
+                                () -> "Sketch type must be set for column " + col.getColumnName()));
+              });
+    }
+  }
+
+  @Test
+  void createsTableAndCommitsPropertiesViaGateway() {
+    String namespace = uniqueName("it_ns_");
+    String table = uniqueName("it_tbl_");
+    createNamespace(namespace);
+    try {
+      Map<String, Object> createPayload = Map.of("name", table, "schemaJson", EMPTY_SCHEMA_JSON);
+
+      given()
+          .spec(spec)
+          .body(createPayload)
+          .when()
+          .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables")
+          .then()
+          .statusCode(200)
+          .body("metadata.'table-uuid'", notNullValue());
+
+      Map<String, Object> commitPayload = Map.of("properties", Map.of("owner", "integration"));
+
+      given()
+          .spec(spec)
+          .body(commitPayload)
+          .when()
+          .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+          .then()
+          .statusCode(200)
+          .body("metadata.properties.owner", equalTo("integration"));
+
+      given()
+          .spec(spec)
+          .when()
+          .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+          .then()
+          .statusCode(200)
+          .body("metadata.properties.owner", equalTo("integration"));
+    } finally {
+      deleteTableResource(namespace, table);
+      deleteNamespaceResource(namespace);
+    }
+  }
+
+  @Test
+  void createsAndReadsViewViaGateway() {
+    String namespace = uniqueName("it_ns_");
+    String view = uniqueName("it_view_");
+    createNamespace(namespace);
+    try {
+      Map<String, Object> createPayload = createViewPayload(namespace, view);
+
+      given()
+          .spec(spec)
+          .body(createPayload)
+          .when()
+          .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/views")
+          .then()
+          .statusCode(200)
+          .body(
+              "metadata.location",
+              equalTo("floecat://views/" + namespace + "/" + view + "/metadata.json"));
+
+      given()
+          .spec(spec)
+          .when()
+          .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/views/" + view)
+          .then()
+          .statusCode(200)
+          .body("metadata.versions[0].representations[0].sql", equalTo("SELECT 1"))
+          .body("metadata.properties.dialect", equalTo("spark"));
+    } finally {
+      deleteViewResource(namespace, view);
+      deleteNamespaceResource(namespace);
+    }
+  }
+
+  @Test
   void stageCommitMaterializesMetadata() {
     String namespace = NAMESPACE_PREFIX + UUID.randomUUID().toString().replace("-", "");
     String table = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
@@ -679,6 +948,76 @@ class IcebergRestFixtureIT {
     return TestS3Fixtures.bucketUri(location);
   }
 
+  private static String uniqueName(String prefix) {
+    return prefix + UUID.randomUUID().toString().replace("-", "");
+  }
+
+  private void createNamespace(String namespace) {
+    Map<String, Object> payload =
+        Map.of("namespace", namespace, "description", "Integration test namespace");
+    given()
+        .spec(spec)
+        .body(payload)
+        .when()
+        .post("/v1/" + CATALOG + "/namespaces")
+        .then()
+        .statusCode(201)
+        .body("namespace[0]", equalTo(namespace));
+  }
+
+  private void deleteNamespaceResource(String namespace) {
+    given()
+        .spec(spec)
+        .when()
+        .delete("/v1/" + CATALOG + "/namespaces/" + namespace + "?requireEmpty=false")
+        .then()
+        .statusCode(anyOf(is(204), is(404)));
+  }
+
+  private void deleteTableResource(String namespace, String table) {
+    given()
+        .spec(spec)
+        .when()
+        .delete("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+        .then()
+        .statusCode(anyOf(is(204), is(404)));
+  }
+
+  private void deleteViewResource(String namespace, String view) {
+    given()
+        .spec(spec)
+        .when()
+        .delete("/v1/" + CATALOG + "/namespaces/" + namespace + "/views/" + view)
+        .then()
+        .statusCode(anyOf(is(204), is(404)));
+  }
+
+  private Map<String, Object> createViewPayload(String namespace, String view) {
+    Map<String, Object> schema =
+        Map.of(
+            "schema-id",
+            1,
+            "type",
+            "struct",
+            "fields",
+            List.of(Map.of("id", 1, "name", "dummy", "required", true, "type", "string")));
+    Map<String, Object> representation =
+        Map.of("type", "sql", "sql", "SELECT 1", "dialect", "ansi");
+    Map<String, Object> version = new java.util.LinkedHashMap<>();
+    version.put("version-id", 1);
+    version.put("schema-id", 1);
+    version.put("summary", Map.of("operation", "create"));
+    version.put("representations", List.of(representation));
+    version.put("default-namespace", List.of(namespace));
+
+    Map<String, Object> payload = new java.util.LinkedHashMap<>();
+    payload.put("name", view);
+    payload.put("schema", schema);
+    payload.put("view-version", version);
+    payload.put("properties", Map.of("dialect", "spark"));
+    return payload;
+  }
+
   private Path localS3Path(String location) {
     URI uri = URI.create(location);
     if (!"s3".equalsIgnoreCase(uri.getScheme())) {
@@ -760,7 +1099,8 @@ class IcebergRestFixtureIT {
     return null;
   }
 
-  private <T> T withConnectorsClient(Function<ConnectorsGrpc.ConnectorsBlockingStub, T> fn) {
+  private <S extends AbstractBlockingStub<S>, T> T withServiceClient(
+      String serviceName, Function<ManagedChannel, S> stubFactory, Function<S, T> fn) {
     parseUpstreamTarget();
     ManagedChannel channel =
         ManagedChannelBuilder.forAddress(upstreamHost, serviceGrpcPort).usePlaintext().build();
@@ -770,20 +1110,119 @@ class IcebergRestFixtureIT {
           Metadata.Key.of(ACCOUNT_HEADER_NAME, Metadata.ASCII_STRING_MARSHALLER), DEFAULT_ACCOUNT);
       headers.put(
           Metadata.Key.of(AUTH_HEADER_NAME, Metadata.ASCII_STRING_MARSHALLER), DEFAULT_AUTH_HEADER);
-      ConnectorsGrpc.ConnectorsBlockingStub stub =
-          ConnectorsGrpc.newBlockingStub(channel)
+      S stub =
+          stubFactory
+              .apply(channel)
               .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers));
       return fn.apply(stub);
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.UNAVAILABLE) {
         Assumptions.assumeTrue(
-            false, "Connectors gRPC endpoint unavailable (" + e.getMessage() + ")");
+            false, serviceName + " gRPC endpoint unavailable (" + e.getMessage() + ")");
         return null;
       }
       throw e;
     } finally {
       channel.shutdownNow();
     }
+  }
+
+  private <T> T withConnectorsClient(Function<ConnectorsGrpc.ConnectorsBlockingStub, T> fn) {
+    return withServiceClient("Connectors", ConnectorsGrpc::newBlockingStub, fn);
+  }
+
+  private <T> T withDirectoryClient(
+      Function<DirectoryServiceGrpc.DirectoryServiceBlockingStub, T> fn) {
+    return withServiceClient("Directory", DirectoryServiceGrpc::newBlockingStub, fn);
+  }
+
+  private <T> T withTableClient(Function<TableServiceGrpc.TableServiceBlockingStub, T> fn) {
+    return withServiceClient("Table", TableServiceGrpc::newBlockingStub, fn);
+  }
+
+  private <T> T withSnapshotClient(
+      Function<SnapshotServiceGrpc.SnapshotServiceBlockingStub, T> fn) {
+    return withServiceClient("Snapshot", SnapshotServiceGrpc::newBlockingStub, fn);
+  }
+
+  private <T> T withStatisticsClient(
+      Function<TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub, T> fn) {
+    return withServiceClient("Statistics", TableStatisticsServiceGrpc::newBlockingStub, fn);
+  }
+
+  private ResourceId resolveTableId(String namespace, String table) {
+    NameRef ref =
+        NameRef.newBuilder()
+            .setCatalog(CATALOG)
+            .addAllPath(namespaceSegments(namespace))
+            .setName(table)
+            .build();
+    ResolveTableResponse response =
+        withDirectoryClient(
+            stub -> stub.resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build()));
+    return response.getResourceId();
+  }
+
+  private static List<String> namespaceSegments(String namespace) {
+    if (namespace == null || namespace.isBlank()) {
+      return List.of();
+    }
+    return Arrays.stream(namespace.split("\\."))
+        .filter(part -> part != null && !part.isBlank())
+        .collect(Collectors.toList());
+  }
+
+  private TableStats awaitTableStats(
+      ResourceId tableId, SnapshotRef snapshotRef, Duration timeout) {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    while (System.nanoTime() < deadline) {
+      GetTableStatsResponse response =
+          withStatisticsClient(
+              stub ->
+                  stub.getTableStats(
+                      GetTableStatsRequest.newBuilder()
+                          .setTableId(tableId)
+                          .setSnapshot(snapshotRef)
+                          .build()));
+      if (response.hasStats() && response.getStats().getRowCount() > 0) {
+        return response.getStats();
+      }
+      try {
+        TimeUnit.MILLISECONDS.sleep(200);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
+    Assertions.fail("Timed out waiting for table stats for " + tableId.getId());
+    return TableStats.getDefaultInstance();
+  }
+
+  private ListColumnStatsResponse awaitColumnStats(
+      ResourceId tableId, SnapshotRef snapshotRef, Duration timeout) {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    while (System.nanoTime() < deadline) {
+      ListColumnStatsResponse response =
+          withStatisticsClient(
+              stub ->
+                  stub.listColumnStats(
+                      ListColumnStatsRequest.newBuilder()
+                          .setTableId(tableId)
+                          .setSnapshot(snapshotRef)
+                          .setPage(PageRequest.newBuilder().setPageSize(200).build())
+                          .build()));
+      if (!response.getColumnsList().isEmpty()) {
+        return response;
+      }
+      try {
+        TimeUnit.MILLISECONDS.sleep(200);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
+    Assertions.fail("Timed out waiting for column stats for " + tableId.getId());
+    return ListColumnStatsResponse.getDefaultInstance();
   }
 
   private static void reseedFixtureBucket() {

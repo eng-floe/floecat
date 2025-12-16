@@ -1,8 +1,10 @@
 package ai.floedb.floecat.gateway.iceberg.rest.common;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.quarkus.test.common.QuarkusTestResourceLifecycleManager;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.ServerSocket;
@@ -16,12 +18,16 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.StringJoiner;
 
 public class RealServiceTestResource implements QuarkusTestResourceLifecycleManager {
   private static final String TEST_GRPC_PORT_PROPERTY = "floecat.test.upstream-grpc-port";
   private static final String TEST_S3_ROOT =
       TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString();
   private static final String LOOPBACK_HOST = "127.0.0.1";
+  private static final String DEFAULT_ACCOUNT = "5eaa9cd5-7d08-3750-9457-cfe800b0b9d2";
+  private static final String AUTH_HEADER_VALUE = "Bearer integration-test";
+  private static final ObjectMapper MAPPER = new ObjectMapper();
   private Process serviceProcess;
   private int httpPort;
   private int managementPort;
@@ -46,6 +52,13 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
                   + DateTimeFormatter.ofPattern("yyyyMMddHHmmss").format(LocalDateTime.now())
                   + ".log");
 
+      List<String> extraClasspath = selectItClasspathEntries();
+      if (!extraClasspath.isEmpty()) {
+        System.out.printf(
+            "RealServiceTestResource adding IT classpath entries to service: %s%n",
+            extraClasspath);
+      }
+
       List<String> command = new ArrayList<>();
       command.add(javaBin());
       command.add("-Dquarkus.http.host=" + LOOPBACK_HOST);
@@ -60,9 +73,11 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
       command.add("-Dquarkus.management.enabled=true");
       command.add("-Dquarkus.management.host=" + LOOPBACK_HOST);
       command.add("-Dquarkus.management.port=" + managementPort);
+      command.add("-Dfloecat.seed.mode=fake");
       command.add("-Dquarkus.profile=test");
-      command.add("-jar");
-      command.add(runnerJar.toString());
+      command.add("-cp");
+      command.add(serviceClasspath(runnerJar, extraClasspath));
+      command.add("io.quarkus.bootstrap.runner.QuarkusEntryPoint");
 
       System.out.printf(
           "RealServiceTestResource launching Floecat service http/grpc port=%d management=%d"
@@ -201,6 +216,61 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
 
   private static Path serviceRunnerJar() {
     return repoRoot().resolve("service/target/quarkus-app/quarkus-run.jar");
+  }
+
+  private static String serviceClasspath(Path runnerJar, List<String> extraEntries) {
+    List<String> entries = new ArrayList<>();
+    entries.add(runnerJar.toAbsolutePath().toString());
+    Path quarkusAppDir = runnerJar.getParent();
+    addJarEntries(quarkusAppDir.resolve("app"), entries);
+    addJarEntries(quarkusAppDir.resolve("lib").resolve("boot"), entries);
+    addJarEntries(quarkusAppDir.resolve("lib").resolve("main"), entries);
+    entries.addAll(extraEntries);
+
+    StringJoiner joiner = new StringJoiner(File.pathSeparator);
+    for (String entry : entries) {
+      joiner.add(entry);
+    }
+    return joiner.toString();
+  }
+
+  private static void addJarEntries(Path dir, List<String> entries) {
+    if (dir == null || !Files.isDirectory(dir)) {
+      return;
+    }
+    try (var stream = Files.list(dir)) {
+      stream
+          .filter(path -> path.toString().endsWith(".jar"))
+          .map(path -> path.toAbsolutePath().toString())
+          .forEach(entries::add);
+    } catch (IOException e) {
+      throw new RuntimeException("Failed to scan service classpath directory " + dir, e);
+    }
+  }
+
+  private static List<String> selectItClasspathEntries() {
+    List<String> selected = new ArrayList<>();
+    Path moduleRoot = Path.of("").toAbsolutePath();
+    addIfExists(moduleRoot.resolve("target/test-classes"), selected);
+    addIfExists(moduleRoot.resolve("target/classes"), selected);
+
+    String classpath = System.getProperty("java.class.path");
+    if (classpath == null || classpath.isBlank()) {
+      return selected;
+    }
+
+    for (String entry : classpath.split(File.pathSeparator)) {
+      if (entry.contains("parquet") || entry.contains("hadoop")) {
+        selected.add(entry);
+      }
+    }
+    return selected;
+  }
+
+  private static void addIfExists(Path path, List<String> entries) {
+    if (Files.exists(path)) {
+      entries.add(path.toAbsolutePath().toString());
+    }
   }
 
   private static String javaBin() {

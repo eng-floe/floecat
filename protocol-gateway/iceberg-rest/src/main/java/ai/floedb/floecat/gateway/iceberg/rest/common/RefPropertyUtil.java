@@ -8,12 +8,6 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.jboss.logging.Logger;
 
-/**
- * Utility for storing and retrieving Iceberg ref metadata in table properties.
- *
- * <p>The backing store is a JSON map keyed by ref-name with values that mirror the Iceberg metadata
- * fields (snapshot-id, type, etc).
- */
 public final class RefPropertyUtil {
 
   private static final Logger LOG = Logger.getLogger(RefPropertyUtil.class);
