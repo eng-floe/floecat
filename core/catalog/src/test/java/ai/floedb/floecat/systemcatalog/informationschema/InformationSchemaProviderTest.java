@@ -48,7 +48,7 @@ class InformationSchemaProviderTest {
 
     List<SchemaColumn> cols = tables.columns();
     assertThat(cols).hasSize(TablesScanner.SCHEMA.size());
-    assertThat(cols.get(0).getName()).isEqualTo("table_schema");
+    assertThat(cols.get(0).getName()).isEqualTo("table_catalog");
   }
 
   @Test

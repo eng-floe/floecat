@@ -76,6 +76,10 @@ public class SystemNodeRegistry {
           List.of(),
           EMPTY_CATALOG);
 
+  public List<String> engineKinds() {
+    return definitionRegistry.engineKinds();
+  }
+
   public BuiltinNodes nodesFor(String engineKind, String engineVersion) {
     if (engineKind == null || engineKind.isBlank()) return EMPTY_NODES;
     if (engineVersion == null || engineVersion.isBlank()) return EMPTY_NODES;

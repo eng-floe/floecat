@@ -1,6 +1,7 @@
 package ai.floedb.floecat.systemcatalog.registry;
 
 import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -30,5 +31,9 @@ public final class SystemDefinitionRegistry {
   /** Test-only: clears catalog cache. */
   public void clear() {
     cache.clear();
+  }
+
+  public List<String> engineKinds() {
+    return provider.engineKinds();
   }
 }

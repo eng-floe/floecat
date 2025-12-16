@@ -2,27 +2,21 @@ package ai.floedb.floecat.systemcatalog.spi.scanner;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 /**
  * Immutable context during a system object scan.
  *
- * <p>This provides view/table/namespace resolution through a minimal graph view abstraction. It is
- * safe, cache-aware, and keeps core decoupled from the full MetadataGraph implementation.
+ * <p>This provides view/relation/namespace resolution through a minimal graph view abstraction. It
+ * is safe, cache-aware, and keeps core decoupled from the full MetadataGraph implementation.
  */
-public record SystemObjectScanContext(
-    SystemObjectGraphView graph,
-    NameRef name,
-    String engineKind,
-    String engineVersion,
-    ResourceId catalogId,
-    ResourceId namespaceId) {
+public record SystemObjectScanContext(CatalogOverlay graph, NameRef name, ResourceId catalogId) {
 
   public GraphNode resolve(ResourceId id) {
     return graph.resolve(id).orElseThrow();
@@ -32,35 +26,32 @@ public record SystemObjectScanContext(
     return graph.resolve(id);
   }
 
-  public List<TableNode> listTables(ResourceId namespace) {
-    return graph.listTables(namespace);
+  /** Tables + views */
+  public List<GraphNode> listRelations(ResourceId namespaceId) {
+    return graph.listRelationsInNamespace(catalogId, namespaceId);
   }
 
-  public Optional<String> schemaJson(ResourceId tableId) {
-    return graph.tableSchemaJson(tableId);
+  /** Tables only */
+  public List<TableNode> listTables(ResourceId namespaceId) {
+    return graph.listRelationsInNamespace(catalogId, namespaceId).stream()
+        .filter(TableNode.class::isInstance)
+        .map(TableNode.class::cast)
+        .toList();
   }
 
-  public Map<String, String> columnTypes(ResourceId tableId) {
-    return graph.tableColumnTypes(tableId);
+  /** Views only */
+  public List<ViewNode> listViews(ResourceId namespaceId) {
+    return graph.listRelationsInNamespace(catalogId, namespaceId).stream()
+        .filter(ViewNode.class::isInstance)
+        .map(ViewNode.class::cast)
+        .toList();
   }
 
   public List<NamespaceNode> listNamespaces() {
     return graph.listNamespaces(catalogId);
   }
 
-  public List<NamespaceNode> listNamespaces(ResourceId catalog) {
-    return graph.listNamespaces(catalog);
-  }
-
-  public List<ViewNode> listViews(ResourceId namespace) {
-    return graph.listViews(namespace);
-  }
-
-  public List<TableNode> listTables() {
-    return graph.listTables(namespaceId);
-  }
-
-  public List<ResourceId> listCatalogs() {
-    return graph.listCatalogs();
+  public List<FunctionNode> listFunctions(ResourceId namespaceId) {
+    return graph.listFunctions(catalogId, namespaceId);
   }
 }

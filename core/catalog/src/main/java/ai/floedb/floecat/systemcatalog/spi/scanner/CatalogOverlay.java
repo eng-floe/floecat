@@ -1,16 +1,17 @@
-package ai.floedb.floecat.service.metagraph.overlay;
+package ai.floedb.floecat.systemcatalog.spi.scanner;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
+import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
-import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectGraphView;
 import com.google.protobuf.Timestamp;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -19,24 +20,29 @@ import java.util.Optional;
  *
  * <p>This interface unifies the MetadataGraph view and the builtin graph so callers can depend on a
  * single entry point and do not need to mix ad-hoc resolver code.
+ *
+ * <p>Engine context is resolved implicitly from the request context.
  */
-public interface CatalogOverlay extends SystemObjectGraphView {
+public interface CatalogOverlay {
 
-  /** Resolves any graph node for the given resource + engine context. */
-  Optional<GraphNode> resolve(ResourceId id, String engineKind, String engineVersion);
+  /** Resolves any graph node for the given resource. Engine context is resolved implicitly. */
+  Optional<GraphNode> resolve(ResourceId id);
 
   /**
    * Lists every relation under the requested catalog (namespaces, tables, views, plus system
-   * objects).
+   * objects). Engine context is resolved implicitly.
    */
-  List<GraphNode> listRelations(ResourceId catalogId, String engineKind, String engineVersion);
+  List<GraphNode> listRelations(ResourceId catalogId);
 
-  /** Lists namespaces owned by the requested catalog. */
-  List<NamespaceNode> listNamespaces(ResourceId catalogId, String engineKind, String engineVersion);
+  /** Lists namespaces owned by the requested catalog. Engine context is resolved implicitly. */
+  List<NamespaceNode> listNamespaces(ResourceId catalogId);
 
-  /** Lists relations that live inside the given namespace. */
-  List<GraphNode> listRelationsInNamespace(
-      ResourceId catalogId, ResourceId namespaceId, String engineKind, String engineVersion);
+  /**
+   * Lists relations that live inside the given namespace. Engine context is resolved implicitly.
+   */
+  List<GraphNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId);
+
+  List<FunctionNode> listFunctions(ResourceId catalogId, ResourceId namespaceId);
 
   ResourceId resolveCatalog(String correlationId, String name);
 
@@ -72,6 +78,8 @@ public interface CatalogOverlay extends SystemObjectGraphView {
 
   SchemaResolution schemaFor(String correlationId, ResourceId tableId, SnapshotRef snapshot);
 
+  Map<String, String> tableColumnTypes(ResourceId tableId);
+
   /**
    * Simplified result returned by the overlay whenever caller requests a paged list of tables or
    * views.
@@ -80,5 +88,5 @@ public interface CatalogOverlay extends SystemObjectGraphView {
 
   record QualifiedRelation(NameRef name, ResourceId resourceId) {}
 
-  record SchemaResolution(TableNode table, String schemaJson) {}
+  record SchemaResolution(UserTableNode table, String schemaJson) {}
 }

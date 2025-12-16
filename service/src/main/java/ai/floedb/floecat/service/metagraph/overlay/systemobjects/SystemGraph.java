@@ -3,6 +3,7 @@ package ai.floedb.floecat.service.metagraph.overlay.systemobjects;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
@@ -10,6 +11,7 @@ import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
+import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
@@ -27,6 +29,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /** Materialised graph of builtin system nodes for a specific engine kind/version. */
@@ -71,7 +74,7 @@ public final class SystemGraph {
   }
 
   /**
-   * Lists every namespace/table relation that belongs to the engine-catalog root.
+   * Lists every system view/table relation that belongs to the engine-catalog root.
    *
    * <p>The snapshot already groups namespace→relations so we can return the bucket without
    * recalculating it on every invocation.
@@ -82,7 +85,17 @@ public final class SystemGraph {
     if (catalogId == null || !catalogId.equals(expected)) {
       return List.of();
     }
-    return snapshotFor(engineKind, engineVersion).tableRelations();
+
+    GraphSnapshot snapshot = snapshotFor(engineKind, engineVersion);
+
+    return snapshot.namespaces().stream()
+        .flatMap(
+            ns ->
+                Stream.concat(
+                    snapshot.tablesInNamespace(ns.id()).stream(),
+                    snapshot.viewsInNamespace(ns.id()).stream()))
+        .map(GraphNode.class::cast)
+        .toList();
   }
 
   /**
@@ -91,55 +104,189 @@ public final class SystemGraph {
    */
   public List<GraphNode> listRelationsInNamespace(
       ResourceId catalogId, ResourceId namespaceId, String engineKind, String engineVersion) {
-    return snapshotFor(engineKind, engineVersion)
-        .relationsByNamespace()
-        .getOrDefault(namespaceId, List.of());
+    ResourceId expected = systemCatalogId(engineKind);
+    if (catalogId == null || !catalogId.equals(expected)) {
+      return List.of();
+    }
+
+    GraphSnapshot snapshot = snapshotFor(engineKind, engineVersion);
+
+    return Stream.concat(
+            snapshot.tablesInNamespace(namespaceId).stream(),
+            snapshot.viewsInNamespace(namespaceId).stream())
+        .map(GraphNode.class::cast)
+        .toList();
   }
 
+  public List<FunctionNode> listFunctions(
+      ResourceId namespaceId, String engineKind, String engineVersion) {
+    return snapshotFor(engineKind, engineVersion).functionsInNamespace(namespaceId);
+  }
+
+  /**
+   * Returns all namespaces in the snapshot.
+   *
+   * <p>The snapshot is already scoped to a single system catalog, so {@code catalogId} is not used
+   * for filtering here.
+   */
   public List<NamespaceNode> listNamespaces(
       ResourceId catalogId, String engineKind, String engineVersion) {
     ResourceId expected = systemCatalogId(engineKind);
     if (catalogId == null || !catalogId.equals(expected)) {
       return List.of();
     }
-    return snapshotFor(engineKind, engineVersion).namespaceNodes();
+    return snapshotFor(engineKind, engineVersion).namespaces();
   }
 
   public List<ResourceId> listCatalogs() {
-    synchronized (snapshots) {
-      return snapshots.keySet().stream()
-          .map(key -> systemCatalogId(key.engineKind()))
-          .distinct()
-          .toList();
-    }
+    return registry.engineKinds().stream().map(SystemGraph::systemCatalogId).toList();
+  }
+
+  /**
+   * Resolves a table by name reference in the system catalog.
+   *
+   * @param ref the name reference to resolve
+   * @param engineKind the engine kind for the system catalog
+   * @param engineVersion the engine version for the system catalog
+   * @return the resolved table resource ID, or empty if not found
+   */
+  public Optional<ResourceId> resolveTable(NameRef ref, String engineKind, String engineVersion) {
+    GraphSnapshot snapshot = snapshotFor(engineKind, engineVersion);
+    String canonical = NameRefUtil.canonical(ref);
+    return Optional.ofNullable(snapshot.tableNames().get(canonical));
+  }
+
+  /**
+   * Resolves a view by name reference in the system catalog.
+   *
+   * @param ref the name reference to resolve
+   * @param engineKind the engine kind for the system catalog
+   * @param engineVersion the engine version for the system catalog
+   * @return the resolved view resource ID, or empty if not found
+   */
+  public Optional<ResourceId> resolveView(NameRef ref, String engineKind, String engineVersion) {
+    GraphSnapshot snapshot = snapshotFor(engineKind, engineVersion);
+    String canonical = NameRefUtil.canonical(ref);
+    return Optional.ofNullable(snapshot.viewNames().get(canonical));
+  }
+
+  /**
+   * Resolves a namespace by name reference in the system catalog.
+   *
+   * @param ref the name reference to resolve
+   * @param engineKind the engine kind for the system catalog
+   * @param engineVersion the engine version for the system catalog
+   * @return the resolved namespace resource ID, or empty if not found
+   */
+  public Optional<ResourceId> resolveNamespace(
+      NameRef ref, String engineKind, String engineVersion) {
+    GraphSnapshot snapshot = snapshotFor(engineKind, engineVersion);
+    String canonical = NameRefUtil.canonical(ref);
+    return Optional.ofNullable(snapshot.namespaceNames().get(canonical));
+  }
+
+  /**
+   * Resolves a relation (table, view, or namespace) by name reference in the system catalog.
+   *
+   * <p>Tries table, view, then namespace in order.
+   *
+   * @param ref the name reference to resolve
+   * @param engineKind the engine kind for the system catalog
+   * @param engineVersion the engine version for the system catalog
+   * @return the resolved resource ID, or empty if not found
+   */
+  public Optional<ResourceId> resolveName(NameRef ref, String engineKind, String engineVersion) {
+    // For simplicity, try table, view, namespace in order
+    return resolveTable(ref, engineKind, engineVersion)
+        .or(() -> resolveView(ref, engineKind, engineVersion))
+        .or(() -> resolveNamespace(ref, engineKind, engineVersion));
+  }
+
+  /**
+   * Gets the fully qualified name of a table by its resource ID.
+   *
+   * @param id the table resource ID
+   * @param engineKind the engine kind for the system catalog
+   * @param engineVersion the engine version for the system catalog
+   * @return the fully qualified name reference, or empty if not found
+   */
+  public Optional<NameRef> tableName(ResourceId id, String engineKind, String engineVersion) {
+    GraphSnapshot snapshot = snapshotFor(engineKind, engineVersion);
+    return snapshot
+        .resolve(id)
+        .filter(TableNode.class::isInstance)
+        .map(TableNode.class::cast)
+        .flatMap(table -> buildTableNameRef(table, engineKind, engineVersion));
+  }
+
+  /**
+   * Gets the fully qualified name of a view by its resource ID.
+   *
+   * @param id the view resource ID
+   * @param engineKind the engine kind for the system catalog
+   * @param engineVersion the engine version for the system catalog
+   * @return the fully qualified name reference, or empty if not found
+   */
+  public Optional<NameRef> viewName(ResourceId id, String engineKind, String engineVersion) {
+    GraphSnapshot snapshot = snapshotFor(engineKind, engineVersion);
+    return snapshot
+        .resolve(id)
+        .filter(ViewNode.class::isInstance)
+        .map(ViewNode.class::cast)
+        .flatMap(view -> buildViewNameRef(view, engineKind, engineVersion));
+  }
+
+  /**
+   * Gets the fully qualified name of a namespace by its resource ID.
+   *
+   * @param id the namespace resource ID
+   * @param engineKind the engine kind for the system catalog
+   * @param engineVersion the engine version for the system catalog
+   * @return the fully qualified name reference, or empty if not found
+   */
+  public Optional<NameRef> namespaceName(ResourceId id, String engineKind, String engineVersion) {
+    GraphSnapshot snapshot = snapshotFor(engineKind, engineVersion);
+    return snapshot
+        .resolve(id)
+        .filter(NamespaceNode.class::isInstance)
+        .map(NamespaceNode.class::cast)
+        .map(ns -> buildNamespaceNameRef(ns, engineKind));
+  }
+
+  private Optional<NameRef> buildTableNameRef(
+      TableNode table, String engineKind, String engineVersion) {
+    return resolve(table.namespaceId(), engineKind, engineVersion)
+        .filter(NamespaceNode.class::isInstance)
+        .map(NamespaceNode.class::cast)
+        .map(
+            ns ->
+                NameRefUtil.name(ns.displayName(), table.displayName()).toBuilder()
+                    .setCatalog(engineKind)
+                    .build());
+  }
+
+  private Optional<NameRef> buildViewNameRef(
+      ViewNode view, String engineKind, String engineVersion) {
+    return resolve(view.namespaceId(), engineKind, engineVersion)
+        .filter(NamespaceNode.class::isInstance)
+        .map(NamespaceNode.class::cast)
+        .map(
+            ns ->
+                NameRefUtil.name(ns.displayName(), view.displayName()).toBuilder()
+                    .setCatalog(engineKind)
+                    .build());
+  }
+
+  private NameRef buildNamespaceNameRef(NamespaceNode ns, String engineKind) {
+    return NameRef.newBuilder().setCatalog(engineKind).addPath(ns.displayName()).build();
   }
 
   public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
-    return snapshotForCatalog(catalogId).namespaceNodes();
+    return snapshotForCatalog(catalogId).namespaces();
   }
 
   public Optional<NamespaceNode> tryNamespace(ResourceId id) {
     return resolveAny(id).filter(NamespaceNode.class::isInstance).map(NamespaceNode.class::cast);
-  }
-
-  public Optional<TableNode> tryTable(ResourceId id) {
-    return Optional.empty();
-  }
-
-  public Optional<ViewNode> tryView(ResourceId id) {
-    return Optional.empty();
-  }
-
-  public List<TableNode> listTables(ResourceId namespaceId) {
-    return List.of();
-  }
-
-  public List<ViewNode> listViews(ResourceId namespaceId) {
-    return List.of();
-  }
-
-  public Optional<String> tableSchemaJson(ResourceId tableId) {
-    return Optional.empty();
   }
 
   /** Builds a new snapshot for the requested engine version. */
@@ -202,9 +349,14 @@ public final class SystemGraph {
     ResourceId catalogId = systemCatalogId(engineKind);
 
     Map<ResourceId, GraphNode> nodesById = new ConcurrentHashMap<>(nodesById(nodes));
-    Map<ResourceId, List<GraphNode>> relationsByNamespace = new ConcurrentHashMap<>();
+    Map<ResourceId, List<TableNode>> tablesByNamespace = new ConcurrentHashMap<>();
+    Map<ResourceId, List<ViewNode>> viewsByNamespace = new ConcurrentHashMap<>();
     Map<ResourceId, List<ResourceId>> relationIdsByNamespace = new ConcurrentHashMap<>();
-    List<GraphNode> tableRelations = new ArrayList<>();
+    List<NamespaceNode> namespaceNodes = new ArrayList<>();
+    Map<ResourceId, List<FunctionNode>> functionsByNamespace = new ConcurrentHashMap<>();
+    Map<String, ResourceId> tableNames = new ConcurrentHashMap<>();
+    Map<String, ResourceId> viewNames = new ConcurrentHashMap<>();
+    Map<String, ResourceId> namespaceNames = new ConcurrentHashMap<>();
 
     Map<String, ResourceId> namespaceIds =
         catalog.namespaces().stream()
@@ -235,17 +387,51 @@ public final class SystemGraph {
               table.scannerId(),
               Map.of());
       nodesById.put(tableId, node);
-      relationsByNamespace
-          .computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>())
-          .add(node);
+      tablesByNamespace.computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>()).add(node);
       relationIdsByNamespace
           .computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>())
           .add(tableId);
-      tableRelations.add(node);
+      tableNames.put(NameRefUtil.canonical(table.name()), tableId);
+    }
+
+    // Build view nodes and map them to namespaces
+    for (SystemViewDef view : catalog.views()) {
+      Optional<ResourceId> namespaceId = findNamespaceId(view.name(), namespaceIds);
+      if (namespaceId.isEmpty()) {
+        continue;
+      }
+
+      ResourceId viewId =
+          SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_VIEW, view.name());
+
+      ViewNode node =
+          new ViewNode(
+              viewId,
+              version,
+              createdAt,
+              catalogId,
+              namespaceId.get(),
+              view.displayName(),
+              view.sql(),
+              view.dialect(),
+              view.columns(),
+              List.of(), // baseRelations (can be wired later)
+              List.of(), // creationSearchPath
+              Map.of(),
+              Optional.empty(),
+              Map.of());
+
+      nodesById.put(viewId, node);
+
+      viewsByNamespace.computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>()).add(node);
+
+      relationIdsByNamespace
+          .computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>())
+          .add(viewId);
+      viewNames.put(NameRefUtil.canonical(view.name()), viewId);
     }
 
     // Build namespace nodes with relation ids attached
-    List<NamespaceNode> namespaceNodes = new ArrayList<>();
     for (SystemNamespaceDef ns : catalog.namespaces()) {
       ResourceId namespaceId =
           SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_NAMESPACE, ns.name());
@@ -264,16 +450,35 @@ public final class SystemGraph {
               Map.of());
       nodesById.put(namespaceId, node);
       namespaceNodes.add(node);
-      relationsByNamespace.computeIfAbsent(namespaceId, ignored -> List.of());
+      tablesByNamespace.computeIfAbsent(namespaceId, ignored -> List.of());
+      viewsByNamespace.computeIfAbsent(namespaceId, ignored -> List.of());
+      namespaceNames.put(NameRefUtil.canonical(ns.name()), namespaceId);
+    }
+
+    // Build function nodes and map them to namespaces
+    for (FunctionNode fn : nodes.functions()) {
+      Optional<ResourceId> nsId =
+          findNamespaceId(
+              fn.displayName() != null ? NameRefUtil.name(fn.displayName()) : null, namespaceIds);
+      nsId.ifPresent(
+          id -> functionsByNamespace.computeIfAbsent(id, ignored -> new ArrayList<>()).add(fn));
     }
 
     return new GraphSnapshot(
         List.copyOf(namespaceNodes),
-        List.copyOf(tableRelations),
-        relationsByNamespace.entrySet().stream()
+        tablesByNamespace.entrySet().stream()
             .collect(
                 Collectors.toUnmodifiableMap(Map.Entry::getKey, e -> List.copyOf(e.getValue()))),
-        Map.copyOf(nodesById));
+        viewsByNamespace.entrySet().stream()
+            .collect(
+                Collectors.toUnmodifiableMap(Map.Entry::getKey, e -> List.copyOf(e.getValue()))),
+        functionsByNamespace.entrySet().stream()
+            .collect(
+                Collectors.toUnmodifiableMap(Map.Entry::getKey, e -> List.copyOf(e.getValue()))),
+        Map.copyOf(nodesById),
+        Map.copyOf(tableNames),
+        Map.copyOf(viewNames),
+        Map.copyOf(namespaceNames));
   }
 
   private static Map<ResourceId, GraphNode> nodesById(BuiltinNodes nodes) {
@@ -295,7 +500,7 @@ public final class SystemGraph {
     return ResourceId.newBuilder()
         .setAccountId(SYSTEM_ACCOUNT)
         .setKind(ResourceKind.RK_CATALOG)
-        .setId(engineKind + ":system")
+        .setId(engineKind)
         .build();
   }
 
@@ -319,54 +524,6 @@ public final class SystemGraph {
       return Long.parseUnsignedLong(prefix, 16);
     } catch (NumberFormatException e) {
       return prefix.hashCode();
-    }
-  }
-
-  /**
-   * Lightweight view that stores the grouped relations + lookup map for the synthetic catalog.
-   *
-   * <p>It keeps namespace buckets and the catalog list so `listRelations*` can return results
-   * without recomputing the grouping logic.
-   */
-  private static final class GraphSnapshot {
-
-    private static final GraphSnapshot EMPTY =
-        new GraphSnapshot(List.of(), List.of(), Map.of(), Map.of());
-
-    private final List<NamespaceNode> namespaceNodes;
-    private final List<GraphNode> tableRelations;
-    private final Map<ResourceId, List<GraphNode>> relationsByNamespace;
-    private final Map<ResourceId, GraphNode> nodesById;
-
-    GraphSnapshot(
-        List<NamespaceNode> namespaceNodes,
-        List<GraphNode> tableRelations,
-        Map<ResourceId, List<GraphNode>> relationsByNamespace,
-        Map<ResourceId, GraphNode> nodesById) {
-      this.namespaceNodes = namespaceNodes;
-      this.tableRelations = tableRelations;
-      this.relationsByNamespace = relationsByNamespace;
-      this.nodesById = nodesById;
-    }
-
-    static GraphSnapshot empty() {
-      return EMPTY;
-    }
-
-    List<NamespaceNode> namespaceNodes() {
-      return namespaceNodes;
-    }
-
-    List<GraphNode> tableRelations() {
-      return tableRelations;
-    }
-
-    Map<ResourceId, List<GraphNode>> relationsByNamespace() {
-      return relationsByNamespace;
-    }
-
-    Optional<GraphNode> resolve(ResourceId id) {
-      return Optional.ofNullable(nodesById.get(id));
     }
   }
 

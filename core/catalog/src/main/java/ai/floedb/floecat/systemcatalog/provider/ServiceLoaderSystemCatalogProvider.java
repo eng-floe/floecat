@@ -63,6 +63,11 @@ public final class ServiceLoaderSystemCatalogProvider implements SystemCatalogPr
   }
 
   @Override
+  public List<String> engineKinds() {
+    return plugins.keySet().stream().sorted().toList();
+  }
+
+  @Override
   public SystemEngineCatalog load(String engineKind) {
     if (engineKind == null || engineKind.isBlank()) {
       throw new IllegalArgumentException("engine_kind must be provided");

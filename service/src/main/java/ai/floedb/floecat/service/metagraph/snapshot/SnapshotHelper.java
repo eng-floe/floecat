@@ -6,7 +6,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc.SnapshotServiceBlocking
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
-import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph.SchemaResolution;
@@ -79,13 +79,19 @@ public class SnapshotHelper {
   // ----------------------------------------------------------------------
 
   public SchemaResolution schemaFor(
-      String cid, TableNode tbl, SnapshotRef ref, java.util.function.Supplier<String> supplier) {
+      String cid,
+      UserTableNode tbl,
+      SnapshotRef ref,
+      java.util.function.Supplier<String> supplier) {
 
     return new SchemaResolution(tbl, schemaJsonFor(cid, tbl, ref, supplier));
   }
 
   public String schemaJsonFor(
-      String cid, TableNode tbl, SnapshotRef ref, java.util.function.Supplier<String> supplier) {
+      String cid,
+      UserTableNode tbl,
+      SnapshotRef ref,
+      java.util.function.Supplier<String> supplier) {
 
     if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
       return supplier.get();

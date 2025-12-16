@@ -3,9 +3,8 @@ package ai.floedb.floecat.systemcatalog.graph.model;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineKey;
-import ai.floedb.floecat.metagraph.model.GraphNode;
-import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import java.time.Instant;
 import java.util.List;
@@ -34,17 +33,12 @@ public record SystemTableNode(
     List<SchemaColumn> columns,
     String scannerId,
     Map<EngineKey, EngineHint> engineHints)
-    implements GraphNode {
+    implements TableNode {
 
   public SystemTableNode {
     columns = List.copyOf(columns);
     displayName = displayName == null ? "" : displayName;
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
-  }
-
-  @Override
-  public GraphNodeKind kind() {
-    return GraphNodeKind.TABLE;
   }
 
   @Override

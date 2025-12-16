@@ -7,7 +7,7 @@ import ai.floedb.floecat.query.rpc.QueryInput;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.overlay.CatalogOverlay;
+import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;

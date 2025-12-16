@@ -15,21 +15,21 @@ class TablesScannerTest {
   void schema_isCorrect() {
     assertThat(new TablesScanner().schema())
         .extracting(c -> c.getName())
-        .containsExactly("table_schema", "table_name", "table_type");
+        .containsExactly("table_catalog", "table_schema", "table_name", "table_type");
   }
 
   @Test
   void scan_returnsOneRowPerTable() {
     var builder = TestScanContextBuilder.builder().withCatalog("catalog").withNamespace("public");
 
-    TableNode table = builder.newTable("mytable", Map.of());
+    UserTableNode table = builder.newTable("mytable", Map.of());
 
     SystemObjectScanContext ctx = builder.withTable(table).build();
 
     var rows = new TablesScanner().scan(ctx).map(r -> r.values()).toList();
 
     assertThat(rows).hasSize(1);
-    assertThat(rows.get(0)).containsExactly("public", "mytable", "BASE TABLE");
+    assertThat(rows.get(0)).containsExactly("catalog", "public", "mytable", "BASE TABLE");
   }
 
   @Test
@@ -41,13 +41,14 @@ class TablesScannerTest {
 
     builder.withNamespaces(List.of(ns));
 
-    TableNode table = builder.newTable("nested_table", Map.of());
+    UserTableNode table = builder.newTable("nested_table", Map.of());
 
     SystemObjectScanContext ctx = builder.withTable(table).build();
 
     var rows = new TablesScanner().scan(ctx).map(r -> r.values()).toList();
 
     assertThat(rows).hasSize(1);
-    assertThat(rows.get(0)).containsExactly("finance.sales", "nested_table", "BASE TABLE");
+    assertThat(rows.get(0))
+        .containsExactly("catalog", "finance.sales", "nested_table", "BASE TABLE");
   }
 }

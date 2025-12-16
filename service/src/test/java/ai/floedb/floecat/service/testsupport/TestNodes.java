@@ -3,7 +3,7 @@ package ai.floedb.floecat.service.testsupport;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -14,8 +14,8 @@ public final class TestNodes {
 
   private TestNodes() {}
 
-  public static TableNode tableNode(ResourceId tableId, String schemaJson) {
-    return new TableNode(
+  public static UserTableNode tableNode(ResourceId tableId, String schemaJson) {
+    return new UserTableNode(
         tableId,
         1L,
         Instant.EPOCH,

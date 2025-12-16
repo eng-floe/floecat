@@ -5,7 +5,7 @@ import static org.assertj.core.api.Assertions.*;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.*;
-import ai.floedb.floecat.systemcatalog.utils.TestGraphView;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -16,16 +16,11 @@ class SystemObjectScanContextTest {
 
   @Test
   void resolve_throws_whenMissing() {
-    SystemObjectGraphView view = new TestGraphView();
+    CatalogOverlay view = new TestCatalogOverlay();
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view,
-            NameRef.newBuilder().build(),
-            "spark",
-            "3.5.0",
-            ResourceId.getDefaultInstance(),
-            ResourceId.getDefaultInstance());
+            view, NameRef.newBuilder().build(), ResourceId.getDefaultInstance());
 
     assertThatThrownBy(() -> ctx.resolve(ResourceId.getDefaultInstance()))
         .isInstanceOf(Exception.class);
@@ -33,16 +28,11 @@ class SystemObjectScanContextTest {
 
   @Test
   void tryResolve_returnsEmptyWhenMissing() {
-    SystemObjectGraphView view = new TestGraphView();
+    CatalogOverlay view = new TestCatalogOverlay();
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view,
-            NameRef.newBuilder().build(),
-            "spark",
-            "3.5.0",
-            ResourceId.getDefaultInstance(),
-            ResourceId.getDefaultInstance());
+            view, NameRef.newBuilder().build(), ResourceId.getDefaultInstance());
 
     assertThat(ctx.tryResolve(ResourceId.getDefaultInstance())).isEmpty();
   }
@@ -50,7 +40,7 @@ class SystemObjectScanContextTest {
   @Test
   void tryResolve_returnsNodeWhenPresent() {
     GraphNode node =
-        new TableNode(
+        new UserTableNode(
             ResourceId.getDefaultInstance(),
             0L,
             Instant.EPOCH,
@@ -69,8 +59,8 @@ class SystemObjectScanContextTest {
             List.of(), // dependentViews
             Map.of()); // engineHints
 
-    SystemObjectGraphView view =
-        new TestGraphView() {
+    CatalogOverlay view =
+        new TestCatalogOverlay() {
           @Override
           public Optional<GraphNode> resolve(ResourceId id) {
             return Optional.of(node);
@@ -79,12 +69,7 @@ class SystemObjectScanContextTest {
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view,
-            NameRef.getDefaultInstance(),
-            "spark",
-            "3.5.0",
-            ResourceId.getDefaultInstance(),
-            ResourceId.getDefaultInstance());
+            view, NameRef.getDefaultInstance(), ResourceId.getDefaultInstance());
 
     assertThat(ctx.tryResolve(ResourceId.getDefaultInstance())).isPresent().containsSame(node);
   }
@@ -92,7 +77,7 @@ class SystemObjectScanContextTest {
   @Test
   void resolve_returnsNodeWhenPresent() {
     GraphNode node =
-        new TableNode(
+        new UserTableNode(
             ResourceId.getDefaultInstance(),
             0L,
             Instant.EPOCH,
@@ -111,8 +96,8 @@ class SystemObjectScanContextTest {
             List.of(), // dependentViews
             Map.of()); // engineHints
 
-    SystemObjectGraphView view =
-        new TestGraphView() {
+    CatalogOverlay view =
+        new TestCatalogOverlay() {
           @Override
           public Optional<GraphNode> resolve(ResourceId id) {
             return Optional.of(node);
@@ -121,12 +106,7 @@ class SystemObjectScanContextTest {
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view,
-            NameRef.getDefaultInstance(),
-            "spark",
-            "3.5.0",
-            ResourceId.getDefaultInstance(),
-            ResourceId.getDefaultInstance());
+            view, NameRef.getDefaultInstance(), ResourceId.getDefaultInstance());
 
     assertThat(ctx.resolve(ResourceId.getDefaultInstance())).isSameAs(node);
   }
@@ -135,8 +115,8 @@ class SystemObjectScanContextTest {
   void resolve_propagatesExceptionFromView() {
     RuntimeException ex = new IllegalStateException("boom");
 
-    SystemObjectGraphView view =
-        new TestGraphView() {
+    CatalogOverlay view =
+        new TestCatalogOverlay() {
           @Override
           public Optional<GraphNode> resolve(ResourceId id) {
             throw ex;
@@ -145,12 +125,7 @@ class SystemObjectScanContextTest {
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view,
-            NameRef.getDefaultInstance(),
-            "spark",
-            "3.5.0",
-            ResourceId.getDefaultInstance(),
-            ResourceId.getDefaultInstance());
+            view, NameRef.getDefaultInstance(), ResourceId.getDefaultInstance());
 
     assertThatThrownBy(() -> ctx.resolve(ResourceId.getDefaultInstance()))
         .isInstanceOf(ex.getClass())
@@ -159,8 +134,8 @@ class SystemObjectScanContextTest {
 
   @Test
   void listTables_delegates() {
-    TableNode t =
-        new TableNode(
+    UserTableNode t =
+        new UserTableNode(
             ResourceId.getDefaultInstance(),
             0L,
             Instant.EPOCH,
@@ -179,22 +154,18 @@ class SystemObjectScanContextTest {
             List.of(),
             Map.of());
 
-    SystemObjectGraphView view =
-        new TestGraphView() {
+    CatalogOverlay view =
+        new TestCatalogOverlay() {
           @Override
-          public List<TableNode> listTables(ResourceId c) {
+          public List<GraphNode> listRelationsInNamespace(
+              ResourceId catalogId, ResourceId namespaceId) {
             return List.of(t);
           }
         };
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view,
-            NameRef.getDefaultInstance(),
-            "spark",
-            "3.5.0",
-            ResourceId.getDefaultInstance(),
-            ResourceId.getDefaultInstance());
+            view, NameRef.getDefaultInstance(), ResourceId.getDefaultInstance());
 
     assertThat(ctx.listTables(ResourceId.getDefaultInstance())).containsExactly(t);
   }
@@ -218,22 +189,18 @@ class SystemObjectScanContextTest {
             Optional.empty(), // owner
             Map.of()); // engineHints
 
-    SystemObjectGraphView view =
-        new TestGraphView() {
+    CatalogOverlay view =
+        new TestCatalogOverlay() {
           @Override
-          public List<ViewNode> listViews(ResourceId c) {
+          public List<GraphNode> listRelationsInNamespace(
+              ResourceId catalogId, ResourceId namespaceId) {
             return List.of(v);
           }
         };
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view,
-            NameRef.getDefaultInstance(),
-            "spark",
-            "3.5.0",
-            ResourceId.getDefaultInstance(),
-            ResourceId.getDefaultInstance());
+            view, NameRef.getDefaultInstance(), ResourceId.getDefaultInstance());
 
     assertThat(ctx.listViews(ResourceId.getDefaultInstance())).containsExactly(v);
   }
@@ -253,8 +220,8 @@ class SystemObjectScanContextTest {
             Optional.empty(), // relationIds
             Map.of()); // engineHints
 
-    SystemObjectGraphView view =
-        new TestGraphView() {
+    CatalogOverlay view =
+        new TestCatalogOverlay() {
           @Override
           public List<NamespaceNode> listNamespaces(ResourceId c) {
             return List.of(n);
@@ -263,54 +230,20 @@ class SystemObjectScanContextTest {
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view,
-            NameRef.getDefaultInstance(),
-            "spark",
-            "3.5.0",
-            ResourceId.getDefaultInstance(),
-            ResourceId.getDefaultInstance());
+            view, NameRef.getDefaultInstance(), ResourceId.getDefaultInstance());
 
-    assertThat(ctx.listNamespaces(ResourceId.getDefaultInstance())).containsExactly(n);
+    assertThat(ctx.listNamespaces()).containsExactly(n);
   }
 
   @Test
-  void listCatalogs_delegates() {
-    ResourceId cat1 = ResourceId.newBuilder().setId("cat1").build();
-    ResourceId cat2 = ResourceId.newBuilder().setId("cat2").build();
-
-    SystemObjectGraphView view =
-        new TestGraphView() {
-          @Override
-          public List<ResourceId> listCatalogs() {
-            return List.of(cat1, cat2);
-          }
-        };
-
-    SystemObjectScanContext ctx =
-        new SystemObjectScanContext(
-            view,
-            NameRef.getDefaultInstance(),
-            "spark",
-            "3.5.0",
-            ResourceId.getDefaultInstance(),
-            ResourceId.getDefaultInstance());
-
-    assertThat(ctx.listCatalogs()).containsExactly(cat1, cat2);
-  }
-
-  @Test
-  void contextFields_areRetained() {
+  void contextFields_areRetained_basic() {
     NameRef name = NameRef.newBuilder().addPath("a").setName("b").build();
     ResourceId catalog = ResourceId.newBuilder().setId("cat").build();
-    ResourceId ns = ResourceId.newBuilder().setId("ns").build();
 
     SystemObjectScanContext ctx =
-        new SystemObjectScanContext(new TestGraphView(), name, "spark", "3.5.0", catalog, ns);
+        new SystemObjectScanContext(new TestCatalogOverlay(), name, catalog);
 
     assertThat(ctx.name()).isEqualTo(name);
     assertThat(ctx.catalogId()).isEqualTo(catalog);
-    assertThat(ctx.namespaceId()).isEqualTo(ns);
-    assertThat(ctx.engineKind()).isEqualTo("spark");
-    assertThat(ctx.engineVersion()).isEqualTo("3.5.0");
   }
 }

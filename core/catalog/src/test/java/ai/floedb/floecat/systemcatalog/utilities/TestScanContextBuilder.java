@@ -8,9 +8,9 @@ import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
-import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
-import ai.floedb.floecat.systemcatalog.utils.TestGraphView;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -57,7 +57,7 @@ public final class TestScanContextBuilder {
   private List<String> namespacePath = List.of("ns");
   private String namespaceDisplay = "ns";
 
-  private List<TableNode> tables = List.of();
+  private List<UserTableNode> tables = List.of();
   private Map<String, String> columnTypes = Map.of();
 
   private String engineKind = "spark";
@@ -94,7 +94,7 @@ public final class TestScanContextBuilder {
     return this;
   }
 
-  public TestScanContextBuilder withTable(TableNode table) {
+  public TestScanContextBuilder withTable(UserTableNode table) {
     this.tables =
         this.tables.isEmpty()
             ? List.of(table)
@@ -111,9 +111,9 @@ public final class TestScanContextBuilder {
     return this;
   }
 
-  public TableNode newTable(String name, Map<String, Integer> columns) {
+  public UserTableNode newTable(String name, Map<String, Integer> columns) {
 
-    return new TableNode(
+    return new UserTableNode(
         ResourceId.newBuilder()
             .setAccountId(catalogId.getAccountId())
             .setKind(ResourceKind.RK_TABLE)
@@ -193,20 +193,27 @@ public final class TestScanContextBuilder {
             Optional.empty(),
             Map.of());
 
-    TestGraphView view =
-        new TestGraphView() {
+    TestCatalogOverlay view =
+        new TestCatalogOverlay() {
+
           @Override
-          public List<TableNode> listTables(ResourceId nsId) {
+          public List<GraphNode> listRelationsInNamespace(ResourceId catalogId, ResourceId nsId) {
+
+            if (!TestScanContextBuilder.this.catalogId.equals(catalogId)) {
+              return List.of();
+            }
+
             // multi-namespace mode -> scanners decide grouping
             if (!namespaces.isEmpty()) {
-              return tables;
+              return new ArrayList<>(tables);
             }
 
             // single-namespace mode -> strict matching
             if (!namespaceId.equals(nsId)) {
               return List.of();
             }
-            return tables;
+
+            return new ArrayList<>(tables);
           }
 
           @Override
@@ -252,15 +259,7 @@ public final class TestScanContextBuilder {
           }
         };
 
-    ResourceId contextNamespaceId = !namespaces.isEmpty() ? namespaces.get(0).id() : namespaceId;
-
-    return new SystemObjectScanContext(
-        view,
-        NameRef.getDefaultInstance(),
-        engineKind,
-        engineVersion,
-        catalogId,
-        contextNamespaceId);
+    return new SystemObjectScanContext(view, NameRef.getDefaultInstance(), catalogId);
   }
 
   public static TestScanContextBuilder builder() {

@@ -8,7 +8,7 @@ import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
-import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.util.Map;
@@ -38,7 +38,7 @@ class HintCacheTest {
     assertThat(provider.calls.get()).isEqualTo(2);
   }
 
-  private static TableNode tableNode(long version) {
+  private static UserTableNode tableNode(long version) {
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId("t")
@@ -46,7 +46,7 @@ class HintCacheTest {
             .setKind(ResourceKind.RK_TABLE)
             .build();
 
-    return new TableNode(
+    return new UserTableNode(
         tableId,
         version,
         Instant.EPOCH,
