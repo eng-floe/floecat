@@ -13,6 +13,35 @@ message FloeNamespaceSpecific {
   optional int32 nspowner = 1;
   repeated string nspacl = 2;
 }
+
+message FloeRelationSpecific {
+  // pg_class identity
+  optional int32 oid = 100;
+  optional string relname = 101;
+
+  // namespace
+  optional int32 relnamespace = 1;
+  optional int32 relowner = 2;
+
+  // relation kind: r, v, m, i, S, c, f, p
+  optional string relkind = 3;
+
+  // storage / stats
+  optional int32 relpages = 4;
+  optional int32 reltuples = 5;
+  optional int32 reltoastrelid = 6;
+  optional int32 reltoastidxid = 7;
+
+  // flags
+  optional bool relhasindex = 8;
+  optional bool relisshared = 9;
+  optional bool relpersistence = 10;
+  optional bool relispartition = 11;
+
+  // ACL
+  repeated string relacl = 12;
+}
+
 message FloeFunctionSpecific {
   optional int32  oid = 100;
   optional string proname = 101;
@@ -168,4 +197,5 @@ extend ai.floedb.floecat.query.EngineSpecific {
   optional FloeAggregateSpecific floe_aggregate = 5;
   optional FloeCollationSpecific floe_collation = 6;
   optional FloeNamespaceSpecific floe_namespace = 7;
+  optional FloeRelationSpecific floe_relation = 8;
 }

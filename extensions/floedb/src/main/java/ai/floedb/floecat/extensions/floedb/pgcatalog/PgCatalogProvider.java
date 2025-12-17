@@ -33,7 +33,7 @@ public final class PgCatalogProvider implements SystemObjectScannerProvider {
   private final Map<String, SystemObjectScanner> scanners =
       Map.of(
           "pg_namespace_scanner", new PgNamespaceScanner(),
-          // "pg_class_scanner", new PgClassScanner(),
+          "pg_class_scanner", new PgClassScanner(),
           // "pg_attribute_scanner", new PgAttributeScanner(),
           "pg_type_scanner", new PgTypeScanner(),
           "pg_proc_scanner", new PgProcScanner());
@@ -57,13 +57,13 @@ public final class PgCatalogProvider implements SystemObjectScannerProvider {
             List.of()),
 
         // // pg_class
-        // new SystemTableDef(
-        //     NameRefUtil.name("pg_catalog", "pg_class"),
-        //     "pg_class",
-        //     PgClassScanner.SCHEMA,
-        //     TableBackendKind.FLOECAT,
-        //     "pg_class_scanner",
-        //     List.of()),
+        new SystemTableDef(
+            NameRefUtil.name("pg_catalog", "pg_class"),
+            "pg_class",
+            PgClassScanner.SCHEMA,
+            TableBackendKind.FLOECAT,
+            "pg_class_scanner",
+            List.of()),
 
         // // pg_attribute
         // new SystemTableDef(

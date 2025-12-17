@@ -6,6 +6,7 @@ import ai.floedb.floecat.extensions.floedb.proto.FloeCollationSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeFunctionSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorSpecific;
+import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
 
 /**
@@ -53,4 +54,7 @@ public final class FloePayloads {
   /** pg_collation */
   public static final PayloadDescriptor<FloeCollationSpecific> COLLATION =
       PayloadDescriptor.of("floe.collation+proto", FloeCollationSpecific::parseFrom);
+
+  public static final PayloadDescriptor<FloeRelationSpecific> RELATION =
+      PayloadDescriptor.of("floe.relation+proto", FloeRelationSpecific::parseFrom);
 }
