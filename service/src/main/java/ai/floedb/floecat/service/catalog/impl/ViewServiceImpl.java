@@ -13,7 +13,6 @@ import ai.floedb.floecat.catalog.rpc.UpdateViewResponse;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewService;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -201,20 +200,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                       canonicalFingerprint(spec.toBuilder().setDisplayName(normName).build());
 
                   var accountId = pc.getAccountId();
-                  var viewUuid =
-                      deterministicUuid(
-                          accountId,
-                          "view",
-                          java.util.Base64.getUrlEncoder()
-                              .withoutPadding()
-                              .encodeToString(fingerprint));
-
-                  var viewResourceId =
-                      ResourceId.newBuilder()
-                          .setAccountId(accountId)
-                          .setId(viewUuid)
-                          .setKind(ResourceKind.RK_VIEW)
-                          .build();
+                  var viewResourceId = randomResourceId(accountId, ResourceKind.RK_VIEW);
 
                   var view =
                       View.newBuilder()
@@ -249,23 +235,26 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   }
 
                   var result =
-                      MutationOps.createProto(
-                          accountId,
-                          "CreateView",
-                          idempotencyKey,
-                          () -> fingerprint,
-                          () -> {
-                            viewRepo.create(view);
-                            metadataGraph.invalidate(viewResourceId);
-                            return new IdempotencyGuard.CreateResult<>(view, viewResourceId);
-                          },
-                          v -> viewRepo.metaForSafe(v.getResourceId()),
-                          idempotencyStore,
-                          tsNow,
-                          idempotencyTtlSeconds(),
-                          this::correlationId,
-                          View::parseFrom,
-                          rec -> viewRepo.getById(rec.getResourceId()).isPresent());
+                      runIdempotentCreate(
+                          () ->
+                              MutationOps.createProto(
+                                  accountId,
+                                  "CreateView",
+                                  idempotencyKey,
+                                  () -> fingerprint,
+                                  () -> {
+                                    viewRepo.create(view);
+                                    metadataGraph.invalidate(viewResourceId);
+                                    return new IdempotencyGuard.CreateResult<>(
+                                        view, viewResourceId);
+                                  },
+                                  v -> viewRepo.metaForSafe(v.getResourceId()),
+                                  idempotencyStore,
+                                  tsNow,
+                                  idempotencyTtlSeconds(),
+                                  this::correlationId,
+                                  View::parseFrom,
+                                  rec -> viewRepo.getById(rec.getResourceId()).isPresent()));
 
                   return CreateViewResponse.newBuilder()
                       .setView(result.body)

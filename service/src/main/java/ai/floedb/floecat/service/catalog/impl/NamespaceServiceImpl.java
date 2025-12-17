@@ -384,54 +384,48 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           : hashFingerprint(fingerprint);
 
                   var namespaceProto =
-                      MutationOps.createProto(
-                          accountId,
-                          "CreateNamespace",
-                          idempotencyKey,
-                          () -> fingerprint,
-                          () -> {
-                            if (!parents.isEmpty()) {
-                              ensurePathChainExists(
-                                  accountId, spec.getCatalogId(), parents, tsNow, correlationId);
-                            }
+                      runIdempotentCreate(
+                          () ->
+                              MutationOps.createProto(
+                                  accountId,
+                                  "CreateNamespace",
+                                  idempotencyKey,
+                                  () -> fingerprint,
+                                  () -> {
+                                    if (!parents.isEmpty()) {
+                                      ensurePathChainExists(
+                                          accountId,
+                                          spec.getCatalogId(),
+                                          parents,
+                                          tsNow,
+                                          correlationId);
+                                    }
 
-                            String namespaceUuid =
-                                deterministicUuid(
-                                    accountId,
-                                    "namespace",
-                                    spec.getCatalogId().getId()
-                                        + "/"
-                                        + String.join(PATH_DELIM, fullPath));
+                                    var namespaceId =
+                                        randomResourceId(accountId, ResourceKind.RK_NAMESPACE);
 
-                            var namespaceId =
-                                ResourceId.newBuilder()
-                                    .setAccountId(accountId)
-                                    .setId(namespaceUuid)
-                                    .setKind(ResourceKind.RK_NAMESPACE)
-                                    .build();
+                                    var built =
+                                        Namespace.newBuilder()
+                                            .setResourceId(namespaceId)
+                                            .setDisplayName(display)
+                                            .clearParents()
+                                            .addAllParents(parents)
+                                            .setDescription(spec.getDescription())
+                                            .setCatalogId(spec.getCatalogId())
+                                            .setCreatedAt(tsNow)
+                                            .build();
 
-                            var built =
-                                Namespace.newBuilder()
-                                    .setResourceId(namespaceId)
-                                    .setDisplayName(display)
-                                    .clearParents()
-                                    .addAllParents(parents)
-                                    .setDescription(spec.getDescription())
-                                    .setCatalogId(spec.getCatalogId())
-                                    .setCreatedAt(tsNow)
-                                    .build();
-
-                            namespaceRepo.create(built);
-                            metadataGraph.invalidate(namespaceId);
-                            return new IdempotencyGuard.CreateResult<>(built, namespaceId);
-                          },
-                          (ns) -> namespaceRepo.metaForSafe(ns.getResourceId()),
-                          idempotencyStore,
-                          tsNow,
-                          idempotencyTtlSeconds(),
-                          this::correlationId,
-                          Namespace::parseFrom,
-                          rec -> namespaceRepo.getById(rec.getResourceId()).isPresent());
+                                    namespaceRepo.create(built);
+                                    metadataGraph.invalidate(namespaceId);
+                                    return new IdempotencyGuard.CreateResult<>(built, namespaceId);
+                                  },
+                                  (ns) -> namespaceRepo.metaForSafe(ns.getResourceId()),
+                                  idempotencyStore,
+                                  tsNow,
+                                  idempotencyTtlSeconds(),
+                                  this::correlationId,
+                                  Namespace::parseFrom,
+                                  rec -> namespaceRepo.getById(rec.getResourceId()).isPresent()));
 
                   return CreateNamespaceResponse.newBuilder()
                       .setNamespace(namespaceProto.body)
@@ -464,15 +458,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         continue;
       }
 
-      String uuid =
-          deterministicUuid(
-              accountId, "namespace", catalogId.getId() + "/" + String.join(PATH_DELIM, chain));
-      var rid =
-          ResourceId.newBuilder()
-              .setAccountId(accountId)
-              .setId(uuid)
-              .setKind(ResourceKind.RK_NAMESPACE)
-              .build();
+      var rid = randomResourceId(accountId, ResourceKind.RK_NAMESPACE);
 
       var parentList = chain.size() > 1 ? chain.subList(0, chain.size() - 1) : List.<String>of();
       var display = chain.get(chain.size() - 1);

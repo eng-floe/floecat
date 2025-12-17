@@ -149,17 +149,24 @@ LOAD aws;
 INSTALL iceberg;
 LOAD iceberg;
 
+CREATE OR REPLACE SECRET floe_secret (
+  TYPE s3,
+  KEY_ID '<access-key>',
+  SECRET '<secret-key>',
+  SCOPE 's3://<bucket>/',
+  REGION '<AWS region>'
+);
+
 ATTACH 'analytics' AS iceberg_floecat
   (TYPE iceberg,
    ENDPOINT 'http://localhost:9200/',
-   AUTHORIZATION_TYPE none);
+   AUTHORIZATION_TYPE none,
+   ACCESS_DELEGATION_MODE 'none');
 
-CREATE TABLE iceberg_floecat.sales.quark_events (event_id INTEGER);
-INSERT INTO iceberg_floecat.sales.quark_events VALUES (1), (2), (3), (4);
-SELECT * FROM iceberg_floecat.sales.quark_events;
+CREATE TABLE iceberg_floecat.core.quark_events (event_id INTEGER);
+INSERT INTO iceberg_floecat.core.quark_events VALUES (1), (2), (3), (4);
+SELECT * FROM iceberg_floecat.core.quark_events;
 ```
-
-Ensure `application.properties` provides `floecat.gateway.default-prefix`, storage location, region, and credentials. The gateway injects matching `write.metadata.path`/credentials into load responses so DuckDB reads/writes manifests to the same bucket.
 
 ### Trino
 

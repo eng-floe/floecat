@@ -14,7 +14,6 @@ import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -34,7 +33,6 @@ import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -204,18 +202,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
                   var fingerprint =
                       canonicalFingerprint(spec.toBuilder().setDisplayName(normName).build());
-                  var tableUuid =
-                      deterministicUuid(
-                          accountId,
-                          "table",
-                          Base64.getUrlEncoder().withoutPadding().encodeToString(fingerprint));
-
-                  var tableResourceId =
-                      ResourceId.newBuilder()
-                          .setAccountId(accountId)
-                          .setId(tableUuid)
-                          .setKind(ResourceKind.RK_TABLE)
-                          .build();
+                  var tableResourceId = randomResourceId(accountId, ResourceKind.RK_TABLE);
 
                   var table =
                       Table.newBuilder()
@@ -251,23 +238,26 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   }
 
                   var result =
-                      MutationOps.createProto(
-                          accountId,
-                          "CreateTable",
-                          idempotencyKey,
-                          () -> fingerprint,
-                          () -> {
-                            tableRepo.create(table);
-                            metadataGraph.invalidate(tableResourceId);
-                            return new IdempotencyGuard.CreateResult<>(table, tableResourceId);
-                          },
-                          t -> tableRepo.metaForSafe(t.getResourceId()),
-                          idempotencyStore,
-                          tsNow,
-                          idempotencyTtlSeconds(),
-                          this::correlationId,
-                          Table::parseFrom,
-                          rec -> tableRepo.getById(rec.getResourceId()).isPresent());
+                      runIdempotentCreate(
+                          () ->
+                              MutationOps.createProto(
+                                  accountId,
+                                  "CreateTable",
+                                  idempotencyKey,
+                                  () -> fingerprint,
+                                  () -> {
+                                    tableRepo.create(table);
+                                    metadataGraph.invalidate(tableResourceId);
+                                    return new IdempotencyGuard.CreateResult<>(
+                                        table, tableResourceId);
+                                  },
+                                  t -> tableRepo.metaForSafe(t.getResourceId()),
+                                  idempotencyStore,
+                                  tsNow,
+                                  idempotencyTtlSeconds(),
+                                  this::correlationId,
+                                  Table::parseFrom,
+                                  rec -> tableRepo.getById(rec.getResourceId()).isPresent()));
 
                   return CreateTableResponse.newBuilder()
                       .setTable(result.body)

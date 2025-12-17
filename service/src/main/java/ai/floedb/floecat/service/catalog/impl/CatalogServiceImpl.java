@@ -13,7 +13,6 @@ import ai.floedb.floecat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.floecat.catalog.rpc.ListCatalogsResponse;
 import ai.floedb.floecat.catalog.rpc.UpdateCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateCatalogResponse;
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -31,7 +30,6 @@ import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -146,18 +144,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
                   var fingerprint = canonicalFingerprint(spec);
-                  var catalogUuid =
-                      deterministicUuid(
-                          accountId,
-                          "catalog",
-                          Base64.getUrlEncoder().withoutPadding().encodeToString(fingerprint));
-
-                  var catalogId =
-                      ResourceId.newBuilder()
-                          .setAccountId(accountId)
-                          .setId(catalogUuid)
-                          .setKind(ResourceKind.RK_CATALOG)
-                          .build();
+                  var catalogId = randomResourceId(accountId, ResourceKind.RK_CATALOG);
 
                   var built =
                       Catalog.newBuilder()
@@ -186,23 +173,25 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   }
 
                   var result =
-                      MutationOps.createProto(
-                          accountId,
-                          "CreateCatalog",
-                          idempotencyKey,
-                          () -> fingerprint,
-                          () -> {
-                            catalogRepo.create(built);
-                            metadataGraph.invalidate(catalogId);
-                            return new IdempotencyGuard.CreateResult<>(built, catalogId);
-                          },
-                          c -> catalogRepo.metaForSafe(c.getResourceId()),
-                          idempotencyStore,
-                          tsNow,
-                          idempotencyTtlSeconds(),
-                          this::correlationId,
-                          Catalog::parseFrom,
-                          rec -> catalogRepo.getById(rec.getResourceId()).isPresent());
+                      runIdempotentCreate(
+                          () ->
+                              MutationOps.createProto(
+                                  accountId,
+                                  "CreateCatalog",
+                                  idempotencyKey,
+                                  () -> fingerprint,
+                                  () -> {
+                                    catalogRepo.create(built);
+                                    metadataGraph.invalidate(catalogId);
+                                    return new IdempotencyGuard.CreateResult<>(built, catalogId);
+                                  },
+                                  c -> catalogRepo.metaForSafe(c.getResourceId()),
+                                  idempotencyStore,
+                                  tsNow,
+                                  idempotencyTtlSeconds(),
+                                  this::correlationId,
+                                  Catalog::parseFrom,
+                                  rec -> catalogRepo.getById(rec.getResourceId()).isPresent()));
 
                   return CreateCatalogResponse.newBuilder()
                       .setCatalog(result.body)

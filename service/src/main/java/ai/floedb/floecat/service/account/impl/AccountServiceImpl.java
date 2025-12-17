@@ -15,6 +15,7 @@ import ai.floedb.floecat.account.rpc.UpdateAccountRequest;
 import ai.floedb.floecat.account.rpc.UpdateAccountResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.common.AccountIds;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -30,7 +31,6 @@ import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -137,12 +137,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
 
                   final byte[] fingerprint = canonicalFingerprint(spec);
 
-                  final String accountUuid =
-                      deterministicUuid(
-                          accountId,
-                          "account",
-                          Base64.getUrlEncoder().withoutPadding().encodeToString(fingerprint));
-
+                  final String accountUuid = AccountIds.deterministicAccountId(normName);
                   final var resourceId =
                       ResourceId.newBuilder()
                           .setAccountId(accountId)
@@ -178,22 +173,25 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   }
 
                   var result =
-                      MutationOps.createProto(
-                          accountId,
-                          "CreateAccount",
-                          idempotencyKey,
-                          () -> fingerprint,
-                          () -> {
-                            accountRepo.create(desiredAccount);
-                            return new IdempotencyGuard.CreateResult<>(desiredAccount, resourceId);
-                          },
-                          (t) -> accountRepo.metaFor(t.getResourceId()),
-                          idempotencyStore,
-                          tsNow,
-                          idempotencyTtlSeconds(),
-                          this::correlationId,
-                          Account::parseFrom,
-                          rec -> accountRepo.getById(rec.getResourceId()).isPresent());
+                      runIdempotentCreate(
+                          () ->
+                              MutationOps.createProto(
+                                  accountId,
+                                  "CreateAccount",
+                                  idempotencyKey,
+                                  () -> fingerprint,
+                                  () -> {
+                                    accountRepo.create(desiredAccount);
+                                    return new IdempotencyGuard.CreateResult<>(
+                                        desiredAccount, resourceId);
+                                  },
+                                  (t) -> accountRepo.metaFor(t.getResourceId()),
+                                  idempotencyStore,
+                                  tsNow,
+                                  idempotencyTtlSeconds(),
+                                  this::correlationId,
+                                  Account::parseFrom,
+                                  rec -> accountRepo.getById(rec.getResourceId()).isPresent()));
 
                   return CreateAccountResponse.newBuilder()
                       .setAccount(result.body)

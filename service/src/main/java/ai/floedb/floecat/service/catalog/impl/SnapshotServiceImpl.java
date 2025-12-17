@@ -1,4 +1,4 @@
-package ai.floedb.floecat.service.systemcatalog.impl;
+package ai.floedb.floecat.service.catalog.impl;
 
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotResponse;
@@ -264,25 +264,28 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   }
 
                   var result =
-                      MutationOps.createProto(
-                          accountId,
-                          "CreateSnapshot",
-                          idempotencyKey,
-                          () -> fingerprint,
-                          () -> {
-                            snapshotRepo.create(snap);
-                            return new IdempotencyGuard.CreateResult<>(snap, snap.getTableId());
-                          },
-                          s -> snapshotRepo.metaForSafe(s.getTableId(), s.getSnapshotId()),
-                          idempotencyStore,
-                          tsNow,
-                          idempotencyTtlSeconds(),
-                          this::correlationId,
-                          Snapshot::parseFrom,
-                          rec ->
-                              snapshotRepo
-                                  .getById(rec.getResourceId(), snap.getSnapshotId())
-                                  .isPresent());
+                      runIdempotentCreate(
+                          () ->
+                              MutationOps.createProto(
+                                  accountId,
+                                  "CreateSnapshot",
+                                  idempotencyKey,
+                                  () -> fingerprint,
+                                  () -> {
+                                    snapshotRepo.create(snap);
+                                    return new IdempotencyGuard.CreateResult<>(
+                                        snap, snap.getTableId());
+                                  },
+                                  s -> snapshotRepo.metaForSafe(s.getTableId(), s.getSnapshotId()),
+                                  idempotencyStore,
+                                  tsNow,
+                                  idempotencyTtlSeconds(),
+                                  this::correlationId,
+                                  Snapshot::parseFrom,
+                                  rec ->
+                                      snapshotRepo
+                                          .getById(rec.getResourceId(), snap.getSnapshotId())
+                                          .isPresent()));
 
                   return CreateSnapshotResponse.newBuilder()
                       .setSnapshot(result.body)

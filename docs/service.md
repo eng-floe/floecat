@@ -51,14 +51,14 @@ query lifecycle / scan bundle logic.
 
 ## Public API / Surface Area
 Each gRPC implementation derives from `BaseServiceImpl`, gaining retry semantics, error mapping, and
-helpers like `deterministicUuid`. Highlights:
+helpers like `randomResourceId` (UUIDv7). Highlights:
 
 - **CatalogServiceImpl** – Enforces `catalog.read`/`catalog.write` permissions, canonicalises names,
   uses `IdempotencyGuard` for Create, and ensures namespace cascading checks during Delete.
 - **NamespaceServiceImpl** – Handles hierarchical selectors, supports recursive listing, and ensures
   `require_empty` semantics on deletion by inspecting repository counts.
-- **TableServiceImpl** – Validates `UpstreamRef`, ensures deterministic IDs derived from canonical
-  specs, supports partial updates via `FieldMask`, and coordinates snapshot/statistics purging.
+- **TableServiceImpl** – Validates `UpstreamRef`, enforces unique names before writing, supports
+  partial updates via `FieldMask`, and coordinates snapshot/statistics purging.
 - **ViewServiceImpl** – Stores SQL definitions and references to base tables.
 - **SnapshotServiceImpl** – Binds snapshots to tables, ensuring parent-child relationships remain
   intact.
@@ -162,10 +162,10 @@ Extension points:
   additional connector metadata via the `FetchScanBundle` RPC / `ScanBundleService`.
 
 ## Examples & Scenarios
-- **Create Catalog** – `CatalogServiceImpl.createCatalog` canonicalises `display_name`, generates a
-  deterministic UUID from the fingerprint, reserves `/accounts/{account}/catalogs/by-name/{name}` and
-  `/by-id/{uuid}` pointer keys, writes the `catalog.pb` blob, and returns `MutationMeta`. If the
-  caller supplies an `IdempotencyKey`, the repository short-circuits duplicates.
+- **Create Catalog** – `CatalogServiceImpl.createCatalog` canonicalises `display_name`, allocates a
+  UUIDv7 identifier, reserves `/accounts/{account}/catalogs/by-name/{name}` and `/by-id/{uuid}`
+  pointer keys, writes the `catalog.pb` blob, and returns `MutationMeta`. If the caller supplies an
+  `IdempotencyKey`, the repository short-circuits duplicates.
 - **Delete Namespace** – Namespace deletions with `require_empty=true` check child counts via
   `NamespaceRepository.countChildren`. If tables exist, the service raises `MC_CONFLICT.namespace.not_empty`.
 - **Query lease renewal** – Clients call `QueryService.RenewQuery` before `expires_at`; the store extends
