@@ -114,12 +114,13 @@ AWS_STORE_PROPS := \
 	-Dfloecat.kv.ttl-enabled=true \
 	-Dfloecat.blob=s3 \
 	-Dfloecat.blob.s3.bucket=$(LOCALSTACK_BUCKET) \
-	-Daws.region=$(LOCALSTACK_REGION) \
-	-Daws.accessKeyId=$(LOCALSTACK_ACCESS_KEY) \
-	-Daws.secretAccessKey=$(LOCALSTACK_SECRET_KEY) \
-	-Daws.dynamodb.endpoint-override=$(LOCALSTACK_ENDPOINT) \
-	-Daws.s3.endpoint-override=$(LOCALSTACK_ENDPOINT) \
-	-Daws.s3.force-path-style=true \
+	-Dfloecat.fileio.override.io-impl=org.apache.iceberg.aws.s3.S3FileIO \
+	-Dfloecat.fileio.override.s3.endpoint=$(LOCALSTACK_ENDPOINT) \
+	-Dfloecat.fileio.override.s3.region=$(LOCALSTACK_REGION) \
+	-Dfloecat.fileio.override.s3.access-key-id=$(LOCALSTACK_ACCESS_KEY) \
+	-Dfloecat.fileio.override.s3.secret-access-key=$(LOCALSTACK_SECRET_KEY) \
+	-Dfloecat.fileio.override.s3.path-style-access=true \
+	-Dfloecat.fileio.override.aws.dynamodb.endpoint-override=$(LOCALSTACK_ENDPOINT) \
 	-Dfloecat.fixtures.use-aws-s3=true \
 	-Daws.requestChecksumCalculation=when_required \
 	-Daws.responseChecksumValidation=when_required
@@ -156,7 +157,7 @@ test: $(PROTO_JAR)
 	$(MVN) $(MVN_TESTALL) install -N
 	@echo "==> [TEST] service + REST gateway + client-cli (unit + IT)"
 	$(MVN) $(MVN_TESTALL) \
-	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	  -pl service,protocol-gateway/iceberg-rest,client-cli  -am \
 	  verify
 
 .PHONY: test-aws
@@ -164,6 +165,10 @@ test-aws: $(PROTO_JAR) localstack-up
 	@echo "==> [BUILD] installing parent POM to local repo"
 	$(MVN) $(MVN_TESTALL) install -N
 	@echo "==> [TEST] full suite (service + REST + CLI) w/ AWS storage (LocalStack)"
+	AWS_REGION=$(LOCALSTACK_REGION) \
+	AWS_DEFAULT_REGION=$(LOCALSTACK_REGION) \
+	AWS_ACCESS_KEY_ID=$(LOCALSTACK_ACCESS_KEY) \
+	AWS_SECRET_ACCESS_KEY=$(LOCALSTACK_SECRET_KEY) \
 	AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED \
 	AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED \
 	$(MVN) $(MVN_TESTALL) $(AWS_STORE_PROPS) \

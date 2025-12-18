@@ -9,6 +9,7 @@ jobs:
   build-test:
     name: ci-build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     concurrency:
       group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
       cancel-in-progress: true
@@ -34,8 +35,12 @@ jobs:
       - name: Build
         run: make build
 
-      - name: Verify
-        run: make verify
+      - name: Test (LocalStack)
+        run: make test-aws
+
+      - name: Stop LocalStack
+        if: always()
+        run: make localstack-down
 
       - name: Trino connector tests
         run: mvn -Pwith-trino -pl connectors/clients/trino -am test
