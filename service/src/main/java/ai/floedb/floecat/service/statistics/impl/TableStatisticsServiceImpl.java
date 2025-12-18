@@ -310,29 +310,34 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                   }
 
                   var result =
-                      MutationOps.createProto(
-                          accountId,
-                          "PutTableStats",
-                          idempotencyKey,
-                          () -> fingerprint,
-                          () -> {
-                            stats.putTableStats(
-                                request.getTableId(), request.getSnapshotId(), request.getStats());
-                            return new IdempotencyGuard.CreateResult<>(
-                                request.getStats(), request.getTableId());
-                          },
-                          ignored ->
-                              stats.metaForTableStats(
-                                  request.getTableId(), request.getSnapshotId(), tsNow),
-                          idempotencyStore,
-                          tsNow,
-                          idempotencyTtlSeconds(),
-                          this::correlationId,
-                          TableStats::parseFrom,
-                          rec ->
-                              stats
-                                  .getTableStats(request.getTableId(), request.getSnapshotId())
-                                  .isPresent());
+                      runIdempotentCreate(
+                          () ->
+                              MutationOps.createProto(
+                                  accountId,
+                                  "PutTableStats",
+                                  idempotencyKey,
+                                  () -> fingerprint,
+                                  () -> {
+                                    stats.putTableStats(
+                                        request.getTableId(),
+                                        request.getSnapshotId(),
+                                        request.getStats());
+                                    return new IdempotencyGuard.CreateResult<>(
+                                        request.getStats(), request.getTableId());
+                                  },
+                                  ignored ->
+                                      stats.metaForTableStats(
+                                          request.getTableId(), request.getSnapshotId(), tsNow),
+                                  idempotencyStore,
+                                  tsNow,
+                                  idempotencyTtlSeconds(),
+                                  this::correlationId,
+                                  TableStats::parseFrom,
+                                  rec ->
+                                      stats
+                                          .getTableStats(
+                                              request.getTableId(), request.getSnapshotId())
+                                          .isPresent()));
 
                   return PutTableStatsResponse.newBuilder()
                       .setStats(request.getStats())
@@ -490,26 +495,29 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
         continue;
       }
 
-      MutationOps.createProto(
-          accountId,
-          "PutColumnStats",
-          next.idempotencyKey(),
-          () -> fingerprint,
-          () -> {
-            stats.putColumnStats(next.tableId(), next.snapshotId(), columnStats);
-            return new IdempotencyGuard.CreateResult<>(columnStats, next.tableId());
-          },
-          cs ->
-              stats.metaForColumnStats(next.tableId(), next.snapshotId(), cs.getColumnId(), tsNow),
-          idempotencyStore,
-          tsNow,
-          idempotencyTtlSeconds(),
-          this::correlationId,
-          ColumnStats::parseFrom,
-          rec ->
-              stats
-                  .getColumnStats(next.tableId(), next.snapshotId(), raw.getColumnId())
-                  .isPresent());
+      runIdempotentCreate(
+          () ->
+              MutationOps.createProto(
+                  accountId,
+                  "PutColumnStats",
+                  next.idempotencyKey(),
+                  () -> fingerprint,
+                  () -> {
+                    stats.putColumnStats(next.tableId(), next.snapshotId(), columnStats);
+                    return new IdempotencyGuard.CreateResult<>(columnStats, next.tableId());
+                  },
+                  cs ->
+                      stats.metaForColumnStats(
+                          next.tableId(), next.snapshotId(), cs.getColumnId(), tsNow),
+                  idempotencyStore,
+                  tsNow,
+                  idempotencyTtlSeconds(),
+                  this::correlationId,
+                  ColumnStats::parseFrom,
+                  rec ->
+                      stats
+                          .getColumnStats(next.tableId(), next.snapshotId(), raw.getColumnId())
+                          .isPresent()));
 
       upserted.incrementAndGet();
     }
@@ -542,27 +550,29 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
         continue;
       }
 
-      MutationOps.createProto(
-          accountId,
-          "PutFileColumnStats",
-          next.idempotencyKey(),
-          () -> fingerprint,
-          () -> {
-            stats.putFileColumnStats(next.tableId(), next.snapshotId(), fileStats);
-            return new IdempotencyGuard.CreateResult<>(fileStats, next.tableId());
-          },
-          fs ->
-              stats.metaForFileColumnStats(
-                  next.tableId(), next.snapshotId(), fs.getFilePath(), tsNow),
-          idempotencyStore,
-          tsNow,
-          idempotencyTtlSeconds(),
-          this::correlationId,
-          FileColumnStats::parseFrom,
-          rec ->
-              stats
-                  .getFileColumnStats(next.tableId(), next.snapshotId(), raw.getFilePath())
-                  .isPresent());
+      runIdempotentCreate(
+          () ->
+              MutationOps.createProto(
+                  accountId,
+                  "PutFileColumnStats",
+                  next.idempotencyKey(),
+                  () -> fingerprint,
+                  () -> {
+                    stats.putFileColumnStats(next.tableId(), next.snapshotId(), fileStats);
+                    return new IdempotencyGuard.CreateResult<>(fileStats, next.tableId());
+                  },
+                  fs ->
+                      stats.metaForFileColumnStats(
+                          next.tableId(), next.snapshotId(), fs.getFilePath(), tsNow),
+                  idempotencyStore,
+                  tsNow,
+                  idempotencyTtlSeconds(),
+                  this::correlationId,
+                  FileColumnStats::parseFrom,
+                  rec ->
+                      stats
+                          .getFileColumnStats(next.tableId(), next.snapshotId(), raw.getFilePath())
+                          .isPresent()));
 
       upserted.incrementAndGet();
     }

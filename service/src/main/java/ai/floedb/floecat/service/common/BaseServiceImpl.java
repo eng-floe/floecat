@@ -16,12 +16,12 @@ import ai.floedb.floecat.storage.errors.StoragePreconditionFailedException;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.smallrye.mutiny.Uni;
 import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.inject.Inject;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.text.Normalizer;
@@ -166,9 +166,27 @@ public abstract class BaseServiceImpl {
     return pctx != null ? pctx.getCorrelationId() : "";
   }
 
-  protected String deterministicUuid(String account, String kind, String key) {
-    var name = (account + ":" + kind + ":" + key).getBytes(StandardCharsets.UTF_8);
-    return UUID.nameUUIDFromBytes(name).toString();
+  protected ResourceId randomResourceId(String account, ResourceKind kind) {
+    return ResourceId.newBuilder().setAccountId(account).setKind(kind).setId(randomUuid()).build();
+  }
+
+  protected String randomUuid() {
+    return UUID.randomUUID().toString();
+  }
+
+  protected <T> MutationOps.OpResult<T> runIdempotentCreate(
+      Supplier<MutationOps.OpResult<T>> supplier) {
+    int attempts = 0;
+    while (true) {
+      try {
+        return supplier.get();
+      } catch (StatusRuntimeException sre) {
+        if (sre.getStatus().getCode() == Status.Code.ABORTED && attempts++ < RETRIES) {
+          continue;
+        }
+        throw sre;
+      }
+    }
   }
 
   protected static String prettyNamespacePath(List<String> parents, String leaf) {

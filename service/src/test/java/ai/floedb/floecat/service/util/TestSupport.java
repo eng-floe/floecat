@@ -14,6 +14,7 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
+import ai.floedb.floecat.service.common.AccountIds;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.BlobStore;
 import ai.floedb.floecat.storage.PointerStore;
@@ -26,7 +27,6 @@ import io.grpc.protobuf.StatusProto;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.UUID;
 
 public final class TestSupport {
   private TestSupport() {}
@@ -46,7 +46,7 @@ public final class TestSupport {
   }
 
   public static ResourceId createAccountId(String tid) {
-    String tidUUID = UUID.nameUUIDFromBytes(("/account:" + tid).getBytes()).toString();
+    String tidUUID = AccountIds.deterministicAccountId("/account:" + tid);
     ResourceId accountId =
         ResourceId.newBuilder()
             .setAccountId(tidUUID)

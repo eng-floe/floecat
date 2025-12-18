@@ -72,21 +72,25 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
 
     blobs.put(uri, rec.toByteArray(), "application/x-protobuf");
 
+    var pendingPointer =
+        Pointer.newBuilder()
+            .setKey(key)
+            .setBlobUri(uri)
+            .setExpiresAt(expiresAt)
+            .setVersion(1L)
+            .build();
+
     for (int i = 0; i < CAS_MAX; i++) {
-      long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
-      var next =
-          Pointer.newBuilder()
-              .setKey(key)
-              .setBlobUri(uri)
-              .setExpiresAt(expiresAt)
-              .setVersion(expected + 1)
-              .build();
-      if (ptr.compareAndSet(key, expected, next)) {
+      if (ptr.compareAndSet(key, 0L, pendingPointer)) {
         return true;
+      }
+
+      if (ptr.get(key).isPresent()) {
+        return false;
       }
     }
 
-    return false;
+    throw new StorageAbortRetryableException("idempotency pointer not yet visible: key=" + key);
   }
 
   @Override

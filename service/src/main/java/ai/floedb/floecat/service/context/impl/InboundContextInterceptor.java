@@ -3,6 +3,7 @@ package ai.floedb.floecat.service.context.impl;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.common.AccountIds;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
@@ -209,7 +210,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
   }
 
   private static PrincipalContext devContext() {
-    var id = UUID.nameUUIDFromBytes("/account:t-0001".getBytes()).toString();
+    var id = AccountIds.deterministicAccountId("/account:t-0001");
     var rid =
         ResourceId.newBuilder().setAccountId(id).setId(id).setKind(ResourceKind.RK_ACCOUNT).build();
     return PrincipalContext.newBuilder()

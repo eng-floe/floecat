@@ -1,6 +1,5 @@
 package ai.floedb.floecat.service.connector.impl;
 
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -56,7 +55,6 @@ import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -194,18 +192,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
                   var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
-                  var connUuid =
-                      deterministicUuid(
-                          accountId,
-                          "connector",
-                          Base64.getUrlEncoder().withoutPadding().encodeToString(fp));
-
-                  var connectorId =
-                      ResourceId.newBuilder()
-                          .setAccountId(accountId)
-                          .setId(connUuid)
-                          .setKind(ResourceKind.RK_CONNECTOR)
-                          .build();
+                  var connectorId = randomResourceId(accountId, ResourceKind.RK_CONNECTOR);
 
                   var spec = request.getSpec();
                   var display = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
@@ -321,7 +308,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   var connector = builder.build();
 
                   if (idempotencyKey == null) {
-                    var existing = connectorRepo.getById(connectorId);
+                    var existing = connectorRepo.getByName(accountId, display);
                     if (existing.isPresent()) {
                       var meta = connectorRepo.metaFor(existing.get().getResourceId());
                       return CreateConnectorResponse.newBuilder()
@@ -338,22 +325,25 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   }
 
                   var result =
-                      MutationOps.createProto(
-                          accountId,
-                          "CreateConnector",
-                          idempotencyKey,
-                          () -> fp,
-                          () -> {
-                            connectorRepo.create(connector);
-                            return new IdempotencyGuard.CreateResult<>(connector, connectorId);
-                          },
-                          c -> connectorRepo.metaFor(c.getResourceId()),
-                          idempotencyStore,
-                          tsNow,
-                          idempotencyTtlSeconds(),
-                          this::correlationId,
-                          Connector::parseFrom,
-                          rec -> connectorRepo.getById(rec.getResourceId()).isPresent());
+                      runIdempotentCreate(
+                          () ->
+                              MutationOps.createProto(
+                                  accountId,
+                                  "CreateConnector",
+                                  idempotencyKey,
+                                  () -> fp,
+                                  () -> {
+                                    connectorRepo.create(connector);
+                                    return new IdempotencyGuard.CreateResult<>(
+                                        connector, connectorId);
+                                  },
+                                  c -> connectorRepo.metaFor(c.getResourceId()),
+                                  idempotencyStore,
+                                  tsNow,
+                                  idempotencyTtlSeconds(),
+                                  this::correlationId,
+                                  Connector::parseFrom,
+                                  rec -> connectorRepo.getById(rec.getResourceId()).isPresent()));
 
                   return CreateConnectorResponse.newBuilder()
                       .setConnector(result.body)
