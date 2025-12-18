@@ -1,10 +1,10 @@
 package ai.floedb.floecat.extensions.floedb;
 
-import static ai.floedb.floecat.extensions.utils.FloePayloads.*;
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.*;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.extensions.floedb.proto.*;
-import ai.floedb.floecat.extensions.utils.PayloadDescriptor;
+import ai.floedb.floecat.extensions.floedb.utils.PayloadDescriptor;
 import ai.floedb.floecat.query.rpc.*;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;

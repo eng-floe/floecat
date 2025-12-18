@@ -1,9 +1,9 @@
 package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
-import static ai.floedb.floecat.extensions.utils.FloePayloads.TYPE;
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.TYPE;
 
 import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
-import ai.floedb.floecat.extensions.utils.ScannerUtils;
+import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;

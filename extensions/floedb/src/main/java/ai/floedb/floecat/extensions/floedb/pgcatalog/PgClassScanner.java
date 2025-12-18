@@ -1,10 +1,10 @@
 package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
-import static ai.floedb.floecat.extensions.utils.FloePayloads.RELATION;
-import static ai.floedb.floecat.extensions.utils.ScannerUtils.col;
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.RELATION;
+import static ai.floedb.floecat.extensions.floedb.utils.ScannerUtils.col;
 
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
-import ai.floedb.floecat.extensions.utils.ScannerUtils;
+import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;

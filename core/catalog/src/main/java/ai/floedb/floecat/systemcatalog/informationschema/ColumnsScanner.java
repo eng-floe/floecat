@@ -69,21 +69,17 @@ public final class ColumnsScanner implements SystemObjectScanner {
   public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx) {
     // Small per-scan caches (cheap, bounded)
     Map<ResourceId, String> catalogNames = new HashMap<>();
-    Map<ResourceId, Map<String, String>> columnTypesCache = new HashMap<>();
 
     return ctx.listNamespaces().stream()
         .flatMap(ns -> ctx.listRelations(ns.id()).stream())
-        .flatMap(node -> scanRelation(ctx, node, catalogNames, columnTypesCache));
+        .flatMap(node -> scanRelation(ctx, node, catalogNames));
   }
 
   private Stream<SystemObjectRow> scanRelation(
-      SystemObjectScanContext ctx,
-      GraphNode node,
-      Map<ResourceId, String> catalogNames,
-      Map<ResourceId, Map<String, String>> columnTypesCache) {
+      SystemObjectScanContext ctx, GraphNode node, Map<ResourceId, String> catalogNames) {
 
     if (node instanceof TableNode table) {
-      return scanTable(ctx, table, catalogNames, columnTypesCache);
+      return scanTable(ctx, table, catalogNames);
     }
 
     if (node instanceof ViewNode view) {
@@ -94,10 +90,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
   }
 
   private Stream<SystemObjectRow> scanTable(
-      SystemObjectScanContext ctx,
-      TableNode table,
-      Map<ResourceId, String> catalogNames,
-      Map<ResourceId, Map<String, String>> columnTypesCache) {
+      SystemObjectScanContext ctx, TableNode table, Map<ResourceId, String> catalogNames) {
 
     NamespaceNode namespace = (NamespaceNode) ctx.resolve(table.namespaceId());
     ResourceId catalogId = namespace.catalogId();
@@ -108,37 +101,36 @@ public final class ColumnsScanner implements SystemObjectScanner {
 
     String schemaName = schemaName(namespace);
 
-    Map<String, String> columnTypes =
-        columnTypesCache.computeIfAbsent(table.id(), id -> ctx.graph().tableColumnTypes(id));
+    List<SchemaColumn> columns = ctx.graph().tableSchema(table.id());
 
     if (table instanceof UserTableNode ut) {
-      return ut.fieldIdByPath().entrySet().stream()
-          .sorted(Comparator.comparingInt(Map.Entry::getValue))
+      return columns.stream()
+          .sorted(Comparator.comparingInt(SchemaColumn::getFieldId))
           .map(
-              entry ->
+              col ->
                   new SystemObjectRow(
                       new Object[] {
                         catalogName,
                         schemaName,
                         table.displayName(),
-                        columnName(entry.getKey()),
-                        columnTypes.getOrDefault(entry.getKey(), ""),
-                        entry.getValue()
+                        col.getName(),
+                        blankToNull(col.getLogicalType()),
+                        col.getFieldId()
                       }));
     }
 
     // System tables (no field ids) – preserve declared order
-    List<SystemObjectRow> rows = new ArrayList<>(columnTypes.size());
+    List<SystemObjectRow> rows = new ArrayList<>(columns.size());
     int ordinal = 1;
-    for (Map.Entry<String, String> entry : columnTypes.entrySet()) {
+    for (SchemaColumn col : columns) {
       rows.add(
           new SystemObjectRow(
               new Object[] {
                 catalogName,
                 schemaName,
                 table.displayName(),
-                columnName(entry.getKey()),
-                entry.getValue(),
+                col.getName(),
+                blankToNull(col.getLogicalType()),
                 ordinal++
               }));
     }
@@ -183,11 +175,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
     return String.join(".", segments);
   }
 
-  private static String columnName(String path) {
-    if (path == null || path.isBlank()) {
-      return "";
-    }
-    int idx = path.lastIndexOf('.');
-    return idx < 0 ? path : path.substring(idx + 1);
+  private static String blankToNull(String value) {
+    return value == null || value.isBlank() ? null : value;
   }
 }

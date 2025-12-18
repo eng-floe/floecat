@@ -8,7 +8,9 @@ import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import com.google.protobuf.Timestamp;
 import java.util.ArrayList;
@@ -23,7 +25,8 @@ public class TestCatalogOverlay implements CatalogOverlay {
   private final Map<ResourceId, GraphNode> nodes = new HashMap<>();
   private final Map<ResourceId, List<GraphNode>> relationsByNamespace = new HashMap<>();
   private final Map<ResourceId, List<FunctionNode>> functionsByNamespace = new HashMap<>();
-  private final Map<ResourceId, Map<String, String>> columnTypes = new HashMap<>();
+  private final Map<ResourceId, List<SchemaColumn>> tableSchemas = new HashMap<>();
+  private final Map<String, TypeNode> typesByQName = new HashMap<>();
 
   // ------------------------
   // Test helpers
@@ -46,9 +49,19 @@ public class TestCatalogOverlay implements CatalogOverlay {
     return this;
   }
 
-  public TestCatalogOverlay setColumnTypes(ResourceId tableId, Map<String, String> types) {
-    columnTypes.put(tableId, types);
+  public TestCatalogOverlay addType(ResourceId namespaceId, TypeNode type) {
+    addNode(type);
+    typesByQName.put(namespaceId.getId() + "." + type.displayName(), type);
     return this;
+  }
+
+  public TestCatalogOverlay setTableSchema(ResourceId tableId, List<SchemaColumn> schema) {
+    tableSchemas.put(tableId, List.copyOf(schema));
+    return this;
+  }
+
+  public Optional<TypeNode> findType(String namespace, String name) {
+    return Optional.ofNullable(typesByQName.get(namespace + "." + name));
   }
 
   // ------------------------
@@ -87,17 +100,31 @@ public class TestCatalogOverlay implements CatalogOverlay {
   }
 
   @Override
-  public Map<String, String> tableColumnTypes(ResourceId tableId) {
-    return columnTypes.getOrDefault(tableId, Map.of());
-  }
+  public List<SchemaColumn> tableSchema(ResourceId tableId) {
 
-  private static UnsupportedOperationException unsupported() {
-    return new UnsupportedOperationException("Not used in this test");
+    // 1. Explicit test schema (highest priority)
+    List<SchemaColumn> explicit = tableSchemas.get(tableId);
+    if (explicit != null) {
+      return explicit;
+    }
+
+    // 2. System table schema
+    GraphNode node = nodes.get(tableId);
+    if (node instanceof SystemTableNode system) {
+      return system.columns();
+    }
+
+    // 3. Nothing defined
+    return List.of();
   }
 
   @Override
   public List<GraphNode> listRelations(ResourceId catalogId) {
     throw unsupported();
+  }
+
+  private static UnsupportedOperationException unsupported() {
+    return new UnsupportedOperationException("Not used in this test");
   }
 
   @Override

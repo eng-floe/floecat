@@ -1,4 +1,4 @@
-package ai.floedb.floecat.extensions.utils;
+package ai.floedb.floecat.extensions.floedb.utils;
 
 @FunctionalInterface
 public interface ThrowingFunction<I, O> {

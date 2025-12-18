@@ -4,6 +4,7 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.*;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import java.time.Instant;
 import java.util.*;
 
@@ -96,7 +97,42 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
             Map.of());
 
     overlay.addRelation(ns.id(), table);
-    overlay.setColumnTypes(tableId, types);
+    overlay.setTableSchema(tableId, buildSchema(fieldIds, types));
     return table;
+  }
+
+  private static List<SchemaColumn> buildSchema(
+      Map<String, Integer> fieldIds, Map<String, String> types) {
+
+    List<SchemaColumn> schema = new ArrayList<>();
+
+    // Sort by field id (Iceberg / Delta semantics)
+    fieldIds.entrySet().stream()
+        .sorted(Map.Entry.comparingByValue())
+        .forEach(
+            e -> {
+              String name = e.getKey();
+              Integer fieldId = e.getValue();
+              String type = types.get(name);
+
+              SchemaColumn.Builder b =
+                  SchemaColumn.newBuilder().setName(simpleName(name)).setFieldId(fieldId);
+
+              if (type != null) {
+                b.setLogicalType(type);
+              }
+
+              // default nullability for tests
+              b.setNullable(true);
+
+              schema.add(b.build());
+            });
+
+    return schema;
+  }
+
+  private static String simpleName(String path) {
+    int idx = path.lastIndexOf('.');
+    return idx < 0 ? path : path.substring(idx + 1);
   }
 }

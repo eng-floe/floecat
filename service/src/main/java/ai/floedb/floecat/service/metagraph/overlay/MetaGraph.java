@@ -23,7 +23,6 @@ import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -499,35 +498,23 @@ public final class MetaGraph implements CatalogOverlay {
     throw GrpcErrors.notFound(correlationId, notFoundMessageKey, Map.of("id", ref.toString()));
   }
 
-  /**
-   * Gets the column types for a table.
-   *
-   * @param tableId the table resource ID
-   * @return map of column names to their logical types
-   */
   @Override
-  public Map<String, String> tableColumnTypes(ResourceId tableId) {
+  public List<SchemaColumn> tableSchema(ResourceId tableId) {
     return resolve(tableId)
         .filter(TableNode.class::isInstance)
         .map(TableNode.class::cast)
-        .map(this::columnTypesFor)
-        .orElse(Map.of());
+        .map(this::schemaForTable)
+        .orElse(List.of());
   }
 
-  /**
-   * Extracts column type mappings from a table node.
-   *
-   * @param table the table node to extract types from
-   * @return map of column paths to logical types
-   */
-  private Map<String, String> columnTypesFor(TableNode table) {
+  private List<SchemaColumn> schemaForTable(TableNode table) {
     if (table instanceof UserTableNode ut) {
-      return toTypeMap(schemaMapper.map(ut).getColumnsList());
+      return schemaMapper.map(ut).getColumnsList();
     }
     if (table instanceof SystemTableNode st) {
-      return toTypeMap(st.columns());
+      return st.columns();
     }
-    return Map.of();
+    return List.of();
   }
 
   /**
@@ -542,23 +529,5 @@ public final class MetaGraph implements CatalogOverlay {
             .map(rel -> new CatalogOverlay.QualifiedRelation(rel.name(), rel.resourceId()))
             .toList();
     return new ResolveResult(relations, delegate.totalSize(), delegate.nextToken());
-  }
-
-  /**
-   * Converts a list of schema columns to a type map.
-   *
-   * @param columns the schema columns to convert
-   * @return map of column paths to logical types
-   */
-  private Map<String, String> toTypeMap(List<SchemaColumn> columns) {
-    Map<String, String> types = new LinkedHashMap<>(columns.size());
-    for (SchemaColumn column : columns) {
-      String path = column.getPhysicalPath();
-      if (path == null || path.isBlank()) {
-        path = column.getName();
-      }
-      types.put(path, column.getLogicalType());
-    }
-    return types;
   }
 }

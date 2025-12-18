@@ -1,4 +1,4 @@
-package ai.floedb.floecat.extensions.utils;
+package ai.floedb.floecat.extensions.floedb.utils;
 
 import ai.floedb.floecat.extensions.floedb.proto.FloeAggregateSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeCastSpecific;

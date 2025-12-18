@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.*;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -37,7 +38,7 @@ class ColumnsScannerTest {
 
     SystemObjectScanContext ctx = builder.build();
 
-    var rows = new ColumnsScanner().scan(ctx).map(r -> List.of(r.values())).toList();
+    var rows = new ColumnsScanner().scan(ctx).map(r -> Arrays.asList(r.values())).toList();
 
     assertThat(rows)
         .containsExactly(
@@ -64,7 +65,7 @@ class ColumnsScannerTest {
 
     SystemObjectScanContext ctx = builder.build();
 
-    var rows = new ColumnsScanner().scan(ctx).map(r -> List.of(r.values())).toList();
+    var rows = new ColumnsScanner().scan(ctx).map(r -> Arrays.asList(r.values())).toList();
 
     // Expect two rows, one for each column
     assertThat(rows).hasSize(2);

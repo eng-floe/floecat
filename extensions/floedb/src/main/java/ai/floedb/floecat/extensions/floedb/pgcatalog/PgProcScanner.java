@@ -1,11 +1,11 @@
 package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
-import static ai.floedb.floecat.extensions.utils.FloePayloads.FUNCTION;
-import static ai.floedb.floecat.extensions.utils.FloePayloads.NAMESPACE;
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.FUNCTION;
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.NAMESPACE;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.extensions.floedb.proto.FloeFunctionSpecific;
-import ai.floedb.floecat.extensions.utils.ScannerUtils;
+import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;

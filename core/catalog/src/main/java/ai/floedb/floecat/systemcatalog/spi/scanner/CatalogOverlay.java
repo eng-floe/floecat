@@ -9,10 +9,10 @@ import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import com.google.protobuf.Timestamp;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -81,7 +81,7 @@ public interface CatalogOverlay {
 
   SchemaResolution schemaFor(String correlationId, ResourceId tableId, SnapshotRef snapshot);
 
-  Map<String, String> tableColumnTypes(ResourceId tableId);
+  List<SchemaColumn> tableSchema(ResourceId tableId);
 
   /**
    * Simplified result returned by the overlay whenever caller requests a paged list of tables or
