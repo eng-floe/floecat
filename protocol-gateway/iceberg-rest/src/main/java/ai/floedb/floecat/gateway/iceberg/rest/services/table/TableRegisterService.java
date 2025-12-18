@@ -54,7 +54,6 @@ public class TableRegisterService {
 
     Map<String, String> ioProperties =
         req.properties() == null ? new LinkedHashMap<>() : new LinkedHashMap<>(req.properties());
-    Map<String, String> sanitizedIoProps = FileIoFactory.filterIoProperties(ioProperties);
     ImportedMetadata importedMetadata;
     try {
       importedMetadata = tableMetadataImportService.importMetadata(metadataLocation, ioProperties);
@@ -69,7 +68,7 @@ public class TableRegisterService {
       spec.setSchemaJson(importedMetadata.schemaJson());
     }
     Map<String, String> mergedProps =
-        mergeImportedProperties(null, importedMetadata, metadataLocation, sanitizedIoProps);
+        mergeImportedProperties(null, importedMetadata, metadataLocation);
     if (!mergedProps.isEmpty()) {
       spec.putAllProperties(mergedProps);
     }
@@ -81,14 +80,16 @@ public class TableRegisterService {
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.ALREADY_EXISTS) {
         if (Boolean.TRUE.equals(req.overwrite())) {
+          Map<String, String> requestIoProps =
+              req.properties() == null ? Map.of() : FileIoFactory.filterIoProperties(req.properties());
           return overwriteRegisteredTable(
               namespaceContext,
               tableName,
               metadataLocation,
               idempotencyKey,
               importedMetadata,
-              sanitizedIoProps,
-              tableSupport);
+              tableSupport,
+              requestIoProps);
         }
         return IcebergErrorResponses.conflict("Table already exists");
       }
@@ -119,7 +120,8 @@ public class TableRegisterService {
       created = ensuredCreated;
     }
 
-    Map<String, String> ioProps = FileIoFactory.filterIoProperties(created.getPropertiesMap());
+    Map<String, String> ioProps =
+        req.properties() == null ? Map.of() : FileIoFactory.filterIoProperties(req.properties());
     LOG.infof(
         "Register table io props namespace=%s.%s props=%s",
         String.join(".", namespaceContext.namespacePath()), tableName, ioProps);
@@ -137,7 +139,7 @@ public class TableRegisterService {
             null,
             idempotencyKey,
             tableSupport,
-            sanitizedIoProps);
+            ioProps);
     tableCommitService.runConnectorSync(
         tableSupport, connectorId, namespaceContext.namespacePath(), tableName);
 
@@ -164,8 +166,8 @@ public class TableRegisterService {
       String metadataLocation,
       String idempotencyKey,
       ImportedMetadata importedMetadata,
-      Map<String, String> sanitizedIoProps,
-      TableGatewaySupport tableSupport) {
+      TableGatewaySupport tableSupport,
+      Map<String, String> requestIoProps) {
     ResourceId tableId =
         tableLifecycleService.resolveTableId(
             namespaceContext.catalogName(), namespaceContext.namespacePath(), tableName);
@@ -185,8 +187,7 @@ public class TableRegisterService {
     }
 
     Map<String, String> props =
-        mergeImportedProperties(
-            existing.getPropertiesMap(), importedMetadata, metadataLocation, sanitizedIoProps);
+        mergeImportedProperties(existing.getPropertiesMap(), importedMetadata, metadataLocation);
     LOG.infof(
         "Register overwrite merged metadata namespace=%s.%s merged=%s imported=%s",
         String.join(".", namespaceContext.namespacePath()),
@@ -245,6 +246,10 @@ public class TableRegisterService {
         existing.hasUpstream() && existing.getUpstream().hasConnectorId()
             ? existing.getUpstream().getConnectorId()
             : null;
+    Map<String, String> ioProps =
+        requestIoProps == null || requestIoProps.isEmpty()
+            ? FileIoFactory.filterIoProperties(updated.getPropertiesMap())
+            : requestIoProps;
     String resolvedLocation =
         tableSupport.resolveTableLocation(
             importedMetadata != null ? importedMetadata.tableLocation() : null, metadataLocation);
@@ -259,11 +264,15 @@ public class TableRegisterService {
               null,
               idempotencyKey,
               tableSupport,
-              sanitizedIoProps);
+              ioProps);
       tableCommitService.runConnectorSync(
           tableSupport, connectorId, namespaceContext.namespacePath(), tableName);
     } else {
-      tableSupport.updateConnectorMetadata(connectorId, metadataLocation);
+      if (ioProps != null && !ioProps.isEmpty()) {
+        tableSupport.updateConnectorMetadata(connectorId, metadataLocation, ioProps);
+      } else {
+        tableSupport.updateConnectorMetadata(connectorId, metadataLocation);
+      }
       String existingUri =
           existing.hasUpstream() && existing.getUpstream().getUri() != null
               ? existing.getUpstream().getUri()
@@ -324,6 +333,8 @@ public class TableRegisterService {
           metadataLocation != null && !metadataLocation.isBlank()
               ? metadataLocation
               : resolvedTableLocation;
+      Map<String, String> connectorFileIoProps =
+          fileIoProps == null ? Map.of() : new LinkedHashMap<>(fileIoProps);
       connectorId =
           tableSupport.createExternalConnector(
               namespaceContext.prefix(),
@@ -335,7 +346,7 @@ public class TableRegisterService {
               metadata,
               resolvedTableLocation,
               idempotencyKey,
-              fileIoProps);
+              connectorFileIoProps);
       upstreamUri = resolvedTableLocation;
     }
     if (connectorId == null || upstreamUri == null || upstreamUri.isBlank()) {
@@ -349,10 +360,7 @@ public class TableRegisterService {
   }
 
   private Map<String, String> mergeImportedProperties(
-      Map<String, String> existing,
-      ImportedMetadata importedMetadata,
-      String metadataLocation,
-      Map<String, String> sanitizedIoProps) {
+      Map<String, String> existing, ImportedMetadata importedMetadata, String metadataLocation) {
     Map<String, String> merged = new LinkedHashMap<>();
     if (existing != null && !existing.isEmpty()) {
       merged.putAll(existing);
@@ -360,16 +368,21 @@ public class TableRegisterService {
     if (importedMetadata != null && importedMetadata.properties() != null) {
       merged.putAll(importedMetadata.properties());
     }
-    if (sanitizedIoProps != null && !sanitizedIoProps.isEmpty()) {
-      merged.putAll(sanitizedIoProps);
-    }
     if (importedMetadata != null
         && importedMetadata.tableLocation() != null
         && !importedMetadata.tableLocation().isBlank()) {
       merged.put("location", importedMetadata.tableLocation());
     }
     MetadataLocationUtil.setMetadataLocation(merged, metadataLocation);
+    removeManagedFileIoProperties(merged);
     return merged;
+  }
+
+  private static void removeManagedFileIoProperties(Map<String, String> target) {
+    if (target == null || target.isEmpty()) {
+      return;
+    }
+    target.keySet().removeIf(FileIoFactory::isFileIoProperty);
   }
 
   private Long propertyLong(Map<String, String> props, String key) {

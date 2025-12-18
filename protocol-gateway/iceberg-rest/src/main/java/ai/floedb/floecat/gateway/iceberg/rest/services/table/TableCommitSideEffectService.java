@@ -13,6 +13,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
+import ai.floedb.floecat.storage.spi.io.RuntimeFileIoOverrides;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -141,8 +142,7 @@ public class TableCommitSideEffectService {
         LOG.infof(
             "Creating external connector namespace=%s table=%s metadata=%s resolvedLocation=%s",
             namespacePath, table, effectiveMetadata, resolvedLocation);
-        Map<String, String> ioProps =
-            FileIoFactory.filterIoProperties(tableRecord.getPropertiesMap());
+        Map<String, String> ioProps = resolveFileIoProps(tableRecord);
         connectorId =
             tableSupport.createExternalConnector(
                 prefix,
@@ -161,7 +161,8 @@ public class TableCommitSideEffectService {
         }
       }
     } else {
-      tableSupport.updateConnectorMetadata(connectorId, effectiveMetadata);
+      tableSupport.updateConnectorMetadata(
+          connectorId, effectiveMetadata, resolveFileIoProps(tableRecord));
       LOG.infof(
           "Updated connector metadata connectorId=%s namespace=%s table=%s metadata=%s",
           connectorId.getId(), namespacePath, table, effectiveMetadata);
@@ -264,6 +265,18 @@ public class TableCommitSideEffectService {
     }
     String existing = props.put(key, value);
     return !value.equals(existing);
+  }
+
+  private Map<String, String> resolveFileIoProps(Table tableRecord) {
+    if (tableRecord == null) {
+      Map<String, String> overrides = new LinkedHashMap<>();
+      RuntimeFileIoOverrides.mergeInto(overrides);
+      return overrides.isEmpty() ? Map.of() : Map.copyOf(overrides);
+    }
+    Map<String, String> ioProps =
+        new LinkedHashMap<>(FileIoFactory.filterIoProperties(tableRecord.getPropertiesMap()));
+    RuntimeFileIoOverrides.mergeInto(ioProps);
+    return ioProps.isEmpty() ? Map.of() : Map.copyOf(ioProps);
   }
 
   private ResourceId resolveConnectorId(Table tableRecord) {

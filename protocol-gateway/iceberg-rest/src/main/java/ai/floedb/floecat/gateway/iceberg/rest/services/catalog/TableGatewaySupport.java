@@ -31,6 +31,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
@@ -152,6 +153,9 @@ public class TableGatewaySupport {
           if ("metadata-location".equals(key)) {
             return;
           }
+          if (FileIoFactory.isFileIoProperty(key)) {
+            return;
+          }
           sanitized.put(key, value);
         });
     return sanitized;
@@ -192,6 +196,11 @@ public class TableGatewaySupport {
   }
 
   public void updateConnectorMetadata(ResourceId connectorId, String metadataLocation) {
+    updateConnectorMetadata(connectorId, metadataLocation, Map.of());
+  }
+
+  public void updateConnectorMetadata(
+      ResourceId connectorId, String metadataLocation, Map<String, String> fileIoProps) {
     if (connectorId == null || metadataLocation == null || metadataLocation.isBlank()) {
       return;
     }
@@ -206,6 +215,14 @@ public class TableGatewaySupport {
       Connector existing = response.getConnector();
       Map<String, String> props = new LinkedHashMap<>(existing.getPropertiesMap());
       props.put("external.metadata-location", metadataLocation);
+      if (fileIoProps != null && !fileIoProps.isEmpty()) {
+        fileIoProps.forEach(
+            (k, v) -> {
+              if (k != null && v != null && !k.isBlank() && !v.isBlank()) {
+                props.put(k, v);
+              }
+            });
+      }
       ConnectorSpec spec = ConnectorSpec.newBuilder().putAllProperties(props).build();
       connectorClient.updateConnector(
           UpdateConnectorRequest.newBuilder()

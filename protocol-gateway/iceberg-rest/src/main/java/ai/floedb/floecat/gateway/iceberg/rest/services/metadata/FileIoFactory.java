@@ -1,6 +1,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
+import ai.floedb.floecat.storage.spi.io.RuntimeFileIoOverrides;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -51,16 +52,25 @@ public final class FileIoFactory {
           if (key == null || value == null) {
             return;
           }
-          for (String prefix : IO_PROP_PREFIXES) {
-            if (key.startsWith(prefix)) {
-              filtered.put(key, value);
-              return;
-            }
-          }
-          if ("io-impl".equals(key)) {
+          if (isFileIoProperty(key)) {
             filtered.put(key, value);
           }
         });
     return filtered;
+  }
+
+  public static boolean isFileIoProperty(String key) {
+    if (key == null || key.isBlank()) {
+      return false;
+    }
+    if ("io-impl".equals(key)) {
+      return true;
+    }
+    for (String prefix : IO_PROP_PREFIXES) {
+      if (key.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
   }
 }

@@ -101,7 +101,7 @@ public class TableUpdatePlanner {
       return UpdatePlan.failure(spec, mask, snapshotError);
     }
     mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
-    mergedProps = preserveFileIoProperties(tableSupplier, mergedProps);
+    mergedProps = stripFileIoProperties(mergedProps);
     if (mergedProps != null) {
       spec.clearProperties().putAllProperties(mergedProps);
       mask.addPaths("properties");
@@ -260,21 +260,14 @@ public class TableUpdatePlanner {
     return RefPropertyUtil.decode(encoded);
   }
 
-  private Map<String, String> preserveFileIoProperties(
-      Supplier<Table> tableSupplier, Map<String, String> mergedProps) {
+  private Map<String, String> stripFileIoProperties(Map<String, String> mergedProps) {
     if (mergedProps == null) {
       return null;
     }
-    Table table = tableSupplier.get();
-    if (table == null || table.getPropertiesMap().isEmpty()) {
+    if (mergedProps.isEmpty()) {
       return mergedProps;
     }
-    Map<String, String> managedProps =
-        FileIoFactory.filterIoProperties(table.getPropertiesMap());
-    if (managedProps.isEmpty()) {
-      return mergedProps;
-    }
-    managedProps.forEach(mergedProps::putIfAbsent);
+    mergedProps.keySet().removeIf(FileIoFactory::isFileIoProperty);
     return mergedProps;
   }
 

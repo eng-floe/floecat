@@ -7,7 +7,7 @@ DynamoDB tables exist before the service starts.
 
 ## Architecture & Responsibilities
 - **`AwsClients`** – Centralises AWS SDK v2 clients (DynamoDB, S3) configured via Quarkus properties
-  (`aws.region`, credentials providers). Injected into both stores.
+  (`floecat.fileio.override.*`, credentials providers). Injected into both stores.
 - **`DynamoPointerStore`** – Stores pointer entries in DynamoDB tables (partition key = pointer key).
   Implements compare-and-set using conditional expressions, handles pagination via DynamoDB queries,
   and supports TTL fields using native DynamoDB TTL attributes.
@@ -46,7 +46,8 @@ GC → DynamoPointerStore.listPointersByPrefix (Query) → deleteByPrefix (Batch
 Key properties (see `service/application.properties` for defaults):
 - `floecat.kv=dynamodb`, `floecat.kv.table=<tableName>`, `floecat.kv.auto-create=true|false`,
   `floecat.kv.ttl-enabled=true|false`.
-- `floecat.blob=s3`, `floecat.blob.s3.bucket=<bucket>`, `aws.region=<region>`.
+- `floecat.blob=s3`, `floecat.blob.s3.bucket=<bucket>`,
+  `floecat.fileio.override.s3.region=<region>`.
 - Provide AWS credentials via the default SDK provider chain (env vars, profiles, IAM roles) or
   override the client builders inside `AwsClients`.
 

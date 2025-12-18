@@ -380,14 +380,14 @@ public final class TestS3Fixtures {
   }
 
   private static S3Client buildS3Client() {
-    Region region = Region.of(System.getProperty("aws.region", "us-east-1"));
+    Region region = Region.of(resolveFileIoProperty("s3.region", "us-east-1"));
     var builder = S3Client.builder().region(region);
-    String endpoint = System.getProperty("aws.s3.endpoint-override");
+    String endpoint = resolveFileIoProperty("s3.endpoint", null);
     if (endpoint != null && !endpoint.isBlank()) {
       builder.endpointOverride(URI.create(endpoint));
     }
     boolean pathStyle =
-        Boolean.parseBoolean(System.getProperty("aws.s3.force-path-style", "false"));
+        Boolean.parseBoolean(resolveFileIoProperty("s3.path-style-access", "false"));
     builder.serviceConfiguration(
         S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build());
     builder.credentialsProvider(resolveCredentials());
@@ -395,12 +395,20 @@ public final class TestS3Fixtures {
   }
 
   private static AwsCredentialsProvider resolveCredentials() {
-    String accessKey = System.getProperty("aws.accessKeyId");
-    String secretKey = System.getProperty("aws.secretAccessKey");
+    String accessKey = resolveFileIoProperty("s3.access-key-id", null);
+    String secretKey = resolveFileIoProperty("s3.secret-access-key", null);
     if (accessKey != null && secretKey != null) {
       return StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey));
     }
     return DefaultCredentialsProvider.create();
+  }
+
+  private static String resolveFileIoProperty(String overrideKey, String defaultValue) {
+    String override = System.getProperty("floecat.fileio.override." + overrideKey);
+    if (override != null && !override.isBlank()) {
+      return override;
+    }
+    return defaultValue;
   }
 
   public static Map<String, String> fileIoProperties(String localRoot) {
@@ -413,23 +421,21 @@ public final class TestS3Fixtures {
 
   public static Map<String, String> awsFileIoProperties() {
     Map<String, String> props = new LinkedHashMap<>();
-    props.put("io-impl", "org.apache.iceberg.aws.s3.S3FileIO");
-    copySystemProperty("aws.s3.endpoint-override", "s3.endpoint", props);
-    copySystemProperty("aws.region", "s3.region", props);
-    copySystemProperty("aws.accessKeyId", "s3.access-key-id", props);
-    copySystemProperty("aws.secretAccessKey", "s3.secret-access-key", props);
-    if (Boolean.parseBoolean(System.getProperty("aws.s3.force-path-style", "false"))) {
-      props.put("s3.path-style-access", "true");
-    }
+    addOverrideIfPresent(props, "io-impl", resolveFileIoProperty("io-impl", "org.apache.iceberg.aws.s3.S3FileIO"));
+    addOverrideIfPresent(props, "s3.endpoint", resolveFileIoProperty("s3.endpoint", null));
+    addOverrideIfPresent(props, "s3.region", resolveFileIoProperty("s3.region", null));
+    addOverrideIfPresent(props, "s3.access-key-id", resolveFileIoProperty("s3.access-key-id", null));
+    addOverrideIfPresent(props, "s3.secret-access-key", resolveFileIoProperty("s3.secret-access-key", null));
+    addOverrideIfPresent(props, "s3.session-token", resolveFileIoProperty("s3.session-token", null));
+    addOverrideIfPresent(props, "s3.path-style-access", resolveFileIoProperty("s3.path-style-access", null));
     return props;
   }
 
-  private static void copySystemProperty(
-      String sourceName, String targetName, Map<String, String> target) {
-    String value = System.getProperty(sourceName);
-    if (value != null && !value.isBlank()) {
-      target.put(targetName, value);
+  private static void addOverrideIfPresent(Map<String, String> target, String key, String value) {
+    if (key == null || value == null || value.isBlank()) {
+      return;
     }
+    target.put(key, value);
   }
 
   public static boolean objectExistsInS3(String uri) {

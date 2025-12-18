@@ -43,16 +43,16 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
     "floecat.kv.ttl-enabled",
     "floecat.blob",
     "floecat.blob.s3.bucket",
-    "floecat.fixtures.use-aws-s3",
-    "aws.region",
-    "aws.accessKeyId",
-    "aws.secretAccessKey",
-    "aws.dynamodb.endpoint-override",
-    "aws.s3.endpoint-override",
-    "aws.s3.force-path-style"
+    "floecat.fixtures.use-aws-s3"
   };
   private static final String[] FORWARDED_ENVS = {
-    "AWS_REQUEST_CHECKSUM_CALCULATION", "AWS_RESPONSE_CHECKSUM_VALIDATION"
+    "AWS_REQUEST_CHECKSUM_CALCULATION",
+    "AWS_RESPONSE_CHECKSUM_VALIDATION",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN"
   };
   private static final String[] DEBUG_AWS_ENVS = {
     "AWS_ACCESS_KEY_ID",
@@ -167,6 +167,17 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
         command.add("-D" + name + "=" + value);
       }
     }
+    System.getProperties()
+        .stringPropertyNames()
+        .stream()
+        .filter(name -> name.startsWith("floecat.fileio.override."))
+        .forEach(
+            name -> {
+              String value = System.getProperty(name);
+              if (value != null && !value.isBlank()) {
+                command.add("-D" + name + "=" + value);
+              }
+            });
   }
 
   private static void addForwardedEnv(Map<String, String> env) {
