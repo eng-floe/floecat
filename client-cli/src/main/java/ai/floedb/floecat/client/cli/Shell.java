@@ -204,6 +204,9 @@ public class Shell implements Runnable {
   private volatile String currentAccountId =
       System.getenv().getOrDefault("FLOECAT_ACCOUNT", "").trim();
 
+  private volatile String currentCatalog =
+      System.getenv().getOrDefault("FLOECAT_CATALOG", "").trim();
+
   @Override
   public void run() {
     out.println("Floecat Shell (type 'help' for commands, 'quit' to exit).");
@@ -408,7 +411,13 @@ public class Shell implements Runnable {
     switch (command) {
       case "account" -> cmdAccount(tail(tokens));
       case "catalogs" -> cmdCatalogs();
-      case "catalog" -> cmdCatalogCrud(tail(tokens));
+      case "catalog" -> {
+        if (tokens.size() >= 3 && "use".equals(tokens.get(1))) {
+          cmdUseCatalog(tokens.subList(2, tokens.size()));
+        } else {
+          cmdCatalogCrud(tail(tokens));
+        }
+      }
       case "namespaces" -> cmdNamespaces(tail(tokens));
       case "namespace" -> cmdNamespaceCrud(tail(tokens));
       case "tables" -> cmdTables(tail(tokens));
@@ -425,6 +434,24 @@ public class Shell implements Runnable {
       case "query" -> cmdQuery(tail(tokens));
       default -> out.println("Unknown command. Type 'help'.");
     }
+  }
+
+  private void cmdUseCatalog(List<String> args) {
+    if (args.size() != 1) {
+      out.println("usage: catalog use <catalog-name>");
+      return;
+    }
+    String name = Quotes.unquote(args.get(0));
+    if (name.isBlank()) {
+      out.println("catalog name cannot be empty");
+      return;
+    }
+
+    // Validate catalog eagerly
+    ResourceId cid = resolveCatalogId(name);
+
+    currentCatalog = name;
+    out.println("catalog set: " + name + " (" + cid.getId() + ")");
   }
 
   private void cmdAccount(List<String> args) {
@@ -1872,6 +1899,10 @@ public class Shell implements Runnable {
   }
 
   private void queryBegin(List<String> args) {
+    if (currentCatalog == null || currentCatalog.isBlank()) {
+      out.println("query begin: no default catalog set (use `catalog use <name>`)");
+      return;
+    }
     if (args.isEmpty()) {
       out.println(
           "usage: query begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <fq> "
@@ -1927,6 +1958,9 @@ public class Shell implements Runnable {
             out.println("query begin: " + e.getMessage());
             return;
           }
+          if (nr.getCatalog().isBlank()) {
+            nr = NameRef.newBuilder(nr).setCatalog(currentCatalog).build();
+          }
           QueryInput.Builder input = QueryInput.newBuilder().setName(nr);
           int next = parseQueryInputOptions(args, i + 2, input, true);
           if (next < 0) {
@@ -1946,6 +1980,9 @@ public class Shell implements Runnable {
           } catch (IllegalArgumentException e) {
             out.println("query begin: " + e.getMessage());
             return;
+          }
+          if (nr.getCatalog().isBlank()) {
+            nr = NameRef.newBuilder(nr).setCatalog(currentCatalog).build();
           }
           QueryInput.Builder input = QueryInput.newBuilder().setName(nr);
           int next = parseQueryInputOptions(args, i + 2, input, false);
@@ -1995,8 +2032,10 @@ public class Shell implements Runnable {
       return;
     }
 
-    // Build BeginQuery without inputs (removed from proto)
-    BeginQueryRequest.Builder req = BeginQueryRequest.newBuilder();
+    ResourceId queryDefaultCatalogId = resolveCatalogId(currentCatalog);
+
+    BeginQueryRequest.Builder req =
+        BeginQueryRequest.newBuilder().setDefaultCatalogId(queryDefaultCatalogId);
     if (ttlSeconds > 0) {
       req.setTtlSeconds(ttlSeconds);
     }

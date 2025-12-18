@@ -17,7 +17,8 @@ import java.util.Optional;
  * <p>This provides view/relation/namespace resolution through a minimal graph view abstraction. It
  * is safe, cache-aware, and keeps core decoupled from the full MetadataGraph implementation.
  */
-public record SystemObjectScanContext(CatalogOverlay graph, NameRef name, ResourceId catalogId) {
+public record SystemObjectScanContext(
+    CatalogOverlay graph, NameRef name, ResourceId queryDefaultCatalogId) {
 
   public GraphNode resolve(ResourceId id) {
     return graph.resolve(id).orElseThrow();
@@ -29,12 +30,12 @@ public record SystemObjectScanContext(CatalogOverlay graph, NameRef name, Resour
 
   /** Tables + views */
   public List<GraphNode> listRelations(ResourceId namespaceId) {
-    return graph.listRelationsInNamespace(catalogId, namespaceId);
+    return graph.listRelationsInNamespace(queryDefaultCatalogId, namespaceId);
   }
 
   /** Tables only */
   public List<TableNode> listTables(ResourceId namespaceId) {
-    return graph.listRelationsInNamespace(catalogId, namespaceId).stream()
+    return graph.listRelationsInNamespace(queryDefaultCatalogId, namespaceId).stream()
         .filter(TableNode.class::isInstance)
         .map(TableNode.class::cast)
         .toList();
@@ -42,21 +43,21 @@ public record SystemObjectScanContext(CatalogOverlay graph, NameRef name, Resour
 
   /** Views only */
   public List<ViewNode> listViews(ResourceId namespaceId) {
-    return graph.listRelationsInNamespace(catalogId, namespaceId).stream()
+    return graph.listRelationsInNamespace(queryDefaultCatalogId, namespaceId).stream()
         .filter(ViewNode.class::isInstance)
         .map(ViewNode.class::cast)
         .toList();
   }
 
   public List<NamespaceNode> listNamespaces() {
-    return graph.listNamespaces(catalogId);
+    return graph.listNamespaces(queryDefaultCatalogId);
   }
 
   public List<FunctionNode> listFunctions(ResourceId namespaceId) {
-    return graph.listFunctions(catalogId, namespaceId);
+    return graph.listFunctions(queryDefaultCatalogId, namespaceId);
   }
 
   public List<TypeNode> listTypes() {
-    return graph.listTypes(catalogId);
+    return graph.listTypes(queryDefaultCatalogId);
   }
 }

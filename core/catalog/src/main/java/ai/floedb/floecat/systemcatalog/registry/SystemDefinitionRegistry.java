@@ -21,9 +21,6 @@ public final class SystemDefinitionRegistry {
   }
 
   public SystemEngineCatalog catalog(String engineKind) {
-    if (engineKind == null || engineKind.isBlank()) {
-      throw new IllegalArgumentException("engine_kind must be provided");
-    }
     String key = engineKind.toLowerCase(Locale.ROOT);
     return cache.computeIfAbsent(key, provider::load);
   }

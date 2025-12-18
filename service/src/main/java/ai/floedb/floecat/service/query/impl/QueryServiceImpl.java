@@ -4,6 +4,7 @@ import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SchemaServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
@@ -107,6 +108,14 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                               : (int) (defaultTtlMs / 1000))
                           * 1000L;
 
+                  // Default catalog scope of the query
+                  if (!request.hasDefaultCatalogId()) {
+                    throw GrpcErrors.invalidArgument(
+                        correlationId, "query.catalog.required", Map.of());
+                  }
+
+                  ResourceId catalogId = request.getDefaultCatalogId();
+
                   // Empty metadata blobs
                   byte[] emptyExpansion = ExpansionMap.getDefaultInstance().toByteArray();
                   byte[] emptySnapshots = SnapshotSet.getDefaultInstance().toByteArray();
@@ -126,7 +135,8 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           emptyObligations,
                           asOfDefaultBytes,
                           ttlMs,
-                          1L);
+                          1L,
+                          catalogId);
 
                   queryStore.put(ctx);
 

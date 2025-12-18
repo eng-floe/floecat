@@ -6,6 +6,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.GraphNode;
+import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableBackendKind;
 import ai.floedb.floecat.service.testsupport.FakeSystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
@@ -88,9 +89,9 @@ class SystemGraphTest {
   }
 
   @Test
-  void listRelations_filtersByCatalogId() {
+  void listRelations_visibleFromAnyCatalog() {
     List<GraphNode> nodes = systemGraph.listRelations(wrongCatalogId, ENGINE, VERSION);
-    assertThat(nodes).isEmpty();
+    assertThat(nodes).extracting(node -> node.displayName()).contains("pg_class");
   }
 
   @Test
@@ -109,8 +110,9 @@ class SystemGraphTest {
   }
 
   @Test
-  void listNamespaces_filtersByCatalogId() {
-    assertThat(systemGraph.listNamespaces(wrongCatalogId, ENGINE, VERSION)).isEmpty();
+  void listNamespaces_visibleFromAnyCatalog() {
+    List<NamespaceNode> nodes = systemGraph.listNamespaces(wrongCatalogId, ENGINE, VERSION);
+    assertThat(nodes).extracting(NamespaceNode::displayName).contains("pg_catalog");
   }
 
   @Test

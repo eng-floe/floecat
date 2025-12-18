@@ -22,9 +22,9 @@ public final class InformationSchemaProvider implements SystemObjectScannerProvi
 
   private final Map<String, SystemObjectScanner> scanners =
       Map.of(
-          "schemata", new SchemataScanner(),
-          "tables", new TablesScanner(),
-          "columns", new ColumnsScanner());
+          "schemata_scanner", new SchemataScanner(),
+          "tables_scanner", new TablesScanner(),
+          "columns_scanner", new ColumnsScanner());
 
   @Override
   public List<SystemObjectDef> definitions() {
@@ -69,7 +69,7 @@ public final class InformationSchemaProvider implements SystemObjectScannerProvi
     if (name.getPathCount() != 1 || !"information_schema".equalsIgnoreCase(name.getPath(0))) {
       return false;
     }
-    return scanners.containsKey(name.getName().toLowerCase());
+    return scanners.containsKey(name.getName().toLowerCase() + "_scanner");
   }
 
   @Override

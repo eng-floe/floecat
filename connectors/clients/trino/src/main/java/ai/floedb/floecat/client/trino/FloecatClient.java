@@ -6,6 +6,7 @@ import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
+import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import io.grpc.ManagedChannel;
@@ -23,6 +24,7 @@ public final class FloecatClient implements Closeable {
   private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
   private final QueryServiceGrpc.QueryServiceBlockingStub queries;
   private final QueryScanServiceGrpc.QueryScanServiceBlockingStub scans;
+  private final QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schemas;
   private final SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots;
 
   @Inject
@@ -36,6 +38,7 @@ public final class FloecatClient implements Closeable {
     this.directory = DirectoryServiceGrpc.newBlockingStub(channel);
     this.queries = QueryServiceGrpc.newBlockingStub(channel);
     this.scans = QueryScanServiceGrpc.newBlockingStub(channel);
+    this.schemas = QuerySchemaServiceGrpc.newBlockingStub(channel);
     this.snapshots = SnapshotServiceGrpc.newBlockingStub(channel);
   }
 
@@ -65,6 +68,10 @@ public final class FloecatClient implements Closeable {
 
   public QueryScanServiceGrpc.QueryScanServiceBlockingStub scans() {
     return scans;
+  }
+
+  public QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schemas() {
+    return schemas;
   }
 
   public SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots() {

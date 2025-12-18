@@ -82,10 +82,6 @@ public final class SystemGraph {
    */
   public List<GraphNode> listRelations(
       ResourceId catalogId, String engineKind, String engineVersion) {
-    ResourceId expected = systemCatalogId(engineKind);
-    if (catalogId == null || !catalogId.equals(expected)) {
-      return List.of();
-    }
 
     GraphSnapshot snapshot = snapshotFor(engineKind, engineVersion);
 
@@ -105,11 +101,6 @@ public final class SystemGraph {
    */
   public List<GraphNode> listRelationsInNamespace(
       ResourceId catalogId, ResourceId namespaceId, String engineKind, String engineVersion) {
-    ResourceId expected = systemCatalogId(engineKind);
-    if (catalogId == null || !catalogId.equals(expected)) {
-      return List.of();
-    }
-
     GraphSnapshot snapshot = snapshotFor(engineKind, engineVersion);
 
     return Stream.concat(
@@ -132,20 +123,10 @@ public final class SystemGraph {
    */
   public List<NamespaceNode> listNamespaces(
       ResourceId catalogId, String engineKind, String engineVersion) {
-    ResourceId expected = systemCatalogId(engineKind);
-    if (catalogId == null || !catalogId.equals(expected)) {
-      return List.of();
-    }
     return snapshotFor(engineKind, engineVersion).namespaces();
   }
 
   public List<TypeNode> listTypes(ResourceId catalogId, String engineKind, String engineVersion) {
-
-    ResourceId expected = systemCatalogId(engineKind);
-    if (catalogId == null || !catalogId.equals(expected)) {
-      return List.of();
-    }
-
     return registry.nodesFor(engineKind, engineVersion).types();
   }
 
@@ -302,14 +283,10 @@ public final class SystemGraph {
 
   /** Builds a new snapshot for the requested engine version. */
   private GraphSnapshot snapshotFor(String engineKind, String engineVersion) {
-    if (engineKind == null
-        || engineKind.isBlank()
-        || engineVersion == null
-        || engineVersion.isBlank()) {
-      return GraphSnapshot.empty();
-    }
-    String normalizedKind = engineKind.toLowerCase(Locale.ROOT);
-    VersionKey key = new VersionKey(normalizedKind, engineVersion);
+    String normalizedKind = engineKind == null ? "" : engineKind.toLowerCase(Locale.ROOT);
+    String normalizedVersion = engineVersion == null ? "" : engineVersion;
+
+    VersionKey key = new VersionKey(normalizedKind, normalizedVersion);
     GraphSnapshot cached = snapshots.get(key);
     if (cached != null) {
       return cached;
@@ -475,16 +452,6 @@ public final class SystemGraph {
           id -> functionsByNamespace.computeIfAbsent(id, ignored -> new ArrayList<>()).add(fn));
     }
 
-    // Build function nodes and map them to namespaces
-    for (FunctionNode fn : nodes.functions()) {
-      Optional<ResourceId> nsId =
-          findNamespaceId(
-              fn.displayName() != null ? NameRefUtil.name(fn.displayName()) : null, namespaceIds);
-
-      nsId.ifPresent(
-          id -> functionsByNamespace.computeIfAbsent(id, ignored -> new ArrayList<>()).add(fn));
-    }
-
     return new GraphSnapshot(
         List.copyOf(namespaceNodes),
         tablesByNamespace.entrySet().stream()
@@ -518,10 +485,11 @@ public final class SystemGraph {
   }
 
   private static ResourceId systemCatalogId(String engineKind) {
+    String id = (engineKind == null || engineKind.isBlank()) ? "floecat_system" : engineKind;
     return ResourceId.newBuilder()
         .setAccountId(SYSTEM_ACCOUNT)
         .setKind(ResourceKind.RK_CATALOG)
-        .setId(engineKind)
+        .setId(id)
         .build();
   }
 

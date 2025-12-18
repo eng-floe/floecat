@@ -1,6 +1,5 @@
 package ai.floedb.floecat.service.query.resolver;
 
-import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.query.rpc.QueryInput;
@@ -115,29 +114,8 @@ public class QueryInputResolver {
   }
 
   // =============================================================================
-  // Name resolution
+  // Pin resolution
   // =============================================================================
-
-  /**
-   * Attempts to resolve a NameRef into either a table or view.
-   *
-   * <p>Resolution tries:
-   *
-   * <ol>
-   *   <li>resolveTable()
-   *   <li>resolveView()
-   * </ol>
-   *
-   * <p>Failure modes:
-   *
-   * <ul>
-   *   <li>No match ⇒ INVALID_ARGUMENT(query.input.unresolved)
-   *   <li>Multiple matches ⇒ INVALID_ARGUMENT(query.input.ambiguous)
-   * </ul>
-   */
-  private ResourceId resolveName(String cid, NameRef ref) {
-    return metadataGraph.resolveName(cid, ref);
-  }
 
   private SnapshotPin pinForResource(
       String correlationId, ResourceId rid, SnapshotRef override, Optional<Timestamp> asOfDefault) {

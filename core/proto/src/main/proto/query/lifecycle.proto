@@ -129,6 +129,9 @@ message BeginQueryRequest {
 
   // Optional timestamp used by downstream RPCs when no snapshot override is provided.
   google.protobuf.Timestamp as_of_default = 2;
+  
+  // default catalog for this query
+  ai.floedb.floecat.common.ResourceId default_catalog_id = 3;
 }
 
 /**

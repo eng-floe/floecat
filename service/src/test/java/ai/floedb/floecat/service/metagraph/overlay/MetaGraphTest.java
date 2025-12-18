@@ -229,18 +229,18 @@ class MetaGraphTest {
   }
 
   @Test
-  void engineAbsent_skipsSystemGraph() {
+  void engineAbsent_showsEmptySystemGraph() {
     EngineContextProvider engine = mock(EngineContextProvider.class);
     when(engine.isPresent()).thenReturn(false);
 
     MetaGraph metaNoEngine = new MetaGraph(user, schemaMapper, system, engine);
 
     NameRef ref = NameRef.newBuilder().setName("t").build();
+    when(system.resolveTable(ref, null, null)).thenReturn(Optional.empty());
     when(user.tryResolveTable("c", ref)).thenReturn(Optional.of(usrTable));
 
     ResourceId out = metaNoEngine.resolveTable("c", ref);
 
-    verify(system, never()).resolveTable(any(), any(), any());
     assertThat(out).isEqualTo(usrTable);
   }
 }

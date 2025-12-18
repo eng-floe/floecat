@@ -1,5 +1,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.planning;
 
+import ai.floedb.floecat.common.rpc.Operator;
+import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
@@ -18,8 +20,6 @@ import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
 import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.floecat.query.rpc.GetQueryRequest;
-import ai.floedb.floecat.query.rpc.Operator;
-import ai.floedb.floecat.query.rpc.Predicate;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
 import ai.floedb.floecat.query.rpc.QueryInput;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -43,7 +43,7 @@ public class TablePlanService {
   @Inject ObjectMapper mapper;
 
   public PlanHandle startPlan(
-      String catalogName,
+      ResourceId catalogId,
       ResourceId tableId,
       List<String> selectColumns,
       Long startSnapshotId,
@@ -57,7 +57,9 @@ public class TablePlanService {
     Long resolvedSnapshot = endSnapshotId != null ? endSnapshotId : snapshotId;
     List<Predicate> predicates = buildPredicates(filter, caseSensitive);
 
-    var begin = queryClient.beginQuery(BeginQueryRequest.newBuilder().build());
+    var begin =
+        queryClient.beginQuery(
+            BeginQueryRequest.newBuilder().setDefaultCatalogId(catalogId).build());
     String queryId = begin.getQuery().getQueryId();
 
     planContexts.put(

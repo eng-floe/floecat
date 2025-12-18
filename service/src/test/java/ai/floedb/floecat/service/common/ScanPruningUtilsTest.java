@@ -3,10 +3,10 @@ package ai.floedb.floecat.service.common;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
+import ai.floedb.floecat.common.rpc.Operator;
+import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.execution.rpc.ScanFile;
-import ai.floedb.floecat.query.rpc.Operator;
-import ai.floedb.floecat.query.rpc.Predicate;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;

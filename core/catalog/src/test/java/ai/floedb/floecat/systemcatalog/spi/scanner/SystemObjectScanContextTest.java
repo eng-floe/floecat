@@ -217,6 +217,6 @@ class SystemObjectScanContextTest {
         new SystemObjectScanContext(new TestCatalogOverlay(), name, catalog);
 
     assertThat(ctx.name()).isEqualTo(name);
-    assertThat(ctx.catalogId()).isEqualTo(catalog);
+    assertThat(ctx.queryDefaultCatalogId()).isEqualTo(catalog);
   }
 }

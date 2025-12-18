@@ -67,12 +67,9 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public Optional<GraphNode> resolve(ResourceId id) {
-    if (engine.isPresent()) {
-      Optional<GraphNode> sys =
-          systemGraph.resolve(id, engine.engineKind(), engine.engineVersion());
-      if (sys.isPresent()) {
-        return sys;
-      }
+    Optional<GraphNode> sys = systemGraph.resolve(id, engine.engineKind(), engine.engineVersion());
+    if (sys.isPresent()) {
+      return sys;
     }
     return userGraph.resolve(id);
   }
@@ -359,10 +356,7 @@ public final class MetaGraph implements CatalogOverlay {
     if (user.isPresent()) {
       return user;
     }
-    if (engine.isPresent()) {
-      return systemGraph.namespaceName(id, engine.engineKind(), engine.engineVersion());
-    }
-    return Optional.empty();
+    return systemGraph.namespaceName(id, engine.engineKind(), engine.engineVersion());
   }
 
   /**
@@ -379,10 +373,7 @@ public final class MetaGraph implements CatalogOverlay {
     if (user.isPresent()) {
       return user;
     }
-    if (engine.isPresent()) {
-      return systemGraph.tableName(id, engine.engineKind(), engine.engineVersion());
-    }
-    return Optional.empty();
+    return systemGraph.tableName(id, engine.engineKind(), engine.engineVersion());
   }
 
   /**
@@ -399,10 +390,7 @@ public final class MetaGraph implements CatalogOverlay {
     if (user.isPresent()) {
       return user;
     }
-    if (engine.isPresent()) {
-      return systemGraph.viewName(id, engine.engineKind(), engine.engineVersion());
-    }
-    return Optional.empty();
+    return systemGraph.viewName(id, engine.engineKind(), engine.engineVersion());
   }
 
   /**
@@ -456,9 +444,7 @@ public final class MetaGraph implements CatalogOverlay {
    */
   private <T> List<T> mergeLists(Supplier<List<T>> systemSupplier, Supplier<List<T>> userSupplier) {
     List<T> result = new ArrayList<>();
-    if (engine.isPresent()) {
-      result.addAll(systemSupplier.get());
-    }
+    result.addAll(systemSupplier.get());
     result.addAll(userSupplier.get());
     return result;
   }
@@ -483,7 +469,7 @@ public final class MetaGraph implements CatalogOverlay {
       Supplier<Optional<ResourceId>> systemResolver,
       Supplier<Optional<ResourceId>> userResolver,
       String notFoundMessageKey) {
-    Optional<ResourceId> sys = engine.isPresent() ? systemResolver.get() : Optional.empty();
+    Optional<ResourceId> sys = systemResolver.get();
     Optional<ResourceId> user = userResolver.get();
     if (sys.isPresent() && user.isPresent()) {
       throw GrpcErrors.invalidArgument(

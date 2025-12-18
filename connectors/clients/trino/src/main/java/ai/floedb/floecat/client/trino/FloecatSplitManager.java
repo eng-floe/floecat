@@ -1,13 +1,16 @@
 package ai.floedb.floecat.client.trino;
 
+import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
-import ai.floedb.floecat.query.rpc.Operator;
-import ai.floedb.floecat.query.rpc.Predicate;
+import ai.floedb.floecat.common.rpc.Operator;
+import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.query.rpc.QueryInput;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
@@ -20,12 +23,14 @@ import io.trino.plugin.iceberg.IcebergFileFormat;
 import io.trino.plugin.iceberg.IcebergSplit;
 import io.trino.plugin.iceberg.delete.DeleteFile;
 import io.trino.spi.SplitWeight;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.connector.Constraint;
+import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.DynamicFilter;
 import io.trino.spi.connector.FixedSplitSource;
 import io.trino.spi.predicate.Domain;
@@ -46,19 +51,41 @@ public class FloecatSplitManager implements ConnectorSplitManager {
 
   private final QueryServiceGrpc.QueryServiceBlockingStub planning;
   private final QueryScanServiceGrpc.QueryScanServiceBlockingStub scan;
-  private final FloecatConfig config;
   private final QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schema;
+  private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
+  private final CatalogName catalogName;
+  private final FloecatConfig config;
+  private volatile ResourceId catalogResourceId;
 
   @Inject
   public FloecatSplitManager(
       QueryServiceGrpc.QueryServiceBlockingStub planning,
       QueryScanServiceGrpc.QueryScanServiceBlockingStub scan,
       QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schema,
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      CatalogName catalogName,
       FloecatConfig config) {
     this.planning = planning;
     this.scan = scan;
     this.schema = schema;
+    this.directory = directory;
+    this.catalogName = catalogName;
     this.config = config;
+  }
+
+  private ResourceId getCatalogResourceId() {
+    if (catalogResourceId == null) {
+      synchronized (this) {
+        if (catalogResourceId == null) {
+          var response = directory.resolveCatalog(
+              ResolveCatalogRequest.newBuilder()
+                  .setRef(NameRef.newBuilder().setCatalog(catalogName.toString()).build())
+                  .build());
+          catalogResourceId = response.getResourceId();
+        }
+      }
+    }
+    return catalogResourceId;
   }
 
   @Override
@@ -96,7 +123,9 @@ public class FloecatSplitManager implements ConnectorSplitManager {
             });
     requiredColumns.addAll(floecatHandle.getProjectedColumns());
 
-    BeginQueryRequest beginReq = BeginQueryRequest.newBuilder().build();
+    BeginQueryRequest beginReq = BeginQueryRequest.newBuilder()
+        .setDefaultCatalogId(getCatalogResourceId())
+        .build();
 
     var beginResp = planning.beginQuery(beginReq);
     String queryId = beginResp.getQuery().getQueryId();

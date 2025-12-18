@@ -21,7 +21,6 @@ import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificMatcher;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
-import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
@@ -81,10 +80,9 @@ public class SystemNodeRegistry {
   }
 
   public BuiltinNodes nodesFor(String engineKind, String engineVersion) {
-    if (engineKind == null || engineKind.isBlank()) return EMPTY_NODES;
-    if (engineVersion == null || engineVersion.isBlank()) return EMPTY_NODES;
-    String normalizedKind = engineKind.toLowerCase(Locale.ROOT);
-    VersionKey key = new VersionKey(normalizedKind, engineVersion);
+    String normalizedKind = engineKind == null ? "" : engineKind.toLowerCase(Locale.ROOT);
+    String normalizedVersion = engineVersion == null ? "" : engineVersion;
+    VersionKey key = new VersionKey(normalizedKind, normalizedVersion);
     return cache.computeIfAbsent(key, k -> buildNodes(k.engineKind(), k.engineVersion()));
   }
 

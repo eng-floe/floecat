@@ -1,7 +1,6 @@
 package ai.floedb.floecat.systemcatalog.provider;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
@@ -25,21 +24,34 @@ import org.junit.jupiter.api.Test;
 class ServiceLoaderSystemCatalogProviderTest {
 
   @Test
-  void load_nullEngineKindThrows() {
+  void load_nullEngineKindReturnsInformationSchemaOnly() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
-    assertThatThrownBy(() -> provider.load(null))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("engine_kind");
+    SystemEngineCatalog catalog = provider.load(null);
+
+    assertThat(catalog.namespaces())
+        .containsExactly(
+            new SystemNamespaceDef(
+                NameRefUtil.name("information_schema"), "information_schema", List.of()));
+
+    assertThat(catalog.tables()).isNotEmpty(); // information_schema tables
+    assertThat(catalog.functions()).isEmpty();
+    assertThat(catalog.types()).isEmpty();
   }
 
   @Test
-  void load_blankEngineKindThrows() {
+  void load_blankEngineKindReturnsInformationSchemaOnly() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
-    assertThatThrownBy(() -> provider.load("  "))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("engine_kind");
+    SystemEngineCatalog catalog = provider.load("  ");
+
+    assertThat(catalog.namespaces())
+        .containsExactly(
+            new SystemNamespaceDef(
+                NameRefUtil.name("information_schema"), "information_schema", List.of()));
+
+    assertThat(catalog.tables()).isNotEmpty();
+    assertThat(catalog.functions()).isEmpty();
   }
 
   @Test

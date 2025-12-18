@@ -69,8 +69,10 @@ public final class ServiceLoaderSystemCatalogProvider implements SystemCatalogPr
 
   @Override
   public SystemEngineCatalog load(String engineKind) {
+    // Blank engineKind = engine-agnostic catalog (information_schema only)
     if (engineKind == null || engineKind.isBlank()) {
-      throw new IllegalArgumentException("engine_kind must be provided");
+      SystemCatalogData data = mergeProviderDefinitions("", SystemCatalogData.empty());
+      return SystemEngineCatalog.from("", data);
     }
 
     EngineSystemCatalogExtension ext = plugins.get(engineKind.toLowerCase(Locale.ROOT));
