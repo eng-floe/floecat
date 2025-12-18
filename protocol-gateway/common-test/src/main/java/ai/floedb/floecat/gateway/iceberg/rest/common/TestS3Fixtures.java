@@ -300,7 +300,10 @@ public final class TestS3Fixtures {
       ensureBucketExists(s3, STAGE_BUCKET);
       deletePrefix(s3, STAGE_BUCKET, normalizeKey(basePrefix));
       uploadDirectoryToS3(
-          s3, SIMPLE_ROOT.resolve("metadata"), STAGE_BUCKET, normalizeKey(basePrefix + "/metadata"));
+          s3,
+          SIMPLE_ROOT.resolve("metadata"),
+          STAGE_BUCKET,
+          normalizeKey(basePrefix + "/metadata"));
       uploadDirectoryToS3(
           s3, SIMPLE_ROOT.resolve("data"), STAGE_BUCKET, normalizeKey(basePrefix + "/data"));
     } catch (IOException e) {
@@ -335,7 +338,7 @@ public final class TestS3Fixtures {
   private static void deletePrefix(S3Client s3, String bucket, String prefix) {
     String normalized = prefix == null ? "" : prefix;
     ListObjectsV2Request request =
-      ListObjectsV2Request.builder().bucket(bucket).prefix(normalized).build();
+        ListObjectsV2Request.builder().bucket(bucket).prefix(normalized).build();
     ListObjectsV2Response response = s3.listObjectsV2(request);
     while (true) {
       response
@@ -343,10 +346,7 @@ public final class TestS3Fixtures {
           .forEach(
               object ->
                   s3.deleteObject(
-                      DeleteObjectRequest.builder()
-                          .bucket(bucket)
-                          .key(object.key())
-                          .build()));
+                      DeleteObjectRequest.builder().bucket(bucket).key(object.key()).build()));
       if (!response.isTruncated()) {
         break;
       }
@@ -415,19 +415,23 @@ public final class TestS3Fixtures {
     if (useAwsFixtures()) {
       return awsFileIoProperties();
     }
-    return Map.of(
-        "io-impl", InMemoryS3FileIO.class.getName(), "fs.floecat.test-root", localRoot);
+    return Map.of("io-impl", InMemoryS3FileIO.class.getName(), "fs.floecat.test-root", localRoot);
   }
 
   public static Map<String, String> awsFileIoProperties() {
     Map<String, String> props = new LinkedHashMap<>();
-    addOverrideIfPresent(props, "io-impl", resolveFileIoProperty("io-impl", "org.apache.iceberg.aws.s3.S3FileIO"));
+    addOverrideIfPresent(
+        props, "io-impl", resolveFileIoProperty("io-impl", "org.apache.iceberg.aws.s3.S3FileIO"));
     addOverrideIfPresent(props, "s3.endpoint", resolveFileIoProperty("s3.endpoint", null));
     addOverrideIfPresent(props, "s3.region", resolveFileIoProperty("s3.region", null));
-    addOverrideIfPresent(props, "s3.access-key-id", resolveFileIoProperty("s3.access-key-id", null));
-    addOverrideIfPresent(props, "s3.secret-access-key", resolveFileIoProperty("s3.secret-access-key", null));
-    addOverrideIfPresent(props, "s3.session-token", resolveFileIoProperty("s3.session-token", null));
-    addOverrideIfPresent(props, "s3.path-style-access", resolveFileIoProperty("s3.path-style-access", null));
+    addOverrideIfPresent(
+        props, "s3.access-key-id", resolveFileIoProperty("s3.access-key-id", null));
+    addOverrideIfPresent(
+        props, "s3.secret-access-key", resolveFileIoProperty("s3.secret-access-key", null));
+    addOverrideIfPresent(
+        props, "s3.session-token", resolveFileIoProperty("s3.session-token", null));
+    addOverrideIfPresent(
+        props, "s3.path-style-access", resolveFileIoProperty("s3.path-style-access", null));
     return props;
   }
 
@@ -445,10 +449,7 @@ public final class TestS3Fixtures {
     S3Location location = parseS3Location(uri);
     try (S3Client s3 = buildS3Client()) {
       s3.headObject(
-          HeadObjectRequest.builder()
-              .bucket(location.bucket())
-              .key(location.key())
-              .build());
+          HeadObjectRequest.builder().bucket(location.bucket()).key(location.key()).build());
       return true;
     } catch (NoSuchKeyException | NoSuchBucketException e) {
       return false;

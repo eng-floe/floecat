@@ -81,7 +81,9 @@ public class TableRegisterService {
       if (e.getStatus().getCode() == Status.Code.ALREADY_EXISTS) {
         if (Boolean.TRUE.equals(req.overwrite())) {
           Map<String, String> requestIoProps =
-              req.properties() == null ? Map.of() : FileIoFactory.filterIoProperties(req.properties());
+              req.properties() == null
+                  ? Map.of()
+                  : FileIoFactory.filterIoProperties(req.properties());
           return overwriteRegisteredTable(
               namespaceContext,
               tableName,
@@ -120,12 +122,6 @@ public class TableRegisterService {
       created = ensuredCreated;
     }
 
-    Map<String, String> ioProps =
-        req.properties() == null ? Map.of() : FileIoFactory.filterIoProperties(req.properties());
-    LOG.infof(
-        "Register table io props namespace=%s.%s props=%s",
-        String.join(".", namespaceContext.namespacePath()), tableName, ioProps);
-
     String resolvedLocation =
         tableSupport.resolveTableLocation(
             importedMetadata != null ? importedMetadata.tableLocation() : null, metadataLocation);
@@ -138,8 +134,7 @@ public class TableRegisterService {
             resolvedLocation,
             null,
             idempotencyKey,
-            tableSupport,
-            ioProps);
+            tableSupport);
     tableCommitService.runConnectorSync(
         tableSupport, connectorId, namespaceContext.namespacePath(), tableName);
 
@@ -246,10 +241,6 @@ public class TableRegisterService {
         existing.hasUpstream() && existing.getUpstream().hasConnectorId()
             ? existing.getUpstream().getConnectorId()
             : null;
-    Map<String, String> ioProps =
-        requestIoProps == null || requestIoProps.isEmpty()
-            ? FileIoFactory.filterIoProperties(updated.getPropertiesMap())
-            : requestIoProps;
     String resolvedLocation =
         tableSupport.resolveTableLocation(
             importedMetadata != null ? importedMetadata.tableLocation() : null, metadataLocation);
@@ -263,16 +254,11 @@ public class TableRegisterService {
               resolvedLocation,
               null,
               idempotencyKey,
-              tableSupport,
-              ioProps);
+              tableSupport);
       tableCommitService.runConnectorSync(
           tableSupport, connectorId, namespaceContext.namespacePath(), tableName);
     } else {
-      if (ioProps != null && !ioProps.isEmpty()) {
-        tableSupport.updateConnectorMetadata(connectorId, metadataLocation, ioProps);
-      } else {
-        tableSupport.updateConnectorMetadata(connectorId, metadataLocation);
-      }
+      tableSupport.updateConnectorMetadata(connectorId, metadataLocation);
       String existingUri =
           existing.hasUpstream() && existing.getUpstream().getUri() != null
               ? existing.getUpstream().getUri()
@@ -311,8 +297,7 @@ public class TableRegisterService {
       String resolvedTableLocation,
       String existingUpstreamUri,
       String idempotencyKey,
-      TableGatewaySupport tableSupport,
-      Map<String, String> fileIoProps) {
+      TableGatewaySupport tableSupport) {
     var connectorTemplate = tableSupport.connectorTemplateFor(namespaceContext.prefix());
     ResourceId connectorId = null;
     String upstreamUri = null;
@@ -333,8 +318,6 @@ public class TableRegisterService {
           metadataLocation != null && !metadataLocation.isBlank()
               ? metadataLocation
               : resolvedTableLocation;
-      Map<String, String> connectorFileIoProps =
-          fileIoProps == null ? Map.of() : new LinkedHashMap<>(fileIoProps);
       connectorId =
           tableSupport.createExternalConnector(
               namespaceContext.prefix(),
@@ -345,8 +328,7 @@ public class TableRegisterService {
               tableId,
               metadata,
               resolvedTableLocation,
-              idempotencyKey,
-              connectorFileIoProps);
+              idempotencyKey);
       upstreamUri = resolvedTableLocation;
     }
     if (connectorId == null || upstreamUri == null || upstreamUri.isBlank()) {

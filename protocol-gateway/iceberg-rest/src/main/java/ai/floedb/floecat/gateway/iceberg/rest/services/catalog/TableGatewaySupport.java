@@ -30,8 +30,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
@@ -196,11 +196,6 @@ public class TableGatewaySupport {
   }
 
   public void updateConnectorMetadata(ResourceId connectorId, String metadataLocation) {
-    updateConnectorMetadata(connectorId, metadataLocation, Map.of());
-  }
-
-  public void updateConnectorMetadata(
-      ResourceId connectorId, String metadataLocation, Map<String, String> fileIoProps) {
     if (connectorId == null || metadataLocation == null || metadataLocation.isBlank()) {
       return;
     }
@@ -215,14 +210,6 @@ public class TableGatewaySupport {
       Connector existing = response.getConnector();
       Map<String, String> props = new LinkedHashMap<>(existing.getPropertiesMap());
       props.put("external.metadata-location", metadataLocation);
-      if (fileIoProps != null && !fileIoProps.isEmpty()) {
-        fileIoProps.forEach(
-            (k, v) -> {
-              if (k != null && v != null && !k.isBlank() && !v.isBlank()) {
-                props.put(k, v);
-              }
-            });
-      }
       ConnectorSpec spec = ConnectorSpec.newBuilder().putAllProperties(props).build();
       connectorClient.updateConnector(
           UpdateConnectorRequest.newBuilder()
@@ -450,8 +437,7 @@ public class TableGatewaySupport {
       ResourceId tableId,
       String metadataLocation,
       String tableLocation,
-      String idempotencyKey,
-      Map<String, String> fileIoProperties) {
+      String idempotencyKey) {
     NamespacePath nsPath = NamespacePath.newBuilder().addAllSegments(namespacePath).build();
     SourceSelector source =
         SourceSelector.newBuilder().setNamespace(nsPath).setTable(tableName).build();
@@ -481,32 +467,6 @@ public class TableGatewaySupport {
             .putProperties("external.table-name", tableName)
             .putProperties("external.namespace", namespaceFq)
             .putProperties(CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(true));
-    String ioImpl =
-        config
-            .metadataFileIo()
-            .filter(v -> v != null && !v.isBlank())
-            .orElseGet(
-                () ->
-                    metadataLocation != null && metadataLocation.startsWith("s3://")
-                        ? "org.apache.iceberg.aws.s3.S3FileIO"
-                        : null);
-    if (ioImpl != null && !ioImpl.isBlank()) {
-      spec.putProperties("io-impl", ioImpl);
-    }
-    config
-        .defaultRegion()
-        .filter(region -> region != null && !region.isBlank())
-        .ifPresent(region -> spec.putProperties("s3.region", region));
-    config.metadataFileIoRoot().ifPresent(root -> spec.putProperties("fs.floecat.test-root", root));
-
-    if (fileIoProperties != null && !fileIoProperties.isEmpty()) {
-      fileIoProperties.forEach(
-          (k, v) -> {
-            if (k != null && v != null && !k.isBlank() && !v.isBlank()) {
-              spec.putProperties(k, v);
-            }
-          });
-    }
 
     CreateConnectorRequest.Builder request =
         CreateConnectorRequest.newBuilder().setSpec(spec.build());

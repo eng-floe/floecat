@@ -73,9 +73,7 @@ public class TableCommitService {
         committedTable == null
             ? Map.of()
             : FileIoFactory.filterIoProperties(committedTable.getPropertiesMap());
-    LOG.infof(
-        "Commit table io props namespace=%s.%s props=%s",
-        namespace, table, ioProps);
+    LOG.infof("Commit table io props namespace=%s.%s props=%s", namespace, table, ioProps);
     StageCommitResult stageMaterialization = stageResolution.stageCommitResult();
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(committedTable);
     String requestedMetadataOverride = resolveRequestedMetadataLocation(req);
