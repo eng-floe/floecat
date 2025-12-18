@@ -19,13 +19,11 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
-import org.jboss.logging.Logger;
 import org.jboss.resteasy.reactive.server.ServerRequestFilter;
 
 @Provider
 @PreMatching
 public class AccountHeaderFilter implements ContainerRequestFilter {
-  private static final Logger LOG = Logger.getLogger(AccountHeaderFilter.class);
   @Inject Instance<IcebergGatewayConfig> config;
   @Inject AccountContext accountContext;
 
@@ -43,11 +41,7 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
   @Override
   @ServerRequestFilter(priority = 10)
   public void filter(ContainerRequestContext requestContext) {
-    LOG.infof("AccountHeaderFilter invoked for path %s", requestContext.getUriInfo().getPath());
     rewriteDefaultPrefix(requestContext);
-    if (requestContext.getProperty("rewrittenPath") != null) {
-      LOG.infof("Request URI after rewrite: %s", requestContext.getUriInfo().getRequestUri());
-    }
     if (requestContext.getUriInfo().getPath().equals("v1/config")) {
       return;
     }
@@ -84,12 +78,8 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
   private void rewriteDefaultPrefix(ContainerRequestContext context) {
     String prefix = defaultPrefix();
     if (prefix.isEmpty()) {
-      LOG.info("No default prefix configured; skipping path rewrite");
       return;
     }
-    LOG.infof(
-        "Evaluating prefix rewrite for path %s with prefix '%s'",
-        context.getUriInfo().getPath(), prefix);
     UriInfo uriInfo = context.getUriInfo();
     List<PathSegment> segments = uriInfo.getPathSegments();
     if (segments.size() < 2) {
@@ -100,8 +90,6 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
     }
     String second = segments.get(1).getPath();
     if (prefix.equals(second) || !PREFIXED_SEGMENTS.contains(second)) {
-      LOG.infof(
-          "Skipping prefix rewrite for path %s (second segment=%s)", uriInfo.getPath(), second);
       return;
     }
     StringBuilder newPath = new StringBuilder("/v1/").append(prefix);
@@ -112,7 +100,6 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
         UriBuilder.fromUri(uriInfo.getRequestUri()).replacePath(newPath.toString()).build();
     context.setRequestUri(newUri);
     context.setProperty("rewrittenPath", newPath.toString());
-    LOG.infof("Rewrote legacy path %s to %s", uriInfo.getPath(), newPath);
   }
 
   private String resolveAccountHeaderName() {
@@ -177,17 +164,14 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
 
   private String defaultPrefix() {
     if (config.isUnsatisfied()) {
-      LOG.info("Config not available when resolving default prefix");
       return "";
     }
     try {
       var cfg = config.get();
       String value = cfg.defaultPrefix().map(String::trim).orElse("");
-      LOG.infof("Resolved default prefix property to '%s'", value);
       if (value.isEmpty()) {
         String systemValue = System.getProperty("floecat.gateway.default-prefix", "");
         String envValue = System.getenv("FLOECAT_GATEWAY_DEFAULT_PREFIX");
-        LOG.infof("Fallback system property='%s', env='%s'", systemValue, envValue);
         if (!systemValue.isBlank()) {
           value = systemValue.trim();
         } else if (envValue != null && !envValue.isBlank()) {
@@ -196,7 +180,6 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
       }
       return value;
     } catch (Exception ex) {
-      LOG.error("Failed to resolve default prefix", ex);
       return "";
     }
   }
