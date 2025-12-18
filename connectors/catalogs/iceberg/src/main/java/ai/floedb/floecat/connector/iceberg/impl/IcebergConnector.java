@@ -486,6 +486,7 @@ public final class IcebergConnector implements FloecatConnector {
             ioProps.put(k, v);
           }
         });
+    RuntimeFileIoOverrides.mergeInto(ioProps);
     fileIO.initialize(ioProps);
     String resolvedMetadataLocation = resolveMetadataLocation(metadataLocation);
     StaticTableOperations ops = new StaticTableOperations(resolvedMetadataLocation, fileIO);

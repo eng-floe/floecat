@@ -20,6 +20,7 @@ public final class FileIoFactory {
     if (allowConfigOverrides && config != null) {
       config.metadataFileIoRoot().ifPresent(root -> normalized.put("fs.floecat.test-root", root));
     }
+    RuntimeFileIoOverrides.mergeInto(normalized);
     String impl =
         allowConfigOverrides && config != null
             ? config.metadataFileIo().orElse(normalized.getOrDefault("io-impl", DEFAULT_IO_IMPL))
@@ -60,7 +61,6 @@ public final class FileIoFactory {
             filtered.put(key, value);
           }
         });
-    AwsSystemPropertyOverrides.mergeInto(filtered);
     return filtered;
   }
 }

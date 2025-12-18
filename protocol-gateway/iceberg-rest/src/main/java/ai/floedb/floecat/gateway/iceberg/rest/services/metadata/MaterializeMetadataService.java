@@ -179,7 +179,6 @@ public class MaterializeMetadataService {
             }
           });
     }
-    AwsSystemPropertyOverrides.mergeInto(sanitized);
     return sanitized;
   }
 

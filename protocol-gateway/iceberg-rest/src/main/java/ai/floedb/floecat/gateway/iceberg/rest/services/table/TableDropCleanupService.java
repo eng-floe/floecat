@@ -3,7 +3,6 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.AwsSystemPropertyOverrides;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -38,7 +37,6 @@ public class TableDropCleanupService {
         table.getPropertiesMap() == null
             ? new LinkedHashMap<>()
             : new LinkedHashMap<>(table.getPropertiesMap());
-    AwsSystemPropertyOverrides.mergeInto(props);
     if (props == null || props.isEmpty()) {
       LOG.debugf(
           "Skipping purge for %s.%s in catalog %s because table properties were empty",
