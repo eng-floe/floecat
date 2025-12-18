@@ -35,7 +35,6 @@ import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
 import ai.floedb.floecat.connector.rpc.SyncCaptureRequest;
 import ai.floedb.floecat.connector.rpc.TriggerReconcileRequest;
-import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RealServiceTestResource;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -58,6 +57,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -94,6 +94,7 @@ class IcebergRestFixtureIT {
   private static final String DEFAULT_AUTH_HEADER = "Bearer integration-test";
   private static final String ACCOUNT_HEADER_NAME = "x-tenant-id";
   private static final String AUTH_HEADER_NAME = "authorization";
+  private static final boolean USE_AWS_FIXTURES = TestS3Fixtures.useAwsFixtures();
 
   private static long expectedSnapshotId;
   private static List<Long> fixtureSnapshotIds;
@@ -240,6 +241,8 @@ class IcebergRestFixtureIT {
         .when()
         .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables")
         .then()
+        .log()
+        .ifValidationFails()
         .statusCode(200)
         .body("stage-id", equalTo(stageId));
 
@@ -296,9 +299,8 @@ class IcebergRestFixtureIT {
         () ->
             "persisted metadata should reside under the floecat fixture bucket: "
                 + tableMetadataLocation);
-    Assertions.assertTrue(
-        Files.exists(localS3Path(tableMetadataLocation)),
-        "persisted metadata file should exist on the fake S3 filesystem");
+    assertFixtureObjectExists(
+        tableMetadataLocation, "persisted metadata file should exist in fixture storage");
     Assertions.assertEquals(
         tableMetadataLocation,
         refreshed.getPropertiesMap().get("external.metadata-location"),
@@ -335,10 +337,9 @@ class IcebergRestFixtureIT {
 
       String purgeTable = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
       registerTable(namespace, purgeTable, METADATA_V3, false);
-      Path metadataPath = localS3Path(TestS3Fixtures.bucketUri(METADATA_V3));
-      Assertions.assertTrue(
-          Files.exists(metadataPath),
-          "Fixture metadata should exist before issuing purge delete request");
+      String metadataLocation = TestS3Fixtures.bucketUri(METADATA_V3);
+      assertFixtureObjectExists(
+          metadataLocation, "Fixture metadata should exist before issuing purge delete request");
 
       given()
           .spec(spec)
@@ -360,19 +361,17 @@ class IcebergRestFixtureIT {
           .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + purgeTable)
           .then()
           .statusCode(404);
-      Assertions.assertTrue(
-          Files.notExists(metadataPath),
-          "metadata file should be deleted when purgeRequested=true");
+      assertFixtureObjectMissing(
+          metadataLocation, "metadata file should be deleted when purgeRequested=true");
       fixtureManifestLists
           .values()
           .forEach(
               relative -> {
-                Path manifestPath = localS3Path(TestS3Fixtures.bucketUri(relative));
-                Assertions.assertTrue(
-                    Files.notExists(manifestPath),
-                    () ->
-                        "manifest file should be deleted when purgeRequested=true: "
-                            + manifestPath);
+                String manifestLocation = TestS3Fixtures.bucketUri(relative);
+                assertFixtureObjectMissing(
+                    manifestLocation,
+                    "manifest file should be deleted when purgeRequested=true: "
+                        + manifestLocation);
               });
     } finally {
       reseedFixtureBucket();
@@ -394,8 +393,8 @@ class IcebergRestFixtureIT {
     registerTable(namespace, table, METADATA_V3, false);
 
     JsonNode actualMetadata = fetchPersistedMetadata(namespace, table);
-    JsonNode expectedMetadata =
-        MAPPER.readTree(TestS3Fixtures.prefixPath().resolve(Path.of(METADATA_V3)).toFile());
+    Path expectedMetadataPath = resolveFixtureMetadata(METADATA_V3);
+    JsonNode expectedMetadata = MAPPER.readTree(expectedMetadataPath.toFile());
 
     Assertions.assertEquals(
         canonicalizeMetadata(expectedMetadata, TestS3Fixtures.bucketUri(METADATA_V3)),
@@ -404,7 +403,7 @@ class IcebergRestFixtureIT {
   }
 
   private static List<Long> parseSnapshotIds(String relativeMetadataPath) throws IOException {
-    Path metadataPath = TestS3Fixtures.prefixPath().resolve(Path.of(relativeMetadataPath));
+    Path metadataPath = resolveFixtureMetadata(relativeMetadataPath);
     ObjectMapper mapper = new ObjectMapper();
     JsonNode node = mapper.readTree(metadataPath.toFile());
     List<Long> ids = new java.util.ArrayList<>();
@@ -423,6 +422,24 @@ class IcebergRestFixtureIT {
       ids.add(current);
     }
     return List.copyOf(ids);
+  }
+
+  private static Path resolveFixtureMetadata(String relativeMetadataPath) throws IOException {
+    Path seededPath = TestS3Fixtures.prefixPath().resolve(Path.of(relativeMetadataPath));
+    if (Files.isRegularFile(seededPath)) {
+      return seededPath;
+    }
+    Path simplePath =
+        TestS3Fixtures.fixturePath("simple").resolve(Path.of(relativeMetadataPath));
+    if (Files.isRegularFile(simplePath)) {
+      return simplePath;
+    }
+    Path complexPath =
+        TestS3Fixtures.fixturePath("complex").resolve(Path.of(relativeMetadataPath));
+    if (Files.isRegularFile(complexPath)) {
+      return complexPath;
+    }
+    throw new IOException("Fixture metadata not found for " + relativeMetadataPath);
   }
 
   private static String relativeMetadataPath(String location) {
@@ -736,38 +753,34 @@ class IcebergRestFixtureIT {
     String tableLocation = "s3://" + STAGE_BUCKET + "/" + namespace + "/" + table;
     String stageMetadataLocation = TestS3Fixtures.stageTableUri(namespace, table, METADATA_V3);
 
-    Map<String, Object> stageRequest =
+    Map<String, Object> stageRequest = new LinkedHashMap<>();
+    stageRequest.put("name", table);
+    stageRequest.put(
+        "schema",
         Map.of(
-            "name",
-            table,
-            "schema",
-            Map.of(
-                "schema-id",
-                1,
-                "last-column-id",
-                1,
-                "type",
-                "struct",
-                "fields",
-                List.of(Map.of("id", 1, "name", "id", "required", true, "type", "int"))),
-            "partition-spec",
-            Map.of(
-                "spec-id",
-                0,
-                "fields",
-                List.of(
-                    Map.of("name", "id", "field-id", 1, "source-id", 1, "transform", "identity"))),
-            "write-order",
-            Map.of("order-id", 0, "fields", List.of(Map.of("source-id", 1))),
-            "properties",
-            Map.ofEntries(
-                Map.entry("io-impl", InMemoryS3FileIO.class.getName()),
-                Map.entry("fs.floecat.test-root", TEST_S3_ROOT.toAbsolutePath().toString()),
-                Map.entry("metadata-location", stageMetadataLocation)),
-            "location",
-            tableLocation,
-            "stage-create",
-            true);
+            "schema-id",
+            1,
+            "last-column-id",
+            1,
+            "type",
+            "struct",
+            "fields",
+            List.of(Map.of("id", 1, "name", "id", "required", true, "type", "int"))));
+    stageRequest.put(
+        "partition-spec",
+        Map.of(
+            "spec-id",
+            0,
+            "fields",
+            List.of(
+                Map.of("name", "id", "field-id", 1, "source-id", 1, "transform", "identity"))));
+    stageRequest.put(
+        "write-order", Map.of("order-id", 0, "fields", List.of(Map.of("source-id", 1))));
+    Map<String, Object> stageProps = fixtureIoProperties();
+    stageProps.put("metadata-location", stageMetadataLocation);
+    stageRequest.put("properties", stageProps);
+    stageRequest.put("location", tableLocation);
+    stageRequest.put("stage-create", true);
 
     given()
         .spec(spec)
@@ -802,6 +815,8 @@ class IcebergRestFixtureIT {
             .when()
             .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
             .then()
+            .log()
+            .ifValidationFails()
             .statusCode(200)
             .extract()
             .path("'metadata-location'");
@@ -826,32 +841,22 @@ class IcebergRestFixtureIT {
         persistedLocation.endsWith(".metadata.json"),
         "persisted metadata should be an Iceberg metadata file");
 
-    Path commitPath = localS3Path(commitMetadataLocation);
-    Assertions.assertTrue(
-        Files.exists(commitPath),
-        "materialized metadata file should exist on the fake S3 filesystem");
-    Path persistedPath = localS3Path(persistedLocation);
-    Assertions.assertTrue(
-        Files.exists(persistedPath),
-        "persisted metadata file should exist on the fake S3 filesystem");
+    assertFixtureObjectExists(
+        commitMetadataLocation,
+        "materialized metadata file should exist in the fixture bucket storage");
+    assertFixtureObjectExists(
+        persistedLocation,
+        "persisted metadata file should exist in the fixture bucket storage");
   }
 
   private String registerTable(
       String namespace, String table, String metadataLocation, boolean overwrite) {
-    Map<String, Object> payload =
-        Map.of(
-            "name",
-            table,
-            "metadata-location",
-            TestS3Fixtures.bucketUri(metadataLocation),
-            "overwrite",
-            overwrite,
-            "properties",
-            Map.of(
-                "io-impl",
-                InMemoryS3FileIO.class.getName(),
-                "fs.floecat.test-root",
-                TestS3Fixtures.bucketPath().getParent().toString()));
+    Map<String, Object> properties = fixtureIoProperties();
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("name", table);
+    payload.put("metadata-location", TestS3Fixtures.bucketUri(metadataLocation));
+    payload.put("overwrite", overwrite);
+    payload.put("properties", properties);
     System.out.printf(
         "FixtureIT register namespace=%s table=%s metadata=%s overwrite=%s%n",
         namespace, table, metadataLocation, overwrite);
@@ -862,6 +867,8 @@ class IcebergRestFixtureIT {
             .when()
             .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/register")
             .then()
+            .log()
+            .ifValidationFails()
             .statusCode(200)
             .extract()
             .path("'metadata-location'");
@@ -1018,6 +1025,32 @@ class IcebergRestFixtureIT {
     return payload;
   }
 
+  private Map<String, Object> fixtureIoProperties() {
+    Map<String, Object> props = new LinkedHashMap<>();
+    TestS3Fixtures.fileIoProperties(TEST_S3_ROOT.toAbsolutePath().toString()).forEach(props::put);
+    return props;
+  }
+
+  private void assertFixtureObjectExists(String location, String message) {
+    if (USE_AWS_FIXTURES) {
+      Assertions.assertTrue(
+          TestS3Fixtures.objectExistsInS3(location), message + " (" + location + ")");
+    } else {
+      Path local = localS3Path(location);
+      Assertions.assertTrue(Files.exists(local), message + " (" + local + ")");
+    }
+  }
+
+  private void assertFixtureObjectMissing(String location, String message) {
+    if (USE_AWS_FIXTURES) {
+      Assertions.assertFalse(
+          TestS3Fixtures.objectExistsInS3(location), message + " (" + location + ")");
+    } else {
+      Path local = localS3Path(location);
+      Assertions.assertTrue(Files.notExists(local), message + " (" + local + ")");
+    }
+  }
+
   private Path localS3Path(String location) {
     URI uri = URI.create(location);
     if (!"s3".equalsIgnoreCase(uri.getScheme())) {
@@ -1033,9 +1066,9 @@ class IcebergRestFixtureIT {
 
   private Map<String, Object> stageCreateRequest(String table, String namespace) {
     String stagedMetadataLocation = TestS3Fixtures.stageTableUri(namespace, table, METADATA_V3);
-    return Map.of(
-        "name",
-        table,
+    Map<String, Object> request = new LinkedHashMap<>();
+    request.put("name", table);
+    request.put(
         "schema",
         Map.of(
             "schema-id",
@@ -1045,27 +1078,22 @@ class IcebergRestFixtureIT {
             "type",
             "struct",
             "fields",
-            List.of(Map.of("id", 1, "name", "id", "required", true, "type", "int"))),
+            List.of(Map.of("id", 1, "name", "id", "required", true, "type", "int"))));
+    request.put(
         "partition-spec",
         Map.of(
             "spec-id",
             0,
             "fields",
-            List.of(Map.of("name", "id", "field-id", 1, "source-id", 1, "transform", "identity"))),
-        "write-order",
-        Map.of("sort-order-id", 0, "fields", List.of(Map.of("source-id", 1))),
-        "properties",
-        Map.of(
-            "metadata-location",
-            stagedMetadataLocation,
-            "io-impl",
-            InMemoryS3FileIO.class.getName(),
-            "fs.floecat.test-root",
-            TEST_S3_ROOT.toAbsolutePath().toString()),
-        "location",
-        String.format("s3://%s/%s/%s", STAGE_BUCKET, namespace, table),
-        "stage-create",
-        true);
+            List.of(Map.of("name", "id", "field-id", 1, "source-id", 1, "transform", "identity"))));
+    request.put(
+        "write-order", Map.of("sort-order-id", 0, "fields", List.of(Map.of("source-id", 1))));
+    Map<String, Object> props = fixtureIoProperties();
+    props.put("metadata-location", stagedMetadataLocation);
+    request.put("properties", props);
+    request.put("location", String.format("s3://%s/%s/%s", STAGE_BUCKET, namespace, table));
+    request.put("stage-create", true);
+    return request;
   }
 
   private Connector awaitConnectorForTable(String namespace, String table, Duration timeout) {

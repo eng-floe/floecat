@@ -7,6 +7,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -100,6 +101,7 @@ public class TableUpdatePlanner {
       return UpdatePlan.failure(spec, mask, snapshotError);
     }
     mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
+    mergedProps = preserveFileIoProperties(tableSupplier, mergedProps);
     if (mergedProps != null) {
       spec.clearProperties().putAllProperties(mergedProps);
       mask.addPaths("properties");
@@ -256,6 +258,24 @@ public class TableUpdatePlanner {
             ? mergedProps.get(RefPropertyUtil.PROPERTY_KEY)
             : tableSupplier.get().getPropertiesMap().get(RefPropertyUtil.PROPERTY_KEY);
     return RefPropertyUtil.decode(encoded);
+  }
+
+  private Map<String, String> preserveFileIoProperties(
+      Supplier<Table> tableSupplier, Map<String, String> mergedProps) {
+    if (mergedProps == null) {
+      return null;
+    }
+    Table table = tableSupplier.get();
+    if (table == null || table.getPropertiesMap().isEmpty()) {
+      return mergedProps;
+    }
+    Map<String, String> managedProps =
+        FileIoFactory.filterIoProperties(table.getPropertiesMap());
+    if (managedProps.isEmpty()) {
+      return mergedProps;
+    }
+    managedProps.forEach(mergedProps::putIfAbsent);
+    return mergedProps;
   }
 
   private static Object firstNonNull(Object first, Object second) {

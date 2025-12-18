@@ -10,6 +10,7 @@
 #
 # Dev – foreground & background:
 #   make run                     # quarkus:dev for service (foreground)
+#   make run-aws                 # quarkus:dev wired to LocalStack
 #   make run-rest                # quarkus:dev for REST gateway (foreground)
 #   make run-all                 # start REST (bg), then run service (fg)
 #   make start                   # start service in background
@@ -17,6 +18,9 @@
 #   make start-all               # start service + REST gateway in background
 #   make stop                    # stop service + REST gateway
 #   make logs                    # tail -f service log
+#   make test-aws                # full suite tests against LocalStack
+#   make localstack-up           # start LocalStack container
+#   make localstack-down         # stop LocalStack container (if running)
 #   make logs-rest               # tail -f REST gateway log
 #   make status                  # show background dev status
 #
@@ -51,6 +55,8 @@ MAKEFLAGS  += --no-builtin-rules
 MVN ?= mvn
 MVN_FLAGS   := -q -T 1C --no-transfer-progress -DskipTests -DskipUTs=true -DskipITs=true
 MVN_TESTALL := --no-transfer-progress
+
+DOCKER_COMPOSE ?= docker compose
 
 # ---------- Quarkus dev settings ----------
 QUARKUS_PROFILE  ?= dev
@@ -90,6 +96,34 @@ PROTO_STAMP  := $(M2_CLI_DIR)/.proto-$(VERSION).stamp
 CLI_JAR := client-cli/target/quarkus-app/quarkus-run.jar
 CLI_SRC := $(shell find client-cli/src -type f \( -name '*.java' -o -name '*.xml' -o -name '*.properties' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) ) client-cli/pom.xml
 
+# ---------- LocalStack / AWS storage ----------
+LOCALSTACK_DIR := tools/localstack
+LOCALSTACK_COMPOSE := $(LOCALSTACK_DIR)/docker-compose.yml
+LOCALSTACK_PROJECT := floecat-localstack
+LOCALSTACK_ENDPOINT ?= http://localhost:4566
+LOCALSTACK_HEALTH := $(LOCALSTACK_ENDPOINT)/_localstack/health
+LOCALSTACK_BUCKET ?= floecat-dev
+LOCALSTACK_TABLE ?= floecat_pointers
+LOCALSTACK_REGION ?= us-east-1
+LOCALSTACK_ACCESS_KEY ?= test
+LOCALSTACK_SECRET_KEY ?= test
+AWS_STORE_PROPS := \
+	-Dfloecat.kv=dynamodb \
+	-Dfloecat.kv.table=$(LOCALSTACK_TABLE) \
+	-Dfloecat.kv.auto-create=true \
+	-Dfloecat.kv.ttl-enabled=true \
+	-Dfloecat.blob=s3 \
+	-Dfloecat.blob.s3.bucket=$(LOCALSTACK_BUCKET) \
+	-Daws.region=$(LOCALSTACK_REGION) \
+	-Daws.accessKeyId=$(LOCALSTACK_ACCESS_KEY) \
+	-Daws.secretAccessKey=$(LOCALSTACK_SECRET_KEY) \
+	-Daws.dynamodb.endpoint-override=$(LOCALSTACK_ENDPOINT) \
+	-Daws.s3.endpoint-override=$(LOCALSTACK_ENDPOINT) \
+	-Daws.s3.force-path-style=true \
+	-Dfloecat.fixtures.use-aws-s3=true \
+	-Daws.requestChecksumCalculation=when_required \
+	-Daws.responseChecksumValidation=when_required
+
 # ===================================================
 # Aggregates
 # ===================================================
@@ -122,6 +156,17 @@ test: $(PROTO_JAR)
 	$(MVN) $(MVN_TESTALL) install -N
 	@echo "==> [TEST] service + REST gateway + client-cli (unit + IT)"
 	$(MVN) $(MVN_TESTALL) \
+	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	  verify
+
+.PHONY: test-aws
+test-aws: $(PROTO_JAR) localstack-up
+	@echo "==> [BUILD] installing parent POM to local repo"
+	$(MVN) $(MVN_TESTALL) install -N
+	@echo "==> [TEST] full suite (service + REST + CLI) w/ AWS storage (LocalStack)"
+	AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED \
+	AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED \
+	$(MVN) $(MVN_TESTALL) $(AWS_STORE_PROPS) \
 	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	  verify
 
@@ -183,6 +228,18 @@ run-service: $(PROTO_JAR)
 	@echo "==> [DEV] quarkus:dev (profile=$(QUARKUS_PROFILE))"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+	  $(QUARKUS_DEV_ARGS) \
+	  $(REACTOR_SERVICE) \
+	  $(QUARKUS_DEV_GOAL)
+
+.PHONY: run-aws
+run-aws: localstack-up $(PROTO_JAR)
+	@echo "==> [DEV] quarkus:dev (AWS storage via LocalStack)"
+	AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED \
+	AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED \
+	$(MVN) -f ./pom.xml \
+	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+	  $(AWS_STORE_PROPS) \
 	  $(QUARKUS_DEV_ARGS) \
 	  $(REACTOR_SERVICE) \
 	  $(QUARKUS_DEV_GOAL)
@@ -291,6 +348,47 @@ logs-rest:
 	  tail -f "$(REST_LOG)"; \
 	else \
 	  echo "==> [LOGS] no REST log yet"; \
+	fi
+
+.PHONY: localstack-up
+localstack-up:
+	@if curl -fs $(LOCALSTACK_HEALTH) >/dev/null 2>&1; then \
+	  echo "==> [LOCALSTACK] already running at $(LOCALSTACK_ENDPOINT)"; \
+	else \
+	  echo "==> [LOCALSTACK] starting docker compose ($(LOCALSTACK_COMPOSE))"; \
+	  $(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) up -d; \
+	  echo "==> [LOCALSTACK] waiting for health endpoint"; \
+	  bash -c 'set -euo pipefail; for i in $$(seq 1 30); do \
+	    if curl -fs $(LOCALSTACK_HEALTH) >/dev/null 2>&1; then exit 0; fi; \
+	    sleep 1; \
+	  done; \
+	  echo "LocalStack failed to start at $(LOCALSTACK_ENDPOINT)" >&2; \
+	  exit 1'; \
+	fi
+	@echo "==> [LOCALSTACK] ensuring S3 bucket $(LOCALSTACK_BUCKET) exists"
+	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
+	  awslocal s3api create-bucket \
+	    --bucket $(LOCALSTACK_BUCKET) \
+	    --region $(LOCALSTACK_REGION) >/dev/null 2>&1 || true
+	@echo "==> [LOCALSTACK] ensuring DynamoDB table $(LOCALSTACK_TABLE) exists"
+	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
+	  awslocal dynamodb create-table \
+	    --table-name $(LOCALSTACK_TABLE) \
+	    --attribute-definitions AttributeName=pk,AttributeType=S AttributeName=sk,AttributeType=S \
+	    --key-schema AttributeName=pk,KeyType=HASH AttributeName=sk,KeyType=RANGE \
+	    --billing-mode PAY_PER_REQUEST >/dev/null 2>&1 || true
+	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
+	  awslocal dynamodb update-time-to-live \
+	    --table-name $(LOCALSTACK_TABLE) \
+	    --time-to-live-specification '{"Enabled":true,"AttributeName":"expires_at"}' >/dev/null 2>&1 || true
+
+.PHONY: localstack-down
+localstack-down:
+	@if curl -fs $(LOCALSTACK_HEALTH) >/dev/null 2>&1; then \
+	  echo "==> [LOCALSTACK] stopping docker compose ($(LOCALSTACK_PROJECT))"; \
+	  $(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) down; \
+	else \
+	  echo "==> [LOCALSTACK] not running"; \
 	fi
 
 .PHONY: status

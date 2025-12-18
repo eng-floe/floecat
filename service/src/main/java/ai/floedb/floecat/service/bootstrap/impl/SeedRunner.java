@@ -35,6 +35,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import java.time.Clock;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -416,19 +417,27 @@ public class SeedRunner {
             .setAuth(AuthConfig.newBuilder().setScheme("none").build())
             .setCreatedAt(Timestamps.fromMillis(now))
             .setUpdatedAt(Timestamps.fromMillis(now))
-            .putAllProperties(
-                Map.of(
-                    "external.metadata-location", fixture.metadataLocation(),
-                    "external.namespace", fixture.sourceNamespace(),
-                    "external.table-name", fixture.tableName(),
-                    "io-impl", InMemoryS3FileIO.class.getName(),
-                    "fs.floecat.test-root", fixtureRoot,
-                    "stats.ndv.enabled", "false"));
+            .putAllProperties(connectorProperties(fixture, fixtureRoot));
 
     connectorRepo.create(connector.build());
     LOG.infov(
         "Seeded connector {0} for fixture table {1}", fixture.connectorName(), fixture.tableName());
     return connectorRid;
+  }
+
+  private Map<String, String> connectorProperties(FixtureConfig fixture, String fixtureRoot) {
+    Map<String, String> props = new LinkedHashMap<>();
+    props.put("external.metadata-location", fixture.metadataLocation());
+    props.put("external.namespace", fixture.sourceNamespace());
+    props.put("external.table-name", fixture.tableName());
+    props.put("stats.ndv.enabled", "false");
+    if (TestS3Fixtures.useAwsFixtures()) {
+      props.putAll(TestS3Fixtures.awsFileIoProperties());
+    } else {
+      props.put("io-impl", InMemoryS3FileIO.class.getName());
+      props.put("fs.floecat.test-root", fixtureRoot);
+    }
+    return props;
   }
 
   private void syncConnector(ResourceId connectorId, FixtureConfig fixture) {

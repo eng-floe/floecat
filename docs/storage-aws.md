@@ -64,6 +64,21 @@ Extensibility:
   involves rehydrating DynamoDB pointers (versions) and replaying snapshots stored in S3. GC settings
   control how long idempotency records and tombstones linger.
 
+## Local Testing with LocalStack
+- `make run-aws` – Starts a LocalStack container (DynamoDB + S3), creates the configured S3 bucket,
+  creates the DynamoDB pointer table (including TTL), and launches `quarkus:dev` with
+  `floecat.kv=dynamodb` / `floecat.blob=s3`. Requires Docker; the target automatically points the
+  service at `http://localhost:4566` and forces path-style S3 access.
+- `make test-aws` – Reuses the same LocalStack container and runs the service module’s unit+IT
+  suites with the AWS storage implementations enabled.
+- `make aws-test` – Runs the full `service + REST gateway + client-cli` test suite against the same
+  LocalStack backends.
+- `make localstack-down` – Stops the LocalStack container started by the Make targets.
+
+Use the default credentials (`test`/`test`) or override them via `LOCALSTACK_ACCESS_KEY` /
+`LOCALSTACK_SECRET_KEY` when invoking Make. The Make target idempotently provisions the S3 bucket,
+DynamoDB table, and TTL attribute using the bundled `awslocal` CLI.
+
 ## Cross-References
 - SPI contract: [`docs/storage-spi.md`](storage-spi.md)
 - Repository usage: [`docs/service.md`](service.md)

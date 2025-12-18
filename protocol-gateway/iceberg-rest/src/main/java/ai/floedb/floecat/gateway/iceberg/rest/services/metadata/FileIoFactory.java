@@ -40,7 +40,7 @@ public final class FileIoFactory {
     }
   }
 
-  private static Map<String, String> filterIoProperties(Map<String, String> props) {
+  public static Map<String, String> filterIoProperties(Map<String, String> props) {
     if (props == null || props.isEmpty()) {
       return Map.of();
     }
@@ -60,6 +60,7 @@ public final class FileIoFactory {
             filtered.put(key, value);
           }
         });
+    AwsSystemPropertyOverrides.mergeInto(filtered);
     return filtered;
   }
 }

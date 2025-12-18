@@ -170,16 +170,16 @@ public class MaterializeMetadataService {
   }
 
   private Map<String, String> sanitizeProperties(Map<String, String> props) {
-    if (props == null || props.isEmpty()) {
-      return Map.of();
-    }
     Map<String, String> sanitized = new LinkedHashMap<>();
-    props.forEach(
-        (key, value) -> {
-          if (key != null && value != null) {
-            sanitized.put(key, value);
-          }
-        });
+    if (props != null && !props.isEmpty()) {
+      props.forEach(
+          (key, value) -> {
+            if (key != null && value != null) {
+              sanitized.put(key, value);
+            }
+          });
+    }
+    AwsSystemPropertyOverrides.mergeInto(sanitized);
     return sanitized;
   }
 

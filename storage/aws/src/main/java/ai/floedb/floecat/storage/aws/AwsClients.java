@@ -6,6 +6,12 @@ import jakarta.inject.Singleton;
 import java.net.URI;
 import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
@@ -25,6 +31,9 @@ public class AwsClients {
   @ConfigProperty(name = "aws.secretAccessKey", defaultValue = "test")
   String secretKey;
 
+  @ConfigProperty(name = "aws.sessionToken")
+  Optional<String> sessionToken;
+
   @ConfigProperty(name = "aws.dynamodb.endpoint-override")
   Optional<URI> dynamoEndpoint;
 
@@ -41,6 +50,7 @@ public class AwsClients {
         DynamoDbClient.builder()
             .region(region)
             .httpClient(UrlConnectionHttpClient.create())
+            .credentialsProvider(resolveCredentials())
             .overrideConfiguration(ClientOverrideConfiguration.builder().build());
     dynamoEndpoint.ifPresent(builder::endpointOverride);
     return builder.build();
@@ -55,8 +65,32 @@ public class AwsClients {
             .region(region)
             .serviceConfiguration(s3Cfg)
             .httpClient(UrlConnectionHttpClient.create())
+            .credentialsProvider(resolveCredentials())
             .overrideConfiguration(ClientOverrideConfiguration.builder().build());
     s3Endpoint.ifPresent(builder::endpointOverride);
     return builder.build();
+  }
+
+  private AwsCredentialsProvider resolveCredentials() {
+    String trimmedAccess = trim(accessKey);
+    String trimmedSecret = trim(secretKey);
+    if (trimmedAccess != null && trimmedSecret != null) {
+      AwsCredentials creds =
+          sessionToken
+              .filter(token -> !token.isBlank())
+              .map(token -> AwsSessionCredentials.create(trimmedAccess, trimmedSecret, token))
+              .map(AwsCredentials.class::cast)
+              .orElseGet(() -> AwsBasicCredentials.create(trimmedAccess, trimmedSecret));
+      return StaticCredentialsProvider.create(creds);
+    }
+    return DefaultCredentialsProvider.create();
+  }
+
+  private static String trim(String value) {
+    if (value == null) {
+      return null;
+    }
+    String trimmed = value.trim();
+    return trimmed.isEmpty() ? null : trimmed;
   }
 }

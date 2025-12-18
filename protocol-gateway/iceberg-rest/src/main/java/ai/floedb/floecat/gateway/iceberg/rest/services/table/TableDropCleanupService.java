@@ -3,12 +3,14 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.AwsSystemPropertyOverrides;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import org.apache.iceberg.CatalogUtil;
 import org.apache.iceberg.TableMetadata;
@@ -32,7 +34,11 @@ public class TableDropCleanupService {
           namespace, tableName, catalogName);
       return;
     }
-    Map<String, String> props = table.getPropertiesMap();
+    Map<String, String> props =
+        table.getPropertiesMap() == null
+            ? new LinkedHashMap<>()
+            : new LinkedHashMap<>(table.getPropertiesMap());
+    AwsSystemPropertyOverrides.mergeInto(props);
     if (props == null || props.isEmpty()) {
       LOG.debugf(
           "Skipping purge for %s.%s in catalog %s because table properties were empty",
@@ -46,6 +52,10 @@ public class TableDropCleanupService {
           namespace, tableName, catalogName);
       return;
     }
+    Map<String, String> ioProps = FileIoFactory.filterIoProperties(props);
+    LOG.infof(
+        "Purging Iceberg data namespace=%s table=%s metadata=%s ioProps=%s",
+        namespace, tableName, metadataLocation, ioProps);
     FileIO fileIO = null;
     try {
       fileIO = FileIoFactory.createFileIo(props, config, true);

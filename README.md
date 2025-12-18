@@ -119,6 +119,15 @@ make stop
 
 # Tail structured service + audit logs
 make logs
+
+# Run service wired to LocalStack (DynamoDB + S3 backends)
+make run-aws
+
+# Run service tests (service module) against LocalStack
+make test-aws
+
+# Stop the LocalStack container (if you launched it via the Make targets)
+make localstack-down
 ```
 
 Seed data is enabled by default (`floecat.seed.enabled=true`); the service starts with a demo account,

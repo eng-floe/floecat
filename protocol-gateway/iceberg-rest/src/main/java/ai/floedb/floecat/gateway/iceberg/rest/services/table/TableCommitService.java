@@ -15,6 +15,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolv
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
@@ -68,6 +69,13 @@ public class TableCommitService {
 
     Table committedTable =
         applyTableUpdates(tableSupplier, tableId, updatePlan.spec(), updatePlan.mask());
+    Map<String, String> ioProps =
+        committedTable == null
+            ? Map.of()
+            : FileIoFactory.filterIoProperties(committedTable.getPropertiesMap());
+    LOG.infof(
+        "Commit table io props namespace=%s.%s props=%s",
+        namespace, table, ioProps);
     StageCommitResult stageMaterialization = stageResolution.stageCommitResult();
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(committedTable);
     String requestedMetadataOverride = resolveRequestedMetadataLocation(req);

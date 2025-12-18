@@ -433,7 +433,8 @@ public class TableGatewaySupport {
       ResourceId tableId,
       String metadataLocation,
       String tableLocation,
-      String idempotencyKey) {
+      String idempotencyKey,
+      Map<String, String> fileIoProperties) {
     NamespacePath nsPath = NamespacePath.newBuilder().addAllSegments(namespacePath).build();
     SourceSelector source =
         SourceSelector.newBuilder().setNamespace(nsPath).setTable(tableName).build();
@@ -480,6 +481,15 @@ public class TableGatewaySupport {
         .filter(region -> region != null && !region.isBlank())
         .ifPresent(region -> spec.putProperties("s3.region", region));
     config.metadataFileIoRoot().ifPresent(root -> spec.putProperties("fs.floecat.test-root", root));
+
+    if (fileIoProperties != null && !fileIoProperties.isEmpty()) {
+      fileIoProperties.forEach(
+          (k, v) -> {
+            if (k != null && v != null && !k.isBlank() && !v.isBlank()) {
+              spec.putProperties(k, v);
+            }
+          });
+    }
 
     CreateConnectorRequest.Builder request =
         CreateConnectorRequest.newBuilder().setSpec(spec.build());

@@ -9,6 +9,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
@@ -140,6 +141,8 @@ public class TableCommitSideEffectService {
         LOG.infof(
             "Creating external connector namespace=%s table=%s metadata=%s resolvedLocation=%s",
             namespacePath, table, effectiveMetadata, resolvedLocation);
+        Map<String, String> ioProps =
+            FileIoFactory.filterIoProperties(tableRecord.getPropertiesMap());
         connectorId =
             tableSupport.createExternalConnector(
                 prefix,
@@ -150,7 +153,8 @@ public class TableCommitSideEffectService {
                 tableRecord.getResourceId(),
                 effectiveMetadata,
                 resolvedLocation,
-                idempotencyKey);
+                idempotencyKey,
+                ioProps);
         if (connectorId != null) {
           tableSupport.updateTableUpstream(
               tableRecord.getResourceId(), namespacePath, table, connectorId, resolvedLocation);
