@@ -475,12 +475,11 @@ public final class IcebergConnector implements FloecatConnector {
       throw new IllegalArgumentException("metadataLocation is required");
     }
     Map<String, String> opts = options == null ? Map.of() : options;
-    String ioImpl = opts.getOrDefault("io-impl", "org.apache.iceberg.aws.s3.S3FileIO").trim();
-    FileIO fileIO = instantiateFileIO(ioImpl);
     Map<String, String> ioProps = new HashMap<>();
     opts.forEach(
         (k, v) -> {
-          if (k.startsWith("s3.")
+          if ("io-impl".equals(k)
+              || k.startsWith("s3.")
               || k.startsWith("fs.")
               || k.startsWith("client.")
               || k.startsWith("aws.")) {
@@ -488,6 +487,9 @@ public final class IcebergConnector implements FloecatConnector {
           }
         });
     RuntimeFileIoOverrides.mergeInto(ioProps);
+    String ioImpl = ioProps.getOrDefault("io-impl", "org.apache.iceberg.aws.s3.S3FileIO").trim();
+    FileIO fileIO = instantiateFileIO(ioImpl);
+    ioProps.remove("io-impl");
     fileIO.initialize(ioProps);
     String resolvedMetadataLocation = resolveMetadataLocation(metadataLocation);
     StaticTableOperations ops = new StaticTableOperations(resolvedMetadataLocation, fileIO);

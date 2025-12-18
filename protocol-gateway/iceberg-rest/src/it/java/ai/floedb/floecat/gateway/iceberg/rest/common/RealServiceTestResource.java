@@ -75,6 +75,7 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
   @Override
   public Map<String, String> start() {
     try {
+      ensureLocalFixtureOverrides();
       applyDefaultServiceProperties();
       logForwardedState();
       ensureServiceBuilt();
@@ -158,6 +159,14 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
       testConfig.put("floecat.gateway.metadata-file-io-root", TEST_S3_ROOT);
     }
     return testConfig;
+  }
+
+  private static void ensureLocalFixtureOverrides() {
+    if (TestS3Fixtures.useAwsFixtures()) {
+      return;
+    }
+    System.setProperty("floecat.fileio.override.io-impl", InMemoryS3FileIO.class.getName());
+    System.setProperty("floecat.fileio.override.fs.floecat.test-root", TEST_S3_ROOT);
   }
 
   private static void addForwardedProperties(List<String> command) {
