@@ -63,6 +63,22 @@ final class PgAttributeScannerTest {
                         .setTypcollation(0)
                         .build()
                         .toByteArray())));
+    TypeNode numeric =
+        typeNode(
+            NameRef.newBuilder().addPath("pg_catalog").setName("numeric").build(),
+            Map.of(
+                ENGINE,
+                new EngineHint(
+                    FloePayloads.TYPE.type(),
+                    FloeTypeSpecific.newBuilder()
+                        .setOid(1700)
+                        .setTyplen(-1)
+                        .setTypalign("d")
+                        .setTypstorage("m")
+                        .setTypndims(0)
+                        .setTypcollation(0)
+                        .build()
+                        .toByteArray())));
 
     // --- table
     TableNode table =
@@ -81,24 +97,40 @@ final class PgAttributeScannerTest {
                 .setName("id")
                 .setLogicalType("INT32")
                 .setNullable(false)
+                .build(),
+            SchemaColumn.newBuilder()
+                .setName("amount")
+                .setLogicalType("DECIMAL(10,2)")
+                .setNullable(true)
                 .build());
 
-    SystemObjectScanContext ctx = contextWith(int4, table, schema);
+    SystemObjectScanContext ctx = contextWith(List.of(int4, numeric), List.of(table), schema);
 
-    SystemObjectRow row = scanner.scan(ctx).findFirst().orElseThrow();
-    Object[] v = row.values();
+    List<SystemObjectRow> rows = scanner.scan(ctx).toList();
 
-    assertThat(v[0]).isEqualTo(100); // attrelid
-    assertThat(v[1]).isEqualTo("id"); // attname
-    assertThat(v[2]).isEqualTo(23); // atttypid (pg_type.oid)
-    assertThat(v[3]).isEqualTo(1); // attnum
-    assertThat(v[4]).isEqualTo(4); // attlen
-    assertThat(v[5]).isEqualTo(true); // attnotnull
-    assertThat(v[6]).isEqualTo(false); // attisdropped
-    assertThat(v[7]).isEqualTo("i"); // attalign
-    assertThat(v[8]).isEqualTo("p"); // attstorage
-    assertThat(v[9]).isEqualTo(0); // attndims
-    assertThat(v[10]).isEqualTo(0); // attcollation
+    Object[] v0 = rows.get(0).values();
+
+    assertThat(v0[0]).isEqualTo(100); // attrelid
+    assertThat(v0[1]).isEqualTo("id"); // attname
+    assertThat(v0[2]).isEqualTo(23); // atttypid (pg_type.oid)
+    assertThat(v0[3]).isEqualTo(-1); // atttypmod
+    assertThat(v0[4]).isEqualTo(1); // attnum
+    assertThat(v0[5]).isEqualTo(4); // attlen
+    assertThat(v0[6]).isEqualTo(true); // attnotnull
+    assertThat(v0[7]).isEqualTo(false); // attisdropped
+    assertThat(v0[8]).isEqualTo("i"); // attalign
+    assertThat(v0[9]).isEqualTo("p"); // attstorage
+    assertThat(v0[10]).isEqualTo(0); // attndims
+    assertThat(v0[11]).isEqualTo(0); // attcollation
+
+    Object[] v1 = rows.get(1).values();
+
+    assertThat(v1[0]).isEqualTo(100); // attrelid
+    assertThat(v1[1]).isEqualTo("amount"); // attname
+    assertThat(v1[2]).isEqualTo(1700); // atttypid (pg_catalog.numeric oid)
+    assertThat(v1[3]).isEqualTo((10 << 16) | 2); // atttypmod (precision and scale)
+    assertThat(v1[4]).isEqualTo(2); // attnum
+    assertThat(v1[6]).isEqualTo(false); // attnotnull
   }
 
   @Test
@@ -116,13 +148,14 @@ final class PgAttributeScannerTest {
                 .setNullable(true)
                 .build());
 
-    SystemObjectScanContext ctx = contextWith(int4, table, schema);
+    SystemObjectScanContext ctx = contextWith(List.of(int4), List.of(table), schema);
 
     Object[] v = scanner.scan(ctx).findFirst().orElseThrow().values();
 
     assertThat(v[2]).isInstanceOf(Integer.class); // deterministic fallback OID
-    assertThat(v[5]).isEqualTo(false); // nullable → not not-null
-    assertThat(v[4]).isEqualTo(-1); // attlen fallback
+    assertThat(v[3]).isEqualTo(-1); // atttypmod fallback
+    assertThat(v[5]).isEqualTo(-1); // attlen fallback
+    assertThat(v[6]).isEqualTo(false); // nullable → not not-null
   }
 
   // ----------------------------------------------------------------------
@@ -135,12 +168,15 @@ final class PgAttributeScannerTest {
       if (t.kind().name().equals("INT32")) {
         return lookup.findByName("pg_catalog", "int4");
       }
+      if (t.kind().name().equals("DECIMAL")) {
+        return lookup.findByName("pg_catalog", "numeric");
+      }
       return Optional.empty();
     }
   }
 
   private static SystemObjectScanContext contextWith(
-      TypeNode type, TableNode table, List<SchemaColumn> schema) {
+      List<TypeNode> types, List<TableNode> tables, List<SchemaColumn> schema) {
 
     TestCatalogOverlay overlay = new TestCatalogOverlay();
 
@@ -162,9 +198,14 @@ final class PgAttributeScannerTest {
             Map.of());
 
     overlay.addNode(pg);
-    overlay.addType(pg.id(), type);
-    overlay.addRelation(pg.id(), table);
-    overlay.setTableSchema(table.id(), schema);
+
+    for (TypeNode type : types) {
+      overlay.addType(pg.id(), type);
+    }
+    for (TableNode table : tables) {
+      overlay.addRelation(pg.id(), table);
+      overlay.setTableSchema(table.id(), schema);
+    }
 
     return new SystemObjectScanContext(overlay, null, catalogId());
   }

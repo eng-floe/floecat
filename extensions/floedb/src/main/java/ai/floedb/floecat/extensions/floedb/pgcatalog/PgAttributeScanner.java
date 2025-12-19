@@ -40,6 +40,7 @@ public final class PgAttributeScanner implements SystemObjectScanner {
           ScannerUtils.col("attrelid", "INT"),
           ScannerUtils.col("attname", "VARCHAR"),
           ScannerUtils.col("atttypid", "INT"),
+          ScannerUtils.col("atttypmod", "INT"),
           ScannerUtils.col("attnum", "INT"),
           ScannerUtils.col("attlen", "INT"),
           ScannerUtils.col("attnotnull", "BOOLEAN"),
@@ -103,6 +104,13 @@ public final class PgAttributeScanner implements SystemObjectScanner {
 
     LogicalType logical = LogicalTypeFormat.parse(column.getLogicalType());
 
+    int atttypmod;
+    if (logical.isDecimal()) {
+      atttypmod = (logical.precision() << 16) | logical.scale();
+    } else {
+      atttypmod = -1;
+    }
+
     TypeNode type = resolver.resolveOrThrow(logical);
 
     int typeOid = ScannerUtils.oid(ctx, type.id(), FloePayloads.TYPE, FloeTypeSpecific::getOid);
@@ -122,6 +130,7 @@ public final class PgAttributeScanner implements SystemObjectScanner {
           relOid,
           column.getName(),
           typeOid,
+          atttypmod,
           attnum,
           attlen,
           !column.getNullable(),
