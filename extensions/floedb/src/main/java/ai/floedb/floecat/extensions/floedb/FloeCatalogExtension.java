@@ -11,6 +11,7 @@ import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import com.google.protobuf.ExtensionRegistry;
 import com.google.protobuf.TextFormat;
 import java.io.InputStream;
@@ -206,7 +207,19 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
 
   @Override
   public boolean supports(NameRef name, String engineKind) {
-    return supportsEngine(engineKind); // TODO: Validate the name is in the definitions
+    if (!supportsEngine(engineKind) || name == null) {
+      return false;
+    }
+
+    String requested = NameRefUtil.canonical(name);
+    if (requested.isEmpty()) {
+      return false;
+    }
+
+    return definitions().stream()
+        .map(SystemObjectDef::name)
+        .map(NameRefUtil::canonical)
+        .anyMatch(requested::equals);
   }
 
   @Override
