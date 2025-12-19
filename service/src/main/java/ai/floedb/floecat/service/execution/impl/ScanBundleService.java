@@ -64,7 +64,6 @@ public class ScanBundleService {
       TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats) {
     var data = new ArrayList<ScanFile>();
     var deletes = new ArrayList<ScanFile>();
-    String format = table.getUpstream().getFormat().name();
 
     String pageToken = "";
     do {
@@ -81,7 +80,7 @@ public class ScanBundleService {
         var scanFile =
             ScanFile.newBuilder()
                 .setFilePath(fcs.getFilePath())
-                .setFileFormat(format)
+                .setFileFormat(fcs.getFileFormat())
                 .setFileSizeInBytes(fcs.getSizeBytes())
                 .setRecordCount(fcs.getRowCount())
                 .setPartitionDataJson(fcs.getPartitionDataJson())

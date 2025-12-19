@@ -51,6 +51,8 @@ public interface StatsEngine<K> {
   interface FileAgg<K> {
     String path();
 
+    String format();
+
     long rowCount();
 
     long sizeBytes();

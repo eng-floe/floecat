@@ -86,13 +86,14 @@ message FileColumnStats {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   int64 snapshot_id = 2;
   string file_path = 3;
-  int64 row_count = 4;
-  int64 size_bytes = 5;
-  repeated ColumnStats columns = 6;
-  FileContent file_content = 7;
-  string partition_data_json = 8;
-  int32 partition_spec_id = 9;
-  repeated int32 equality_field_ids = 10;
+  string file_format = 4;
+  int64 row_count = 5;
+  int64 size_bytes = 6;
+  repeated ColumnStats columns = 7;
+  FileContent file_content = 8;
+  string partition_data_json = 9;
+  int32 partition_spec_id = 10;
+  repeated int32 equality_field_ids = 11;
 }
 
 enum FileContent {

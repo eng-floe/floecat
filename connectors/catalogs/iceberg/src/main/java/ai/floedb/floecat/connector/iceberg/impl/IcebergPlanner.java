@@ -144,6 +144,7 @@ final class IcebergPlanner implements Planner<Integer> {
 
     return new PlannedFile<>(
         dataFile.location().toString(),
+        dataFile.format().name(),
         dataFile.recordCount(),
         dataFile.fileSizeInBytes(),
         valueCounts,
