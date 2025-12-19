@@ -31,6 +31,15 @@ message ScanSystemTableRequest {
 
   // Logical predicates applied at row level.
   repeated ai.floedb.floecat.common.Predicate predicates = 4;
+
+  // Preferred output format for system table scans.
+  OutputFormat output_format = 5;
+}
+
+enum OutputFormat {
+  OUTPUT_FORMAT_UNSPECIFIED = 0;
+  ROWS = 1;
+  ARROW_IPC = 2;
 }
 
 /**
@@ -44,6 +53,7 @@ message SystemTableRow {
 
 message ScanSystemTableResponse {
   repeated SystemTableRow rows = 1;
+  repeated bytes arrow_batches = 2;
 }
 
 service QuerySystemScanService {
