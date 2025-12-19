@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.common.rpc.Operator;
 import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.systemcatalog.expr.Expr;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -161,5 +162,44 @@ class SystemRowFilterTest {
 
     assertThat(result).hasSize(1);
     assertThat(result.get(0).values()).containsExactly("a", "b");
+  }
+
+  @Test
+  void expressionCapturesEqAndNullPredicates() {
+    Predicate eq =
+        Predicate.newBuilder().setColumn("col_a").setOp(Operator.OP_EQ).addValues("a").build();
+    Predicate isNull = Predicate.newBuilder().setColumn("col_b").setOp(Operator.OP_IS_NULL).build();
+
+    Expr expr = SystemRowFilter.toExpr(List.of(eq, isNull));
+
+    assertThat(expr).isInstanceOf(Expr.And.class);
+    Expr.And and = (Expr.And) expr;
+
+    assertThat(and.left()).isInstanceOf(Expr.Eq.class);
+    Expr.Eq eqExpr = (Expr.Eq) and.left();
+    assertThat(eqExpr.left()).isInstanceOf(Expr.ColumnRef.class);
+    assertThat(eqExpr.right()).isInstanceOf(Expr.Literal.class);
+
+    assertThat(and.right()).isInstanceOf(Expr.IsNull.class);
+  }
+
+  @Test
+  void expressionRepresentsIsNotNullAsNegation() {
+    Predicate predicate =
+        Predicate.newBuilder().setColumn("col_a").setOp(Operator.OP_IS_NOT_NULL).build();
+
+    Expr expr = SystemRowFilter.toExpr(List.of(predicate));
+
+    assertThat(expr).isInstanceOf(Expr.Not.class);
+    Expr.Not not = (Expr.Not) expr;
+    assertThat(not.expression()).isInstanceOf(Expr.IsNull.class);
+  }
+
+  private static Predicate predicate(String column, Operator op, String... values) {
+    Predicate.Builder builder = Predicate.newBuilder().setColumn(column).setOp(op);
+    for (String value : values) {
+      builder.addValues(value);
+    }
+    return builder.build();
   }
 }

@@ -67,7 +67,7 @@ public final class RowStreamToArrowBatchAdapter {
             }
             VectorSchemaRoot root = VectorSchemaRoot.create(arrowSchema, allocator);
             ArrowConversion.fill(root, batch);
-            action.accept(new DefaultColumnarBatch(root));
+            action.accept(new SimpleColumnarBatch(root));
             return true;
           }
         };
@@ -149,27 +149,5 @@ public final class RowStreamToArrowBatchAdapter {
       return false;
     }
     return logicalType.contains("[]");
-  }
-
-  private static final class DefaultColumnarBatch implements ColumnarBatch {
-    private final VectorSchemaRoot root;
-    private boolean closed;
-
-    private DefaultColumnarBatch(VectorSchemaRoot root) {
-      this.root = Objects.requireNonNull(root, "root");
-    }
-
-    @Override
-    public VectorSchemaRoot root() {
-      return root;
-    }
-
-    @Override
-    public void close() {
-      if (!closed) {
-        closed = true;
-        root.close();
-      }
-    }
   }
 }

@@ -28,6 +28,11 @@ This module documents the new, optional Arrow output path introduced in Phase A 
 - Every `ColumnarBatch` owns its `VectorSchemaRoot` vectors and implements `AutoCloseable`. The service consumes the stream and closes each batch right after serialization, so the adapter never leaves dangling buffers.
 - The `BufferAllocator` is created inside `arrowResponse` and closed before returning to the caller, ensuring the Arrow path does not leak native memory.
 
+## Arrow filtering (Phase D)
+
+- Arrow filtering runs during the Arrow path when the system property `ai.floedb.floecat.arrow-filter-enabled` is set to `true`. The new `ArrowFilterOperator` evaluates the `Expr` tree produced by `SystemRowFilter.EXPRESSION_PROVIDER` directly against each `VectorSchemaRoot`, produces a boolean mask of matching rows, and then copies the selected vectors into a fresh `VectorSchemaRoot` before the Arrow IPC serializer sees the batch.
+- The row helpers remain the reference path, so you can compare row-filtered results with Arrow-filtered batches while the feature gate is active; once confidence is high, you can enable the property to make the Arrow filter path authoritative without touching the legacy code.
+
 ## Testing
 
 The new adapter is covered by `RowStreamToArrowBatchAdapterTest`. The existing row-filter/projector tests continue to serve as the semantic baseline; the Arrow path reuses them before conversion, so predicate/projection coverage remains untouched.
