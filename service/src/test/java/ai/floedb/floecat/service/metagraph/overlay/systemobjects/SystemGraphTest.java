@@ -11,6 +11,7 @@ import ai.floedb.floecat.metagraph.model.TableBackendKind;
 import ai.floedb.floecat.service.testsupport.FakeSystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
@@ -61,7 +62,7 @@ class SystemGraphTest {
 
     systemCatalogId =
         ResourceId.newBuilder()
-            .setAccountId("_system")
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_CATALOG)
             .setId(ENGINE)
             .build();
@@ -75,14 +76,14 @@ class SystemGraphTest {
 
     namespaceId =
         ResourceId.newBuilder()
-            .setAccountId("_system")
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_NAMESPACE)
             .setId(ENGINE + ":pg_catalog")
             .build();
 
     tableId =
         ResourceId.newBuilder()
-            .setAccountId("_system")
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_TABLE)
             .setId(ENGINE + ":pg_catalog.pg_class")
             .build();
@@ -148,5 +149,12 @@ class SystemGraphTest {
   @Test
   void listCatalogs_returnsEngineCatalogs() {
     assertThat(systemGraph.listCatalogs()).containsExactly(systemCatalogId);
+  }
+
+  @Test
+  void catalog_returnsCatalogNode() {
+    assertThat(systemGraph.catalog(systemCatalogId, ENGINE, VERSION))
+        .isPresent()
+        .hasValueSatisfying(node -> assertThat(node.displayName()).isEqualTo(ENGINE));
   }
 }

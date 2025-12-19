@@ -11,6 +11,7 @@ import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.spi.scanner.*;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import java.time.Instant;
@@ -130,7 +131,7 @@ final class PgProcScannerTest {
   private static SystemObjectScanContext contextWithFunctions() {
     ResourceId namespaceId =
         ResourceId.newBuilder()
-            .setAccountId("_system")
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_NAMESPACE)
             .setId("floe-demo:pg_catalog")
             .build();
@@ -209,7 +210,7 @@ final class PgProcScannerTest {
   private static SystemObjectScanContext contextWithWindowFunction() {
     ResourceId namespaceId =
         ResourceId.newBuilder()
-            .setAccountId("_system")
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_NAMESPACE)
             .setId("floe-demo:pg_catalog")
             .build();
@@ -301,7 +302,7 @@ final class PgProcScannerTest {
 
   private static ResourceId rid(String name) {
     return ResourceId.newBuilder()
-        .setAccountId("_system")
+        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
         .setKind(ResourceKind.RK_FUNCTION)
         .setId("postgres:" + name)
         .build();
@@ -309,7 +310,7 @@ final class PgProcScannerTest {
 
   private static ResourceId ridCatalog() {
     return ResourceId.newBuilder()
-        .setAccountId("_system")
+        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
         .setKind(ResourceKind.RK_CATALOG)
         .setId("postgres:system")
         .build();

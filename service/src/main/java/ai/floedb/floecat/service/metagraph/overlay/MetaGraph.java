@@ -407,8 +407,7 @@ public final class MetaGraph implements CatalogOverlay {
     if (user.isPresent()) {
       return user;
     }
-    // System catalogs are implicit, no need to handle
-    return Optional.empty();
+    return systemGraph.catalog(id, engine.engineKind(), engine.engineVersion());
   }
 
   /**

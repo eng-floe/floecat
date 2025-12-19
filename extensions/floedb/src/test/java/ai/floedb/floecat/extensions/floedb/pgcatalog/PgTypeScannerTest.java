@@ -8,6 +8,7 @@ import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.metagraph.model.TypeNode;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
@@ -126,7 +127,7 @@ final class PgTypeScannerTest {
 
     ResourceId typeId =
         ResourceId.newBuilder()
-            .setAccountId("_system")
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_TYPE)
             .setId("pg:" + name)
             .build();
@@ -145,7 +146,7 @@ final class PgTypeScannerTest {
 
   private static ResourceId catalogId() {
     return ResourceId.newBuilder()
-        .setAccountId("_system")
+        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
         .setKind(ResourceKind.RK_CATALOG)
         .setId("pg")
         .build();

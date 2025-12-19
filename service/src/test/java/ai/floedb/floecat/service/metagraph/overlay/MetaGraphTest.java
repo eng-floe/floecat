@@ -20,6 +20,7 @@ import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.query.resolver.LogicalSchemaMapper;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -37,7 +38,7 @@ class MetaGraphTest {
 
   ResourceId sysTable =
       ResourceId.newBuilder()
-          .setAccountId("_system")
+          .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
           .setKind(ResourceKind.RK_TABLE)
           .setId("sys")
           .build();

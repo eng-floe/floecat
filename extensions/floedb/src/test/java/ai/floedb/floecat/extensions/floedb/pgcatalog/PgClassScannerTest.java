@@ -12,6 +12,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
@@ -131,7 +132,7 @@ final class PgClassScannerTest {
   private static NamespaceNode pgCatalogNamespace() {
     return new NamespaceNode(
         ResourceId.newBuilder()
-            .setAccountId("_system")
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_NAMESPACE)
             .setId("pg_catalog")
             .build(),
@@ -163,7 +164,7 @@ final class PgClassScannerTest {
 
     ResourceId id =
         ResourceId.newBuilder()
-            .setAccountId("_system")
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_TABLE)
             .setId("pg:" + name)
             .build();
@@ -184,7 +185,7 @@ final class PgClassScannerTest {
 
     ResourceId id =
         ResourceId.newBuilder()
-            .setAccountId("_system")
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_VIEW)
             .setId("pg:" + name)
             .build();
@@ -208,7 +209,7 @@ final class PgClassScannerTest {
 
   private static ResourceId catalogId() {
     return ResourceId.newBuilder()
-        .setAccountId("_system")
+        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
         .setKind(ResourceKind.RK_CATALOG)
         .setId("pg")
         .build();

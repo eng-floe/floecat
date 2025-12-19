@@ -7,6 +7,7 @@ import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import java.time.Instant;
 import java.util.List;
@@ -23,7 +24,7 @@ public final class TestFunctionScanContextBuilder extends AbstractTestScanContex
   public static TestFunctionScanContextBuilder builder(String catalogName) {
     return new TestFunctionScanContextBuilder(
         ResourceId.newBuilder()
-            .setAccountId("_system")
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_CATALOG)
             .setId(catalogName)
             .build());
@@ -32,7 +33,7 @@ public final class TestFunctionScanContextBuilder extends AbstractTestScanContex
   public NamespaceNode addNamespace(String name) {
     ResourceId id =
         ResourceId.newBuilder()
-            .setAccountId("_system")
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_NAMESPACE)
             .setId(name)
             .build();
@@ -65,7 +66,7 @@ public final class TestFunctionScanContextBuilder extends AbstractTestScanContex
     FunctionNode fn =
         new FunctionNode(
             ResourceId.newBuilder()
-                .setAccountId("_system")
+                .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
                 .setKind(ResourceKind.RK_FUNCTION)
                 .setId(name)
                 .build(),

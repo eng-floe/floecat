@@ -3,6 +3,7 @@ package ai.floedb.floecat.service.metagraph.overlay.systemobjects;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
@@ -36,8 +37,6 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 /** Materialised graph of builtin system nodes for a specific engine kind/version. */
 @ApplicationScoped
 public final class SystemGraph {
-
-  private static final String SYSTEM_ACCOUNT = "_system";
   private static final int DEFAULT_SNAPSHOT_CACHE_SIZE = 16;
 
   private final SystemNodeRegistry registry;
@@ -72,6 +71,10 @@ public final class SystemGraph {
    */
   public Optional<GraphNode> resolve(ResourceId id, String engineKind, String engineVersion) {
     return snapshotFor(engineKind, engineVersion).resolve(id);
+  }
+
+  public Optional<CatalogNode> catalog(ResourceId id, String engineKind, String engineVersion) {
+    return snapshotFor(engineKind, engineVersion).catalog(id);
   }
 
   /**
@@ -283,7 +286,10 @@ public final class SystemGraph {
 
   /** Builds a new snapshot for the requested engine version. */
   private GraphSnapshot snapshotFor(String engineKind, String engineVersion) {
-    String normalizedKind = engineKind == null ? "" : engineKind.toLowerCase(Locale.ROOT);
+    String normalizedKind =
+        (engineKind == null || engineKind.isBlank())
+            ? SystemNodeRegistry.FLOECAT_DEFAULT_CATALOG
+            : engineKind.toLowerCase(Locale.ROOT);
     String normalizedVersion = engineVersion == null ? "" : engineVersion;
 
     VersionKey key = new VersionKey(normalizedKind, normalizedVersion);
@@ -336,7 +342,20 @@ public final class SystemGraph {
     long version = versionFromFingerprint(nodes.fingerprint());
     ResourceId catalogId = systemCatalogId(engineKind);
 
+    CatalogNode catalogNode =
+        new CatalogNode(
+            catalogId,
+            version,
+            createdAt,
+            engineKind,
+            Map.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of());
+
     Map<ResourceId, GraphNode> nodesById = new ConcurrentHashMap<>(nodesById(nodes));
+    nodesById.put(catalogId, catalogNode);
     Map<ResourceId, List<TableNode>> tablesByNamespace = new ConcurrentHashMap<>();
     Map<ResourceId, List<ViewNode>> viewsByNamespace = new ConcurrentHashMap<>();
     Map<ResourceId, List<ResourceId>> relationIdsByNamespace = new ConcurrentHashMap<>();
@@ -485,9 +504,12 @@ public final class SystemGraph {
   }
 
   private static ResourceId systemCatalogId(String engineKind) {
-    String id = (engineKind == null || engineKind.isBlank()) ? "floecat_system" : engineKind;
+    String id =
+        (engineKind == null || engineKind.isBlank())
+            ? SystemNodeRegistry.FLOECAT_DEFAULT_CATALOG
+            : engineKind;
     return ResourceId.newBuilder()
-        .setAccountId(SYSTEM_ACCOUNT)
+        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
         .setKind(ResourceKind.RK_CATALOG)
         .setId(id)
         .build();

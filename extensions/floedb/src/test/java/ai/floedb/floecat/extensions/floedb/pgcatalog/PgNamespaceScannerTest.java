@@ -9,6 +9,7 @@ import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
@@ -100,7 +101,7 @@ final class PgNamespaceScannerTest {
 
     ResourceId nsId =
         ResourceId.newBuilder()
-            .setAccountId("_system")
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_NAMESPACE)
             .setId("pg:" + name)
             .build();
@@ -120,7 +121,7 @@ final class PgNamespaceScannerTest {
 
   private static ResourceId catalogId() {
     return ResourceId.newBuilder()
-        .setAccountId("_system")
+        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
         .setKind(ResourceKind.RK_CATALOG)
         .setId("pg")
         .build();

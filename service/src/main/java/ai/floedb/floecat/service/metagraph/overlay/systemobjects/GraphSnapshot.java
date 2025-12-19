@@ -1,6 +1,7 @@
 package ai.floedb.floecat.service.metagraph.overlay.systemobjects;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
@@ -112,6 +113,11 @@ public final class GraphSnapshot {
    */
   public Optional<GraphNode> resolve(ResourceId id) {
     return Optional.ofNullable(nodesById.get(id));
+  }
+
+  /** Resolves a catalog node by its ResourceId. */
+  public Optional<CatalogNode> catalog(ResourceId id) {
+    return resolve(id).filter(CatalogNode.class::isInstance).map(CatalogNode.class::cast);
   }
 
   /**

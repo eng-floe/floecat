@@ -147,7 +147,7 @@ final class PgAttributeScannerTest {
     NamespaceNode pg =
         new NamespaceNode(
             ResourceId.newBuilder()
-                .setAccountId("_system")
+                .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
                 .setKind(ResourceKind.RK_NAMESPACE)
                 .setId("pg_catalog")
                 .build(),
@@ -172,7 +172,7 @@ final class PgAttributeScannerTest {
   private static TypeNode typeNode(NameRef name, Map<EngineKey, EngineHint> hints) {
     return new TypeNode(
         ResourceId.newBuilder()
-            .setAccountId("_system")
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_TYPE)
             .setId("pg:" + SystemNodeRegistry.safeName(name))
             .build(),
@@ -189,7 +189,7 @@ final class PgAttributeScannerTest {
   private static TableNode table(String name, Map<EngineKey, EngineHint> hints) {
     return new SystemTableNode(
         ResourceId.newBuilder()
-            .setAccountId("_system")
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_TABLE)
             .setId("pg:" + name)
             .build(),
@@ -206,7 +206,7 @@ final class PgAttributeScannerTest {
   private static NamespaceNode pgCatalogNamespace() {
     return new NamespaceNode(
         ResourceId.newBuilder()
-            .setAccountId("_system")
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_NAMESPACE)
             .setId("pg_catalog")
             .build(),
@@ -223,7 +223,7 @@ final class PgAttributeScannerTest {
 
   private static ResourceId catalogId() {
     return ResourceId.newBuilder()
-        .setAccountId("_system")
+        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
         .setKind(ResourceKind.RK_CATALOG)
         .setId("pg")
         .build();

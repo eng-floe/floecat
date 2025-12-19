@@ -47,6 +47,8 @@ import java.util.concurrent.ConcurrentMap;
  */
 public class SystemNodeRegistry {
 
+  public static final String SYSTEM_ACCOUNT = "_system";
+  public static final String FLOECAT_DEFAULT_CATALOG = "floecat_internal";
   private final SystemDefinitionRegistry definitionRegistry;
 
   /*
@@ -382,10 +384,12 @@ public class SystemNodeRegistry {
   // =======================================================================
 
   public static ResourceId resourceId(String engineKind, ResourceKind kind, NameRef name) {
+    String engine =
+        (engineKind == null || engineKind.isBlank()) ? FLOECAT_DEFAULT_CATALOG : engineKind;
     return ResourceId.newBuilder()
-        .setAccountId("_system")
+        .setAccountId(SYSTEM_ACCOUNT)
         .setKind(kind)
-        .setId(engineKind + ":" + safeName(name))
+        .setId(engine + ":" + safeName(name))
         .build();
   }
 
