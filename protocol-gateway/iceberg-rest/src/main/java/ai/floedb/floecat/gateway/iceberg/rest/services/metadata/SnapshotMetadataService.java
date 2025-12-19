@@ -3,6 +3,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.PartitionField;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -46,6 +47,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -340,7 +342,7 @@ public class SnapshotMetadataService {
     if (tableId == null || importedMetadata == null) {
       return null;
     }
-    java.util.List<ImportedSnapshot> importedSnapshots = importedMetadata.snapshots();
+    List<ImportedSnapshot> importedSnapshots = importedMetadata.snapshots();
     if (importedSnapshots != null && !importedSnapshots.isEmpty()) {
       for (ImportedSnapshot snapshot : importedSnapshots) {
         Response err =
@@ -380,6 +382,72 @@ public class SnapshotMetadataService {
       updateSnapshotMetadataLocation(tableId, currentSnapshot.snapshotId(), metadataLocation);
     }
     return null;
+  }
+
+  public void syncSnapshotsFromImportedMetadata(
+      TableGatewaySupport tableSupport,
+      ResourceId tableId,
+      List<String> namespacePath,
+      String tableName,
+      Supplier<Table> tableSupplier,
+      ImportedMetadata importedMetadata,
+      String idempotencyKey,
+      boolean pruneMissing) {
+    if (tableId == null || importedMetadata == null) {
+      return;
+    }
+    Set<Long> expectedIds = new LinkedHashSet<>();
+    List<ImportedSnapshot> importedSnapshots = importedMetadata.snapshots();
+    if (importedSnapshots != null && !importedSnapshots.isEmpty()) {
+      for (ImportedSnapshot snapshot : importedSnapshots) {
+        Response err =
+            ensureSnapshotExists(
+                tableSupport,
+                tableId,
+                namespacePath,
+                tableName,
+                tableSupplier,
+                snapshot,
+                idempotencyKey);
+        if (err == null && snapshot != null && snapshot.snapshotId() != null) {
+          expectedIds.add(snapshot.snapshotId());
+        }
+      }
+    } else if (importedMetadata.currentSnapshot() != null) {
+      ImportedSnapshot snapshot = importedMetadata.currentSnapshot();
+      Response err =
+          ensureSnapshotExists(
+              tableSupport,
+              tableId,
+              namespacePath,
+              tableName,
+              tableSupplier,
+              snapshot,
+              idempotencyKey);
+      if (err == null && snapshot != null && snapshot.snapshotId() != null) {
+        expectedIds.add(snapshot.snapshotId());
+      }
+    }
+
+    if (pruneMissing && !expectedIds.isEmpty()) {
+      List<Snapshot> existing =
+          snapshotClient
+              .listSnapshots(ListSnapshotsRequest.newBuilder().setTableId(tableId).build())
+              .getSnapshotsList();
+      for (Snapshot snapshot : existing) {
+        long snapshotId = snapshot.getSnapshotId();
+        if (!expectedIds.contains(snapshotId)) {
+          deleteSnapshots(tableId, List.of(snapshotId));
+        }
+      }
+    }
+
+    ImportedSnapshot currentSnapshot = importedMetadata.currentSnapshot();
+    Map<String, String> props = importedMetadata.properties();
+    String metadataLocation = props == null ? null : props.get("metadata-location");
+    if (currentSnapshot != null) {
+      updateSnapshotMetadataLocation(tableId, currentSnapshot.snapshotId(), metadataLocation);
+    }
   }
 
   private Response ensureSnapshotExists(
@@ -651,7 +719,7 @@ public class SnapshotMetadataService {
       var replace =
           changes.statisticsToAdd.stream()
               .map(IcebergStatisticsFile::getSnapshotId)
-              .collect(java.util.stream.Collectors.toSet());
+              .collect(Collectors.toSet());
       List<IcebergStatisticsFile> filtered = new ArrayList<>();
       for (IcebergStatisticsFile file : iceberg.getStatisticsList()) {
         long snapId = file.getSnapshotId();
@@ -675,7 +743,7 @@ public class SnapshotMetadataService {
       var replace =
           changes.partitionStatisticsToAdd.stream()
               .map(IcebergPartitionStatisticsFile::getSnapshotId)
-              .collect(java.util.stream.Collectors.toSet());
+              .collect(Collectors.toSet());
       List<IcebergPartitionStatisticsFile> filtered = new ArrayList<>();
       for (IcebergPartitionStatisticsFile file : iceberg.getPartitionStatisticsList()) {
         long snapId = file.getSnapshotId();

@@ -31,7 +31,7 @@ class TableResponseMapperTest {
             .build();
     IcebergMetadata metadata =
         IcebergMetadata.newBuilder()
-            .setMetadataLocation("s3://bucket/orders/metadata/00000.metadata.json")
+            .setMetadataLocation("s3://bucket/orders/metadata/00000-abc.metadata.json")
             .build();
 
     LoadTableResultDto result =
@@ -56,12 +56,12 @@ class TableResponseMapperTest {
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
             .putProperties(
                 "metadata-location",
-                "s3://bucket/.floecat-metadata/orders/metadata/00000.metadata.json")
+                "s3://bucket/.floecat-metadata/orders/metadata/00000-abc.metadata.json")
             .build();
     IcebergMetadata metadata =
         IcebergMetadata.newBuilder()
             .setMetadataLocation(
-                "s3://bucket/.floecat-metadata/orders/metadata/00000.metadata.json")
+                "s3://bucket/.floecat-metadata/orders/metadata/00000-abc.metadata.json")
             .build();
 
     LoadTableResultDto result =
@@ -105,7 +105,8 @@ class TableResponseMapperTest {
             .setDisplayName("orders")
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
             .putProperties("location", "s3://bucket/orders")
-            .putProperties("metadata-location", "s3://bucket/orders/metadata.json")
+            .putProperties(
+                "metadata-location", "s3://bucket/orders/metadata/00000-abc.metadata.json")
             .build();
     IcebergMetadata metadata =
         IcebergMetadata.newBuilder()
@@ -199,7 +200,7 @@ class TableResponseMapperTest {
   }
 
   @Test
-  void metadataJsonPointerStillProducesMetadataDirectory() {
+  void metadataLocationProducesMetadataDirectory() {
     Table table =
         Table.newBuilder()
             .setDisplayName("orders")
@@ -208,7 +209,7 @@ class TableResponseMapperTest {
             .build();
     IcebergMetadata metadata =
         IcebergMetadata.newBuilder()
-            .setMetadataLocation("s3://bucket/orders/metadata/metadata.json")
+            .setMetadataLocation("s3://bucket/orders/metadata/00000-abc.metadata.json")
             .build();
 
     LoadTableResultDto result =
@@ -227,7 +228,7 @@ class TableResponseMapperTest {
             .build();
     IcebergMetadata metadata =
         IcebergMetadata.newBuilder()
-            .setMetadataLocation("s3://bucket/orders/metadata/00000.metadata.json")
+            .setMetadataLocation("s3://bucket/orders/metadata/00000-abc.metadata.json")
             .addStatistics(
                 IcebergStatisticsFile.newBuilder()
                     .setSnapshotId(5)

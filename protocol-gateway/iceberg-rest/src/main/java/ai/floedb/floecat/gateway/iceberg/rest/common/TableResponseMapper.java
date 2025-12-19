@@ -82,9 +82,7 @@ public final class TableResponseMapper {
       return originalConfig;
     }
     Map<String, String> updated =
-        originalConfig.isEmpty()
-            ? new java.util.LinkedHashMap<>()
-            : new java.util.LinkedHashMap<>(originalConfig);
+        originalConfig.isEmpty() ? new LinkedHashMap<>() : new LinkedHashMap<>(originalConfig);
     updated.put("write.metadata.path", directory);
     return Map.copyOf(updated);
   }

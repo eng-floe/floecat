@@ -364,9 +364,7 @@ public class TableCreateService {
     Map<String, String> props =
         table == null || table.getPropertiesMap() == null ? Map.of() : table.getPropertiesMap();
     String propertyLocation = MetadataLocationUtil.metadataLocation(props);
-    if (propertyLocation != null
-        && !propertyLocation.isBlank()
-        && !MetadataLocationUtil.isPointer(propertyLocation)) {
+    if (propertyLocation != null && !propertyLocation.isBlank()) {
       return propertyLocation;
     }
     if (metadata != null

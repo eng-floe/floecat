@@ -19,6 +19,7 @@ import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -71,7 +72,7 @@ public class TableCommitSideEffectService {
     String updatedLocation =
         nonBlank(materializationResult.metadataLocation(), responseDto.metadataLocation());
     if (updatedMetadata == responseDto.metadata()
-        && java.util.Objects.equals(updatedLocation, responseDto.metadataLocation())) {
+        && Objects.equals(updatedLocation, responseDto.metadataLocation())) {
       return responseDto;
     }
     return new CommitTableResponseDto(updatedLocation, updatedMetadata);

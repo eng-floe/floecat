@@ -31,6 +31,7 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
+import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
 import ai.floedb.floecat.connector.rpc.SyncCaptureRequest;
@@ -56,7 +57,9 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -98,7 +101,7 @@ class IcebergRestFixtureIT {
 
   private static long expectedSnapshotId;
   private static List<Long> fixtureSnapshotIds;
-  private static Map<Long, String> fixtureManifestLists = new java.util.HashMap<>();
+  private static Map<Long, String> fixtureManifestLists = new HashMap<>();
   private static String upstreamHost;
   private static int upstreamPort;
   private static int serviceGrpcPort;
@@ -288,7 +291,7 @@ class IcebergRestFixtureIT {
         withConnectorsClient(
             stub ->
                 stub.getConnector(
-                        ai.floedb.floecat.connector.rpc.GetConnectorRequest.newBuilder()
+                        GetConnectorRequest.newBuilder()
                             .setConnectorId(connector.getResourceId())
                             .build())
                     .getConnector());
@@ -406,7 +409,7 @@ class IcebergRestFixtureIT {
     Path metadataPath = resolveFixtureMetadata(relativeMetadataPath);
     ObjectMapper mapper = new ObjectMapper();
     JsonNode node = mapper.readTree(metadataPath.toFile());
-    List<Long> ids = new java.util.ArrayList<>();
+    List<Long> ids = new ArrayList<>();
     if (node.has("snapshots")) {
       for (JsonNode snapshotNode : node.withArray("snapshots")) {
         long snapshotId = snapshotNode.path("snapshot-id").asLong();
@@ -429,13 +432,11 @@ class IcebergRestFixtureIT {
     if (Files.isRegularFile(seededPath)) {
       return seededPath;
     }
-    Path simplePath =
-        TestS3Fixtures.fixturePath("simple").resolve(Path.of(relativeMetadataPath));
+    Path simplePath = TestS3Fixtures.fixturePath("simple").resolve(Path.of(relativeMetadataPath));
     if (Files.isRegularFile(simplePath)) {
       return simplePath;
     }
-    Path complexPath =
-        TestS3Fixtures.fixturePath("complex").resolve(Path.of(relativeMetadataPath));
+    Path complexPath = TestS3Fixtures.fixturePath("complex").resolve(Path.of(relativeMetadataPath));
     if (Files.isRegularFile(complexPath)) {
       return complexPath;
     }
@@ -772,8 +773,7 @@ class IcebergRestFixtureIT {
             "spec-id",
             0,
             "fields",
-            List.of(
-                Map.of("name", "id", "field-id", 1, "source-id", 1, "transform", "identity"))));
+            List.of(Map.of("name", "id", "field-id", 1, "source-id", 1, "transform", "identity"))));
     stageRequest.put(
         "write-order", Map.of("order-id", 0, "fields", List.of(Map.of("source-id", 1))));
     Map<String, Object> stageProps = fixtureIoProperties();
@@ -845,8 +845,7 @@ class IcebergRestFixtureIT {
         commitMetadataLocation,
         "materialized metadata file should exist in the fixture bucket storage");
     assertFixtureObjectExists(
-        persistedLocation,
-        "persisted metadata file should exist in the fixture bucket storage");
+        persistedLocation, "persisted metadata file should exist in the fixture bucket storage");
   }
 
   private String registerTable(
@@ -880,7 +879,9 @@ class IcebergRestFixtureIT {
 
   private String fixtureMetadataTarget(String namespace, String table) {
     return TestS3Fixtures.bucketUri(
-        String.format("metadata/%s/%s/metadata.json", namespace, table));
+        String.format(
+            "metadata/%s/%s/00000-00000000-0000-0000-0000-000000000000.metadata.json",
+            namespace, table));
   }
 
   private String fetchMetadataLocation(String namespace, String table) {
@@ -1010,14 +1011,14 @@ class IcebergRestFixtureIT {
             List.of(Map.of("id", 1, "name", "dummy", "required", true, "type", "string")));
     Map<String, Object> representation =
         Map.of("type", "sql", "sql", "SELECT 1", "dialect", "ansi");
-    Map<String, Object> version = new java.util.LinkedHashMap<>();
+    Map<String, Object> version = new LinkedHashMap<>();
     version.put("version-id", 1);
     version.put("schema-id", 1);
     version.put("summary", Map.of("operation", "create"));
     version.put("representations", List.of(representation));
     version.put("default-namespace", List.of(namespace));
 
-    Map<String, Object> payload = new java.util.LinkedHashMap<>();
+    Map<String, Object> payload = new LinkedHashMap<>();
     payload.put("name", view);
     payload.put("schema", schema);
     payload.put("view-version", version);

@@ -133,7 +133,7 @@ class TableResourceTest extends AbstractRestResourceTest {
             .setCatalogId(ResourceId.newBuilder().setId("cat").build())
             .setNamespaceId(ResourceId.newBuilder().setId("cat:db").build())
             .setDisplayName("orders")
-            .putProperties("metadata-location", "s3://bucket/path/metadata.json")
+            .putProperties("metadata-location", "s3://bucket/path/metadata/00000-abc.metadata.json")
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .putProperties("current-snapshot-id", "5")
             .build();
@@ -142,7 +142,7 @@ class TableResourceTest extends AbstractRestResourceTest {
 
     IcebergMetadata metadata =
         IcebergMetadata.newBuilder()
-            .setMetadataLocation("s3://bucket/path/metadata.json")
+            .setMetadataLocation("s3://bucket/path/metadata/00000-abc.metadata.json")
             .putRefs("main", IcebergRef.newBuilder().setSnapshotId(5).setType("branch").build())
             .build();
     Snapshot metaSnapshot =
@@ -180,11 +180,11 @@ class TableResourceTest extends AbstractRestResourceTest {
         .get("/v1/foo/namespaces/db/tables/orders")
         .then()
         .statusCode(200)
-        .header("ETag", equalTo("\"s3://bucket/path/metadata.json\""))
+        .header("ETag", equalTo("\"s3://bucket/path/metadata/00000-abc.metadata.json\""))
         .body("metadata.snapshots.size()", equalTo(2));
 
     given()
-        .header("If-None-Match", "\"s3://bucket/path/metadata.json\"")
+        .header("If-None-Match", "\"s3://bucket/path/metadata/00000-abc.metadata.json\"")
         .when()
         .get("/v1/foo/namespaces/db/tables/orders")
         .then()
@@ -210,7 +210,8 @@ class TableResourceTest extends AbstractRestResourceTest {
         Table.newBuilder()
             .setResourceId(ResourceId.newBuilder().setId("cat:db:new_table"))
             .setDisplayName("new_table")
-            .putProperties("metadata-location", "s3://b/db/new_table/metadata.json")
+            .putProperties(
+                "metadata-location", "s3://b/db/new_table/metadata/00000-abc.metadata.json")
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
     when(tableStub.createTable(any()))
@@ -246,7 +247,7 @@ class TableResourceTest extends AbstractRestResourceTest {
             """
             {
               "name":"new_table",
-              "metadata-location":"s3://b/db/new_table/metadata.json",
+              "metadata-location":"s3://b/db/new_table/metadata/00000-abc.metadata.json",
               "properties":{"io-impl":"org.apache.iceberg.inmemory.InMemoryFileIO"}
             }
             """)
@@ -254,7 +255,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         .post("/v1/foo/namespaces/db/register")
         .then()
         .statusCode(200)
-        .body("metadata-location", equalTo("s3://b/db/new_table/metadata.json"));
+        .body("metadata-location", equalTo("s3://b/db/new_table/metadata/00000-abc.metadata.json"));
 
     ArgumentCaptor<CreateConnectorRequest> createReq =
         ArgumentCaptor.forClass(CreateConnectorRequest.class);
@@ -264,7 +265,7 @@ class TableResourceTest extends AbstractRestResourceTest {
     assertEquals(nsId, createReq.getValue().getSpec().getDestination().getNamespaceId());
     assertEquals("none", createReq.getValue().getSpec().getAuth().getScheme());
     assertEquals(
-        "s3://b/db/new_table/metadata.json",
+        "s3://b/db/new_table/metadata/00000-abc.metadata.json",
         createReq.getValue().getSpec().getPropertiesMap().get("external.metadata-location"));
 
     ArgumentCaptor<TriggerReconcileRequest> trigger =
@@ -297,7 +298,7 @@ class TableResourceTest extends AbstractRestResourceTest {
             """
             {
               "name":"existing_table",
-              "metadata-location":"s3://bucket/db/existing_table/metadata.json"
+              "metadata-location":"s3://bucket/db/existing_table/metadata/00000-abc.metadata.json"
             }
             """)
         .when()
@@ -326,15 +327,16 @@ class TableResourceTest extends AbstractRestResourceTest {
             .setResourceId(tableId)
             .setDisplayName("existing_table")
             .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
-            .putProperties("metadata-location", "s3://bucket/db/existing_table/old.metadata.json")
+            .putProperties(
+                "metadata-location", "s3://bucket/db/existing_table/00000-old.metadata.json")
             .build();
     when(tableStub.getTable(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.GetTableResponse.newBuilder().setTable(existing).build());
+        .thenReturn(GetTableResponse.newBuilder().setTable(existing).build());
 
     Table updated =
         existing.toBuilder()
-            .putProperties("metadata-location", "s3://bucket/db/existing_table/new.metadata.json")
+            .putProperties(
+                "metadata-location", "s3://bucket/db/existing_table/00001-new.metadata.json")
             .build();
     when(tableStub.updateTable(any()))
         .thenReturn(UpdateTableResponse.newBuilder().setTable(updated).build());
@@ -362,7 +364,7 @@ class TableResourceTest extends AbstractRestResourceTest {
             """
             {
               "name":"existing_table",
-              "metadata-location":"s3://bucket/db/existing_table/new.metadata.json",
+              "metadata-location":"s3://bucket/db/existing_table/00001-new.metadata.json",
               "overwrite":true
             }
             """)
@@ -370,7 +372,8 @@ class TableResourceTest extends AbstractRestResourceTest {
         .post("/v1/foo/namespaces/db/register")
         .then()
         .statusCode(200)
-        .body("metadata-location", equalTo("s3://bucket/db/existing_table/new.metadata.json"));
+        .body(
+            "metadata-location", equalTo("s3://bucket/db/existing_table/00001-new.metadata.json"));
 
     ArgumentCaptor<UpdateTableRequest> updateCaptor =
         ArgumentCaptor.forClass(UpdateTableRequest.class);
@@ -382,7 +385,7 @@ class TableResourceTest extends AbstractRestResourceTest {
                     req.getSpec()
                         .getPropertiesMap()
                         .getOrDefault("metadata-location", "")
-                        .equals("s3://bucket/db/existing_table/new.metadata.json"));
+                        .equals("s3://bucket/db/existing_table/00001-new.metadata.json"));
     assertTrue(updatedProps);
   }
 
@@ -401,7 +404,7 @@ class TableResourceTest extends AbstractRestResourceTest {
             """
             {
               "name":"bad_table",
-              "metadata-location":"s3://bucket/db/bad/metadata.json"
+              "metadata-location":"s3://bucket/db/bad/metadata/00000-abc.metadata.json"
             }
             """)
         .when()
@@ -429,7 +432,7 @@ class TableResourceTest extends AbstractRestResourceTest {
             .setDisplayName("orders")
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
-            .putProperties("metadata-location", "s3://bucket/path/metadata.json")
+            .putProperties("metadata-location", "s3://bucket/path/metadata/00000-abc.metadata.json")
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
     when(tableStub.createTable(any()))
@@ -455,8 +458,10 @@ class TableResourceTest extends AbstractRestResourceTest {
         .post("/v1/foo/namespaces/db/tables")
         .then()
         .statusCode(200)
-        .body("'metadata-location'", equalTo("s3://bucket/path/metadata.json"))
-        .body("metadata.properties.'metadata-location'", equalTo("s3://bucket/path/metadata.json"));
+        .body("'metadata-location'", equalTo("s3://bucket/path/metadata/00000-abc.metadata.json"))
+        .body(
+            "metadata.properties.'metadata-location'",
+            equalTo("s3://bucket/path/metadata/00000-abc.metadata.json"));
 
     Table existing =
         created.toBuilder()
@@ -613,7 +618,7 @@ class TableResourceTest extends AbstractRestResourceTest {
             .setDisplayName("orders")
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
-            .putProperties("metadata-location", "s3://bucket/path/metadata.json")
+            .putProperties("metadata-location", "s3://bucket/path/metadata/00000-abc.metadata.json")
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
     when(tableStub.createTable(any()))
@@ -651,7 +656,7 @@ class TableResourceTest extends AbstractRestResourceTest {
                 "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
               },
               "properties":{
-                "metadata-location":"s3://bucket/path/metadata.json",
+                "metadata-location":"s3://bucket/path/metadata/00000-abc.metadata.json",
                 "io-impl":"org.apache.iceberg.inmemory.InMemoryFileIO"
               }
             }
@@ -661,7 +666,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         .post("/v1/foo/namespaces/db/tables")
         .then()
         .statusCode(200)
-        .body("'metadata-location'", equalTo("s3://bucket/path/metadata.json"));
+        .body("'metadata-location'", equalTo("s3://bucket/path/metadata/00000-abc.metadata.json"));
   }
 
   @Test

@@ -17,6 +17,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySuppo
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.google.protobuf.FieldMask;
@@ -24,9 +26,11 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Supplier;
 import org.jboss.logging.Logger;
 
@@ -41,6 +45,8 @@ public class TableCommitService {
   @Inject StageMaterializationService stageMaterializationService;
   @Inject CommitStageResolver stageResolver;
   @Inject TableUpdatePlanner tableUpdatePlanner;
+  @Inject SnapshotMetadataService snapshotMetadataService;
+  @Inject TableMetadataImportService tableMetadataImportService;
 
   public Response commit(CommitCommand command) {
     String prefix = command.prefix();
@@ -79,6 +85,13 @@ public class TableCommitService {
     String requestedMetadataOverride = resolveRequestedMetadataLocation(req);
     List<Snapshot> snapshotList =
         SnapshotLister.fetchSnapshots(snapshotClient, tableId, SnapshotLister.Mode.ALL, metadata);
+    Set<Long> removedSnapshotIds = removedSnapshotIds(req);
+    if (!removedSnapshotIds.isEmpty() && snapshotList != null && !snapshotList.isEmpty()) {
+      snapshotList =
+          snapshotList.stream()
+              .filter(s -> !removedSnapshotIds.contains(s.getSnapshotId()))
+              .toList();
+    }
     CommitTableResponseDto initialResponse =
         TableResponseMapper.toCommitResponse(table, committedTable, metadata, snapshotList);
     CommitTableResponseDto stageAwareResponse =
@@ -125,7 +138,18 @@ public class TableCommitService {
             responseDto == null ? null : responseDto.metadata(),
             responseDto == null ? null : responseDto.metadataLocation(),
             idempotencyKey);
-    runConnectorSync(tableSupport, connectorId, namespacePath, table);
+    syncExternalSnapshotsIfNeeded(
+        tableSupport,
+        tableId,
+        namespacePath,
+        table,
+        committedTable,
+        responseDto,
+        req,
+        idempotencyKey);
+    if (!containsRemoveSnapshots(req)) {
+      runConnectorSync(tableSupport, connectorId, namespacePath, table);
+    }
     return builder.build();
   }
 
@@ -151,6 +175,134 @@ public class TableCommitService {
         "Stage commit satisfied for %s.%s tableId=%s stageId=%s currentSnapshot=%s"
             + " snapshotCount=%d",
         namespace, table, tableId, stageId, snapshotStr, snapshotCount);
+  }
+
+  private boolean containsRemoveSnapshots(TableRequests.Commit req) {
+    if (req == null || req.updates() == null) {
+      return false;
+    }
+    for (Map<String, Object> update : req.updates()) {
+      String action = update == null ? null : String.valueOf(update.get("action"));
+      if ("remove-snapshots".equals(action)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private Set<Long> removedSnapshotIds(TableRequests.Commit req) {
+    if (req == null || req.updates() == null) {
+      return Set.of();
+    }
+    Set<Long> ids = new LinkedHashSet<>();
+    for (Map<String, Object> update : req.updates()) {
+      String action = update == null ? null : String.valueOf(update.get("action"));
+      if (!"remove-snapshots".equals(action)) {
+        continue;
+      }
+      Object raw = update.get("snapshot-ids");
+      if (raw instanceof List<?> list) {
+        for (Object item : list) {
+          Long val = parseLong(item);
+          if (val != null) {
+            ids.add(val);
+          }
+        }
+      }
+    }
+    return ids.isEmpty() ? Set.of() : Set.copyOf(ids);
+  }
+
+  private Long parseLong(Object value) {
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof Number number) {
+      return number.longValue();
+    }
+    String text = value.toString();
+    if (text.isBlank()) {
+      return null;
+    }
+    try {
+      return Long.parseLong(text);
+    } catch (NumberFormatException e) {
+      return null;
+    }
+  }
+
+  private void syncExternalSnapshotsIfNeeded(
+      TableGatewaySupport tableSupport,
+      ResourceId tableId,
+      List<String> namespacePath,
+      String tableName,
+      Table committedTable,
+      CommitTableResponseDto responseDto,
+      TableRequests.Commit req,
+      String idempotencyKey) {
+    String metadataLocation = responseDto == null ? null : responseDto.metadataLocation();
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      Map<String, String> props =
+          committedTable == null ? Map.of() : committedTable.getPropertiesMap();
+      metadataLocation = MetadataLocationUtil.metadataLocation(props);
+    }
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      metadataLocation = tableSupport.stripMetadataMirrorPrefix(metadataLocation);
+    }
+    if (!isExternalLocationTable(committedTable, metadataLocation, tableSupport)) {
+      return;
+    }
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return;
+    }
+    String previousLocation =
+        committedTable == null
+            ? null
+            : MetadataLocationUtil.metadataLocation(committedTable.getPropertiesMap());
+    if (previousLocation != null && !previousLocation.isBlank()) {
+      previousLocation = tableSupport.stripMetadataMirrorPrefix(previousLocation);
+    }
+    if (previousLocation != null && metadataLocation.equals(previousLocation)) {
+      return;
+    }
+    try {
+      Map<String, String> ioProps =
+          committedTable == null
+              ? Map.of()
+              : FileIoFactory.filterIoProperties(committedTable.getPropertiesMap());
+      var imported = tableMetadataImportService.importMetadata(metadataLocation, ioProps);
+      snapshotMetadataService.syncSnapshotsFromImportedMetadata(
+          tableSupport,
+          tableId,
+          namespacePath,
+          tableName,
+          () -> committedTable,
+          imported,
+          idempotencyKey,
+          true);
+    } catch (Exception e) {
+      LOG.warnf(
+          e,
+          "Snapshot sync from metadata failed for %s.%s (metadata=%s)",
+          namespacePath,
+          tableName,
+          metadataLocation);
+    }
+  }
+
+  private boolean isExternalLocationTable(
+      Table table, String metadataLocation, TableGatewaySupport tableSupport) {
+    if (table == null) {
+      return false;
+    }
+    if (!table.hasUpstream()) {
+      if (metadataLocation == null || metadataLocation.isBlank()) {
+        return false;
+      }
+      return tableSupport == null || !tableSupport.isMirrorMetadataLocation(metadataLocation);
+    }
+    String uri = table.getUpstream().getUri();
+    return uri != null && !uri.isBlank();
   }
 
   private CommitTableResponseDto preferStageMetadata(

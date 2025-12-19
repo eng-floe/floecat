@@ -161,7 +161,7 @@ test: $(PROTO_JAR)
 	  verify
 
 .PHONY: test-aws
-test-aws: $(PROTO_JAR) localstack-up
+test-aws: $(PROTO_JAR) localstack-down localstack-up
 	@echo "==> [BUILD] installing parent POM to local repo"
 	$(MVN) $(MVN_TESTALL) install -N
 	@echo "==> [TEST] full suite (service + REST + CLI) w/ AWS storage (LocalStack)"

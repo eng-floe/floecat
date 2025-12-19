@@ -10,9 +10,11 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
+import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.ListTablesRequest;
+import ai.floedb.floecat.catalog.rpc.ListTablesResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
@@ -37,11 +39,8 @@ class TableLifecycleServiceTest {
   private final GrpcClients clients = mock(GrpcClients.class);
   private final TableServiceGrpc.TableServiceBlockingStub tableStub =
       mock(TableServiceGrpc.TableServiceBlockingStub.class);
-  private final ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc.DirectoryServiceBlockingStub
-      directoryStub =
-          mock(
-              ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc.DirectoryServiceBlockingStub
-                  .class);
+  private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryStub =
+      mock(DirectoryServiceGrpc.DirectoryServiceBlockingStub.class);
 
   @BeforeEach
   void setUp() {
@@ -67,11 +66,7 @@ class TableLifecycleServiceTest {
             .build();
     var page = PageResponse.newBuilder().setNextPageToken("next-token").build();
     when(tableStub.listTables(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.ListTablesResponse.newBuilder()
-                .addTables(table)
-                .setPage(page)
-                .build());
+        .thenReturn(ListTablesResponse.newBuilder().addTables(table).setPage(page).build());
 
     TableLifecycleService.ListTablesResult result = service.listTables("cat", "db", 50, "cursor");
 

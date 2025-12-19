@@ -15,6 +15,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
+import java.util.Map;
 
 @ApplicationScoped
 public class TableLoadService {
@@ -81,12 +82,10 @@ public class TableLoadService {
   private String metadataLocation(Table table, IcebergMetadata metadata) {
     var props =
         table == null || table.getPropertiesMap() == null
-            ? java.util.Map.<String, String>of()
+            ? Map.<String, String>of()
             : table.getPropertiesMap();
     String propertyLocation = MetadataLocationUtil.metadataLocation(props);
-    if (propertyLocation != null
-        && !propertyLocation.isBlank()
-        && !MetadataLocationUtil.isPointer(propertyLocation)) {
+    if (propertyLocation != null && !propertyLocation.isBlank()) {
       return propertyLocation;
     }
     if (metadata != null

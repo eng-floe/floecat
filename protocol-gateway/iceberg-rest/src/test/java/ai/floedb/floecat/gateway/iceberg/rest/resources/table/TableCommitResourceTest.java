@@ -108,7 +108,8 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
             .setResourceId(tableId)
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
-            .putProperties("metadata-location", "s3://bucket/orders/metadata.json")
+            .putProperties(
+                "metadata-location", "s3://bucket/orders/metadata/00000-abc.metadata.json")
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .setUpstream(upstream)
             .build();
@@ -193,7 +194,8 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
             .setUpstream(upstream)
-            .putProperties("metadata-location", "s3://bucket/orders/metadata.json")
+            .putProperties(
+                "metadata-location", "s3://bucket/orders/metadata/00000-abc.metadata.json")
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .putProperties("current-snapshot-id", "4")
             .build();

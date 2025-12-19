@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.StringJoiner;
+import java.util.concurrent.TimeUnit;
 
 public class RealServiceTestResource implements QuarkusTestResourceLifecycleManager {
   private static final String TEST_GRPC_PORT_PROPERTY = "floecat.test.upstream-grpc-port";
@@ -70,7 +71,9 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
   private static final Map<String, String> DEFAULT_SERVICE_PROPS =
       Map.of("floecat.kv", "memory", "floecat.blob", "memory");
   private static final String BUILD_PROPS_FILE = ".real-service-build.properties";
-  private static final String[] BUILD_PROP_NAMES = {"floecat.kv", "floecat.blob", "floecat.kv.auto-create"};
+  private static final String[] BUILD_PROP_NAMES = {
+    "floecat.kv", "floecat.blob", "floecat.kv.auto-create"
+  };
 
   @Override
   public Map<String, String> start() {
@@ -98,8 +101,7 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
       List<String> extraClasspath = selectItClasspathEntries();
       if (!extraClasspath.isEmpty()) {
         System.out.printf(
-            "RealServiceTestResource adding IT classpath entries to service: %s%n",
-            extraClasspath);
+            "RealServiceTestResource adding IT classpath entries to service: %s%n", extraClasspath);
       }
 
       List<String> command = new ArrayList<>();
@@ -176,9 +178,7 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
         command.add("-D" + name + "=" + value);
       }
     }
-    System.getProperties()
-        .stringPropertyNames()
-        .stream()
+    System.getProperties().stringPropertyNames().stream()
         .filter(name -> name.startsWith("floecat.fileio.override."))
         .forEach(
             name -> {
@@ -200,12 +200,16 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
 
   private static void addChecksumProperties(List<String> command) {
     String request =
-        firstNonBlank(System.getProperty(CHECKSUM_REQUEST_PROP), System.getenv("AWS_REQUEST_CHECKSUM_CALCULATION"));
+        firstNonBlank(
+            System.getProperty(CHECKSUM_REQUEST_PROP),
+            System.getenv("AWS_REQUEST_CHECKSUM_CALCULATION"));
     if (request == null || request.isBlank()) {
       request = CHECKSUM_DEFAULT;
     }
     String response =
-        firstNonBlank(System.getProperty(CHECKSUM_RESPONSE_PROP), System.getenv("AWS_RESPONSE_CHECKSUM_VALIDATION"));
+        firstNonBlank(
+            System.getProperty(CHECKSUM_RESPONSE_PROP),
+            System.getenv("AWS_RESPONSE_CHECKSUM_VALIDATION"));
     if (response == null || response.isBlank()) {
       response = CHECKSUM_DEFAULT;
     }
@@ -221,8 +225,7 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
         "RealServiceTestResource forwarded env vars: %s%n",
         maskSensitive(collectEnv(FORWARDED_ENVS)));
     System.out.printf(
-        "RealServiceTestResource AWS env vars: %s%n",
-        maskSensitive(collectEnv(DEBUG_AWS_ENVS)));
+        "RealServiceTestResource AWS env vars: %s%n", maskSensitive(collectEnv(DEBUG_AWS_ENVS)));
   }
 
   private Map<String, String> collectProperties(String[] names) {
@@ -261,7 +264,9 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
       return null;
     }
     String lowerKey = key == null ? "" : key.toLowerCase();
-    if (lowerKey.contains("secret") || lowerKey.contains("accesskey") || lowerKey.contains("token")) {
+    if (lowerKey.contains("secret")
+        || lowerKey.contains("accesskey")
+        || lowerKey.contains("token")) {
       return redact(value);
     }
     return value;
@@ -298,7 +303,7 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
     if (serviceProcess != null) {
       serviceProcess.destroy();
       try {
-        if (!serviceProcess.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+        if (!serviceProcess.waitFor(10, TimeUnit.SECONDS)) {
           serviceProcess.destroyForcibly();
         }
       } catch (InterruptedException e) {
@@ -506,8 +511,7 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
     try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
       props.load(reader);
     } catch (IOException e) {
-      System.err.printf(
-          "RealServiceTestResource failed to read %s: %s%n", file, e.getMessage());
+      System.err.printf("RealServiceTestResource failed to read %s: %s%n", file, e.getMessage());
       return Map.of();
     }
     Map<String, String> result = new LinkedHashMap<>();
@@ -532,8 +536,7 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
         toWrite.store(writer, "RealServiceTestResource build properties");
       }
     } catch (IOException e) {
-      System.err.printf(
-          "RealServiceTestResource failed to store %s: %s%n", file, e.getMessage());
+      System.err.printf("RealServiceTestResource failed to store %s: %s%n", file, e.getMessage());
     }
   }
 

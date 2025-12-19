@@ -9,11 +9,14 @@ import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
+import ai.floedb.floecat.connector.rpc.DeleteConnectorResponse;
+import ai.floedb.floecat.connector.rpc.SyncCaptureResponse;
 import ai.floedb.floecat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
@@ -23,6 +26,14 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableReposi
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableDropCleanupService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
+import ai.floedb.floecat.query.rpc.GetQueryRequest;
+import ai.floedb.floecat.query.rpc.GetQueryResponse;
+import ai.floedb.floecat.query.rpc.QueryDescriptor;
+import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
+import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
+import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
+import ai.floedb.floecat.query.rpc.QueryServiceGrpc.QueryServiceBlockingStub;
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.quarkus.test.InjectMock;
 import io.restassured.RestAssured;
@@ -49,11 +60,9 @@ public abstract class AbstractRestResourceTest {
   protected ViewServiceGrpc.ViewServiceBlockingStub viewStub;
   protected SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub;
   protected TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statsStub;
-  protected ai.floedb.floecat.query.rpc.QueryServiceGrpc.QueryServiceBlockingStub queryStub;
-  protected ai.floedb.floecat.query.rpc.QueryScanServiceGrpc.QueryScanServiceBlockingStub
-      queryScanStub;
-  protected ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub
-      querySchemaStub;
+  protected QueryServiceBlockingStub queryStub;
+  protected QueryScanServiceGrpc.QueryScanServiceBlockingStub queryScanStub;
+  protected QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchemaStub;
   protected ConnectorsGrpc.ConnectorsBlockingStub connectorsStub;
   protected RequestSpecification defaultSpec;
 
@@ -65,15 +74,9 @@ public abstract class AbstractRestResourceTest {
     viewStub = Mockito.mock(ViewServiceGrpc.ViewServiceBlockingStub.class);
     snapshotStub = Mockito.mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
     statsStub = Mockito.mock(TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub.class);
-    queryStub =
-        Mockito.mock(ai.floedb.floecat.query.rpc.QueryServiceGrpc.QueryServiceBlockingStub.class);
-    queryScanStub =
-        Mockito.mock(
-            ai.floedb.floecat.query.rpc.QueryScanServiceGrpc.QueryScanServiceBlockingStub.class);
-    querySchemaStub =
-        Mockito.mock(
-            ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub
-                .class);
+    queryStub = Mockito.mock(QueryServiceGrpc.QueryServiceBlockingStub.class);
+    queryScanStub = Mockito.mock(QueryScanServiceGrpc.QueryScanServiceBlockingStub.class);
+    querySchemaStub = Mockito.mock(QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub.class);
     connectorsStub = Mockito.mock(ConnectorsGrpc.ConnectorsBlockingStub.class);
 
     Mockito.when(clients.table()).thenReturn(tableStub);
@@ -98,7 +101,7 @@ public abstract class AbstractRestResourceTest {
     Mockito.when(grpc.withHeaders(querySchemaStub)).thenReturn(querySchemaStub);
     Mockito.when(grpc.withHeaders(connectorsStub)).thenReturn(connectorsStub);
     Mockito.when(querySchemaStub.describeInputs(Mockito.any()))
-        .thenReturn(ai.floedb.floecat.query.rpc.DescribeInputsResponse.getDefaultInstance());
+        .thenReturn(DescribeInputsResponse.getDefaultInstance());
     Mockito.when(snapshotStub.createSnapshot(Mockito.any()))
         .thenReturn(CreateSnapshotResponse.newBuilder().build());
     Mockito.when(snapshotStub.deleteSnapshot(Mockito.any()))
@@ -111,21 +114,18 @@ public abstract class AbstractRestResourceTest {
     Mockito.when(connectorsStub.triggerReconcile(Mockito.any()))
         .thenReturn(TriggerReconcileResponse.newBuilder().setJobId("job").build());
     Mockito.when(connectorsStub.syncCapture(Mockito.any()))
-        .thenReturn(ai.floedb.floecat.connector.rpc.SyncCaptureResponse.newBuilder().build());
+        .thenReturn(SyncCaptureResponse.newBuilder().build());
     Mockito.when(queryStub.getQuery(Mockito.any()))
         .thenAnswer(
             inv -> {
-              var request = inv.getArgument(0, ai.floedb.floecat.query.rpc.GetQueryRequest.class);
+              var request = inv.getArgument(0, GetQueryRequest.class);
               String queryId = request == null ? "" : request.getQueryId();
-              return ai.floedb.floecat.query.rpc.GetQueryResponse.newBuilder()
-                  .setQuery(
-                      ai.floedb.floecat.query.rpc.QueryDescriptor.newBuilder()
-                          .setQueryId(queryId)
-                          .build())
+              return GetQueryResponse.newBuilder()
+                  .setQuery(QueryDescriptor.newBuilder().setQueryId(queryId).build())
                   .build();
             });
     Mockito.when(connectorsStub.deleteConnector(Mockito.any()))
-        .thenReturn(ai.floedb.floecat.connector.rpc.DeleteConnectorResponse.newBuilder().build());
+        .thenReturn(DeleteConnectorResponse.newBuilder().build());
     Mockito.when(metadataImportService.importMetadata(Mockito.any(), Mockito.any()))
         .thenAnswer(
             inv -> {
@@ -226,7 +226,7 @@ public abstract class AbstractRestResourceTest {
         ]
       },
       "properties": {
-        "metadata-location": "s3://bucket/%s/metadata.json",
+        "metadata-location": "s3://bucket/%s/metadata/00000-abc.metadata.json",
         "io-impl": "org.apache.iceberg.inmemory.InMemoryFileIO"
       },
       "location": "s3://bucket/%s",
@@ -236,8 +236,7 @@ public abstract class AbstractRestResourceTest {
         .formatted(tableName, tableName, tableName);
   }
 
-  protected static IcebergMetadata metadataFromSpec(
-      ai.floedb.floecat.catalog.rpc.SnapshotSpec spec) {
+  protected static IcebergMetadata metadataFromSpec(SnapshotSpec spec) {
     try {
       return IcebergMetadata.parseFrom(spec.getFormatMetadataOrThrow("iceberg"));
     } catch (InvalidProtocolBufferException e) {

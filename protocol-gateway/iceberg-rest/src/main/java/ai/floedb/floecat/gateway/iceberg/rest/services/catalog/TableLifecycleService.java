@@ -4,12 +4,14 @@ import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.ListTablesRequest;
+import ai.floedb.floecat.catalog.rpc.ListTablesResponse;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
@@ -21,7 +23,7 @@ import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class TableLifecycleService {
-  @Inject ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders grpc;
+  @Inject GrpcWithHeaders grpc;
   @Inject TableClient tableClient;
 
   public record ListTablesResult(List<TableIdentifierDto> identifiers, String nextPageToken) {}
@@ -45,7 +47,7 @@ public class TableLifecycleService {
 
     var resp = tableClient.listTables(request.build());
     if (resp == null) {
-      resp = ai.floedb.floecat.catalog.rpc.ListTablesResponse.getDefaultInstance();
+      resp = ListTablesResponse.getDefaultInstance();
     }
     List<TableIdentifierDto> identifiers =
         resp.getTablesList().stream()

@@ -22,7 +22,7 @@ public class TableMetadataImportService {
       Map<String, String> properties,
       String tableLocation,
       ImportedSnapshot currentSnapshot,
-      java.util.List<ImportedSnapshot> snapshots) {}
+      List<ImportedSnapshot> snapshots) {}
 
   public record ImportedSnapshot(
       Long snapshotId,

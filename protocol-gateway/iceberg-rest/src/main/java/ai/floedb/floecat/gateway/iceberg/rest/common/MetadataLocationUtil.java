@@ -65,15 +65,6 @@ public final class MetadataLocationUtil {
     return stripMetadataMirrorPrefix(directory);
   }
 
-  public static boolean isPointer(String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return false;
-    }
-    int slash = metadataLocation.lastIndexOf('/');
-    String file = slash >= 0 ? metadataLocation.substring(slash + 1) : metadataLocation;
-    return "metadata.json".equalsIgnoreCase(file);
-  }
-
   public static boolean isMirrorMetadataLocation(String metadataLocation) {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return false;

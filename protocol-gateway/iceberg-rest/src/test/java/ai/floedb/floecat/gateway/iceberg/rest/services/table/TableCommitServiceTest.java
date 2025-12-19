@@ -8,6 +8,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -27,6 +28,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolv
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolver.StageResolution;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitSideEffectService.PostCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
@@ -53,17 +56,19 @@ class TableCommitServiceTest {
   private final CommitStageResolver stageResolver = mock(CommitStageResolver.class);
   private final TableUpdatePlanner tableUpdatePlanner = mock(TableUpdatePlanner.class);
   private final TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+  private final TableMetadataImportService tableMetadataImportService =
+      mock(TableMetadataImportService.class);
 
   @BeforeEach
   void setUp() {
     service.grpc = grpc;
-    service.snapshotClient =
-        new ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient(grpc);
+    service.snapshotClient = new SnapshotClient(grpc);
     service.tableLifecycleService = tableLifecycleService;
     service.sideEffectService = sideEffectService;
     service.stageMaterializationService = stageMaterializationService;
     service.stageResolver = stageResolver;
     service.tableUpdatePlanner = tableUpdatePlanner;
+    service.tableMetadataImportService = tableMetadataImportService;
     when(grpc.raw()).thenReturn(grpcClients);
     when(grpcClients.snapshot()).thenReturn(snapshotStub);
     when(grpc.withHeaders(snapshotStub)).thenReturn(snapshotStub);
@@ -75,6 +80,9 @@ class TableCommitServiceTest {
     when(sideEffectService.finalizeCommitResponse(any(), any(), any(), any(), any(), anyBoolean()))
         .thenAnswer(inv -> PostCommitResult.success(inv.getArgument(4)));
     doNothing().when(sideEffectService).runConnectorSync(any(), any(), any(), any());
+    when(tableMetadataImportService.importMetadata(any(), any()))
+        .thenReturn(
+            new TableMetadataImportService.ImportedMetadata(null, Map.of(), null, null, List.of()));
   }
 
   @Test
@@ -107,8 +115,9 @@ class TableCommitServiceTest {
 
   @Test
   void commitPrefersStageMetadata() {
-    String stageMetadataLocation = "s3://stage/orders/metadata/00001.json";
-    Table stagedTable = tableRecord("cat:db:orders", "s3://warehouse/orders/metadata/00000.json");
+    String stageMetadataLocation = "s3://stage/orders/metadata/00001-abc.metadata.json";
+    Table stagedTable =
+        tableRecord("cat:db:orders", "s3://warehouse/orders/metadata/00000-abc.metadata.json");
     StageCommitResult stageResult =
         new StageCommitResult(
             stagedTable,
@@ -123,7 +132,7 @@ class TableCommitServiceTest {
     when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(successPlan);
     IcebergMetadata metadata =
         IcebergMetadata.newBuilder()
-            .setMetadataLocation("s3://warehouse/orders/metadata/00000.json")
+            .setMetadataLocation("s3://warehouse/orders/metadata/00000-abc.metadata.json")
             .build();
     when(tableSupport.loadCurrentMetadata(stagedTable)).thenReturn(metadata);
     when(sideEffectService.synchronizeConnector(
@@ -173,7 +182,7 @@ class TableCommitServiceTest {
             any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
         .thenReturn(null);
 
-    String requested = "s3://requested/orders/metadata.json";
+    String requested = "s3://requested/orders/metadata/00001-abc.metadata.json";
     TableRequests.Commit request =
         new TableRequests.Commit(
             "orders",
@@ -188,7 +197,7 @@ class TableCommitServiceTest {
 
     CommitTableResponseDto dto = (CommitTableResponseDto) response.getEntity();
     assertEquals(requested, dto.metadataLocation());
-    verify(tableSupport).stripMetadataMirrorPrefix(requested);
+    verify(tableSupport, times(2)).stripMetadataMirrorPrefix(requested);
   }
 
   private TableRequests.Commit emptyCommitRequest() {

@@ -39,10 +39,10 @@ public class TableDeleteService {
       tableDropCleanupService.purgeTableData(
           tableContext.catalog().catalogName(), tableContext.namespaceName(), tableName, existing);
     }
-    tableLifecycleService.deleteTable(tableId, purge);
     if (connectorId != null) {
       tableSupport.deleteConnector(connectorId);
     }
+    tableLifecycleService.deleteTable(tableId, purge);
     return Response.noContent().build();
   }
 }

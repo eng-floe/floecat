@@ -11,6 +11,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortOrder;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
@@ -103,8 +105,7 @@ class SnapshotMetadataServiceTest {
 
     var method = SnapshotMetadataService.class.getDeclaredMethod("buildSortOrder", Map.class);
     method.setAccessible(true);
-    var sortOrder =
-        (ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortOrder) method.invoke(service, order);
+    var sortOrder = (IcebergSortOrder) method.invoke(service, order);
     Assertions.assertEquals(3, sortOrder.getSortOrderId());
     Assertions.assertEquals(0, sortOrder.getFieldsCount());
   }
@@ -113,7 +114,8 @@ class SnapshotMetadataServiceTest {
   void snapshotMetadataSynthesizesFromTablePropertiesWhenMissing() throws Exception {
     Table table =
         Table.newBuilder()
-            .putProperties("metadata-location", "s3://bucket/orders/metadata/00000.metadata.json")
+            .putProperties(
+                "metadata-location", "s3://bucket/orders/metadata/00000-abc.metadata.json")
             .putProperties("table-uuid", "uuid")
             .putProperties("format-version", "2")
             .putProperties("current-schema-id", "1")
@@ -126,25 +128,20 @@ class SnapshotMetadataServiceTest {
             .build();
     var method =
         SnapshotMetadataService.class.getDeclaredMethod(
-            "snapshotIcebergMetadata",
-            ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata.class,
-            Table.class,
-            Long.class,
-            Long.class);
+            "snapshotIcebergMetadata", IcebergMetadata.class, Table.class, Long.class, Long.class);
     method.setAccessible(true);
 
-    ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata metadata =
-        (ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata)
-            method.invoke(service, null, table, 9L, 11L);
+    IcebergMetadata metadata = (IcebergMetadata) method.invoke(service, null, table, 9L, 11L);
 
-    assertEquals("s3://bucket/orders/metadata/00000.metadata.json", metadata.getMetadataLocation());
+    assertEquals(
+        "s3://bucket/orders/metadata/00000-abc.metadata.json", metadata.getMetadataLocation());
     assertEquals(9L, metadata.getCurrentSnapshotId());
     assertEquals(11L, metadata.getLastSequenceNumber());
     assertEquals(2, metadata.getFormatVersion());
     assertEquals("uuid", metadata.getTableUuid());
   }
 
-  private Supplier<ai.floedb.floecat.catalog.rpc.Table> neverInvokedTableSupplier() {
+  private Supplier<Table> neverInvokedTableSupplier() {
     return () -> {
       throw new AssertionError("table should not be loaded");
     };

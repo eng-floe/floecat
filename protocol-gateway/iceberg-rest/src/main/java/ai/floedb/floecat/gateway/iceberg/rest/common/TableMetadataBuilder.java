@@ -412,9 +412,7 @@ public final class TableMetadataBuilder {
       return metadataLocation;
     }
     String propertyLocation = MetadataLocationUtil.metadataLocation(props);
-    if (propertyLocation != null
-        && !propertyLocation.isBlank()
-        && !MetadataLocationUtil.isPointer(propertyLocation)) {
+    if (propertyLocation != null && !propertyLocation.isBlank()) {
       return propertyLocation;
     }
     return propertyLocation;

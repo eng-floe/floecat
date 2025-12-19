@@ -44,12 +44,16 @@ class TableCommitSideEffectServiceTest {
 
   @Test
   void materializeMetadataUpdatesTableProperties() throws Exception {
-    TableMetadataView metadata = metadata("s3://warehouse/tables/orders/metadata.json");
+    TableMetadataView metadata =
+        metadata("s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
     TableMetadataView materialized =
         metadata.withMetadataLocation(
             "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json");
     when(materializeMetadataService.materialize(
-            "cat.db", "orders", metadata, "s3://warehouse/tables/orders/metadata.json"))
+            "cat.db",
+            "orders",
+            metadata,
+            "s3://warehouse/tables/orders/metadata/00000-abc.metadata.json"))
         .thenReturn(
             new MaterializeResult(
                 "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json", materialized));
@@ -71,7 +75,7 @@ class TableCommitSideEffectServiceTest {
             "orders",
             table,
             metadata,
-            "s3://warehouse/tables/orders/metadata.json");
+            "s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
 
     assertNull(result.error());
     assertSame(materialized, result.metadata());
@@ -96,18 +100,20 @@ class TableCommitSideEffectServiceTest {
             "orders",
             null,
             null,
-            "s3://warehouse/tables/orders/metadata.json");
+            "s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
 
     assertNull(result.error());
     assertNull(result.metadata());
-    assertEquals("s3://warehouse/tables/orders/metadata.json", result.metadataLocation());
+    assertEquals(
+        "s3://warehouse/tables/orders/metadata/00000-abc.metadata.json", result.metadataLocation());
     verify(materializeMetadataService, never()).materialize(any(), any(), any(), any());
     verify(tableLifecycleService, never()).updateTable(any());
   }
 
   @Test
   void materializeMetadataFallsBackWhenMaterializationFails() throws Exception {
-    TableMetadataView metadata = metadata("s3://warehouse/tables/orders/metadata.json");
+    TableMetadataView metadata =
+        metadata("s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
     when(materializeMetadataService.materialize(any(), any(), any(), any()))
         .thenThrow(new MaterializeMetadataException("boom"));
 

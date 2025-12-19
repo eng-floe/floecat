@@ -1,8 +1,11 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
+import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
+import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -15,6 +18,7 @@ import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
+import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
@@ -297,9 +301,7 @@ public class TableGatewaySupport {
     try {
       SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT);
       var requestBuilder =
-          ai.floedb.floecat.catalog.rpc.GetSnapshotRequest.newBuilder()
-              .setTableId(table.getResourceId())
-              .setSnapshot(ref);
+          GetSnapshotRequest.newBuilder().setTableId(table.getResourceId()).setSnapshot(ref);
       var response = snapshotClient.getSnapshot(requestBuilder.build());
       if (response == null || !response.hasSnapshot()) {
         return null;
@@ -336,10 +338,7 @@ public class TableGatewaySupport {
     SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSnapshotId(snapshotId);
     var response =
         snapshotClient.getSnapshot(
-            ai.floedb.floecat.catalog.rpc.GetSnapshotRequest.newBuilder()
-                .setTableId(tableId)
-                .setSnapshot(ref)
-                .build());
+            GetSnapshotRequest.newBuilder().setTableId(tableId).setSnapshot(ref).build());
     if (response == null || !response.hasSnapshot()) {
       return null;
     }
@@ -374,7 +373,7 @@ public class TableGatewaySupport {
     SourceSelector source =
         SourceSelector.newBuilder().setNamespace(nsPath).setTable(tableName).build();
     var dest =
-        ai.floedb.floecat.connector.rpc.DestinationTarget.newBuilder()
+        DestinationTarget.newBuilder()
             .setCatalogId(catalogId)
             .setNamespaceId(namespaceId)
             .setTableId(tableId)
@@ -442,7 +441,7 @@ public class TableGatewaySupport {
     SourceSelector source =
         SourceSelector.newBuilder().setNamespace(nsPath).setTable(tableName).build();
     var dest =
-        ai.floedb.floecat.connector.rpc.DestinationTarget.newBuilder()
+        DestinationTarget.newBuilder()
             .setCatalogId(catalogId)
             .setNamespaceId(namespaceId)
             .setTableId(tableId)
@@ -499,8 +498,8 @@ public class TableGatewaySupport {
     if (connectorUri != null && !connectorUri.isBlank()) {
       upstream.setUri(connectorUri);
     }
-    ai.floedb.floecat.catalog.rpc.UpdateTableRequest request =
-        ai.floedb.floecat.catalog.rpc.UpdateTableRequest.newBuilder()
+    UpdateTableRequest request =
+        UpdateTableRequest.newBuilder()
             .setTableId(tableId)
             .setSpec(TableSpec.newBuilder().setUpstream(upstream).build())
             .setUpdateMask(com.google.protobuf.FieldMask.newBuilder().addPaths("upstream").build())
@@ -619,7 +618,7 @@ public class TableGatewaySupport {
     }
   }
 
-  private IcebergMetadata parseSnapshotMetadata(ai.floedb.floecat.catalog.rpc.Snapshot snapshot) {
+  private IcebergMetadata parseSnapshotMetadata(Snapshot snapshot) {
     if (snapshot == null) {
       return null;
     }
