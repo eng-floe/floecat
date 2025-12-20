@@ -99,14 +99,14 @@ public class TableCommitSideEffectService {
       return null;
     }
     String effectiveMetadata = metadataLocation;
-    if ((effectiveMetadata == null || effectiveMetadata.isBlank()) && metadataView != null) {
-      effectiveMetadata = metadataView.metadataLocation();
-    }
     if (effectiveMetadata == null || effectiveMetadata.isBlank()) {
       Map<String, String> props = tableRecord.getPropertiesMap();
       effectiveMetadata = props.get("metadata-location");
     }
     if (effectiveMetadata == null || effectiveMetadata.isBlank()) {
+      LOG.infof(
+          "Skipping connector sync for %s.%s because metadata-location was empty",
+          namespacePath, table);
       return resolveConnectorId(tableRecord);
     }
     LOG.infof(

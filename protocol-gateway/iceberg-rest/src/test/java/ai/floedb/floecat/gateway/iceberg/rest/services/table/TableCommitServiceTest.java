@@ -116,6 +116,7 @@ class TableCommitServiceTest {
   @Test
   void commitPrefersStageMetadata() {
     String stageMetadataLocation = "s3://stage/orders/metadata/00001-abc.metadata.json";
+    String materializedLocation = "s3://warehouse/orders/metadata/00001-def.metadata.json";
     Table stagedTable =
         tableRecord("cat:db:orders", "s3://warehouse/orders/metadata/00000-abc.metadata.json");
     StageCommitResult stageResult =
@@ -147,6 +148,11 @@ class TableCommitServiceTest {
             any(),
             any()))
         .thenReturn(ResourceId.newBuilder().setId("connector-1").build());
+    when(sideEffectService.finalizeCommitResponse(
+            eq("db"), eq("orders"), eq(tableId), eq(stagedTable), any(), eq(false)))
+        .thenReturn(
+            PostCommitResult.success(
+                new CommitTableResponseDto(materializedLocation, metadataView(materializedLocation))));
 
     Response response = service.commit(command(stageCommitRequest()));
 
@@ -154,12 +160,76 @@ class TableCommitServiceTest {
     Object entity = response.getEntity();
     assertTrue(entity instanceof CommitTableResponseDto);
     CommitTableResponseDto dto = (CommitTableResponseDto) entity;
-    assertEquals(stageMetadataLocation, dto.metadataLocation());
+    assertEquals(materializedLocation, dto.metadataLocation());
+    ArgumentCaptor<String> metadataLocationCaptor = ArgumentCaptor.forClass(String.class);
+    verify(sideEffectService)
+        .synchronizeConnector(
+            eq(tableSupport),
+            any(),
+            eq(List.of("db")),
+            any(),
+            any(),
+            eq("orders"),
+            eq(stagedTable),
+            any(),
+            metadataLocationCaptor.capture(),
+            any());
+    String connectorMetadataLocation = metadataLocationCaptor.getValue();
+    assertEquals(materializedLocation, connectorMetadataLocation);
     ArgumentCaptor<ResourceId> connectorCaptor = ArgumentCaptor.forClass(ResourceId.class);
     verify(sideEffectService)
         .runConnectorSync(
             eq(tableSupport), connectorCaptor.capture(), eq(List.of("db")), eq("orders"));
     assertEquals("connector-1", connectorCaptor.getValue().getId());
+  }
+
+  @Test
+  void commitIgnoresStageMetadataWhenSnapshotUpdatesPresent() {
+    String catalogMetadataLocation = "s3://warehouse/orders/metadata/00000-abc.metadata.json";
+    String stageMetadataLocation = "s3://stage/orders/metadata/00001-abc.metadata.json";
+    Table stagedTable = tableRecord("cat:db:orders", catalogMetadataLocation);
+    StageCommitResult stageResult =
+        new StageCommitResult(
+            stagedTable,
+            new LoadTableResultDto(
+                stageMetadataLocation, metadataView(stageMetadataLocation), Map.of(), List.of()));
+    ResourceId tableId = stagedTable.getResourceId();
+    StageResolution resolution = new StageResolution(tableId, stageResult, "stage-1", null);
+    when(stageResolver.resolve(any())).thenReturn(resolution);
+
+    TableUpdatePlanner.UpdatePlan successPlan =
+        TableUpdatePlanner.UpdatePlan.success(TableSpec.newBuilder(), FieldMask.newBuilder());
+    when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(successPlan);
+    IcebergMetadata metadata =
+        IcebergMetadata.newBuilder().setMetadataLocation(catalogMetadataLocation).build();
+    when(tableSupport.loadCurrentMetadata(stagedTable)).thenReturn(metadata);
+    when(sideEffectService.synchronizeConnector(
+            eq(tableSupport),
+            any(),
+            eq(List.of("db")),
+            any(),
+            any(),
+            eq("orders"),
+            eq(stagedTable),
+            any(),
+            any(),
+            any()))
+        .thenReturn(ResourceId.newBuilder().setId("connector-1").build());
+
+    TableRequests.Commit request =
+        new TableRequests.Commit(
+            "orders",
+            List.of("db"),
+            null,
+            null,
+            "stage-commit",
+            null,
+            List.of(Map.of("action", "remove-snapshots", "snapshot-ids", List.of(1L))));
+
+    Response response = service.commit(command(request));
+
+    CommitTableResponseDto dto = (CommitTableResponseDto) response.getEntity();
+    assertEquals(catalogMetadataLocation, dto.metadataLocation());
   }
 
   @Test

@@ -95,7 +95,9 @@ public class TableCommitService {
     CommitTableResponseDto initialResponse =
         TableResponseMapper.toCommitResponse(table, committedTable, metadata, snapshotList);
     CommitTableResponseDto stageAwareResponse =
-        preferStageMetadata(initialResponse, stageMaterialization);
+        containsSnapshotUpdates(req)
+            ? initialResponse
+            : preferStageMetadata(initialResponse, stageMaterialization);
     stageAwareResponse =
         normalizeMetadataLocation(tableSupport, committedTable, stageAwareResponse);
     stageAwareResponse =
@@ -184,6 +186,22 @@ public class TableCommitService {
     for (Map<String, Object> update : req.updates()) {
       String action = update == null ? null : String.valueOf(update.get("action"));
       if ("remove-snapshots".equals(action)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private boolean containsSnapshotUpdates(TableRequests.Commit req) {
+    if (req == null || req.updates() == null) {
+      return false;
+    }
+    for (Map<String, Object> update : req.updates()) {
+      String action = update == null ? null : String.valueOf(update.get("action"));
+      if ("add-snapshot".equals(action)
+          || "remove-snapshots".equals(action)
+          || "set-snapshot-ref".equals(action)
+          || "remove-snapshot-ref".equals(action)) {
         return true;
       }
     }

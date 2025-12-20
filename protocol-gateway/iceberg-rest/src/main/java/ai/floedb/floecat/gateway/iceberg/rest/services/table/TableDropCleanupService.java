@@ -21,6 +21,13 @@ public class TableDropCleanupService {
   @Inject IcebergGatewayConfig config;
 
   public void purgeTableData(String catalogName, String namespace, String tableName, Table table) {
+    String tableId =
+        table != null && table.hasResourceId() && table.getResourceId().getId() != null
+            ? table.getResourceId().getId()
+            : "<missing>";
+    LOG.infof(
+        "Purging request received namespace=%s table=%s catalog=%s tableId=%s",
+        namespace, tableName, catalogName, tableId);
     if (table == null) {
       LOG.debugf(
           "Skipping purge for %s.%s in catalog %s because table metadata was unavailable",
@@ -54,8 +61,8 @@ public class TableDropCleanupService {
       TableMetadata metadata = TableMetadataParser.read(fileIO, metadataLocation);
       CatalogUtil.dropTableData(fileIO, metadata);
       LOG.infof(
-          "Purged Iceberg metadata and data for %s.%s in catalog %s (metadata=%s)",
-          namespace, tableName, catalogName, metadataLocation);
+          "Purged Iceberg metadata and data for %s.%s in catalog %s (tableId=%s metadata=%s)",
+          namespace, tableName, catalogName, tableId, metadataLocation);
     } catch (Exception e) {
       LOG.warnf(
           e,
