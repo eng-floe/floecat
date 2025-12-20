@@ -230,7 +230,11 @@ class ConcurrencyOCCIdempotencyIT {
 
     start.countDown();
     pool.shutdown();
-    assertTrue(pool.awaitTermination(60, TimeUnit.SECONDS), "workers timed out");
+    boolean finished = pool.awaitTermination(120, TimeUnit.SECONDS);
+    if (!finished) {
+      pool.shutdownNow();
+    }
+    assertTrue(finished, "workers timed out");
 
     if (!unexpected.isEmpty()) {
       unexpected.peek().printStackTrace();

@@ -80,18 +80,13 @@ public class TableRegisterService {
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.ALREADY_EXISTS) {
         if (Boolean.TRUE.equals(req.overwrite())) {
-          Map<String, String> requestIoProps =
-              req.properties() == null
-                  ? Map.of()
-                  : FileIoFactory.filterIoProperties(req.properties());
           return overwriteRegisteredTable(
               namespaceContext,
               tableName,
               metadataLocation,
               idempotencyKey,
               importedMetadata,
-              tableSupport,
-              requestIoProps);
+              tableSupport);
         }
         return IcebergErrorResponses.conflict("Table already exists");
       }
@@ -161,8 +156,7 @@ public class TableRegisterService {
       String metadataLocation,
       String idempotencyKey,
       ImportedMetadata importedMetadata,
-      TableGatewaySupport tableSupport,
-      Map<String, String> requestIoProps) {
+      TableGatewaySupport tableSupport) {
     ResourceId tableId =
         tableLifecycleService.resolveTableId(
             namespaceContext.catalogName(), namespaceContext.namespacePath(), tableName);

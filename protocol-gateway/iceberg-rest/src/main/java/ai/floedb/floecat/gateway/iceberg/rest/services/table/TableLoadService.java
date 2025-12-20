@@ -93,9 +93,6 @@ public class TableLoadService {
         && !metadata.getMetadataLocation().isBlank()) {
       return metadata.getMetadataLocation();
     }
-    if (propertyLocation != null && !propertyLocation.isBlank()) {
-      return propertyLocation;
-    }
     return table != null && table.hasResourceId() ? table.getResourceId().getId() : null;
   }
 }
