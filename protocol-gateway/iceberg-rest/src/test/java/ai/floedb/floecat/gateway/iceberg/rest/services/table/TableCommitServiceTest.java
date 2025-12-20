@@ -152,7 +152,8 @@ class TableCommitServiceTest {
             eq("db"), eq("orders"), eq(tableId), eq(stagedTable), any(), eq(false)))
         .thenReturn(
             PostCommitResult.success(
-                new CommitTableResponseDto(materializedLocation, metadataView(materializedLocation))));
+                new CommitTableResponseDto(
+                    materializedLocation, metadataView(materializedLocation))));
 
     Response response = service.commit(command(stageCommitRequest()));
 

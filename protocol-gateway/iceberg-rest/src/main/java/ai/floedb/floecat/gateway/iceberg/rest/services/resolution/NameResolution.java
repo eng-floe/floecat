@@ -35,11 +35,7 @@ public final class NameResolution {
     var response =
         client.resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(ref).build());
     return requireId(
-        response == null ? null : response.getResourceId(),
-        "namespace",
-        catalogName,
-        path,
-        null);
+        response == null ? null : response.getResourceId(), "namespace", catalogName, path, null);
   }
 
   public static ResourceId resolveTable(
@@ -53,11 +49,7 @@ public final class NameResolution {
         NameRef.newBuilder().setCatalog(catalogName).addAllPath(path).setName(tableName).build();
     var response = client.resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build());
     return requireId(
-        response == null ? null : response.getResourceId(),
-        "table",
-        catalogName,
-        path,
-        tableName);
+        response == null ? null : response.getResourceId(), "table", catalogName, path, tableName);
   }
 
   public static ResourceId resolveView(
