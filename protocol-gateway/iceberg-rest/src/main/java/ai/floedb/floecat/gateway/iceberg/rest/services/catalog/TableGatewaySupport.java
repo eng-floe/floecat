@@ -32,6 +32,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
+import ai.floedb.floecat.storage.spi.io.RuntimeFileIoOverrides;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
@@ -454,6 +455,12 @@ public class TableGatewaySupport {
 
     String connectorUri =
         (tableLocation != null && !tableLocation.isBlank()) ? tableLocation : metadataLocation;
+    Map<String, String> props = new LinkedHashMap<>();
+    props.put("external.metadata-location", metadataLocation);
+    props.put("external.table-name", tableName);
+    props.put("external.namespace", namespaceFq);
+    props.put(CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(true));
+    RuntimeFileIoOverrides.mergeInto(props);
     ConnectorSpec.Builder spec =
         ConnectorSpec.newBuilder()
             .setDisplayName(displayName)
@@ -462,10 +469,7 @@ public class TableGatewaySupport {
             .setSource(source)
             .setDestination(dest)
             .setAuth(AuthConfig.newBuilder().setScheme("none").build())
-            .putProperties("external.metadata-location", metadataLocation)
-            .putProperties("external.table-name", tableName)
-            .putProperties("external.namespace", namespaceFq)
-            .putProperties(CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(true));
+            .putAllProperties(props);
 
     CreateConnectorRequest.Builder request =
         CreateConnectorRequest.newBuilder().setSpec(spec.build());

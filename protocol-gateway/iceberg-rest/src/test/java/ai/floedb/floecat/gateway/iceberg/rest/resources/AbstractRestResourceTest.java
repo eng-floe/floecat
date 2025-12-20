@@ -8,6 +8,12 @@ import ai.floedb.floecat.catalog.rpc.GetViewResponse;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogResponse;
+import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
+import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
+import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
@@ -148,6 +154,46 @@ public abstract class AbstractRestResourceTest {
     ResourceId catalogId = ResourceId.newBuilder().setId("cat:default").build();
     Mockito.when(directoryStub.resolveCatalog(Mockito.any()))
         .thenReturn(ResolveCatalogResponse.newBuilder().setResourceId(catalogId).build());
+    Mockito.when(directoryStub.resolveNamespace(Mockito.any()))
+        .thenAnswer(
+            inv -> {
+              ResolveNamespaceRequest request = inv.getArgument(0, ResolveNamespaceRequest.class);
+              if (request == null || !request.hasRef()) {
+                return ResolveNamespaceResponse.getDefaultInstance();
+              }
+              ResourceId id =
+                  buildResourceId(
+                      request.getRef().getCatalog(), request.getRef().getPathList(), null);
+              return ResolveNamespaceResponse.newBuilder().setResourceId(id).build();
+            });
+    Mockito.when(directoryStub.resolveTable(Mockito.any()))
+        .thenAnswer(
+            inv -> {
+              ResolveTableRequest request = inv.getArgument(0, ResolveTableRequest.class);
+              if (request == null || !request.hasRef()) {
+                return ResolveTableResponse.getDefaultInstance();
+              }
+              ResourceId id =
+                  buildResourceId(
+                      request.getRef().getCatalog(),
+                      request.getRef().getPathList(),
+                      request.getRef().getName());
+              return ResolveTableResponse.newBuilder().setResourceId(id).build();
+            });
+    Mockito.when(directoryStub.resolveView(Mockito.any()))
+        .thenAnswer(
+            inv -> {
+              ResolveViewRequest request = inv.getArgument(0, ResolveViewRequest.class);
+              if (request == null || !request.hasRef()) {
+                return ResolveViewResponse.getDefaultInstance();
+              }
+              ResourceId id =
+                  buildResourceId(
+                      request.getRef().getCatalog(),
+                      request.getRef().getPathList(),
+                      request.getRef().getName());
+              return ResolveViewResponse.newBuilder().setResourceId(id).build();
+            });
     defaultSpec =
         new RequestSpecBuilder()
             .addHeader("x-tenant-id", "account1")
@@ -155,6 +201,24 @@ public abstract class AbstractRestResourceTest {
             .build();
     RestAssured.requestSpecification = defaultSpec;
     stageRepository.clear();
+  }
+
+  private ResourceId buildResourceId(String catalog, List<String> path, String leafName) {
+    StringBuilder builder = new StringBuilder("cat");
+    if (catalog != null && !catalog.isBlank()) {
+      builder.append(':').append(catalog);
+    }
+    if (path != null) {
+      for (String part : path) {
+        if (part != null && !part.isBlank()) {
+          builder.append(':').append(part);
+        }
+      }
+    }
+    if (leafName != null && !leafName.isBlank()) {
+      builder.append(':').append(leafName);
+    }
+    return ResourceId.newBuilder().setId(builder.toString()).build();
   }
 
   protected String stageCreateRequestWithoutLocation(String tableName) {
