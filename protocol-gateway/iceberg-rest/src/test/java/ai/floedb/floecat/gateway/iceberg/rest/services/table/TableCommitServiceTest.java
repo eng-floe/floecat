@@ -29,6 +29,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolv
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitSideEffectService.PostCommitResult;
@@ -58,6 +59,8 @@ class TableCommitServiceTest {
   private final TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
   private final TableMetadataImportService tableMetadataImportService =
       mock(TableMetadataImportService.class);
+  private final SnapshotMetadataService snapshotMetadataService =
+      mock(SnapshotMetadataService.class);
 
   @BeforeEach
   void setUp() {
@@ -68,6 +71,7 @@ class TableCommitServiceTest {
     service.stageMaterializationService = stageMaterializationService;
     service.stageResolver = stageResolver;
     service.tableUpdatePlanner = tableUpdatePlanner;
+    service.snapshotMetadataService = snapshotMetadataService;
     service.tableMetadataImportService = tableMetadataImportService;
     when(grpc.raw()).thenReturn(grpcClients);
     when(grpcClients.snapshot()).thenReturn(snapshotStub);

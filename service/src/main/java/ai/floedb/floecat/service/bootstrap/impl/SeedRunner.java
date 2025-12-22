@@ -28,6 +28,8 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import com.google.protobuf.util.Timestamps;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.runtime.StartupEvent;
 import io.vertx.core.Vertx;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -38,8 +40,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -48,6 +50,9 @@ public class SeedRunner {
   private static final Logger LOG = Logger.getLogger(SeedRunner.class);
   private static final List<String> CORE_NAMESPACE = List.of("core");
   private static final AtomicBoolean SEEDED = new AtomicBoolean(false);
+  private static final int SEED_SYNC_MAX_ATTEMPTS = 6;
+  private static final long SEED_SYNC_INITIAL_BACKOFF_MS = 250L;
+  private static final long SEED_SYNC_MAX_BACKOFF_MS = 5_000L;
 
   @Inject AccountRepository accounts;
   @Inject CatalogRepository catalogs;
@@ -88,17 +93,9 @@ public class SeedRunner {
               }
             },
             true);
-    waitForSeeding(future);
-  }
-
-  private void waitForSeeding(io.vertx.core.Future<Void> future) {
-    try {
-      future.toCompletionStage().toCompletableFuture().join();
-      LOG.info("Startup seeding completed successfully");
-    } catch (CompletionException e) {
-      LOG.error("Startup seeding failed", e.getCause());
-      throw new RuntimeException("Startup seeding failed", e.getCause());
-    }
+    future
+        .onSuccess(v -> LOG.info("Startup seeding completed successfully"))
+        .onFailure(t -> LOG.error("Startup seeding failed", t));
   }
 
   public void seedData() {
@@ -430,20 +427,63 @@ public class SeedRunner {
   private void syncConnector(ResourceId connectorId, FixtureConfig fixture) {
     var scope =
         ReconcileScope.of(List.of(fixture.destinationNamespace()), fixture.tableName(), List.of());
-    var result =
-        reconciler.reconcile(
-            connectorId, true, scope, ReconcilerService.CaptureMode.METADATA_AND_STATS);
-    if (result.ok()) {
-      LOG.infov(
-          "Populated fixture table {0} (scanned={1}, changed={2})",
-          fixture.tableName(), result.scanned, result.changed);
-    } else {
-      LOG.warnf(
-          result.error,
-          "Failed to populate fixture table {0}: {1}",
-          fixture.tableName(),
-          result.message());
+    long backoffMs = SEED_SYNC_INITIAL_BACKOFF_MS;
+    for (int attempt = 1; attempt <= SEED_SYNC_MAX_ATTEMPTS; attempt++) {
+      try {
+        var result =
+            reconciler.reconcile(
+                connectorId, true, scope, ReconcilerService.CaptureMode.METADATA_AND_STATS);
+        if (result.ok()) {
+          LOG.infov(
+              "Populated fixture table {0} (scanned={1}, changed={2})",
+              fixture.tableName(), result.scanned, result.changed);
+          return;
+        }
+        if (result.error != null && isRetryableSeedSyncError(result.error)) {
+          if (attempt == SEED_SYNC_MAX_ATTEMPTS) {
+            LOG.warnf(
+                result.error,
+                "Failed to populate fixture table {0}: {1}",
+                fixture.tableName(),
+                result.message());
+            return;
+          }
+          LOG.warnf(
+              "Retrying fixture sync for %s (attempt %d/%d) after %dms due to: %s",
+              fixture.tableName(), attempt, SEED_SYNC_MAX_ATTEMPTS, backoffMs, result.message());
+          LockSupport.parkNanos(backoffMs * 1_000_000L);
+          backoffMs = Math.min(backoffMs * 2, SEED_SYNC_MAX_BACKOFF_MS);
+          continue;
+        }
+        LOG.warnf(
+            result.error,
+            "Failed to populate fixture table {0}: {1}",
+            fixture.tableName(),
+            result.message());
+        return;
+      } catch (RuntimeException e) {
+        if (!isRetryableSeedSyncError(e) || attempt == SEED_SYNC_MAX_ATTEMPTS) {
+          throw e;
+        }
+        LOG.warnf(
+            "Retrying fixture sync for %s (attempt %d/%d) after %dms due to: %s",
+            fixture.tableName(), attempt, SEED_SYNC_MAX_ATTEMPTS, backoffMs, e.getMessage());
+        LockSupport.parkNanos(backoffMs * 1_000_000L);
+        backoffMs = Math.min(backoffMs * 2, SEED_SYNC_MAX_BACKOFF_MS);
+      }
     }
+  }
+
+  private static boolean isRetryableSeedSyncError(Throwable error) {
+    Throwable current = error;
+    while (current != null) {
+      if (current instanceof StatusRuntimeException statusEx
+          && statusEx.getStatus().getCode() == Status.Code.UNAVAILABLE) {
+        return true;
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 
   private static List<String> namespaceSegments(String namespaceFq) {

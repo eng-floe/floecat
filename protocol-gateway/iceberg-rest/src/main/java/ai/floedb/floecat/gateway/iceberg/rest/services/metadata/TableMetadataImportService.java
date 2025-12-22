@@ -38,6 +38,11 @@ public class TableMetadataImportService {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       throw new IllegalArgumentException("metadata-location is required");
     }
+    LOG.infof(
+        "Importing Iceberg metadata location=%s fileIO=%s ioProps=%s",
+        metadataLocation,
+        ioProperties == null ? "<null>" : ioProperties.getOrDefault("io-impl", "<default>"),
+        redactIoProperties(ioProperties));
     FileIO fileIO = null;
     try {
       fileIO = FileIoFactory.createFileIo(ioProperties, null, false);
@@ -129,5 +134,27 @@ public class TableMetadataImportService {
     if (value >= 0) {
       props.put(key, Long.toString(value));
     }
+  }
+
+  private Map<String, String> redactIoProperties(Map<String, String> ioProperties) {
+    if (ioProperties == null || ioProperties.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, String> redacted = new LinkedHashMap<>(ioProperties.size());
+    ioProperties.forEach(
+        (key, value) -> {
+          if (key == null) {
+            return;
+          }
+          String normalized = key.toLowerCase();
+          if (normalized.contains("secret")
+              || normalized.contains("token")
+              || normalized.contains("key")) {
+            redacted.put(key, "***");
+          } else {
+            redacted.put(key, value);
+          }
+        });
+    return redacted;
   }
 }

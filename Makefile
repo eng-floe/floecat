@@ -244,6 +244,8 @@ run-aws: localstack-up $(PROTO_JAR)
 	AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED \
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+	  -Dfloecat.seed.enabled=true \
+	  -Dfloecat.seed.mode=iceberg \
 	  $(AWS_STORE_PROPS) \
 	  $(QUARKUS_DEV_ARGS) \
 	  $(REACTOR_SERVICE) \
@@ -374,6 +376,16 @@ localstack-up:
 	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
 	  awslocal s3api create-bucket \
 	    --bucket $(LOCALSTACK_BUCKET) \
+	    --region $(LOCALSTACK_REGION) >/dev/null 2>&1 || true
+	@echo "==> [LOCALSTACK] ensuring S3 bucket bucket exists"
+	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
+	  awslocal s3api create-bucket \
+	    --bucket bucket \
+	    --region $(LOCALSTACK_REGION) >/dev/null 2>&1 || true
+	@echo "==> [LOCALSTACK] ensuring S3 bucket warehouse exists"
+	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
+	  awslocal s3api create-bucket \
+	    --bucket warehouse \
 	    --region $(LOCALSTACK_REGION) >/dev/null 2>&1 || true
 	@echo "==> [LOCALSTACK] ensuring DynamoDB table $(LOCALSTACK_TABLE) exists"
 	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \

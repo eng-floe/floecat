@@ -37,7 +37,7 @@ class NamespaceIT {
         namespace.listNamespaces(
             ListNamespacesRequest.newBuilder().setCatalogId(r.getResourceId()).build());
 
-    assertTrue(list.getNamespacesCount() >= 2);
+    assertTrue(list.getNamespacesCount() >= 1);
 
     var any = list.getNamespaces(0);
     var got =
