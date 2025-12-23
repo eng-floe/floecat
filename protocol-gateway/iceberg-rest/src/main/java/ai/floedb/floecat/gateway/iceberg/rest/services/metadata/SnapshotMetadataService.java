@@ -17,7 +17,6 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
-import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
@@ -345,6 +344,7 @@ public class SnapshotMetadataService {
       return null;
     }
     List<ImportedSnapshot> importedSnapshots = importedMetadata.snapshots();
+    String schemaJson = importedMetadata.schemaJson();
     if (importedSnapshots != null && !importedSnapshots.isEmpty()) {
       for (ImportedSnapshot snapshot : importedSnapshots) {
         Response err =
@@ -355,6 +355,7 @@ public class SnapshotMetadataService {
                 tableName,
                 tableSupplier,
                 snapshot,
+                schemaJson,
                 idempotencyKey);
         if (err != null) {
           return err;
@@ -371,6 +372,7 @@ public class SnapshotMetadataService {
                 tableName,
                 tableSupplier,
                 snapshot,
+                schemaJson,
                 idempotencyKey);
         if (err != null) {
           return err;
@@ -400,6 +402,7 @@ public class SnapshotMetadataService {
     }
     Set<Long> expectedIds = new LinkedHashSet<>();
     List<ImportedSnapshot> importedSnapshots = importedMetadata.snapshots();
+    String schemaJson = importedMetadata.schemaJson();
     if (importedSnapshots != null && !importedSnapshots.isEmpty()) {
       for (ImportedSnapshot snapshot : importedSnapshots) {
         Response err =
@@ -410,6 +413,7 @@ public class SnapshotMetadataService {
                 tableName,
                 tableSupplier,
                 snapshot,
+                schemaJson,
                 idempotencyKey);
         if (err == null && snapshot != null && snapshot.snapshotId() != null) {
           expectedIds.add(snapshot.snapshotId());
@@ -425,6 +429,7 @@ public class SnapshotMetadataService {
               tableName,
               tableSupplier,
               snapshot,
+              schemaJson,
               idempotencyKey);
       if (err == null && snapshot != null && snapshot.snapshotId() != null) {
         expectedIds.add(snapshot.snapshotId());
@@ -459,6 +464,7 @@ public class SnapshotMetadataService {
       String tableName,
       Supplier<Table> tableSupplier,
       ImportedSnapshot snapshot,
+      String schemaJson,
       String idempotencyKey) {
     Long snapshotId = snapshot == null ? null : snapshot.snapshotId();
     if (snapshotId == null || snapshotId <= 0) {
@@ -471,7 +477,7 @@ public class SnapshotMetadataService {
     if (table == null) {
       return validationError("table not found for snapshot bootstrap");
     }
-    Map<String, Object> snapshotMap = importedSnapshotMap(snapshot);
+    Map<String, Object> snapshotMap = importedSnapshotMap(snapshot, schemaJson);
     return createSnapshotPlaceholder(
         tableSupport, tableId, namespacePath, tableName, table, snapshotMap, idempotencyKey);
   }
@@ -535,9 +541,6 @@ public class SnapshotMetadataService {
     Integer schemaId = asInteger(snapshot.get("schema-id"));
     IcebergMetadata metadata = null;
     if (schemaId == null) {
-      schemaId = propertyInt(existing.getPropertiesMap(), "current-schema-id");
-    }
-    if (schemaId == null) {
       metadata = tableSupport.loadCurrentMetadata(existing);
       if (metadata != null && metadata.getCurrentSchemaId() > 0) {
         schemaId = metadata.getCurrentSchemaId();
@@ -546,19 +549,17 @@ public class SnapshotMetadataService {
       metadata = tableSupport.loadCurrentMetadata(existing);
     }
     if (schemaId == null) {
-      schemaId = 0;
+      return validationError("add-snapshot requires schema-id");
     }
     spec.setSchemaId(schemaId);
     String schemaJson = asString(snapshot.get("schema-json"));
-    if (schemaJson == null || schemaJson.isBlank()) {
-      schemaJson = existing.getSchemaJson();
-    }
     if ((schemaJson == null || schemaJson.isBlank()) && metadata != null) {
       schemaJson = schemaJsonFromMetadata(metadata, schemaId);
     }
-    if (schemaJson != null && !schemaJson.isBlank()) {
-      spec.setSchemaJson(schemaJson);
+    if (schemaJson == null || schemaJson.isBlank()) {
+      return validationError("add-snapshot requires schema-json");
     }
+    spec.setSchemaJson(schemaJson);
     IcebergMetadata snapshotIceberg =
         snapshotIcebergMetadata(metadata, existing, snapshotId, sequenceNumber);
     if (snapshotIceberg != null) {
@@ -609,16 +610,14 @@ public class SnapshotMetadataService {
                 .getSnapshot();
         targetSnapshotId = snapshot.getSnapshotId();
       } catch (StatusRuntimeException e) {
-        Long propertySnapshot = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
-        targetSnapshotId = propertySnapshot;
-        snapshot = null;
+        return validationError("current snapshot not found");
       }
     } else {
       snapshot = null;
     }
 
     if (targetSnapshotId == null || targetSnapshotId <= 0) {
-      return null;
+      return validationError("snapshot-id is required");
     }
 
     if (snapshot == null) {
@@ -1226,11 +1225,10 @@ public class SnapshotMetadataService {
 
   private IcebergMetadata snapshotIcebergMetadata(
       IcebergMetadata currentMetadata, Table table, Long snapshotId, Long sequenceNumber) {
-    IcebergMetadata.Builder builder =
-        currentMetadata != null ? currentMetadata.toBuilder() : metadataFromTable(table);
-    if (builder == null) {
-      builder = IcebergMetadata.newBuilder();
+    if (currentMetadata == null) {
+      return null;
     }
+    IcebergMetadata.Builder builder = currentMetadata.toBuilder();
     String metadataLocation = metadataLocationFrom(table);
     if (metadataLocation != null && !metadataLocation.isBlank()) {
       builder.setMetadataLocation(metadataLocation);
@@ -1244,63 +1242,7 @@ public class SnapshotMetadataService {
     return builder.build();
   }
 
-  private IcebergMetadata.Builder metadataFromTable(Table table) {
-    if (table == null) {
-      return null;
-    }
-    Map<String, String> props = table.getPropertiesMap();
-    if (props == null) {
-      props = Map.of();
-    }
-    IcebergMetadata.Builder builder = IcebergMetadata.newBuilder();
-    String tableUuid = props.get("table-uuid");
-    if (tableUuid != null && !tableUuid.isBlank()) {
-      builder.setTableUuid(tableUuid);
-    }
-    Integer formatVersion = propertyInt(props, "format-version");
-    if (formatVersion != null && formatVersion > 0) {
-      builder.setFormatVersion(formatVersion);
-    }
-    String metadataLocation = MetadataLocationUtil.metadataLocation(props);
-    if (metadataLocation != null && !metadataLocation.isBlank()) {
-      builder.setMetadataLocation(metadataLocation);
-    }
-    Long lastUpdated = propertyLong(props, "last-updated-ms");
-    if (lastUpdated != null && lastUpdated > 0) {
-      builder.setLastUpdatedMs(lastUpdated);
-    }
-    Integer lastColumnId = propertyInt(props, "last-column-id");
-    if (lastColumnId != null && lastColumnId >= 0) {
-      builder.setLastColumnId(lastColumnId);
-    }
-    Integer currentSchemaId = propertyInt(props, "current-schema-id");
-    if (currentSchemaId != null && currentSchemaId >= 0) {
-      builder.setCurrentSchemaId(currentSchemaId);
-    }
-    Integer defaultSpecId = propertyInt(props, "default-spec-id");
-    if (defaultSpecId != null && defaultSpecId >= 0) {
-      builder.setDefaultSpecId(defaultSpecId);
-    }
-    Integer lastPartitionId = propertyInt(props, "last-partition-id");
-    if (lastPartitionId != null && lastPartitionId >= 0) {
-      builder.setLastPartitionId(lastPartitionId);
-    }
-    Integer defaultSortId = propertyInt(props, "default-sort-order-id");
-    if (defaultSortId != null && defaultSortId >= 0) {
-      builder.setDefaultSortOrderId(defaultSortId);
-    }
-    Long currentSnapshotId = propertyLong(props, "current-snapshot-id");
-    if (currentSnapshotId != null && currentSnapshotId > 0) {
-      builder.setCurrentSnapshotId(currentSnapshotId);
-    }
-    Long lastSequenceNumber = propertyLong(props, "last-sequence-number");
-    if (lastSequenceNumber != null && lastSequenceNumber >= 0) {
-      builder.setLastSequenceNumber(lastSequenceNumber);
-    }
-    return builder;
-  }
-
-  private Map<String, Object> importedSnapshotMap(ImportedSnapshot snapshot) {
+  private Map<String, Object> importedSnapshotMap(ImportedSnapshot snapshot, String schemaJson) {
     Map<String, Object> map = new LinkedHashMap<>();
     map.put("snapshot-id", snapshot.snapshotId());
     if (snapshot.parentSnapshotId() != null && snapshot.parentSnapshotId() > 0) {
@@ -1320,6 +1262,9 @@ public class SnapshotMetadataService {
     }
     if (snapshot.schemaId() != null) {
       map.put("schema-id", snapshot.schemaId());
+    }
+    if (schemaJson != null && !schemaJson.isBlank()) {
+      map.put("schema-json", schemaJson);
     }
     if (snapshot.summary() != null && snapshot.summary().containsKey("operation")) {
       map.put("operation", snapshot.summary().get("operation"));

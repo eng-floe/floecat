@@ -46,7 +46,6 @@ import io.grpc.StatusRuntimeException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import org.eclipse.microprofile.config.Config;
 import org.jboss.logging.Logger;
 
@@ -112,11 +111,6 @@ public class TableGatewaySupport {
       spec.putAllProperties(sanitizeCreateProperties(req.properties()));
     }
     String metadataLocation = metadataLocationFromCreate(req);
-    if ((metadataLocation == null || metadataLocation.isBlank())
-        && req.location() != null
-        && !req.location().isBlank()) {
-      metadataLocation = metadataLocationFromTableLocation(req.location());
-    }
     addMetadataLocationProperties(spec, metadataLocation);
     return spec;
   }
@@ -182,18 +176,6 @@ public class TableGatewaySupport {
       base = slash > 0 ? metadataLocation.substring(0, slash) : metadataLocation;
     }
     return stripMetadataMirrorPrefix(base);
-  }
-
-  private String metadataLocationFromTableLocation(String tableLocation) {
-    if (tableLocation == null || tableLocation.isBlank()) {
-      return null;
-    }
-    String base =
-        tableLocation.endsWith("/")
-            ? tableLocation.substring(0, tableLocation.length() - 1)
-            : tableLocation;
-    String dir = base + "/metadata/";
-    return dir + String.format("%05d-%s.metadata.json", 0, UUID.randomUUID());
   }
 
   public boolean connectorIntegrationEnabled() {

@@ -68,6 +68,7 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.eclipse.microprofile.config.ConfigProvider;
@@ -101,6 +102,8 @@ class IcebergRestFixtureIT {
   private static long expectedSnapshotId;
   private static List<Long> fixtureSnapshotIds;
   private static Map<Long, String> fixtureManifestLists = new HashMap<>();
+  private static Integer fixtureSchemaId;
+  private static String fixtureSchemaJson;
   private static String upstreamHost;
   private static int upstreamPort;
   private static int serviceGrpcPort;
@@ -115,6 +118,9 @@ class IcebergRestFixtureIT {
     fixtureSnapshotIds = parseSnapshotIds(METADATA_V3);
     expectedSnapshotId =
         fixtureSnapshotIds.isEmpty() ? -1L : fixtureSnapshotIds.get(fixtureSnapshotIds.size() - 1);
+    TableMetadata fixtureMetadata = loadFixtureMetadata(METADATA_V3);
+    fixtureSchemaId = fixtureMetadata.currentSchemaId();
+    fixtureSchemaJson = SchemaParser.toJson(fixtureMetadata.schema());
     parseUpstreamTarget();
     connectorIntegrationEnabled = parseConnectorIntegration();
   }
@@ -149,6 +155,8 @@ class IcebergRestFixtureIT {
 
     String anyFixtureManifestRel = fixtureManifestLists.values().stream().findFirst().orElseThrow();
     String manifestList = TestS3Fixtures.stageTableUri(namespace, table, anyFixtureManifestRel);
+    Assertions.assertNotNull(fixtureSchemaId, "Fixture schema id should be available");
+    Assertions.assertNotNull(fixtureSchemaJson, "Fixture schema JSON should be available");
 
     Map<String, Object> addSnapshotUpdate =
         Map.of(
@@ -161,6 +169,8 @@ class IcebergRestFixtureIT {
                 Map.entry("parent-snapshot-id", parentSnapshotId),
                 Map.entry("sequence-number", System.currentTimeMillis()),
                 Map.entry("manifest-list", manifestList),
+                Map.entry("schema-id", fixtureSchemaId),
+                Map.entry("schema-json", fixtureSchemaJson),
                 Map.entry("summary", Map.of("operation", "append"))));
     Map<String, Object> removeSnapshotUpdate =
         Map.of("action", "remove-snapshots", "snapshot-ids", List.of(removedSnapshotId));
@@ -273,7 +283,8 @@ class IcebergRestFixtureIT {
         .then()
         .statusCode(204);
 
-    String commitMetadataLocation = ensurePromotedMetadata(fetchMetadataLocation(namespace, table));
+    String commitMetadataLocation =
+        ensurePromotedMetadata(fetchTablePropertyMetadataLocation(namespace, table));
     Assertions.assertNotNull(commitMetadataLocation, "commit should materialize metadata");
 
     Connector connector = awaitConnectorForTable(namespace, table, Duration.ofSeconds(10));
@@ -295,16 +306,15 @@ class IcebergRestFixtureIT {
                             .build())
                     .getConnector());
 
-    String tableMetadataLocation = ensurePromotedMetadata(fetchMetadataLocation(namespace, table));
     Assertions.assertTrue(
-        tableMetadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
+        commitMetadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
         () ->
             "persisted metadata should reside under the floecat fixture bucket: "
-                + tableMetadataLocation);
+                + commitMetadataLocation);
     assertFixtureObjectExists(
-        tableMetadataLocation, "persisted metadata file should exist in fixture storage");
+        commitMetadataLocation, "persisted metadata file should exist in fixture storage");
     Assertions.assertEquals(
-        tableMetadataLocation,
+        commitMetadataLocation,
         refreshed.getPropertiesMap().get("external.metadata-location"),
         "Connector external metadata location should match the persisted metadata");
   }
@@ -424,6 +434,12 @@ class IcebergRestFixtureIT {
       ids.add(current);
     }
     return List.copyOf(ids);
+  }
+
+  private static TableMetadata loadFixtureMetadata(String relativeMetadataPath) throws IOException {
+    Path metadataPath = resolveFixtureMetadata(relativeMetadataPath);
+    JsonNode node = MAPPER.readTree(metadataPath.toFile());
+    return TableMetadataParser.fromJson(TestS3Fixtures.bucketUri(relativeMetadataPath), node);
   }
 
   private static Path resolveFixtureMetadata(String relativeMetadataPath) throws IOException {
@@ -822,7 +838,8 @@ class IcebergRestFixtureIT {
     Assertions.assertTrue(
         fileName.contains("-"), "materialized metadata file should include a version prefix");
 
-    String persistedLocation = ensurePromotedMetadata(fetchMetadataLocation(namespace, table));
+    String persistedLocation =
+        ensurePromotedMetadata(fetchTablePropertyMetadataLocation(namespace, table));
     Assertions.assertTrue(
         persistedLocation.startsWith(FIXTURE_METADATA_PREFIX),
         () ->
@@ -884,6 +901,19 @@ class IcebergRestFixtureIT {
         .statusCode(200)
         .extract()
         .path("'metadata-location'");
+  }
+
+  private String fetchTablePropertyMetadataLocation(String namespace, String table) {
+    ResourceId tableId = resolveTableId(namespace, table);
+    Table tableRecord =
+        withTableClient(
+            stub ->
+                stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build())
+                    .getTable());
+    if (tableRecord == null) {
+      return null;
+    }
+    return tableRecord.getPropertiesMap().get("metadata-location");
   }
 
   private List<Long> fetchSnapshotIds(String namespace, String table) {
@@ -1020,6 +1050,7 @@ class IcebergRestFixtureIT {
   private Map<String, Object> fixtureIoProperties() {
     Map<String, Object> props = new LinkedHashMap<>();
     TestS3Fixtures.fileIoProperties(TEST_S3_ROOT.toAbsolutePath().toString()).forEach(props::put);
+    props.put("format-version", "2");
     return props;
   }
 

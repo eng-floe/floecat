@@ -114,32 +114,23 @@ class SnapshotMetadataServiceTest {
   }
 
   @Test
-  void snapshotMetadataSynthesizesFromTablePropertiesWhenMissing() throws Exception {
+  void snapshotMetadataUsesCurrentMetadata() throws Exception {
     Table table =
-        Table.newBuilder()
-            .putProperties("metadata-location", FIXTURE.metadataLocation())
-            .putProperties("table-uuid", "uuid")
-            .putProperties("format-version", "2")
-            .putProperties("current-schema-id", "1")
-            .putProperties("last-column-id", "10")
-            .putProperties("default-spec-id", "3")
-            .putProperties("last-partition-id", "4")
-            .putProperties("default-sort-order-id", "5")
-            .putProperties("current-snapshot-id", "6")
-            .putProperties("last-sequence-number", "7")
-            .build();
+        Table.newBuilder().putProperties("metadata-location", FIXTURE.metadataLocation()).build();
+    IcebergMetadata currentMetadata = FIXTURE.metadata();
     var method =
         SnapshotMetadataService.class.getDeclaredMethod(
             "snapshotIcebergMetadata", IcebergMetadata.class, Table.class, Long.class, Long.class);
     method.setAccessible(true);
 
-    IcebergMetadata metadata = (IcebergMetadata) method.invoke(service, null, table, 9L, 11L);
+    IcebergMetadata metadata =
+        (IcebergMetadata) method.invoke(service, currentMetadata, table, 9L, 11L);
 
     assertEquals(FIXTURE.metadataLocation(), metadata.getMetadataLocation());
     assertEquals(9L, metadata.getCurrentSnapshotId());
     assertEquals(11L, metadata.getLastSequenceNumber());
-    assertEquals(2, metadata.getFormatVersion());
-    assertEquals("uuid", metadata.getTableUuid());
+    assertEquals(currentMetadata.getFormatVersion(), metadata.getFormatVersion());
+    assertEquals(currentMetadata.getTableUuid(), metadata.getTableUuid());
   }
 
   private Supplier<Table> neverInvokedTableSupplier() {

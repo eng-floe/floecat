@@ -10,7 +10,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadataLogEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergStatisticsFile;
 import java.util.List;
 import java.util.Map;
@@ -83,9 +82,10 @@ class TableResponseMapperTest {
             .setDisplayName("orders")
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
             .build();
+    Map<String, String> props = Map.of("metadata-location", FIXTURE.metadataLocation());
     TableRequests.Create request =
         new TableRequests.Create(
-            "orders", FIXTURE.table().getSchemaJson(), null, null, Map.of(), null, null, null);
+            "orders", FIXTURE.table().getSchemaJson(), null, null, props, null, null, null);
 
     LoadTableResultDto loadResult =
         TableResponseMapper.toLoadResultFromCreate("orders", table, request, Map.of(), List.of());
@@ -157,67 +157,6 @@ class TableResponseMapperTest {
         result.metadataLocation());
     assertEquals(
         "s3://yb-iceberg-tpcds/trino_test/metadata", result.config().get("write.metadata.path"));
-  }
-
-  @Test
-  void metadataLocationFallsBackToLatestMetadataLogEntry() {
-    Table table =
-        FIXTURE.table().toBuilder()
-            .setDisplayName("orders")
-            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
-            .putProperties(
-                "metadata-location",
-                "s3://yb-iceberg-tpcds/trino_test/metadata/00000-old.metadata.json")
-            .build();
-    IcebergMetadata metadata =
-        FIXTURE.metadata().toBuilder()
-            .clearMetadataLog()
-            .addMetadataLog(
-                IcebergMetadataLogEntry.newBuilder()
-                    .setFile("s3://yb-iceberg-tpcds/trino_test/metadata/00000-old.metadata.json")
-                    .build())
-            .addMetadataLog(
-                IcebergMetadataLogEntry.newBuilder()
-                    .setFile("s3://yb-iceberg-tpcds/trino_test/metadata/00001-new.metadata.json")
-                    .build())
-            .build();
-
-    LoadTableResultDto result =
-        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
-
-    assertEquals(
-        "s3://yb-iceberg-tpcds/trino_test/metadata/00001-new.metadata.json",
-        result.metadataLocation());
-  }
-
-  @Test
-  void metadataLocationPrefersMetadataLogOverStaleMetadataLocationField() {
-    Table table =
-        FIXTURE.table().toBuilder()
-            .setDisplayName("orders")
-            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
-            .build();
-    IcebergMetadata metadata =
-        FIXTURE.metadata().toBuilder()
-            .setMetadataLocation(
-                "s3://yb-iceberg-tpcds/trino_test/metadata/00000-old.metadata.json")
-            .clearMetadataLog()
-            .addMetadataLog(
-                IcebergMetadataLogEntry.newBuilder()
-                    .setFile("s3://yb-iceberg-tpcds/trino_test/metadata/00000-old.metadata.json")
-                    .build())
-            .addMetadataLog(
-                IcebergMetadataLogEntry.newBuilder()
-                    .setFile("s3://yb-iceberg-tpcds/trino_test/metadata/00001-new.metadata.json")
-                    .build())
-            .build();
-
-    LoadTableResultDto result =
-        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
-
-    assertEquals(
-        "s3://yb-iceberg-tpcds/trino_test/metadata/00001-new.metadata.json",
-        result.metadataLocation());
   }
 
   @Test

@@ -20,7 +20,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService.MaterializeResult;
@@ -91,46 +90,6 @@ class TableCommitSideEffectServiceTest {
     assertEquals(
         "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json",
         request.getSpec().getPropertiesOrThrow("metadata-location"));
-  }
-
-  @Test
-  void materializeMetadataReturnsOriginalWhenMetadataMissing() throws Exception {
-    MaterializeMetadataResult result =
-        service.materializeMetadata(
-            "cat.db",
-            ResourceId.getDefaultInstance(),
-            "orders",
-            null,
-            null,
-            "s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
-
-    assertNull(result.error());
-    assertNull(result.metadata());
-    assertEquals(
-        "s3://warehouse/tables/orders/metadata/00000-abc.metadata.json", result.metadataLocation());
-    verify(materializeMetadataService, never()).materialize(any(), any(), any(), any());
-    verify(tableLifecycleService, never()).updateTable(any());
-  }
-
-  @Test
-  void materializeMetadataFallsBackWhenMaterializationFails() throws Exception {
-    TableMetadataView metadata =
-        metadata("s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
-    when(materializeMetadataService.materialize(any(), any(), any(), any()))
-        .thenThrow(new MaterializeMetadataException("boom"));
-
-    MaterializeMetadataResult result =
-        service.materializeMetadata(
-            "cat.db",
-            ResourceId.getDefaultInstance(),
-            "orders",
-            null,
-            metadata,
-            metadata.metadataLocation());
-
-    assertNull(result.error());
-    assertSame(metadata, result.metadata());
-    assertEquals(metadata.metadataLocation(), result.metadataLocation());
   }
 
   @Test

@@ -111,25 +111,7 @@ public class TableCommitService {
       return sideEffects.error();
     }
     CommitTableResponseDto responseDto = sideEffects.response();
-    Response.ResponseBuilder builder = Response.ok(responseDto);
-    LOG.infof(
-        "Commit response for %s.%s tableId=%s currentSnapshot=%s snapshotCount=%d",
-        namespace,
-        table,
-        committedTable.hasResourceId() ? committedTable.getResourceId().getId() : "<missing>",
-        metadata != null ? metadata.getCurrentSnapshotId() : "<null>",
-        snapshotList == null ? 0 : snapshotList.size());
-    if (responseDto != null && responseDto.metadataLocation() != null) {
-      builder.tag(responseDto.metadataLocation());
-    }
-    logStageCommit(
-        stageMaterialization,
-        nonBlank(
-            stageResolution.materializedStageId(),
-            stageMaterializationService.resolveStageId(req, transactionId)),
-        namespace,
-        table,
-        responseDto == null ? null : responseDto.metadata());
+
     ResourceId connectorId =
         sideEffectService.synchronizeConnector(
             tableSupport,
@@ -151,9 +133,58 @@ public class TableCommitService {
         responseDto,
         req,
         idempotencyKey);
-    if (!containsRemoveSnapshots(req)) {
-      runConnectorSync(tableSupport, connectorId, namespacePath, table);
+    runConnectorSync(tableSupport, connectorId, namespacePath, table);
+
+    IcebergMetadata refreshedMetadata = tableSupport.loadCurrentMetadata(committedTable);
+    List<Snapshot> refreshedSnapshots =
+        SnapshotLister.fetchSnapshots(
+            snapshotClient, tableId, SnapshotLister.Mode.ALL, refreshedMetadata);
+    if (!removedSnapshotIds.isEmpty()
+        && refreshedSnapshots != null
+        && !refreshedSnapshots.isEmpty()) {
+      refreshedSnapshots =
+          refreshedSnapshots.stream()
+              .filter(s -> !removedSnapshotIds.contains(s.getSnapshotId()))
+              .toList();
     }
+    CommitTableResponseDto finalResponse =
+        TableResponseMapper.toCommitResponse(
+            table, committedTable, refreshedMetadata, refreshedSnapshots);
+    String preferredLocation = responseDto == null ? null : responseDto.metadataLocation();
+    if (preferredLocation != null && !preferredLocation.isBlank()) {
+      TableMetadataView finalMetadata = finalResponse.metadata();
+      if (finalMetadata != null) {
+        finalMetadata = finalMetadata.withMetadataLocation(preferredLocation);
+      }
+      finalResponse = new CommitTableResponseDto(preferredLocation, finalMetadata);
+    } else {
+      if (!containsSnapshotUpdates(req)) {
+        finalResponse = preferStageMetadata(finalResponse, stageMaterialization);
+      }
+      finalResponse = normalizeMetadataLocation(tableSupport, committedTable, finalResponse);
+      finalResponse =
+          preferRequestedMetadata(tableSupport, finalResponse, requestedMetadataOverride);
+    }
+
+    Response.ResponseBuilder builder = Response.ok(finalResponse);
+    LOG.infof(
+        "Commit response for %s.%s tableId=%s currentSnapshot=%s snapshotCount=%d",
+        namespace,
+        table,
+        committedTable.hasResourceId() ? committedTable.getResourceId().getId() : "<missing>",
+        refreshedMetadata != null ? refreshedMetadata.getCurrentSnapshotId() : "<null>",
+        refreshedSnapshots == null ? 0 : refreshedSnapshots.size());
+    if (finalResponse != null && finalResponse.metadataLocation() != null) {
+      builder.tag(finalResponse.metadataLocation());
+    }
+    logStageCommit(
+        stageMaterialization,
+        nonBlank(
+            stageResolution.materializedStageId(),
+            stageMaterializationService.resolveStageId(req, transactionId)),
+        namespace,
+        table,
+        finalResponse == null ? null : finalResponse.metadata());
     return builder.build();
   }
 

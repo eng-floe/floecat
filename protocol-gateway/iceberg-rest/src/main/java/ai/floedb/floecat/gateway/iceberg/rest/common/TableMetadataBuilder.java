@@ -21,7 +21,6 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asL
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asObjectMap;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonNull;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.maybeInt;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.maybeLong;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -49,7 +48,7 @@ public final class TableMetadataBuilder {
       Map<String, String> props,
       IcebergMetadata metadata,
       List<Snapshot> snapshots) {
-    String metadataLocation = resolveMetadataLocation(props, metadata);
+    String metadataLocation = resolveMetadataLocation(metadata);
     return buildMetadata(tableName, table, props, metadata, snapshots, metadataLocation);
   }
 
@@ -70,43 +69,43 @@ public final class TableMetadataBuilder {
     Long lastUpdatedMs =
         (metadata != null && metadata.getLastUpdatedMs() > 0)
             ? Long.valueOf(metadata.getLastUpdatedMs())
-            : maybeLong(props.get("last-updated-ms"));
+            : null;
     Long currentSnapshotId =
         metadata != null && metadata.getCurrentSnapshotId() > 0
             ? Long.valueOf(metadata.getCurrentSnapshotId())
-            : maybeLong(props.get("current-snapshot-id"));
+            : null;
     Long lastSequenceNumber =
         metadata != null && metadata.getLastSequenceNumber() >= 0
             ? Long.valueOf(metadata.getLastSequenceNumber())
-            : maybeLong(props.get("last-sequence-number"));
+            : null;
     Integer lastColumnId =
         metadata != null && metadata.getLastColumnId() >= 0
             ? Integer.valueOf(metadata.getLastColumnId())
-            : maybeInt(props.get("last-column-id"));
+            : null;
     Integer currentSchemaId =
         metadata != null && metadata.getCurrentSchemaId() >= 0
             ? Integer.valueOf(metadata.getCurrentSchemaId())
-            : maybeInt(props.get("current-schema-id"));
+            : null;
     Integer defaultSpecId =
         metadata != null && metadata.getDefaultSpecId() >= 0
             ? Integer.valueOf(metadata.getDefaultSpecId())
-            : maybeInt(props.get("default-spec-id"));
+            : null;
     Integer lastPartitionId =
         metadata != null && metadata.getLastPartitionId() >= 0
             ? Integer.valueOf(metadata.getLastPartitionId())
-            : maybeInt(props.get("last-partition-id"));
+            : null;
     Integer defaultSortOrderId =
         metadata != null && metadata.getDefaultSortOrderId() >= 0
             ? Integer.valueOf(metadata.getDefaultSortOrderId())
-            : maybeInt(props.get("default-sort-order-id"));
+            : null;
     String tableUuid =
         metadata != null && metadata.getTableUuid() != null && !metadata.getTableUuid().isBlank()
             ? metadata.getTableUuid()
-            : props.get("table-uuid");
+            : null;
     Integer formatVersion =
         metadata != null && metadata.getFormatVersion() > 0
             ? Integer.valueOf(metadata.getFormatVersion())
-            : maybeInt(props.get("format-version"));
+            : null;
     List<Map<String, Object>> schemaList = schemasFromMetadata(metadata);
     List<Map<String, Object>> specList = partitionSpecsFromMetadata(metadata);
     List<Map<String, Object>> sortOrderList = sortOrdersFromMetadata(metadata);
@@ -228,16 +227,9 @@ public final class TableMetadataBuilder {
                 }
               });
     }
-    String locationOverride =
-        Optional.ofNullable(request.location())
-            .filter(s -> !s.isBlank())
-            .orElseGet(() -> props.get("location"));
     String metadataLoc = metadataLocationFromRequest(request);
     if (metadataLoc == null || metadataLoc.isBlank()) {
-      metadataLoc = metadataLocationFromTableLocation(locationOverride);
-    }
-    if (metadataLoc == null || metadataLoc.isBlank()) {
-      metadataLoc = defaultMetadataLocation(table, tableName);
+      throw new IllegalArgumentException("metadata-location is required");
     }
     MetadataLocationUtil.setMetadataLocation(props, metadataLoc);
     syncWriteMetadataPath(props, metadataLoc);
@@ -273,7 +265,10 @@ public final class TableMetadataBuilder {
       defaultSortOrderId = 0;
       sortOrder.put("sort-order-id", defaultSortOrderId);
     }
-    props.putIfAbsent("format-version", "2");
+    Integer formatVersion = maybeInt(props.get("format-version"));
+    if (formatVersion == null || formatVersion < 1) {
+      throw new IllegalArgumentException("format-version is required");
+    }
     props.putIfAbsent("current-schema-id", schemaId.toString());
     props.putIfAbsent("last-column-id", lastColumnId.toString());
     props.putIfAbsent("default-spec-id", defaultSpecId.toString());
@@ -282,7 +277,7 @@ public final class TableMetadataBuilder {
     props.putIfAbsent("current-snapshot-id", "0");
     props.putIfAbsent("last-sequence-number", "0");
     return new TableMetadataView(
-        formatVersion(props),
+        formatVersion,
         table.hasResourceId() ? table.getResourceId().getId() : tableName,
         resolveTableLocation(location, metadataLocation),
         metadataLocation,
@@ -306,28 +301,8 @@ public final class TableMetadataBuilder {
         List.of());
   }
 
-  private static Integer formatVersion(Map<String, String> props) {
-    Integer version = maybeInt(props.get("format-version"));
-    if (version == null || version < 1) {
-      version = 2;
-    }
-    return version;
-  }
-
-  private static String resolveMetadataLocation(
-      Map<String, String> props, IcebergMetadata metadata) {
-    String metadataLocation = metadataLocationFromMetadataLog(metadata);
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      metadataLocation = metadataLocationFromField(metadata);
-    }
-    if (metadataLocation != null && !metadataLocation.isBlank()) {
-      return metadataLocation;
-    }
-    String propertyLocation = MetadataLocationUtil.metadataLocation(props);
-    if (propertyLocation != null && !propertyLocation.isBlank()) {
-      return propertyLocation;
-    }
-    return propertyLocation;
+  private static String resolveMetadataLocation(IcebergMetadata metadata) {
+    return metadataLocationFromField(metadata);
   }
 
   private static String metadataLocationFromField(IcebergMetadata metadata) {
@@ -337,20 +312,6 @@ public final class TableMetadataBuilder {
     String directLocation = metadata.getMetadataLocation();
     if (directLocation != null && !directLocation.isBlank()) {
       return directLocation;
-    }
-    return null;
-  }
-
-  private static String metadataLocationFromMetadataLog(IcebergMetadata metadata) {
-    if (metadata == null || metadata.getMetadataLogCount() == 0) {
-      return null;
-    }
-    var entries = metadata.getMetadataLogList();
-    for (int idx = entries.size() - 1; idx >= 0; idx--) {
-      String candidate = entries.get(idx).getFile();
-      if (candidate != null && !candidate.isBlank()) {
-        return candidate;
-      }
     }
     return null;
   }
@@ -379,28 +340,6 @@ public final class TableMetadataBuilder {
     }
     String location = request.properties().get("metadata-location");
     return (location == null || location.isBlank()) ? null : location;
-  }
-
-  private static String metadataLocationFromTableLocation(String tableLocation) {
-    if (tableLocation == null || tableLocation.isBlank()) {
-      return null;
-    }
-    String base =
-        tableLocation.endsWith("/")
-            ? tableLocation.substring(0, tableLocation.length() - 1)
-            : tableLocation;
-    String dir = base + "/metadata/";
-    return dir + nextMetadataFileName();
-  }
-
-  private static String defaultMetadataLocation(Table table, String tableName) {
-    String suffix;
-    if (table != null && table.hasResourceId() && table.getResourceId().getId() != null) {
-      suffix = table.getResourceId().getId();
-    } else {
-      suffix = tableName;
-    }
-    return "floecat:///tables/" + suffix + "/metadata/" + nextMetadataFileName();
   }
 
   private static String defaultLocation(String current, String metadataLocation) {

@@ -1,6 +1,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -114,7 +115,7 @@ class CommitRequirementServiceTest {
   }
 
   @Test
-  void validateRequirementsAcceptsPropertyUuidEvenIfMetadataDiffers() {
+  void validateRequirementsRejectsPropertyUuidWhenMetadataDiffers() {
     Table table =
         Table.newBuilder()
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
@@ -131,7 +132,8 @@ class CommitRequirementServiceTest {
             validation(),
             conflict());
 
-    assertNull(resp);
+    assertNotNull(resp);
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), resp.getStatus());
   }
 
   @Test

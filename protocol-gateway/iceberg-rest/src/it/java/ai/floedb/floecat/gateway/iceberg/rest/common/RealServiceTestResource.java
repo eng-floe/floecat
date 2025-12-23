@@ -1,6 +1,5 @@
 package ai.floedb.floecat.gateway.iceberg.rest.common;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.quarkus.test.common.QuarkusTestResourceLifecycleManager;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -31,9 +30,6 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
   private static final String TEST_S3_ROOT =
       TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString();
   private static final String LOOPBACK_HOST = "127.0.0.1";
-  private static final String DEFAULT_ACCOUNT = "5eaa9cd5-7d08-3750-9457-cfe800b0b9d2";
-  private static final String AUTH_HEADER_VALUE = "Bearer integration-test";
-  private static final ObjectMapper MAPPER = new ObjectMapper();
   private Process serviceProcess;
   private int httpPort;
   private int managementPort;

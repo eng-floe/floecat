@@ -120,6 +120,8 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .thenReturn(GetTableResponse.newBuilder().setTable(existing).build());
     when(tableStub.updateTable(any()))
         .thenReturn(UpdateTableResponse.newBuilder().setTable(existing).build());
+    int schemaId = FIXTURE.metadata().getCurrentSchemaId();
+    String schemaJson = FIXTURE.table().getSchemaJson().replace("\"", "\\\"");
 
     given()
         .body(
@@ -130,12 +132,16 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
                   "timestamp-ms":1000,
                   "parent-snapshot-id":%d,
                   "manifest-list":"%s",
+                  "schema-id":%d,
+                  "schema-json":"%s",
                   "summary":{"operation":"append"}
                 }}]}
                 """,
                 newSnapshot.getSnapshotId(),
                 newSnapshot.getParentSnapshotId(),
-                newSnapshot.getManifestList()))
+                newSnapshot.getManifestList(),
+                schemaId,
+                schemaJson))
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
@@ -230,6 +236,8 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
             .build();
     when(snapshotStub.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build());
+    int schemaId = FIXTURE.metadata().getCurrentSchemaId();
+    String schemaJson = FIXTURE.table().getSchemaJson().replace("\"", "\\\"");
 
     given()
         .body(
@@ -240,6 +248,8 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
                     "snapshot-id":%d,
                     "timestamp-ms":1000,
                     "manifest-list":"%s",
+                    "schema-id":%d,
+                    "schema-json":"%s",
                     "summary":{"operation":"append"}
                   }},
                   {"action":"set-snapshot-ref","ref-name":"main","type":"branch","snapshot-id":%d}
@@ -247,6 +257,8 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
                 """,
                 newSnapshotId,
                 fixtureSnapshots.get(fixtureSnapshots.size() - 1).getManifestList(),
+                schemaId,
+                schemaJson,
                 newSnapshotId))
         .header("Content-Type", "application/json")
         .when()

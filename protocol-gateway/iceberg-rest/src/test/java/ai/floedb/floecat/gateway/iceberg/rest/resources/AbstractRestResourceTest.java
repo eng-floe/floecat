@@ -281,38 +281,6 @@ public abstract class AbstractRestResourceTest {
     return Objects.requireNonNullElse(result, "");
   }
 
-  protected String stageCreateRequestWithoutLocation(String tableName) {
-    return """
-    {
-      "name": "%s",
-      "schema": {
-        "schema-id": 0,
-        "type": "struct",
-        "fields": [
-          {
-            "id": 1,
-            "name": "i",
-            "required": false,
-            "type": "int"
-          }
-        ]
-      },
-      "partition-spec": {
-        "spec-id": 0,
-        "fields": []
-      },
-      "write-order": {
-        "order-id": 0,
-        "fields": []
-      },
-      "properties": {},
-      "location": null,
-      "stage-create": true
-    }
-    """
-        .formatted(tableName);
-  }
-
   protected String stageCreateRequest(String tableName) {
     return """
     {
@@ -351,6 +319,7 @@ public abstract class AbstractRestResourceTest {
       },
       "properties": {
         "metadata-location": "s3://yb-iceberg-tpcds/%s/metadata/00000-abc.metadata.json",
+        "format-version": "2",
         "io-impl": "org.apache.iceberg.inmemory.InMemoryFileIO"
       },
       "location": "s3://yb-iceberg-tpcds/%s",

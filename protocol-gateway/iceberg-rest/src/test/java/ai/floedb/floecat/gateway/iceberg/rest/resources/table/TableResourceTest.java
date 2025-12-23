@@ -4,7 +4,6 @@ import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -45,7 +44,6 @@ import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
-import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
@@ -62,8 +60,6 @@ import io.grpc.StatusRuntimeException;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.RestAssured;
-import io.restassured.response.ExtractableResponse;
-import io.restassured.response.Response;
 import jakarta.ws.rs.core.MediaType;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -583,39 +579,6 @@ class TableResourceTest extends AbstractRestResourceTest {
     verify(tableStub, never()).createTable(any());
     StagedTableKey key = new StagedTableKey("account1", "foo", List.of("db"), "orders", "stage-1");
     assertTrue(stageRepository.get(key).isPresent());
-  }
-
-  @Test
-  void stageCreateWithoutLocationFallsBackToDefaultWarehouse() {
-    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
-    when(directoryStub.resolveNamespace(any()))
-        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
-
-    ExtractableResponse<Response> response =
-        given()
-            .body(stageCreateRequestWithoutLocation("ducktab"))
-            .header("Iceberg-Transaction-Id", "stage-default")
-            .contentType(MediaType.APPLICATION_JSON)
-            .when()
-            .post("/v1/foo/namespaces/db/tables")
-            .then()
-            .statusCode(200)
-            .body("stage-id", equalTo("stage-default"))
-            .extract();
-
-    String responseMetadataLocation = response.path("metadata-location");
-    assertNotNull(responseMetadataLocation);
-    assertTrue(
-        responseMetadataLocation.startsWith("s3://warehouse/default/foo/db/ducktab/metadata/"));
-
-    verify(tableStub, never()).createTable(any());
-    StagedTableKey key =
-        new StagedTableKey("account1", "foo", List.of("db"), "ducktab", "stage-default");
-    StagedTableEntry entry = stageRepository.get(key).orElseThrow();
-    assertEquals("s3://warehouse/default/foo/db/ducktab", entry.request().location());
-    assertEquals(responseMetadataLocation, entry.request().properties().get("metadata-location"));
-    assertEquals(
-        responseMetadataLocation, entry.spec().getPropertiesMap().get("metadata-location"));
   }
 
   @Test

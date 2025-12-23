@@ -32,6 +32,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class StageMaterializationServiceTest {
+  private static final String METADATA_LOCATION =
+      "s3://bucket/db/orders/metadata/00000-abc.metadata.json";
   private final StageMaterializationService service = new StageMaterializationService();
   private final AccountContext accountContext = mock(AccountContext.class);
   private final StagedTableService stagedTableService = mock(StagedTableService.class);
@@ -147,7 +149,15 @@ class StageMaterializationServiceTest {
             new StagedTableKey("account-2", "cat", List.of("db"), "orders", "only-stage"),
             ResourceId.newBuilder().setId("cat").build(),
             ResourceId.newBuilder().setId("cat:db").build(),
-            new TableRequests.Create("orders", null, null, null, Map.of(), null, null, false),
+            new TableRequests.Create(
+                "orders",
+                null,
+                null,
+                null,
+                Map.of("metadata-location", METADATA_LOCATION),
+                null,
+                null,
+                false),
             TableSpec.getDefaultInstance(),
             List.of(),
             StageState.STAGED,
@@ -222,7 +232,15 @@ class StageMaterializationServiceTest {
             new StagedTableKey("account-fallback", "cat", List.of("db"), "orders", "only-stage"),
             ResourceId.newBuilder().setId("cat").build(),
             ResourceId.newBuilder().setId("cat:db").build(),
-            new TableRequests.Create("orders", null, null, null, Map.of(), null, null, false),
+            new TableRequests.Create(
+                "orders",
+                null,
+                null,
+                null,
+                Map.of("metadata-location", METADATA_LOCATION),
+                null,
+                null,
+                false),
             TableSpec.getDefaultInstance(),
             List.of(),
             StageState.STAGED,
@@ -281,7 +299,15 @@ class StageMaterializationServiceTest {
             new StagedTableKey("account-4", "cat", List.of("db"), "orders", "txn-only-stage"),
             ResourceId.newBuilder().setId("cat").build(),
             ResourceId.newBuilder().setId("cat:db").build(),
-            new TableRequests.Create("orders", null, null, null, Map.of(), null, null, false),
+            new TableRequests.Create(
+                "orders",
+                null,
+                null,
+                null,
+                Map.of("metadata-location", METADATA_LOCATION),
+                null,
+                null,
+                false),
             TableSpec.getDefaultInstance(),
             List.of(),
             StageState.STAGED,
