@@ -18,17 +18,15 @@ import org.junit.jupiter.api.Test;
 
 class TableResponseMapperTest {
 
-  private static final String EMPTY_SCHEMA_JSON = "{\"type\":\"struct\",\"fields\":[]}";
   private static final TrinoFixtureTestSupport.Fixture FIXTURE =
       TrinoFixtureTestSupport.simpleFixture();
 
   @Test
-  void loadResultFallsBackWhenSchemaFieldsMissing() {
+  void loadResultUsesMetadataSchema() {
     Table table =
         FIXTURE.table().toBuilder()
             .setDisplayName("orders")
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
-            .setSchemaJson("{\"type\":\"struct\"}")
             .build();
     IcebergMetadata metadata = FIXTURE.metadata();
 
@@ -44,7 +42,12 @@ class TableResponseMapperTest {
     List<Map<String, Object>> schemas = result.metadata().schemas();
     assertFalse(schemas.isEmpty(), "Expected at least one schema");
     Object fields = schemas.get(0).get("fields");
-    assertTrue(fields instanceof List<?> list && !list.isEmpty(), "Expected placeholder fields");
+    assertTrue(fields instanceof List<?>, "Expected fixture fields");
+    List<?> list = (List<?>) fields;
+    assertFalse(list.isEmpty(), "Expected fixture fields");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> field = (Map<String, Object>) list.get(0);
+    assertEquals("i", field.get("name"));
   }
 
   @Test
@@ -74,7 +77,7 @@ class TableResponseMapperTest {
   }
 
   @Test
-  void createRequestWithoutFieldsUsesPlaceholderSchema() {
+  void createRequestUsesSchemaJson() {
     Table table =
         FIXTURE.table().toBuilder()
             .setDisplayName("orders")
@@ -82,7 +85,7 @@ class TableResponseMapperTest {
             .build();
     TableRequests.Create request =
         new TableRequests.Create(
-            "orders", EMPTY_SCHEMA_JSON, null, null, Map.of(), null, null, null);
+            "orders", FIXTURE.table().getSchemaJson(), null, null, Map.of(), null, null, null);
 
     LoadTableResultDto loadResult =
         TableResponseMapper.toLoadResultFromCreate("orders", table, request, Map.of(), List.of());
@@ -96,7 +99,12 @@ class TableResponseMapperTest {
     List<Map<String, Object>> schemas = loadResult.metadata().schemas();
     assertFalse(schemas.isEmpty(), "schema list should not be empty");
     Object fields = schemas.get(0).get("fields");
-    assertTrue(fields instanceof List<?> list && !list.isEmpty(), "Expected placeholder fields");
+    assertTrue(fields instanceof List<?>, "Expected fixture fields");
+    List<?> list = (List<?>) fields;
+    assertFalse(list.isEmpty(), "Expected fixture fields");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> field = (Map<String, Object>) list.get(0);
+    assertEquals("i", field.get("name"));
   }
 
   @Test

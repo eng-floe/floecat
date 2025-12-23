@@ -1,5 +1,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.common;
 
+import ai.floedb.floecat.catalog.rpc.PartitionField;
+import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -7,6 +9,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSchema;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortField;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortOrder;
 import com.google.protobuf.util.Timestamps;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -15,8 +19,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.SnapshotRef;
+import org.apache.iceberg.SortField;
+import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.io.FileIO;
@@ -113,6 +120,35 @@ public final class TrinoFixtureTestSupport {
             .setSchemaId(metadata.currentSchemaId())
             .setSchemaJson(schemaJson)
             .build());
+
+    for (PartitionSpec spec : metadata.specs()) {
+      PartitionSpecInfo.Builder specBuilder =
+          PartitionSpecInfo.newBuilder().setSpecId(spec.specId());
+      for (org.apache.iceberg.PartitionField field : spec.fields()) {
+        specBuilder.addFields(
+            PartitionField.newBuilder()
+                .setFieldId(field.sourceId())
+                .setName(field.name())
+                .setTransform(field.transform().toString())
+                .build());
+      }
+      builder.addPartitionSpecs(specBuilder.build());
+    }
+
+    for (SortOrder order : metadata.sortOrders()) {
+      IcebergSortOrder.Builder orderBuilder =
+          IcebergSortOrder.newBuilder().setSortOrderId(order.orderId());
+      for (SortField field : order.fields()) {
+        orderBuilder.addFields(
+            IcebergSortField.newBuilder()
+                .setSourceFieldId(field.sourceId())
+                .setTransform(field.transform().toString())
+                .setDirection(field.direction().name())
+                .setNullOrder(field.nullOrder().name())
+                .build());
+      }
+      builder.addSortOrders(orderBuilder.build());
+    }
 
     for (Map.Entry<String, SnapshotRef> entry : metadata.refs().entrySet()) {
       SnapshotRef ref = entry.getValue();

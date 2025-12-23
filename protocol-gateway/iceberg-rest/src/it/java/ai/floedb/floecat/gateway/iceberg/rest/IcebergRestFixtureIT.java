@@ -83,7 +83,6 @@ class IcebergRestFixtureIT {
 
   private static final ObjectMapper MAPPER = new ObjectMapper();
   private static final String DEFAULT_ACCOUNT = "5eaa9cd5-7d08-3750-9457-cfe800b0b9d2";
-  private static final String EMPTY_SCHEMA_JSON = "{\"type\":\"struct\",\"fields\":[]}";
   private static final String NAMESPACE_PREFIX = "fixture_ns_";
   private static final String TABLE_PREFIX = "fixture_tbl_";
   private static final String CATALOG = "sales";
@@ -443,6 +442,7 @@ class IcebergRestFixtureIT {
     throw new IOException("Fixture metadata not found for " + relativeMetadataPath);
   }
 
+
   private static String relativeMetadataPath(String location) {
     if (location == null || location.isBlank()) {
       return location;
@@ -663,21 +663,12 @@ class IcebergRestFixtureIT {
   }
 
   @Test
-  void createsTableAndCommitsPropertiesViaGateway() {
+  void registersTableAndCommitsPropertiesViaGateway() {
     String namespace = uniqueName("it_ns_");
     String table = uniqueName("it_tbl_");
     createNamespace(namespace);
     try {
-      Map<String, Object> createPayload = Map.of("name", table, "schemaJson", EMPTY_SCHEMA_JSON);
-
-      given()
-          .spec(spec)
-          .body(createPayload)
-          .when()
-          .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables")
-          .then()
-          .statusCode(200)
-          .body("metadata.'table-uuid'", notNullValue());
+      registerTable(namespace, table, METADATA_V3, false);
 
       Map<String, Object> commitPayload = Map.of("properties", Map.of("owner", "integration"));
 

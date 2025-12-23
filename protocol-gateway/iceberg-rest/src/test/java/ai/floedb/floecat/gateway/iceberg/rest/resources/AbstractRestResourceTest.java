@@ -125,8 +125,13 @@ public abstract class AbstractRestResourceTest {
     Mockito.when(snapshotStub.listSnapshots(Mockito.any()))
         .thenReturn(
             ListSnapshotsResponse.newBuilder().addAllSnapshots(FIXTURE.snapshots()).build());
+    Snapshot fixtureSnapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(FIXTURE.metadata().getCurrentSnapshotId())
+            .putFormatMetadata("iceberg", FIXTURE.metadata().toByteString())
+            .build();
     Mockito.when(snapshotStub.getSnapshot(Mockito.any()))
-        .thenReturn(GetSnapshotResponse.getDefaultInstance());
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(fixtureSnapshot).build());
     Mockito.when(viewStub.getView(Mockito.any())).thenReturn(GetViewResponse.getDefaultInstance());
     Mockito.when(connectorsStub.triggerReconcile(Mockito.any()))
         .thenReturn(TriggerReconcileResponse.newBuilder().setJobId("job").build());

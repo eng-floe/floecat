@@ -51,6 +51,14 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
   private static final TrinoFixtureTestSupport.Fixture FIXTURE =
       TrinoFixtureTestSupport.simpleFixture();
 
+  private Table.Builder baseTable(ResourceId tableId, ResourceId nsId) {
+    return Table.newBuilder()
+        .setResourceId(tableId)
+        .setCatalogId(ResourceId.newBuilder().setId("cat"))
+        .setNamespaceId(nsId)
+        .putAllProperties(FIXTURE.table().getPropertiesMap());
+  }
+
   @Test
   void commitSupportsSetLocationUpdate() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
@@ -64,13 +72,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
             .setUri("s3://bucket/path/")
             .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
             .build();
-    Table current =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setCatalogId(ResourceId.newBuilder().setId("cat"))
-            .setNamespaceId(nsId)
-            .setUpstream(upstream)
-            .build();
+    Table current = baseTable(tableId, nsId).setUpstream(upstream).build();
     when(tableStub.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(current).build());
 
@@ -109,10 +111,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
             .setConnectorId(ResourceId.newBuilder().setId("conn").build())
             .build();
     Table existing =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setCatalogId(ResourceId.newBuilder().setId("cat"))
-            .setNamespaceId(nsId)
+        baseTable(tableId, nsId)
             .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .setUpstream(upstream)
@@ -159,10 +158,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 
     Table existing =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setCatalogId(ResourceId.newBuilder().setId("cat"))
-            .setNamespaceId(nsId)
+        baseTable(tableId, nsId)
             .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
@@ -204,10 +200,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
             .setConnectorId(ResourceId.newBuilder().setId("conn").build())
             .build();
     Table existing =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setCatalogId(ResourceId.newBuilder().setId("cat"))
-            .setNamespaceId(nsId)
+        baseTable(tableId, nsId)
             .setUpstream(upstream)
             .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
@@ -280,10 +273,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     long refSnapshotId = FIXTURE.snapshots().get(0).getSnapshotId();
 
     Table existing =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setCatalogId(ResourceId.newBuilder().setId("cat"))
-            .setNamespaceId(nsId)
+        baseTable(tableId, nsId)
             .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .putProperties("current-snapshot-id", Long.toString(currentSnapshotId))
@@ -340,10 +330,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     long currentSnapshotId = FIXTURE.metadata().getCurrentSnapshotId();
 
     Table existing =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setCatalogId(ResourceId.newBuilder().setId("cat"))
-            .setNamespaceId(nsId)
+        baseTable(tableId, nsId)
             .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .putProperties("current-snapshot-id", Long.toString(currentSnapshotId))
@@ -544,8 +531,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 
     Table current =
-        Table.newBuilder()
-            .setResourceId(tableId)
+        baseTable(tableId, ResourceId.newBuilder().setId("cat:db").build())
             .putProperties("table-uuid", "actual-uuid")
             .build();
     when(tableStub.getTable(any()))
@@ -571,8 +557,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     long currentSnapshotId = FIXTURE.metadata().getCurrentSnapshotId();
 
     Table current =
-        Table.newBuilder()
-            .setResourceId(tableId)
+        baseTable(tableId, ResourceId.newBuilder().setId("cat:db").build())
             .putProperties("current-snapshot-id", Long.toString(currentSnapshotId))
             .build();
     when(tableStub.getTable(any()))
@@ -620,8 +605,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     long currentSnapshotId = FIXTURE.metadata().getCurrentSnapshotId();
 
     Table current =
-        Table.newBuilder()
-            .setResourceId(tableId)
+        baseTable(tableId, ResourceId.newBuilder().setId("cat:db").build())
             .putProperties("current-snapshot-id", Long.toString(currentSnapshotId))
             .build();
     when(tableStub.getTable(any()))
@@ -667,7 +651,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-    Table current = Table.newBuilder().setResourceId(tableId).build();
+    Table current = baseTable(tableId, ResourceId.newBuilder().setId("cat:db").build()).build();
     when(tableStub.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(current).build());
 
@@ -688,7 +672,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-    Table current = Table.newBuilder().setResourceId(tableId).build();
+    Table current = baseTable(tableId, ResourceId.newBuilder().setId("cat:db").build()).build();
     when(tableStub.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(current).build());
 

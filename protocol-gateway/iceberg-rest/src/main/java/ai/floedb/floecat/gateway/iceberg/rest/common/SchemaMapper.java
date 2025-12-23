@@ -29,7 +29,7 @@ final class SchemaMapper {
   static Map<String, Object> schemaFromTable(Table table) {
     String schemaJson = table.getSchemaJson();
     if (schemaJson == null || schemaJson.isBlank()) {
-      return defaultSchema();
+      throw new IllegalArgumentException("schemaJson is required");
     }
     JsonNode node;
     try {
@@ -42,12 +42,8 @@ final class SchemaMapper {
     }
     Map<String, Object> schema =
         new LinkedHashMap<>(JSON.convertValue(node, new TypeReference<Map<String, Object>>() {}));
-    try {
-      normalizeSchema(schema);
-      return schema;
-    } catch (IllegalArgumentException e) {
-      return defaultSchema();
-    }
+    normalizeSchema(schema);
+    return schema;
   }
 
   static Map<String, Object> schemaFromRequest(TableRequests.Create request) {
@@ -70,12 +66,8 @@ final class SchemaMapper {
     }
     Map<String, Object> schema =
         new LinkedHashMap<>(JSON.convertValue(node, new TypeReference<Map<String, Object>>() {}));
-    try {
-      normalizeSchema(schema);
-      return schema;
-    } catch (IllegalArgumentException e) {
-      return defaultSchema();
-    }
+    normalizeSchema(schema);
+    return schema;
   }
 
   static Map<String, Object> partitionSpecFromRequest(TableRequests.Create request) {
@@ -140,21 +132,6 @@ final class SchemaMapper {
     order.put("fields", List.of());
     normalizeSortOrder(order);
     return order;
-  }
-
-  static Map<String, Object> defaultSchema() {
-    Map<String, Object> schema = new LinkedHashMap<>();
-    schema.put("schema-id", 0);
-    schema.put("last-column-id", 1);
-    schema.put("type", "struct");
-    Map<String, Object> field = new LinkedHashMap<>();
-    field.put("id", 1);
-    field.put("name", "placeholder");
-    field.put("type", "string");
-    field.put("required", false);
-    schema.put("fields", new ArrayList<>(List.of(field)));
-    normalizeSchema(schema);
-    return schema;
   }
 
   static List<Map<String, Object>> schemasFromMetadata(IcebergMetadata metadata) {

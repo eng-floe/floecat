@@ -1,13 +1,10 @@
 package ai.floedb.floecat.gateway.iceberg.rest.common;
 
-import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.defaultPartitionSpec;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.defaultSortOrder;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.maxPartitionFieldId;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.normalizeSortOrder;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.partitionSpecFromRequest;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.partitionSpecsFromMetadata;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.schemaFromRequest;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.schemaFromTable;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.schemasFromMetadata;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.sortOrderFromRequest;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.sortOrdersFromMetadata;
@@ -68,83 +65,52 @@ public final class TableMetadataBuilder {
       IcebergMetadata metadata,
       List<Snapshot> snapshots,
       String metadataLocation) {
-    if (metadata == null) {
-      return synthesizeMetadataFromTable(tableName, table, props, metadataLocation, snapshots);
-    }
     String location = table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
     location = resolveTableLocation(location, metadataLocation);
     Long lastUpdatedMs =
         (metadata != null && metadata.getLastUpdatedMs() > 0)
             ? Long.valueOf(metadata.getLastUpdatedMs())
             : maybeLong(props.get("last-updated-ms"));
-    // For new tables, last-updates-ms will not be set, so set it
-    if (lastUpdatedMs == null || lastUpdatedMs <= 0) {
-      lastUpdatedMs = Instant.now().toEpochMilli();
-    }
     Long currentSnapshotId =
-        metadata.getCurrentSnapshotId() > 0
+        metadata != null && metadata.getCurrentSnapshotId() > 0
             ? Long.valueOf(metadata.getCurrentSnapshotId())
             : maybeLong(props.get("current-snapshot-id"));
     Long lastSequenceNumber =
-        metadata != null
+        metadata != null && metadata.getLastSequenceNumber() >= 0
             ? Long.valueOf(metadata.getLastSequenceNumber())
             : maybeLong(props.get("last-sequence-number"));
     Integer lastColumnId =
-        metadata.getLastColumnId() >= 0
-            ? metadata.getLastColumnId()
+        metadata != null && metadata.getLastColumnId() >= 0
+            ? Integer.valueOf(metadata.getLastColumnId())
             : maybeInt(props.get("last-column-id"));
     Integer currentSchemaId =
-        metadata.getCurrentSchemaId() >= 0
-            ? metadata.getCurrentSchemaId()
+        metadata != null && metadata.getCurrentSchemaId() >= 0
+            ? Integer.valueOf(metadata.getCurrentSchemaId())
             : maybeInt(props.get("current-schema-id"));
     Integer defaultSpecId =
-        metadata.getDefaultSpecId() >= 0
-            ? metadata.getDefaultSpecId()
+        metadata != null && metadata.getDefaultSpecId() >= 0
+            ? Integer.valueOf(metadata.getDefaultSpecId())
             : maybeInt(props.get("default-spec-id"));
     Integer lastPartitionId =
-        metadata.getLastPartitionId() >= 0
-            ? metadata.getLastPartitionId()
+        metadata != null && metadata.getLastPartitionId() >= 0
+            ? Integer.valueOf(metadata.getLastPartitionId())
             : maybeInt(props.get("last-partition-id"));
     Integer defaultSortOrderId =
-        metadata.getDefaultSortOrderId() >= 0
-            ? metadata.getDefaultSortOrderId()
+        metadata != null && metadata.getDefaultSortOrderId() >= 0
+            ? Integer.valueOf(metadata.getDefaultSortOrderId())
             : maybeInt(props.get("default-sort-order-id"));
     String tableUuid =
-        (metadata != null && metadata.getTableUuid() != null && !metadata.getTableUuid().isBlank())
+        metadata != null && metadata.getTableUuid() != null && !metadata.getTableUuid().isBlank()
             ? metadata.getTableUuid()
-            : Optional.ofNullable(props.get("table-uuid"))
-                .orElseGet(() -> table.hasResourceId() ? table.getResourceId().getId() : tableName);
-    if (lastSequenceNumber == null) {
-      lastSequenceNumber = 0L;
-    }
-    Integer formatVersion = formatVersion(props);
+            : props.get("table-uuid");
+    Integer formatVersion =
+        metadata != null && metadata.getFormatVersion() > 0
+            ? Integer.valueOf(metadata.getFormatVersion())
+            : maybeInt(props.get("format-version"));
     List<Map<String, Object>> schemaList = schemasFromMetadata(metadata);
-    if (schemaList.isEmpty()) {
-      Map<String, Object> fallback = schemaFromTable(table);
-      schemaList = List.of(fallback);
-      Integer fallbackId = asInteger(fallback.get("schema-id"));
-      if (fallbackId != null && fallbackId >= 0) {
-        currentSchemaId = fallbackId;
-      }
-    }
     List<Map<String, Object>> specList = partitionSpecsFromMetadata(metadata);
-    if (specList.isEmpty()) {
-      Map<String, Object> fallbackSpec = defaultPartitionSpec();
-      specList = List.of(fallbackSpec);
-      Integer fallbackSpecId = asInteger(fallbackSpec.get("spec-id"));
-      if (fallbackSpecId != null && fallbackSpecId >= 0) {
-        defaultSpecId = fallbackSpecId;
-      }
-    }
     List<Map<String, Object>> sortOrderList = sortOrdersFromMetadata(metadata);
-    if (sortOrderList.isEmpty()) {
-      Map<String, Object> fallbackOrder = defaultSortOrder();
-      sortOrderList = List.of(fallbackOrder);
-      Integer fallbackOrderId = asInteger(fallbackOrder.get("sort-order-id"));
-      if (fallbackOrderId != null && fallbackOrderId >= 0) {
-        defaultSortOrderId = fallbackOrderId;
-      }
-    } else {
+    if (!sortOrderList.isEmpty()) {
       sortOrderList.forEach(order -> normalizeSortOrder(order));
     }
     List<Map<String, Object>> statisticsList = sanitizeStatistics(statistics(metadata));
@@ -166,8 +132,11 @@ public final class TableMetadataBuilder {
                   Comparator.comparingLong(Snapshot::getSequenceNumber)
                       .thenComparingLong(Snapshot::getSnapshotId))
               .orElse(null);
-      if (latestSnapshot != null && latestSnapshot.getSequenceNumber() > lastSequenceNumber) {
-        lastSequenceNumber = latestSnapshot.getSequenceNumber();
+      if (latestSnapshot != null) {
+        long latestSequence = latestSnapshot.getSequenceNumber();
+        if (lastSequenceNumber == null || latestSequence > lastSequenceNumber) {
+          lastSequenceNumber = latestSequence;
+        }
       }
     }
     Map<String, Object> refs = refs(metadata);
@@ -241,71 +210,6 @@ public final class TableMetadataBuilder {
         statisticsList,
         partitionStatisticsList,
         snapshots(orderedSnapshots));
-  }
-
-  private static TableMetadataView synthesizeMetadataFromTable(
-      String tableName,
-      Table table,
-      Map<String, String> props,
-      String metadataLocation,
-      List<Snapshot> snapshots) {
-    String resolvedMetadata =
-        resolveInitialMetadataLocation(tableName, table, props, metadataLocation);
-    MetadataLocationUtil.setMetadataLocation(props, resolvedMetadata);
-    syncWriteMetadataPath(props, resolvedMetadata);
-    Map<String, Object> schema = schemaFromTable(table);
-    Integer schemaId = asInteger(schema.get("schema-id"));
-    Integer lastColumnId = asInteger(schema.get("last-column-id"));
-    Map<String, Object> partitionSpec = defaultPartitionSpec();
-    Integer defaultSpecId = asInteger(partitionSpec.get("spec-id"));
-    Integer lastPartitionId = 0;
-    Map<String, Object> sortOrder = defaultSortOrder();
-    Integer defaultSortOrderId = asInteger(sortOrder.get("sort-order-id"));
-    String location =
-        defaultLocation(
-            table.hasUpstream() ? table.getUpstream().getUri() : props.get("location"),
-            resolvedMetadata);
-    long lastUpdatedMs =
-        table.hasCreatedAt()
-            ? table.getCreatedAt().getSeconds() * 1000 + table.getCreatedAt().getNanos() / 1_000_000
-            : Instant.now().toEpochMilli();
-    props.putIfAbsent("format-version", "2");
-    props.putIfAbsent("current-schema-id", schemaId.toString());
-    props.putIfAbsent("last-column-id", lastColumnId.toString());
-    props.putIfAbsent("default-spec-id", defaultSpecId.toString());
-    props.putIfAbsent("last-partition-id", Integer.toString(lastPartitionId));
-    props.putIfAbsent("default-sort-order-id", defaultSortOrderId.toString());
-    long maxSequence =
-        snapshots == null || snapshots.isEmpty()
-            ? 0L
-            : snapshots.stream().mapToLong(Snapshot::getSequenceNumber).max().orElse(0L);
-    long currentSnapshotId =
-        snapshots == null || snapshots.isEmpty() ? -1L : snapshots.get(0).getSnapshotId();
-    props.put("current-snapshot-id", Long.toString(currentSnapshotId < 0 ? 0 : currentSnapshotId));
-    props.put("last-sequence-number", Long.toString(maxSequence));
-    return new TableMetadataView(
-        formatVersion(props),
-        table.hasResourceId() ? table.getResourceId().getId() : tableName,
-        location,
-        resolvedMetadata,
-        lastUpdatedMs,
-        props,
-        lastColumnId,
-        schemaId,
-        defaultSpecId,
-        lastPartitionId,
-        defaultSortOrderId,
-        currentSnapshotId,
-        maxSequence,
-        List.of(schema),
-        List.of(partitionSpec),
-        List.of(sortOrder),
-        Map.of(),
-        List.of(),
-        List.of(),
-        List.of(),
-        List.of(),
-        snapshots(snapshots));
   }
 
   private static TableMetadataView initialMetadata(
@@ -449,23 +353,6 @@ public final class TableMetadataBuilder {
       }
     }
     return null;
-  }
-
-  private static String resolveInitialMetadataLocation(
-      String tableName, Table table, Map<String, String> props, String metadataLocation) {
-    if (metadataLocation != null && !metadataLocation.isBlank()) {
-      return metadataLocation;
-    }
-    String tableLocation =
-        table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
-    if (tableLocation != null && !tableLocation.isBlank()) {
-      String base =
-          tableLocation.endsWith("/")
-              ? tableLocation.substring(0, tableLocation.length() - 1)
-              : tableLocation;
-      return base + "/metadata/" + nextMetadataFileName();
-    }
-    return defaultMetadataLocation(table, tableName);
   }
 
   private static String resolveTableLocation(String location, String metadataLocation) {

@@ -75,6 +75,26 @@ class TableResourceTest extends AbstractRestResourceTest {
   private static final TrinoFixtureTestSupport.Fixture FIXTURE =
       TrinoFixtureTestSupport.simpleFixture();
 
+  private Table.Builder baseTable(ResourceId tableId, ResourceId nsId) {
+    return Table.newBuilder()
+        .setResourceId(tableId)
+        .setCatalogId(ResourceId.newBuilder().setId("cat"))
+        .setNamespaceId(nsId)
+        .putAllProperties(FIXTURE.table().getPropertiesMap());
+  }
+
+  private void stubSnapshotMetadata(String metadataLocation) {
+    IcebergMetadata metadata =
+        FIXTURE.metadata().toBuilder().setMetadataLocation(metadataLocation).build();
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(metadata.getCurrentSnapshotId())
+            .putFormatMetadata("iceberg", metadata.toByteString())
+            .build();
+    when(snapshotStub.getSnapshot(any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build());
+  }
+
   @Test
   void listsTablesWithPagination() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
@@ -133,10 +153,7 @@ class TableResourceTest extends AbstractRestResourceTest {
     List<Snapshot> fixtureSnapshots = FIXTURE.snapshots();
     Snapshot currentSnapshot = fixtureSnapshots.get(fixtureSnapshots.size() - 1);
     Table table =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setCatalogId(ResourceId.newBuilder().setId("cat").build())
-            .setNamespaceId(ResourceId.newBuilder().setId("cat:db").build())
+        baseTable(tableId, ResourceId.newBuilder().setId("cat:db").build())
             .setDisplayName("orders")
             .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
@@ -204,8 +221,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
 
     Table created =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("cat:db:new_table"))
+        baseTable(ResourceId.newBuilder().setId("cat:db:new_table").build(), nsId)
             .setDisplayName("new_table")
             .putProperties(
                 "metadata-location", "s3://b/db/new_table/metadata/00000-abc.metadata.json")
@@ -215,6 +231,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
     when(tableStub.updateTable(any()))
         .thenReturn(UpdateTableResponse.newBuilder().setTable(created).build());
+    stubSnapshotMetadata("s3://b/db/new_table/metadata/00000-abc.metadata.json");
 
     ResourceId connectorId =
         ResourceId.newBuilder()
@@ -322,8 +339,7 @@ class TableResourceTest extends AbstractRestResourceTest {
     ResourceId connectorId =
         ResourceId.newBuilder().setId("conn-1").setKind(ResourceKind.RK_CONNECTOR).build();
     Table existing =
-        Table.newBuilder()
-            .setResourceId(tableId)
+        baseTable(tableId, nsId)
             .setDisplayName("existing_table")
             .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
             .putProperties(
@@ -339,6 +355,7 @@ class TableResourceTest extends AbstractRestResourceTest {
             .build();
     when(tableStub.updateTable(any()))
         .thenReturn(UpdateTableResponse.newBuilder().setTable(updated).build());
+    stubSnapshotMetadata("s3://bucket/db/existing_table/00001-new.metadata.json");
 
     Connector connector =
         Connector.newBuilder()
@@ -426,11 +443,8 @@ class TableResourceTest extends AbstractRestResourceTest {
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 
     Table created =
-        Table.newBuilder()
-            .setResourceId(tableId)
+        baseTable(tableId, nsId)
             .setDisplayName("orders")
-            .setCatalogId(ResourceId.newBuilder().setId("cat"))
-            .setNamespaceId(nsId)
             .putProperties("metadata-location", "s3://bucket/path/metadata/00000-abc.metadata.json")
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
@@ -612,11 +626,8 @@ class TableResourceTest extends AbstractRestResourceTest {
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
 
     Table created =
-        Table.newBuilder()
-            .setResourceId(tableId)
+        baseTable(tableId, nsId)
             .setDisplayName("orders")
-            .setCatalogId(ResourceId.newBuilder().setId("cat"))
-            .setNamespaceId(nsId)
             .putProperties("metadata-location", "s3://bucket/path/metadata/00000-abc.metadata.json")
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();

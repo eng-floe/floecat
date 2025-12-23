@@ -24,6 +24,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolver.StageResolution;
@@ -37,6 +38,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitSideEffe
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.google.protobuf.FieldMask;
 import jakarta.ws.rs.core.Response;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
@@ -289,29 +291,14 @@ class TableCommitServiceTest {
   }
 
   private TableMetadataView metadataView(String metadataLocation) {
-    return new TableMetadataView(
-        2,
-        FIXTURE.metadata().getTableUuid(),
-        FIXTURE.table().getPropertiesOrDefault("location", ""),
-        metadataLocation,
-        1L,
-        Map.of("metadata-location", metadataLocation),
-        1,
-        1,
-        1,
-        1,
-        1,
-        1L,
-        1L,
-        List.of(),
-        List.of(),
-        List.of(),
-        Map.of(),
-        List.of(),
-        List.of(),
-        List.of(),
-        List.of(),
-        List.of());
+    TableMetadataView base =
+        TableMetadataBuilder.fromCatalog(
+            "orders",
+            FIXTURE.table(),
+            new LinkedHashMap<>(FIXTURE.table().getPropertiesMap()),
+            FIXTURE.metadata(),
+            FIXTURE.snapshots());
+    return base.withMetadataLocation(metadataLocation);
   }
 
   private TableCommitService.CommitCommand command(TableRequests.Commit request) {

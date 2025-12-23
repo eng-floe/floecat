@@ -16,25 +16,27 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService.MaterializeResult;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.LinkedHashMap;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class TableCommitSideEffectServiceTest {
+  private static final TrinoFixtureTestSupport.Fixture FIXTURE =
+      TrinoFixtureTestSupport.simpleFixture();
   private final TableCommitSideEffectService service = new TableCommitSideEffectService();
   private final MaterializeMetadataService materializeMetadataService =
       mock(MaterializeMetadataService.class);
   private final TableLifecycleService tableLifecycleService = mock(TableLifecycleService.class);
-  private final ObjectMapper mapper = new ObjectMapper();
 
   @BeforeEach
   void setUp() {
@@ -229,12 +231,14 @@ class TableCommitSideEffectServiceTest {
     verify(materializeMetadataService, never()).materialize(any(), any(), any(), any());
   }
 
-  private TableMetadataView metadata(String metadataLocation) throws JsonProcessingException {
-    return mapper.readValue(
-        "{"
-            + "\"metadata-location\":\""
-            + metadataLocation
-            + "\",\"properties\":{\"existing\":\"value\"}}",
-        TableMetadataView.class);
+  private TableMetadataView metadata(String metadataLocation) {
+    TableMetadataView base =
+        TableMetadataBuilder.fromCatalog(
+            "orders",
+            FIXTURE.table(),
+            new LinkedHashMap<>(FIXTURE.table().getPropertiesMap()),
+            FIXTURE.metadata(),
+            FIXTURE.snapshots());
+    return base.withMetadataLocation(metadataLocation);
   }
 }
