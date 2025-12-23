@@ -42,6 +42,7 @@ import ai.floedb.floecat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
@@ -71,6 +72,8 @@ import org.mockito.ArgumentCaptor;
 @QuarkusTest
 @TestProfile(RestResourceTestProfile.class)
 class TableResourceTest extends AbstractRestResourceTest {
+  private static final TrinoFixtureTestSupport.Fixture FIXTURE =
+      TrinoFixtureTestSupport.simpleFixture();
 
   @Test
   void listsTablesWithPagination() {
@@ -127,47 +130,41 @@ class TableResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    List<Snapshot> fixtureSnapshots = FIXTURE.snapshots();
+    Snapshot currentSnapshot = fixtureSnapshots.get(fixtureSnapshots.size() - 1);
     Table table =
         Table.newBuilder()
             .setResourceId(tableId)
             .setCatalogId(ResourceId.newBuilder().setId("cat").build())
             .setNamespaceId(ResourceId.newBuilder().setId("cat:db").build())
             .setDisplayName("orders")
-            .putProperties("metadata-location", "s3://bucket/path/metadata/00000-abc.metadata.json")
+            .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
-            .putProperties("current-snapshot-id", "5")
+            .putProperties("current-snapshot-id", Long.toString(currentSnapshot.getSnapshotId()))
             .build();
     when(tableStub.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
 
     IcebergMetadata metadata =
-        IcebergMetadata.newBuilder()
-            .setMetadataLocation("s3://bucket/path/metadata/00000-abc.metadata.json")
-            .putRefs("main", IcebergRef.newBuilder().setSnapshotId(5).setType("branch").build())
+        FIXTURE.metadata().toBuilder()
+            .putRefs(
+                "main",
+                IcebergRef.newBuilder()
+                    .setSnapshotId(currentSnapshot.getSnapshotId())
+                    .setType("branch")
+                    .build())
             .build();
     Snapshot metaSnapshot =
         Snapshot.newBuilder()
             .setTableId(tableId)
-            .setSnapshotId(5)
+            .setSnapshotId(currentSnapshot.getSnapshotId())
             .putFormatMetadata("iceberg", metadata.toByteString())
             .build();
     when(snapshotStub.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(metaSnapshot).build());
 
-    Snapshot snapshot1 =
-        Snapshot.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(5)
-            .setManifestList("manifest1")
-            .putSummary("operation", "append")
-            .build();
-    Snapshot snapshot2 =
-        Snapshot.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(6)
-            .setManifestList("manifest2")
-            .putSummary("operation", "overwrite")
-            .build();
+    Snapshot snapshot1 = currentSnapshot.toBuilder().setTableId(tableId).build();
+    Snapshot snapshot2 = fixtureSnapshots.get(0).toBuilder().setTableId(tableId).build();
     when(snapshotStub.listSnapshots(any()))
         .thenReturn(
             ListSnapshotsResponse.newBuilder()
@@ -180,11 +177,11 @@ class TableResourceTest extends AbstractRestResourceTest {
         .get("/v1/foo/namespaces/db/tables/orders")
         .then()
         .statusCode(200)
-        .header("ETag", equalTo("\"s3://bucket/path/metadata/00000-abc.metadata.json\""))
+        .header("ETag", equalTo("\"" + FIXTURE.metadataLocation() + "\""))
         .body("metadata.snapshots.size()", equalTo(2));
 
     given()
-        .header("If-None-Match", "\"s3://bucket/path/metadata/00000-abc.metadata.json\"")
+        .header("If-None-Match", "\"" + FIXTURE.metadataLocation() + "\"")
         .when()
         .get("/v1/foo/namespaces/db/tables/orders")
         .then()
@@ -197,7 +194,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(200)
         .body("metadata.snapshots.size()", equalTo(1))
-        .body("metadata.snapshots[0].'snapshot-id'", equalTo(5));
+        .body("metadata.snapshots[0].'snapshot-id'", equalTo(currentSnapshot.getSnapshotId()));
   }
 
   @Test
@@ -260,7 +257,9 @@ class TableResourceTest extends AbstractRestResourceTest {
     ArgumentCaptor<CreateConnectorRequest> createReq =
         ArgumentCaptor.forClass(CreateConnectorRequest.class);
     verify(connectorsStub).createConnector(createReq.capture());
-    assertEquals("s3://b/db/new_table", createReq.getValue().getSpec().getUri());
+    assertEquals(
+        FIXTURE.table().getPropertiesMap().get("location"),
+        createReq.getValue().getSpec().getUri());
     assertEquals("new_table", createReq.getValue().getSpec().getSource().getTable());
     assertEquals(nsId, createReq.getValue().getSpec().getDestination().getNamespaceId());
     assertEquals("none", createReq.getValue().getSpec().getAuth().getScheme());

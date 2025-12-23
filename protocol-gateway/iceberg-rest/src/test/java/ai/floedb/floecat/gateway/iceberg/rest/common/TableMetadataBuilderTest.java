@@ -18,29 +18,44 @@ class TableMetadataBuilderTest {
 
   @Test
   void latestSnapshotBecomesCurrentReference() {
+    TrinoFixtureTestSupport.Fixture fixture = TrinoFixtureTestSupport.simpleFixture();
     Table table =
-        Table.newBuilder()
+        fixture.table().toBuilder()
             .setResourceId(ResourceId.newBuilder().setId("catalog:ns:orders"))
             .build();
-    Map<String, String> props = new LinkedHashMap<>();
-    props.put("current-snapshot-id", "1");
+    Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
+    List<Snapshot> snapshots = fixture.snapshots();
+    long earliest = snapshots.stream().mapToLong(Snapshot::getSequenceNumber).min().orElse(0L);
+    long latest = snapshots.stream().mapToLong(Snapshot::getSequenceNumber).max().orElse(0L);
+    long earliestSnapshotId =
+        snapshots.stream()
+            .filter(s -> s.getSequenceNumber() == earliest)
+            .findFirst()
+            .map(Snapshot::getSnapshotId)
+            .orElse(0L);
+    long latestSnapshotId =
+        snapshots.stream()
+            .filter(s -> s.getSequenceNumber() == latest)
+            .findFirst()
+            .map(Snapshot::getSnapshotId)
+            .orElse(0L);
+    props.put("current-snapshot-id", Long.toString(earliestSnapshotId));
     IcebergMetadata metadata =
-        IcebergMetadata.newBuilder()
-            .setMetadataLocation("s3://warehouse/orders/metadata/00000.json")
-            .putRefs("main", IcebergRef.newBuilder().setSnapshotId(1).setType("branch").build())
+        fixture.metadata().toBuilder()
+            .setCurrentSnapshotId(earliestSnapshotId)
+            .putRefs(
+                "main",
+                IcebergRef.newBuilder().setSnapshotId(earliestSnapshotId).setType("branch").build())
             .build();
-    Snapshot firstSnapshot = Snapshot.newBuilder().setSnapshotId(1).setSequenceNumber(1).build();
-    Snapshot secondSnapshot = Snapshot.newBuilder().setSnapshotId(2).setSequenceNumber(2).build();
 
     TableMetadataView view =
-        TableMetadataBuilder.fromCatalog(
-            "orders", table, props, metadata, List.of(firstSnapshot, secondSnapshot));
+        TableMetadataBuilder.fromCatalog("orders", table, props, metadata, snapshots);
 
-    assertEquals(2L, view.currentSnapshotId());
-    assertEquals("2", view.properties().get("current-snapshot-id"));
+    assertEquals(latestSnapshotId, view.currentSnapshotId());
+    assertEquals(Long.toString(latestSnapshotId), view.properties().get("current-snapshot-id"));
     @SuppressWarnings("unchecked")
     Map<String, Object> mainRef = (Map<String, Object>) view.refs().get("main");
     assertNotNull(mainRef);
-    assertEquals(2L, mainRef.get("snapshot-id"));
+    assertEquals(latestSnapshotId, mainRef.get("snapshot-id"));
   }
 }

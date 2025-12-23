@@ -14,6 +14,7 @@ import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
@@ -26,8 +27,11 @@ import ai.floedb.floecat.connector.rpc.SyncCaptureResponse;
 import ai.floedb.floecat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
+import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedSnapshot;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableRepository;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableDropCleanupService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService;
@@ -41,17 +45,23 @@ import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc.QueryServiceBlockingStub;
 import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.protobuf.util.Timestamps;
 import io.quarkus.test.InjectMock;
 import io.restassured.RestAssured;
 import io.restassured.builder.RequestSpecBuilder;
 import io.restassured.specification.RequestSpecification;
 import jakarta.inject.Inject;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.BeforeEach;
 import org.mockito.Mockito;
 
 public abstract class AbstractRestResourceTest {
+  private static final TrinoFixtureTestSupport.Fixture FIXTURE =
+      TrinoFixtureTestSupport.simpleFixture();
 
   @InjectMock protected GrpcWithHeaders grpc;
   @InjectMock protected GrpcClients clients;
@@ -113,7 +123,8 @@ public abstract class AbstractRestResourceTest {
     Mockito.when(snapshotStub.deleteSnapshot(Mockito.any()))
         .thenReturn(DeleteSnapshotResponse.newBuilder().build());
     Mockito.when(snapshotStub.listSnapshots(Mockito.any()))
-        .thenReturn(ListSnapshotsResponse.getDefaultInstance());
+        .thenReturn(
+            ListSnapshotsResponse.newBuilder().addAllSnapshots(FIXTURE.snapshots()).build());
     Mockito.when(snapshotStub.getSnapshot(Mockito.any()))
         .thenReturn(GetSnapshotResponse.getDefaultInstance());
     Mockito.when(viewStub.getView(Mockito.any())).thenReturn(GetViewResponse.getDefaultInstance());
@@ -135,21 +146,23 @@ public abstract class AbstractRestResourceTest {
     Mockito.when(metadataImportService.importMetadata(Mockito.any(), Mockito.any()))
         .thenAnswer(
             inv -> {
-              String metadataLocation = inv.getArgument(0, String.class);
-              String tableLocation = metadataLocation;
-              if (tableLocation != null) {
-                int idx = tableLocation.indexOf("/metadata");
-                if (idx > 0) {
-                  tableLocation = tableLocation.substring(0, idx);
-                } else {
-                  int slash = tableLocation.lastIndexOf('/');
-                  if (slash > 0) {
-                    tableLocation = tableLocation.substring(0, slash);
-                  }
-                }
+              Map<String, String> props = new LinkedHashMap<>(FIXTURE.table().getPropertiesMap());
+              String encodedRefs = encodeRefs(FIXTURE.metadata().getRefsMap());
+              if (encodedRefs != null && !encodedRefs.isBlank()) {
+                props.put(RefPropertyUtil.PROPERTY_KEY, encodedRefs);
               }
+              String tableLocation = props.get("location");
+              ImportedSnapshot currentSnapshot = currentSnapshotFromFixture();
+              List<ImportedSnapshot> snapshots =
+                  FIXTURE.snapshots().stream()
+                      .map(AbstractRestResourceTest::toImportedSnapshot)
+                      .collect(Collectors.toList());
               return new ImportedMetadata(
-                  "{\"type\":\"struct\",\"fields\":[]}", Map.of(), tableLocation, null, List.of());
+                  FIXTURE.table().getSchemaJson(),
+                  props,
+                  tableLocation,
+                  currentSnapshot,
+                  List.copyOf(snapshots));
             });
     ResourceId catalogId = ResourceId.newBuilder().setId("cat:default").build();
     Mockito.when(directoryStub.resolveCatalog(Mockito.any()))
@@ -221,6 +234,48 @@ public abstract class AbstractRestResourceTest {
     return ResourceId.newBuilder().setId(builder.toString()).build();
   }
 
+  private static ImportedSnapshot currentSnapshotFromFixture() {
+    if (FIXTURE.snapshots().isEmpty()) {
+      return null;
+    }
+    long currentId = FIXTURE.metadata().getCurrentSnapshotId();
+    for (Snapshot snapshot : FIXTURE.snapshots()) {
+      if (snapshot.getSnapshotId() == currentId) {
+        return toImportedSnapshot(snapshot);
+      }
+    }
+    return toImportedSnapshot(FIXTURE.snapshots().get(FIXTURE.snapshots().size() - 1));
+  }
+
+  private static String encodeRefs(
+      Map<String, ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef> refs) {
+    if (refs == null || refs.isEmpty()) {
+      return null;
+    }
+    Map<String, Map<String, Object>> encoded = new LinkedHashMap<>();
+    refs.forEach(
+        (name, ref) -> {
+          if (name == null || name.isBlank() || ref == null) {
+            return;
+          }
+          Map<String, Object> entry = new LinkedHashMap<>();
+          entry.put("snapshot-id", ref.getSnapshotId());
+          entry.put("type", ref.getType());
+          if (ref.hasMaxReferenceAgeMs()) {
+            entry.put("max-reference-age-ms", ref.getMaxReferenceAgeMs());
+          }
+          if (ref.hasMaxSnapshotAgeMs()) {
+            entry.put("max-snapshot-age-ms", ref.getMaxSnapshotAgeMs());
+          }
+          if (ref.hasMinSnapshotsToKeep()) {
+            entry.put("min-snapshots-to-keep", ref.getMinSnapshotsToKeep());
+          }
+          encoded.put(name, entry);
+        });
+    String result = RefPropertyUtil.encode(encoded);
+    return Objects.requireNonNullElse(result, "");
+  }
+
   protected String stageCreateRequestWithoutLocation(String tableName) {
     return """
     {
@@ -290,10 +345,10 @@ public abstract class AbstractRestResourceTest {
         ]
       },
       "properties": {
-        "metadata-location": "s3://bucket/%s/metadata/00000-abc.metadata.json",
+        "metadata-location": "s3://yb-iceberg-tpcds/%s/metadata/00000-abc.metadata.json",
         "io-impl": "org.apache.iceberg.inmemory.InMemoryFileIO"
       },
-      "location": "s3://bucket/%s",
+      "location": "s3://yb-iceberg-tpcds/%s",
       "stage-create": true
     }
     """
@@ -306,5 +361,29 @@ public abstract class AbstractRestResourceTest {
     } catch (InvalidProtocolBufferException e) {
       throw new RuntimeException("Failed to parse Iceberg metadata", e);
     }
+  }
+
+  private static ImportedSnapshot toImportedSnapshot(Snapshot snapshot) {
+    if (snapshot == null) {
+      return null;
+    }
+    Long parentId = snapshot.getParentSnapshotId() == 0 ? null : snapshot.getParentSnapshotId();
+    Long sequence = snapshot.getSequenceNumber() == 0 ? null : snapshot.getSequenceNumber();
+    Long timestampMs =
+        snapshot.hasUpstreamCreatedAt()
+            ? Timestamps.toMillis(snapshot.getUpstreamCreatedAt())
+            : null;
+    String manifestList = snapshot.getManifestList();
+    if (manifestList != null && manifestList.isBlank()) {
+      manifestList = null;
+    }
+    return new ImportedSnapshot(
+        snapshot.getSnapshotId(),
+        parentId,
+        sequence,
+        timestampMs,
+        manifestList,
+        snapshot.getSummaryMap(),
+        snapshot.getSchemaId() == 0 ? null : snapshot.getSchemaId());
   }
 }

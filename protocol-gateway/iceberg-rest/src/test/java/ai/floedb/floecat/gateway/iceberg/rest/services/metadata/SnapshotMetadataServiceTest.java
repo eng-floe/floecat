@@ -10,6 +10,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortOrder;
@@ -26,6 +27,8 @@ import org.junit.jupiter.api.Test;
 class SnapshotMetadataServiceTest {
   private SnapshotMetadataService service;
   private TableGatewaySupport tableSupport;
+  private static final TrinoFixtureTestSupport.Fixture FIXTURE =
+      TrinoFixtureTestSupport.simpleFixture();
 
   @BeforeEach
   void setUp() {
@@ -114,8 +117,7 @@ class SnapshotMetadataServiceTest {
   void snapshotMetadataSynthesizesFromTablePropertiesWhenMissing() throws Exception {
     Table table =
         Table.newBuilder()
-            .putProperties(
-                "metadata-location", "s3://bucket/orders/metadata/00000-abc.metadata.json")
+            .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("table-uuid", "uuid")
             .putProperties("format-version", "2")
             .putProperties("current-schema-id", "1")
@@ -133,8 +135,7 @@ class SnapshotMetadataServiceTest {
 
     IcebergMetadata metadata = (IcebergMetadata) method.invoke(service, null, table, 9L, 11L);
 
-    assertEquals(
-        "s3://bucket/orders/metadata/00000-abc.metadata.json", metadata.getMetadataLocation());
+    assertEquals(FIXTURE.metadataLocation(), metadata.getMetadataLocation());
     assertEquals(9L, metadata.getCurrentSnapshotId());
     assertEquals(11L, metadata.getLastSequenceNumber());
     assertEquals(2, metadata.getFormatVersion());

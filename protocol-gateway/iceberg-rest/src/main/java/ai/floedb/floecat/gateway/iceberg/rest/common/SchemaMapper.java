@@ -191,6 +191,7 @@ final class SchemaMapper {
       for (PartitionField field : spec.getFieldsList()) {
         Map<String, Object> f = new LinkedHashMap<>();
         f.put("field-id", field.getFieldId());
+        f.put("source-id", field.getFieldId());
         f.put("name", field.getName());
         f.put("transform", field.getTransform());
         fields.add(f);
@@ -212,7 +213,7 @@ final class SchemaMapper {
       List<Map<String, Object>> fields = new ArrayList<>();
       for (IcebergSortField field : order.getFieldsList()) {
         Map<String, Object> f = new LinkedHashMap<>();
-        f.put("source-field-id", field.getSourceFieldId());
+        f.put("source-id", field.getSourceFieldId());
         f.put("transform", field.getTransform());
         f.put("direction", field.getDirection());
         f.put("null-order", field.getNullOrder());

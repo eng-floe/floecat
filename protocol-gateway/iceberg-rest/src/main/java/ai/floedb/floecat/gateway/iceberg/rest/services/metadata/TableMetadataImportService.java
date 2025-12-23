@@ -1,13 +1,16 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.SnapshotRef;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.io.FileIO;
@@ -53,6 +56,10 @@ public class TableMetadataImportService {
       props.putIfAbsent("table-uuid", metadata.uuid());
       if (metadata.location() != null && !metadata.location().isBlank()) {
         props.put("location", metadata.location());
+      }
+      String refsProperty = encodeRefs(metadata.refs());
+      if (refsProperty != null && !refsProperty.isBlank()) {
+        props.put(RefPropertyUtil.PROPERTY_KEY, refsProperty);
       }
       props.put("format-version", Integer.toString(metadata.formatVersion()));
       putInt(props, "current-schema-id", metadata.currentSchemaId());
@@ -134,6 +141,33 @@ public class TableMetadataImportService {
     if (value >= 0) {
       props.put(key, Long.toString(value));
     }
+  }
+
+  private String encodeRefs(Map<String, SnapshotRef> refs) {
+    if (refs == null || refs.isEmpty()) {
+      return null;
+    }
+    Map<String, Map<String, Object>> encoded = new LinkedHashMap<>();
+    refs.forEach(
+        (name, ref) -> {
+          if (name == null || name.isBlank() || ref == null) {
+            return;
+          }
+          Map<String, Object> entry = new LinkedHashMap<>();
+          entry.put("snapshot-id", ref.snapshotId());
+          entry.put("type", ref.type().name().toLowerCase(Locale.ROOT));
+          if (ref.maxRefAgeMs() != null) {
+            entry.put("max-reference-age-ms", ref.maxRefAgeMs());
+          }
+          if (ref.maxSnapshotAgeMs() != null) {
+            entry.put("max-snapshot-age-ms", ref.maxSnapshotAgeMs());
+          }
+          if (ref.minSnapshotsToKeep() != null) {
+            entry.put("min-snapshots-to-keep", ref.minSnapshotsToKeep());
+          }
+          encoded.put(name, entry);
+        });
+    return RefPropertyUtil.encode(encoded);
   }
 
   private Map<String, String> redactIoProperties(Map<String, String> ioProperties) {

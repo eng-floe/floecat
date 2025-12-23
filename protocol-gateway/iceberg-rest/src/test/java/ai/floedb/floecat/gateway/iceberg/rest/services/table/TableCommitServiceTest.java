@@ -24,6 +24,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolver.StageResolution;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
@@ -43,6 +44,8 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class TableCommitServiceTest {
+  private static final TrinoFixtureTestSupport.Fixture FIXTURE =
+      TrinoFixtureTestSupport.simpleFixture();
 
   private final TableCommitService service = new TableCommitService();
   private final GrpcWithHeaders grpc = mock(GrpcWithHeaders.class);
@@ -121,8 +124,7 @@ class TableCommitServiceTest {
   void commitPrefersStageMetadata() {
     String stageMetadataLocation = "s3://stage/orders/metadata/00001-abc.metadata.json";
     String materializedLocation = "s3://warehouse/orders/metadata/00001-def.metadata.json";
-    Table stagedTable =
-        tableRecord("cat:db:orders", "s3://warehouse/orders/metadata/00000-abc.metadata.json");
+    Table stagedTable = tableRecord("cat:db:orders", FIXTURE.metadataLocation());
     StageCommitResult stageResult =
         new StageCommitResult(
             stagedTable,
@@ -135,10 +137,7 @@ class TableCommitServiceTest {
     TableUpdatePlanner.UpdatePlan successPlan =
         TableUpdatePlanner.UpdatePlan.success(TableSpec.newBuilder(), FieldMask.newBuilder());
     when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(successPlan);
-    IcebergMetadata metadata =
-        IcebergMetadata.newBuilder()
-            .setMetadataLocation("s3://warehouse/orders/metadata/00000-abc.metadata.json")
-            .build();
+    IcebergMetadata metadata = FIXTURE.metadata();
     when(tableSupport.loadCurrentMetadata(stagedTable)).thenReturn(metadata);
     when(sideEffectService.synchronizeConnector(
             eq(tableSupport),
@@ -190,7 +189,7 @@ class TableCommitServiceTest {
 
   @Test
   void commitIgnoresStageMetadataWhenSnapshotUpdatesPresent() {
-    String catalogMetadataLocation = "s3://warehouse/orders/metadata/00000-abc.metadata.json";
+    String catalogMetadataLocation = FIXTURE.metadataLocation();
     String stageMetadataLocation = "s3://stage/orders/metadata/00001-abc.metadata.json";
     Table stagedTable = tableRecord("cat:db:orders", catalogMetadataLocation);
     StageCommitResult stageResult =
@@ -206,7 +205,7 @@ class TableCommitServiceTest {
         TableUpdatePlanner.UpdatePlan.success(TableSpec.newBuilder(), FieldMask.newBuilder());
     when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(successPlan);
     IcebergMetadata metadata =
-        IcebergMetadata.newBuilder().setMetadataLocation(catalogMetadataLocation).build();
+        FIXTURE.metadata().toBuilder().setMetadataLocation(catalogMetadataLocation).build();
     when(tableSupport.loadCurrentMetadata(stagedTable)).thenReturn(metadata);
     when(sideEffectService.synchronizeConnector(
             eq(tableSupport),
@@ -243,15 +242,12 @@ class TableCommitServiceTest {
         new StageResolution(
             ResourceId.newBuilder().setId("cat:db:orders").build(), null, null, null);
     when(stageResolver.resolve(any())).thenReturn(resolution);
-    Table table = tableRecord("cat:db:orders", "s3://warehouse/orders/metadata/00000.json");
+    Table table = tableRecord("cat:db:orders", FIXTURE.metadataLocation());
     when(tableLifecycleService.getTable(any())).thenReturn(table);
     TableUpdatePlanner.UpdatePlan successPlan =
         TableUpdatePlanner.UpdatePlan.success(TableSpec.newBuilder(), FieldMask.newBuilder());
     when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(successPlan);
-    IcebergMetadata metadata =
-        IcebergMetadata.newBuilder()
-            .setMetadataLocation("s3://warehouse/orders/metadata/00000.json")
-            .build();
+    IcebergMetadata metadata = FIXTURE.metadata();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
     when(sideEffectService.synchronizeConnector(
             any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
@@ -288,15 +284,15 @@ class TableCommitServiceTest {
     return Table.newBuilder()
         .setResourceId(ResourceId.newBuilder().setId(id))
         .putProperties("metadata-location", metadataLocation)
-        .putProperties("location", "s3://warehouse/orders")
+        .putProperties("location", FIXTURE.table().getPropertiesOrDefault("location", ""))
         .build();
   }
 
   private TableMetadataView metadataView(String metadataLocation) {
     return new TableMetadataView(
         2,
-        "uuid",
-        "s3://warehouse/orders",
+        FIXTURE.metadata().getTableUuid(),
+        FIXTURE.table().getPropertiesOrDefault("location", ""),
         metadataLocation,
         1L,
         Map.of("metadata-location", metadataLocation),

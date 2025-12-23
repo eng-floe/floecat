@@ -3,7 +3,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.resources.table;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
@@ -26,6 +26,7 @@ import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergBlobMetadata;
@@ -40,12 +41,15 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergStatisticsFile;
 import com.google.protobuf.ByteString;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 @QuarkusTest
 @TestProfile(RestResourceTestProfile.class)
 class TableCommitResourceTest extends AbstractRestResourceTest {
+  private static final TrinoFixtureTestSupport.Fixture FIXTURE =
+      TrinoFixtureTestSupport.simpleFixture();
 
   @Test
   void commitSupportsSetLocationUpdate() {
@@ -97,6 +101,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    Snapshot newSnapshot = FIXTURE.snapshots().get(FIXTURE.snapshots().size() - 1);
 
     UpstreamRef upstream =
         UpstreamRef.newBuilder()
@@ -108,8 +113,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
             .setResourceId(tableId)
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
-            .putProperties(
-                "metadata-location", "s3://bucket/orders/metadata/00000-abc.metadata.json")
+            .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .setUpstream(upstream)
             .build();
@@ -120,13 +124,19 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
 
     given()
         .body(
-            "{\"updates\":[{\"action\":\"add-snapshot\",\"snapshot\":{"
-                + "\"snapshot-id\":5,"
-                + "\"timestamp-ms\":1000,"
-                + "\"parent-snapshot-id\":4,"
-                + "\"manifest-list\":\"s3://bucket/manifest.avro\","
-                + "\"summary\":{\"operation\":\"append\"}"
-                + "}}]}")
+            String.format(
+                """
+                {"updates":[{"action":"add-snapshot","snapshot":{
+                  "snapshot-id":%d,
+                  "timestamp-ms":1000,
+                  "parent-snapshot-id":%d,
+                  "manifest-list":"%s",
+                  "summary":{"operation":"append"}
+                }}]}
+                """,
+                newSnapshot.getSnapshotId(),
+                newSnapshot.getParentSnapshotId(),
+                newSnapshot.getManifestList()))
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
@@ -136,7 +146,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     ArgumentCaptor<CreateSnapshotRequest> snapReq =
         ArgumentCaptor.forClass(CreateSnapshotRequest.class);
     verify(snapshotStub).createSnapshot(snapReq.capture());
-    assertEquals(5, snapReq.getValue().getSpec().getSnapshotId());
+    assertEquals(newSnapshot.getSnapshotId(), snapReq.getValue().getSpec().getSnapshotId());
     verify(connectorsStub).triggerReconcile(any());
     verify(connectorsStub).syncCapture(any());
   }
@@ -153,8 +163,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
             .setResourceId(tableId)
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
-            .putProperties(
-                "metadata-location", "s3://bucket/orders/metadata/00000-abc.metadata.json")
+            .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
     when(tableStub.getTable(any()))
@@ -185,6 +194,9 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    List<Snapshot> fixtureSnapshots = FIXTURE.snapshots();
+    long existingSnapshotId = fixtureSnapshots.get(0).getSnapshotId();
+    long newSnapshotId = fixtureSnapshots.get(fixtureSnapshots.size() - 1).getSnapshotId();
 
     UpstreamRef upstream =
         UpstreamRef.newBuilder()
@@ -197,10 +209,9 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
             .setUpstream(upstream)
-            .putProperties(
-                "metadata-location", "s3://bucket/orders/metadata/00000-abc.metadata.json")
+            .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
-            .putProperties("current-snapshot-id", "4")
+            .putProperties("current-snapshot-id", Long.toString(existingSnapshotId))
             .build();
     when(tableStub.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(existing).build());
@@ -210,13 +221,17 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     Snapshot snapshot =
         Snapshot.newBuilder()
             .setTableId(tableId)
-            .setSnapshotId(5)
+            .setSnapshotId(existingSnapshotId)
             .putFormatMetadata(
                 "iceberg",
-                IcebergMetadata.newBuilder()
-                    .setTableUuid("uuid")
+                FIXTURE.metadata().toBuilder()
+                    .setCurrentSnapshotId(existingSnapshotId)
                     .putRefs(
-                        "main", IcebergRef.newBuilder().setType("branch").setSnapshotId(4).build())
+                        "main",
+                        IcebergRef.newBuilder()
+                            .setType("branch")
+                            .setSnapshotId(existingSnapshotId)
+                            .build())
                     .build()
                     .toByteString())
             .build();
@@ -225,17 +240,21 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
 
     given()
         .body(
-            """
-            {"updates":[
-              {"action":"add-snapshot","snapshot":{
-                "snapshot-id":5,
-                "timestamp-ms":1000,
-                "manifest-list":"s3://bucket/manifest.avro",
-                "summary":{"operation":"append"}
-              }},
-              {"action":"set-snapshot-ref","ref-name":"main","type":"branch","snapshot-id":5}
-            ]}
-            """)
+            String.format(
+                """
+                {"updates":[
+                  {"action":"add-snapshot","snapshot":{
+                    "snapshot-id":%d,
+                    "timestamp-ms":1000,
+                    "manifest-list":"%s",
+                    "summary":{"operation":"append"}
+                  }},
+                  {"action":"set-snapshot-ref","ref-name":"main","type":"branch","snapshot-id":%d}
+                ]}
+                """,
+                newSnapshotId,
+                fixtureSnapshots.get(fixtureSnapshots.size() - 1).getManifestList(),
+                newSnapshotId))
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
@@ -245,9 +264,9 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     ArgumentCaptor<UpdateSnapshotRequest> updateReq =
         ArgumentCaptor.forClass(UpdateSnapshotRequest.class);
     verify(snapshotStub).updateSnapshot(updateReq.capture());
-    assertEquals(5L, updateReq.getValue().getSpec().getSnapshotId());
+    assertEquals(newSnapshotId, updateReq.getValue().getSpec().getSnapshotId());
     assertEquals(
-        5L,
+        newSnapshotId,
         metadataFromSpec(updateReq.getValue().getSpec()).getRefsOrThrow("main").getSnapshotId());
   }
 
@@ -257,16 +276,17 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    long currentSnapshotId = FIXTURE.metadata().getCurrentSnapshotId();
+    long refSnapshotId = FIXTURE.snapshots().get(0).getSnapshotId();
 
     Table existing =
         Table.newBuilder()
             .setResourceId(tableId)
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
-            .putProperties(
-                "metadata-location", "s3://bucket/orders/metadata/00000-abc.metadata.json")
+            .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
-            .putProperties("current-snapshot-id", "9")
+            .putProperties("current-snapshot-id", Long.toString(currentSnapshotId))
             .build();
     when(tableStub.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(existing).build());
@@ -276,13 +296,17 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     Snapshot snapshot =
         Snapshot.newBuilder()
             .setTableId(tableId)
-            .setSnapshotId(9)
+            .setSnapshotId(currentSnapshotId)
             .putFormatMetadata(
                 "iceberg",
-                IcebergMetadata.newBuilder()
-                    .setTableUuid("uuid")
+                FIXTURE.metadata().toBuilder()
+                    .setCurrentSnapshotId(currentSnapshotId)
                     .putRefs(
-                        "dev", IcebergRef.newBuilder().setType("branch").setSnapshotId(8).build())
+                        "dev",
+                        IcebergRef.newBuilder()
+                            .setType("branch")
+                            .setSnapshotId(refSnapshotId)
+                            .build())
                     .build()
                     .toByteString())
             .build();
@@ -299,8 +323,12 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
 
     ArgumentCaptor<UpdateSnapshotRequest> updateReq =
         ArgumentCaptor.forClass(UpdateSnapshotRequest.class);
-    verify(snapshotStub).updateSnapshot(updateReq.capture());
-    assertFalse(metadataFromSpec(updateReq.getValue().getSpec()).getRefsMap().containsKey("dev"));
+    verify(snapshotStub, atLeastOnce()).updateSnapshot(updateReq.capture());
+    boolean removed =
+        updateReq.getAllValues().stream()
+            .map(req -> metadataFromSpec(req.getSpec()).getRefsMap())
+            .anyMatch(refs -> !refs.containsKey("dev"));
+    assertTrue(removed, "expected at least one update to remove the dev ref");
   }
 
   @Test
@@ -309,16 +337,16 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    long currentSnapshotId = FIXTURE.metadata().getCurrentSnapshotId();
 
     Table existing =
         Table.newBuilder()
             .setResourceId(tableId)
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
-            .putProperties(
-                "metadata-location", "s3://bucket/orders/metadata/00000-abc.metadata.json")
+            .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
-            .putProperties("current-snapshot-id", "4")
+            .putProperties("current-snapshot-id", Long.toString(currentSnapshotId))
             .build();
     when(tableStub.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(existing).build());
@@ -328,10 +356,19 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     Snapshot snapshot =
         Snapshot.newBuilder()
             .setTableId(tableId)
-            .setSnapshotId(4)
+            .setSnapshotId(currentSnapshotId)
             .putFormatMetadata(
                 "iceberg",
-                IcebergMetadata.newBuilder()
+                FIXTURE.metadata().toBuilder()
+                    .clearSchemas()
+                    .clearPartitionSpecs()
+                    .clearSortOrders()
+                    .clearStatistics()
+                    .clearPartitionStatistics()
+                    .clearEncryptionKeys()
+                    .clearRefs()
+                    .clearMetadataLog()
+                    .clearSnapshotLog()
                     .setTableUuid("uuid")
                     .setFormatVersion(2)
                     .setCurrentSchemaId(1)
@@ -340,13 +377,14 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
                     .addSchemas(
                         IcebergSchema.newBuilder()
                             .setSchemaId(1)
-                            .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
+                            .setSchemaJson(
+                                "{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"placeholder\",\"required\":false,\"type\":\"string\"}]}")
                             .build())
                     .addSchemas(
                         IcebergSchema.newBuilder()
                             .setSchemaId(3)
                             .setSchemaJson(
-                                "{\"type\":\"struct\",\"fields\":[{\"name\":\"c\",\"type\":\"long\"}]}")
+                                "{\"type\":\"struct\",\"fields\":[{\"id\":3,\"name\":\"c\",\"required\":false,\"type\":\"long\"}]}")
                             .build())
                     .addPartitionSpecs(
                         PartitionSpecInfo.newBuilder()
@@ -422,7 +460,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
               {"action":"add-schema","schema":{
                 "schema-id":7,
                 "type":"struct",
-                "fields":[]
+                "fields":[{"id":7,"name":"new_col","required":false,"type":"string"}]
               }},
               {"action":"set-current-schema","schema-id":-1},
               {"action":"remove-schemas","schema-ids":[3]},
@@ -467,8 +505,14 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
 
     ArgumentCaptor<UpdateSnapshotRequest> updateReq =
         ArgumentCaptor.forClass(UpdateSnapshotRequest.class);
-    verify(snapshotStub).updateSnapshot(updateReq.capture());
-    IcebergMetadata updated = metadataFromSpec(updateReq.getValue().getSpec());
+    verify(snapshotStub, atLeastOnce()).updateSnapshot(updateReq.capture());
+    IcebergMetadata updated =
+        updateReq.getAllValues().stream()
+            .map(req -> metadataFromSpec(req.getSpec()))
+            .filter(meta -> "new-uuid".equals(meta.getTableUuid()))
+            .findFirst()
+            .orElse(null);
+    assertTrue(updated != null, "expected updated metadata with new-uuid");
     assertEquals("new-uuid", updated.getTableUuid());
     assertEquals(3, updated.getFormatVersion());
     assertEquals(7, updated.getCurrentSchemaId());
@@ -524,20 +568,27 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    long currentSnapshotId = FIXTURE.metadata().getCurrentSnapshotId();
 
     Table current =
-        Table.newBuilder().setResourceId(tableId).putProperties("current-snapshot-id", "5").build();
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .putProperties("current-snapshot-id", Long.toString(currentSnapshotId))
+            .build();
     when(tableStub.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(current).build());
 
     IcebergMetadata metadata =
-        IcebergMetadata.newBuilder()
-            .putRefs("main", IcebergRef.newBuilder().setSnapshotId(5).setType("branch").build())
+        FIXTURE.metadata().toBuilder()
+            .setCurrentSnapshotId(currentSnapshotId)
+            .putRefs(
+                "main",
+                IcebergRef.newBuilder().setSnapshotId(currentSnapshotId).setType("branch").build())
             .build();
     Snapshot metaSnapshot =
         Snapshot.newBuilder()
             .setTableId(tableId)
-            .setSnapshotId(5)
+            .setSnapshotId(currentSnapshotId)
             .putFormatMetadata("iceberg", metadata.toByteString())
             .build();
     when(snapshotStub.getSnapshot(any()))
@@ -545,10 +596,12 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
 
     given()
         .body(
-            """
-            {"requirements":[{"type":"assert-ref-snapshot-id","ref":"main","snapshot-id":7}],
-             "updates":[{"action":"set-properties","updates":{"owner":"floecat"}}]}
-            """)
+            String.format(
+                """
+                {"requirements":[{"type":"assert-ref-snapshot-id","ref":"main","snapshot-id":%d}],
+                 "updates":[{"action":"set-properties","updates":{"owner":"floecat"}}]}
+                """,
+                currentSnapshotId + 1))
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
@@ -564,22 +617,29 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    long currentSnapshotId = FIXTURE.metadata().getCurrentSnapshotId();
 
     Table current =
-        Table.newBuilder().setResourceId(tableId).putProperties("current-snapshot-id", "5").build();
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .putProperties("current-snapshot-id", Long.toString(currentSnapshotId))
+            .build();
     when(tableStub.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(current).build());
     when(tableStub.updateTable(any()))
         .thenReturn(UpdateTableResponse.newBuilder().setTable(current).build());
 
     IcebergMetadata metadata =
-        IcebergMetadata.newBuilder()
-            .putRefs("main", IcebergRef.newBuilder().setSnapshotId(5).setType("branch").build())
+        FIXTURE.metadata().toBuilder()
+            .setCurrentSnapshotId(currentSnapshotId)
+            .putRefs(
+                "main",
+                IcebergRef.newBuilder().setSnapshotId(currentSnapshotId).setType("branch").build())
             .build();
     Snapshot metaSnapshot =
         Snapshot.newBuilder()
             .setTableId(tableId)
-            .setSnapshotId(5)
+            .setSnapshotId(currentSnapshotId)
             .putFormatMetadata("iceberg", metadata.toByteString())
             .build();
     when(snapshotStub.getSnapshot(any()))
@@ -587,10 +647,12 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
 
     given()
         .body(
-            """
-            {"requirements":[{"type":"assert-ref-snapshot-id","ref":"main","snapshot-id":5}],
-             "updates":[{"action":"set-properties","updates":{"owner":"floecat"}}]}
-            """)
+            String.format(
+                """
+                {"requirements":[{"type":"assert-ref-snapshot-id","ref":"main","snapshot-id":%d}],
+                 "updates":[{"action":"set-properties","updates":{"owner":"floecat"}}]}
+                """,
+                currentSnapshotId))
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")

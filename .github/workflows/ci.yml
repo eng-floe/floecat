@@ -35,6 +35,9 @@ jobs:
       - name: Build
         run: make build
 
+      - name: Test (In Memory)
+        run: make test
+
       - name: Test (LocalStack)
         run: make test-aws
 

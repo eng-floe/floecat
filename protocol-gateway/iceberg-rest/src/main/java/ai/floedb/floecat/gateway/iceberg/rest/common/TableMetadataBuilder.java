@@ -150,10 +150,18 @@ public final class TableMetadataBuilder {
     List<Map<String, Object>> statisticsList = sanitizeStatistics(statistics(metadata));
     List<Map<String, Object>> partitionStatisticsList =
         nonNullMapList(partitionStatistics(metadata));
+    List<Snapshot> orderedSnapshots =
+        snapshots == null || snapshots.size() < 2
+            ? snapshots
+            : snapshots.stream()
+                .sorted(
+                    Comparator.comparingLong(Snapshot::getSequenceNumber)
+                        .thenComparingLong(Snapshot::getSnapshotId))
+                .toList();
     Snapshot latestSnapshot = null;
-    if (snapshots != null && !snapshots.isEmpty()) {
+    if (orderedSnapshots != null && !orderedSnapshots.isEmpty()) {
       latestSnapshot =
-          snapshots.stream()
+          orderedSnapshots.stream()
               .max(
                   Comparator.comparingLong(Snapshot::getSequenceNumber)
                       .thenComparingLong(Snapshot::getSnapshotId))
@@ -166,9 +174,9 @@ public final class TableMetadataBuilder {
     refs = mergePropertyRefs(props, refs);
     if (metadata != null && !refs.isEmpty()) {
       Set<Long> snapshotIds = new HashSet<>();
-      if (snapshots != null) {
+      if (orderedSnapshots != null) {
         snapshotIds.addAll(
-            snapshots.stream().map(Snapshot::getSnapshotId).collect(Collectors.toSet()));
+            orderedSnapshots.stream().map(Snapshot::getSnapshotId).collect(Collectors.toSet()));
       }
       if (!snapshotIds.isEmpty()) {
         refs.entrySet()
@@ -232,7 +240,7 @@ public final class TableMetadataBuilder {
         metadataLog(metadata),
         statisticsList,
         partitionStatisticsList,
-        snapshots(snapshots));
+        snapshots(orderedSnapshots));
   }
 
   private static TableMetadataView synthesizeMetadataFromTable(
