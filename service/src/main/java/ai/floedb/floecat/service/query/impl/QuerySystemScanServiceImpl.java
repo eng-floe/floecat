@@ -17,6 +17,7 @@ import ai.floedb.floecat.system.rpc.QuerySystemScanService;
 import ai.floedb.floecat.system.rpc.ScanSystemTableRequest;
 import ai.floedb.floecat.system.rpc.ScanSystemTableResponse;
 import ai.floedb.floecat.systemcatalog.columnar.ArrowFilterOperator;
+import ai.floedb.floecat.systemcatalog.columnar.ArrowProjectOperator;
 import ai.floedb.floecat.systemcatalog.columnar.ColumnarBatch;
 import ai.floedb.floecat.systemcatalog.columnar.RowStreamToArrowBatchAdapter;
 import ai.floedb.floecat.systemcatalog.expr.Expr;
@@ -108,7 +109,7 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
                           rows, scanner.schema(), request.getRequiredColumnsList());
 
                   if (request.getOutputFormat() == OutputFormat.ARROW_IPC) {
-                    return arrowResponse(rows, schema, arrowExpr);
+                    return arrowResponse(rows, schema, arrowExpr, request.getRequiredColumnsList());
                   }
 
                   // 6. Build response
@@ -124,7 +125,10 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
   }
 
   private static ScanSystemTableResponse arrowResponse(
-      List<SystemObjectRow> rows, List<SchemaColumn> schema, Expr arrowExpr) {
+      List<SystemObjectRow> rows,
+      List<SchemaColumn> schema,
+      Expr arrowExpr,
+      List<String> requiredColumns) {
     try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
       RowStreamToArrowBatchAdapter adapter =
           new RowStreamToArrowBatchAdapter(allocator, schema, DEFAULT_ARROW_BATCH_SIZE);
@@ -132,6 +136,7 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
           adapter
               .adapt(rows.stream())
               .map(batch -> applyArrowFilter(batch, arrowExpr, allocator))
+              .map(batch -> applyArrowProjection(batch, requiredColumns, allocator))
               .map(QuerySystemScanServiceImpl::serializeArrowBatch)
               .toList();
       return ScanSystemTableResponse.newBuilder().addAllArrowBatches(batches).build();
@@ -144,6 +149,14 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
       return batch;
     }
     return ArrowFilterOperator.filter(batch, arrowExpr, allocator);
+  }
+
+  private static ColumnarBatch applyArrowProjection(
+      ColumnarBatch batch, List<String> requiredColumns, BufferAllocator allocator) {
+    if (requiredColumns.isEmpty()) {
+      return batch;
+    }
+    return ArrowProjectOperator.project(batch, requiredColumns, allocator);
   }
 
   private static ByteString serializeArrowBatch(ColumnarBatch batch) {

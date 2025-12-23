@@ -33,6 +33,11 @@ This module documents the new, optional Arrow output path introduced in Phase A 
 - Arrow filtering runs during the Arrow path when the system property `ai.floedb.floecat.arrow-filter-enabled` is set to `true`. The new `ArrowFilterOperator` evaluates the `Expr` tree produced by `SystemRowFilter.EXPRESSION_PROVIDER` directly against each `VectorSchemaRoot`, produces a boolean mask of matching rows, and then copies the selected vectors into a fresh `VectorSchemaRoot` before the Arrow IPC serializer sees the batch.
 - The row helpers remain the reference path, so you can compare row-filtered results with Arrow-filtered batches while the feature gate is active; once confidence is high, you can enable the property to make the Arrow filter path authoritative without touching the legacy code.
 
+## Arrow projection (Phase E)
+
+- The Arrow projection operator runs on the Arrow path independent of filtering, zero-copying only the requested columns into a new `VectorSchemaRoot` by transferring the underlying buffers (`TransferPair`) from the filtered batch. This ensures the RPC response contains exactly the columns the caller asked for without materializing extra rows or objects.
+- When `ScanSystemTableRequest.required_columns` is empty, the operator becomes a no-op and the original batch flows through (so the arrow path degrades gracefully for clients that still want the full schema).
+
 ## Testing
 
 The new adapter is covered by `RowStreamToArrowBatchAdapterTest`. The existing row-filter/projector tests continue to serve as the semantic baseline; the Arrow path reuses them before conversion, so predicate/projection coverage remains untouched.
