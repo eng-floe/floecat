@@ -506,7 +506,7 @@ public class TableGatewaySupport {
         UpdateTableRequest.newBuilder()
             .setTableId(tableId)
             .setSpec(TableSpec.newBuilder().setUpstream(upstream).build())
-            .setUpdateMask(com.google.protobuf.FieldMask.newBuilder().addPaths("upstream").build())
+            .setUpdateMask(FieldMask.newBuilder().addPaths("upstream").build())
             .build();
     tableClient.updateTable(request);
   }

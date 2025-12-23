@@ -36,6 +36,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableReposi
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableDropCleanupService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
 import ai.floedb.floecat.query.rpc.GetQueryRequest;
 import ai.floedb.floecat.query.rpc.GetQueryResponse;
@@ -252,8 +253,7 @@ public abstract class AbstractRestResourceTest {
     return toImportedSnapshot(FIXTURE.snapshots().get(FIXTURE.snapshots().size() - 1));
   }
 
-  private static String encodeRefs(
-      Map<String, ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef> refs) {
+  private static String encodeRefs(Map<String, IcebergRef> refs) {
     if (refs == null || refs.isEmpty()) {
       return null;
     }

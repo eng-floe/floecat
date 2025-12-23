@@ -6,6 +6,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageMaterializationService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitService;
+import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
@@ -37,7 +38,7 @@ public class CommitStageResolver {
         materializedStageId = explicitStage.stageId();
         resolvedTableId = explicitStage.table().getResourceId();
       }
-    } catch (io.grpc.StatusRuntimeException e) {
+    } catch (StatusRuntimeException e) {
       StageMaterializationService.StageMaterializationResult materialization;
       try {
         materialization =

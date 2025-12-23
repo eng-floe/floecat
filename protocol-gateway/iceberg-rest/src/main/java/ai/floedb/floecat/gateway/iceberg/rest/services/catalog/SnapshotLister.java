@@ -8,6 +8,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
+import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -39,7 +40,7 @@ public final class SnapshotLister {
             .collect(Collectors.toList());
       }
       return snapshots;
-    } catch (io.grpc.StatusRuntimeException e) {
+    } catch (StatusRuntimeException e) {
       return List.of();
     }
   }

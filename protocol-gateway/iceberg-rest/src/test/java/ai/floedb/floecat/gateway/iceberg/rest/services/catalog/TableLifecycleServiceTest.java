@@ -28,6 +28,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,8 +46,7 @@ class TableLifecycleServiceTest {
   @BeforeEach
   void setUp() {
     service.grpc = grpc;
-    service.tableClient =
-        new ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient(grpc);
+    service.tableClient = new TableClient(grpc);
     when(grpc.raw()).thenReturn(clients);
     when(clients.table()).thenReturn(tableStub);
     when(clients.directory()).thenReturn(directoryStub);

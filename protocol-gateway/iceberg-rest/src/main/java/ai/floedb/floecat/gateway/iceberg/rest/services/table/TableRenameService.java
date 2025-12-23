@@ -3,6 +3,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.RenameRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFactory;
@@ -15,7 +16,7 @@ import jakarta.ws.rs.core.Response;
 
 @ApplicationScoped
 public class TableRenameService {
-  @Inject ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders grpc;
+  @Inject GrpcWithHeaders grpc;
   @Inject RequestContextFactory requestContextFactory;
   @Inject TableClient tableClient;
 

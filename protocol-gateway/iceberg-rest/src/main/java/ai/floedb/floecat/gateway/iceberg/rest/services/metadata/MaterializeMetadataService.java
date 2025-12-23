@@ -19,8 +19,10 @@ import java.util.UUID;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.FileInfo;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;
+import org.apache.iceberg.io.SupportsPrefixOperations;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -284,12 +286,12 @@ public class MaterializeMetadataService {
   }
 
   private long parseExistingFiles(FileIO fileIO, String directory) {
-    if (!(fileIO instanceof org.apache.iceberg.io.SupportsPrefixOperations prefixOps)) {
+    if (!(fileIO instanceof SupportsPrefixOperations prefixOps)) {
       return -1;
     }
     long max = -1;
     try {
-      for (org.apache.iceberg.io.FileInfo info : prefixOps.listPrefix(directory)) {
+      for (FileInfo info : prefixOps.listPrefix(directory)) {
         String location = info.location();
         if (location != null && location.endsWith(".metadata.json")) {
           long parsed = parseVersion(location);

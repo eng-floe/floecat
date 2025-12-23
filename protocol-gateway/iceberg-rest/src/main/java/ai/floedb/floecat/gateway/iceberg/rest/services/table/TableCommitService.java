@@ -5,6 +5,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
@@ -15,6 +16,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolv
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
@@ -38,8 +40,8 @@ import org.jboss.logging.Logger;
 public class TableCommitService {
   private static final Logger LOG = Logger.getLogger(TableCommitService.class);
 
-  @Inject ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders grpc;
-  @Inject ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient snapshotClient;
+  @Inject GrpcWithHeaders grpc;
+  @Inject SnapshotClient snapshotClient;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableCommitSideEffectService sideEffectService;
   @Inject StageMaterializationService stageMaterializationService;

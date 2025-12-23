@@ -15,6 +15,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
+import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
+import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
@@ -87,7 +89,7 @@ public class SnapshotMetadataService {
       }
       Snapshot snapshot = resp.getSnapshot();
       return parseSnapshotMetadata(snapshot);
-    } catch (io.grpc.StatusRuntimeException e) {
+    } catch (StatusRuntimeException e) {
       return null;
     }
   }
@@ -486,7 +488,7 @@ public class SnapshotMetadataService {
                   .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
                   .build());
       return response != null && response.hasSnapshot();
-    } catch (io.grpc.StatusRuntimeException ignored) {
+    } catch (StatusRuntimeException ignored) {
       return false;
     }
   }
@@ -606,7 +608,7 @@ public class SnapshotMetadataService {
                         .build())
                 .getSnapshot();
         targetSnapshotId = snapshot.getSnapshotId();
-      } catch (io.grpc.StatusRuntimeException e) {
+      } catch (StatusRuntimeException e) {
         Long propertySnapshot = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
         targetSnapshotId = propertySnapshot;
         snapshot = null;
@@ -1009,10 +1011,7 @@ public class SnapshotMetadataService {
 
   private Response validationError(String message) {
     return Response.status(Response.Status.BAD_REQUEST)
-        .entity(
-            new ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse(
-                new ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError(
-                    message, "ValidationException", 400)))
+        .entity(new IcebergErrorResponse(new IcebergError(message, "ValidationException", 400)))
         .build();
   }
 

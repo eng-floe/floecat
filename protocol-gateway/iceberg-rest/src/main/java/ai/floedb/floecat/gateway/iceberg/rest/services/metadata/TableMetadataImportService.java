@@ -2,6 +2,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
+import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -16,7 +17,7 @@ import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.io.FileIO;
 import org.jboss.logging.Logger;
 
-@jakarta.enterprise.context.ApplicationScoped
+@ApplicationScoped
 public class TableMetadataImportService {
   private static final Logger LOG = Logger.getLogger(TableMetadataImportService.class);
 
@@ -125,7 +126,7 @@ public class TableMetadataImportService {
     }
   }
 
-  private Map<String, String> copySummaryWithOperation(org.apache.iceberg.Snapshot snapshot) {
+  private Map<String, String> copySummaryWithOperation(Snapshot snapshot) {
     Map<String, String> summary = snapshot.summary() == null ? Map.of() : snapshot.summary();
     if (summary.isEmpty() && (snapshot.operation() == null || snapshot.operation().isBlank())) {
       return Map.of();

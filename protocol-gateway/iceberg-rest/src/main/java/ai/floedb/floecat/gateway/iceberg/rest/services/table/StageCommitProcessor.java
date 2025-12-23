@@ -14,6 +14,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
@@ -44,7 +45,7 @@ public class StageCommitProcessor {
   @Inject StagedTableService stagedTableService;
   @Inject TableClient tableClient;
   @Inject SnapshotClient snapshotClient;
-  @Inject ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient connectorClient;
+  @Inject ConnectorClient connectorClient;
 
   private TableGatewaySupport tableSupport;
 
