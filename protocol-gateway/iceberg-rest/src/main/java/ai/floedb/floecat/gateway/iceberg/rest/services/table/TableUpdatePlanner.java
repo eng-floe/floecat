@@ -3,6 +3,8 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
+import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
@@ -100,6 +102,7 @@ public class TableUpdatePlanner {
     if (snapshotError != null) {
       return UpdatePlan.failure(spec, mask, snapshotError);
     }
+    mergedProps = applySnapshotPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = stripFileIoProperties(mergedProps);
     if (mergedProps != null) {
@@ -125,19 +128,13 @@ public class TableUpdatePlanner {
 
   private Response validationError(String message) {
     return Response.status(Response.Status.BAD_REQUEST)
-        .entity(
-            new ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse(
-                new ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError(
-                    message, "ValidationException", 400)))
+        .entity(new IcebergErrorResponse(new IcebergError(message, "ValidationException", 400)))
         .build();
   }
 
   private Response conflictError(String message) {
     return Response.status(Response.Status.CONFLICT)
-        .entity(
-            new ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse(
-                new ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError(
-                    message, "CommitFailedException", 409)))
+        .entity(new IcebergErrorResponse(new IcebergError(message, "CommitFailedException", 409)))
         .build();
   }
 
@@ -247,6 +244,56 @@ public class TableUpdatePlanner {
       targetProps.remove(RefPropertyUtil.PROPERTY_KEY);
     } else {
       targetProps.put(RefPropertyUtil.PROPERTY_KEY, RefPropertyUtil.encode(refs));
+    }
+    return targetProps;
+  }
+
+  private Map<String, String> applySnapshotPropertyUpdates(
+      Map<String, String> mergedProps,
+      Supplier<Table> tableSupplier,
+      List<Map<String, Object>> updates) {
+    if (updates == null || updates.isEmpty()) {
+      return mergedProps;
+    }
+    Long latestSnapshotId = null;
+    Long latestSequence = null;
+    for (Map<String, Object> update : updates) {
+      if (update == null) {
+        continue;
+      }
+      String action = asString(update.get("action"));
+      if (!"add-snapshot".equals(action)) {
+        continue;
+      }
+      @SuppressWarnings("unchecked")
+      Map<String, Object> snapshot =
+          update.get("snapshot") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+      if (snapshot == null || snapshot.isEmpty()) {
+        continue;
+      }
+      Long snapshotId = asLong(snapshot.get("snapshot-id"));
+      if (snapshotId != null && snapshotId > 0) {
+        latestSnapshotId = snapshotId;
+      }
+      Long sequenceNumber = asLong(snapshot.get("sequence-number"));
+      if (sequenceNumber != null && sequenceNumber > 0) {
+        latestSequence =
+            latestSequence == null ? sequenceNumber : Math.max(latestSequence, sequenceNumber);
+      }
+    }
+    if (latestSnapshotId == null || latestSnapshotId <= 0) {
+      return mergedProps;
+    }
+    Map<String, String> targetProps =
+        mergedProps == null
+            ? new LinkedHashMap<>(tableSupplier.get().getPropertiesMap())
+            : mergedProps;
+    targetProps.put("current-snapshot-id", Long.toString(latestSnapshotId));
+    if (latestSequence != null && latestSequence > 0) {
+      Long existing = asLong(targetProps.get("last-sequence-number"));
+      if (existing == null || existing < latestSequence) {
+        targetProps.put("last-sequence-number", Long.toString(latestSequence));
+      }
     }
     return targetProps;
   }
