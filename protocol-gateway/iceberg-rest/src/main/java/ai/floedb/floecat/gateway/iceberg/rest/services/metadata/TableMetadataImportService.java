@@ -1,7 +1,14 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
+import ai.floedb.floecat.catalog.rpc.PartitionField;
+import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSchema;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortField;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortOrder;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -9,9 +16,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.SnapshotRef;
+import org.apache.iceberg.SortField;
+import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.io.FileIO;
@@ -25,6 +36,7 @@ public class TableMetadataImportService {
       String schemaJson,
       Map<String, String> properties,
       String tableLocation,
+      IcebergMetadata icebergMetadata,
       ImportedSnapshot currentSnapshot,
       List<ImportedSnapshot> snapshots) {}
 
@@ -97,8 +109,14 @@ public class TableMetadataImportService {
                 summary,
                 snapshot.schemaId()));
       }
+      IcebergMetadata icebergMetadata = toIcebergMetadata(metadata, metadataLocation);
       return new ImportedMetadata(
-          schemaJson, props, metadata.location(), importedSnapshot, List.copyOf(snapshotList));
+          schemaJson,
+          props,
+          metadata.location(),
+          icebergMetadata,
+          importedSnapshot,
+          List.copyOf(snapshotList));
     } catch (IllegalArgumentException e) {
       throw e;
     } catch (Exception e) {
@@ -142,6 +160,84 @@ public class TableMetadataImportService {
     if (value >= 0) {
       props.put(key, Long.toString(value));
     }
+  }
+
+  private IcebergMetadata toIcebergMetadata(TableMetadata metadata, String metadataLocation) {
+    IcebergMetadata.Builder builder =
+        IcebergMetadata.newBuilder()
+            .setTableUuid(metadata.uuid())
+            .setFormatVersion(metadata.formatVersion())
+            .setMetadataLocation(metadataLocation)
+            .setLastUpdatedMs(metadata.lastUpdatedMillis())
+            .setLastColumnId(metadata.lastColumnId())
+            .setCurrentSchemaId(metadata.currentSchemaId())
+            .setDefaultSpecId(metadata.defaultSpecId())
+            .setLastPartitionId(metadata.lastAssignedPartitionId())
+            .setDefaultSortOrderId(metadata.defaultSortOrderId())
+            .setLastSequenceNumber(metadata.lastSequenceNumber());
+    Snapshot current = metadata.currentSnapshot();
+    if (current != null) {
+      builder.setCurrentSnapshotId(current.snapshotId());
+    }
+
+    for (Schema schema : metadata.schemas()) {
+      IcebergSchema.Builder schemaBuilder =
+          IcebergSchema.newBuilder()
+              .setSchemaId(schema.schemaId())
+              .setSchemaJson(SchemaParser.toJson(schema));
+      if (schema.identifierFieldIds() != null && !schema.identifierFieldIds().isEmpty()) {
+        schemaBuilder.addAllIdentifierFieldIds(schema.identifierFieldIds());
+      }
+      builder.addSchemas(schemaBuilder.build());
+    }
+
+    for (PartitionSpec spec : metadata.specs()) {
+      PartitionSpecInfo.Builder specBuilder =
+          PartitionSpecInfo.newBuilder().setSpecId(spec.specId());
+      for (org.apache.iceberg.PartitionField field : spec.fields()) {
+        specBuilder.addFields(
+            PartitionField.newBuilder()
+                .setFieldId(field.sourceId())
+                .setName(field.name())
+                .setTransform(field.transform().toString())
+                .build());
+      }
+      builder.addPartitionSpecs(specBuilder.build());
+    }
+
+    for (SortOrder order : metadata.sortOrders()) {
+      IcebergSortOrder.Builder orderBuilder =
+          IcebergSortOrder.newBuilder().setSortOrderId(order.orderId());
+      for (SortField field : order.fields()) {
+        orderBuilder.addFields(
+            IcebergSortField.newBuilder()
+                .setSourceFieldId(field.sourceId())
+                .setTransform(field.transform().toString())
+                .setDirection(field.direction().name())
+                .setNullOrder(field.nullOrder().name())
+                .build());
+      }
+      builder.addSortOrders(orderBuilder.build());
+    }
+
+    for (Map.Entry<String, SnapshotRef> entry : metadata.refs().entrySet()) {
+      SnapshotRef ref = entry.getValue();
+      IcebergRef.Builder refBuilder =
+          IcebergRef.newBuilder()
+              .setSnapshotId(ref.snapshotId())
+              .setType(ref.type().name().toLowerCase(Locale.ROOT));
+      if (ref.maxRefAgeMs() != null) {
+        refBuilder.setMaxReferenceAgeMs(ref.maxRefAgeMs());
+      }
+      if (ref.maxSnapshotAgeMs() != null) {
+        refBuilder.setMaxSnapshotAgeMs(ref.maxSnapshotAgeMs());
+      }
+      if (ref.minSnapshotsToKeep() != null) {
+        refBuilder.setMinSnapshotsToKeep(ref.minSnapshotsToKeep());
+      }
+      builder.putRefs(entry.getKey(), refBuilder.build());
+    }
+    return builder.build();
   }
 
   private String encodeRefs(Map<String, SnapshotRef> refs) {

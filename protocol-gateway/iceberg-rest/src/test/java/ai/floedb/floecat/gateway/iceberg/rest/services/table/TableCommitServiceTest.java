@@ -91,7 +91,8 @@ class TableCommitServiceTest {
     doNothing().when(sideEffectService).runConnectorSync(any(), any(), any(), any());
     when(tableMetadataImportService.importMetadata(any(), any()))
         .thenReturn(
-            new TableMetadataImportService.ImportedMetadata(null, Map.of(), null, null, List.of()));
+            new TableMetadataImportService.ImportedMetadata(
+                null, Map.of(), null, null, null, List.of()));
   }
 
   @Test

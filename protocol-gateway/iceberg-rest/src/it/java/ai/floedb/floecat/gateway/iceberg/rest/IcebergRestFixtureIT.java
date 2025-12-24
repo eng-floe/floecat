@@ -62,6 +62,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -104,6 +105,10 @@ class IcebergRestFixtureIT {
   private static Map<Long, String> fixtureManifestLists = new HashMap<>();
   private static Integer fixtureSchemaId;
   private static String fixtureSchemaJson;
+  private static Integer fixtureLastColumnId;
+  private static Integer fixtureDefaultSpecId;
+  private static Integer fixtureDefaultSortOrderId;
+  private static TableMetadata fixtureMetadata;
   private static String upstreamHost;
   private static int upstreamPort;
   private static int serviceGrpcPort;
@@ -118,8 +123,11 @@ class IcebergRestFixtureIT {
     fixtureSnapshotIds = parseSnapshotIds(METADATA_V3);
     expectedSnapshotId =
         fixtureSnapshotIds.isEmpty() ? -1L : fixtureSnapshotIds.get(fixtureSnapshotIds.size() - 1);
-    TableMetadata fixtureMetadata = loadFixtureMetadata(METADATA_V3);
+    fixtureMetadata = loadFixtureMetadata(METADATA_V3);
     fixtureSchemaId = fixtureMetadata.currentSchemaId();
+    fixtureLastColumnId = fixtureMetadata.lastColumnId();
+    fixtureDefaultSpecId = fixtureMetadata.defaultSpecId();
+    fixtureDefaultSortOrderId = fixtureMetadata.defaultSortOrderId();
     fixtureSchemaJson = SchemaParser.toJson(fixtureMetadata.schema());
     parseUpstreamTarget();
     connectorIntegrationEnabled = parseConnectorIntegration();
@@ -186,8 +194,20 @@ class IcebergRestFixtureIT {
             newSnapshotId,
             "max-ref-age-ms",
             60000);
+    Map<String, Object> setMainRefUpdate =
+        Map.of(
+            "action",
+            "set-snapshot-ref",
+            "ref-name",
+            "main",
+            "type",
+            "branch",
+            "snapshot-id",
+            newSnapshotId);
     Map<String, Object> commitPayload =
-        Map.of("updates", List.of(addSnapshotUpdate, removeSnapshotUpdate, setRefUpdate));
+        Map.of(
+            "updates",
+            List.of(addSnapshotUpdate, removeSnapshotUpdate, setRefUpdate, setMainRefUpdate));
 
     given()
         .spec(spec)
@@ -763,26 +783,9 @@ class IcebergRestFixtureIT {
 
     Map<String, Object> stageRequest = new LinkedHashMap<>();
     stageRequest.put("name", table);
-    stageRequest.put(
-        "schema",
-        Map.of(
-            "schema-id",
-            1,
-            "last-column-id",
-            1,
-            "type",
-            "struct",
-            "fields",
-            List.of(Map.of("id", 1, "name", "id", "required", true, "type", "int"))));
-    stageRequest.put(
-        "partition-spec",
-        Map.of(
-            "spec-id",
-            0,
-            "fields",
-            List.of(Map.of("name", "id", "field-id", 1, "source-id", 1, "transform", "identity"))));
-    stageRequest.put(
-        "write-order", Map.of("order-id", 0, "fields", List.of(Map.of("source-id", 1))));
+    stageRequest.put("schema", fixtureSchema());
+    stageRequest.put("partition-spec", fixturePartitionSpec());
+    stageRequest.put("write-order", fixtureWriteOrder());
     Map<String, Object> stageProps = fixtureIoProperties();
     stageProps.put("metadata-location", stageMetadataLocation);
     stageRequest.put("properties", stageProps);
@@ -1050,7 +1053,11 @@ class IcebergRestFixtureIT {
   private Map<String, Object> fixtureIoProperties() {
     Map<String, Object> props = new LinkedHashMap<>();
     TestS3Fixtures.fileIoProperties(TEST_S3_ROOT.toAbsolutePath().toString()).forEach(props::put);
-    props.put("format-version", "2");
+    int formatVersion = fixtureMetadata == null ? 2 : fixtureMetadata.formatVersion();
+    props.put("format-version", Integer.toString(formatVersion));
+    if (fixtureMetadata != null && fixtureMetadata.lastUpdatedMillis() > 0) {
+      props.put("last-updated-ms", Long.toString(fixtureMetadata.lastUpdatedMillis()));
+    }
     return props;
   }
 
@@ -1091,32 +1098,96 @@ class IcebergRestFixtureIT {
     String stagedMetadataLocation = TestS3Fixtures.stageTableUri(namespace, table, METADATA_V3);
     Map<String, Object> request = new LinkedHashMap<>();
     request.put("name", table);
-    request.put(
-        "schema",
-        Map.of(
-            "schema-id",
-            1,
-            "last-column-id",
-            1,
-            "type",
-            "struct",
-            "fields",
-            List.of(Map.of("id", 1, "name", "id", "required", true, "type", "int"))));
-    request.put(
-        "partition-spec",
-        Map.of(
-            "spec-id",
-            0,
-            "fields",
-            List.of(Map.of("name", "id", "field-id", 1, "source-id", 1, "transform", "identity"))));
-    request.put(
-        "write-order", Map.of("sort-order-id", 0, "fields", List.of(Map.of("source-id", 1))));
+    request.put("schema", fixtureSchema());
+    request.put("partition-spec", fixturePartitionSpec());
+    request.put("write-order", fixtureWriteOrder());
     Map<String, Object> props = fixtureIoProperties();
     props.put("metadata-location", stagedMetadataLocation);
     request.put("properties", props);
     request.put("location", String.format("s3://%s/%s/%s", STAGE_BUCKET, namespace, table));
     request.put("stage-create", true);
     return request;
+  }
+
+  private Map<String, Object> fixtureSchema() {
+    if (fixtureSchemaJson == null || fixtureSchemaJson.isBlank()) {
+      throw new IllegalStateException("Fixture schema JSON is required");
+    }
+    try {
+      @SuppressWarnings("unchecked")
+      Map<String, Object> schema =
+          MAPPER.readValue(fixtureSchemaJson, Map.class);
+      if (fixtureSchemaId != null) {
+        schema.putIfAbsent("schema-id", fixtureSchemaId);
+      }
+      if (fixtureLastColumnId != null) {
+        schema.putIfAbsent("last-column-id", fixtureLastColumnId);
+      }
+      return schema;
+    } catch (IOException e) {
+      throw new IllegalStateException("Failed to parse fixture schema JSON", e);
+    }
+  }
+
+  private Map<String, Object> fixturePartitionSpec() {
+    if (fixtureMetadata == null) {
+      throw new IllegalStateException("Fixture metadata is required");
+    }
+    int targetId = fixtureDefaultSpecId == null ? fixtureMetadata.defaultSpecId() : fixtureDefaultSpecId;
+    var spec =
+        fixtureMetadata.specs().stream()
+            .filter(s -> s.specId() == targetId)
+            .findFirst()
+            .orElseThrow(() -> new IllegalStateException("Default partition spec not found"));
+    List<Map<String, Object>> fields =
+        spec.fields().stream()
+            .map(
+                field -> {
+                  Map<String, Object> entry = new LinkedHashMap<>();
+                  entry.put("name", field.name());
+                  entry.put("field-id", field.fieldId());
+                  entry.put("source-id", field.sourceId());
+                  entry.put("transform", field.transform().toString());
+                  return entry;
+                })
+            .collect(Collectors.toList());
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("spec-id", spec.specId());
+    payload.put("fields", fields);
+    return payload;
+  }
+
+  private Map<String, Object> fixtureWriteOrder() {
+    if (fixtureMetadata == null) {
+      throw new IllegalStateException("Fixture metadata is required");
+    }
+    int targetId =
+        fixtureDefaultSortOrderId == null
+            ? fixtureMetadata.defaultSortOrderId()
+            : fixtureDefaultSortOrderId;
+    var order =
+        fixtureMetadata.sortOrders().stream()
+            .filter(o -> o.orderId() == targetId)
+            .findFirst()
+            .orElseThrow(() -> new IllegalStateException("Default sort order not found"));
+    List<Map<String, Object>> fields =
+        order.fields().stream()
+            .map(
+                field -> {
+                  Map<String, Object> entry = new LinkedHashMap<>();
+                  entry.put("source-id", field.sourceId());
+                  entry.put("transform", field.transform().toString());
+                  entry.put("direction", field.direction().name().toLowerCase(Locale.ROOT));
+                  entry.put(
+                      "null-order",
+                      field.nullOrder().name().toLowerCase(Locale.ROOT).replace('_', '-'));
+                  return entry;
+                })
+            .collect(Collectors.toList());
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("order-id", order.orderId());
+    payload.put("fields", fields);
+    return payload;
   }
 
   private Connector awaitConnectorForTable(String namespace, String table, Duration timeout) {

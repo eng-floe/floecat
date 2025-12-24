@@ -123,8 +123,6 @@ final class SnapshotMapper {
       }
       if (snapshot.hasUpstreamCreatedAt()) {
         entry.put("timestamp-ms", snapshot.getUpstreamCreatedAt().getSeconds() * 1000L);
-      } else if (snapshot.hasIngestedAt()) {
-        entry.put("timestamp-ms", snapshot.getIngestedAt().getSeconds() * 1000L);
       }
       if (!snapshot.getManifestList().isBlank()) {
         entry.put("manifest-list", snapshot.getManifestList());

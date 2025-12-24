@@ -12,7 +12,6 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSchema;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortField;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortOrder;
 import com.google.protobuf.util.Timestamps;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -64,11 +63,16 @@ public final class TrinoFixtureTestSupport {
     if (metadata.location() != null && !metadata.location().isBlank()) {
       props.put("location", metadata.location());
     }
+    long lastUpdatedMs = metadata.lastUpdatedMillis();
+    if (lastUpdatedMs <= 0) {
+      throw new IllegalStateException("fixture metadata lastUpdatedMillis is required");
+    }
     Table table =
         Table.newBuilder()
             .setDisplayName("trino_test")
             .setResourceId(ResourceId.newBuilder().setId("catalog:core:trino_test").build())
             .setSchemaJson(SchemaParser.toJson(metadata.schema()))
+            .setCreatedAt(Timestamps.fromMillis(lastUpdatedMs))
             .putAllProperties(props)
             .build();
     IcebergMetadata icebergMetadata = toIcebergMetadata(metadata, metadataLocation);
@@ -185,7 +189,6 @@ public final class TrinoFixtureTestSupport {
       }
       long timestampMs = snapshot.timestampMillis();
       builder.setUpstreamCreatedAt(Timestamps.fromMillis(timestampMs));
-      builder.setIngestedAt(Timestamps.fromMillis(Instant.now().toEpochMilli()));
       if (snapshot.summary() != null) {
         builder.putAllSummary(snapshot.summary());
       }

@@ -2,7 +2,6 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestContext;
@@ -15,7 +14,6 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
-import java.util.Map;
 
 @ApplicationScoped
 public class TableLoadService {
@@ -39,7 +37,7 @@ public class TableLoadService {
     List<Snapshot> snapshotList =
         SnapshotLister.fetchSnapshots(
             snapshotClient, tableContext.tableId(), snapshotMode, metadata);
-    String etagValue = metadataLocation(tableRecord, metadata);
+    String etagValue = metadataLocation(metadata);
     if (etagMatches(etagValue, ifNoneMatch)) {
       return Response.status(Response.Status.NOT_MODIFIED).tag(etagValue).build();
     }
@@ -79,20 +77,12 @@ public class TableLoadService {
     return token.equals(etagValue);
   }
 
-  private String metadataLocation(Table table, IcebergMetadata metadata) {
-    var props =
-        table == null || table.getPropertiesMap() == null
-            ? Map.<String, String>of()
-            : table.getPropertiesMap();
-    String propertyLocation = MetadataLocationUtil.metadataLocation(props);
-    if (propertyLocation != null && !propertyLocation.isBlank()) {
-      return propertyLocation;
-    }
+  private String metadataLocation(IcebergMetadata metadata) {
     if (metadata != null
         && metadata.getMetadataLocation() != null
         && !metadata.getMetadataLocation().isBlank()) {
       return metadata.getMetadataLocation();
     }
-    return table != null && table.hasResourceId() ? table.getResourceId().getId() : null;
+    return null;
   }
 }

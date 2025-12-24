@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -11,39 +12,53 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitException;
-import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
-import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
-import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
-import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class StageMaterializationServiceTest {
-  private static final String METADATA_LOCATION =
-      "s3://bucket/db/orders/metadata/00000-abc.metadata.json";
-  private static final String TABLE_LOCATION = "s3://bucket/db/orders";
+  private static final TrinoFixtureTestSupport.Fixture FIXTURE =
+      TrinoFixtureTestSupport.simpleFixture();
+  private static final ObjectMapper JSON = new ObjectMapper();
+  private static final TableMetadataView FIXTURE_METADATA_VIEW =
+      TableMetadataBuilder.fromCatalog(
+          FIXTURE.table().getDisplayName(),
+          FIXTURE.table(),
+          new LinkedHashMap<>(FIXTURE.table().getPropertiesMap()),
+          FIXTURE.metadata(),
+          FIXTURE.snapshots());
+  private static final String METADATA_LOCATION = FIXTURE.metadataLocation();
+  private static final String TABLE_LOCATION = FIXTURE.table().getPropertiesMap().get("location");
+
+  static {
+    if (TABLE_LOCATION == null || TABLE_LOCATION.isBlank()) {
+      throw new IllegalStateException("fixture location is required");
+    }
+  }
+
   private final StageMaterializationService service = new StageMaterializationService();
   private final AccountContext accountContext = mock(AccountContext.class);
-  private final StagedTableService stagedTableService = mock(StagedTableService.class);
   private final StageCommitProcessor stageCommitProcessor = mock(StageCommitProcessor.class);
 
   @BeforeEach
   void setUp() {
     service.accountContext = accountContext;
-    service.stagedTableService = stagedTableService;
     service.stageCommitProcessor = stageCommitProcessor;
   }
 
@@ -95,8 +110,6 @@ class StageMaterializationServiceTest {
   @Test
   void materializeIfTableMissingRequiresStageId() {
     when(accountContext.getAccountId()).thenReturn("account-required");
-    when(stagedTableService.findSingleStage("account-required", "cat", List.of("db"), "orders"))
-        .thenReturn(Optional.empty());
 
     StageCommitException ex =
         assertThrows(
@@ -134,54 +147,6 @@ class StageMaterializationServiceTest {
     } catch (StageCommitException expected) {
       assertEquals("bad stage", expected.getMessage());
     }
-  }
-
-  @Test
-  void materializeIfTableMissingFallsBackWhenSingleStageExists() throws Exception {
-    when(accountContext.getAccountId()).thenReturn("account-2");
-    Table table = Table.newBuilder().build();
-    StageCommitResult stageResult =
-        new StageCommitResult(
-            table, new LoadTableResultDto(null, null, Map.of(), List.<StorageCredentialDto>of()));
-    when(stageCommitProcessor.commitStage(any(), any(), any(), any(), any(), any()))
-        .thenReturn(stageResult);
-    StagedTableEntry entry =
-        new StagedTableEntry(
-            new StagedTableKey("account-2", "cat", List.of("db"), "orders", "only-stage"),
-            ResourceId.newBuilder().setId("cat").build(),
-            ResourceId.newBuilder().setId("cat:db").build(),
-            new TableRequests.Create(
-                "orders",
-                null,
-                null,
-                TABLE_LOCATION,
-                Map.of("metadata-location", METADATA_LOCATION, "format-version", "2"),
-                null,
-                null,
-                false),
-            TableSpec.getDefaultInstance(),
-            List.of(),
-            StageState.STAGED,
-            null,
-            null,
-            null);
-    when(stagedTableService.findSingleStage("account-2", "cat", List.of("db"), "orders"))
-        .thenReturn(Optional.of(entry));
-
-    StageMaterializationService.StageMaterializationResult result =
-        service.materializeIfTableMissing(
-            Status.NOT_FOUND.asRuntimeException(),
-            "pref",
-            "cat",
-            List.of("db"),
-            "orders",
-            new TableRequests.Commit(null, null, null, null, null, null, null),
-            null);
-
-    assertNotNull(result);
-    assertEquals("only-stage", result.stageId());
-    verify(stageCommitProcessor)
-        .commitStage("pref", "cat", "account-2", List.of("db"), "orders", "only-stage");
   }
 
   @Test
@@ -226,53 +191,6 @@ class StageMaterializationServiceTest {
   }
 
   @Test
-  void materializeExplicitStageUsesSingleStageFallback() throws Exception {
-    when(accountContext.getAccountId()).thenReturn("account-fallback");
-    StagedTableEntry entry =
-        new StagedTableEntry(
-            new StagedTableKey("account-fallback", "cat", List.of("db"), "orders", "only-stage"),
-            ResourceId.newBuilder().setId("cat").build(),
-            ResourceId.newBuilder().setId("cat:db").build(),
-            new TableRequests.Create(
-                "orders",
-                null,
-                null,
-                TABLE_LOCATION,
-                Map.of("metadata-location", METADATA_LOCATION, "format-version", "2"),
-                null,
-                null,
-                false),
-            TableSpec.getDefaultInstance(),
-            List.of(),
-            StageState.STAGED,
-            null,
-            null,
-            null);
-    when(stagedTableService.findSingleStage("account-fallback", "cat", List.of("db"), "orders"))
-        .thenReturn(Optional.of(entry));
-    Table table = Table.newBuilder().build();
-    StageCommitResult stageResult =
-        new StageCommitResult(
-            table, new LoadTableResultDto(null, null, Map.of(), List.<StorageCredentialDto>of()));
-    when(stageCommitProcessor.commitStage(any(), any(), any(), any(), any(), any()))
-        .thenReturn(stageResult);
-
-    StageMaterializationService.StageMaterializationResult result =
-        service.materializeExplicitStage(
-            "pref",
-            "cat",
-            List.of("db"),
-            "orders",
-            new TableRequests.Commit(null, null, null, null, null, null, null),
-            null);
-
-    assertNotNull(result);
-    assertEquals("only-stage", result.stageId());
-    verify(stageCommitProcessor)
-        .commitStage("pref", "cat", "account-fallback", List.of("db"), "orders", "only-stage");
-  }
-
-  @Test
   void materializeTransactionStageUsesProvidedStageId() throws Exception {
     when(accountContext.getAccountId()).thenReturn("account-3");
     Table table =
@@ -293,43 +211,102 @@ class StageMaterializationServiceTest {
   }
 
   @Test
-  void materializeTransactionStageFallsBackToSingleStage() throws Exception {
+  void materializeTransactionStageRequiresStageId() {
     when(accountContext.getAccountId()).thenReturn("account-4");
-    StagedTableEntry entry =
-        new StagedTableEntry(
-            new StagedTableKey("account-4", "cat", List.of("db"), "orders", "txn-only-stage"),
-            ResourceId.newBuilder().setId("cat").build(),
-            ResourceId.newBuilder().setId("cat:db").build(),
-            new TableRequests.Create(
-                "orders",
-                null,
-                null,
-                TABLE_LOCATION,
-                Map.of("metadata-location", METADATA_LOCATION, "format-version", "2"),
-                null,
-                null,
-                false),
-            TableSpec.getDefaultInstance(),
-            List.of(),
-            StageState.STAGED,
-            null,
-            null,
-            null);
-    when(stagedTableService.findSingleStage("account-4", "cat", List.of("db"), "orders"))
-        .thenReturn(Optional.of(entry));
-    Table table = Table.newBuilder().build();
-    StageCommitResult stageResult =
-        new StageCommitResult(
-            table, new LoadTableResultDto(null, null, Map.of(), List.<StorageCredentialDto>of()));
-    when(stageCommitProcessor.commitStage(any(), any(), any(), any(), any(), any()))
-        .thenReturn(stageResult);
+    StageCommitException ex =
+        assertThrows(
+            StageCommitException.class,
+            () ->
+                service.materializeTransactionStage("pref", "cat", List.of("db"), "orders", null));
 
-    StageMaterializationService.StageMaterializationResult result =
-        service.materializeTransactionStage("pref", "cat", List.of("db"), "orders", null);
+    assertTrue(ex.getMessage().contains("stage-id is required"));
+    verify(stageCommitProcessor, never()).commitStage(any(), any(), any(), any(), any(), any());
+  }
 
-    assertNotNull(result);
-    assertEquals("txn-only-stage", result.stageId());
-    verify(stageCommitProcessor)
-        .commitStage("pref", "cat", "account-4", List.of("db"), "orders", "txn-only-stage");
+  private static Map<String, String> fixtureProperties() {
+    return Map.of(
+        "metadata-location", METADATA_LOCATION,
+        "format-version", Integer.toString(FIXTURE.metadata().getFormatVersion()),
+        "last-updated-ms", Long.toString(FIXTURE.metadata().getLastUpdatedMs()));
+  }
+
+  private static JsonNode fixtureSchemaNode() {
+    Map<String, Object> schema =
+        selectById(
+            FIXTURE_METADATA_VIEW.schemas(),
+            "schema-id",
+            FIXTURE_METADATA_VIEW.currentSchemaId(),
+            "fixture schema");
+    Integer schemaId = FIXTURE_METADATA_VIEW.currentSchemaId();
+    if (!schema.containsKey("schema-id")) {
+      if (schemaId == null) {
+        throw new IllegalStateException("fixture schema requires schema-id");
+      }
+      schema.put("schema-id", schemaId);
+    }
+    Integer lastColumnId = FIXTURE_METADATA_VIEW.lastColumnId();
+    if (!schema.containsKey("last-column-id")) {
+      if (lastColumnId == null) {
+        throw new IllegalStateException("fixture schema requires last-column-id");
+      }
+      schema.put("last-column-id", lastColumnId);
+    }
+    return JSON.valueToTree(schema);
+  }
+
+  private static JsonNode fixturePartitionSpec() {
+    Map<String, Object> spec =
+        selectById(
+            FIXTURE_METADATA_VIEW.partitionSpecs(),
+            "spec-id",
+            FIXTURE_METADATA_VIEW.defaultSpecId(),
+            "fixture partition spec");
+    return JSON.valueToTree(spec);
+  }
+
+  private static JsonNode fixtureWriteOrder() {
+    Map<String, Object> order =
+        selectById(
+            FIXTURE_METADATA_VIEW.sortOrders(),
+            "order-id",
+            FIXTURE_METADATA_VIEW.defaultSortOrderId(),
+            "fixture sort order");
+    return JSON.valueToTree(order);
+  }
+
+  private static Map<String, Object> selectById(
+      List<Map<String, Object>> candidates, String key, Integer targetId, String label) {
+    if (candidates == null || candidates.isEmpty()) {
+      throw new IllegalStateException(label + " list is empty");
+    }
+    if (targetId != null) {
+      for (Map<String, Object> candidate : candidates) {
+        if (candidate == null) {
+          continue;
+        }
+        Integer value = asInteger(candidate.get(key));
+        if (value != null && value.equals(targetId)) {
+          return candidate;
+        }
+      }
+    }
+    throw new IllegalStateException(label + " not found for " + key + "=" + targetId);
+  }
+
+  private static Integer asInteger(Object value) {
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof Number number) {
+      return number.intValue();
+    }
+    if (value instanceof String text) {
+      try {
+        return Integer.parseInt(text);
+      } catch (NumberFormatException ignored) {
+        return null;
+      }
+    }
+    return null;
   }
 }

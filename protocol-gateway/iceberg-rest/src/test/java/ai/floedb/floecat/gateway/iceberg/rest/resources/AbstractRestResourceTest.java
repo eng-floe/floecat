@@ -27,7 +27,9 @@ import ai.floedb.floecat.connector.rpc.SyncCaptureResponse;
 import ai.floedb.floecat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
+import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
@@ -45,6 +47,8 @@ import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc.QueryServiceBlockingStub;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.test.InjectMock;
@@ -63,6 +67,14 @@ import org.mockito.Mockito;
 public abstract class AbstractRestResourceTest {
   private static final TrinoFixtureTestSupport.Fixture FIXTURE =
       TrinoFixtureTestSupport.simpleFixture();
+  private static final ObjectMapper JSON = new ObjectMapper();
+  private static final TableMetadataView FIXTURE_METADATA_VIEW =
+      TableMetadataBuilder.fromCatalog(
+          FIXTURE.table().getDisplayName(),
+          FIXTURE.table(),
+          new LinkedHashMap<>(FIXTURE.table().getPropertiesMap()),
+          FIXTURE.metadata(),
+          FIXTURE.snapshots());
 
   @InjectMock protected GrpcWithHeaders grpc;
   @InjectMock protected GrpcClients clients;
@@ -167,6 +179,7 @@ public abstract class AbstractRestResourceTest {
                   FIXTURE.table().getSchemaJson(),
                   props,
                   tableLocation,
+                  FIXTURE.metadata(),
                   currentSnapshot,
                   List.copyOf(snapshots));
             });
@@ -282,51 +295,122 @@ public abstract class AbstractRestResourceTest {
   }
 
   protected String stageCreateRequest(String tableName) {
-    return """
-    {
-      "name": "%s",
-      "schema": {
-        "schema-id": 1,
-        "last-column-id": 1,
-        "type": "struct",
-        "fields": [
-          {
-            "id": 1,
-            "name": "id",
-            "required": true,
-            "type": "int"
-          }
-        ]
-      },
-      "partition-spec": {
-        "spec-id": 0,
-        "fields": [
-          {
-            "name": "id",
-            "field-id": 1,
-            "source-id": 1,
-            "transform": "identity"
-          }
-        ]
-      },
-      "write-order": {
-        "sort-order-id": 0,
-        "fields": [
-          {
-            "source-id": 1
-          }
-        ]
-      },
-      "properties": {
-        "metadata-location": "s3://yb-iceberg-tpcds/%s/metadata/00000-abc.metadata.json",
-        "format-version": "2",
-        "io-impl": "org.apache.iceberg.inmemory.InMemoryFileIO"
-      },
-      "location": "s3://yb-iceberg-tpcds/%s",
-      "stage-create": true
+    return createTableRequest(tableName, true);
+  }
+
+  protected String createTableRequest(String tableName) {
+    return createTableRequest(tableName, false);
+  }
+
+  private String createTableRequest(String tableName, boolean stageCreate) {
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("name", tableName);
+    payload.put("schema", fixtureSchema());
+    payload.put("partition-spec", fixturePartitionSpec());
+    payload.put("write-order", fixtureSortOrder());
+    payload.put("location", fixtureLocation());
+    Map<String, String> properties = new LinkedHashMap<>();
+    properties.put("metadata-location", FIXTURE.metadataLocation());
+    properties.put("format-version", Integer.toString(FIXTURE.metadata().getFormatVersion()));
+    properties.put("last-updated-ms", Long.toString(FIXTURE.metadata().getLastUpdatedMs()));
+    properties.put("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO");
+    payload.put("properties", properties);
+    if (stageCreate) {
+      payload.put("stage-create", true);
     }
-    """
-        .formatted(tableName, tableName, tableName);
+    try {
+      return JSON.writeValueAsString(payload);
+    } catch (JsonProcessingException e) {
+      throw new IllegalStateException("Failed to build create request payload", e);
+    }
+  }
+
+  private static String fixtureLocation() {
+    String location = FIXTURE.table().getPropertiesMap().get("location");
+    if (location == null || location.isBlank()) {
+      throw new IllegalStateException("fixture location is required");
+    }
+    return location;
+  }
+
+  private static Map<String, Object> fixtureSchema() {
+    Map<String, Object> schema =
+        selectById(
+            FIXTURE_METADATA_VIEW.schemas(),
+            "schema-id",
+            FIXTURE_METADATA_VIEW.currentSchemaId(),
+            "fixture schema");
+    Integer schemaId = FIXTURE_METADATA_VIEW.currentSchemaId();
+    if (!schema.containsKey("schema-id")) {
+      if (schemaId == null) {
+        throw new IllegalStateException("fixture schema requires schema-id");
+      }
+      schema.put("schema-id", schemaId);
+    }
+    Integer lastColumnId = FIXTURE_METADATA_VIEW.lastColumnId();
+    if (!schema.containsKey("last-column-id")) {
+      if (lastColumnId == null) {
+        throw new IllegalStateException("fixture schema requires last-column-id");
+      }
+      schema.put("last-column-id", lastColumnId);
+    }
+    return new LinkedHashMap<>(schema);
+  }
+
+  private static Map<String, Object> fixturePartitionSpec() {
+    Map<String, Object> spec =
+        selectById(
+            FIXTURE_METADATA_VIEW.partitionSpecs(),
+            "spec-id",
+            FIXTURE_METADATA_VIEW.defaultSpecId(),
+            "fixture partition spec");
+    return new LinkedHashMap<>(spec);
+  }
+
+  private static Map<String, Object> fixtureSortOrder() {
+    Map<String, Object> order =
+        selectById(
+            FIXTURE_METADATA_VIEW.sortOrders(),
+            "order-id",
+            FIXTURE_METADATA_VIEW.defaultSortOrderId(),
+            "fixture sort order");
+    return new LinkedHashMap<>(order);
+  }
+
+  private static Map<String, Object> selectById(
+      List<Map<String, Object>> candidates, String key, Integer targetId, String label) {
+    if (candidates == null || candidates.isEmpty()) {
+      throw new IllegalStateException(label + " list is empty");
+    }
+    if (targetId != null) {
+      for (Map<String, Object> candidate : candidates) {
+        if (candidate == null) {
+          continue;
+        }
+        Integer value = asInteger(candidate.get(key));
+        if (value != null && value.equals(targetId)) {
+          return candidate;
+        }
+      }
+    }
+    throw new IllegalStateException(label + " not found for " + key + "=" + targetId);
+  }
+
+  private static Integer asInteger(Object value) {
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof Number number) {
+      return number.intValue();
+    }
+    if (value instanceof String text) {
+      try {
+        return Integer.parseInt(text);
+      } catch (NumberFormatException ignored) {
+        return null;
+      }
+    }
+    return null;
   }
 
   protected static IcebergMetadata metadataFromSpec(SnapshotSpec spec) {

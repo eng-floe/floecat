@@ -18,8 +18,6 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.snaps
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.statistics;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asInteger;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asLong;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asObjectMap;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonNull;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.maybeInt;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -27,17 +25,12 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import java.time.Instant;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 public final class TableMetadataBuilder {
   private TableMetadataBuilder() {}
@@ -64,6 +57,12 @@ public final class TableMetadataBuilder {
       IcebergMetadata metadata,
       List<Snapshot> snapshots,
       String metadataLocation) {
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      metadataLocation = MetadataLocationUtil.metadataLocation(props);
+      if (metadataLocation == null || metadataLocation.isBlank()) {
+        throw new IllegalArgumentException("metadata-location is required");
+      }
+    }
     String location = table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
     location = resolveTableLocation(location, metadataLocation);
     Long lastUpdatedMs =
@@ -123,60 +122,8 @@ public final class TableMetadataBuilder {
                     Comparator.comparingLong(Snapshot::getSequenceNumber)
                         .thenComparingLong(Snapshot::getSnapshotId))
                 .toList();
-    Snapshot latestSnapshot = null;
-    if (orderedSnapshots != null && !orderedSnapshots.isEmpty()) {
-      latestSnapshot =
-          orderedSnapshots.stream()
-              .max(
-                  Comparator.comparingLong(Snapshot::getSequenceNumber)
-                      .thenComparingLong(Snapshot::getSnapshotId))
-              .orElse(null);
-      if (latestSnapshot != null) {
-        long latestSequence = latestSnapshot.getSequenceNumber();
-        if (lastSequenceNumber == null || latestSequence > lastSequenceNumber) {
-          lastSequenceNumber = latestSequence;
-        }
-      }
-    }
     Map<String, Object> refs = refs(metadata);
     refs = mergePropertyRefs(props, refs);
-    if (metadata != null && !refs.isEmpty()) {
-      Set<Long> snapshotIds = new HashSet<>();
-      if (orderedSnapshots != null) {
-        snapshotIds.addAll(
-            orderedSnapshots.stream().map(Snapshot::getSnapshotId).collect(Collectors.toSet()));
-      }
-      if (!snapshotIds.isEmpty()) {
-        refs.entrySet()
-            .removeIf(
-                entry -> {
-                  Map<String, Object> refMap = asObjectMap(entry.getValue());
-                  if (refMap == null) {
-                    return true;
-                  }
-                  Long refSnapshot = asLong(refMap.get("snapshot-id"));
-                  return refSnapshot == null || !snapshotIds.contains(refSnapshot);
-                });
-      }
-      Map<String, Object> mainRef = asObjectMap(refs.get("main"));
-      if (mainRef != null) {
-        Long mainSnapshot = asLong(mainRef.get("snapshot-id"));
-        if (mainSnapshot != null && mainSnapshot > 0) {
-          currentSnapshotId = mainSnapshot;
-        }
-      }
-    }
-    if (latestSnapshot != null) {
-      long latestSnapshotId = latestSnapshot.getSnapshotId();
-      if (latestSnapshotId > 0 && !Objects.equals(currentSnapshotId, latestSnapshotId)) {
-        currentSnapshotId = latestSnapshotId;
-        refs = ensureMainRef(refs, latestSnapshotId);
-      }
-    } else if ((currentSnapshotId == null || currentSnapshotId <= 0)
-        && snapshots != null
-        && !snapshots.isEmpty()) {
-      currentSnapshotId = snapshots.get(0).getSnapshotId();
-    }
     syncProperty(props, "table-uuid", tableUuid);
     MetadataLocationUtil.setMetadataLocation(props, metadataLocation);
     syncProperty(props, "current-snapshot-id", currentSnapshotId);
@@ -239,10 +186,19 @@ public final class TableMetadataBuilder {
     if (location == null || location.isBlank()) {
       throw new IllegalArgumentException("location is required");
     }
-    long lastUpdatedMs =
-        table.hasCreatedAt()
-            ? table.getCreatedAt().getSeconds() * 1000 + table.getCreatedAt().getNanos() / 1_000_000
-            : Instant.now().toEpochMilli();
+    long lastUpdatedMs;
+    if (table.hasCreatedAt()) {
+      lastUpdatedMs =
+          table.getCreatedAt().getSeconds() * 1000 + table.getCreatedAt().getNanos() / 1_000_000;
+    } else {
+      Long updatedMs =
+          request.properties() == null ? null : asLong(request.properties().get("last-updated-ms"));
+      if (updatedMs == null || updatedMs <= 0) {
+        throw new IllegalArgumentException(
+            "last-updated-ms is required when table createdAt is missing");
+      }
+      lastUpdatedMs = updatedMs;
+    }
     Map<String, Object> schema = schemaFromRequest(request);
     Integer schemaId = asInteger(schema.get("schema-id"));
     Integer lastColumnId = asInteger(schema.get("last-column-id"));
@@ -252,16 +208,13 @@ public final class TableMetadataBuilder {
     Map<String, Object> partitionSpec = partitionSpecFromRequest(request);
     Integer defaultSpecId = asInteger(partitionSpec.get("spec-id"));
     if (defaultSpecId == null) {
-      defaultSpecId = 0;
-      partitionSpec.put("spec-id", defaultSpecId);
+      throw new IllegalArgumentException("partition-spec requires spec-id");
     }
     Integer lastPartitionId = maxPartitionFieldId(partitionSpec);
     Map<String, Object> sortOrder = sortOrderFromRequest(request);
-    Integer defaultSortOrderId =
-        asInteger(firstNonNull(sortOrder.get("sort-order-id"), sortOrder.get("order-id")));
+    Integer defaultSortOrderId = asInteger(sortOrder.get("order-id"));
     if (defaultSortOrderId == null) {
-      defaultSortOrderId = 0;
-      sortOrder.put("sort-order-id", defaultSortOrderId);
+      throw new IllegalArgumentException("write-order requires sort-order-id");
     }
     Integer formatVersion = maybeInt(props.get("format-version"));
     if (formatVersion == null || formatVersion < 1) {
@@ -272,8 +225,8 @@ public final class TableMetadataBuilder {
     props.putIfAbsent("default-spec-id", defaultSpecId.toString());
     props.putIfAbsent("last-partition-id", lastPartitionId.toString());
     props.putIfAbsent("default-sort-order-id", defaultSortOrderId.toString());
-    props.putIfAbsent("current-snapshot-id", "0");
-    props.putIfAbsent("last-sequence-number", "0");
+    long lastSequenceNumber = 0L;
+    props.putIfAbsent("last-sequence-number", Long.toString(lastSequenceNumber));
     return new TableMetadataView(
         formatVersion,
         table.hasResourceId() ? table.getResourceId().getId() : tableName,
@@ -287,7 +240,7 @@ public final class TableMetadataBuilder {
         lastPartitionId,
         defaultSortOrderId,
         null,
-        0L,
+        lastSequenceNumber,
         List.of(schema),
         List.of(partitionSpec),
         List.of(sortOrder),
@@ -348,18 +301,6 @@ public final class TableMetadataBuilder {
           }
         });
     return merged;
-  }
-
-  private static Map<String, Object> ensureMainRef(Map<String, Object> refs, long snapshotId) {
-    Map<String, Object> updated =
-        (refs == null || refs.isEmpty()) ? new LinkedHashMap<>() : new LinkedHashMap<>(refs);
-    Map<String, Object> mainRef = asObjectMap(updated.get("main"));
-    Map<String, Object> newMain =
-        mainRef == null ? new LinkedHashMap<>() : new LinkedHashMap<>(mainRef);
-    newMain.put("snapshot-id", snapshotId);
-    newMain.putIfAbsent("type", "branch");
-    updated.put("main", newMain);
-    return updated;
   }
 
   private static void syncProperty(Map<String, String> props, String key, Object value) {

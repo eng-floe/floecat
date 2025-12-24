@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 class TableMetadataBuilderTest {
 
   @Test
-  void latestSnapshotBecomesCurrentReference() {
+  void currentSnapshotUsesMetadataReference() {
     TrinoFixtureTestSupport.Fixture fixture = TrinoFixtureTestSupport.simpleFixture();
     Table table =
         fixture.table().toBuilder()
@@ -26,16 +26,9 @@ class TableMetadataBuilderTest {
     Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
     List<Snapshot> snapshots = fixture.snapshots();
     long earliest = snapshots.stream().mapToLong(Snapshot::getSequenceNumber).min().orElse(0L);
-    long latest = snapshots.stream().mapToLong(Snapshot::getSequenceNumber).max().orElse(0L);
     long earliestSnapshotId =
         snapshots.stream()
             .filter(s -> s.getSequenceNumber() == earliest)
-            .findFirst()
-            .map(Snapshot::getSnapshotId)
-            .orElse(0L);
-    long latestSnapshotId =
-        snapshots.stream()
-            .filter(s -> s.getSequenceNumber() == latest)
             .findFirst()
             .map(Snapshot::getSnapshotId)
             .orElse(0L);
@@ -51,11 +44,11 @@ class TableMetadataBuilderTest {
     TableMetadataView view =
         TableMetadataBuilder.fromCatalog("orders", table, props, metadata, snapshots);
 
-    assertEquals(latestSnapshotId, view.currentSnapshotId());
-    assertEquals(Long.toString(latestSnapshotId), view.properties().get("current-snapshot-id"));
+    assertEquals(earliestSnapshotId, view.currentSnapshotId());
+    assertEquals(Long.toString(earliestSnapshotId), view.properties().get("current-snapshot-id"));
     @SuppressWarnings("unchecked")
     Map<String, Object> mainRef = (Map<String, Object>) view.refs().get("main");
     assertNotNull(mainRef);
-    assertEquals(latestSnapshotId, mainRef.get("snapshot-id"));
+    assertEquals(earliestSnapshotId, mainRef.get("snapshot-id"));
   }
 }

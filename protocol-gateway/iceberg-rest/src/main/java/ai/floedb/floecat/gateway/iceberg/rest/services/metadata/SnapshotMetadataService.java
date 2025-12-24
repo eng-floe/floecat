@@ -130,6 +130,7 @@ public class SnapshotMetadataService {
                 tableName,
                 existing,
                 snapshot,
+                null,
                 idempotencyKey);
         if (error != null) {
           return error;
@@ -343,6 +344,7 @@ public class SnapshotMetadataService {
     if (tableId == null || importedMetadata == null) {
       return null;
     }
+    IcebergMetadata importedIcebergMetadata = importedMetadata.icebergMetadata();
     List<ImportedSnapshot> importedSnapshots = importedMetadata.snapshots();
     String schemaJson = importedMetadata.schemaJson();
     if (importedSnapshots != null && !importedSnapshots.isEmpty()) {
@@ -356,6 +358,7 @@ public class SnapshotMetadataService {
                 tableSupplier,
                 snapshot,
                 schemaJson,
+                importedIcebergMetadata,
                 idempotencyKey);
         if (err != null) {
           return err;
@@ -373,6 +376,7 @@ public class SnapshotMetadataService {
                 tableSupplier,
                 snapshot,
                 schemaJson,
+                importedIcebergMetadata,
                 idempotencyKey);
         if (err != null) {
           return err;
@@ -401,6 +405,7 @@ public class SnapshotMetadataService {
       return;
     }
     Set<Long> expectedIds = new LinkedHashSet<>();
+    IcebergMetadata importedIcebergMetadata = importedMetadata.icebergMetadata();
     List<ImportedSnapshot> importedSnapshots = importedMetadata.snapshots();
     String schemaJson = importedMetadata.schemaJson();
     if (importedSnapshots != null && !importedSnapshots.isEmpty()) {
@@ -414,6 +419,7 @@ public class SnapshotMetadataService {
                 tableSupplier,
                 snapshot,
                 schemaJson,
+                importedIcebergMetadata,
                 idempotencyKey);
         if (err == null && snapshot != null && snapshot.snapshotId() != null) {
           expectedIds.add(snapshot.snapshotId());
@@ -430,6 +436,7 @@ public class SnapshotMetadataService {
               tableSupplier,
               snapshot,
               schemaJson,
+              importedIcebergMetadata,
               idempotencyKey);
       if (err == null && snapshot != null && snapshot.snapshotId() != null) {
         expectedIds.add(snapshot.snapshotId());
@@ -465,6 +472,7 @@ public class SnapshotMetadataService {
       Supplier<Table> tableSupplier,
       ImportedSnapshot snapshot,
       String schemaJson,
+      IcebergMetadata importedIcebergMetadata,
       String idempotencyKey) {
     Long snapshotId = snapshot == null ? null : snapshot.snapshotId();
     if (snapshotId == null || snapshotId <= 0) {
@@ -479,7 +487,14 @@ public class SnapshotMetadataService {
     }
     Map<String, Object> snapshotMap = importedSnapshotMap(snapshot, schemaJson);
     return createSnapshotPlaceholder(
-        tableSupport, tableId, namespacePath, tableName, table, snapshotMap, idempotencyKey);
+        tableSupport,
+        tableId,
+        namespacePath,
+        tableName,
+        table,
+        snapshotMap,
+        importedIcebergMetadata,
+        idempotencyKey);
   }
 
   private boolean snapshotExists(ResourceId tableId, Long snapshotId) {
@@ -506,6 +521,7 @@ public class SnapshotMetadataService {
       String tableName,
       Table existing,
       Map<String, Object> snapshot,
+      IcebergMetadata importedIcebergMetadata,
       String idempotencyKey) {
     Long snapshotId = asLong(snapshot.get("snapshot-id"));
     if (snapshotId == null) {
@@ -548,7 +564,10 @@ public class SnapshotMetadataService {
       return validationError("add-snapshot requires schema-json");
     }
     spec.setSchemaJson(schemaJson);
-    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(existing);
+    IcebergMetadata metadata =
+        importedIcebergMetadata != null
+            ? importedIcebergMetadata
+            : tableSupport.loadCurrentMetadata(existing);
     IcebergMetadata snapshotIceberg =
         snapshotIcebergMetadata(metadata, existing, snapshotId, sequenceNumber);
     if (snapshotIceberg != null) {

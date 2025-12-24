@@ -56,6 +56,7 @@ import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.floecat.query.rpc.GetQueryResponse;
 import ai.floedb.floecat.query.rpc.Operator;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
+import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.test.junit.QuarkusTest;
@@ -77,6 +78,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         .setResourceId(tableId)
         .setCatalogId(ResourceId.newBuilder().setId("cat"))
         .setNamespaceId(nsId)
+        .setCreatedAt(Timestamps.fromMillis(FIXTURE.metadata().getLastUpdatedMs()))
         .putAllProperties(FIXTURE.table().getPropertiesMap());
   }
 
@@ -447,27 +449,7 @@ class TableResourceTest extends AbstractRestResourceTest {
             .build();
     when(tableStub.createTable(any()))
         .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
-    String fixtureLocation =
-        FIXTURE.table().getPropertiesMap().getOrDefault("location", "s3://yb-iceberg-tpcds/orders");
-    String requestBody =
-        """
-        {
-          "name":"orders",
-          "location":"%s",
-          "schema":{
-            "schema-id":1,
-            "last-column-id":1,
-            "type":"struct",
-            "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
-          },
-          "properties":{
-            "metadata-location":"%s",
-            "format-version":"2",
-            "io-impl":"org.apache.iceberg.inmemory.InMemoryFileIO"
-          }
-        }
-        """
-            .formatted(fixtureLocation, FIXTURE.metadataLocation());
+    String requestBody = createTableRequest("orders");
 
     given()
         .body(requestBody)
@@ -621,29 +603,8 @@ class TableResourceTest extends AbstractRestResourceTest {
             .build();
     when(connectorsStub.createConnector(any()))
         .thenReturn(CreateConnectorResponse.newBuilder().setConnector(connector).build());
-    String fixtureLocation =
-        FIXTURE.table().getPropertiesMap().getOrDefault("location", "s3://yb-iceberg-tpcds/orders");
-
     given()
-        .body(
-            """
-            {
-              "name":"orders",
-              "location":"%s",
-              "schema":{
-                "schema-id":1,
-                "last-column-id":1,
-                "type":"struct",
-                "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
-              },
-              "properties":{
-                "metadata-location":"%s",
-                "format-version":"2",
-                "io-impl":"org.apache.iceberg.inmemory.InMemoryFileIO"
-              }
-            }
-            """
-                .formatted(fixtureLocation, FIXTURE.metadataLocation()))
+        .body(createTableRequest("orders"))
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables")

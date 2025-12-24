@@ -56,6 +56,12 @@ public class TableCreateService {
     if (!hasSchema(request)) {
       return IcebergErrorResponses.validation("schema is required");
     }
+    if (!hasPartitionSpec(request)) {
+      return IcebergErrorResponses.validation("partition-spec is required");
+    }
+    if (!hasWriteOrder(request)) {
+      return IcebergErrorResponses.validation("write-order is required");
+    }
     if (request.location() == null || request.location().isBlank()) {
       return IcebergErrorResponses.validation("location is required");
     }
@@ -139,6 +145,14 @@ public class TableCreateService {
       builder.tag(etagValue);
     }
     return builder.build();
+  }
+
+  private boolean hasPartitionSpec(TableRequests.Create request) {
+    return request.partitionSpec() != null && !request.partitionSpec().isNull();
+  }
+
+  private boolean hasWriteOrder(TableRequests.Create request) {
+    return request.writeOrder() != null && !request.writeOrder().isNull();
   }
 
   private Response handleStageCreate(

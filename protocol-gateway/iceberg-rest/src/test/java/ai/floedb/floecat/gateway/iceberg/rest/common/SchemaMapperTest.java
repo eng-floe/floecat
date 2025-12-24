@@ -1,6 +1,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.common;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -20,8 +21,24 @@ class SchemaMapperTest {
                 List.of(
                     new LinkedHashMap<>(
                         Map.of(
-                            "source-id", 1, "transform", "identity", "null-order", "NULLS_LAST")),
-                    new LinkedHashMap<>(Map.of("source-id", 2)))));
+                            "source-id",
+                            1,
+                            "transform",
+                            "identity",
+                            "direction",
+                            "desc",
+                            "null-order",
+                            "NULLS_LAST")),
+                    new LinkedHashMap<>(
+                        Map.of(
+                            "source-id",
+                            2,
+                            "transform",
+                            "identity",
+                            "direction",
+                            "asc",
+                            "null-order",
+                            "nulls_first")))));
 
     SchemaMapper.normalizeSortOrder(order);
 
@@ -32,18 +49,25 @@ class SchemaMapperTest {
   }
 
   @Test
-  void normalizeSortOrderAssignsPositiveOrderIdWhenSorted() {
+  void normalizeSortOrderRejectsMissingOrderId() {
     Map<String, Object> order =
         new LinkedHashMap<>(
             Map.of(
                 "sort-order-id",
                 0,
                 "fields",
-                List.of(new LinkedHashMap<>(Map.of("source-id", 3)))));
+                List.of(
+                    new LinkedHashMap<>(
+                        Map.of(
+                            "source-id",
+                            3,
+                            "transform",
+                            "identity",
+                            "direction",
+                            "asc",
+                            "null-order",
+                            "nulls-first")))));
 
-    SchemaMapper.normalizeSortOrder(order);
-
-    assertEquals(1, order.get("sort-order-id"));
-    assertEquals(1, order.get("order-id"));
+    assertThrows(IllegalArgumentException.class, () -> SchemaMapper.normalizeSortOrder(order));
   }
 }
