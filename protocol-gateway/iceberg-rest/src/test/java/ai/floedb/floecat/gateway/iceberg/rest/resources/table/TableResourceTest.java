@@ -519,6 +519,81 @@ class TableResourceTest extends AbstractRestResourceTest {
   }
 
   @Test
+  void createTableAcceptsSpecMinimalRequest() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    Table created =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(ResourceId.newBuilder().setId("cat"))
+            .setNamespaceId(nsId)
+            .setDisplayName("orders")
+            .build();
+    when(tableStub.createTable(any()))
+        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+
+    given()
+        .body(
+            """
+            {
+              "name":"orders",
+              "schema":{
+                "schema-id":1,
+                "last-column-id":1,
+                "type":"struct",
+                "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
+              }
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(200)
+        .body("metadata.'format-version'", equalTo(1))
+        .body("metadata.'partition-specs'[0].'spec-id'", equalTo(0))
+        .body("metadata.'sort-orders'[0].'order-id'", equalTo(0));
+  }
+
+  @Test
+  void createTableUsesRequestMetadataEvenWhenSnapshotMetadataDiffers() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    Table created = baseTable(tableId, nsId).setDisplayName("orders").build();
+    when(tableStub.createTable(any()))
+        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+
+    IcebergMetadata differentMetadata =
+        FIXTURE.metadata().toBuilder()
+            .setFormatVersion(1)
+            .setMetadataLocation("s3://bucket/other/metadata/00000-other.metadata.json")
+            .build();
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(differentMetadata.getCurrentSnapshotId())
+            .putFormatMetadata("iceberg", differentMetadata.toByteString())
+            .build();
+    when(snapshotStub.getSnapshot(any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build());
+
+    given()
+        .body(createTableRequest("orders"))
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(200)
+        .body("metadata.'format-version'", equalTo(FIXTURE.metadata().getFormatVersion()))
+        .body("'metadata-location'", equalTo(FIXTURE.metadataLocation()));
+  }
+
+  @Test
   void deleteTableHonorsPurgeRequestedFlag() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
@@ -691,6 +766,10 @@ class TableResourceTest extends AbstractRestResourceTest {
               "report-type":"scan",
               "table-name":"orders",
               "snapshot-id":5,
+              "filter":{"type":"always-true"},
+              "schema-id":1,
+              "projected-field-ids":[1],
+              "projected-field-names":["id"],
               "metrics":{
                 "total-data-manifests":{"unit":"count","value":1}
               }
@@ -929,5 +1008,48 @@ class TableResourceTest extends AbstractRestResourceTest {
         .body("'storage-credentials'[0].config.type", equalTo("s3"))
         .body("'storage-credentials'[0].config.'s3.access-key-id'", equalTo("test-key"))
         .body("'storage-credentials'[0].config.'s3.secret-access-key'", equalTo("test-secret"));
+  }
+
+  @Test
+  void metricsMissingRequiredFieldsReturns400() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+
+    given()
+        .body("{\"report-type\":\"scan\"}")
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables/orders/metrics")
+        .then()
+        .statusCode(400)
+        .body("error.type", equalTo("ValidationException"));
+  }
+
+  @Test
+  void metricsScanReportReturns204() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+
+    given()
+        .body(
+            """
+            {
+              "report-type":"scan",
+              "table-name":"orders",
+              "snapshot-id":1,
+              "filter":{"type":"always-true"},
+              "schema-id":1,
+              "projected-field-ids":[1],
+              "projected-field-names":["id"],
+              "metrics":{}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables/orders/metrics")
+        .then()
+        .statusCode(204);
   }
 }

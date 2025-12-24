@@ -132,7 +132,7 @@ class TablePropertyServiceTest {
   void hasPropertyUpdatesDetectsSetAndRemove() {
     TableRequests.Commit commit =
         new TableRequests.Commit(
-            null, null, null, null, null, null, List.of(Map.of("action", "set-properties")));
+            null, null, null, null, null, List.of(), List.of(Map.of("action", "set-properties")));
     assertTrue(service.hasPropertyUpdates(commit));
   }
 

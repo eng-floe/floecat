@@ -230,7 +230,7 @@ class TableCommitServiceTest {
             null,
             null,
             "stage-commit",
-            null,
+            List.of(),
             List.of(Map.of("action", "remove-snapshots", "snapshot-ids", List.of(1L))));
 
     Response response = service.commit(command(request));
@@ -264,8 +264,8 @@ class TableCommitServiceTest {
             null,
             Map.of("metadata-location", requested),
             null,
-            null,
-            null);
+            List.of(),
+            List.of());
 
     Response response = service.commit(command(request));
 
@@ -275,12 +275,12 @@ class TableCommitServiceTest {
   }
 
   private TableRequests.Commit emptyCommitRequest() {
-    return new TableRequests.Commit(null, List.of("db"), null, null, null, null, null);
+    return new TableRequests.Commit(null, List.of("db"), null, null, null, List.of(), List.of());
   }
 
   private TableRequests.Commit stageCommitRequest() {
     return new TableRequests.Commit(
-        "orders", List.of("db"), null, null, "stage-commit", null, null);
+        "orders", List.of("db"), null, null, "stage-commit", List.of(), List.of());
   }
 
   private Table tableRecord(String id, String metadataLocation) {

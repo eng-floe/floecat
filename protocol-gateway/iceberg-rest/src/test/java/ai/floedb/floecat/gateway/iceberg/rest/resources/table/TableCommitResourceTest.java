@@ -87,7 +87,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
 
     given()
         .body(
-            "{\"updates\":[{\"action\":\"set-location\",\"location\":\"s3://bucket/new_path/\"}]}")
+            "{\"requirements\":[],\"updates\":[{\"action\":\"set-location\",\"location\":\"s3://bucket/new_path/\"}]}")
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
@@ -132,7 +132,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .body(
             String.format(
                 """
-                {"updates":[{"action":"add-snapshot","snapshot":{
+                {"requirements":[],"updates":[{"action":"add-snapshot","snapshot":{
                   "snapshot-id":%d,
                   "timestamp-ms":1000,
                   "parent-snapshot-id":%d,
@@ -179,7 +179,8 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .thenReturn(UpdateTableResponse.newBuilder().setTable(existing).build());
 
     given()
-        .body("{\"updates\":[{\"action\":\"remove-snapshots\",\"snapshot-ids\":[7,8]}]}")
+        .body(
+            "{\"requirements\":[],\"updates\":[{\"action\":\"remove-snapshots\",\"snapshot-ids\":[7,8]}]}")
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
@@ -249,7 +250,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .body(
             String.format(
                 """
-                {"updates":[
+                {"requirements":[],"updates":[
                   {"action":"add-snapshot","snapshot":{
                     "snapshot-id":%d,
                     "timestamp-ms":1000,
@@ -324,7 +325,8 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build());
 
     given()
-        .body("{\"updates\":[{\"action\":\"remove-snapshot-ref\",\"ref-name\":\"dev\"}]}")
+        .body(
+            "{\"requirements\":[],\"updates\":[{\"action\":\"remove-snapshot-ref\",\"ref-name\":\"dev\"}]}")
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
@@ -461,7 +463,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     given()
         .body(
             """
-            {"updates":[
+            {"requirements":[],"updates":[
               {"action":"assign-uuid","uuid":"new-uuid"},
               {"action":"upgrade-format-version","format-version":3},
               {"action":"add-schema","schema":{
@@ -558,7 +560,8 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .thenReturn(GetTableResponse.newBuilder().setTable(current).build());
 
     given()
-        .body("{\"requirements\":[{\"type\":\"assert-table-uuid\",\"uuid\":\"expected\"}]}")
+        .body(
+            "{\"requirements\":[{\"type\":\"assert-table-uuid\",\"uuid\":\"expected\"}],\"updates\":[]}")
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
@@ -676,7 +679,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .thenReturn(GetTableResponse.newBuilder().setTable(current).build());
 
     given()
-        .body("{\"requirements\":[{\"type\":\"unknown-requirement\"}]}")
+        .body("{\"requirements\":[{\"type\":\"unknown-requirement\"}],\"updates\":[]}")
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")

@@ -36,7 +36,13 @@ public class TableUpdatePlanner {
     TableSpec.Builder spec = TableSpec.newBuilder();
     FieldMask.Builder mask = FieldMask.newBuilder();
     if (req == null) {
-      return UpdatePlan.success(spec, mask);
+      return UpdatePlan.failure(spec, mask, validationError("Request body is required"));
+    }
+    if (req.requirements() == null) {
+      return UpdatePlan.failure(spec, mask, validationError("requirements are required"));
+    }
+    if (req.updates() == null) {
+      return UpdatePlan.failure(spec, mask, validationError("updates are required"));
     }
     Response requirementError =
         commitRequirementService.validateRequirements(

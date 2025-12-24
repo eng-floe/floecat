@@ -5,7 +5,6 @@ import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StageCreateResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
-import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
@@ -18,7 +17,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -56,21 +54,7 @@ public class TableCreateService {
     if (!hasSchema(request)) {
       return IcebergErrorResponses.validation("schema is required");
     }
-    if (!hasPartitionSpec(request)) {
-      return IcebergErrorResponses.validation("partition-spec is required");
-    }
-    if (!hasWriteOrder(request)) {
-      return IcebergErrorResponses.validation("write-order is required");
-    }
-    if (request.location() == null || request.location().isBlank()) {
-      return IcebergErrorResponses.validation("location is required");
-    }
-    if (!hasMetadataLocation(request)) {
-      return IcebergErrorResponses.validation("metadata-location is required");
-    }
-    if (!hasFormatVersion(request)) {
-      return IcebergErrorResponses.validation("format-version is required");
-    }
+    // Match the REST spec: name + schema are required; other fields are optional.
 
     String tableName = request.name().trim();
     TableRequests.Create effectiveReq = request;
@@ -91,25 +75,18 @@ public class TableCreateService {
       return IcebergErrorResponses.validation(e.getMessage());
     }
     Table created = tableLifecycleService.createTable(spec, idempotencyKey);
-    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
     Map<String, String> tableConfig = tableSupport.defaultTableConfig();
     List<StorageCredentialDto> credentials = tableSupport.defaultCredentials();
     LoadTableResultDto loadResult;
-    if (metadata == null && request != null) {
-      try {
-        loadResult =
-            TableResponseMapper.toLoadResultFromCreate(
-                tableName, created, effectiveReq, tableConfig, credentials);
-      } catch (IllegalArgumentException e) {
-        return IcebergErrorResponses.validation(e.getMessage());
-      }
-    } else {
+    try {
       loadResult =
-          TableResponseMapper.toLoadResult(
-              tableName, created, metadata, List.of(), tableConfig, credentials);
+          TableResponseMapper.toLoadResultFromCreate(
+              tableName, created, effectiveReq, tableConfig, credentials);
+    } catch (IllegalArgumentException e) {
+      return IcebergErrorResponses.validation(e.getMessage());
     }
 
-    TableMetadataView responseMetadata = loadResult.metadata();
+    var responseMetadata = loadResult.metadata();
     String responseMetadataLocation = loadResult.metadataLocation();
     if (responseMetadata != null && responseMetadataLocation != null) {
       responseMetadata = responseMetadata.withMetadataLocation(responseMetadataLocation);
@@ -145,14 +122,6 @@ public class TableCreateService {
       builder.tag(etagValue);
     }
     return builder.build();
-  }
-
-  private boolean hasPartitionSpec(TableRequests.Create request) {
-    return request.partitionSpec() != null && !request.partitionSpec().isNull();
-  }
-
-  private boolean hasWriteOrder(TableRequests.Create request) {
-    return request.writeOrder() != null && !request.writeOrder().isNull();
   }
 
   private Response handleStageCreate(
@@ -283,21 +252,5 @@ public class TableCreateService {
       return true;
     }
     return request.schema() != null && !request.schema().isNull();
-  }
-
-  private boolean hasMetadataLocation(TableRequests.Create request) {
-    if (request == null) {
-      return false;
-    }
-    String metadataLocation = MetadataLocationUtil.metadataLocation(request.properties());
-    return metadataLocation != null && !metadataLocation.isBlank();
-  }
-
-  private boolean hasFormatVersion(TableRequests.Create request) {
-    if (request == null || request.properties() == null) {
-      return false;
-    }
-    String formatVersion = request.properties().get("format-version");
-    return formatVersion != null && !formatVersion.isBlank();
   }
 }

@@ -73,7 +73,7 @@ class StageMaterializationServiceTest {
             "cat",
             List.of("db"),
             "orders",
-            new TableRequests.Commit(null, null, null, null, null, null, null),
+            new TableRequests.Commit(null, null, null, null, null, List.of(), List.of()),
             null);
 
     assertNull(result);
@@ -98,7 +98,7 @@ class StageMaterializationServiceTest {
             "cat",
             List.of("db"),
             "orders",
-            new TableRequests.Commit(null, null, null, null, "stage-1", null, null),
+            new TableRequests.Commit(null, null, null, null, "stage-1", List.of(), List.of()),
             "header-stage");
 
     assertNotNull(result);
@@ -121,7 +121,7 @@ class StageMaterializationServiceTest {
                     "cat",
                     List.of("db"),
                     "orders",
-                    new TableRequests.Commit(null, null, null, null, null, null, null),
+                    new TableRequests.Commit(null, null, null, null, null, List.of(), List.of()),
                     null));
 
     assertEquals(
@@ -142,7 +142,7 @@ class StageMaterializationServiceTest {
           "cat",
           List.of("db"),
           "orders",
-          new TableRequests.Commit(null, null, null, null, "stage-1", null, null),
+          new TableRequests.Commit(null, null, null, null, "stage-1", List.of(), List.of()),
           null);
     } catch (StageCommitException expected) {
       assertEquals("bad stage", expected.getMessage());
@@ -157,7 +157,7 @@ class StageMaterializationServiceTest {
             "cat",
             List.of("db"),
             "orders",
-            new TableRequests.Commit(null, null, null, null, null, null, null),
+            new TableRequests.Commit(null, null, null, null, null, List.of(), List.of()),
             null);
 
     assertNull(result);
@@ -181,7 +181,8 @@ class StageMaterializationServiceTest {
             "cat",
             List.of("db"),
             "orders",
-            new TableRequests.Commit(null, null, null, null, "explicit-stage", null, null),
+            new TableRequests.Commit(
+                null, null, null, null, "explicit-stage", List.of(), List.of()),
             null);
 
     assertNotNull(result);

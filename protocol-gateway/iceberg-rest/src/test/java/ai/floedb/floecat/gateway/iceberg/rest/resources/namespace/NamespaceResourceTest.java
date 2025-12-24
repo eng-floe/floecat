@@ -2,6 +2,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.resources.namespace;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
@@ -70,7 +71,8 @@ class NamespaceResourceTest extends AbstractRestResourceTest {
         .get("/v1/foo/namespaces?recursive=true&pageSize=5")
         .then()
         .statusCode(200)
-        .body("namespaces[0][0]", equalTo("analytics"));
+        .body("namespaces[0][0]", equalTo("analytics"))
+        .body("next-page-token", nullValue());
 
     given()
         .when()

@@ -175,17 +175,14 @@ public final class TableMetadataBuilder {
               });
     }
     String metadataLoc = metadataLocationFromRequest(request);
-    if (metadataLoc == null || metadataLoc.isBlank()) {
-      throw new IllegalArgumentException("metadata-location is required");
+    String metadataLocation = null;
+    if (metadataLoc != null && !metadataLoc.isBlank()) {
+      MetadataLocationUtil.setMetadataLocation(props, metadataLoc);
+      syncWriteMetadataPath(props, metadataLoc);
+      metadataLocation = metadataLoc;
     }
-    MetadataLocationUtil.setMetadataLocation(props, metadataLoc);
-    syncWriteMetadataPath(props, metadataLoc);
-    final String metadataLocation = metadataLoc;
     String location =
         Optional.ofNullable(request.location()).filter(s -> !s.isBlank()).orElse(null);
-    if (location == null || location.isBlank()) {
-      throw new IllegalArgumentException("location is required");
-    }
     long lastUpdatedMs;
     if (table.hasCreatedAt()) {
       lastUpdatedMs =
@@ -194,10 +191,10 @@ public final class TableMetadataBuilder {
       Long updatedMs =
           request.properties() == null ? null : asLong(request.properties().get("last-updated-ms"));
       if (updatedMs == null || updatedMs <= 0) {
-        throw new IllegalArgumentException(
-            "last-updated-ms is required when table createdAt is missing");
+        lastUpdatedMs = System.currentTimeMillis();
+      } else {
+        lastUpdatedMs = updatedMs;
       }
-      lastUpdatedMs = updatedMs;
     }
     Map<String, Object> schema = schemaFromRequest(request);
     Integer schemaId = asInteger(schema.get("schema-id"));
@@ -205,21 +202,28 @@ public final class TableMetadataBuilder {
     if (schemaId == null || lastColumnId == null) {
       throw new IllegalArgumentException("schema requires schema-id and last-column-id");
     }
-    Map<String, Object> partitionSpec = partitionSpecFromRequest(request);
+    Map<String, Object> partitionSpec =
+        request.partitionSpec() == null || request.partitionSpec().isNull()
+            ? defaultPartitionSpec()
+            : partitionSpecFromRequest(request);
     Integer defaultSpecId = asInteger(partitionSpec.get("spec-id"));
     if (defaultSpecId == null) {
       throw new IllegalArgumentException("partition-spec requires spec-id");
     }
     Integer lastPartitionId = maxPartitionFieldId(partitionSpec);
-    Map<String, Object> sortOrder = sortOrderFromRequest(request);
+    Map<String, Object> sortOrder =
+        request.writeOrder() == null || request.writeOrder().isNull()
+            ? defaultSortOrder()
+            : sortOrderFromRequest(request);
     Integer defaultSortOrderId = asInteger(sortOrder.get("order-id"));
     if (defaultSortOrderId == null) {
       throw new IllegalArgumentException("write-order requires sort-order-id");
     }
     Integer formatVersion = maybeInt(props.get("format-version"));
     if (formatVersion == null || formatVersion < 1) {
-      throw new IllegalArgumentException("format-version is required");
+      formatVersion = 1;
     }
+    props.putIfAbsent("format-version", formatVersion.toString());
     props.putIfAbsent("current-schema-id", schemaId.toString());
     props.putIfAbsent("last-column-id", lastColumnId.toString());
     props.putIfAbsent("default-spec-id", defaultSpecId.toString());
@@ -250,6 +254,20 @@ public final class TableMetadataBuilder {
         List.of(),
         List.of(),
         List.of());
+  }
+
+  private static Map<String, Object> defaultPartitionSpec() {
+    Map<String, Object> spec = new LinkedHashMap<>();
+    spec.put("spec-id", 0);
+    spec.put("fields", List.of());
+    return spec;
+  }
+
+  private static Map<String, Object> defaultSortOrder() {
+    Map<String, Object> order = new LinkedHashMap<>();
+    order.put("order-id", 0);
+    order.put("fields", List.of());
+    return order;
   }
 
   private static String resolveMetadataLocation(IcebergMetadata metadata) {

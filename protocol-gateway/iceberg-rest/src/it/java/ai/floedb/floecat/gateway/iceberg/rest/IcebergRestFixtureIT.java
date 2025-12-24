@@ -206,6 +206,8 @@ class IcebergRestFixtureIT {
             newSnapshotId);
     Map<String, Object> commitPayload =
         Map.of(
+            "requirements",
+            List.of(),
             "updates",
             List.of(addSnapshotUpdate, removeSnapshotUpdate, setRefUpdate, setMainRefUpdate));
 
@@ -289,6 +291,8 @@ class IcebergRestFixtureIT {
                         Map.of("namespace", List.of(namespace), "name", table),
                         "stage-id",
                         stageId,
+                        "requirements",
+                        List.of(),
                         "updates",
                         List.of(
                             Map.of(
@@ -706,7 +710,14 @@ class IcebergRestFixtureIT {
     try {
       registerTable(namespace, table, METADATA_V3, false);
 
-      Map<String, Object> commitPayload = Map.of("properties", Map.of("owner", "integration"));
+      Map<String, Object> commitPayload =
+          Map.of(
+              "properties",
+              Map.of("owner", "integration"),
+              "requirements",
+              List.of(),
+              "updates",
+              List.of());
 
       given()
           .spec(spec)

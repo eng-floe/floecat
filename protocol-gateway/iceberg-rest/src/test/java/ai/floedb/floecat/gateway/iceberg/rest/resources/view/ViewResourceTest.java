@@ -69,7 +69,8 @@ class ViewResourceTest extends AbstractRestResourceTest {
         .body("identifiers[0].name", equalTo("reports"))
         .body("identifiers[0].namespace[0]", equalTo("db"))
         .body("identifiers[1].name", equalTo("dashboards"))
-        .body("identifiers[1].namespace[0]", equalTo("db"));
+        .body("identifiers[1].namespace[0]", equalTo("db"))
+        .body("next-page-token", equalTo("np"));
   }
 
   @Test
