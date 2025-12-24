@@ -8,15 +8,35 @@ import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.systemcatalog.columnar.ArrowSchemaUtil;
+import ai.floedb.floecat.systemcatalog.columnar.ArrowValueWriters;
+import ai.floedb.floecat.systemcatalog.columnar.ColumnarBatch;
+import ai.floedb.floecat.systemcatalog.columnar.SimpleColumnarBatch;
+import ai.floedb.floecat.systemcatalog.expr.Expr;
+import ai.floedb.floecat.systemcatalog.spi.scanner.ScanOutputFormat;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Spliterator;
+import java.util.Spliterators;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.vector.FieldVector;
+import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.VarCharVector;
+import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.types.pojo.Schema;
 
 /** information_schema.columns */
 public final class ColumnsScanner implements SystemObjectScanner {
@@ -65,6 +85,9 @@ public final class ColumnsScanner implements SystemObjectScanner {
     return SCHEMA;
   }
 
+  private static final Schema ARROW_SCHEMA = ArrowSchemaUtil.toArrowSchema(SCHEMA);
+  private static final int ARROW_BATCH_SIZE = 512;
+
   @Override
   public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx) {
     // Small per-scan caches (cheap, bounded)
@@ -73,6 +96,70 @@ public final class ColumnsScanner implements SystemObjectScanner {
     return ctx.listNamespaces().stream()
         .flatMap(ns -> ctx.listRelations(ns.id()).stream())
         .flatMap(node -> scanRelation(ctx, node, catalogNames));
+  }
+
+  @Override
+  public EnumSet<ScanOutputFormat> supportedFormats() {
+    return EnumSet.of(ScanOutputFormat.ROWS, ScanOutputFormat.ARROW_IPC);
+  }
+
+  @Override
+  public Stream<ColumnarBatch> scanArrow(
+      SystemObjectScanContext ctx,
+      Expr predicate,
+      List<String> requiredColumns,
+      BufferAllocator allocator) {
+    Objects.requireNonNull(ctx, "ctx");
+    Objects.requireNonNull(allocator, "allocator");
+    Objects.requireNonNull(requiredColumns, "requiredColumns");
+    List<NamespaceNode> namespaces = ctx.listNamespaces();
+    Iterator<NamespaceNode> namespaceIterator = namespaces.iterator();
+    Spliterator<ColumnarBatch> spliterator =
+        new Spliterators.AbstractSpliterator<ColumnarBatch>(
+            Long.MAX_VALUE, Spliterator.ORDERED | Spliterator.NONNULL) {
+          private final Iterator<NamespaceNode> nsIter = namespaceIterator;
+          private Iterator<GraphNode> relationIter = Collections.emptyIterator();
+          private Iterator<ColumnEntry> columnIter = Collections.emptyIterator();
+          private NamespaceNode currentNamespace;
+          private final Map<ResourceId, String> catalogNames = new HashMap<>();
+
+          @Override
+          public boolean tryAdvance(Consumer<? super ColumnarBatch> action) {
+            ColumnsBatchBuilder builder = new ColumnsBatchBuilder(allocator);
+            while (true) {
+              if (columnIter.hasNext()) {
+                builder.append(columnIter.next());
+                if (builder.isFull()) {
+                  action.accept(builder.build());
+                  return true;
+                }
+                continue;
+              }
+              GraphNode relation = nextRelation(ctx);
+              if (relation == null) {
+                if (builder.isEmpty()) {
+                  return false;
+                }
+                action.accept(builder.build());
+                return true;
+              }
+              columnIter =
+                  columnsForRelation(ctx, currentNamespace, relation, catalogNames).iterator();
+            }
+          }
+
+          private GraphNode nextRelation(SystemObjectScanContext ctx) {
+            while (!relationIter.hasNext()) {
+              if (!nsIter.hasNext()) {
+                return null;
+              }
+              currentNamespace = nsIter.next();
+              relationIter = ctx.listRelations(currentNamespace.id()).iterator();
+            }
+            return relationIter.next();
+          }
+        };
+    return StreamSupport.stream(spliterator, false);
   }
 
   private Stream<SystemObjectRow> scanRelation(
@@ -177,5 +264,145 @@ public final class ColumnsScanner implements SystemObjectScanner {
 
   private static String blankToNull(String value) {
     return value == null || value.isBlank() ? null : value;
+  }
+
+  private List<ColumnEntry> columnsForRelation(
+      SystemObjectScanContext ctx,
+      NamespaceNode namespace,
+      GraphNode node,
+      Map<ResourceId, String> catalogNames) {
+    String catalogName =
+        catalogNames.computeIfAbsent(
+            namespace.catalogId(), id -> ((CatalogNode) ctx.resolve(id)).displayName());
+    String schemaName = schemaName(namespace);
+
+    if (node instanceof TableNode table) {
+      List<SchemaColumn> columns = ctx.graph().tableSchema(table.id());
+      if (table instanceof UserTableNode) {
+        return columns.stream()
+            .sorted(Comparator.comparingInt(SchemaColumn::getFieldId))
+            .map(
+                col ->
+                    ColumnEntry.of(
+                        catalogName,
+                        schemaName,
+                        table.displayName(),
+                        col.getName(),
+                        blankToNull(col.getLogicalType()),
+                        col.getFieldId()))
+            .toList();
+      }
+      List<ColumnEntry> entries = new ArrayList<>(columns.size());
+      int ordinal = 1;
+      for (SchemaColumn col : columns) {
+        entries.add(
+            ColumnEntry.of(
+                catalogName,
+                schemaName,
+                table.displayName(),
+                col.getName(),
+                blankToNull(col.getLogicalType()),
+                ordinal++));
+      }
+      return entries;
+    }
+
+    if (node instanceof ViewNode view) {
+      List<SchemaColumn> cols = view.outputColumns();
+      List<ColumnEntry> entries = new ArrayList<>(cols.size());
+      for (int i = 0; i < cols.size(); i++) {
+        SchemaColumn col = cols.get(i);
+        entries.add(
+            ColumnEntry.of(
+                catalogName,
+                schemaName,
+                view.displayName(),
+                col.getName(),
+                col.getLogicalType(),
+                i + 1));
+      }
+      return entries;
+    }
+
+    return List.of();
+  }
+
+  private static final class ColumnEntry {
+
+    final String tableCatalog;
+    final String tableSchema;
+    final String tableName;
+    final String columnName;
+    final String dataType;
+    final int ordinalPosition;
+
+    private ColumnEntry(
+        String tableCatalog,
+        String tableSchema,
+        String tableName,
+        String columnName,
+        String dataType,
+        int ordinalPosition) {
+      this.tableCatalog = tableCatalog;
+      this.tableSchema = tableSchema;
+      this.tableName = tableName;
+      this.columnName = columnName;
+      this.dataType = dataType;
+      this.ordinalPosition = ordinalPosition;
+    }
+
+    static ColumnEntry of(
+        String catalog, String schema, String table, String column, String dataType, int ordinal) {
+      return new ColumnEntry(catalog, schema, table, column, dataType, ordinal);
+    }
+  }
+
+  private static final class ColumnsBatchBuilder {
+
+    private final VectorSchemaRoot root;
+    private final VarCharVector tableCatalog;
+    private final VarCharVector tableSchema;
+    private final VarCharVector tableName;
+    private final VarCharVector columnName;
+    private final VarCharVector dataType;
+    private final IntVector ordinalPosition;
+    private int rowCount;
+
+    private ColumnsBatchBuilder(BufferAllocator allocator) {
+      this.root = VectorSchemaRoot.create(ARROW_SCHEMA, allocator);
+      List<FieldVector> vectors = root.getFieldVectors();
+      this.tableCatalog = (VarCharVector) vectors.get(0);
+      this.tableSchema = (VarCharVector) vectors.get(1);
+      this.tableName = (VarCharVector) vectors.get(2);
+      this.columnName = (VarCharVector) vectors.get(3);
+      this.dataType = (VarCharVector) vectors.get(4);
+      this.ordinalPosition = (IntVector) vectors.get(5);
+    }
+
+    private boolean isFull() {
+      return rowCount >= ARROW_BATCH_SIZE;
+    }
+
+    private boolean isEmpty() {
+      return rowCount == 0;
+    }
+
+    private void append(ColumnEntry entry) {
+      ArrowValueWriters.writeVarChar(tableCatalog, rowCount, entry.tableCatalog);
+      ArrowValueWriters.writeVarChar(tableSchema, rowCount, entry.tableSchema);
+      ArrowValueWriters.writeVarChar(tableName, rowCount, entry.tableName);
+      ArrowValueWriters.writeVarChar(columnName, rowCount, entry.columnName);
+      ArrowValueWriters.writeVarChar(dataType, rowCount, entry.dataType);
+      ordinalPosition.setSafe(rowCount, entry.ordinalPosition);
+      rowCount++;
+    }
+
+    private ColumnarBatch build() {
+      for (FieldVector vector : root.getFieldVectors()) {
+        vector.setValueCount(rowCount);
+      }
+      root.setRowCount(rowCount);
+      return new SimpleColumnarBatch(root);
+    }
   }
 }

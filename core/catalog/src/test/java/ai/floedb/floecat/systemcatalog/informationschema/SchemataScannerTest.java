@@ -4,7 +4,14 @@ import static org.assertj.core.api.Assertions.*;
 
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.FieldVector;
+import org.apache.arrow.vector.VarCharVector;
+import org.apache.arrow.vector.VectorSchemaRoot;
 import org.junit.jupiter.api.Test;
 
 class SchemataScannerTest {
@@ -39,5 +46,58 @@ class SchemataScannerTest {
     var rows = new SchemataScanner().scan(ctx).map(r -> List.of(r.values())).toList();
 
     assertThat(rows).containsExactly(List.of("main_catalog", "finance.sales"));
+  }
+
+  @Test
+  void scanArrow_matchesRowPath() {
+    var builder = TestTableScanContextBuilder.builder("main_catalog");
+    builder.addNamespace("public");
+    SystemObjectScanContext ctx = builder.build();
+
+    var scanner = new SchemataScanner();
+    List<List<String>> expected = scanner.scan(ctx).map(row -> toStringList(row.values())).toList();
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      List<List<String>> arrowRows =
+          scanner
+              .scanArrow(ctx, null, List.of(), allocator)
+              .map(
+                  batch -> {
+                    try (batch) {
+                      return toRows(batch.root());
+                    }
+                  })
+              .flatMap(List::stream)
+              .toList();
+
+      assertThat(arrowRows).isEqualTo(expected);
+    }
+  }
+
+  private static List<List<String>> toRows(VectorSchemaRoot root) {
+    int rowCount = root.getRowCount();
+    List<FieldVector> vectors = root.getFieldVectors();
+    List<List<String>> results = new ArrayList<>(rowCount);
+    for (int row = 0; row < rowCount; row++) {
+      List<String> values = new ArrayList<>(vectors.size());
+      for (FieldVector vector : vectors) {
+        VarCharVector varchar = (VarCharVector) vector;
+        if (varchar.isNull(row)) {
+          values.add(null);
+        } else {
+          values.add(new String(varchar.get(row), StandardCharsets.UTF_8));
+        }
+      }
+      results.add(values);
+    }
+    return results;
+  }
+
+  private static List<String> toStringList(Object[] values) {
+    List<String> list = new ArrayList<>(values.length);
+    for (Object value : values) {
+      list.add(value == null ? null : value.toString());
+    }
+    return list;
   }
 }
