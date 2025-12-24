@@ -72,9 +72,6 @@ public final class TableResponseMapper {
       Map<String, String> originalConfig, TableMetadataView metadataView) {
     String metadataLocation = metadataView.metadataLocation();
     if (metadataLocation == null || metadataLocation.isBlank()) {
-      metadataLocation = MetadataLocationUtil.metadataLocation(metadataView.properties());
-    }
-    if (metadataLocation == null || metadataLocation.isBlank()) {
       return originalConfig;
     }
     String directory = MetadataLocationUtil.canonicalMetadataDirectory(metadataLocation);

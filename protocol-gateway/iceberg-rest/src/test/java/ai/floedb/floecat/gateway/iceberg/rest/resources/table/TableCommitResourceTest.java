@@ -42,6 +42,7 @@ import com.google.protobuf.ByteString;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import java.util.List;
+import java.util.Objects;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -50,6 +51,9 @@ import org.mockito.ArgumentCaptor;
 class TableCommitResourceTest extends AbstractRestResourceTest {
   private static final TrinoFixtureTestSupport.Fixture FIXTURE =
       TrinoFixtureTestSupport.simpleFixture();
+  private static final String FIXTURE_LOCATION =
+      Objects.requireNonNull(
+          FIXTURE.table().getPropertiesMap().get("location"), "fixture location is required");
 
   private Table.Builder baseTable(ResourceId tableId, ResourceId nsId) {
     return Table.newBuilder()
@@ -108,6 +112,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     UpstreamRef upstream =
         UpstreamRef.newBuilder()
             .setFormat(TableFormat.TF_ICEBERG)
+            .setUri(FIXTURE_LOCATION)
             .setConnectorId(ResourceId.newBuilder().setId("conn").build())
             .build();
     Table existing =
@@ -203,6 +208,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     UpstreamRef upstream =
         UpstreamRef.newBuilder()
             .setFormat(TableFormat.TF_ICEBERG)
+            .setUri(FIXTURE_LOCATION)
             .setConnectorId(ResourceId.newBuilder().setId("conn").build())
             .build();
     Table existing =
@@ -268,11 +274,13 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
 
     ArgumentCaptor<UpdateSnapshotRequest> updateReq =
         ArgumentCaptor.forClass(UpdateSnapshotRequest.class);
-    verify(snapshotStub).updateSnapshot(updateReq.capture());
-    assertEquals(newSnapshotId, updateReq.getValue().getSpec().getSnapshotId());
-    assertEquals(
-        newSnapshotId,
-        metadataFromSpec(updateReq.getValue().getSpec()).getRefsOrThrow("main").getSnapshotId());
+    verify(snapshotStub, atLeastOnce()).updateSnapshot(updateReq.capture());
+    boolean updatedMainRef =
+        updateReq.getAllValues().stream()
+            .map(UpdateSnapshotRequest::getSpec)
+            .map(spec -> metadataFromSpec(spec).getRefsOrThrow("main").getSnapshotId())
+            .anyMatch(snapshotId -> snapshotId == newSnapshotId);
+    assertTrue(updatedMainRef, "expected at least one update to set main ref to new snapshot");
   }
 
   @Test

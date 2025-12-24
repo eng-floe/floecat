@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 class StageMaterializationServiceTest {
   private static final String METADATA_LOCATION =
       "s3://bucket/db/orders/metadata/00000-abc.metadata.json";
+  private static final String TABLE_LOCATION = "s3://bucket/db/orders";
   private final StageMaterializationService service = new StageMaterializationService();
   private final AccountContext accountContext = mock(AccountContext.class);
   private final StagedTableService stagedTableService = mock(StagedTableService.class);
@@ -153,8 +154,8 @@ class StageMaterializationServiceTest {
                 "orders",
                 null,
                 null,
-                null,
-                Map.of("metadata-location", METADATA_LOCATION),
+                TABLE_LOCATION,
+                Map.of("metadata-location", METADATA_LOCATION, "format-version", "2"),
                 null,
                 null,
                 false),
@@ -236,8 +237,8 @@ class StageMaterializationServiceTest {
                 "orders",
                 null,
                 null,
-                null,
-                Map.of("metadata-location", METADATA_LOCATION),
+                TABLE_LOCATION,
+                Map.of("metadata-location", METADATA_LOCATION, "format-version", "2"),
                 null,
                 null,
                 false),
@@ -303,8 +304,8 @@ class StageMaterializationServiceTest {
                 "orders",
                 null,
                 null,
-                null,
-                Map.of("metadata-location", METADATA_LOCATION),
+                TABLE_LOCATION,
+                Map.of("metadata-location", METADATA_LOCATION, "format-version", "2"),
                 null,
                 null,
                 false),

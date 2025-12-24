@@ -235,9 +235,7 @@ public final class TableMetadataBuilder {
     syncWriteMetadataPath(props, metadataLoc);
     final String metadataLocation = metadataLoc;
     String location =
-        Optional.ofNullable(request.location())
-            .filter(s -> !s.isBlank())
-            .orElseGet(() -> defaultLocation(props.get("location"), metadataLocation));
+        Optional.ofNullable(request.location()).filter(s -> !s.isBlank()).orElse(null);
     if (location == null || location.isBlank()) {
       throw new IllegalArgumentException("location is required");
     }
@@ -317,21 +315,10 @@ public final class TableMetadataBuilder {
   }
 
   private static String resolveTableLocation(String location, String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return location;
+    if (location == null || location.isBlank()) {
+      return null;
     }
-    if (location != null && !location.isBlank() && !location.startsWith("https://glue")) {
-      return location;
-    }
-    int idx = metadataLocation.indexOf("/metadata/");
-    if (idx > 0) {
-      return metadataLocation.substring(0, idx);
-    }
-    int slash = metadataLocation.lastIndexOf('/');
-    if (slash > 0) {
-      return metadataLocation.substring(0, slash);
-    }
-    return metadataLocation;
+    return location;
   }
 
   private static String metadataLocationFromRequest(TableRequests.Create request) {
@@ -340,24 +327,6 @@ public final class TableMetadataBuilder {
     }
     String location = request.properties().get("metadata-location");
     return (location == null || location.isBlank()) ? null : location;
-  }
-
-  private static String defaultLocation(String current, String metadataLocation) {
-    if (current != null && !current.isBlank()) {
-      return current;
-    }
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return null;
-    }
-    int idx = metadataLocation.indexOf("/metadata/");
-    if (idx > 0) {
-      return metadataLocation.substring(0, idx);
-    }
-    int slash = metadataLocation.lastIndexOf('/');
-    if (slash > 0) {
-      return metadataLocation.substring(0, slash);
-    }
-    return metadataLocation;
   }
 
   private static Map<String, Object> mergePropertyRefs(

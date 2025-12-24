@@ -539,27 +539,16 @@ public class SnapshotMetadataService {
       spec.putAllSummary(summary);
     }
     Integer schemaId = asInteger(snapshot.get("schema-id"));
-    IcebergMetadata metadata = null;
-    if (schemaId == null) {
-      metadata = tableSupport.loadCurrentMetadata(existing);
-      if (metadata != null && metadata.getCurrentSchemaId() > 0) {
-        schemaId = metadata.getCurrentSchemaId();
-      }
-    } else {
-      metadata = tableSupport.loadCurrentMetadata(existing);
-    }
     if (schemaId == null) {
       return validationError("add-snapshot requires schema-id");
     }
     spec.setSchemaId(schemaId);
     String schemaJson = asString(snapshot.get("schema-json"));
-    if ((schemaJson == null || schemaJson.isBlank()) && metadata != null) {
-      schemaJson = schemaJsonFromMetadata(metadata, schemaId);
-    }
     if (schemaJson == null || schemaJson.isBlank()) {
       return validationError("add-snapshot requires schema-json");
     }
     spec.setSchemaJson(schemaJson);
+    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(existing);
     IcebergMetadata snapshotIceberg =
         snapshotIcebergMetadata(metadata, existing, snapshotId, sequenceNumber);
     if (snapshotIceberg != null) {

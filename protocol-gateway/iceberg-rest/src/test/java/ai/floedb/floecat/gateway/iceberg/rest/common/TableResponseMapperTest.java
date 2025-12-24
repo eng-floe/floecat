@@ -82,10 +82,17 @@ class TableResponseMapperTest {
             .setDisplayName("orders")
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
             .build();
-    Map<String, String> props = Map.of("metadata-location", FIXTURE.metadataLocation());
+    String formatVersion = FIXTURE.table().getPropertiesMap().getOrDefault("format-version", "2");
+    String location =
+        FIXTURE
+            .table()
+            .getPropertiesMap()
+            .getOrDefault("location", "s3://yb-iceberg-tpcds/trino_test");
+    Map<String, String> props =
+        Map.of("metadata-location", FIXTURE.metadataLocation(), "format-version", formatVersion);
     TableRequests.Create request =
         new TableRequests.Create(
-            "orders", FIXTURE.table().getSchemaJson(), null, null, props, null, null, null);
+            "orders", FIXTURE.table().getSchemaJson(), null, location, props, null, null, null);
 
     LoadTableResultDto loadResult =
         TableResponseMapper.toLoadResultFromCreate("orders", table, request, Map.of(), List.of());

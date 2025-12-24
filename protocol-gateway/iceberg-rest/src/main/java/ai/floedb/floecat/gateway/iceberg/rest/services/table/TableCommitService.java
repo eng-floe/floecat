@@ -292,11 +292,6 @@ public class TableCommitService {
       TableRequests.Commit req,
       String idempotencyKey) {
     String metadataLocation = responseDto == null ? null : responseDto.metadataLocation();
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      Map<String, String> props =
-          committedTable == null ? Map.of() : committedTable.getPropertiesMap();
-      metadataLocation = MetadataLocationUtil.metadataLocation(props);
-    }
     if (metadataLocation != null && !metadataLocation.isBlank()) {
       metadataLocation = tableSupport.stripMetadataMirrorPrefix(metadataLocation);
     }
