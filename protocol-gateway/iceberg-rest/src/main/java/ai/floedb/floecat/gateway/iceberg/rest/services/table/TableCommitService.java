@@ -27,6 +27,7 @@ import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -104,6 +105,20 @@ public class TableCommitService {
         normalizeMetadataLocation(tableSupport, committedTable, stageAwareResponse);
     stageAwareResponse =
         preferRequestedMetadata(tableSupport, stageAwareResponse, requestedMetadataOverride);
+    stageAwareResponse = preferRequestedSequence(stageAwareResponse, req);
+    stageAwareResponse = preferSnapshotSequence(stageAwareResponse, req);
+    stageAwareResponse = mergeSnapshotUpdates(stageAwareResponse, req);
+    if (LOG.isDebugEnabled() && stageAwareResponse != null) {
+      TableMetadataView debugMeta = stageAwareResponse.metadata();
+      Long debugLastSeq = debugMeta == null ? null : debugMeta.lastSequenceNumber();
+      String debugPropSeq =
+          debugMeta == null || debugMeta.properties() == null
+              ? null
+              : debugMeta.properties().get("last-sequence-number");
+      LOG.debugf(
+          "Commit response sequence debug namespace=%s table=%s reqSeq=%s metaSeq=%s propSeq=%s",
+          namespace, table, maxSequenceNumber(req), debugLastSeq, debugPropSeq);
+    }
     var sideEffects =
         sideEffectService.finalizeCommitResponse(
             namespace, table, tableId, committedTable, stageAwareResponse, false);
@@ -366,7 +381,20 @@ public class TableCommitService {
       stagedLocation = stagedMetadata.metadataLocation();
     }
     if (stagedLocation == null || stagedLocation.isBlank()) {
-      return response;
+      if (stagedMetadata == null) {
+        return response;
+      }
+      boolean responseIncomplete =
+          response == null
+              || response.metadata() == null
+              || response.metadata().formatVersion() == null
+              || response.metadata().schemas() == null
+              || response.metadata().schemas().isEmpty();
+      if (!responseIncomplete) {
+        return response;
+      }
+      String responseLocation = response == null ? null : response.metadataLocation();
+      return new CommitTableResponseDto(responseLocation, stagedMetadata);
     }
     String originalLocation = response == null ? "<null>" : response.metadataLocation();
     LOG.infof(
@@ -422,6 +450,284 @@ public class TableCommitService {
       metadata = metadata.withMetadataLocation(resolvedLocation);
     }
     return new CommitTableResponseDto(resolvedLocation, metadata);
+  }
+
+  private CommitTableResponseDto preferSnapshotSequence(
+      CommitTableResponseDto response, TableRequests.Commit req) {
+    if (response == null || response.metadata() == null) {
+      return response;
+    }
+    Long latestSequence = maxSequenceNumber(req);
+    if (latestSequence == null || latestSequence <= 0) {
+      return response;
+    }
+    TableMetadataView metadata = response.metadata();
+    Map<String, String> props =
+        metadata.properties() == null
+            ? new LinkedHashMap<>()
+            : new LinkedHashMap<>(metadata.properties());
+    props.put("last-sequence-number", Long.toString(latestSequence));
+    TableMetadataView updated =
+        new TableMetadataView(
+            metadata.formatVersion(),
+            metadata.tableUuid(),
+            metadata.location(),
+            metadata.metadataLocation(),
+            metadata.lastUpdatedMs(),
+            Map.copyOf(props),
+            metadata.lastColumnId(),
+            metadata.currentSchemaId(),
+            metadata.defaultSpecId(),
+            metadata.lastPartitionId(),
+            metadata.defaultSortOrderId(),
+            metadata.currentSnapshotId(),
+            latestSequence,
+            metadata.schemas(),
+            metadata.partitionSpecs(),
+            metadata.sortOrders(),
+            metadata.refs(),
+            metadata.snapshotLog(),
+            metadata.metadataLog(),
+            metadata.statistics(),
+            metadata.partitionStatistics(),
+            metadata.snapshots());
+    return new CommitTableResponseDto(response.metadataLocation(), updated);
+  }
+
+  private CommitTableResponseDto preferRequestedSequence(
+      CommitTableResponseDto response, TableRequests.Commit req) {
+    if (response == null || response.metadata() == null) {
+      return response;
+    }
+    Long requested = requestedSequenceNumber(req);
+    if (requested == null || requested <= 0) {
+      return response;
+    }
+    TableMetadataView metadata = response.metadata();
+    Long existing = metadata.lastSequenceNumber();
+    if (existing != null && existing >= requested) {
+      return response;
+    }
+    Map<String, String> props =
+        metadata.properties() == null
+            ? new LinkedHashMap<>()
+            : new LinkedHashMap<>(metadata.properties());
+    props.put("last-sequence-number", Long.toString(requested));
+    TableMetadataView updated =
+        new TableMetadataView(
+            metadata.formatVersion(),
+            metadata.tableUuid(),
+            metadata.location(),
+            metadata.metadataLocation(),
+            metadata.lastUpdatedMs(),
+            Map.copyOf(props),
+            metadata.lastColumnId(),
+            metadata.currentSchemaId(),
+            metadata.defaultSpecId(),
+            metadata.lastPartitionId(),
+            metadata.defaultSortOrderId(),
+            metadata.currentSnapshotId(),
+            requested,
+            metadata.schemas(),
+            metadata.partitionSpecs(),
+            metadata.sortOrders(),
+            metadata.refs(),
+            metadata.snapshotLog(),
+            metadata.metadataLog(),
+            metadata.statistics(),
+            metadata.partitionStatistics(),
+            metadata.snapshots());
+    return new CommitTableResponseDto(response.metadataLocation(), updated);
+  }
+
+  private Long requestedSequenceNumber(TableRequests.Commit req) {
+    if (req == null) {
+      return null;
+    }
+    Long max = null;
+    Long direct =
+        parseLong(req.properties() == null ? null : req.properties().get("last-sequence-number"));
+    if (direct != null && direct > 0) {
+      max = direct;
+    }
+    if (req.updates() == null) {
+      return max;
+    }
+    for (Map<String, Object> update : req.updates()) {
+      if (update == null) {
+        continue;
+      }
+      String action = asString(update.get("action"));
+      if (!"set-properties".equals(action)) {
+        continue;
+      }
+      Map<String, String> updates = asStringMap(update.get("updates"));
+      Long candidate = parseLong(updates.get("last-sequence-number"));
+      if (candidate != null && candidate > 0) {
+        max = max == null ? candidate : Math.max(max, candidate);
+      }
+    }
+    return max;
+  }
+
+  private Long maxSequenceNumber(TableRequests.Commit req) {
+    if (req == null || req.updates() == null) {
+      return null;
+    }
+    Long max = null;
+    for (Map<String, Object> update : req.updates()) {
+      if (update == null) {
+        continue;
+      }
+      String action = asString(update.get("action"));
+      if (!"add-snapshot".equals(action)) {
+        continue;
+      }
+      @SuppressWarnings("unchecked")
+      Map<String, Object> snapshot =
+          update.get("snapshot") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+      if (snapshot == null) {
+        continue;
+      }
+      Long sequence = parseLong(snapshot.get("sequence-number"));
+      if (sequence == null || sequence <= 0) {
+        continue;
+      }
+      max = max == null ? sequence : Math.max(max, sequence);
+    }
+    return max;
+  }
+
+  private CommitTableResponseDto mergeSnapshotUpdates(
+      CommitTableResponseDto response, TableRequests.Commit req) {
+    if (response == null || response.metadata() == null || req == null || req.updates() == null) {
+      return response;
+    }
+    List<Map<String, Object>> addedSnapshots = extractSnapshots(req.updates());
+    if (addedSnapshots.isEmpty()) {
+      return response;
+    }
+    TableMetadataView metadata = response.metadata();
+    List<Map<String, Object>> existing =
+        metadata.snapshots() == null ? List.of() : metadata.snapshots();
+    Map<Long, Map<String, Object>> merged = new LinkedHashMap<>();
+    for (Map<String, Object> snapshot : existing) {
+      Long id = snapshotId(snapshot);
+      if (id != null) {
+        merged.put(id, new LinkedHashMap<>(snapshot));
+      }
+    }
+    for (Map<String, Object> snapshot : addedSnapshots) {
+      Long id = snapshotId(snapshot);
+      if (id == null) {
+        continue;
+      }
+      merged.put(id, new LinkedHashMap<>(snapshot));
+    }
+    List<Map<String, Object>> updatedSnapshots =
+        merged.isEmpty() ? List.of() : List.copyOf(merged.values());
+    Long requestSequence = maxSequenceNumber(req);
+    Long maxSequence =
+        requestSequence != null && requestSequence > 0
+            ? requestSequence
+            : maxSequenceFromSnapshots(updatedSnapshots);
+    Integer formatVersion = metadata.formatVersion();
+    if (requestSequence != null && requestSequence > 0) {
+      if (formatVersion == null || formatVersion < 2) {
+        formatVersion = 2;
+      }
+    }
+    Long currentSnapshotId =
+        metadata.currentSnapshotId() == null ? latestSnapshotId(updatedSnapshots) : null;
+    Map<String, String> props =
+        metadata.properties() == null
+            ? new LinkedHashMap<>()
+            : new LinkedHashMap<>(metadata.properties());
+    if (maxSequence != null && maxSequence > 0) {
+      props.put("last-sequence-number", Long.toString(maxSequence));
+    }
+    if (currentSnapshotId != null && currentSnapshotId > 0) {
+      props.put("current-snapshot-id", Long.toString(currentSnapshotId));
+    }
+    TableMetadataView updated =
+        new TableMetadataView(
+            formatVersion,
+            metadata.tableUuid(),
+            metadata.location(),
+            metadata.metadataLocation(),
+            metadata.lastUpdatedMs(),
+            Map.copyOf(props),
+            metadata.lastColumnId(),
+            metadata.currentSchemaId(),
+            metadata.defaultSpecId(),
+            metadata.lastPartitionId(),
+            metadata.defaultSortOrderId(),
+            currentSnapshotId != null ? currentSnapshotId : metadata.currentSnapshotId(),
+            maxSequence != null ? maxSequence : metadata.lastSequenceNumber(),
+            metadata.schemas(),
+            metadata.partitionSpecs(),
+            metadata.sortOrders(),
+            metadata.refs(),
+            metadata.snapshotLog(),
+            metadata.metadataLog(),
+            metadata.statistics(),
+            metadata.partitionStatistics(),
+            updatedSnapshots);
+    return new CommitTableResponseDto(response.metadataLocation(), updated);
+  }
+
+  private List<Map<String, Object>> extractSnapshots(List<Map<String, Object>> updates) {
+    List<Map<String, Object>> out = new ArrayList<>();
+    for (Map<String, Object> update : updates) {
+      if (update == null) {
+        continue;
+      }
+      String action = asString(update.get("action"));
+      if (!"add-snapshot".equals(action)) {
+        continue;
+      }
+      @SuppressWarnings("unchecked")
+      Map<String, Object> snapshot =
+          update.get("snapshot") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+      if (snapshot == null || snapshot.isEmpty()) {
+        continue;
+      }
+      out.add(snapshot);
+    }
+    return out;
+  }
+
+  private Long snapshotId(Map<String, Object> snapshot) {
+    if (snapshot == null) {
+      return null;
+    }
+    return parseLong(snapshot.get("snapshot-id"));
+  }
+
+  private Long latestSnapshotId(List<Map<String, Object>> snapshots) {
+    Long latest = null;
+    for (Map<String, Object> snapshot : snapshots) {
+      Long id = snapshotId(snapshot);
+      if (id != null && id > 0) {
+        latest = id;
+      }
+    }
+    return latest;
+  }
+
+  private Long maxSequenceFromSnapshots(List<Map<String, Object>> snapshots) {
+    Long max = null;
+    for (Map<String, Object> snapshot : snapshots) {
+      if (snapshot == null) {
+        continue;
+      }
+      Long seq = parseLong(snapshot.get("sequence-number"));
+      if (seq == null || seq <= 0) {
+        continue;
+      }
+      max = max == null ? seq : Math.max(max, seq);
+    }
+    return max;
   }
 
   private static String asString(Object value) {
@@ -495,6 +801,17 @@ public class TableCommitService {
       ResourceId connectorId,
       List<String> namespacePath,
       String tableName) {
+    if (LOG.isDebugEnabled()) {
+      String namespace =
+          namespacePath == null
+              ? "<missing>"
+              : (namespacePath.isEmpty() ? "<empty>" : String.join(".", namespacePath));
+      String connector =
+          connectorId == null || connectorId.getId().isBlank() ? "<missing>" : connectorId.getId();
+      LOG.debugf(
+          "Connector sync request namespace=%s table=%s connectorId=%s",
+          namespace, tableName == null ? "<missing>" : tableName, connector);
+    }
     try {
       sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
     } catch (Throwable e) {

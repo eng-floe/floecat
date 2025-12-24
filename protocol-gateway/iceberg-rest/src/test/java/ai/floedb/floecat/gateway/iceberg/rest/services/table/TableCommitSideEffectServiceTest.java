@@ -23,8 +23,10 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleSer
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService.MaterializeResult;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -35,11 +37,14 @@ class TableCommitSideEffectServiceTest {
   private final TableCommitSideEffectService service = new TableCommitSideEffectService();
   private final MaterializeMetadataService materializeMetadataService =
       mock(MaterializeMetadataService.class);
+  private final SnapshotMetadataService snapshotMetadataService =
+      mock(SnapshotMetadataService.class);
   private final TableLifecycleService tableLifecycleService = mock(TableLifecycleService.class);
 
   @BeforeEach
   void setUp() {
     service.materializeMetadataService = materializeMetadataService;
+    service.snapshotMetadataService = snapshotMetadataService;
     service.tableLifecycleService = tableLifecycleService;
   }
 
@@ -90,6 +95,48 @@ class TableCommitSideEffectServiceTest {
     assertEquals(
         "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json",
         request.getSpec().getPropertiesOrThrow("metadata-location"));
+  }
+
+  @Test
+  void materializeMetadataSkipsWhenNoLocationProvided() throws Exception {
+    TableMetadataView base =
+        metadata("s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
+    Map<String, String> props = new LinkedHashMap<>(base.properties());
+    props.remove("metadata-location");
+    TableMetadataView noLocation =
+        new TableMetadataView(
+            base.formatVersion(),
+            base.tableUuid(),
+            base.location(),
+            null,
+            base.lastUpdatedMs(),
+            props,
+            base.lastColumnId(),
+            base.currentSchemaId(),
+            base.defaultSpecId(),
+            base.lastPartitionId(),
+            base.defaultSortOrderId(),
+            base.currentSnapshotId(),
+            base.lastSequenceNumber(),
+            base.schemas(),
+            base.partitionSpecs(),
+            base.sortOrders(),
+            base.refs(),
+            base.snapshotLog(),
+            base.metadataLog(),
+            base.statistics(),
+            base.partitionStatistics(),
+            base.snapshots());
+    when(materializeMetadataService.materialize("cat.db", "orders", noLocation, null))
+        .thenReturn(new MaterializeResult(null, noLocation));
+
+    MaterializeMetadataResult result =
+        service.materializeMetadata("cat.db", null, "orders", null, noLocation, null);
+
+    assertNull(result.error());
+    assertSame(noLocation, result.metadata());
+    assertNull(result.metadataLocation());
+    verify(tableLifecycleService, never()).updateTable(any());
   }
 
   @Test

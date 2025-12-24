@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
@@ -212,6 +213,62 @@ class TableResponseMapperTest {
 
     assertEquals(
         "s3://yb-iceberg-tpcds/trino_test/metadata", result.config().get("write.metadata.path"));
+  }
+
+  @Test
+  void loadResultUsesTablePropertiesWhenMetadataMissing() {
+    Table table =
+        FIXTURE.table().toBuilder()
+            .setDisplayName("orders")
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .putProperties("format-version", "1")
+            .putProperties(
+                "current-schema-id",
+                Integer.toString(
+                    FIXTURE_METADATA_VIEW.currentSchemaId() == null
+                        ? 0
+                        : FIXTURE_METADATA_VIEW.currentSchemaId()))
+            .putProperties(
+                "last-column-id",
+                Integer.toString(
+                    FIXTURE_METADATA_VIEW.lastColumnId() == null
+                        ? 0
+                        : FIXTURE_METADATA_VIEW.lastColumnId()))
+            .putProperties(
+                "default-spec-id",
+                Integer.toString(
+                    FIXTURE_METADATA_VIEW.defaultSpecId() == null
+                        ? 0
+                        : FIXTURE_METADATA_VIEW.defaultSpecId()))
+            .putProperties(
+                "last-partition-id",
+                Integer.toString(
+                    FIXTURE_METADATA_VIEW.lastPartitionId() == null
+                        ? 0
+                        : FIXTURE_METADATA_VIEW.lastPartitionId()))
+            .putProperties(
+                "default-sort-order-id",
+                Integer.toString(
+                    FIXTURE_METADATA_VIEW.defaultSortOrderId() == null
+                        ? 0
+                        : FIXTURE_METADATA_VIEW.defaultSortOrderId()))
+            .putProperties("last-sequence-number", "0")
+            .putProperties("location", "s3://warehouse/db/orders")
+            .putProperties(
+                "metadata-location", "s3://warehouse/db/orders/metadata/00000-abc.metadata.json")
+            .build();
+
+    Snapshot snapshot = Snapshot.newBuilder().setSnapshotId(11L).setSequenceNumber(1L).build();
+    LoadTableResultDto result =
+        TableResponseMapper.toLoadResult(
+            "orders", table, null, List.of(snapshot), Map.of(), List.of());
+
+    assertNotNull(result.metadata());
+    assertEquals(1, result.metadata().formatVersion());
+    assertNotNull(result.metadata().tableUuid());
+    assertEquals(1L, result.metadata().lastSequenceNumber());
+    assertNotNull(result.metadata().lastUpdatedMs());
+    assertFalse(result.metadata().schemas().isEmpty());
   }
 
   @Test

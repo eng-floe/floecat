@@ -4,6 +4,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitException;
+import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -18,6 +19,7 @@ public class StageMaterializationService {
 
   @Inject AccountContext accountContext;
   @Inject StageCommitProcessor stageCommitProcessor;
+  @Inject StagedTableService stagedTableService;
 
   public StageMaterializationResult materializeIfTableMissing(
       StatusRuntimeException resolutionFailure,
@@ -33,11 +35,10 @@ public class StageMaterializationService {
     }
     String stageIdToUse = resolveStageId(request, transactionStageId);
     if (stageIdToUse == null) {
-      throw StageCommitException.validation(
-          "stage-id is required when committing a staged create for "
-              + String.join(".", namespacePath)
-              + "."
-              + table);
+      stageIdToUse = resolveSingleStageId(catalogName, namespacePath, table);
+      if (stageIdToUse == null) {
+        return null;
+      }
     }
 
     LOG.infof(
@@ -74,6 +75,18 @@ public class StageMaterializationService {
       return headerStageId;
     }
     return null;
+  }
+
+  private String resolveSingleStageId(
+      String catalogName, List<String> namespacePath, String table) {
+    String accountId = accountContext.getAccountId();
+    if (accountId == null || accountId.isBlank()) {
+      return null;
+    }
+    return stagedTableService
+        .findSingleStage(accountId, catalogName, namespacePath, table)
+        .map(entry -> entry.key().stageId())
+        .orElse(null);
   }
 
   public record StageMaterializationResult(String stageId, StageCommitResult result) {

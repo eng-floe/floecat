@@ -15,11 +15,13 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.CreateTableResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
+import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.ListTablesRequest;
 import ai.floedb.floecat.catalog.rpc.ListTablesResponse;
+import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -63,7 +65,9 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.RestAssured;
 import jakarta.ws.rs.core.MediaType;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -643,6 +647,90 @@ class TableResourceTest extends AbstractRestResourceTest {
     verify(tableStub, never()).createTable(any());
     StagedTableKey key = new StagedTableKey("account1", "foo", List.of("db"), "orders", "stage-1");
     assertTrue(stageRepository.get(key).isPresent());
+  }
+
+  @Test
+  void stageCreateUsesNamespaceLocationWhenMissingRequestLocation() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    Namespace ns =
+        Namespace.newBuilder()
+            .setResourceId(nsId)
+            .setDisplayName("db")
+            .putProperties("location", "s3://warehouse/db")
+            .build();
+    when(namespaceStub.getNamespace(any()))
+        .thenReturn(GetNamespaceResponse.newBuilder().setNamespace(ns).build());
+
+    Map<String, Object> field = new LinkedHashMap<>();
+    field.put("id", 1);
+    field.put("name", "id");
+    field.put("required", true);
+    field.put("type", "long");
+    Map<String, Object> schema = new LinkedHashMap<>();
+    schema.put("schema-id", 1);
+    schema.put("last-column-id", 1);
+    schema.put("type", "struct");
+    schema.put("fields", List.of(field));
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("name", "orders");
+    payload.put("schema", schema);
+    payload.put("stage-create", true);
+
+    given()
+        .body(payload)
+        .contentType(MediaType.APPLICATION_JSON)
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(200)
+        .body("metadata.location", equalTo("s3://warehouse/db/orders"));
+  }
+
+  @Test
+  void createTableUsesNamespaceLocationWhenMissingRequestLocation() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    Namespace ns =
+        Namespace.newBuilder()
+            .setResourceId(nsId)
+            .setDisplayName("db")
+            .putProperties("location", "s3://warehouse/db")
+            .build();
+    when(namespaceStub.getNamespace(any()))
+        .thenReturn(GetNamespaceResponse.newBuilder().setNamespace(ns).build());
+
+    Table created =
+        baseTable(ResourceId.newBuilder().setId("cat:db:orders").build(), nsId)
+            .setDisplayName("orders")
+            .build();
+    when(tableStub.createTable(any()))
+        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+
+    Map<String, Object> field = new LinkedHashMap<>();
+    field.put("id", 1);
+    field.put("name", "id");
+    field.put("required", true);
+    field.put("type", "long");
+    Map<String, Object> schema = new LinkedHashMap<>();
+    schema.put("schema-id", 1);
+    schema.put("last-column-id", 1);
+    schema.put("type", "struct");
+    schema.put("fields", List.of(field));
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("name", "orders");
+    payload.put("schema", schema);
+
+    given()
+        .body(payload)
+        .contentType(MediaType.APPLICATION_JSON)
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(200)
+        .body("metadata.location", equalTo("s3://warehouse/db/orders"));
   }
 
   @Test

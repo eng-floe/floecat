@@ -21,6 +21,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitException;
+import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -29,6 +30,7 @@ import io.grpc.StatusRuntimeException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -55,11 +57,15 @@ class StageMaterializationServiceTest {
   private final StageMaterializationService service = new StageMaterializationService();
   private final AccountContext accountContext = mock(AccountContext.class);
   private final StageCommitProcessor stageCommitProcessor = mock(StageCommitProcessor.class);
+  private final StagedTableService stagedTableService = mock(StagedTableService.class);
 
   @BeforeEach
   void setUp() {
     service.accountContext = accountContext;
     service.stageCommitProcessor = stageCommitProcessor;
+    service.stagedTableService = stagedTableService;
+    when(stagedTableService.findSingleStage(any(), any(), any(), any()))
+        .thenReturn(Optional.empty());
   }
 
   @Test
@@ -108,24 +114,20 @@ class StageMaterializationServiceTest {
   }
 
   @Test
-  void materializeIfTableMissingRequiresStageId() {
+  void materializeIfTableMissingSkipsWhenNoStageId() {
     when(accountContext.getAccountId()).thenReturn("account-required");
 
-    StageCommitException ex =
-        assertThrows(
-            StageCommitException.class,
-            () ->
-                service.materializeIfTableMissing(
-                    Status.NOT_FOUND.asRuntimeException(),
-                    "pref",
-                    "cat",
-                    List.of("db"),
-                    "orders",
-                    new TableRequests.Commit(null, null, null, null, null, List.of(), List.of()),
-                    null));
+    StageMaterializationService.StageMaterializationResult result =
+        service.materializeIfTableMissing(
+            Status.NOT_FOUND.asRuntimeException(),
+            "pref",
+            "cat",
+            List.of("db"),
+            "orders",
+            new TableRequests.Commit(null, null, null, null, null, List.of(), List.of()),
+            null);
 
-    assertEquals(
-        "stage-id is required when committing a staged create for db.orders", ex.getMessage());
+    assertNull(result);
     verify(stageCommitProcessor, never()).commitStage(any(), any(), any(), any(), any(), any());
   }
 

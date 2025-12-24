@@ -1,10 +1,14 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.CreateSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -12,6 +16,7 @@ import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortOrder;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -35,6 +40,7 @@ class SnapshotMetadataServiceTest {
     service = new SnapshotMetadataService();
     service.grpc = mock(GrpcWithHeaders.class);
     service.mapper = new ObjectMapper();
+    service.snapshotClient = mock(SnapshotClient.class);
     tableSupport = mock(TableGatewaySupport.class);
   }
 
@@ -84,6 +90,33 @@ class SnapshotMetadataServiceTest {
     IcebergErrorResponse error = (IcebergErrorResponse) response.getEntity();
     assertEquals("set-snapshot-ref requires ref-name", error.error().message());
     verifyNoInteractions(tableSupport);
+  }
+
+  @Test
+  void applySnapshotUpdatesUsesTableSchemaJsonWhenMissingInSnapshot() {
+    Table table = Table.newBuilder().setSchemaJson(FIXTURE.table().getSchemaJson()).build();
+    when(service.snapshotClient.createSnapshot(any()))
+        .thenReturn(CreateSnapshotResponse.newBuilder().build());
+    Map<String, Object> snapshot = new LinkedHashMap<>();
+    snapshot.put("snapshot-id", 11L);
+    snapshot.put("schema-id", 0);
+    snapshot.put("sequence-number", 1L);
+    snapshot.put("timestamp-ms", 123L);
+    Map<String, Object> update = new LinkedHashMap<>();
+    update.put("action", "add-snapshot");
+    update.put("snapshot", snapshot);
+
+    Response response =
+        service.applySnapshotUpdates(
+            tableSupport,
+            ResourceId.newBuilder().setId("cat:db:orders").build(),
+            List.of("db"),
+            "orders",
+            () -> table,
+            List.of(update),
+            "commit-key");
+
+    assertNull(response);
   }
 
   @Test

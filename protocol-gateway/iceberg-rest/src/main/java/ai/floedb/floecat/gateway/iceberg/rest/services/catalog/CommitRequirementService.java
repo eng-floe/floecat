@@ -58,7 +58,14 @@ public class CommitRequirementService {
                       && !metadata.getTableUuid().isBlank()
                   ? metadata.getTableUuid()
                   : null;
-          if (metadataUuid != null && expected.equals(metadataUuid)) {
+          if (metadataUuid != null) {
+            if (expected.equals(metadataUuid)) {
+              continue;
+            }
+            return conflictErrorFactory.apply("assert-table-uuid failed");
+          }
+          String fallbackUuid = resolveTableUuid(table);
+          if (fallbackUuid != null && expected.equals(fallbackUuid)) {
             continue;
           }
           return conflictErrorFactory.apply("assert-table-uuid failed");
@@ -166,6 +173,23 @@ public class CommitRequirementService {
     }
     if (value instanceof String text && !text.isBlank()) {
       return Integer.parseInt(text);
+    }
+    return null;
+  }
+
+  private static String resolveTableUuid(Table table) {
+    if (table == null) {
+      return null;
+    }
+    String fromProps = table.getPropertiesMap().get("table-uuid");
+    if (fromProps != null && !fromProps.isBlank()) {
+      return fromProps;
+    }
+    if (table.hasResourceId()) {
+      String id = table.getResourceId().getId();
+      if (id != null && !id.isBlank()) {
+        return id;
+      }
     }
     return null;
   }

@@ -1,5 +1,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
@@ -10,7 +11,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.inmemory.InMemoryFileIO;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
@@ -43,6 +47,115 @@ class MaterializeMetadataServiceTest {
         !second.metadataLocation().equals(first.metadataLocation()),
         "Expected subsequent materialization to produce a new metadata file");
     assertTrue(readFile(service.fileIo(), second.metadataLocation()).contains("\"table-uuid\""));
+  }
+
+  @Test
+  void materializeUsesTableLocationWhenMetadataLocationMissing() throws Exception {
+    TestMaterializeMetadataService service = new TestMaterializeMetadataService();
+    service.setMapper(MAPPER);
+
+    TableMetadataView base =
+        TableMetadataBuilder.fromCatalog(
+            "orders",
+            FIXTURE.table(),
+            new LinkedHashMap<>(FIXTURE.table().getPropertiesMap()),
+            FIXTURE.metadata(),
+            FIXTURE.snapshots());
+    Map<String, String> props = new LinkedHashMap<>(base.properties());
+    props.remove("metadata-location");
+    props.put("location", "s3://warehouse/db/orders");
+    TableMetadataView metadata =
+        new TableMetadataView(
+            base.formatVersion(),
+            base.tableUuid(),
+            "s3://warehouse/db/orders",
+            null,
+            base.lastUpdatedMs(),
+            props,
+            base.lastColumnId(),
+            base.currentSchemaId(),
+            base.defaultSpecId(),
+            base.lastPartitionId(),
+            base.defaultSortOrderId(),
+            base.currentSnapshotId(),
+            base.lastSequenceNumber(),
+            base.schemas(),
+            base.partitionSpecs(),
+            base.sortOrders(),
+            base.refs(),
+            base.snapshotLog(),
+            base.metadataLog(),
+            base.statistics(),
+            base.partitionStatistics(),
+            base.snapshots());
+
+    MaterializeResult result = service.materialize("sales.us", "orders", metadata, null);
+
+    assertTrue(
+        result.metadataLocation().contains("/orders/metadata/"),
+        "Expected metadata location to include table metadata directory");
+  }
+
+  @Test
+  void materializeUpdatesLastSequenceNumberFromSnapshots() throws Exception {
+    TestMaterializeMetadataService service = new TestMaterializeMetadataService();
+    service.setMapper(MAPPER);
+
+    TableMetadataView base =
+        TableMetadataBuilder.fromCatalog(
+            "orders",
+            FIXTURE.table(),
+            new LinkedHashMap<>(FIXTURE.table().getPropertiesMap()),
+            null,
+            List.of());
+    Map<String, Object> snapshot = new LinkedHashMap<>();
+    snapshot.put("snapshot-id", 101L);
+    snapshot.put("sequence-number", 1L);
+    snapshot.put("timestamp-ms", System.currentTimeMillis());
+    snapshot.put("manifest-list", "s3://warehouse/orders/metadata/snap-101.avro");
+    snapshot.put("schema-id", 0);
+    Map<String, String> props = new LinkedHashMap<>(base.properties());
+    props.put("format-version", "2");
+    props.put("current-snapshot-id", "101");
+    Map<String, Object> refs = Map.of("main", Map.of("snapshot-id", 101L, "type", "branch"));
+    List<Map<String, Object>> snapshotLog =
+        List.of(Map.of("snapshot-id", 101L, "timestamp-ms", System.currentTimeMillis()));
+    TableMetadataView withSnapshot =
+        new TableMetadataView(
+            2,
+            base.tableUuid(),
+            base.location(),
+            "s3://warehouse/orders/metadata/00000-seed.metadata.json",
+            base.lastUpdatedMs(),
+            props,
+            base.lastColumnId(),
+            base.currentSchemaId(),
+            base.defaultSpecId(),
+            base.lastPartitionId(),
+            base.defaultSortOrderId(),
+            101L,
+            0L,
+            base.schemas(),
+            base.partitionSpecs(),
+            base.sortOrders(),
+            refs,
+            snapshotLog,
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(snapshot));
+
+    MaterializeResult result =
+        service.materialize("sales.us", "orders", withSnapshot, withSnapshot.metadataLocation());
+    String payload = readFile(service.fileIo(), result.metadataLocation());
+    TableMetadata parsed =
+        TableMetadataParser.fromJson(result.metadataLocation(), MAPPER.readTree(payload));
+    long maxSnapshotSeq =
+        parsed.snapshots().stream().mapToLong(snap -> snap.sequenceNumber()).max().orElse(0L);
+    assertEquals(1L, maxSnapshotSeq, "Expected snapshot sequence to be 1");
+    assertTrue(
+        parsed.lastSequenceNumber() >= maxSnapshotSeq,
+        "Expected last-sequence-number to be >= snapshot sequence");
   }
 
   private TableMetadataView fixtureMetadata(String location) {

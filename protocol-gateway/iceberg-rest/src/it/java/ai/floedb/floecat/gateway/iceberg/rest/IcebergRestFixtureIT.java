@@ -575,6 +575,320 @@ class IcebergRestFixtureIT {
   }
 
   @Test
+  void trinoCreateTableSequenceMaterializesMetadata() throws Exception {
+    String namespace = uniqueName("it_ns_");
+    String table = uniqueName("it_tbl_");
+    createNamespace(namespace);
+
+    try {
+      given()
+          .spec(spec)
+          .when()
+          .head("/v1/" + CATALOG + "/namespaces/" + namespace)
+          .then()
+          .statusCode(204);
+
+      given()
+          .spec(spec)
+          .when()
+          .get("/v1/" + CATALOG + "/namespaces/" + namespace)
+          .then()
+          .statusCode(200);
+
+      Map<String, Object> createPayload = new LinkedHashMap<>();
+      createPayload.put("name", table);
+      createPayload.put("location", null);
+      createPayload.put(
+          "schema",
+          Map.of(
+              "type",
+              "struct",
+              "schema-id",
+              0,
+              "fields",
+              List.of(Map.of("id", 1, "name", "i", "required", false, "type", "int"))));
+      createPayload.put("partition-spec", Map.of("spec-id", 0, "fields", List.of()));
+      createPayload.put("write-order", Map.of("order-id", 0, "fields", List.of()));
+      createPayload.put(
+          "properties",
+          Map.of(
+              "write.format.default",
+              "PARQUET",
+              "format-version",
+              "2",
+              "write.parquet.compression-codec",
+              ""));
+      createPayload.put("stage-create", false);
+
+      given()
+          .spec(spec)
+          .body(createPayload)
+          .when()
+          .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables")
+          .then()
+          .statusCode(200);
+
+      String tableBody =
+          given()
+              .spec(spec)
+              .when()
+              .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+              .then()
+              .statusCode(200)
+              .extract()
+              .asString();
+      JsonNode tableNode = MAPPER.readTree(tableBody);
+      JsonNode metadataNode = tableNode.path("metadata");
+      String tableUuid = metadataNode.path("table-uuid").asText(null);
+      if (tableUuid == null || tableUuid.isBlank()) {
+        tableUuid = metadataNode.path("properties").path("table-uuid").asText(null);
+      }
+      Assertions.assertNotNull(tableUuid, "table-uuid should be available");
+
+      Map.Entry<Long, String> fixtureManifest =
+          fixtureManifestLists.entrySet().stream().findFirst().orElseThrow();
+      long snapshotId = fixtureManifest.getKey();
+      String manifestList = TestS3Fixtures.bucketUri(fixtureManifest.getValue());
+      Map<String, Object> metricsPayload =
+          Map.of(
+              "report-type",
+              "commit-report",
+              "table-name",
+              "sales_rest." + namespace + "." + table,
+              "snapshot-id",
+              snapshotId,
+              "sequence-number",
+              1,
+              "operation",
+              "append",
+              "metrics",
+              Map.of(
+                  "total-duration",
+                  Map.of("count", 1, "time-unit", "nanoseconds", "total-duration", 78018250),
+                  "attempts",
+                  Map.of("unit", "count", "value", 1),
+                  "total-data-files",
+                  Map.of("unit", "count", "value", 0),
+                  "total-delete-files",
+                  Map.of("unit", "count", "value", 0),
+                  "total-records",
+                  Map.of("unit", "count", "value", 0),
+                  "total-files-size-bytes",
+                  Map.of("unit", "bytes", "value", 0),
+                  "total-positional-deletes",
+                  Map.of("unit", "count", "value", 0),
+                  "total-equality-deletes",
+                  Map.of("unit", "count", "value", 0)),
+              "metadata",
+              Map.of("engine-version", "478", "engine-name", "trino", "iceberg-version", "1.10.0"));
+
+      given()
+          .spec(spec)
+          .body(metricsPayload)
+          .when()
+          .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table + "/metrics")
+          .then()
+          .statusCode(204);
+
+      given()
+          .spec(spec)
+          .when()
+          .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+          .then()
+          .statusCode(200);
+
+      Map<String, Object> commitPayload =
+          new LinkedHashMap<>();
+      Map<String, Object> assertTableUuid = new LinkedHashMap<>();
+      assertTableUuid.put("type", "assert-table-uuid");
+      assertTableUuid.put("uuid", tableUuid);
+      Map<String, Object> assertRefSnapshot = new LinkedHashMap<>();
+      assertRefSnapshot.put("type", "assert-ref-snapshot-id");
+      assertRefSnapshot.put("ref", "main");
+      assertRefSnapshot.put("snapshot-id", null);
+      commitPayload.put("requirements", List.of(assertTableUuid, assertRefSnapshot));
+      commitPayload.put(
+          "updates",
+          List.of(
+              Map.of(
+                  "action",
+                  "remove-properties",
+                  "removals",
+                  List.of("write.parquet.compression-codec", "format-version")),
+              Map.of(
+                  "action",
+                  "add-snapshot",
+                  "snapshot",
+                  Map.of(
+                      "sequence-number",
+                      1,
+                      "snapshot-id",
+                      snapshotId,
+                      "timestamp-ms",
+                      System.currentTimeMillis(),
+                      "summary",
+                      Map.of("operation", "append", "trino_user", "trino"),
+                      "manifest-list",
+                      manifestList,
+                      "schema-id",
+                      0)),
+              Map.of(
+                  "action",
+                  "set-snapshot-ref",
+                  "ref-name",
+                  "main",
+                  "snapshot-id",
+                  snapshotId,
+                  "type",
+                  "branch")));
+
+      String commitBody =
+          given()
+              .spec(spec)
+              .body(commitPayload)
+              .when()
+              .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+              .then()
+              .statusCode(200)
+              .extract()
+              .asString();
+
+      JsonNode commitNode = MAPPER.readTree(commitBody).path("metadata");
+      Assertions.assertEquals(snapshotId, commitNode.path("current-snapshot-id").asLong());
+      Assertions.assertTrue(
+          commitNode.path("last-sequence-number").asLong() >= 1L,
+          "last-sequence-number should be >= 1");
+      Assertions.assertEquals(
+          snapshotId,
+          commitNode.path("refs").path("main").path("snapshot-id").asLong());
+      Assertions.assertTrue(
+          commitNode.path("properties").path("metadata-location").asText("").contains("/metadata/"),
+          "metadata-location should be populated");
+    } finally {
+      deleteTableResource(namespace, table);
+      deleteNamespaceResource(namespace);
+    }
+  }
+
+  @Test
+  void duckdbCreateTableSequenceMaterializesMetadata() throws Exception {
+    String namespace = uniqueName("it_ns_");
+    String table = uniqueName("it_tbl_");
+    createNamespace(namespace);
+
+    try {
+      given()
+          .spec(spec)
+          .when()
+          .head("/v1/" + CATALOG + "/namespaces/" + namespace)
+          .then()
+          .statusCode(204);
+
+      given()
+          .spec(spec)
+          .when()
+          .head("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+          .then()
+          .statusCode(404);
+
+      Map<String, Object> createPayload = new LinkedHashMap<>();
+      createPayload.put("stage-create", true);
+      createPayload.put("name", table);
+      createPayload.put(
+          "schema",
+          Map.of(
+              "type",
+              "struct",
+              "fields",
+              List.of(Map.of("name", "event_id", "id", 1, "type", "int", "required", false)),
+              "schema-id",
+              0));
+      createPayload.put("partition-spec", Map.of("spec-id", 0, "fields", List.of()));
+      createPayload.put("write-order", Map.of("order-id", 0, "fields", List.of()));
+      createPayload.put("properties", Map.of());
+
+      String stageId =
+          given()
+              .spec(spec)
+              .body(createPayload)
+              .when()
+              .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables")
+              .then()
+              .statusCode(200)
+              .extract()
+              .path("'stage-id'");
+
+      Assertions.assertNotNull(stageId, "stage-id should be returned");
+
+      Map<String, Object> commitPayload = new LinkedHashMap<>();
+      commitPayload.put("requirements", List.of(Map.of("type", "assert-create")));
+      commitPayload.put(
+          "updates",
+          List.of(
+              Map.of("action", "assign-uuid", "uuid", table),
+              Map.of("action", "upgrade-format-version", "format-version", 1),
+              Map.of(
+                  "action",
+                  "add-schema",
+                  "last-column-id",
+                  1,
+                  "schema",
+                  Map.of(
+                      "type",
+                      "struct",
+                      "fields",
+                      List.of(
+                          Map.of("name", "event_id", "id", 1, "type", "int", "required", false)),
+                      "schema-id",
+                      0,
+                      "identifier-field-ids",
+                      List.of())),
+              Map.of("action", "set-current-schema", "schema-id", 0),
+              Map.of("action", "add-spec", "spec", Map.of("spec-id", 0, "fields", List.of())),
+              Map.of("action", "set-default-spec", "spec-id", 0),
+              Map.of(
+                  "action",
+                  "add-sort-order",
+                  "sort-order",
+                  Map.of("order-id", 0, "fields", List.of())),
+              Map.of("action", "set-default-sort-order", "sort-order-id", 0),
+              Map.of(
+                  "action",
+                  "set-location",
+                  "location",
+                  String.format("s3://floecat/%s/%s", namespace, table))));
+      commitPayload.put(
+          "identifier", Map.of("name", table, "namespace", List.of(namespace)));
+
+      String commitBody =
+          given()
+              .spec(spec)
+              .header("Iceberg-Stage-Id", stageId)
+              .body(commitPayload)
+              .when()
+              .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+              .then()
+              .statusCode(200)
+              .extract()
+              .asString();
+
+      JsonNode commitNode = MAPPER.readTree(commitBody).path("metadata");
+      Assertions.assertTrue(
+          commitNode.path("properties").path("metadata-location").asText("").contains("/metadata/"),
+          "metadata-location should be populated");
+      Assertions.assertEquals(1, commitNode.path("format-version").asInt());
+      Assertions.assertTrue(
+          commitNode.path("current-snapshot-id").isMissingNode()
+              || commitNode.path("current-snapshot-id").isNull()
+              || commitNode.path("current-snapshot-id").asLong() <= 0,
+          "current-snapshot-id should be empty on create");
+    } finally {
+      deleteTableResource(namespace, table);
+      deleteNamespaceResource(namespace);
+    }
+  }
+
+  @Test
   void listsTablesInSeededNamespace() {
     registerTable(
         "core",

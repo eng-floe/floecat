@@ -191,6 +191,50 @@ class TableCommitServiceTest {
   }
 
   @Test
+  void commitPrefersStageMetadataWhenLocationMissing() {
+    Table stagedTable = tableRecord("cat:db:orders", null);
+    TableRequests.Create createRequest =
+        new TableRequests.Create(
+            "orders",
+            FIXTURE.table().getSchemaJson(),
+            null,
+            "s3://warehouse/db/orders",
+            Map.of(),
+            null,
+            null,
+            true);
+    TableMetadataView stagedMetadata =
+        TableMetadataBuilder.fromCreateRequest("orders", stagedTable, createRequest);
+    StageCommitResult stageResult =
+        new StageCommitResult(
+            stagedTable, new LoadTableResultDto(null, stagedMetadata, Map.of(), List.of()));
+    ResourceId tableId = stagedTable.getResourceId();
+    StageResolution resolution = new StageResolution(tableId, stageResult, "stage-1", null);
+    when(stageResolver.resolve(any())).thenReturn(resolution);
+    TableUpdatePlanner.UpdatePlan successPlan =
+        TableUpdatePlanner.UpdatePlan.success(TableSpec.newBuilder(), FieldMask.newBuilder());
+    when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(successPlan);
+    when(tableSupport.loadCurrentMetadata(stagedTable)).thenReturn(null);
+    ArgumentCaptor<CommitTableResponseDto> responseCaptor =
+        ArgumentCaptor.forClass(CommitTableResponseDto.class);
+    when(sideEffectService.finalizeCommitResponse(
+            eq("db"),
+            eq("orders"),
+            eq(tableId),
+            eq(stagedTable),
+            responseCaptor.capture(),
+            eq(false)))
+        .thenAnswer(inv -> PostCommitResult.success(inv.getArgument(4)));
+
+    Response response = service.commit(command(stageCommitRequest()));
+
+    assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
+    CommitTableResponseDto captured = responseCaptor.getValue();
+    assertTrue(captured.metadata().formatVersion() != null);
+    assertTrue(captured.metadata().schemas() != null && !captured.metadata().schemas().isEmpty());
+  }
+
+  @Test
   void commitIgnoresStageMetadataWhenSnapshotUpdatesPresent() {
     String catalogMetadataLocation = FIXTURE.metadataLocation();
     String stageMetadataLocation = "s3://stage/orders/metadata/00001-abc.metadata.json";
@@ -284,11 +328,14 @@ class TableCommitServiceTest {
   }
 
   private Table tableRecord(String id, String metadataLocation) {
-    return Table.newBuilder()
-        .setResourceId(ResourceId.newBuilder().setId(id))
-        .putProperties("metadata-location", metadataLocation)
-        .putProperties("location", FIXTURE.table().getPropertiesOrDefault("location", ""))
-        .build();
+    Table.Builder builder =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId(id))
+            .putProperties("location", FIXTURE.table().getPropertiesOrDefault("location", ""));
+    if (metadataLocation != null) {
+      builder.putProperties("metadata-location", metadataLocation);
+    }
+    return builder.build();
   }
 
   private TableMetadataView metadataView(String metadataLocation) {

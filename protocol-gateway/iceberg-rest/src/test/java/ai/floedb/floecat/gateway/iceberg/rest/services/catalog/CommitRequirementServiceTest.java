@@ -51,6 +51,43 @@ class CommitRequirementServiceTest {
   }
 
   @Test
+  void validateRequirementsUsesTablePropertyWhenMetadataMissing() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .putProperties("table-uuid", "prop-uuid")
+            .build();
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-table-uuid", "uuid", "prop-uuid")),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNull(resp);
+  }
+
+  @Test
+  void validateRequirementsUsesResourceIdWhenMetadataMissing() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .build();
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-table-uuid", "uuid", "cat:db:orders")),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNull(resp);
+  }
+
+  @Test
   void validateRequirementsChecksRefSnapshotIds() {
     Table table =
         Table.newBuilder()

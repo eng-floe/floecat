@@ -122,18 +122,66 @@ public class MaterializeMetadataService {
   private String canonicalMetadataJson(TableMetadataView metadata, String metadataLocation) {
     try {
       JsonNode node = mapper.valueToTree(metadata);
-      if (node instanceof ObjectNode objectNode) {
+      ObjectNode objectNode = node instanceof ObjectNode obj ? obj : null;
+      if (objectNode != null) {
         long snapshotId = objectNode.path("current-snapshot-id").asLong(-1L);
         if (snapshotId <= 0) {
           objectNode.remove("current-snapshot-id");
+        }
+        long maxSequence = maxSnapshotSequence(objectNode);
+        long metadataMaxSequence = maxSnapshotSequence(metadata);
+        if (metadataMaxSequence > maxSequence) {
+          maxSequence = metadataMaxSequence;
+        }
+        long metadataDeclared = declaredSequence(metadata);
+        if (metadataDeclared > maxSequence) {
+          maxSequence = metadataDeclared;
+        }
+        if (maxSequence > 0) {
+          long existingSequence = objectNode.path("last-sequence-number").asLong(-1L);
+          if (existingSequence < maxSequence) {
+            objectNode.put("last-sequence-number", maxSequence);
+          }
         }
         long lastUpdated = objectNode.path("last-updated-ms").asLong(-1L);
         if (lastUpdated <= 0) {
           objectNode.put("last-updated-ms", System.currentTimeMillis());
         }
+        if (LOG.isDebugEnabled()) {
+          long debugSeq = objectNode.path("last-sequence-number").asLong(-1L);
+          long debugSnapSeq = maxSnapshotSequence(objectNode);
+          Long debugMetaSeq = metadata == null ? null : metadata.lastSequenceNumber();
+          String debugPropSeq =
+              metadata == null || metadata.properties() == null
+                  ? null
+                  : metadata.properties().get("last-sequence-number");
+          LOG.debugf(
+              "Materialize sequence debug metaSeq=%s propSeq=%s jsonSeq=%d jsonSnapMax=%d",
+              debugMetaSeq, debugPropSeq, debugSeq, debugSnapSeq);
+        }
       }
-      TableMetadata parsed = TableMetadataParser.fromJson(metadataLocation, node);
-      return TableMetadataParser.toJson(parsed);
+      try {
+        TableMetadata parsed = TableMetadataParser.fromJson(metadataLocation, node);
+        return TableMetadataParser.toJson(parsed);
+      } catch (RuntimeException e) {
+        if (objectNode != null) {
+          long maxSequence = maxSnapshotSequence(objectNode);
+          long metadataMaxSequence = maxSnapshotSequence(metadata);
+          if (metadataMaxSequence > maxSequence) {
+            maxSequence = metadataMaxSequence;
+          }
+          long metadataDeclared = declaredSequence(metadata);
+          if (metadataDeclared > maxSequence) {
+            maxSequence = metadataDeclared;
+          }
+          if (maxSequence > 0) {
+            objectNode.put("last-sequence-number", maxSequence);
+            TableMetadata parsed = TableMetadataParser.fromJson(metadataLocation, objectNode);
+            return TableMetadataParser.toJson(parsed);
+          }
+        }
+        throw e;
+      }
     } catch (RuntimeException e) {
       throw new MaterializeMetadataException("Unable to serialize Iceberg metadata", e);
     }
@@ -220,7 +268,7 @@ public class MaterializeMetadataService {
       return null;
     }
     String location = firstNonBlank(metadata.metadataLocation(), metadata.location());
-    String directory = directoryOf(location);
+    String directory = metadataDirectoryFromLocation(location);
     if (directory != null) {
       return directory;
     }
@@ -228,7 +276,7 @@ public class MaterializeMetadataService {
     Map<String, String> props = metadata.properties();
     if (props != null && !props.isEmpty()) {
       String candidate = firstNonBlank(props.get("metadata-location"), props.get("location"));
-      directory = directoryOf(candidate);
+      directory = metadataDirectoryFromLocation(candidate);
       if (directory != null) {
         return directory;
       }
@@ -245,6 +293,107 @@ public class MaterializeMetadataService {
     }
     String base = location.endsWith("/") ? location.substring(0, location.length() - 1) : location;
     return base + "/metadata/";
+  }
+
+  private long maxSnapshotSequence(ObjectNode objectNode) {
+    JsonNode snapshots = objectNode.get("snapshots");
+    if (snapshots == null || !snapshots.isArray()) {
+      return -1L;
+    }
+    long max = -1L;
+    for (JsonNode snapshot : snapshots) {
+      if (snapshot == null || !snapshot.isObject()) {
+        continue;
+      }
+      long seq = snapshot.path("sequence-number").asLong(-1L);
+      if (seq <= 0) {
+        seq = snapshot.path("sequence_number").asLong(-1L);
+      }
+      if (seq <= 0) {
+        seq = snapshot.path("sequenceNumber").asLong(-1L);
+      }
+      if (seq > max) {
+        max = seq;
+      }
+    }
+    return max;
+  }
+
+  private long maxSnapshotSequence(TableMetadataView metadata) {
+    if (metadata == null || metadata.snapshots() == null || metadata.snapshots().isEmpty()) {
+      return -1L;
+    }
+    long max = -1L;
+    for (Map<String, Object> snapshot : metadata.snapshots()) {
+      if (snapshot == null) {
+        continue;
+      }
+      Long seq = parseSequence(snapshot.get("sequence-number"));
+      if (seq == null || seq <= 0) {
+        seq = parseSequence(snapshot.get("sequence_number"));
+      }
+      if (seq == null || seq <= 0) {
+        seq = parseSequence(snapshot.get("sequenceNumber"));
+      }
+      if (seq != null && seq > max) {
+        max = seq;
+      }
+    }
+    return max;
+  }
+
+  private Long parseSequence(Object value) {
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof Number number) {
+      return number.longValue();
+    }
+    String text = value.toString();
+    if (text.isBlank()) {
+      return null;
+    }
+    try {
+      return Long.parseLong(text);
+    } catch (NumberFormatException e) {
+      return null;
+    }
+  }
+
+  private long declaredSequence(TableMetadataView metadata) {
+    if (metadata == null) {
+      return -1L;
+    }
+    Long declared = metadata.lastSequenceNumber();
+    if (declared != null && declared > 0) {
+      return declared;
+    }
+    Map<String, String> props = metadata.properties();
+    if (props == null || props.isEmpty()) {
+      return -1L;
+    }
+    Long propValue = parseSequence(props.get("last-sequence-number"));
+    return propValue != null ? propValue : -1L;
+  }
+
+  private String metadataDirectoryFromLocation(String location) {
+    if (location == null || location.isBlank()) {
+      return null;
+    }
+    if (looksLikeMetadataPath(location)) {
+      return directoryOf(location);
+    }
+    return null;
+  }
+
+  private boolean looksLikeMetadataPath(String location) {
+    if (location == null || location.isBlank()) {
+      return false;
+    }
+    if (location.contains("/metadata/")) {
+      return true;
+    }
+    return location.endsWith(".metadata.json");
   }
 
   private String directoryFromMetadataLog(TableMetadataView metadata) {

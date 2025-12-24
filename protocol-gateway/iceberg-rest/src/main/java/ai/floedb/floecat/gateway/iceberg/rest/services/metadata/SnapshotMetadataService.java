@@ -17,6 +17,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
+import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
@@ -561,6 +562,12 @@ public class SnapshotMetadataService {
     spec.setSchemaId(schemaId);
     String schemaJson = asString(snapshot.get("schema-json"));
     if (schemaJson == null || schemaJson.isBlank()) {
+      String existingSchema = existing == null ? null : existing.getSchemaJson();
+      if (existingSchema != null && !existingSchema.isBlank()) {
+        schemaJson = existingSchema;
+      }
+    }
+    if (schemaJson == null || schemaJson.isBlank()) {
       return validationError("add-snapshot requires schema-json");
     }
     spec.setSchemaJson(schemaJson);
@@ -618,6 +625,11 @@ public class SnapshotMetadataService {
                 .getSnapshot();
         targetSnapshotId = snapshot.getSnapshotId();
       } catch (StatusRuntimeException e) {
+        Long fallbackSnapshotId =
+            table == null ? null : asLong(table.getPropertiesMap().get("current-snapshot-id"));
+        if (fallbackSnapshotId == null || fallbackSnapshotId <= 0) {
+          return null;
+        }
         return validationError("current snapshot not found");
       }
     } else {
@@ -1205,6 +1217,86 @@ public class SnapshotMetadataService {
       LOG.debugf(
           e,
           "Failed to update snapshot metadata-location tableId=%s snapshotId=%s",
+          tableId.getId(),
+          snapshotId);
+    }
+  }
+
+  public void updateSnapshotMetadata(
+      ResourceId tableId, Long snapshotId, TableMetadataView metadata) {
+    if (tableId == null || snapshotId == null || snapshotId <= 0 || metadata == null) {
+      return;
+    }
+    Snapshot snapshot;
+    try {
+      snapshot =
+          snapshotClient
+              .getSnapshot(
+                  GetSnapshotRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
+                      .build())
+              .getSnapshot();
+    } catch (StatusRuntimeException e) {
+      LOG.debugf(
+          e,
+          "Failed to load snapshot %s for metadata update (tableId=%s)",
+          snapshotId,
+          tableId == null ? "<null>" : tableId.getId());
+      return;
+    }
+    if (snapshot == null) {
+      return;
+    }
+    IcebergMetadata.Builder iceberg = snapshotMetadataBuilder(snapshot);
+    if (metadata.tableUuid() != null && !metadata.tableUuid().isBlank()) {
+      iceberg.setTableUuid(metadata.tableUuid());
+    }
+    if (metadata.formatVersion() != null && metadata.formatVersion() > 0) {
+      iceberg.setFormatVersion(metadata.formatVersion());
+    }
+    String metadataLocation = metadata.metadataLocation();
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      iceberg.setMetadataLocation(metadataLocation);
+    }
+    if (metadata.lastUpdatedMs() != null && metadata.lastUpdatedMs() > 0) {
+      iceberg.setLastUpdatedMs(metadata.lastUpdatedMs());
+    }
+    if (metadata.currentSnapshotId() != null && metadata.currentSnapshotId() > 0) {
+      iceberg.setCurrentSnapshotId(metadata.currentSnapshotId());
+    }
+    if (metadata.lastSequenceNumber() != null && metadata.lastSequenceNumber() > 0) {
+      iceberg.setLastSequenceNumber(metadata.lastSequenceNumber());
+    }
+    if (metadata.currentSchemaId() != null && metadata.currentSchemaId() >= 0) {
+      iceberg.setCurrentSchemaId(metadata.currentSchemaId());
+    }
+    if (metadata.lastColumnId() != null && metadata.lastColumnId() >= 0) {
+      iceberg.setLastColumnId(metadata.lastColumnId());
+    }
+    if (metadata.defaultSpecId() != null && metadata.defaultSpecId() >= 0) {
+      iceberg.setDefaultSpecId(metadata.defaultSpecId());
+    }
+    if (metadata.lastPartitionId() != null && metadata.lastPartitionId() >= 0) {
+      iceberg.setLastPartitionId(metadata.lastPartitionId());
+    }
+    if (metadata.defaultSortOrderId() != null && metadata.defaultSortOrderId() >= 0) {
+      iceberg.setDefaultSortOrderId(metadata.defaultSortOrderId());
+    }
+    SnapshotSpec spec =
+        SnapshotSpec.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .putFormatMetadata(ICEBERG_METADATA_KEY, iceberg.build().toByteString())
+            .build();
+    FieldMask mask = FieldMask.newBuilder().addPaths("format_metadata").build();
+    try {
+      snapshotClient.updateSnapshot(
+          UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build());
+    } catch (StatusRuntimeException e) {
+      LOG.debugf(
+          e,
+          "Failed to update snapshot metadata tableId=%s snapshotId=%s",
           tableId.getId(),
           snapshotId);
     }

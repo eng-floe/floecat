@@ -13,6 +13,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleSer
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -28,6 +29,7 @@ public class TableCommitSideEffectService {
   private static final Logger LOG = Logger.getLogger(TableCommitSideEffectService.class);
 
   @Inject MaterializeMetadataService materializeMetadataService;
+  @Inject SnapshotMetadataService snapshotMetadataService;
   @Inject TableLifecycleService tableLifecycleService;
 
   public MaterializeMetadataResult materializeMetadata(
@@ -41,11 +43,17 @@ public class TableCommitSideEffectService {
       return MaterializeMetadataResult.failure(
           IcebergErrorResponses.validation("metadata is required for materialization"));
     }
+    boolean requestedLocation = hasText(metadataLocation) || hasText(metadata.metadataLocation());
     try {
       MaterializeMetadataService.MaterializeResult mirrorResult =
           materializeMetadataService.materialize(namespace, table, metadata, metadataLocation);
       String resolvedLocation = mirrorResult.metadataLocation();
       if (resolvedLocation == null || resolvedLocation.isBlank()) {
+        if (!requestedLocation) {
+          TableMetadataView resolvedMetadata =
+              mirrorResult.metadata() != null ? mirrorResult.metadata() : metadata;
+          return MaterializeMetadataResult.success(resolvedMetadata, resolvedLocation);
+        }
         return MaterializeMetadataResult.failure(
             IcebergErrorResponses.failure(
                 "metadata materialization returned empty metadata-location",
@@ -56,6 +64,10 @@ public class TableCommitSideEffectService {
           mirrorResult.metadata() != null ? mirrorResult.metadata() : metadata;
       if (tableId != null) {
         updateTableMetadataProperties(tableId, tableRecord, resolvedMetadata, resolvedLocation);
+        Long snapshotId = currentSnapshotId(resolvedMetadata);
+        if (snapshotId != null && snapshotId > 0) {
+          snapshotMetadataService.updateSnapshotMetadata(tableId, snapshotId, resolvedMetadata);
+        }
       }
       return MaterializeMetadataResult.success(resolvedMetadata, resolvedLocation);
     } catch (MaterializeMetadataException e) {
@@ -70,6 +82,32 @@ public class TableCommitSideEffectService {
               "metadata materialization failed",
               "MaterializeMetadataException",
               Response.Status.INTERNAL_SERVER_ERROR));
+    }
+  }
+
+  private static boolean hasText(String value) {
+    return value != null && !value.isBlank();
+  }
+
+  private Long currentSnapshotId(TableMetadataView metadata) {
+    if (metadata == null) {
+      return null;
+    }
+    if (metadata.currentSnapshotId() != null && metadata.currentSnapshotId() > 0) {
+      return metadata.currentSnapshotId();
+    }
+    Map<String, String> props = metadata.properties();
+    if (props == null || props.isEmpty()) {
+      return null;
+    }
+    String raw = props.get("current-snapshot-id");
+    if (raw == null || raw.isBlank()) {
+      return null;
+    }
+    try {
+      return Long.parseLong(raw);
+    } catch (NumberFormatException e) {
+      return null;
     }
   }
 

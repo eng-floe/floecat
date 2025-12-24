@@ -442,7 +442,9 @@ public class TableGatewaySupport {
     props.put("external.table-name", tableName);
     props.put("external.namespace", namespaceFq);
     props.put(CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(true));
-    RuntimeFileIoOverrides.mergeInto(props);
+    if (Boolean.parseBoolean(System.getProperty("floecat.connector.fileio.overrides", "true"))) {
+      RuntimeFileIoOverrides.mergeInto(props);
+    }
     ConnectorSpec.Builder spec =
         ConnectorSpec.newBuilder()
             .setDisplayName(displayName)

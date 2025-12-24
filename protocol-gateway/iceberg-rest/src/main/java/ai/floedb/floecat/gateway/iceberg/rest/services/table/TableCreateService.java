@@ -1,7 +1,10 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
+import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
+import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StageCreateResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
@@ -13,6 +16,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestC
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.NamespaceClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
@@ -22,6 +26,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,6 +40,8 @@ public class TableCreateService {
       List.of(Map.of("type", "assert-create"));
 
   @Inject TableLifecycleService tableLifecycleService;
+  @Inject NamespaceClient namespaceClient;
+  @Inject IcebergGatewayConfig config;
   @Inject StagedTableService stagedTableService;
   @Inject AccountContext accountContext;
   @Inject ObjectMapper mapper;
@@ -57,7 +64,8 @@ public class TableCreateService {
     // Match the REST spec: name + schema are required; other fields are optional.
 
     String tableName = request.name().trim();
-    TableRequests.Create effectiveReq = request;
+    TableRequests.Create effectiveReq =
+        applyDefaultLocationIfMissing(namespaceContext, tableName, request);
     if (Boolean.TRUE.equals(effectiveReq.stageCreate())) {
       return handleStageCreate(
           namespaceContext, tableName, effectiveReq, transactionId, idempotencyKey, tableSupport);
@@ -134,7 +142,8 @@ public class TableCreateService {
     if (request == null) {
       return IcebergErrorResponses.validation("stage-create requires a request body");
     }
-    TableRequests.Create effectiveReq = request;
+    TableRequests.Create effectiveReq =
+        applyDefaultLocationIfMissing(namespaceContext, tableName, request);
     if (effectiveReq.location() == null || effectiveReq.location().isBlank()) {
       LOG.warnf(
           "Stage-create request missing location prefix=%s namespace=%s table=%s payload=%s",
@@ -142,7 +151,6 @@ public class TableCreateService {
           namespaceContext.namespacePath(),
           tableName,
           safeSerializeCreate(request));
-      return IcebergErrorResponses.validation("location is required");
     }
     String accountId = accountContext.getAccountId();
     if (accountId == null || accountId.isBlank()) {
@@ -231,6 +239,107 @@ public class TableCreateService {
     } catch (IllegalArgumentException | JsonProcessingException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
+  }
+
+  private TableRequests.Create applyDefaultLocationIfMissing(
+      NamespaceRequestContext namespaceContext, String tableName, TableRequests.Create request) {
+    if (request == null) {
+      return null;
+    }
+    if (request.location() != null && !request.location().isBlank()) {
+      return request;
+    }
+    String resolved = resolveDefaultLocation(namespaceContext, tableName);
+    if (resolved == null || resolved.isBlank()) {
+      return request;
+    }
+    return new TableRequests.Create(
+        request.name(),
+        request.schemaJson(),
+        request.schema(),
+        resolved,
+        request.properties(),
+        request.partitionSpec(),
+        request.writeOrder(),
+        request.stageCreate());
+  }
+
+  private String resolveDefaultLocation(
+      NamespaceRequestContext namespaceContext, String tableName) {
+    if (namespaceContext == null || tableName == null || tableName.isBlank()) {
+      return null;
+    }
+    String namespaceLocation = resolveNamespaceLocation(namespaceContext);
+    if (namespaceLocation != null && !namespaceLocation.isBlank()) {
+      return joinLocation(namespaceLocation, List.of(tableName));
+    }
+    String warehouse = config.defaultWarehousePath().orElse(null);
+    if (warehouse == null || warehouse.isBlank()) {
+      return null;
+    }
+    return joinLocation(warehouse, joinNamespaceParts(namespaceContext.namespacePath(), tableName));
+  }
+
+  private String resolveNamespaceLocation(NamespaceRequestContext namespaceContext) {
+    if (namespaceContext == null || namespaceContext.namespaceId() == null) {
+      return null;
+    }
+    try {
+      Namespace namespace =
+          namespaceClient
+              .getNamespace(
+                  GetNamespaceRequest.newBuilder()
+                      .setNamespaceId(namespaceContext.namespaceId())
+                      .build())
+              .getNamespace();
+      if (namespace == null) {
+        return null;
+      }
+      Map<String, String> props = namespace.getPropertiesMap();
+      if (props == null || props.isEmpty()) {
+        return null;
+      }
+      return firstNonBlank(props.get("location"), props.get("warehouse"));
+    } catch (Exception e) {
+      LOG.debugf(
+          e, "Failed to resolve namespace location for %s", namespaceContext.namespacePath());
+      return null;
+    }
+  }
+
+  private List<String> joinNamespaceParts(List<String> namespacePath, String tableName) {
+    List<String> parts = namespacePath == null ? new ArrayList<>() : new ArrayList<>(namespacePath);
+    if (tableName != null && !tableName.isBlank()) {
+      parts.add(tableName);
+    }
+    return parts;
+  }
+
+  private String joinLocation(String base, List<String> parts) {
+    if (base == null || base.isBlank()) {
+      return base;
+    }
+    String normalized = base;
+    while (normalized.endsWith("/") && normalized.length() > 1) {
+      normalized = normalized.substring(0, normalized.length() - 1);
+    }
+    String suffix =
+        parts == null
+            ? ""
+            : parts.stream()
+                .filter(part -> part != null && !part.isBlank())
+                .reduce("", (left, right) -> left.isEmpty() ? right : left + "/" + right);
+    if (suffix.isBlank()) {
+      return normalized;
+    }
+    return normalized + "/" + suffix;
+  }
+
+  private String firstNonBlank(String primary, String fallback) {
+    if (primary != null && !primary.isBlank()) {
+      return primary;
+    }
+    return fallback != null && !fallback.isBlank() ? fallback : null;
   }
 
   private String safeSerializeCreate(TableRequests.Create request) {

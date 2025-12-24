@@ -5,6 +5,7 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.normali
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.partitionSpecFromRequest;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.partitionSpecsFromMetadata;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.schemaFromRequest;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.schemaFromTable;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.schemasFromMetadata;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.sortOrderFromRequest;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.sortOrdersFromMetadata;
@@ -59,9 +60,6 @@ public final class TableMetadataBuilder {
       String metadataLocation) {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       metadataLocation = MetadataLocationUtil.metadataLocation(props);
-      if (metadataLocation == null || metadataLocation.isBlank()) {
-        throw new IllegalArgumentException("metadata-location is required");
-      }
     }
     String location = table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
     location = resolveTableLocation(location, metadataLocation);
@@ -105,9 +103,91 @@ public final class TableMetadataBuilder {
         metadata != null && metadata.getFormatVersion() > 0
             ? Integer.valueOf(metadata.getFormatVersion())
             : null;
+    if (formatVersion == null || formatVersion < 1) {
+      formatVersion = maybeInt(props.get("format-version"));
+    }
+    if (formatVersion == null || formatVersion < 1) {
+      formatVersion = 1;
+    }
+    if (tableUuid == null) {
+      String candidate = props.get("table-uuid");
+      if (candidate != null && !candidate.isBlank()) {
+        tableUuid = candidate;
+      }
+    }
+    if (tableUuid == null && table != null && table.hasResourceId()) {
+      String candidate = table.getResourceId().getId();
+      if (candidate != null && !candidate.isBlank()) {
+        tableUuid = candidate;
+      }
+    }
+    if (tableUuid == null || tableUuid.isBlank()) {
+      tableUuid = tableName;
+    }
+    if (currentSchemaId == null) {
+      currentSchemaId = maybeInt(props.get("current-schema-id"));
+    }
+    if (lastColumnId == null) {
+      lastColumnId = maybeInt(props.get("last-column-id"));
+    }
+    if (defaultSpecId == null) {
+      defaultSpecId = maybeInt(props.get("default-spec-id"));
+    }
+    if (lastPartitionId == null) {
+      lastPartitionId = maybeInt(props.get("last-partition-id"));
+    }
+    if (defaultSortOrderId == null) {
+      defaultSortOrderId = maybeInt(props.get("default-sort-order-id"));
+    }
+    if (lastUpdatedMs == null) {
+      lastUpdatedMs = asLong(props.get("last-updated-ms"));
+    }
+    if (lastUpdatedMs == null || lastUpdatedMs <= 0) {
+      lastUpdatedMs = System.currentTimeMillis();
+    }
+    if (currentSnapshotId == null) {
+      currentSnapshotId = asLong(props.get("current-snapshot-id"));
+    }
+    if (lastSequenceNumber == null) {
+      lastSequenceNumber = asLong(props.get("last-sequence-number"));
+    }
+    if (lastSequenceNumber == null) {
+      lastSequenceNumber = 0L;
+    }
     List<Map<String, Object>> schemaList = schemasFromMetadata(metadata);
+    if (schemaList.isEmpty()) {
+      try {
+        Map<String, Object> schema = schemaFromTable(table);
+        schemaList = List.of(schema);
+        if (currentSchemaId == null) {
+          currentSchemaId = asInteger(schema.get("schema-id"));
+        }
+        if (lastColumnId == null) {
+          lastColumnId = asInteger(schema.get("last-column-id"));
+        }
+      } catch (IllegalArgumentException e) {
+        // ignore; fall back to metadata-derived defaults only
+      }
+    }
     List<Map<String, Object>> specList = partitionSpecsFromMetadata(metadata);
+    if (specList.isEmpty()) {
+      Map<String, Object> spec = defaultPartitionSpec();
+      specList = List.of(spec);
+      if (defaultSpecId == null) {
+        defaultSpecId = asInteger(spec.get("spec-id"));
+      }
+      if (lastPartitionId == null) {
+        lastPartitionId = maxPartitionFieldId(spec);
+      }
+    }
     List<Map<String, Object>> sortOrderList = sortOrdersFromMetadata(metadata);
+    if (sortOrderList.isEmpty()) {
+      Map<String, Object> order = defaultSortOrder();
+      sortOrderList = List.of(order);
+      if (defaultSortOrderId == null) {
+        defaultSortOrderId = asInteger(order.get("order-id"));
+      }
+    }
     if (!sortOrderList.isEmpty()) {
       sortOrderList.forEach(order -> normalizeSortOrder(order));
     }
@@ -122,6 +202,11 @@ public final class TableMetadataBuilder {
                     Comparator.comparingLong(Snapshot::getSequenceNumber)
                         .thenComparingLong(Snapshot::getSnapshotId))
                 .toList();
+    Long maxSnapshotSequence = maxSnapshotSequence(orderedSnapshots);
+    if (maxSnapshotSequence != null
+        && (lastSequenceNumber == null || lastSequenceNumber < maxSnapshotSequence)) {
+      lastSequenceNumber = maxSnapshotSequence;
+    }
     Map<String, Object> refs = refs(metadata);
     refs = mergePropertyRefs(props, refs);
     syncProperty(props, "table-uuid", tableUuid);
@@ -334,6 +419,23 @@ public final class TableMetadataBuilder {
       return;
     }
     props.put("write.metadata.path", directory);
+  }
+
+  private static Long maxSnapshotSequence(List<Snapshot> snapshots) {
+    if (snapshots == null || snapshots.isEmpty()) {
+      return null;
+    }
+    long max = -1L;
+    for (Snapshot snapshot : snapshots) {
+      if (snapshot == null) {
+        continue;
+      }
+      long seq = snapshot.getSequenceNumber();
+      if (seq > max) {
+        max = seq;
+      }
+    }
+    return max > 0 ? max : null;
   }
 
   private static String nextMetadataFileName() {

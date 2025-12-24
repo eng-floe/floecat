@@ -214,8 +214,26 @@ final class SchemaMapper {
     }
     Integer lastColumnId = asInteger(schema.get("last-column-id"));
     if (lastColumnId == null) {
-      throw new IllegalArgumentException("schema requires last-column-id");
+      lastColumnId = maxFieldId(fields);
+      if (lastColumnId == null || lastColumnId <= 0) {
+        throw new IllegalArgumentException("schema requires last-column-id");
+      }
+      schema.put("last-column-id", lastColumnId);
     }
+  }
+
+  private static Integer maxFieldId(List<Map<String, Object>> fields) {
+    int max = 0;
+    for (Map<String, Object> field : fields) {
+      Integer fieldId = asInteger(field.get("id"));
+      if (fieldId == null) {
+        fieldId = asInteger(firstNonNull(field.get("field-id"), field.get("source-id")));
+      }
+      if (fieldId != null && fieldId > max) {
+        max = fieldId;
+      }
+    }
+    return max == 0 ? null : max;
   }
 
   @SuppressWarnings("unchecked")
