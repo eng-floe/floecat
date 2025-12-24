@@ -860,17 +860,24 @@ class IcebergRestFixtureIT {
       commitPayload.put(
           "identifier", Map.of("name", table, "namespace", List.of(namespace)));
 
-      String commitBody =
+      io.restassured.response.Response commitResponse =
           given()
               .spec(spec)
-              .header("Iceberg-Stage-Id", stageId)
               .body(commitPayload)
               .when()
               .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
               .then()
-              .statusCode(200)
               .extract()
-              .asString();
+              .response();
+      String commitBody = commitResponse.asString();
+      Assertions.assertEquals(
+          200,
+          commitResponse.statusCode(),
+          () ->
+              "DuckDB commit failed: status="
+                  + commitResponse.statusCode()
+                  + " body="
+                  + commitBody);
 
       JsonNode commitNode = MAPPER.readTree(commitBody).path("metadata");
       Assertions.assertTrue(

@@ -23,7 +23,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleSer
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService.MaterializeResult;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,14 +36,11 @@ class TableCommitSideEffectServiceTest {
   private final TableCommitSideEffectService service = new TableCommitSideEffectService();
   private final MaterializeMetadataService materializeMetadataService =
       mock(MaterializeMetadataService.class);
-  private final SnapshotMetadataService snapshotMetadataService =
-      mock(SnapshotMetadataService.class);
   private final TableLifecycleService tableLifecycleService = mock(TableLifecycleService.class);
 
   @BeforeEach
   void setUp() {
     service.materializeMetadataService = materializeMetadataService;
-    service.snapshotMetadataService = snapshotMetadataService;
     service.tableLifecycleService = tableLifecycleService;
   }
 

@@ -37,7 +37,11 @@ public class StageMaterializationService {
     if (stageIdToUse == null) {
       stageIdToUse = resolveSingleStageId(catalogName, namespacePath, table);
       if (stageIdToUse == null) {
-        return null;
+        throw StageCommitException.validation(
+            "stage-id is required when committing a staged create for "
+                + String.join(".", namespacePath)
+                + "."
+                + table);
       }
     }
 
@@ -77,6 +81,12 @@ public class StageMaterializationService {
     return null;
   }
 
+  public record StageMaterializationResult(String stageId, StageCommitResult result) {
+    public Table table() {
+      return result.table();
+    }
+  }
+
   private String resolveSingleStageId(
       String catalogName, List<String> namespacePath, String table) {
     String accountId = accountContext.getAccountId();
@@ -87,12 +97,6 @@ public class StageMaterializationService {
         .findSingleStage(accountId, catalogName, namespacePath, table)
         .map(entry -> entry.key().stageId())
         .orElse(null);
-  }
-
-  public record StageMaterializationResult(String stageId, StageCommitResult result) {
-    public Table table() {
-      return result.table();
-    }
   }
 
   public StageMaterializationResult materializeTransactionStage(

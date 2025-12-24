@@ -114,20 +114,24 @@ class StageMaterializationServiceTest {
   }
 
   @Test
-  void materializeIfTableMissingSkipsWhenNoStageId() {
+  void materializeIfTableMissingRequiresStageId() {
     when(accountContext.getAccountId()).thenReturn("account-required");
 
-    StageMaterializationService.StageMaterializationResult result =
-        service.materializeIfTableMissing(
-            Status.NOT_FOUND.asRuntimeException(),
-            "pref",
-            "cat",
-            List.of("db"),
-            "orders",
-            new TableRequests.Commit(null, null, null, null, null, List.of(), List.of()),
-            null);
+    StageCommitException ex =
+        assertThrows(
+            StageCommitException.class,
+            () ->
+                service.materializeIfTableMissing(
+                    Status.NOT_FOUND.asRuntimeException(),
+                    "pref",
+                    "cat",
+                    List.of("db"),
+                    "orders",
+                    new TableRequests.Commit(null, null, null, null, null, List.of(), List.of()),
+                    null));
 
-    assertNull(result);
+    assertEquals(
+        "stage-id is required when committing a staged create for db.orders", ex.getMessage());
     verify(stageCommitProcessor, never()).commitStage(any(), any(), any(), any(), any(), any());
   }
 
