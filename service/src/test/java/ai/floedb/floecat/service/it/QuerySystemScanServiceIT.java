@@ -12,10 +12,12 @@ import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
+import ai.floedb.floecat.system.rpc.OutputFormat;
 import ai.floedb.floecat.system.rpc.QuerySystemScanServiceGrpc;
 import ai.floedb.floecat.system.rpc.ScanSystemTableRequest;
 import ai.floedb.floecat.system.rpc.ScanSystemTableResponse;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
+import com.google.protobuf.ByteString;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -23,7 +25,15 @@ import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.FieldVector;
+import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.ipc.ArrowStreamReader;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -103,6 +113,7 @@ public class QuerySystemScanServiceIT {
             ScanSystemTableRequest.newBuilder()
                 .setQueryId(beginQuery(cat.getResourceId()))
                 .setTableId(systemTableId)
+                .setOutputFormat(OutputFormat.ROWS)
                 .build());
 
     assertTrue(resp.getRowsCount() > 0);
@@ -152,6 +163,7 @@ public class QuerySystemScanServiceIT {
             ScanSystemTableRequest.newBuilder()
                 .setQueryId(beginQuery(catB.getResourceId()))
                 .setTableId(systemTableId)
+                .setOutputFormat(OutputFormat.ROWS)
                 .build());
 
     List<List<String>> rows = rows(resp);
@@ -197,6 +209,7 @@ public class QuerySystemScanServiceIT {
             ScanSystemTableRequest.newBuilder()
                 .setQueryId(beginQuery(cat.getResourceId()))
                 .setTableId(systemTableId)
+                .setOutputFormat(OutputFormat.ROWS)
                 .build());
 
     assertTrue(resp.getRowsCount() > 0);
@@ -213,11 +226,67 @@ public class QuerySystemScanServiceIT {
         "There should be a row with table_catalog = no-engine and schema = 'information_schema'");
   }
 
+  @Test
+  void informationSchemaReturnsArrowBatchesForQueryCatalog() throws IOException {
+    var catName = catalogPrefix + "arrow";
+    var cat = TestSupport.createCatalog(catalog, catName, "");
+    var ns =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "ns", List.of("analytics"), "");
+    TestSupport.createTable(
+        table,
+        cat.getResourceId(),
+        ns.getResourceId(),
+        "orders",
+        "s3://bucket/orders",
+        "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+        "orders table");
+
+    ResourceId systemTableId = systemTable("pg", "information_schema", "tables");
+    var stub = withEngine(systemScan, "pg");
+    ScanSystemTableResponse resp =
+        stub.scanSystemTable(
+            ScanSystemTableRequest.newBuilder()
+                .setQueryId(beginQuery(cat.getResourceId()))
+                .setTableId(systemTableId)
+                .setOutputFormat(OutputFormat.ARROW_IPC)
+                .build());
+
+    assertEquals(0, resp.getRowsCount());
+    assertTrue(resp.getArrowBatchesCount() > 0);
+    List<List<String>> rows = arrowRows(resp);
+    assertTrue(
+        rows.stream().anyMatch(row -> row.size() > 2 && "orders".equals(row.get(2))),
+        "Arrow payload must include the 'orders' table");
+  }
+
   // ------------------------------------------------------------------------
   // Helpers
   // ------------------------------------------------------------------------
   private List<List<String>> rows(ScanSystemTableResponse resp) {
     return resp.getRowsList().stream().map(r -> List.copyOf(r.getValuesList())).toList();
+  }
+
+  private List<List<String>> arrowRows(ScanSystemTableResponse resp) throws IOException {
+    List<List<String>> rows = new ArrayList<>();
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      for (ByteString batch : resp.getArrowBatchesList()) {
+        try (ArrowStreamReader reader =
+            new ArrowStreamReader(new ByteArrayInputStream(batch.toByteArray()), allocator)) {
+          VectorSchemaRoot root = reader.getVectorSchemaRoot();
+          while (reader.loadNextBatch()) {
+            for (int rowIndex = 0; rowIndex < root.getRowCount(); rowIndex++) {
+              List<String> row = new ArrayList<>();
+              for (FieldVector vector : root.getFieldVectors()) {
+                Object value = vector.getObject(rowIndex);
+                row.add(value == null ? null : value.toString());
+              }
+              rows.add(row);
+            }
+          }
+        }
+      }
+    }
+    return rows;
   }
 
   private static final Metadata.Key<String> ENGINE_KIND_HEADER =

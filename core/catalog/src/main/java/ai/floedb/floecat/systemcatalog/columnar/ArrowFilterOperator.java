@@ -389,6 +389,9 @@ public final class ArrowFilterOperator {
 
     private BitVector falseMask() {
       BitVector mask = newMask();
+      for (int i = 0; i < rowCount; i++) {
+        mask.setSafe(i, 0);
+      }
       mask.setValueCount(rowCount);
       return mask;
     }

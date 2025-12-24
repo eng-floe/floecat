@@ -22,6 +22,7 @@ import ai.floedb.floecat.systemcatalog.columnar.ColumnarBatch;
 import ai.floedb.floecat.systemcatalog.columnar.RowStreamToArrowBatchAdapter;
 import ai.floedb.floecat.systemcatalog.expr.Expr;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
+import ai.floedb.floecat.systemcatalog.spi.scanner.ScanOutputFormat;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
@@ -92,30 +93,46 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
                       new SystemObjectScanContext(graph, null, queryCtx.getQueryDefaultCatalogId());
 
                   List<SchemaColumn> schema = scanner.schema();
+                  List<String> requiredColumns = request.getRequiredColumnsList();
+                  OutputFormat format = request.getOutputFormat();
+                  if (format == OutputFormat.UNRECOGNIZED) {
+                    throw GrpcErrors.invalidArgument(
+                        correlationId,
+                        "system.output_format.unrecognized",
+                        Map.of("output_format", format.toString()));
+                  }
+                  boolean arrowRequested = format != OutputFormat.ROWS;
+                  // OutputFormat.ARROW_IPC is the default path today. When scanners opt into
+                  // ScanOutputFormat.ARROW_IPC we stream ColumnarBatch objects directly from
+                  // the scanner implementation (native Arrow path). Otherwise we fall back to
+                  // the row+adapter flow that reuses SystemRowFilter/Projector and converts
+                  // to Arrow batches via the RowStreamToArrowBatchAdapter before encoding.
                   Expr arrowExpr =
-                      SystemRowFilter.EXPRESSION_PROVIDER.toExpr(request.getPredicatesList());
+                      arrowRequested
+                          ? SystemRowFilter.EXPRESSION_PROVIDER.toExpr(request.getPredicatesList())
+                          : null;
 
-                  // 3. Scan rows
-                  var rows = scanner.scan(ctx).toList();
-
-                  // 4. Apply predicates (exact)
-                  rows =
-                      SystemRowFilter.applyPredicates(
-                          rows, scanner.schema(), request.getPredicatesList());
-
-                  // 5. Apply projection
-                  rows =
-                      SystemRowProjector.project(
-                          rows, scanner.schema(), request.getRequiredColumnsList());
-
-                  if (request.getOutputFormat() == OutputFormat.ARROW_IPC) {
-                    return arrowResponse(rows, schema, arrowExpr, request.getRequiredColumnsList());
+                  if (arrowRequested
+                      && scanner.supportedFormats().contains(ScanOutputFormat.ARROW_IPC)) {
+                    return arrowResponseFromScanner(scanner, ctx, arrowExpr, requiredColumns);
                   }
 
-                  // 6. Build response
-                  return ScanSystemTableResponse.newBuilder()
-                      .addAllRows(rows.stream().map(SystemRowMappers::toProto).toList())
-                      .build();
+                  var rows = scanner.scan(ctx).toList();
+
+                  if (!arrowRequested) {
+                    var filtered =
+                        SystemRowFilter.applyPredicates(
+                            rows, scanner.schema(), request.getPredicatesList());
+
+                    var projected =
+                        SystemRowProjector.project(filtered, scanner.schema(), requiredColumns);
+
+                    return ScanSystemTableResponse.newBuilder()
+                        .addAllRows(projected.stream().map(SystemRowMappers::toProto).toList())
+                        .build();
+                  }
+
+                  return arrowResponse(rows, schema, arrowExpr, requiredColumns);
                 }),
             correlationId())
         .onFailure()
@@ -135,6 +152,23 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
       List<ByteString> batches =
           adapter
               .adapt(rows.stream())
+              .map(batch -> applyArrowFilter(batch, arrowExpr, allocator))
+              .map(batch -> applyArrowProjection(batch, requiredColumns, allocator))
+              .map(QuerySystemScanServiceImpl::serializeArrowBatch)
+              .toList();
+      return ScanSystemTableResponse.newBuilder().addAllArrowBatches(batches).build();
+    }
+  }
+
+  private static ScanSystemTableResponse arrowResponseFromScanner(
+      SystemObjectScanner scanner,
+      SystemObjectScanContext ctx,
+      Expr arrowExpr,
+      List<String> requiredColumns) {
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      List<ByteString> batches =
+          scanner
+              .scanArrow(ctx, arrowExpr, requiredColumns, allocator)
               .map(batch -> applyArrowFilter(batch, arrowExpr, allocator))
               .map(batch -> applyArrowProjection(batch, requiredColumns, allocator))
               .map(QuerySystemScanServiceImpl::serializeArrowBatch)
