@@ -120,7 +120,7 @@ public class TablePropertyService {
       }
       String value = asString(update.get("location"));
       if (value == null || value.isBlank()) {
-        continue;
+        return validationError("set-location requires location");
       }
       location = value;
     }

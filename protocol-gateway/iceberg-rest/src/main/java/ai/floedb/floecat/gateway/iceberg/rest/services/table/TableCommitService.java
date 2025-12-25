@@ -148,6 +148,8 @@ public class TableCommitService {
         responseDto,
         req,
         idempotencyKey);
+    syncSnapshotMetadataFromCommit(
+        tableSupport, tableId, namespacePath, table, committedTable, responseDto, idempotencyKey);
     runConnectorSync(tableSupport, connectorId, namespacePath, table);
 
     IcebergMetadata refreshedMetadata = tableSupport.loadCurrentMetadata(committedTable);
@@ -345,6 +347,49 @@ public class TableCommitService {
       LOG.warnf(
           e,
           "Snapshot sync from metadata failed for %s.%s (metadata=%s)",
+          namespacePath,
+          tableName,
+          metadataLocation);
+    }
+  }
+
+  private void syncSnapshotMetadataFromCommit(
+      TableGatewaySupport tableSupport,
+      ResourceId tableId,
+      List<String> namespacePath,
+      String tableName,
+      Table committedTable,
+      CommitTableResponseDto responseDto,
+      String idempotencyKey) {
+    if (tableId == null || responseDto == null) {
+      return;
+    }
+    String metadataLocation = responseDto.metadataLocation();
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return;
+    }
+    if (tableSupport != null) {
+      metadataLocation = tableSupport.stripMetadataMirrorPrefix(metadataLocation);
+    }
+    Map<String, String> ioProps =
+        committedTable == null
+            ? Map.of()
+            : FileIoFactory.filterIoProperties(committedTable.getPropertiesMap());
+    try {
+      var imported = tableMetadataImportService.importMetadata(metadataLocation, ioProps);
+      snapshotMetadataService.syncSnapshotsFromImportedMetadata(
+          tableSupport,
+          tableId,
+          namespacePath,
+          tableName,
+          () -> committedTable,
+          imported,
+          idempotencyKey,
+          false);
+    } catch (Exception e) {
+      LOG.warnf(
+          e,
+          "Snapshot sync from commit metadata failed for %s.%s (metadata=%s)",
           namespacePath,
           tableName,
           metadataLocation);

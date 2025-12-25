@@ -144,7 +144,6 @@ class TableCommitSideEffectServiceTest {
 
     service.runConnectorSync(tableSupport, connectorId, namespacePath, "orders");
 
-    verify(tableSupport).runSyncMetadataCapture(connectorId, namespacePath, "orders");
     verify(tableSupport).triggerScopedReconcile(connectorId, namespacePath, "orders");
   }
 

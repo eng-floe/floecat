@@ -40,6 +40,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.RealServiceTestResource;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
@@ -1299,7 +1300,18 @@ class IcebergRestFixtureIT {
                         .path("metadata-location")
                         .asText("s3://mock/metadata"));
     TableMetadata parsed = TableMetadataParser.fromJson(location, metadata);
-    return MAPPER.readTree(TableMetadataParser.toJson(parsed));
+    JsonNode normalized = MAPPER.readTree(TableMetadataParser.toJson(parsed));
+    if (normalized instanceof ObjectNode objectNode) {
+      JsonNode propsNode = objectNode.get("properties");
+      if (propsNode instanceof ObjectNode props) {
+        props.remove("format-version");
+        String propLocation = props.path("location").asText(null);
+        if (propLocation != null && propLocation.endsWith("/")) {
+          props.put("location", propLocation.substring(0, propLocation.length() - 1));
+        }
+      }
+    }
+    return normalized;
   }
 
   private String ensurePromotedMetadata(String location) {

@@ -478,7 +478,13 @@ public class SnapshotMetadataService {
     if (snapshotId == null || snapshotId <= 0) {
       return null;
     }
-    if (snapshotExists(tableId, snapshotId)) {
+    Snapshot existingSnapshot = loadSnapshot(tableId, snapshotId);
+    if (existingSnapshot != null) {
+      if (importedIcebergMetadata != null) {
+        Table table = tableSupplier.get();
+        updateSnapshotFormatMetadataIfNeeded(
+            tableId, existingSnapshot, importedIcebergMetadata, table, snapshot.sequenceNumber());
+      }
       return null;
     }
     Table table = tableSupplier.get();
@@ -497,9 +503,9 @@ public class SnapshotMetadataService {
         idempotencyKey);
   }
 
-  private boolean snapshotExists(ResourceId tableId, Long snapshotId) {
+  private Snapshot loadSnapshot(ResourceId tableId, Long snapshotId) {
     if (snapshotId == null || snapshotId <= 0) {
-      return false;
+      return null;
     }
     try {
       var response =
@@ -508,9 +514,52 @@ public class SnapshotMetadataService {
                   .setTableId(tableId)
                   .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
                   .build());
-      return response != null && response.hasSnapshot();
+      return response != null && response.hasSnapshot() ? response.getSnapshot() : null;
     } catch (StatusRuntimeException ignored) {
-      return false;
+      return null;
+    }
+  }
+
+  private void updateSnapshotFormatMetadataIfNeeded(
+      ResourceId tableId,
+      Snapshot snapshot,
+      IcebergMetadata importedIcebergMetadata,
+      Table table,
+      Long sequenceNumber) {
+    if (tableId == null || snapshot == null || importedIcebergMetadata == null) {
+      return;
+    }
+    IcebergMetadata existing = parseSnapshotMetadata(snapshot);
+    boolean missing =
+        existing == null
+            || existing.getFormatVersion() <= 0
+            || existing.getTableUuid().isBlank()
+            || existing.getSchemasCount() == 0;
+    if (!missing) {
+      return;
+    }
+    IcebergMetadata snapshotIceberg =
+        snapshotIcebergMetadata(
+            importedIcebergMetadata, table, snapshot.getSnapshotId(), sequenceNumber);
+    if (snapshotIceberg == null) {
+      return;
+    }
+    SnapshotSpec spec =
+        SnapshotSpec.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshot.getSnapshotId())
+            .putFormatMetadata(ICEBERG_METADATA_KEY, snapshotIceberg.toByteString())
+            .build();
+    FieldMask mask = FieldMask.newBuilder().addPaths("format_metadata").build();
+    try {
+      snapshotClient.updateSnapshot(
+          UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build());
+    } catch (StatusRuntimeException e) {
+      LOG.debugf(
+          e,
+          "Failed to backfill snapshot metadata tableId=%s snapshotId=%s",
+          tableId.getId(),
+          snapshot.getSnapshotId());
     }
   }
 

@@ -3,7 +3,6 @@ package ai.floedb.floecat.gateway.iceberg.rest.resources.table;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -37,7 +36,6 @@ import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
-import ai.floedb.floecat.connector.rpc.SyncCaptureRequest;
 import ai.floedb.floecat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.floecat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
@@ -292,13 +290,6 @@ class TableResourceTest extends AbstractRestResourceTest {
     assertEquals(connectorId, trigger.getValue().getConnectorId());
     assertEquals(1, trigger.getValue().getDestinationNamespacePathsCount());
     assertEquals("new_table", trigger.getValue().getDestinationTableDisplayName());
-
-    ArgumentCaptor<SyncCaptureRequest> captureReq =
-        ArgumentCaptor.forClass(SyncCaptureRequest.class);
-    verify(connectorsStub).syncCapture(captureReq.capture());
-    assertEquals(connectorId, captureReq.getValue().getConnectorId());
-    assertEquals("new_table", captureReq.getValue().getDestinationTableDisplayName());
-    assertFalse(captureReq.getValue().getIncludeStatistics());
   }
 
   @Test

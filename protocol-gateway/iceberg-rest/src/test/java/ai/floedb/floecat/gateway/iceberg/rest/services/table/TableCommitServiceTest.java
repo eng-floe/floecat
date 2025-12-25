@@ -315,7 +315,7 @@ class TableCommitServiceTest {
 
     CommitTableResponseDto dto = (CommitTableResponseDto) response.getEntity();
     assertEquals(requested, dto.metadataLocation());
-    verify(tableSupport, times(2)).stripMetadataMirrorPrefix(requested);
+    verify(tableSupport, times(3)).stripMetadataMirrorPrefix(requested);
   }
 
   private TableRequests.Commit emptyCommitRequest() {

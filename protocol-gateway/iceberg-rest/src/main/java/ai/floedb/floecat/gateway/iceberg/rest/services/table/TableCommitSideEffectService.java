@@ -196,16 +196,6 @@ public class TableCommitSideEffectService {
       return;
     }
     try {
-      tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
-    } catch (Throwable e) {
-      LOG.warnf(
-          e,
-          "Connector sync capture failed connectorId=%s namespace=%s table=%s",
-          connectorId.getId(),
-          namespacePath == null ? "<null>" : String.join(".", namespacePath),
-          tableName);
-    }
-    try {
       tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
     } catch (Throwable e) {
       LOG.warnf(

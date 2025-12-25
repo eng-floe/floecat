@@ -158,7 +158,6 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     verify(snapshotStub).createSnapshot(snapReq.capture());
     assertEquals(newSnapshot.getSnapshotId(), snapReq.getValue().getSpec().getSnapshotId());
     verify(connectorsStub).triggerReconcile(any());
-    verify(connectorsStub).syncCapture(any());
   }
 
   @Test
@@ -193,7 +192,6 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     assertEquals(7L, delReq.getAllValues().get(0).getSnapshotId());
     assertEquals(8L, delReq.getAllValues().get(1).getSnapshotId());
     verify(connectorsStub, never()).triggerReconcile(any());
-    verify(connectorsStub, never()).syncCapture(any());
   }
 
   @Test
