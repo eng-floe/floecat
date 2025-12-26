@@ -66,14 +66,12 @@ Extensibility:
   control how long idempotency records and tombstones linger.
 
 ## Local Testing with LocalStack
-- `make run-aws` – Starts a LocalStack container (DynamoDB + S3), creates the configured S3 bucket,
-  creates the DynamoDB pointer table (including TTL), and launches `quarkus:dev` with
-  `floecat.kv=dynamodb` / `floecat.blob=s3`. Requires Docker; the target automatically points the
-  service at `http://localhost:4566` and forces path-style S3 access.
-- `make test-aws` – Reuses the same LocalStack container and runs the service module’s unit+IT
-  suites with the AWS storage implementations enabled.
-- `make aws-test` – Runs the full `service + REST gateway + client-cli` test suite against the same
-  LocalStack backends.
+- `make localstack-up` – Starts a LocalStack container (DynamoDB + S3) and provisions buckets/tables.
+- `make run-localstack-localstack` – Runs `quarkus:dev` with both upstream and catalog pointing at
+  LocalStack. Uses `floecat.kv=dynamodb` / `floecat.blob=s3` and path-style S3 access.
+- `make run-localstack-aws` – Upstream LocalStack, catalog real AWS.
+- `make run-aws-localstack` – Upstream real AWS, catalog LocalStack.
+- `make test-localstack` – Runs unit + IT suites against LocalStack backends.
 - `make localstack-down` – Stops the LocalStack container started by the Make targets.
 
 Use the default credentials (`test`/`test`) or override them via `LOCALSTACK_ACCESS_KEY` /
