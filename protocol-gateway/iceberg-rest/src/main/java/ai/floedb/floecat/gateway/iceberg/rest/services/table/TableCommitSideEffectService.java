@@ -7,6 +7,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataException;
@@ -19,6 +20,7 @@ import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -36,12 +38,26 @@ public class TableCommitSideEffectService {
       TableMetadataView metadata,
       String metadataLocation) {
     if (metadata == null) {
-      return MaterializeMetadataResult.success(null, metadataLocation);
+      return MaterializeMetadataResult.failure(
+          IcebergErrorResponses.validation("metadata is required for materialization"));
     }
+    boolean requestedLocation = hasText(metadataLocation) || hasText(metadata.metadataLocation());
     try {
       MaterializeMetadataService.MaterializeResult mirrorResult =
           materializeMetadataService.materialize(namespace, table, metadata, metadataLocation);
-      String resolvedLocation = nonBlank(mirrorResult.metadataLocation(), metadataLocation);
+      String resolvedLocation = mirrorResult.metadataLocation();
+      if (resolvedLocation == null || resolvedLocation.isBlank()) {
+        if (!requestedLocation) {
+          TableMetadataView resolvedMetadata =
+              mirrorResult.metadata() != null ? mirrorResult.metadata() : metadata;
+          return MaterializeMetadataResult.success(resolvedMetadata, resolvedLocation);
+        }
+        return MaterializeMetadataResult.failure(
+            IcebergErrorResponses.failure(
+                "metadata materialization returned empty metadata-location",
+                "MaterializeMetadataException",
+                Response.Status.INTERNAL_SERVER_ERROR));
+      }
       TableMetadataView resolvedMetadata =
           mirrorResult.metadata() != null ? mirrorResult.metadata() : metadata;
       if (tableId != null) {
@@ -55,8 +71,16 @@ public class TableCommitSideEffectService {
           namespace,
           table,
           metadataLocation);
-      return MaterializeMetadataResult.success(metadata, metadataLocation);
+      return MaterializeMetadataResult.failure(
+          IcebergErrorResponses.failure(
+              "metadata materialization failed",
+              "MaterializeMetadataException",
+              Response.Status.INTERNAL_SERVER_ERROR));
     }
+  }
+
+  private static boolean hasText(String value) {
+    return value != null && !value.isBlank();
   }
 
   public CommitTableResponseDto applyMaterializationResult(
@@ -68,10 +92,9 @@ public class TableCommitSideEffectService {
         materializationResult.metadata() != null
             ? materializationResult.metadata()
             : responseDto.metadata();
-    String updatedLocation =
-        nonBlank(materializationResult.metadataLocation(), responseDto.metadataLocation());
+    String updatedLocation = materializationResult.metadataLocation();
     if (updatedMetadata == responseDto.metadata()
-        && java.util.Objects.equals(updatedLocation, responseDto.metadataLocation())) {
+        && Objects.equals(updatedLocation, responseDto.metadataLocation())) {
       return responseDto;
     }
     return new CommitTableResponseDto(updatedLocation, updatedMetadata);
@@ -98,14 +121,10 @@ public class TableCommitSideEffectService {
       return null;
     }
     String effectiveMetadata = metadataLocation;
-    if ((effectiveMetadata == null || effectiveMetadata.isBlank()) && metadataView != null) {
-      effectiveMetadata = metadataView.metadataLocation();
-    }
     if (effectiveMetadata == null || effectiveMetadata.isBlank()) {
-      Map<String, String> props = tableRecord.getPropertiesMap();
-      effectiveMetadata = props.get("metadata-location");
-    }
-    if (effectiveMetadata == null || effectiveMetadata.isBlank()) {
+      LOG.infof(
+          "Skipping connector sync for %s.%s because metadata-location was empty",
+          namespacePath, table);
       return resolveConnectorId(tableRecord);
     }
     LOG.infof(
@@ -175,16 +194,6 @@ public class TableCommitSideEffectService {
     }
     if (connectorId == null || connectorId.getId().isBlank()) {
       return;
-    }
-    try {
-      tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
-    } catch (Throwable e) {
-      LOG.warnf(
-          e,
-          "Connector sync capture failed connectorId=%s namespace=%s table=%s",
-          connectorId.getId(),
-          namespacePath == null ? "<null>" : String.join(".", namespacePath),
-          tableName);
     }
     try {
       tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
@@ -291,10 +300,6 @@ public class TableCommitSideEffectService {
       return location;
     }
     return null;
-  }
-
-  private static String nonBlank(String primary, String fallback) {
-    return primary != null && !primary.isBlank() ? primary : fallback;
   }
 
   public PostCommitResult finalizeCommitResponse(

@@ -25,6 +25,7 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSchema;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSnapshotLogEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortField;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortOrder;
+import ai.floedb.floecat.storage.spi.io.RuntimeFileIoOverrides;
 import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
@@ -66,10 +67,12 @@ import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.rest.RESTCatalog;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
+import org.jboss.logging.Logger;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.glue.GlueClient;
 
 public final class IcebergConnector implements FloecatConnector {
+  private static final Logger LOG = Logger.getLogger(IcebergConnector.class);
   private final String connectorId;
   private final RESTCatalog catalog;
   private final GlueIcebergFilter glueFilter;
@@ -474,18 +477,43 @@ public final class IcebergConnector implements FloecatConnector {
       throw new IllegalArgumentException("metadataLocation is required");
     }
     Map<String, String> opts = options == null ? Map.of() : options;
-    String ioImpl = opts.getOrDefault("io-impl", "org.apache.iceberg.aws.s3.S3FileIO").trim();
-    FileIO fileIO = instantiateFileIO(ioImpl);
     Map<String, String> ioProps = new HashMap<>();
     opts.forEach(
         (k, v) -> {
-          if (k.startsWith("s3.")
+          if ("io-impl".equals(k)
+              || k.startsWith("s3.")
               || k.startsWith("fs.")
               || k.startsWith("client.")
               || k.startsWith("aws.")) {
             ioProps.put(k, v);
           }
         });
+    if (Boolean.parseBoolean(System.getProperty("floecat.connector.fileio.overrides", "true"))) {
+      RuntimeFileIoOverrides.mergeInto(ioProps);
+    }
+    Map<String, String> sanitized = new LinkedHashMap<>();
+    ioProps.forEach(
+        (k, v) -> {
+          if (k == null) {
+            return;
+          }
+          String key = k.toLowerCase(Locale.ROOT);
+          if (key.contains("secret")
+              || key.contains("token")
+              || key.contains("password")
+              || key.contains("access")
+              || key.endsWith("key")
+              || key.contains("credentials")) {
+            sanitized.put(k, "<redacted>");
+          } else {
+            sanitized.put(k, v);
+          }
+        });
+    LOG.infof(
+        "Iceberg external table load metadataLocation=%s ioProps=%s", metadataLocation, sanitized);
+    String ioImpl = ioProps.getOrDefault("io-impl", "org.apache.iceberg.aws.s3.S3FileIO").trim();
+    FileIO fileIO = instantiateFileIO(ioImpl);
+    ioProps.remove("io-impl");
     fileIO.initialize(ioProps);
     String resolvedMetadataLocation = resolveMetadataLocation(metadataLocation);
     StaticTableOperations ops = new StaticTableOperations(resolvedMetadataLocation, fileIO);

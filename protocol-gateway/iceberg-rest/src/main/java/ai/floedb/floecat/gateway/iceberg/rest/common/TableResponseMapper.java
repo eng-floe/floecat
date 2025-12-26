@@ -72,9 +72,6 @@ public final class TableResponseMapper {
       Map<String, String> originalConfig, TableMetadataView metadataView) {
     String metadataLocation = metadataView.metadataLocation();
     if (metadataLocation == null || metadataLocation.isBlank()) {
-      metadataLocation = MetadataLocationUtil.metadataLocation(metadataView.properties());
-    }
-    if (metadataLocation == null || metadataLocation.isBlank()) {
       return originalConfig;
     }
     String directory = MetadataLocationUtil.canonicalMetadataDirectory(metadataLocation);
@@ -82,9 +79,7 @@ public final class TableResponseMapper {
       return originalConfig;
     }
     Map<String, String> updated =
-        originalConfig.isEmpty()
-            ? new java.util.LinkedHashMap<>()
-            : new java.util.LinkedHashMap<>(originalConfig);
+        originalConfig.isEmpty() ? new LinkedHashMap<>() : new LinkedHashMap<>(originalConfig);
     updated.put("write.metadata.path", directory);
     return Map.copyOf(updated);
   }

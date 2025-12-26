@@ -441,7 +441,7 @@ class TableMutationIT {
 
     List<Snapshot> snaps = resp.getSnapshotsList();
     for (int i = 0; i < 100; i++) {
-      assertEquals(i, snaps.get(i).getSnapshotId());
+      assertEquals(99 - i, snaps.get(i).getSnapshotId());
     }
   }
 

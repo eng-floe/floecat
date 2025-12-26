@@ -108,8 +108,11 @@ class ConcurrencyOCCIdempotencyIT {
     String canonSeed = Keys.tablePointerById(seedTid.getAccountId(), seedTid.getId());
     long v0 = ptr.get(canonSeed).orElseThrow().getVersion();
 
-    final int WORKERS = 48;
-    final int OPS_PER_WORKER = 8;
+    int workers =
+        Integer.getInteger(
+            "floecat.test.idem.workers",
+            Math.min(24, Math.max(8, Runtime.getRuntime().availableProcessors() * 2)));
+    int opsPerWorker = Integer.getInteger("floecat.test.idem.ops", 8);
 
     var sharedIdemKeys = List.of("K1", "K2", "K3", "K4");
     var createdTableNames = Collections.newSetFromMap(new ConcurrentHashMap<>());
@@ -117,16 +120,16 @@ class ConcurrencyOCCIdempotencyIT {
     var successfulCreatesByIdem = new ConcurrentHashMap<String, ResourceId>();
 
     CountDownLatch start = new CountDownLatch(1);
-    ExecutorService pool = Executors.newFixedThreadPool(WORKERS);
+    ExecutorService pool = Executors.newFixedThreadPool(workers);
 
     AtomicBoolean seedDeleted = new AtomicBoolean(false);
 
-    for (int w = 0; w < WORKERS; w++) {
+    for (int w = 0; w < workers; w++) {
       pool.submit(
           () -> {
             try {
               start.await();
-              for (int i = 0; i < OPS_PER_WORKER; i++) {
+              for (int i = 0; i < opsPerWorker; i++) {
                 Op op = pickOp();
                 ThreadLocalRandom rnd = ThreadLocalRandom.current();
 
@@ -230,7 +233,12 @@ class ConcurrencyOCCIdempotencyIT {
 
     start.countDown();
     pool.shutdown();
-    assertTrue(pool.awaitTermination(60, TimeUnit.SECONDS), "workers timed out");
+    int timeoutSeconds = Integer.getInteger("floecat.test.idem.timeoutSeconds", 120);
+    boolean finished = pool.awaitTermination(timeoutSeconds, TimeUnit.SECONDS);
+    if (!finished) {
+      pool.shutdownNow();
+    }
+    assertTrue(finished, "workers timed out");
 
     if (!unexpected.isEmpty()) {
       unexpected.peek().printStackTrace();

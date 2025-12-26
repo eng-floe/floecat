@@ -93,6 +93,12 @@ public class SnapshotRepository {
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
+  public List<Snapshot> listByTime(
+      ResourceId tableId, int limit, String pageToken, StringBuilder nextOut) {
+    String prefix = Keys.snapshotPointerByTimePrefix(tableId.getAccountId(), tableId.getId());
+    return repo.listByPrefix(prefix, limit, pageToken, nextOut);
+  }
+
   public int count(ResourceId tableId) {
     String prefix = Keys.snapshotPointerByIdPrefix(tableId.getAccountId(), tableId.getId());
     return repo.countByPrefix(prefix);

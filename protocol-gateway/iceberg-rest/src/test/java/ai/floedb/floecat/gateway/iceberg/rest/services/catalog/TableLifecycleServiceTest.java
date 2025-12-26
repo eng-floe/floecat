@@ -1,31 +1,25 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
-import ai.floedb.floecat.catalog.rpc.CreateTableResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableResponse;
+import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ListTablesRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveCatalogResponse;
+import ai.floedb.floecat.catalog.rpc.ListTablesResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableSpec;
-import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
-import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,17 +31,13 @@ class TableLifecycleServiceTest {
   private final GrpcClients clients = mock(GrpcClients.class);
   private final TableServiceGrpc.TableServiceBlockingStub tableStub =
       mock(TableServiceGrpc.TableServiceBlockingStub.class);
-  private final ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc.DirectoryServiceBlockingStub
-      directoryStub =
-          mock(
-              ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc.DirectoryServiceBlockingStub
-                  .class);
+  private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryStub =
+      mock(DirectoryServiceGrpc.DirectoryServiceBlockingStub.class);
 
   @BeforeEach
   void setUp() {
     service.grpc = grpc;
-    service.tableClient =
-        new ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient(grpc);
+    service.tableClient = new TableClient(grpc);
     when(grpc.raw()).thenReturn(clients);
     when(clients.table()).thenReturn(tableStub);
     when(clients.directory()).thenReturn(directoryStub);
@@ -67,11 +57,7 @@ class TableLifecycleServiceTest {
             .build();
     var page = PageResponse.newBuilder().setNextPageToken("next-token").build();
     when(tableStub.listTables(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.ListTablesResponse.newBuilder()
-                .addTables(table)
-                .setPage(page)
-                .build());
+        .thenReturn(ListTablesResponse.newBuilder().addTables(table).setPage(page).build());
 
     TableLifecycleService.ListTablesResult result = service.listTables("cat", "db", 50, "cursor");
 
@@ -90,46 +76,6 @@ class TableLifecycleServiceTest {
   }
 
   @Test
-  void createTableAppliesIdempotencyKey() {
-    TableSpec.Builder spec = TableSpec.newBuilder().setDisplayName("orders");
-    Table created = Table.newBuilder().setDisplayName("orders").build();
-    when(tableStub.createTable(any()))
-        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
-
-    Table result = service.createTable(spec, "idem-key");
-    assertSame(created, result);
-
-    ArgumentCaptor<CreateTableRequest> captor = ArgumentCaptor.forClass(CreateTableRequest.class);
-    verify(tableStub).createTable(captor.capture());
-    CreateTableRequest sent = captor.getValue();
-    assertEquals(spec.build(), sent.getSpec());
-    assertEquals("idem-key", sent.getIdempotency().getKey());
-  }
-
-  @Test
-  void getAndUpdateTableDelegateToStubs() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    Table table = Table.newBuilder().setDisplayName("orders").build();
-    when(tableStub.getTable(any()))
-        .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
-    when(tableStub.updateTable(any()))
-        .thenReturn(UpdateTableResponse.newBuilder().setTable(table).build());
-
-    assertSame(table, service.getTable(tableId));
-
-    UpdateTableRequest request =
-        UpdateTableRequest.newBuilder()
-            .setTableId(tableId)
-            .setSpec(TableSpec.newBuilder().setDisplayName("orders").build())
-            .build();
-    assertSame(table, service.updateTable(request));
-
-    ArgumentCaptor<GetTableRequest> getCaptor = ArgumentCaptor.forClass(GetTableRequest.class);
-    verify(tableStub).getTable(getCaptor.capture());
-    assertEquals(tableId, getCaptor.getValue().getTableId());
-  }
-
-  @Test
   void deleteTableResolvesIdentifiers() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
@@ -143,37 +89,5 @@ class TableLifecycleServiceTest {
     assertEquals(tableId, deleteCaptor.getValue().getTableId());
     assertEquals(false, deleteCaptor.getValue().getPurgeStats());
     assertEquals(false, deleteCaptor.getValue().getPurgeSnapshots());
-  }
-
-  @Test
-  void deleteTableHonorsPurgeRequest() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-
-    service.deleteTable(tableId, true);
-
-    ArgumentCaptor<DeleteTableRequest> deleteCaptor =
-        ArgumentCaptor.forClass(DeleteTableRequest.class);
-    verify(tableStub).deleteTable(deleteCaptor.capture());
-    DeleteTableRequest sent = deleteCaptor.getValue();
-    assertEquals(tableId, sent.getTableId());
-    assertEquals(true, sent.getPurgeStats());
-    assertEquals(true, sent.getPurgeSnapshots());
-  }
-
-  @Test
-  void resolveHelpersReturnResourceIds() {
-    ResourceId catalogId = ResourceId.newBuilder().setId("cat").build();
-    ResourceId namespaceId = ResourceId.newBuilder().setId("cat:db").build();
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    when(directoryStub.resolveCatalog(any()))
-        .thenReturn(ResolveCatalogResponse.newBuilder().setResourceId(catalogId).build());
-    when(directoryStub.resolveNamespace(any()))
-        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(namespaceId).build());
-    when(directoryStub.resolveTable(any()))
-        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-
-    assertEquals(catalogId, service.resolveCatalogId("cat"));
-    assertEquals(namespaceId, service.resolveNamespaceId("cat", "db"));
-    assertEquals(tableId, service.resolveTableId("cat", "db", "orders"));
   }
 }

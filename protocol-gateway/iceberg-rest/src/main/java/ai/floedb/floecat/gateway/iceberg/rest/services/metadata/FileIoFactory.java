@@ -1,6 +1,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
+import ai.floedb.floecat.storage.spi.io.RuntimeFileIoOverrides;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -20,6 +21,7 @@ public final class FileIoFactory {
     if (allowConfigOverrides && config != null) {
       config.metadataFileIoRoot().ifPresent(root -> normalized.put("fs.floecat.test-root", root));
     }
+    RuntimeFileIoOverrides.mergeInto(normalized);
     String impl =
         allowConfigOverrides && config != null
             ? config.metadataFileIo().orElse(normalized.getOrDefault("io-impl", DEFAULT_IO_IMPL))
@@ -40,7 +42,7 @@ public final class FileIoFactory {
     }
   }
 
-  private static Map<String, String> filterIoProperties(Map<String, String> props) {
+  public static Map<String, String> filterIoProperties(Map<String, String> props) {
     if (props == null || props.isEmpty()) {
       return Map.of();
     }
@@ -50,16 +52,25 @@ public final class FileIoFactory {
           if (key == null || value == null) {
             return;
           }
-          for (String prefix : IO_PROP_PREFIXES) {
-            if (key.startsWith(prefix)) {
-              filtered.put(key, value);
-              return;
-            }
-          }
-          if ("io-impl".equals(key)) {
+          if (isFileIoProperty(key)) {
             filtered.put(key, value);
           }
         });
     return filtered;
+  }
+
+  public static boolean isFileIoProperty(String key) {
+    if (key == null || key.isBlank()) {
+      return false;
+    }
+    if ("io-impl".equals(key)) {
+      return true;
+    }
+    for (String prefix : IO_PROP_PREFIXES) {
+      if (key.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
   }
 }

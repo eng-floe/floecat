@@ -1,7 +1,5 @@
 package ai.floedb.floecat.gateway.iceberg.rest.common;
 
-import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.defaultPartitionSpec;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.defaultSortOrder;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.maxPartitionFieldId;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.normalizeSortOrder;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SchemaMapper.partitionSpecFromRequest;
@@ -21,27 +19,19 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.snaps
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.statistics;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asInteger;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asLong;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asObjectMap;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonNull;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.maybeInt;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.maybeLong;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import java.time.Instant;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 public final class TableMetadataBuilder {
   private TableMetadataBuilder() {}
@@ -52,7 +42,7 @@ public final class TableMetadataBuilder {
       Map<String, String> props,
       IcebergMetadata metadata,
       List<Snapshot> snapshots) {
-    String metadataLocation = resolveMetadataLocation(props, metadata);
+    String metadataLocation = resolveMetadataLocation(metadata);
     return buildMetadata(tableName, table, props, metadata, snapshots, metadataLocation);
   }
 
@@ -68,139 +58,157 @@ public final class TableMetadataBuilder {
       IcebergMetadata metadata,
       List<Snapshot> snapshots,
       String metadataLocation) {
-    if (metadata == null) {
-      return synthesizeMetadataFromTable(tableName, table, props, metadataLocation, snapshots);
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      metadataLocation = MetadataLocationUtil.metadataLocation(props);
     }
     String location = table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
     location = resolveTableLocation(location, metadataLocation);
     Long lastUpdatedMs =
         (metadata != null && metadata.getLastUpdatedMs() > 0)
             ? Long.valueOf(metadata.getLastUpdatedMs())
-            : maybeLong(props.get("last-updated-ms"));
-    // For new tables, last-updates-ms will not be set, so set it
-    if (lastUpdatedMs == null || lastUpdatedMs <= 0) {
-      lastUpdatedMs = Instant.now().toEpochMilli();
-    }
+            : null;
     Long currentSnapshotId =
-        metadata.getCurrentSnapshotId() > 0
+        metadata != null && metadata.getCurrentSnapshotId() > 0
             ? Long.valueOf(metadata.getCurrentSnapshotId())
-            : maybeLong(props.get("current-snapshot-id"));
+            : null;
     Long lastSequenceNumber =
-        metadata != null
+        metadata != null && metadata.getLastSequenceNumber() >= 0
             ? Long.valueOf(metadata.getLastSequenceNumber())
-            : maybeLong(props.get("last-sequence-number"));
+            : null;
     Integer lastColumnId =
-        metadata.getLastColumnId() >= 0
-            ? metadata.getLastColumnId()
-            : maybeInt(props.get("last-column-id"));
+        metadata != null && metadata.getLastColumnId() >= 0
+            ? Integer.valueOf(metadata.getLastColumnId())
+            : null;
     Integer currentSchemaId =
-        metadata.getCurrentSchemaId() >= 0
-            ? metadata.getCurrentSchemaId()
-            : maybeInt(props.get("current-schema-id"));
+        metadata != null && metadata.getCurrentSchemaId() >= 0
+            ? Integer.valueOf(metadata.getCurrentSchemaId())
+            : null;
     Integer defaultSpecId =
-        metadata.getDefaultSpecId() >= 0
-            ? metadata.getDefaultSpecId()
-            : maybeInt(props.get("default-spec-id"));
+        metadata != null && metadata.getDefaultSpecId() >= 0
+            ? Integer.valueOf(metadata.getDefaultSpecId())
+            : null;
     Integer lastPartitionId =
-        metadata.getLastPartitionId() >= 0
-            ? metadata.getLastPartitionId()
-            : maybeInt(props.get("last-partition-id"));
+        metadata != null && metadata.getLastPartitionId() >= 0
+            ? Integer.valueOf(metadata.getLastPartitionId())
+            : null;
     Integer defaultSortOrderId =
-        metadata.getDefaultSortOrderId() >= 0
-            ? metadata.getDefaultSortOrderId()
-            : maybeInt(props.get("default-sort-order-id"));
+        metadata != null && metadata.getDefaultSortOrderId() >= 0
+            ? Integer.valueOf(metadata.getDefaultSortOrderId())
+            : null;
     String tableUuid =
-        (metadata != null && metadata.getTableUuid() != null && !metadata.getTableUuid().isBlank())
+        metadata != null && metadata.getTableUuid() != null && !metadata.getTableUuid().isBlank()
             ? metadata.getTableUuid()
-            : Optional.ofNullable(props.get("table-uuid"))
-                .orElseGet(() -> table.hasResourceId() ? table.getResourceId().getId() : tableName);
+            : null;
+    Integer formatVersion =
+        metadata != null && metadata.getFormatVersion() > 0
+            ? Integer.valueOf(metadata.getFormatVersion())
+            : null;
+    if (formatVersion == null || formatVersion < 1) {
+      formatVersion = maybeInt(props.get("format-version"));
+    }
+    if (formatVersion == null || formatVersion < 1) {
+      formatVersion = 1;
+    }
+    if (tableUuid == null) {
+      String candidate = props.get("table-uuid");
+      if (candidate != null && !candidate.isBlank()) {
+        tableUuid = candidate;
+      }
+    }
+    if (tableUuid == null && table != null && table.hasResourceId()) {
+      String candidate = table.getResourceId().getId();
+      if (candidate != null && !candidate.isBlank()) {
+        tableUuid = candidate;
+      }
+    }
+    if (tableUuid == null || tableUuid.isBlank()) {
+      tableUuid = tableName;
+    }
+    if (currentSchemaId == null) {
+      currentSchemaId = maybeInt(props.get("current-schema-id"));
+    }
+    if (lastColumnId == null) {
+      lastColumnId = maybeInt(props.get("last-column-id"));
+    }
+    if (defaultSpecId == null) {
+      defaultSpecId = maybeInt(props.get("default-spec-id"));
+    }
+    if (lastPartitionId == null) {
+      lastPartitionId = maybeInt(props.get("last-partition-id"));
+    }
+    if (defaultSortOrderId == null) {
+      defaultSortOrderId = maybeInt(props.get("default-sort-order-id"));
+    }
+    if (lastUpdatedMs == null) {
+      lastUpdatedMs = asLong(props.get("last-updated-ms"));
+    }
+    if (lastUpdatedMs == null || lastUpdatedMs <= 0) {
+      lastUpdatedMs = System.currentTimeMillis();
+    }
+    if (currentSnapshotId == null) {
+      currentSnapshotId = asLong(props.get("current-snapshot-id"));
+    }
+    if (lastSequenceNumber == null) {
+      lastSequenceNumber = asLong(props.get("last-sequence-number"));
+    }
     if (lastSequenceNumber == null) {
       lastSequenceNumber = 0L;
     }
-    Integer formatVersion = formatVersion(props);
     List<Map<String, Object>> schemaList = schemasFromMetadata(metadata);
     if (schemaList.isEmpty()) {
-      Map<String, Object> fallback = schemaFromTable(table);
-      schemaList = List.of(fallback);
-      Integer fallbackId = asInteger(fallback.get("schema-id"));
-      if (fallbackId != null && fallbackId >= 0) {
-        currentSchemaId = fallbackId;
+      try {
+        Map<String, Object> schema = schemaFromTable(table);
+        schemaList = List.of(schema);
+        if (currentSchemaId == null) {
+          currentSchemaId = asInteger(schema.get("schema-id"));
+        }
+        if (lastColumnId == null) {
+          lastColumnId = asInteger(schema.get("last-column-id"));
+        }
+      } catch (IllegalArgumentException e) {
+        // ignore; fall back to metadata-derived defaults only
       }
     }
     List<Map<String, Object>> specList = partitionSpecsFromMetadata(metadata);
     if (specList.isEmpty()) {
-      Map<String, Object> fallbackSpec = defaultPartitionSpec();
-      specList = List.of(fallbackSpec);
-      Integer fallbackSpecId = asInteger(fallbackSpec.get("spec-id"));
-      if (fallbackSpecId != null && fallbackSpecId >= 0) {
-        defaultSpecId = fallbackSpecId;
+      Map<String, Object> spec = defaultPartitionSpec();
+      specList = List.of(spec);
+      if (defaultSpecId == null) {
+        defaultSpecId = asInteger(spec.get("spec-id"));
+      }
+      if (lastPartitionId == null) {
+        lastPartitionId = maxPartitionFieldId(spec);
       }
     }
     List<Map<String, Object>> sortOrderList = sortOrdersFromMetadata(metadata);
     if (sortOrderList.isEmpty()) {
-      Map<String, Object> fallbackOrder = defaultSortOrder();
-      sortOrderList = List.of(fallbackOrder);
-      Integer fallbackOrderId = asInteger(fallbackOrder.get("sort-order-id"));
-      if (fallbackOrderId != null && fallbackOrderId >= 0) {
-        defaultSortOrderId = fallbackOrderId;
+      Map<String, Object> order = defaultSortOrder();
+      sortOrderList = List.of(order);
+      if (defaultSortOrderId == null) {
+        defaultSortOrderId = asInteger(order.get("order-id"));
       }
-    } else {
+    }
+    if (!sortOrderList.isEmpty()) {
       sortOrderList.forEach(order -> normalizeSortOrder(order));
     }
     List<Map<String, Object>> statisticsList = sanitizeStatistics(statistics(metadata));
     List<Map<String, Object>> partitionStatisticsList =
         nonNullMapList(partitionStatistics(metadata));
-    Snapshot latestSnapshot = null;
-    if (snapshots != null && !snapshots.isEmpty()) {
-      latestSnapshot =
-          snapshots.stream()
-              .max(
-                  Comparator.comparingLong(Snapshot::getSequenceNumber)
-                      .thenComparingLong(Snapshot::getSnapshotId))
-              .orElse(null);
-      if (latestSnapshot != null && latestSnapshot.getSequenceNumber() > lastSequenceNumber) {
-        lastSequenceNumber = latestSnapshot.getSequenceNumber();
-      }
+    List<Snapshot> orderedSnapshots =
+        snapshots == null || snapshots.size() < 2
+            ? snapshots
+            : snapshots.stream()
+                .sorted(
+                    Comparator.comparingLong(Snapshot::getSequenceNumber)
+                        .thenComparingLong(Snapshot::getSnapshotId))
+                .toList();
+    Long maxSnapshotSequence = maxSnapshotSequence(orderedSnapshots);
+    if (maxSnapshotSequence != null
+        && (lastSequenceNumber == null || lastSequenceNumber < maxSnapshotSequence)) {
+      lastSequenceNumber = maxSnapshotSequence;
     }
     Map<String, Object> refs = refs(metadata);
     refs = mergePropertyRefs(props, refs);
-    if (metadata != null && !refs.isEmpty()) {
-      Set<Long> snapshotIds = new HashSet<>();
-      if (snapshots != null) {
-        snapshotIds.addAll(
-            snapshots.stream().map(Snapshot::getSnapshotId).collect(Collectors.toSet()));
-      }
-      if (!snapshotIds.isEmpty()) {
-        refs.entrySet()
-            .removeIf(
-                entry -> {
-                  Map<String, Object> refMap = asObjectMap(entry.getValue());
-                  if (refMap == null) {
-                    return true;
-                  }
-                  Long refSnapshot = asLong(refMap.get("snapshot-id"));
-                  return refSnapshot == null || !snapshotIds.contains(refSnapshot);
-                });
-      }
-      Map<String, Object> mainRef = asObjectMap(refs.get("main"));
-      if (mainRef != null) {
-        Long mainSnapshot = asLong(mainRef.get("snapshot-id"));
-        if (mainSnapshot != null && mainSnapshot > 0) {
-          currentSnapshotId = mainSnapshot;
-        }
-      }
-    }
-    if (latestSnapshot != null) {
-      long latestSnapshotId = latestSnapshot.getSnapshotId();
-      if (latestSnapshotId > 0 && !Objects.equals(currentSnapshotId, latestSnapshotId)) {
-        currentSnapshotId = latestSnapshotId;
-        refs = ensureMainRef(refs, latestSnapshotId);
-      }
-    } else if ((currentSnapshotId == null || currentSnapshotId <= 0)
-        && snapshots != null
-        && !snapshots.isEmpty()) {
-      currentSnapshotId = snapshots.get(0).getSnapshotId();
-    }
     syncProperty(props, "table-uuid", tableUuid);
     MetadataLocationUtil.setMetadataLocation(props, metadataLocation);
     syncProperty(props, "current-snapshot-id", currentSnapshotId);
@@ -232,72 +240,7 @@ public final class TableMetadataBuilder {
         metadataLog(metadata),
         statisticsList,
         partitionStatisticsList,
-        snapshots(snapshots));
-  }
-
-  private static TableMetadataView synthesizeMetadataFromTable(
-      String tableName,
-      Table table,
-      Map<String, String> props,
-      String metadataLocation,
-      List<Snapshot> snapshots) {
-    String resolvedMetadata =
-        resolveInitialMetadataLocation(tableName, table, props, metadataLocation);
-    MetadataLocationUtil.setMetadataLocation(props, resolvedMetadata);
-    syncWriteMetadataPath(props, resolvedMetadata);
-    Map<String, Object> schema = schemaFromTable(table);
-    Integer schemaId = asInteger(schema.get("schema-id"));
-    Integer lastColumnId = asInteger(schema.get("last-column-id"));
-    Map<String, Object> partitionSpec = defaultPartitionSpec();
-    Integer defaultSpecId = asInteger(partitionSpec.get("spec-id"));
-    Integer lastPartitionId = 0;
-    Map<String, Object> sortOrder = defaultSortOrder();
-    Integer defaultSortOrderId = asInteger(sortOrder.get("sort-order-id"));
-    String location =
-        defaultLocation(
-            table.hasUpstream() ? table.getUpstream().getUri() : props.get("location"),
-            resolvedMetadata);
-    long lastUpdatedMs =
-        table.hasCreatedAt()
-            ? table.getCreatedAt().getSeconds() * 1000 + table.getCreatedAt().getNanos() / 1_000_000
-            : Instant.now().toEpochMilli();
-    props.putIfAbsent("format-version", "2");
-    props.putIfAbsent("current-schema-id", schemaId.toString());
-    props.putIfAbsent("last-column-id", lastColumnId.toString());
-    props.putIfAbsent("default-spec-id", defaultSpecId.toString());
-    props.putIfAbsent("last-partition-id", Integer.toString(lastPartitionId));
-    props.putIfAbsent("default-sort-order-id", defaultSortOrderId.toString());
-    long maxSequence =
-        snapshots == null || snapshots.isEmpty()
-            ? 0L
-            : snapshots.stream().mapToLong(Snapshot::getSequenceNumber).max().orElse(0L);
-    long currentSnapshotId =
-        snapshots == null || snapshots.isEmpty() ? -1L : snapshots.get(0).getSnapshotId();
-    props.put("current-snapshot-id", Long.toString(currentSnapshotId < 0 ? 0 : currentSnapshotId));
-    props.put("last-sequence-number", Long.toString(maxSequence));
-    return new TableMetadataView(
-        formatVersion(props),
-        table.hasResourceId() ? table.getResourceId().getId() : tableName,
-        location,
-        resolvedMetadata,
-        lastUpdatedMs,
-        props,
-        lastColumnId,
-        schemaId,
-        defaultSpecId,
-        lastPartitionId,
-        defaultSortOrderId,
-        currentSnapshotId,
-        maxSequence,
-        List.of(schema),
-        List.of(partitionSpec),
-        List.of(sortOrder),
-        Map.of(),
-        List.of(),
-        List.of(),
-        List.of(),
-        List.of(),
-        snapshots(snapshots));
+        snapshots(orderedSnapshots));
   }
 
   private static TableMetadataView initialMetadata(
@@ -316,61 +259,65 @@ public final class TableMetadataBuilder {
                 }
               });
     }
-    String locationOverride =
-        Optional.ofNullable(request.location())
-            .filter(s -> !s.isBlank())
-            .orElseGet(() -> props.get("location"));
     String metadataLoc = metadataLocationFromRequest(request);
-    if (metadataLoc == null || metadataLoc.isBlank()) {
-      metadataLoc = metadataLocationFromTableLocation(locationOverride);
+    String metadataLocation = null;
+    if (metadataLoc != null && !metadataLoc.isBlank()) {
+      MetadataLocationUtil.setMetadataLocation(props, metadataLoc);
+      syncWriteMetadataPath(props, metadataLoc);
+      metadataLocation = metadataLoc;
     }
-    if (metadataLoc == null || metadataLoc.isBlank()) {
-      metadataLoc = defaultMetadataLocation(table, tableName);
-    }
-    MetadataLocationUtil.setMetadataLocation(props, metadataLoc);
-    syncWriteMetadataPath(props, metadataLoc);
-    final String metadataLocation = metadataLoc;
     String location =
-        Optional.ofNullable(request.location())
-            .filter(s -> !s.isBlank())
-            .orElseGet(() -> defaultLocation(props.get("location"), metadataLocation));
-    if (location == null || location.isBlank()) {
-      throw new IllegalArgumentException("location is required");
+        Optional.ofNullable(request.location()).filter(s -> !s.isBlank()).orElse(null);
+    long lastUpdatedMs;
+    if (table.hasCreatedAt()) {
+      lastUpdatedMs =
+          table.getCreatedAt().getSeconds() * 1000 + table.getCreatedAt().getNanos() / 1_000_000;
+    } else {
+      Long updatedMs =
+          request.properties() == null ? null : asLong(request.properties().get("last-updated-ms"));
+      if (updatedMs == null || updatedMs <= 0) {
+        lastUpdatedMs = System.currentTimeMillis();
+      } else {
+        lastUpdatedMs = updatedMs;
+      }
     }
-    long lastUpdatedMs =
-        table.hasCreatedAt()
-            ? table.getCreatedAt().getSeconds() * 1000 + table.getCreatedAt().getNanos() / 1_000_000
-            : Instant.now().toEpochMilli();
     Map<String, Object> schema = schemaFromRequest(request);
     Integer schemaId = asInteger(schema.get("schema-id"));
     Integer lastColumnId = asInteger(schema.get("last-column-id"));
     if (schemaId == null || lastColumnId == null) {
       throw new IllegalArgumentException("schema requires schema-id and last-column-id");
     }
-    Map<String, Object> partitionSpec = partitionSpecFromRequest(request);
+    Map<String, Object> partitionSpec =
+        request.partitionSpec() == null || request.partitionSpec().isNull()
+            ? defaultPartitionSpec()
+            : partitionSpecFromRequest(request);
     Integer defaultSpecId = asInteger(partitionSpec.get("spec-id"));
     if (defaultSpecId == null) {
-      defaultSpecId = 0;
-      partitionSpec.put("spec-id", defaultSpecId);
+      throw new IllegalArgumentException("partition-spec requires spec-id");
     }
     Integer lastPartitionId = maxPartitionFieldId(partitionSpec);
-    Map<String, Object> sortOrder = sortOrderFromRequest(request);
-    Integer defaultSortOrderId =
-        asInteger(firstNonNull(sortOrder.get("sort-order-id"), sortOrder.get("order-id")));
+    Map<String, Object> sortOrder =
+        request.writeOrder() == null || request.writeOrder().isNull()
+            ? defaultSortOrder()
+            : sortOrderFromRequest(request);
+    Integer defaultSortOrderId = asInteger(sortOrder.get("order-id"));
     if (defaultSortOrderId == null) {
-      defaultSortOrderId = 0;
-      sortOrder.put("sort-order-id", defaultSortOrderId);
+      throw new IllegalArgumentException("write-order requires sort-order-id");
     }
-    props.putIfAbsent("format-version", "2");
+    Integer formatVersion = maybeInt(props.get("format-version"));
+    if (formatVersion == null || formatVersion < 1) {
+      formatVersion = 1;
+    }
+    props.putIfAbsent("format-version", formatVersion.toString());
     props.putIfAbsent("current-schema-id", schemaId.toString());
     props.putIfAbsent("last-column-id", lastColumnId.toString());
     props.putIfAbsent("default-spec-id", defaultSpecId.toString());
     props.putIfAbsent("last-partition-id", lastPartitionId.toString());
     props.putIfAbsent("default-sort-order-id", defaultSortOrderId.toString());
-    props.putIfAbsent("current-snapshot-id", "0");
-    props.putIfAbsent("last-sequence-number", "0");
+    long lastSequenceNumber = 0L;
+    props.putIfAbsent("last-sequence-number", Long.toString(lastSequenceNumber));
     return new TableMetadataView(
-        formatVersion(props),
+        formatVersion,
         table.hasResourceId() ? table.getResourceId().getId() : tableName,
         resolveTableLocation(location, metadataLocation),
         metadataLocation,
@@ -382,7 +329,7 @@ public final class TableMetadataBuilder {
         lastPartitionId,
         defaultSortOrderId,
         null,
-        0L,
+        lastSequenceNumber,
         List.of(schema),
         List.of(partitionSpec),
         List.of(sortOrder),
@@ -394,30 +341,22 @@ public final class TableMetadataBuilder {
         List.of());
   }
 
-  private static Integer formatVersion(Map<String, String> props) {
-    Integer version = maybeInt(props.get("format-version"));
-    if (version == null || version < 1) {
-      version = 2;
-    }
-    return version;
+  private static Map<String, Object> defaultPartitionSpec() {
+    Map<String, Object> spec = new LinkedHashMap<>();
+    spec.put("spec-id", 0);
+    spec.put("fields", List.of());
+    return spec;
   }
 
-  private static String resolveMetadataLocation(
-      Map<String, String> props, IcebergMetadata metadata) {
-    String metadataLocation = metadataLocationFromMetadataLog(metadata);
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      metadataLocation = metadataLocationFromField(metadata);
-    }
-    if (metadataLocation != null && !metadataLocation.isBlank()) {
-      return metadataLocation;
-    }
-    String propertyLocation = MetadataLocationUtil.metadataLocation(props);
-    if (propertyLocation != null
-        && !propertyLocation.isBlank()
-        && !MetadataLocationUtil.isPointer(propertyLocation)) {
-      return propertyLocation;
-    }
-    return propertyLocation;
+  private static Map<String, Object> defaultSortOrder() {
+    Map<String, Object> order = new LinkedHashMap<>();
+    order.put("order-id", 0);
+    order.put("fields", List.of());
+    return order;
+  }
+
+  private static String resolveMetadataLocation(IcebergMetadata metadata) {
+    return metadataLocationFromField(metadata);
   }
 
   private static String metadataLocationFromField(IcebergMetadata metadata) {
@@ -431,53 +370,11 @@ public final class TableMetadataBuilder {
     return null;
   }
 
-  private static String metadataLocationFromMetadataLog(IcebergMetadata metadata) {
-    if (metadata == null || metadata.getMetadataLogCount() == 0) {
+  private static String resolveTableLocation(String location, String metadataLocation) {
+    if (location == null || location.isBlank()) {
       return null;
     }
-    var entries = metadata.getMetadataLogList();
-    for (int idx = entries.size() - 1; idx >= 0; idx--) {
-      String candidate = entries.get(idx).getFile();
-      if (candidate != null && !candidate.isBlank()) {
-        return candidate;
-      }
-    }
-    return null;
-  }
-
-  private static String resolveInitialMetadataLocation(
-      String tableName, Table table, Map<String, String> props, String metadataLocation) {
-    if (metadataLocation != null && !metadataLocation.isBlank()) {
-      return metadataLocation;
-    }
-    String tableLocation =
-        table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
-    if (tableLocation != null && !tableLocation.isBlank()) {
-      String base =
-          tableLocation.endsWith("/")
-              ? tableLocation.substring(0, tableLocation.length() - 1)
-              : tableLocation;
-      return base + "/metadata/" + nextMetadataFileName();
-    }
-    return defaultMetadataLocation(table, tableName);
-  }
-
-  private static String resolveTableLocation(String location, String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return location;
-    }
-    if (location != null && !location.isBlank() && !location.startsWith("https://glue")) {
-      return location;
-    }
-    int idx = metadataLocation.indexOf("/metadata/");
-    if (idx > 0) {
-      return metadataLocation.substring(0, idx);
-    }
-    int slash = metadataLocation.lastIndexOf('/');
-    if (slash > 0) {
-      return metadataLocation.substring(0, slash);
-    }
-    return metadataLocation;
+    return location;
   }
 
   private static String metadataLocationFromRequest(TableRequests.Create request) {
@@ -486,46 +383,6 @@ public final class TableMetadataBuilder {
     }
     String location = request.properties().get("metadata-location");
     return (location == null || location.isBlank()) ? null : location;
-  }
-
-  private static String metadataLocationFromTableLocation(String tableLocation) {
-    if (tableLocation == null || tableLocation.isBlank()) {
-      return null;
-    }
-    String base =
-        tableLocation.endsWith("/")
-            ? tableLocation.substring(0, tableLocation.length() - 1)
-            : tableLocation;
-    String dir = base + "/metadata/";
-    return dir + nextMetadataFileName();
-  }
-
-  private static String defaultMetadataLocation(Table table, String tableName) {
-    String suffix;
-    if (table != null && table.hasResourceId() && table.getResourceId().getId() != null) {
-      suffix = table.getResourceId().getId();
-    } else {
-      suffix = tableName;
-    }
-    return "floecat:///tables/" + suffix + "/metadata/" + nextMetadataFileName();
-  }
-
-  private static String defaultLocation(String current, String metadataLocation) {
-    if (current != null && !current.isBlank()) {
-      return current;
-    }
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return null;
-    }
-    int idx = metadataLocation.indexOf("/metadata/");
-    if (idx > 0) {
-      return metadataLocation.substring(0, idx);
-    }
-    int slash = metadataLocation.lastIndexOf('/');
-    if (slash > 0) {
-      return metadataLocation.substring(0, slash);
-    }
-    return metadataLocation;
   }
 
   private static Map<String, Object> mergePropertyRefs(
@@ -549,18 +406,6 @@ public final class TableMetadataBuilder {
     return merged;
   }
 
-  private static Map<String, Object> ensureMainRef(Map<String, Object> refs, long snapshotId) {
-    Map<String, Object> updated =
-        (refs == null || refs.isEmpty()) ? new LinkedHashMap<>() : new LinkedHashMap<>(refs);
-    Map<String, Object> mainRef = asObjectMap(updated.get("main"));
-    Map<String, Object> newMain =
-        mainRef == null ? new LinkedHashMap<>() : new LinkedHashMap<>(mainRef);
-    newMain.put("snapshot-id", snapshotId);
-    newMain.putIfAbsent("type", "branch");
-    updated.put("main", newMain);
-    return updated;
-  }
-
   private static void syncProperty(Map<String, String> props, String key, Object value) {
     if (props == null || key == null || value == null) {
       return;
@@ -574,6 +419,23 @@ public final class TableMetadataBuilder {
       return;
     }
     props.put("write.metadata.path", directory);
+  }
+
+  private static Long maxSnapshotSequence(List<Snapshot> snapshots) {
+    if (snapshots == null || snapshots.isEmpty()) {
+      return null;
+    }
+    long max = -1L;
+    for (Snapshot snapshot : snapshots) {
+      if (snapshot == null) {
+        continue;
+      }
+      long seq = snapshot.getSequenceNumber();
+      if (seq > max) {
+        max = seq;
+      }
+    }
+    return max > 0 ? max : null;
   }
 
   private static String nextMetadataFileName() {

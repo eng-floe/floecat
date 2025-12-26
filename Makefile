@@ -3,20 +3,29 @@
 #   make / make build            # build proto + all modules (skip tests)
 #   make build-all               # build all modules only (skip tests)
 #   make proto                   # generate/install protobuf stubs
-#   make test                    # unit + IT (service, REST gateway, client-cli)
+#   make test                    # unit + IT (service, REST gateway, client-cli, in-memory)
+#   make test-localstack          # unit + IT (upstream + catalog LocalStack)
 #   make unit-test               # unit tests only (service, REST gateway, client-cli)
 #   make integration-test        # integration tests only (service, REST gateway, client-cli)
 #   make verify                  # full Maven verify lifecycle
 #
 # Dev – foreground & background:
 #   make run                     # quarkus:dev for service (foreground)
-#   make run-rest                # quarkus:dev for REST gateway (foreground)
+#   make run-aws-aws              # upstream real AWS -> catalog real AWS
+#   make run-localstack-aws       # upstream Localstack -> catalog real AWS
+#   make run-aws-localstack       # upstream real AWS -> catalog Localstack
+#   make run-localstack-localstack # upstream Localstack -> catalog Localstack
+#   make run-rest                # quarkus:dev for REST gateway (foreground, in-memory)
+#   make run-rest-aws             # REST gateway upstream real AWS
+#   make run-rest-localstack      # REST gateway upstream LocalStack
 #   make run-all                 # start REST (bg), then run service (fg)
 #   make start                   # start service in background
 #   make start-rest              # start REST gateway in background
 #   make start-all               # start service + REST gateway in background
 #   make stop                    # stop service + REST gateway
 #   make logs                    # tail -f service log
+#   make localstack-up           # start LocalStack container
+#   make localstack-down         # stop LocalStack container (if running)
 #   make logs-rest               # tail -f REST gateway log
 #   make status                  # show background dev status
 #
@@ -51,6 +60,8 @@ MAKEFLAGS  += --no-builtin-rules
 MVN ?= mvn
 MVN_FLAGS   := -q -T 1C --no-transfer-progress -DskipTests -DskipUTs=true -DskipITs=true
 MVN_TESTALL := --no-transfer-progress
+
+DOCKER_COMPOSE ?= docker compose
 
 # ---------- Quarkus dev settings ----------
 QUARKUS_PROFILE  ?= dev
@@ -90,6 +101,65 @@ PROTO_STAMP  := $(M2_CLI_DIR)/.proto-$(VERSION).stamp
 CLI_JAR := client-cli/target/quarkus-app/quarkus-run.jar
 CLI_SRC := $(shell find client-cli/src -type f \( -name '*.java' -o -name '*.xml' -o -name '*.properties' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) ) client-cli/pom.xml
 
+# ---------- LocalStack / AWS storage ----------
+LOCALSTACK_DIR := tools/localstack
+LOCALSTACK_COMPOSE := $(LOCALSTACK_DIR)/docker-compose.yml
+LOCALSTACK_PROJECT := floecat-localstack
+LOCALSTACK_ENDPOINT ?= http://localhost:4566
+LOCALSTACK_HEALTH := $(LOCALSTACK_ENDPOINT)/_localstack/health
+LOCALSTACK_BUCKET ?= floecat-dev
+LOCALSTACK_TABLE ?= floecat_pointers
+LOCALSTACK_REGION ?= us-east-1
+LOCALSTACK_ACCESS_KEY ?= test
+LOCALSTACK_SECRET_KEY ?= test
+LOCALSTACK_ENV := \
+	AWS_REGION=$(LOCALSTACK_REGION) \
+	AWS_DEFAULT_REGION=$(LOCALSTACK_REGION) \
+	AWS_ACCESS_KEY_ID=$(LOCALSTACK_ACCESS_KEY) \
+	AWS_SECRET_ACCESS_KEY=$(LOCALSTACK_SECRET_KEY) \
+	AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED \
+	AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED
+
+REAL_AWS_BUCKET ?=
+REAL_AWS_TABLE ?=
+REAL_AWS_REGION ?= us-east-1
+
+LOCALSTACK_S3_OVERRIDES := \
+	-Dfloecat.fileio.override.io-impl=org.apache.iceberg.aws.s3.S3FileIO \
+	-Dfloecat.fileio.override.s3.endpoint=$(LOCALSTACK_ENDPOINT) \
+	-Dfloecat.fileio.override.s3.region=$(LOCALSTACK_REGION) \
+	-Dfloecat.fileio.override.s3.access-key-id=$(LOCALSTACK_ACCESS_KEY) \
+	-Dfloecat.fileio.override.s3.secret-access-key=$(LOCALSTACK_SECRET_KEY) \
+	-Dfloecat.fileio.override.s3.path-style-access=true
+
+CATALOG_LOCALSTACK_PROPS := \
+	-Dfloecat.kv=dynamodb \
+	-Dfloecat.kv.table=$(LOCALSTACK_TABLE) \
+	-Dfloecat.kv.auto-create=true \
+	-Dfloecat.kv.ttl-enabled=true \
+	-Dfloecat.blob=s3 \
+	-Dfloecat.blob.s3.bucket=$(LOCALSTACK_BUCKET) \
+	$(LOCALSTACK_S3_OVERRIDES) \
+	-Dfloecat.fileio.override.aws.dynamodb.endpoint-override=$(LOCALSTACK_ENDPOINT) \
+	-Dfloecat.fixtures.use-aws-s3=true \
+	-Daws.requestChecksumCalculation=when_required \
+	-Daws.responseChecksumValidation=when_required
+
+UPSTREAM_LOCALSTACK_PROPS := $(LOCALSTACK_S3_OVERRIDES)
+
+CATALOG_REAL_AWS_PROPS := \
+	-Dfloecat.kv=dynamodb \
+	-Dfloecat.kv.table=$(REAL_AWS_TABLE) \
+	-Dfloecat.kv.auto-create=true \
+	-Dfloecat.kv.ttl-enabled=true \
+	-Dfloecat.blob=s3 \
+	-Dfloecat.blob.s3.bucket=$(REAL_AWS_BUCKET) \
+	-Dfloecat.fixtures.use-aws-s3=true
+
+UPSTREAM_REAL_AWS_PROPS :=
+
+AWS_STORE_PROPS := $(CATALOG_LOCALSTACK_PROPS) $(UPSTREAM_LOCALSTACK_PROPS)
+
 # ===================================================
 # Aggregates
 # ===================================================
@@ -114,14 +184,26 @@ $(PROTO_JAR): core/proto/pom.xml $(shell find core/proto -type f -name '*.proto'
 
 # ===================================================
 # Tests
+# - test: in-memory stores (fast default)
+# - test-localstack: upstream + catalog LocalStack
 # ===================================================
-.PHONY: test unit-test integration-test verify
+.PHONY: test test-localstack unit-test integration-test verify
 
 test: $(PROTO_JAR)
 	@echo "==> [BUILD] installing parent POM to local repo"
 	$(MVN) $(MVN_TESTALL) install -N
-	@echo "==> [TEST] service + REST gateway + client-cli (unit + IT)"
+	@echo "==> [TEST] service + REST gateway + client-cli (unit + IT, in-memory)"
 	$(MVN) $(MVN_TESTALL) \
+	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	  verify
+
+.PHONY: test-localstack
+test-localstack: $(PROTO_JAR) localstack-down localstack-up
+	@echo "==> [BUILD] installing parent POM to local repo"
+	$(MVN) $(MVN_TESTALL) install -N
+	@echo "==> [TEST] full suite (service + REST + CLI) upstream LocalStack -> catalog LocalStack"
+	$(LOCALSTACK_ENV) \
+	$(MVN) $(MVN_TESTALL) $(CATALOG_LOCALSTACK_PROPS) $(UPSTREAM_LOCALSTACK_PROPS) \
 	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	  verify
 
@@ -187,6 +269,65 @@ run-service: $(PROTO_JAR)
 	  $(REACTOR_SERVICE) \
 	  $(QUARKUS_DEV_GOAL)
 
+.PHONY: run-aws-aws
+run-aws-aws: $(PROTO_JAR)
+	@if [ -z "$(REAL_AWS_BUCKET)" ] || [ -z "$(REAL_AWS_TABLE)" ]; then \
+	  echo "ERROR: REAL_AWS_BUCKET and REAL_AWS_TABLE must be set"; \
+	  exit 1; \
+	fi
+	@echo "==> [DEV] quarkus:dev upstream real AWS -> catalog real AWS"
+	$(MVN) -f ./pom.xml \
+	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+	  -Dfloecat.seed.enabled=true \
+	  -Dfloecat.seed.mode=iceberg \
+	  $(CATALOG_REAL_AWS_PROPS) $(UPSTREAM_REAL_AWS_PROPS) \
+	  $(QUARKUS_DEV_ARGS) \
+	  $(REACTOR_SERVICE) \
+	  $(QUARKUS_DEV_GOAL)
+
+.PHONY: run-localstack-aws
+run-localstack-aws: localstack-up $(PROTO_JAR)
+	@if [ -z "$(REAL_AWS_BUCKET)" ] || [ -z "$(REAL_AWS_TABLE)" ]; then \
+	  echo "ERROR: REAL_AWS_BUCKET and REAL_AWS_TABLE must be set"; \
+	  exit 1; \
+	fi
+	@echo "==> [DEV] quarkus:dev upstream LocalStack -> catalog real AWS"
+	$(LOCALSTACK_ENV) \
+	$(MVN) -f ./pom.xml \
+	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+	  -Dfloecat.seed.enabled=true \
+	  -Dfloecat.seed.mode=iceberg \
+	  $(CATALOG_REAL_AWS_PROPS) $(UPSTREAM_LOCALSTACK_PROPS) \
+	  $(QUARKUS_DEV_ARGS) \
+	  $(REACTOR_SERVICE) \
+	  $(QUARKUS_DEV_GOAL)
+
+.PHONY: run-aws-localstack
+run-aws-localstack: localstack-up $(PROTO_JAR)
+	@echo "==> [DEV] quarkus:dev upstream real AWS -> catalog LocalStack"
+	$(MVN) -f ./pom.xml \
+	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+	  -Dfloecat.connector.fileio.overrides=false \
+	  -Dfloecat.seed.enabled=true \
+	  -Dfloecat.seed.mode=iceberg \
+	  $(CATALOG_LOCALSTACK_PROPS) $(UPSTREAM_REAL_AWS_PROPS) \
+	  $(QUARKUS_DEV_ARGS) \
+	  $(REACTOR_SERVICE) \
+	  $(QUARKUS_DEV_GOAL)
+
+.PHONY: run-localstack-localstack
+run-localstack-localstack: localstack-up $(PROTO_JAR)
+	@echo "==> [DEV] quarkus:dev upstream LocalStack -> catalog LocalStack"
+	$(LOCALSTACK_ENV) \
+	$(MVN) -f ./pom.xml \
+	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+	  -Dfloecat.seed.enabled=true \
+	  -Dfloecat.seed.mode=iceberg \
+	  $(CATALOG_LOCALSTACK_PROPS) $(UPSTREAM_LOCALSTACK_PROPS) \
+	  $(QUARKUS_DEV_ARGS) \
+	  $(REACTOR_SERVICE) \
+	  $(QUARKUS_DEV_GOAL)
+
 .PHONY: run-all
 run-all: start-rest run-service
 
@@ -212,9 +353,30 @@ endef
 
 .PHONY: run-rest
 run-rest:
-	@echo "==> [DEV] quarkus:dev (REST gateway)"
+	@echo "==> [DEV] quarkus:dev (REST gateway, in-memory)"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+	  $(QUARKUS_DEV_ARGS) \
+	  $(REACTOR_REST) \
+	  $(QUARKUS_DEV_GOAL)
+
+.PHONY: run-rest-localstack
+run-rest-localstack: localstack-up $(PROTO_JAR)
+	@echo "==> [DEV] quarkus:dev REST gateway upstream LocalStack"
+	$(LOCALSTACK_ENV) \
+	$(MVN) -f ./pom.xml \
+	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+	  $(UPSTREAM_LOCALSTACK_PROPS) \
+	  $(QUARKUS_DEV_ARGS) \
+	  $(REACTOR_REST) \
+	  $(QUARKUS_DEV_GOAL)
+
+.PHONY: run-rest-aws
+run-rest-aws: $(PROTO_JAR)
+	@echo "==> [DEV] quarkus:dev REST gateway upstream real AWS"
+	$(MVN) -f ./pom.xml \
+	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+	  $(UPSTREAM_REAL_AWS_PROPS) \
 	  $(QUARKUS_DEV_ARGS) \
 	  $(REACTOR_REST) \
 	  $(QUARKUS_DEV_GOAL)
@@ -291,6 +453,57 @@ logs-rest:
 	  tail -f "$(REST_LOG)"; \
 	else \
 	  echo "==> [LOGS] no REST log yet"; \
+	fi
+
+.PHONY: localstack-up
+localstack-up:
+	@if curl -fs $(LOCALSTACK_HEALTH) >/dev/null 2>&1; then \
+	  echo "==> [LOCALSTACK] already running at $(LOCALSTACK_ENDPOINT)"; \
+	else \
+	  echo "==> [LOCALSTACK] starting docker compose ($(LOCALSTACK_COMPOSE))"; \
+	  $(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) up -d; \
+	  echo "==> [LOCALSTACK] waiting for health endpoint"; \
+	  bash -c 'set -euo pipefail; for i in $$(seq 1 30); do \
+	    if curl -fs $(LOCALSTACK_HEALTH) >/dev/null 2>&1; then exit 0; fi; \
+	    sleep 1; \
+	  done; \
+	  echo "LocalStack failed to start at $(LOCALSTACK_ENDPOINT)" >&2; \
+	  exit 1'; \
+	fi
+	@echo "==> [LOCALSTACK] ensuring S3 bucket $(LOCALSTACK_BUCKET) exists"
+	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
+	  awslocal s3api create-bucket \
+	    --bucket $(LOCALSTACK_BUCKET) \
+	    --region $(LOCALSTACK_REGION) >/dev/null 2>&1 || true
+	@echo "==> [LOCALSTACK] ensuring S3 bucket bucket exists"
+	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
+	  awslocal s3api create-bucket \
+	    --bucket bucket \
+	    --region $(LOCALSTACK_REGION) >/dev/null 2>&1 || true
+	@echo "==> [LOCALSTACK] ensuring S3 bucket warehouse exists"
+	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
+	  awslocal s3api create-bucket \
+	    --bucket warehouse \
+	    --region $(LOCALSTACK_REGION) >/dev/null 2>&1 || true
+	@echo "==> [LOCALSTACK] ensuring DynamoDB table $(LOCALSTACK_TABLE) exists"
+	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
+	  awslocal dynamodb create-table \
+	    --table-name $(LOCALSTACK_TABLE) \
+	    --attribute-definitions AttributeName=pk,AttributeType=S AttributeName=sk,AttributeType=S \
+	    --key-schema AttributeName=pk,KeyType=HASH AttributeName=sk,KeyType=RANGE \
+	    --billing-mode PAY_PER_REQUEST >/dev/null 2>&1 || true
+	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
+	  awslocal dynamodb update-time-to-live \
+	    --table-name $(LOCALSTACK_TABLE) \
+	    --time-to-live-specification '{"Enabled":true,"AttributeName":"expires_at"}' >/dev/null 2>&1 || true
+
+.PHONY: localstack-down
+localstack-down:
+	@if curl -fs $(LOCALSTACK_HEALTH) >/dev/null 2>&1; then \
+	  echo "==> [LOCALSTACK] stopping docker compose ($(LOCALSTACK_PROJECT))"; \
+	  $(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) down; \
+	else \
+	  echo "==> [LOCALSTACK] not running"; \
 	fi
 
 .PHONY: status

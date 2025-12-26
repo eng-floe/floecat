@@ -7,7 +7,7 @@ DynamoDB tables exist before the service starts.
 
 ## Architecture & Responsibilities
 - **`AwsClients`** – Centralises AWS SDK v2 clients (DynamoDB, S3) configured via Quarkus properties
-  (`aws.region`, credentials providers). Injected into both stores.
+  (`floecat.fileio.override.*`, credentials providers). Injected into both stores.
 - **`DynamoPointerStore`** – Stores pointer entries in DynamoDB tables (partition key = pointer key).
   Implements compare-and-set using conditional expressions, handles pagination via DynamoDB queries,
   and supports TTL fields using native DynamoDB TTL attributes.
@@ -46,7 +46,8 @@ GC → DynamoPointerStore.listPointersByPrefix (Query) → deleteByPrefix (Batch
 Key properties (see `service/application.properties` for defaults):
 - `floecat.kv=dynamodb`, `floecat.kv.table=<tableName>`, `floecat.kv.auto-create=true|false`,
   `floecat.kv.ttl-enabled=true|false`.
-- `floecat.blob=s3`, `floecat.blob.s3.bucket=<bucket>`, `aws.region=<region>`.
+- `floecat.blob=s3`, `floecat.blob.s3.bucket=<bucket>`,
+  `floecat.fileio.override.s3.region=<region>`.
 - Provide AWS credentials via the default SDK provider chain (env vars, profiles, IAM roles) or
   override the client builders inside `AwsClients`.
 
@@ -63,6 +64,19 @@ Extensibility:
 - **Disaster recovery** – Because blobs are immutable and pointers encode versions, restoring a table
   involves rehydrating DynamoDB pointers (versions) and replaying snapshots stored in S3. GC settings
   control how long idempotency records and tombstones linger.
+
+## Local Testing with LocalStack
+- `make localstack-up` – Starts a LocalStack container (DynamoDB + S3) and provisions buckets/tables.
+- `make run-localstack-localstack` – Runs `quarkus:dev` with both upstream and catalog pointing at
+  LocalStack. Uses `floecat.kv=dynamodb` / `floecat.blob=s3` and path-style S3 access.
+- `make run-localstack-aws` – Upstream LocalStack, catalog real AWS.
+- `make run-aws-localstack` – Upstream real AWS, catalog LocalStack.
+- `make test-localstack` – Runs unit + IT suites against LocalStack backends.
+- `make localstack-down` – Stops the LocalStack container started by the Make targets.
+
+Use the default credentials (`test`/`test`) or override them via `LOCALSTACK_ACCESS_KEY` /
+`LOCALSTACK_SECRET_KEY` when invoking Make. The Make target idempotently provisions the S3 bucket,
+DynamoDB table, and TTL attribute using the bundled `awslocal` CLI.
 
 ## Cross-References
 - SPI contract: [`docs/storage-spi.md`](storage-spi.md)

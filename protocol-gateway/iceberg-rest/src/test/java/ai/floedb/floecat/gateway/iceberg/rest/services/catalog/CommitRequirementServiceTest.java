@@ -1,12 +1,14 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import jakarta.ws.rs.core.Response;
@@ -18,6 +20,8 @@ import org.junit.jupiter.api.Test;
 class CommitRequirementServiceTest {
   private final CommitRequirementService service = new CommitRequirementService();
   private final TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+  private static final TrinoFixtureTestSupport.Fixture FIXTURE =
+      TrinoFixtureTestSupport.simpleFixture();
 
   @Test
   void validateRequirementsReturnsNullWhenUnset() {
@@ -47,6 +51,43 @@ class CommitRequirementServiceTest {
   }
 
   @Test
+  void validateRequirementsUsesTablePropertyWhenMetadataMissing() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .putProperties("table-uuid", "prop-uuid")
+            .build();
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-table-uuid", "uuid", "prop-uuid")),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNull(resp);
+  }
+
+  @Test
+  void validateRequirementsUsesResourceIdWhenMetadataMissing() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .build();
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-table-uuid", "uuid", "cat:db:orders")),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNull(resp);
+  }
+
+  @Test
   void validateRequirementsChecksRefSnapshotIds() {
     Table table =
         Table.newBuilder()
@@ -68,16 +109,19 @@ class CommitRequirementServiceTest {
   @Test
   void validateRequirementsAccessesMetadataRefs() {
     Table table = Table.newBuilder().build();
+    long snapshotId = FIXTURE.metadata().getCurrentSnapshotId();
     IcebergMetadata metadata =
-        IcebergMetadata.newBuilder()
-            .putRefs("branch", IcebergRef.newBuilder().setSnapshotId(5).build())
+        FIXTURE.metadata().toBuilder()
+            .putRefs("branch", IcebergRef.newBuilder().setSnapshotId(snapshotId).build())
             .build();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
 
     Response resp =
         service.validateRequirements(
             tableSupport,
-            List.of(Map.of("type", "assert-ref-snapshot-id", "ref", "branch", "snapshot-id", 5)),
+            List.of(
+                Map.of(
+                    "type", "assert-ref-snapshot-id", "ref", "branch", "snapshot-id", snapshotId)),
             () -> table,
             validation(),
             conflict());
@@ -92,13 +136,14 @@ class CommitRequirementServiceTest {
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
             .putProperties("table-uuid", "prop-uuid")
             .build();
-    IcebergMetadata metadata = IcebergMetadata.newBuilder().setTableUuid("meta-uuid").build();
+    String fixtureUuid = FIXTURE.metadata().getTableUuid();
+    IcebergMetadata metadata = FIXTURE.metadata().toBuilder().setTableUuid(fixtureUuid).build();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
 
     Response resp =
         service.validateRequirements(
             tableSupport,
-            List.of(Map.of("type", "assert-table-uuid", "uuid", "meta-uuid")),
+            List.of(Map.of("type", "assert-table-uuid", "uuid", fixtureUuid)),
             () -> table,
             validation(),
             conflict());
@@ -107,13 +152,13 @@ class CommitRequirementServiceTest {
   }
 
   @Test
-  void validateRequirementsAcceptsPropertyUuidEvenIfMetadataDiffers() {
+  void validateRequirementsRejectsPropertyUuidWhenMetadataDiffers() {
     Table table =
         Table.newBuilder()
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
             .putProperties("table-uuid", "placeholder-uuid")
             .build();
-    IcebergMetadata metadata = IcebergMetadata.newBuilder().setTableUuid("real-uuid").build();
+    IcebergMetadata metadata = FIXTURE.metadata();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
 
     Response resp =
@@ -124,7 +169,8 @@ class CommitRequirementServiceTest {
             validation(),
             conflict());
 
-    assertNull(resp);
+    assertNotNull(resp);
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), resp.getStatus());
   }
 
   @Test
@@ -133,13 +179,20 @@ class CommitRequirementServiceTest {
         Table.newBuilder()
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
             .build();
-    IcebergMetadata metadata = IcebergMetadata.newBuilder().setCurrentSnapshotId(77).build();
+    IcebergMetadata metadata = FIXTURE.metadata();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
 
     Response resp =
         service.validateRequirements(
             tableSupport,
-            List.of(Map.of("type", "assert-ref-snapshot-id", "ref", "main", "snapshot-id", 77)),
+            List.of(
+                Map.of(
+                    "type",
+                    "assert-ref-snapshot-id",
+                    "ref",
+                    "main",
+                    "snapshot-id",
+                    metadata.getCurrentSnapshotId())),
             () -> table,
             validation(),
             conflict());

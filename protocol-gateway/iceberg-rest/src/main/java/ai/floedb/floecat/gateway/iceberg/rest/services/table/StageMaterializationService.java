@@ -4,8 +4,6 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitException;
-import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
-import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import io.grpc.Status;
@@ -20,8 +18,8 @@ public class StageMaterializationService {
   private static final Logger LOG = Logger.getLogger(StageMaterializationService.class);
 
   @Inject AccountContext accountContext;
-  @Inject StagedTableService stagedTableService;
   @Inject StageCommitProcessor stageCommitProcessor;
+  @Inject StagedTableService stagedTableService;
 
   public StageMaterializationResult materializeIfTableMissing(
       StatusRuntimeException resolutionFailure,
@@ -35,15 +33,16 @@ public class StageMaterializationService {
     if (resolutionFailure.getStatus().getCode() != Status.Code.NOT_FOUND) {
       return null;
     }
-    String stageIdToUse =
-        stageIdOrFallback(
-            resolveStageId(request, transactionStageId), catalogName, namespacePath, table);
+    String stageIdToUse = resolveStageId(request, transactionStageId);
     if (stageIdToUse == null) {
-      throw StageCommitException.validation(
-          "stage-id is required when committing a staged create for "
-              + String.join(".", namespacePath)
-              + "."
-              + table);
+      stageIdToUse = resolveSingleStageId(catalogName, namespacePath, table);
+      if (stageIdToUse == null) {
+        throw StageCommitException.validation(
+            "stage-id is required when committing a staged create for "
+                + String.join(".", namespacePath)
+                + "."
+                + table);
+      }
     }
 
     LOG.infof(
@@ -61,9 +60,7 @@ public class StageMaterializationService {
       TableRequests.Commit request,
       String transactionStageId)
       throws StageCommitException {
-    String stageIdToUse =
-        stageIdOrFallback(
-            resolveStageId(request, transactionStageId), catalogName, namespacePath, table);
+    String stageIdToUse = resolveStageId(request, transactionStageId);
     if (stageIdToUse == null) {
       return null;
     }
@@ -90,10 +87,22 @@ public class StageMaterializationService {
     }
   }
 
+  private String resolveSingleStageId(
+      String catalogName, List<String> namespacePath, String table) {
+    String accountId = accountContext.getAccountId();
+    if (accountId == null || accountId.isBlank()) {
+      return null;
+    }
+    return stagedTableService
+        .findSingleStage(accountId, catalogName, namespacePath, table)
+        .map(entry -> entry.key().stageId())
+        .orElse(null);
+  }
+
   public StageMaterializationResult materializeTransactionStage(
       String prefix, String catalogName, List<String> namespacePath, String table, String stageId)
       throws StageCommitException {
-    String stageIdToUse = stageIdOrFallback(stageId, catalogName, namespacePath, table);
+    String stageIdToUse = stageId;
     if (stageIdToUse == null) {
       throw StageCommitException.validation(
           "stage-id is required when committing a staged update for "
@@ -118,28 +127,5 @@ public class StageMaterializationService {
         stageCommitProcessor.commitStage(
             prefix, catalogName, accountId, namespacePath, table, stageId);
     return new StageMaterializationResult(stageId, result);
-  }
-
-  private String stageIdOrFallback(
-      String stageId, String catalogName, List<String> namespacePath, String table) {
-    if (stageId != null && !stageId.isBlank()) {
-      return stageId;
-    }
-    String accountId = accountContext.getAccountId();
-    if (accountId == null) {
-      return null;
-    }
-    String resolved =
-        stagedTableService
-            .findSingleStage(accountId, catalogName, namespacePath, table)
-            .map(StagedTableEntry::key)
-            .map(StagedTableKey::stageId)
-            .orElse(null);
-    if (resolved != null) {
-      LOG.infof(
-          "Found single staged payload namespace=%s table=%s stageId=%s",
-          namespacePath, table, resolved);
-    }
-    return resolved;
   }
 }

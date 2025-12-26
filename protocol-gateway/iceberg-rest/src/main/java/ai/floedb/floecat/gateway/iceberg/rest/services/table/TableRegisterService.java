@@ -11,6 +11,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorRespo
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MetadataLocationSync;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
@@ -349,7 +350,15 @@ public class TableRegisterService {
       merged.put("location", importedMetadata.tableLocation());
     }
     MetadataLocationUtil.setMetadataLocation(merged, metadataLocation);
+    removeManagedFileIoProperties(merged);
     return merged;
+  }
+
+  private static void removeManagedFileIoProperties(Map<String, String> target) {
+    if (target == null || target.isEmpty()) {
+      return;
+    }
+    target.keySet().removeIf(FileIoFactory::isFileIoProperty);
   }
 
   private Long propertyLong(Map<String, String> props, String key) {
@@ -371,9 +380,7 @@ public class TableRegisterService {
     Map<String, String> props =
         table == null || table.getPropertiesMap() == null ? Map.of() : table.getPropertiesMap();
     String propertyLocation = MetadataLocationUtil.metadataLocation(props);
-    if (propertyLocation != null
-        && !propertyLocation.isBlank()
-        && !MetadataLocationUtil.isPointer(propertyLocation)) {
+    if (propertyLocation != null && !propertyLocation.isBlank()) {
       return propertyLocation;
     }
     if (metadata != null

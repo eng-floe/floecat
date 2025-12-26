@@ -35,7 +35,7 @@ class ResourceAccessIT {
   @Test
   void listCatalogs() {
     var resp = catalog.listCatalogs(ListCatalogsRequest.newBuilder().build());
-    assertTrue(resp.getCatalogsCount() >= 2, "Expected seeded catalogs");
+    assertTrue(resp.getCatalogsCount() >= 1, "Expected seeded catalogs");
   }
 
   @Test

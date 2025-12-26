@@ -83,7 +83,7 @@ class TableUpdatePlannerTest {
             null,
             Map.of("metadata-location", "s3://current", "retention", "7d"),
             null,
-            null,
+            List.of(),
             List.of(Map.of("action", "set-properties", "updates", Map.of("ignored", "value"))));
 
     TableUpdatePlanner.UpdatePlan plan =
@@ -109,7 +109,7 @@ class TableUpdatePlannerTest {
     when(propertyService.hasPropertyUpdates(any())).thenReturn(false);
     TableRequests.Commit request =
         new TableRequests.Commit(
-            "orders", null, null, null, null, null, List.of(Map.of("action", "drop")));
+            "orders", null, null, null, null, List.of(), List.of(Map.of("action", "drop")));
 
     TableUpdatePlanner.UpdatePlan plan =
         planner.planUpdates(
@@ -133,7 +133,8 @@ class TableUpdatePlannerTest {
 
     TableUpdatePlanner.UpdatePlan plan =
         planner.planUpdates(
-            command(new TableRequests.Commit("orders", null, null, null, null, List.of(), null)),
+            command(
+                new TableRequests.Commit("orders", null, null, null, null, List.of(), List.of())),
             tableSupplier(),
             ResourceId.newBuilder().setId("cat:db:orders").build());
 

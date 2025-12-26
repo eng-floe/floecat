@@ -1,5 +1,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest.common;
 
+import java.net.URI;
 import java.util.Map;
 import java.util.function.BiConsumer;
 
@@ -65,21 +66,12 @@ public final class MetadataLocationUtil {
     return stripMetadataMirrorPrefix(directory);
   }
 
-  public static boolean isPointer(String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return false;
-    }
-    int slash = metadataLocation.lastIndexOf('/');
-    String file = slash >= 0 ? metadataLocation.substring(slash + 1) : metadataLocation;
-    return "metadata.json".equalsIgnoreCase(file);
-  }
-
   public static boolean isMirrorMetadataLocation(String metadataLocation) {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return false;
     }
     try {
-      java.net.URI uri = java.net.URI.create(metadataLocation);
+      URI uri = URI.create(metadataLocation);
       String path = uri.getPath();
       return path != null && path.startsWith(METADATA_MIRROR_SEGMENT + "/");
     } catch (IllegalArgumentException e) {
@@ -92,7 +84,7 @@ public final class MetadataLocationUtil {
       return location;
     }
     try {
-      java.net.URI uri = java.net.URI.create(location);
+      URI uri = URI.create(location);
       if (uri.getScheme() != null && uri.getAuthority() != null) {
         String path = uri.getPath();
         if (path != null && path.startsWith(METADATA_MIRROR_SEGMENT)) {

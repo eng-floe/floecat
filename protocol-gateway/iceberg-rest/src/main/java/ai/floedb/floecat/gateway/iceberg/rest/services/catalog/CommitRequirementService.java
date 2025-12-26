@@ -7,7 +7,6 @@ import jakarta.ws.rs.core.Response;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.jboss.logging.Logger;
@@ -26,7 +25,6 @@ public class CommitRequirementService {
       return null;
     }
     Table table = tableSupplier.get();
-    Map<String, String> props = table.getPropertiesMap();
     IcebergMetadata[] metadataHolder = new IcebergMetadata[1];
     Supplier<IcebergMetadata> metadataSupplier =
         () -> {
@@ -53,13 +51,6 @@ public class CommitRequirementService {
           if (expected == null || expected.isBlank()) {
             return validationErrorFactory.apply("assert-table-uuid requires uuid");
           }
-          String propertyUuid =
-              Optional.ofNullable(props.get("table-uuid"))
-                  .filter(value -> !value.isBlank())
-                  .orElse(null);
-          if (propertyUuid != null && expected.equals(propertyUuid)) {
-            continue;
-          }
           IcebergMetadata metadata = metadataSupplier.get();
           String metadataUuid =
               metadata != null
@@ -67,11 +58,14 @@ public class CommitRequirementService {
                       && !metadata.getTableUuid().isBlank()
                   ? metadata.getTableUuid()
                   : null;
-          if (metadataUuid != null && expected.equals(metadataUuid)) {
-            continue;
+          if (metadataUuid != null) {
+            if (expected.equals(metadataUuid)) {
+              continue;
+            }
+            return conflictErrorFactory.apply("assert-table-uuid failed");
           }
-          String fallbackUuid = table.hasResourceId() ? table.getResourceId().getId() : "";
-          if (expected.equals(fallbackUuid)) {
+          String fallbackUuid = resolveTableUuid(table);
+          if (fallbackUuid != null && expected.equals(fallbackUuid)) {
             continue;
           }
           return conflictErrorFactory.apply("assert-table-uuid failed");
@@ -83,10 +77,7 @@ public class CommitRequirementService {
                 "assert-current-schema-id requires current-schema-id");
           }
           IcebergMetadata metadata = metadataSupplier.get();
-          Integer actual =
-              metadata != null
-                  ? metadata.getCurrentSchemaId()
-                  : propertyInt(props, "current-schema-id");
+          Integer actual = metadata != null ? metadata.getCurrentSchemaId() : null;
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-current-schema-id failed");
           }
@@ -98,10 +89,7 @@ public class CommitRequirementService {
                 "assert-last-assigned-field-id requires last-assigned-field-id");
           }
           IcebergMetadata metadata = metadataSupplier.get();
-          Integer actual =
-              metadata != null
-                  ? metadata.getLastColumnId()
-                  : propertyInt(props, "last-assigned-field-id");
+          Integer actual = metadata != null ? metadata.getLastColumnId() : null;
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-last-assigned-field-id failed");
           }
@@ -113,10 +101,7 @@ public class CommitRequirementService {
                 "assert-last-assigned-partition-id requires last-assigned-partition-id");
           }
           IcebergMetadata metadata = metadataSupplier.get();
-          Integer actual =
-              metadata != null
-                  ? metadata.getLastPartitionId()
-                  : propertyInt(props, "last-assigned-partition-id");
+          Integer actual = metadata != null ? metadata.getLastPartitionId() : null;
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-last-assigned-partition-id failed");
           }
@@ -127,10 +112,7 @@ public class CommitRequirementService {
             return validationErrorFactory.apply("assert-default-spec-id requires default-spec-id");
           }
           IcebergMetadata metadata = metadataSupplier.get();
-          Integer actual =
-              metadata != null
-                  ? metadata.getDefaultSpecId()
-                  : propertyInt(props, "default-spec-id");
+          Integer actual = metadata != null ? metadata.getDefaultSpecId() : null;
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-default-spec-id failed");
           }
@@ -142,10 +124,7 @@ public class CommitRequirementService {
                 "assert-default-sort-order-id requires default-sort-order-id");
           }
           IcebergMetadata metadata = metadataSupplier.get();
-          Integer actual =
-              metadata != null
-                  ? metadata.getDefaultSortOrderId()
-                  : propertyInt(props, "default-sort-order-id");
+          Integer actual = metadata != null ? metadata.getDefaultSortOrderId() : null;
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-default-sort-order-id failed");
           }
@@ -170,8 +149,6 @@ public class CommitRequirementService {
           } else if ("main".equals(refName)) {
             if (metadata != null && metadata.getCurrentSnapshotId() > 0) {
               actual = metadata.getCurrentSnapshotId();
-            } else {
-              actual = propertyLong(props, "current-snapshot-id");
             }
           }
           if (!Objects.equals(actual, expected)) {
@@ -200,6 +177,23 @@ public class CommitRequirementService {
     return null;
   }
 
+  private static String resolveTableUuid(Table table) {
+    if (table == null) {
+      return null;
+    }
+    String fromProps = table.getPropertiesMap().get("table-uuid");
+    if (fromProps != null && !fromProps.isBlank()) {
+      return fromProps;
+    }
+    if (table.hasResourceId()) {
+      String id = table.getResourceId().getId();
+      if (id != null && !id.isBlank()) {
+        return id;
+      }
+    }
+    return null;
+  }
+
   private static Long asLong(Object value) {
     if (value instanceof Number number) {
       return number.longValue();
@@ -208,35 +202,5 @@ public class CommitRequirementService {
       return Long.parseLong(text);
     }
     return null;
-  }
-
-  private static Integer propertyInt(Map<String, String> props, String key) {
-    if (props == null) {
-      return null;
-    }
-    String value = props.get(key);
-    if (value == null || value.isBlank()) {
-      return null;
-    }
-    try {
-      return Integer.parseInt(value);
-    } catch (NumberFormatException e) {
-      return null;
-    }
-  }
-
-  private static Long propertyLong(Map<String, String> props, String key) {
-    if (props == null) {
-      return null;
-    }
-    String value = props.get(key);
-    if (value == null || value.isBlank()) {
-      return null;
-    }
-    try {
-      return Long.parseLong(value);
-    } catch (NumberFormatException e) {
-      return null;
-    }
   }
 }

@@ -35,7 +35,6 @@
 
   <properties>
     <quarkus-plugin.version>${quarkus.platform.version}</quarkus-plugin.version>
-    <aws.sdk.version>2.39.5</aws.sdk.version>
   </properties>
 
   <dependencies>
@@ -64,6 +63,11 @@
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-proto</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-storage-spi</artifactId>
       <version>${project.version}</version>
     </dependency>
 

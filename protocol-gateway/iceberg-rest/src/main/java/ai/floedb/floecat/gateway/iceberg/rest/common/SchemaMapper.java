@@ -29,7 +29,7 @@ final class SchemaMapper {
   static Map<String, Object> schemaFromTable(Table table) {
     String schemaJson = table.getSchemaJson();
     if (schemaJson == null || schemaJson.isBlank()) {
-      return defaultSchema();
+      throw new IllegalArgumentException("schemaJson is required");
     }
     JsonNode node;
     try {
@@ -42,12 +42,8 @@ final class SchemaMapper {
     }
     Map<String, Object> schema =
         new LinkedHashMap<>(JSON.convertValue(node, new TypeReference<Map<String, Object>>() {}));
-    try {
-      normalizeSchema(schema);
-      return schema;
-    } catch (IllegalArgumentException e) {
-      return defaultSchema();
-    }
+    normalizeSchema(schema);
+    return schema;
   }
 
   static Map<String, Object> schemaFromRequest(TableRequests.Create request) {
@@ -70,38 +66,41 @@ final class SchemaMapper {
     }
     Map<String, Object> schema =
         new LinkedHashMap<>(JSON.convertValue(node, new TypeReference<Map<String, Object>>() {}));
-    try {
-      normalizeSchema(schema);
-      return schema;
-    } catch (IllegalArgumentException e) {
-      return defaultSchema();
-    }
+    normalizeSchema(schema);
+    return schema;
   }
 
   static Map<String, Object> partitionSpecFromRequest(TableRequests.Create request) {
     JsonNode node = request.partitionSpec();
     if (node == null || node.isNull()) {
-      return defaultPartitionSpec();
+      throw new IllegalArgumentException("partition-spec is required");
     }
     if (!node.isObject()) {
       throw new IllegalArgumentException("partition-spec must be an object");
     }
-    return new LinkedHashMap<>(
-        JSON.convertValue(node, new TypeReference<Map<String, Object>>() {}));
+    Map<String, Object> spec =
+        new LinkedHashMap<>(JSON.convertValue(node, new TypeReference<Map<String, Object>>() {}));
+    Integer specId = asInteger(spec.get("spec-id"));
+    if (specId == null) {
+      throw new IllegalArgumentException("partition-spec requires spec-id");
+    }
+    return spec;
   }
 
   static Map<String, Object> sortOrderFromRequest(TableRequests.Create request) {
     JsonNode node = request.writeOrder();
     if (node == null || node.isNull()) {
-      Map<String, Object> defaults = defaultSortOrder();
-      defaults.put("fields", List.of());
-      return defaults;
+      throw new IllegalArgumentException("write-order is required");
     }
     if (!node.isObject()) {
       throw new IllegalArgumentException("write-order must be an object");
     }
     Map<String, Object> order =
         new LinkedHashMap<>(JSON.convertValue(node, new TypeReference<Map<String, Object>>() {}));
+    Integer orderId = asInteger(order.get("order-id"));
+    if (orderId == null) {
+      throw new IllegalArgumentException("write-order requires order-id");
+    }
     normalizeSortOrder(order);
     return order;
   }
@@ -124,37 +123,6 @@ final class SchemaMapper {
       }
     }
     return max;
-  }
-
-  static Map<String, Object> defaultPartitionSpec() {
-    Map<String, Object> spec = new LinkedHashMap<>();
-    spec.put("spec-id", 0);
-    spec.put("fields", List.of());
-    return spec;
-  }
-
-  static Map<String, Object> defaultSortOrder() {
-    Map<String, Object> order = new LinkedHashMap<>();
-    order.put("sort-order-id", 0);
-    order.put("order-id", 0);
-    order.put("fields", List.of());
-    normalizeSortOrder(order);
-    return order;
-  }
-
-  static Map<String, Object> defaultSchema() {
-    Map<String, Object> schema = new LinkedHashMap<>();
-    schema.put("schema-id", 0);
-    schema.put("last-column-id", 1);
-    schema.put("type", "struct");
-    Map<String, Object> field = new LinkedHashMap<>();
-    field.put("id", 1);
-    field.put("name", "placeholder");
-    field.put("type", "string");
-    field.put("required", false);
-    schema.put("fields", new ArrayList<>(List.of(field)));
-    normalizeSchema(schema);
-    return schema;
   }
 
   static List<Map<String, Object>> schemasFromMetadata(IcebergMetadata metadata) {
@@ -191,6 +159,7 @@ final class SchemaMapper {
       for (PartitionField field : spec.getFieldsList()) {
         Map<String, Object> f = new LinkedHashMap<>();
         f.put("field-id", field.getFieldId());
+        f.put("source-id", field.getFieldId());
         f.put("name", field.getName());
         f.put("transform", field.getTransform());
         fields.add(f);
@@ -212,7 +181,7 @@ final class SchemaMapper {
       List<Map<String, Object>> fields = new ArrayList<>();
       for (IcebergSortField field : order.getFieldsList()) {
         Map<String, Object> f = new LinkedHashMap<>();
-        f.put("source-field-id", field.getSourceFieldId());
+        f.put("source-id", field.getSourceFieldId());
         f.put("transform", field.getTransform());
         f.put("direction", field.getDirection());
         f.put("null-order", field.getNullOrder());
@@ -229,31 +198,42 @@ final class SchemaMapper {
     if (fields.isEmpty()) {
       throw new IllegalArgumentException("schema.fields is required");
     }
-    int nextFieldId = 1;
-    int maxFieldId = 0;
     for (Map<String, Object> field : fields) {
       Object fieldIdSource =
           firstNonNull(
               field.get("id"), firstNonNull(field.get("field-id"), field.get("source-id")));
       Integer fieldId = asInteger(fieldIdSource);
       if (fieldId == null || fieldId <= 0) {
-        fieldId = nextFieldId++;
-      } else if (fieldId >= nextFieldId) {
-        nextFieldId = fieldId + 1;
+        throw new IllegalArgumentException("schema.fields entries require positive ids");
       }
-      maxFieldId = Math.max(maxFieldId, fieldId);
       field.put("id", fieldId);
     }
     Integer schemaId = asInteger(schema.get("schema-id"));
     if (schemaId == null || schemaId < 0) {
-      schemaId = 0;
-      schema.put("schema-id", schemaId);
+      throw new IllegalArgumentException("schema requires schema-id");
     }
     Integer lastColumnId = asInteger(schema.get("last-column-id"));
-    if (lastColumnId == null || lastColumnId < maxFieldId) {
-      lastColumnId = maxFieldId;
+    if (lastColumnId == null) {
+      lastColumnId = maxFieldId(fields);
+      if (lastColumnId == null || lastColumnId <= 0) {
+        throw new IllegalArgumentException("schema requires last-column-id");
+      }
       schema.put("last-column-id", lastColumnId);
     }
+  }
+
+  private static Integer maxFieldId(List<Map<String, Object>> fields) {
+    int max = 0;
+    for (Map<String, Object> field : fields) {
+      Integer fieldId = asInteger(field.get("id"));
+      if (fieldId == null) {
+        fieldId = asInteger(firstNonNull(field.get("field-id"), field.get("source-id")));
+      }
+      if (fieldId != null && fieldId > max) {
+        max = fieldId;
+      }
+    }
+    return max == 0 ? null : max;
   }
 
   @SuppressWarnings("unchecked")
@@ -281,27 +261,24 @@ final class SchemaMapper {
 
   private static Object parseSchema(String json) {
     if (json == null || json.isBlank()) {
-      return Map.of();
+      throw new IllegalArgumentException("schemaJson is required");
     }
     try {
       return JSON.readValue(json, Object.class);
     } catch (JsonProcessingException e) {
-      return Map.of();
+      throw new IllegalArgumentException("schemaJson is invalid", e);
     }
   }
 
   static void normalizeSortOrder(Map<String, Object> order) {
     Object fieldsObj = order.get("fields");
     if (!(fieldsObj instanceof List<?> list)) {
-      order.put("sort-order-id", 0);
-      order.put("order-id", 0);
-      order.put("fields", List.of());
-      return;
+      throw new IllegalArgumentException("write-order.fields is required");
     }
     List<Map<String, Object>> normalized = new ArrayList<>();
     for (Object entry : list) {
       if (!(entry instanceof Map<?, ?> mapEntry)) {
-        continue;
+        throw new IllegalArgumentException("write-order.fields entries must be objects");
       }
       Map<String, Object> field = new LinkedHashMap<>();
       for (Map.Entry<?, ?> e : mapEntry.entrySet()) {
@@ -312,31 +289,61 @@ final class SchemaMapper {
       if (!field.containsKey("source-id") && field.containsKey("source")) {
         field.put("source-id", field.get("source"));
       }
+      if (!field.containsKey("source-id")) {
+        throw new IllegalArgumentException("write-order.fields require source-id");
+      }
       if (!field.containsKey("transform")) {
-        field.put("transform", "identity");
+        throw new IllegalArgumentException("write-order.fields require transform");
       }
       if (!field.containsKey("direction")) {
-        field.put("direction", "ASC");
+        throw new IllegalArgumentException("write-order.fields require direction");
       }
+      if (!field.containsKey("null-order")) {
+        throw new IllegalArgumentException("write-order.fields require null-order");
+      }
+      field.put("direction", canonicalDirection(field.get("direction")));
       field.put("null-order", canonicalNullOrder(field.get("null-order")));
       normalized.add(field);
     }
     order.put("fields", normalized);
-    Integer orderId = asInteger(firstNonNull(order.get("sort-order-id"), order.get("order-id")));
-    if (orderId == null || orderId < 0) {
-      orderId = 0;
+    Integer orderId = asInteger(order.get("order-id"));
+    if (orderId == null) {
+      throw new IllegalArgumentException("write-order requires order-id");
     }
     if (!normalized.isEmpty() && orderId <= 0) {
-      orderId = 1;
+      throw new IllegalArgumentException("write-order order-id must be > 0 when fields exist");
     }
-    order.put("sort-order-id", orderId);
+    if (normalized.isEmpty() && orderId != 0) {
+      throw new IllegalArgumentException("write-order order-id must be 0 when fields are empty");
+    }
     order.put("order-id", orderId);
   }
 
-  private static String canonicalNullOrder(Object raw) {
-    String value = raw == null ? "nulls-first" : raw.toString();
+  private static String canonicalDirection(Object raw) {
+    if (raw == null) {
+      throw new IllegalArgumentException("write-order.fields require direction");
+    }
+    String value = raw.toString();
     if (value == null || value.isBlank()) {
-      return "nulls-first";
+      throw new IllegalArgumentException("write-order.fields require direction");
+    }
+    String normalized = value.toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
+    if ("asc".equals(normalized)) {
+      return "asc";
+    }
+    if ("desc".equals(normalized)) {
+      return "desc";
+    }
+    throw new IllegalArgumentException("write-order direction must be asc or desc");
+  }
+
+  private static String canonicalNullOrder(Object raw) {
+    if (raw == null) {
+      throw new IllegalArgumentException("write-order.fields require null-order");
+    }
+    String value = raw.toString();
+    if (value == null || value.isBlank()) {
+      throw new IllegalArgumentException("write-order.fields require null-order");
     }
     String normalized = value.replace('_', '-').toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
     if ("nulls-first".equals(normalized) || "nullsfirst".equals(normalized)) {
@@ -345,6 +352,6 @@ final class SchemaMapper {
     if ("nulls-last".equals(normalized) || "nullslast".equals(normalized)) {
       return "nulls-last";
     }
-    return value.toLowerCase(Locale.ROOT);
+    throw new IllegalArgumentException("write-order null-order must be nulls-first or nulls-last");
   }
 }

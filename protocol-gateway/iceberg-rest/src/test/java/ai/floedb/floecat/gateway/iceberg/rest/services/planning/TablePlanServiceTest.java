@@ -19,6 +19,8 @@ import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanTasksResponseDto;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.QueryClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.QuerySchemaClient;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
@@ -50,10 +52,8 @@ class TablePlanServiceTest {
   @BeforeEach
   void setUp() {
     service.mapper = new ObjectMapper();
-    service.queryClient =
-        new ai.floedb.floecat.gateway.iceberg.rest.services.client.QueryClient(grpc);
-    service.querySchemaClient =
-        new ai.floedb.floecat.gateway.iceberg.rest.services.client.QuerySchemaClient(grpc);
+    service.queryClient = new QueryClient(grpc);
+    service.querySchemaClient = new QuerySchemaClient(grpc);
     when(grpc.raw()).thenReturn(clients);
     when(clients.query()).thenReturn(queryStub);
     when(clients.queryScan()).thenReturn(scanStub);

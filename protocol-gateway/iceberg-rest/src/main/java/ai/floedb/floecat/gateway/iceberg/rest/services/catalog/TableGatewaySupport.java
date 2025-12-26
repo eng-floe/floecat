@@ -1,8 +1,11 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
+import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
+import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -15,6 +18,7 @@ import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
+import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
@@ -30,7 +34,9 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.storage.spi.io.RuntimeFileIoOverrides;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
@@ -40,7 +46,6 @@ import io.grpc.StatusRuntimeException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import org.eclipse.microprofile.config.Config;
 import org.jboss.logging.Logger;
 
@@ -106,11 +111,6 @@ public class TableGatewaySupport {
       spec.putAllProperties(sanitizeCreateProperties(req.properties()));
     }
     String metadataLocation = metadataLocationFromCreate(req);
-    if ((metadataLocation == null || metadataLocation.isBlank())
-        && req.location() != null
-        && !req.location().isBlank()) {
-      metadataLocation = metadataLocationFromTableLocation(req.location());
-    }
     addMetadataLocationProperties(spec, metadataLocation);
     return spec;
   }
@@ -152,6 +152,9 @@ public class TableGatewaySupport {
           if ("metadata-location".equals(key)) {
             return;
           }
+          if (FileIoFactory.isFileIoProperty(key)) {
+            return;
+          }
           sanitized.put(key, value);
         });
     return sanitized;
@@ -173,18 +176,6 @@ public class TableGatewaySupport {
       base = slash > 0 ? metadataLocation.substring(0, slash) : metadataLocation;
     }
     return stripMetadataMirrorPrefix(base);
-  }
-
-  private String metadataLocationFromTableLocation(String tableLocation) {
-    if (tableLocation == null || tableLocation.isBlank()) {
-      return null;
-    }
-    String base =
-        tableLocation.endsWith("/")
-            ? tableLocation.substring(0, tableLocation.length() - 1)
-            : tableLocation;
-    String dir = base + "/metadata/";
-    return dir + String.format("%05d-%s.metadata.json", 0, UUID.randomUUID());
   }
 
   public boolean connectorIntegrationEnabled() {
@@ -293,9 +284,7 @@ public class TableGatewaySupport {
     try {
       SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT);
       var requestBuilder =
-          ai.floedb.floecat.catalog.rpc.GetSnapshotRequest.newBuilder()
-              .setTableId(table.getResourceId())
-              .setSnapshot(ref);
+          GetSnapshotRequest.newBuilder().setTableId(table.getResourceId()).setSnapshot(ref);
       var response = snapshotClient.getSnapshot(requestBuilder.build());
       if (response == null || !response.hasSnapshot()) {
         return null;
@@ -332,10 +321,7 @@ public class TableGatewaySupport {
     SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSnapshotId(snapshotId);
     var response =
         snapshotClient.getSnapshot(
-            ai.floedb.floecat.catalog.rpc.GetSnapshotRequest.newBuilder()
-                .setTableId(tableId)
-                .setSnapshot(ref)
-                .build());
+            GetSnapshotRequest.newBuilder().setTableId(tableId).setSnapshot(ref).build());
     if (response == null || !response.hasSnapshot()) {
       return null;
     }
@@ -370,7 +356,7 @@ public class TableGatewaySupport {
     SourceSelector source =
         SourceSelector.newBuilder().setNamespace(nsPath).setTable(tableName).build();
     var dest =
-        ai.floedb.floecat.connector.rpc.DestinationTarget.newBuilder()
+        DestinationTarget.newBuilder()
             .setCatalogId(catalogId)
             .setNamespaceId(namespaceId)
             .setTableId(tableId)
@@ -438,7 +424,7 @@ public class TableGatewaySupport {
     SourceSelector source =
         SourceSelector.newBuilder().setNamespace(nsPath).setTable(tableName).build();
     var dest =
-        ai.floedb.floecat.connector.rpc.DestinationTarget.newBuilder()
+        DestinationTarget.newBuilder()
             .setCatalogId(catalogId)
             .setNamespaceId(namespaceId)
             .setTableId(tableId)
@@ -451,6 +437,14 @@ public class TableGatewaySupport {
 
     String connectorUri =
         (tableLocation != null && !tableLocation.isBlank()) ? tableLocation : metadataLocation;
+    Map<String, String> props = new LinkedHashMap<>();
+    props.put("external.metadata-location", metadataLocation);
+    props.put("external.table-name", tableName);
+    props.put("external.namespace", namespaceFq);
+    props.put(CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(true));
+    if (Boolean.parseBoolean(System.getProperty("floecat.connector.fileio.overrides", "true"))) {
+      RuntimeFileIoOverrides.mergeInto(props);
+    }
     ConnectorSpec.Builder spec =
         ConnectorSpec.newBuilder()
             .setDisplayName(displayName)
@@ -459,27 +453,7 @@ public class TableGatewaySupport {
             .setSource(source)
             .setDestination(dest)
             .setAuth(AuthConfig.newBuilder().setScheme("none").build())
-            .putProperties("external.metadata-location", metadataLocation)
-            .putProperties("external.table-name", tableName)
-            .putProperties("external.namespace", namespaceFq)
-            .putProperties(CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(true));
-    String ioImpl =
-        config
-            .metadataFileIo()
-            .filter(v -> v != null && !v.isBlank())
-            .orElseGet(
-                () ->
-                    metadataLocation != null && metadataLocation.startsWith("s3://")
-                        ? "org.apache.iceberg.aws.s3.S3FileIO"
-                        : null);
-    if (ioImpl != null && !ioImpl.isBlank()) {
-      spec.putProperties("io-impl", ioImpl);
-    }
-    config
-        .defaultRegion()
-        .filter(region -> region != null && !region.isBlank())
-        .ifPresent(region -> spec.putProperties("s3.region", region));
-    config.metadataFileIoRoot().ifPresent(root -> spec.putProperties("fs.floecat.test-root", root));
+            .putAllProperties(props);
 
     CreateConnectorRequest.Builder request =
         CreateConnectorRequest.newBuilder().setSpec(spec.build());
@@ -512,11 +486,11 @@ public class TableGatewaySupport {
     if (connectorUri != null && !connectorUri.isBlank()) {
       upstream.setUri(connectorUri);
     }
-    ai.floedb.floecat.catalog.rpc.UpdateTableRequest request =
-        ai.floedb.floecat.catalog.rpc.UpdateTableRequest.newBuilder()
+    UpdateTableRequest request =
+        UpdateTableRequest.newBuilder()
             .setTableId(tableId)
             .setSpec(TableSpec.newBuilder().setUpstream(upstream).build())
-            .setUpdateMask(com.google.protobuf.FieldMask.newBuilder().addPaths("upstream").build())
+            .setUpdateMask(FieldMask.newBuilder().addPaths("upstream").build())
             .build();
     tableClient.updateTable(request);
   }
@@ -632,7 +606,7 @@ public class TableGatewaySupport {
     }
   }
 
-  private IcebergMetadata parseSnapshotMetadata(ai.floedb.floecat.catalog.rpc.Snapshot snapshot) {
+  private IcebergMetadata parseSnapshotMetadata(Snapshot snapshot) {
     if (snapshot == null) {
       return null;
     }

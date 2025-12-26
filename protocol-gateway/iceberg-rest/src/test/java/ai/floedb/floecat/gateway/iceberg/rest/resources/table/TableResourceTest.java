@@ -3,8 +3,6 @@ package ai.floedb.floecat.gateway.iceberg.rest.resources.table;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -16,11 +14,13 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.CreateTableResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
+import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.ListTablesRequest;
 import ai.floedb.floecat.catalog.rpc.ListTablesResponse;
+import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -36,15 +36,15 @@ import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
-import ai.floedb.floecat.connector.rpc.SyncCaptureRequest;
 import ai.floedb.floecat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.floecat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
-import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
@@ -56,21 +56,45 @@ import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.floecat.query.rpc.GetQueryResponse;
 import ai.floedb.floecat.query.rpc.Operator;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
+import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.RestAssured;
-import io.restassured.response.ExtractableResponse;
-import io.restassured.response.Response;
 import jakarta.ws.rs.core.MediaType;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 @QuarkusTest
 @TestProfile(RestResourceTestProfile.class)
 class TableResourceTest extends AbstractRestResourceTest {
+  private static final TrinoFixtureTestSupport.Fixture FIXTURE =
+      TrinoFixtureTestSupport.simpleFixture();
+
+  private Table.Builder baseTable(ResourceId tableId, ResourceId nsId) {
+    return Table.newBuilder()
+        .setResourceId(tableId)
+        .setCatalogId(ResourceId.newBuilder().setId("cat"))
+        .setNamespaceId(nsId)
+        .setCreatedAt(Timestamps.fromMillis(FIXTURE.metadata().getLastUpdatedMs()))
+        .putAllProperties(FIXTURE.table().getPropertiesMap());
+  }
+
+  private void stubSnapshotMetadata(String metadataLocation) {
+    IcebergMetadata metadata =
+        FIXTURE.metadata().toBuilder().setMetadataLocation(metadataLocation).build();
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(metadata.getCurrentSnapshotId())
+            .putFormatMetadata("iceberg", metadata.toByteString())
+            .build();
+    when(snapshotStub.getSnapshot(any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build());
+  }
 
   @Test
   void listsTablesWithPagination() {
@@ -127,47 +151,38 @@ class TableResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    List<Snapshot> fixtureSnapshots = FIXTURE.snapshots();
+    Snapshot currentSnapshot = fixtureSnapshots.get(fixtureSnapshots.size() - 1);
     Table table =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setCatalogId(ResourceId.newBuilder().setId("cat").build())
-            .setNamespaceId(ResourceId.newBuilder().setId("cat:db").build())
+        baseTable(tableId, ResourceId.newBuilder().setId("cat:db").build())
             .setDisplayName("orders")
-            .putProperties("metadata-location", "s3://bucket/path/metadata.json")
+            .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
-            .putProperties("current-snapshot-id", "5")
+            .putProperties("current-snapshot-id", Long.toString(currentSnapshot.getSnapshotId()))
             .build();
     when(tableStub.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
 
     IcebergMetadata metadata =
-        IcebergMetadata.newBuilder()
-            .setMetadataLocation("s3://bucket/path/metadata.json")
-            .putRefs("main", IcebergRef.newBuilder().setSnapshotId(5).setType("branch").build())
+        FIXTURE.metadata().toBuilder()
+            .putRefs(
+                "main",
+                IcebergRef.newBuilder()
+                    .setSnapshotId(currentSnapshot.getSnapshotId())
+                    .setType("branch")
+                    .build())
             .build();
     Snapshot metaSnapshot =
         Snapshot.newBuilder()
             .setTableId(tableId)
-            .setSnapshotId(5)
+            .setSnapshotId(currentSnapshot.getSnapshotId())
             .putFormatMetadata("iceberg", metadata.toByteString())
             .build();
     when(snapshotStub.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(metaSnapshot).build());
 
-    Snapshot snapshot1 =
-        Snapshot.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(5)
-            .setManifestList("manifest1")
-            .putSummary("operation", "append")
-            .build();
-    Snapshot snapshot2 =
-        Snapshot.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(6)
-            .setManifestList("manifest2")
-            .putSummary("operation", "overwrite")
-            .build();
+    Snapshot snapshot1 = currentSnapshot.toBuilder().setTableId(tableId).build();
+    Snapshot snapshot2 = fixtureSnapshots.get(0).toBuilder().setTableId(tableId).build();
     when(snapshotStub.listSnapshots(any()))
         .thenReturn(
             ListSnapshotsResponse.newBuilder()
@@ -180,11 +195,11 @@ class TableResourceTest extends AbstractRestResourceTest {
         .get("/v1/foo/namespaces/db/tables/orders")
         .then()
         .statusCode(200)
-        .header("ETag", equalTo("\"s3://bucket/path/metadata.json\""))
+        .header("ETag", equalTo("\"" + FIXTURE.metadataLocation() + "\""))
         .body("metadata.snapshots.size()", equalTo(2));
 
     given()
-        .header("If-None-Match", "\"s3://bucket/path/metadata.json\"")
+        .header("If-None-Match", "\"" + FIXTURE.metadataLocation() + "\"")
         .when()
         .get("/v1/foo/namespaces/db/tables/orders")
         .then()
@@ -197,7 +212,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(200)
         .body("metadata.snapshots.size()", equalTo(1))
-        .body("metadata.snapshots[0].'snapshot-id'", equalTo(5));
+        .body("metadata.snapshots[0].'snapshot-id'", equalTo(currentSnapshot.getSnapshotId()));
   }
 
   @Test
@@ -207,16 +222,15 @@ class TableResourceTest extends AbstractRestResourceTest {
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
 
     Table created =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("cat:db:new_table"))
+        baseTable(ResourceId.newBuilder().setId("cat:db:new_table").build(), nsId)
             .setDisplayName("new_table")
-            .putProperties("metadata-location", "s3://b/db/new_table/metadata.json")
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
     when(tableStub.createTable(any()))
         .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
     when(tableStub.updateTable(any()))
         .thenReturn(UpdateTableResponse.newBuilder().setTable(created).build());
+    stubSnapshotMetadata(FIXTURE.metadataLocation());
 
     ResourceId connectorId =
         ResourceId.newBuilder()
@@ -246,25 +260,28 @@ class TableResourceTest extends AbstractRestResourceTest {
             """
             {
               "name":"new_table",
-              "metadata-location":"s3://b/db/new_table/metadata.json",
+              "metadata-location":"%s",
               "properties":{"io-impl":"org.apache.iceberg.inmemory.InMemoryFileIO"}
             }
-            """)
+            """
+                .formatted(FIXTURE.metadataLocation()))
         .when()
         .post("/v1/foo/namespaces/db/register")
         .then()
         .statusCode(200)
-        .body("metadata-location", equalTo("s3://b/db/new_table/metadata.json"));
+        .body("metadata-location", equalTo(FIXTURE.metadataLocation()));
 
     ArgumentCaptor<CreateConnectorRequest> createReq =
         ArgumentCaptor.forClass(CreateConnectorRequest.class);
     verify(connectorsStub).createConnector(createReq.capture());
-    assertEquals("s3://b/db/new_table", createReq.getValue().getSpec().getUri());
+    assertEquals(
+        FIXTURE.table().getPropertiesMap().get("location"),
+        createReq.getValue().getSpec().getUri());
     assertEquals("new_table", createReq.getValue().getSpec().getSource().getTable());
     assertEquals(nsId, createReq.getValue().getSpec().getDestination().getNamespaceId());
     assertEquals("none", createReq.getValue().getSpec().getAuth().getScheme());
     assertEquals(
-        "s3://b/db/new_table/metadata.json",
+        FIXTURE.metadataLocation(),
         createReq.getValue().getSpec().getPropertiesMap().get("external.metadata-location"));
 
     ArgumentCaptor<TriggerReconcileRequest> trigger =
@@ -273,13 +290,6 @@ class TableResourceTest extends AbstractRestResourceTest {
     assertEquals(connectorId, trigger.getValue().getConnectorId());
     assertEquals(1, trigger.getValue().getDestinationNamespacePathsCount());
     assertEquals("new_table", trigger.getValue().getDestinationTableDisplayName());
-
-    ArgumentCaptor<SyncCaptureRequest> captureReq =
-        ArgumentCaptor.forClass(SyncCaptureRequest.class);
-    verify(connectorsStub).syncCapture(captureReq.capture());
-    assertEquals(connectorId, captureReq.getValue().getConnectorId());
-    assertEquals("new_table", captureReq.getValue().getDestinationTableDisplayName());
-    assertFalse(captureReq.getValue().getIncludeStatistics());
   }
 
   @Test
@@ -297,9 +307,10 @@ class TableResourceTest extends AbstractRestResourceTest {
             """
             {
               "name":"existing_table",
-              "metadata-location":"s3://bucket/db/existing_table/metadata.json"
+              "metadata-location":"%s"
             }
-            """)
+            """
+                .formatted(FIXTURE.metadataLocation()))
         .when()
         .post("/v1/foo/namespaces/db/register")
         .then()
@@ -319,25 +330,27 @@ class TableResourceTest extends AbstractRestResourceTest {
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 
+    String oldMetadata =
+        TestS3Fixtures.bucketUri(
+            "metadata/00000-16393a9a-3433-440c-98f4-fe023ed03973.metadata.json");
+    String newMetadata =
+        TestS3Fixtures.bucketUri(
+            "metadata/00001-084f601d-8c4e-4315-8747-5152a12ad2ea.metadata.json");
     ResourceId connectorId =
         ResourceId.newBuilder().setId("conn-1").setKind(ResourceKind.RK_CONNECTOR).build();
     Table existing =
-        Table.newBuilder()
-            .setResourceId(tableId)
+        baseTable(tableId, nsId)
             .setDisplayName("existing_table")
             .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
-            .putProperties("metadata-location", "s3://bucket/db/existing_table/old.metadata.json")
+            .putProperties("metadata-location", oldMetadata)
             .build();
     when(tableStub.getTable(any()))
-        .thenReturn(
-            ai.floedb.floecat.catalog.rpc.GetTableResponse.newBuilder().setTable(existing).build());
+        .thenReturn(GetTableResponse.newBuilder().setTable(existing).build());
 
-    Table updated =
-        existing.toBuilder()
-            .putProperties("metadata-location", "s3://bucket/db/existing_table/new.metadata.json")
-            .build();
+    Table updated = existing.toBuilder().putProperties("metadata-location", newMetadata).build();
     when(tableStub.updateTable(any()))
         .thenReturn(UpdateTableResponse.newBuilder().setTable(updated).build());
+    stubSnapshotMetadata(newMetadata);
 
     Connector connector =
         Connector.newBuilder()
@@ -362,15 +375,16 @@ class TableResourceTest extends AbstractRestResourceTest {
             """
             {
               "name":"existing_table",
-              "metadata-location":"s3://bucket/db/existing_table/new.metadata.json",
+              "metadata-location":"%s",
               "overwrite":true
             }
-            """)
+            """
+                .formatted(newMetadata))
         .when()
         .post("/v1/foo/namespaces/db/register")
         .then()
         .statusCode(200)
-        .body("metadata-location", equalTo("s3://bucket/db/existing_table/new.metadata.json"));
+        .body("metadata-location", equalTo(newMetadata));
 
     ArgumentCaptor<UpdateTableRequest> updateCaptor =
         ArgumentCaptor.forClass(UpdateTableRequest.class);
@@ -382,7 +396,7 @@ class TableResourceTest extends AbstractRestResourceTest {
                     req.getSpec()
                         .getPropertiesMap()
                         .getOrDefault("metadata-location", "")
-                        .equals("s3://bucket/db/existing_table/new.metadata.json"));
+                        .equals(newMetadata));
     assertTrue(updatedProps);
   }
 
@@ -401,7 +415,7 @@ class TableResourceTest extends AbstractRestResourceTest {
             """
             {
               "name":"bad_table",
-              "metadata-location":"s3://bucket/db/bad/metadata.json"
+              "metadata-location":"s3://bucket/db/bad/metadata/00000-abc.metadata.json"
             }
             """)
         .when()
@@ -424,39 +438,23 @@ class TableResourceTest extends AbstractRestResourceTest {
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 
     Table created =
-        Table.newBuilder()
-            .setResourceId(tableId)
+        baseTable(tableId, nsId)
             .setDisplayName("orders")
-            .setCatalogId(ResourceId.newBuilder().setId("cat"))
-            .setNamespaceId(nsId)
-            .putProperties("metadata-location", "s3://bucket/path/metadata.json")
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
     when(tableStub.createTable(any()))
         .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+    String requestBody = createTableRequest("orders");
 
     given()
-        .body(
-            """
-            {
-              "name":"orders",
-              "location":"s3://warehouse/db/orders",
-              "schema":{
-                "schema-id":1,
-                "last-column-id":1,
-                "type":"struct",
-                "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
-              },
-              "properties":{"io-impl":"org.apache.iceberg.inmemory.InMemoryFileIO"}
-            }
-            """)
+        .body(requestBody)
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables")
         .then()
         .statusCode(200)
-        .body("'metadata-location'", equalTo("s3://bucket/path/metadata.json"))
-        .body("metadata.properties.'metadata-location'", equalTo("s3://bucket/path/metadata.json"));
+        .body("'metadata-location'", equalTo(FIXTURE.metadataLocation()))
+        .body("metadata.properties.'metadata-location'", equalTo(FIXTURE.metadataLocation()));
 
     Table existing =
         created.toBuilder()
@@ -516,6 +514,81 @@ class TableResourceTest extends AbstractRestResourceTest {
   }
 
   @Test
+  void createTableAcceptsSpecMinimalRequest() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    Table created =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(ResourceId.newBuilder().setId("cat"))
+            .setNamespaceId(nsId)
+            .setDisplayName("orders")
+            .build();
+    when(tableStub.createTable(any()))
+        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+
+    given()
+        .body(
+            """
+            {
+              "name":"orders",
+              "schema":{
+                "schema-id":1,
+                "last-column-id":1,
+                "type":"struct",
+                "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
+              }
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(200)
+        .body("metadata.'format-version'", equalTo(1))
+        .body("metadata.'partition-specs'[0].'spec-id'", equalTo(0))
+        .body("metadata.'sort-orders'[0].'order-id'", equalTo(0));
+  }
+
+  @Test
+  void createTableUsesRequestMetadataEvenWhenSnapshotMetadataDiffers() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    Table created = baseTable(tableId, nsId).setDisplayName("orders").build();
+    when(tableStub.createTable(any()))
+        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+
+    IcebergMetadata differentMetadata =
+        FIXTURE.metadata().toBuilder()
+            .setFormatVersion(1)
+            .setMetadataLocation("s3://bucket/other/metadata/00000-other.metadata.json")
+            .build();
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(differentMetadata.getCurrentSnapshotId())
+            .putFormatMetadata("iceberg", differentMetadata.toByteString())
+            .build();
+    when(snapshotStub.getSnapshot(any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build());
+
+    given()
+        .body(createTableRequest("orders"))
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(200)
+        .body("metadata.'format-version'", equalTo(FIXTURE.metadata().getFormatVersion()))
+        .body("'metadata-location'", equalTo(FIXTURE.metadataLocation()));
+  }
+
+  @Test
   void deleteTableHonorsPurgeRequestedFlag() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
@@ -568,36 +641,87 @@ class TableResourceTest extends AbstractRestResourceTest {
   }
 
   @Test
-  void stageCreateWithoutLocationFallsBackToDefaultWarehouse() {
+  void stageCreateUsesNamespaceLocationWhenMissingRequestLocation() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    Namespace ns =
+        Namespace.newBuilder()
+            .setResourceId(nsId)
+            .setDisplayName("db")
+            .putProperties("location", "s3://warehouse/db")
+            .build();
+    when(namespaceStub.getNamespace(any()))
+        .thenReturn(GetNamespaceResponse.newBuilder().setNamespace(ns).build());
 
-    ExtractableResponse<Response> response =
-        given()
-            .body(stageCreateRequestWithoutLocation("ducktab"))
-            .header("Iceberg-Transaction-Id", "stage-default")
-            .contentType(MediaType.APPLICATION_JSON)
-            .when()
-            .post("/v1/foo/namespaces/db/tables")
-            .then()
-            .statusCode(200)
-            .body("stage-id", equalTo("stage-default"))
-            .extract();
+    Map<String, Object> field = new LinkedHashMap<>();
+    field.put("id", 1);
+    field.put("name", "id");
+    field.put("required", true);
+    field.put("type", "long");
+    Map<String, Object> schema = new LinkedHashMap<>();
+    schema.put("schema-id", 1);
+    schema.put("last-column-id", 1);
+    schema.put("type", "struct");
+    schema.put("fields", List.of(field));
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("name", "orders");
+    payload.put("schema", schema);
+    payload.put("stage-create", true);
 
-    String responseMetadataLocation = response.path("metadata-location");
-    assertNotNull(responseMetadataLocation);
-    assertTrue(
-        responseMetadataLocation.startsWith("s3://warehouse/default/foo/db/ducktab/metadata/"));
+    given()
+        .body(payload)
+        .contentType(MediaType.APPLICATION_JSON)
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(200)
+        .body("metadata.location", equalTo("s3://warehouse/db/orders"));
+  }
 
-    verify(tableStub, never()).createTable(any());
-    StagedTableKey key =
-        new StagedTableKey("account1", "foo", List.of("db"), "ducktab", "stage-default");
-    StagedTableEntry entry = stageRepository.get(key).orElseThrow();
-    assertEquals("s3://warehouse/default/foo/db/ducktab", entry.request().location());
-    assertEquals(responseMetadataLocation, entry.request().properties().get("metadata-location"));
-    assertEquals(
-        responseMetadataLocation, entry.spec().getPropertiesMap().get("metadata-location"));
+  @Test
+  void createTableUsesNamespaceLocationWhenMissingRequestLocation() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    Namespace ns =
+        Namespace.newBuilder()
+            .setResourceId(nsId)
+            .setDisplayName("db")
+            .putProperties("location", "s3://warehouse/db")
+            .build();
+    when(namespaceStub.getNamespace(any()))
+        .thenReturn(GetNamespaceResponse.newBuilder().setNamespace(ns).build());
+
+    Table created =
+        baseTable(ResourceId.newBuilder().setId("cat:db:orders").build(), nsId)
+            .setDisplayName("orders")
+            .build();
+    when(tableStub.createTable(any()))
+        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+
+    Map<String, Object> field = new LinkedHashMap<>();
+    field.put("id", 1);
+    field.put("name", "id");
+    field.put("required", true);
+    field.put("type", "long");
+    Map<String, Object> schema = new LinkedHashMap<>();
+    schema.put("schema-id", 1);
+    schema.put("last-column-id", 1);
+    schema.put("type", "struct");
+    schema.put("fields", List.of(field));
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("name", "orders");
+    payload.put("schema", schema);
+
+    given()
+        .body(payload)
+        .contentType(MediaType.APPLICATION_JSON)
+        .when()
+        .post("/v1/foo/namespaces/db/tables")
+        .then()
+        .statusCode(200)
+        .body("metadata.location", equalTo("s3://warehouse/db/orders"));
   }
 
   @Test
@@ -608,12 +732,8 @@ class TableResourceTest extends AbstractRestResourceTest {
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
 
     Table created =
-        Table.newBuilder()
-            .setResourceId(tableId)
+        baseTable(tableId, nsId)
             .setDisplayName("orders")
-            .setCatalogId(ResourceId.newBuilder().setId("cat"))
-            .setNamespaceId(nsId)
-            .putProperties("metadata-location", "s3://bucket/path/metadata.json")
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
     when(tableStub.createTable(any()))
@@ -637,31 +757,14 @@ class TableResourceTest extends AbstractRestResourceTest {
             .build();
     when(connectorsStub.createConnector(any()))
         .thenReturn(CreateConnectorResponse.newBuilder().setConnector(connector).build());
-
     given()
-        .body(
-            """
-            {
-              "name":"orders",
-              "location":"s3://warehouse/db/orders",
-              "schema":{
-                "schema-id":1,
-                "last-column-id":1,
-                "type":"struct",
-                "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
-              },
-              "properties":{
-                "metadata-location":"s3://bucket/path/metadata.json",
-                "io-impl":"org.apache.iceberg.inmemory.InMemoryFileIO"
-              }
-            }
-            """)
+        .body(createTableRequest("orders"))
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces/db/tables")
         .then()
         .statusCode(200)
-        .body("'metadata-location'", equalTo("s3://bucket/path/metadata.json"));
+        .body("'metadata-location'", equalTo(FIXTURE.metadataLocation()));
   }
 
   @Test
@@ -742,6 +845,10 @@ class TableResourceTest extends AbstractRestResourceTest {
               "report-type":"scan",
               "table-name":"orders",
               "snapshot-id":5,
+              "filter":{"type":"always-true"},
+              "schema-id":1,
+              "projected-field-ids":[1],
+              "projected-field-names":["id"],
               "metrics":{
                 "total-data-manifests":{"unit":"count","value":1}
               }
@@ -980,5 +1087,48 @@ class TableResourceTest extends AbstractRestResourceTest {
         .body("'storage-credentials'[0].config.type", equalTo("s3"))
         .body("'storage-credentials'[0].config.'s3.access-key-id'", equalTo("test-key"))
         .body("'storage-credentials'[0].config.'s3.secret-access-key'", equalTo("test-secret"));
+  }
+
+  @Test
+  void metricsMissingRequiredFieldsReturns400() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+
+    given()
+        .body("{\"report-type\":\"scan\"}")
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables/orders/metrics")
+        .then()
+        .statusCode(400)
+        .body("error.type", equalTo("ValidationException"));
+  }
+
+  @Test
+  void metricsScanReportReturns204() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+
+    given()
+        .body(
+            """
+            {
+              "report-type":"scan",
+              "table-name":"orders",
+              "snapshot-id":1,
+              "filter":{"type":"always-true"},
+              "schema-id":1,
+              "projected-field-ids":[1],
+              "projected-field-names":["id"],
+              "metrics":{}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables/orders/metrics")
+        .then()
+        .statusCode(204);
   }
 }

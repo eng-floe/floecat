@@ -75,7 +75,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   final List<Snapshot> snaps;
                   try {
                     snaps =
-                        snapshotRepo.list(
+                        snapshotRepo.listByTime(
                             request.getTableId(), Math.max(1, pageIn.limit), pageIn.token, next);
                   } catch (IllegalArgumentException badToken) {
                     throw GrpcErrors.invalidArgument(

@@ -16,25 +16,27 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService.MaterializeResult;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class TableCommitSideEffectServiceTest {
+  private static final TrinoFixtureTestSupport.Fixture FIXTURE =
+      TrinoFixtureTestSupport.simpleFixture();
   private final TableCommitSideEffectService service = new TableCommitSideEffectService();
   private final MaterializeMetadataService materializeMetadataService =
       mock(MaterializeMetadataService.class);
   private final TableLifecycleService tableLifecycleService = mock(TableLifecycleService.class);
-  private final ObjectMapper mapper = new ObjectMapper();
 
   @BeforeEach
   void setUp() {
@@ -44,12 +46,16 @@ class TableCommitSideEffectServiceTest {
 
   @Test
   void materializeMetadataUpdatesTableProperties() throws Exception {
-    TableMetadataView metadata = metadata("s3://warehouse/tables/orders/metadata.json");
+    TableMetadataView metadata =
+        metadata("s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
     TableMetadataView materialized =
         metadata.withMetadataLocation(
             "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json");
     when(materializeMetadataService.materialize(
-            "cat.db", "orders", metadata, "s3://warehouse/tables/orders/metadata.json"))
+            "cat.db",
+            "orders",
+            metadata,
+            "s3://warehouse/tables/orders/metadata/00000-abc.metadata.json"))
         .thenReturn(
             new MaterializeResult(
                 "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json", materialized));
@@ -71,7 +77,7 @@ class TableCommitSideEffectServiceTest {
             "orders",
             table,
             metadata,
-            "s3://warehouse/tables/orders/metadata.json");
+            "s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
 
     assertNull(result.error());
     assertSame(materialized, result.metadata());
@@ -88,41 +94,45 @@ class TableCommitSideEffectServiceTest {
   }
 
   @Test
-  void materializeMetadataReturnsOriginalWhenMetadataMissing() throws Exception {
+  void materializeMetadataSkipsWhenNoLocationProvided() throws Exception {
+    TableMetadataView base =
+        metadata("s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
+    Map<String, String> props = new LinkedHashMap<>(base.properties());
+    props.remove("metadata-location");
+    TableMetadataView noLocation =
+        new TableMetadataView(
+            base.formatVersion(),
+            base.tableUuid(),
+            base.location(),
+            null,
+            base.lastUpdatedMs(),
+            props,
+            base.lastColumnId(),
+            base.currentSchemaId(),
+            base.defaultSpecId(),
+            base.lastPartitionId(),
+            base.defaultSortOrderId(),
+            base.currentSnapshotId(),
+            base.lastSequenceNumber(),
+            base.schemas(),
+            base.partitionSpecs(),
+            base.sortOrders(),
+            base.refs(),
+            base.snapshotLog(),
+            base.metadataLog(),
+            base.statistics(),
+            base.partitionStatistics(),
+            base.snapshots());
+    when(materializeMetadataService.materialize("cat.db", "orders", noLocation, null))
+        .thenReturn(new MaterializeResult(null, noLocation));
+
     MaterializeMetadataResult result =
-        service.materializeMetadata(
-            "cat.db",
-            ResourceId.getDefaultInstance(),
-            "orders",
-            null,
-            null,
-            "s3://warehouse/tables/orders/metadata.json");
+        service.materializeMetadata("cat.db", null, "orders", null, noLocation, null);
 
     assertNull(result.error());
-    assertNull(result.metadata());
-    assertEquals("s3://warehouse/tables/orders/metadata.json", result.metadataLocation());
-    verify(materializeMetadataService, never()).materialize(any(), any(), any(), any());
+    assertSame(noLocation, result.metadata());
+    assertNull(result.metadataLocation());
     verify(tableLifecycleService, never()).updateTable(any());
-  }
-
-  @Test
-  void materializeMetadataFallsBackWhenMaterializationFails() throws Exception {
-    TableMetadataView metadata = metadata("s3://warehouse/tables/orders/metadata.json");
-    when(materializeMetadataService.materialize(any(), any(), any(), any()))
-        .thenThrow(new MaterializeMetadataException("boom"));
-
-    MaterializeMetadataResult result =
-        service.materializeMetadata(
-            "cat.db",
-            ResourceId.getDefaultInstance(),
-            "orders",
-            null,
-            metadata,
-            metadata.metadataLocation());
-
-    assertNull(result.error());
-    assertSame(metadata, result.metadata());
-    assertEquals(metadata.metadataLocation(), result.metadataLocation());
   }
 
   @Test
@@ -134,7 +144,6 @@ class TableCommitSideEffectServiceTest {
 
     service.runConnectorSync(tableSupport, connectorId, namespacePath, "orders");
 
-    verify(tableSupport).runSyncMetadataCapture(connectorId, namespacePath, "orders");
     verify(tableSupport).triggerScopedReconcile(connectorId, namespacePath, "orders");
   }
 
@@ -223,12 +232,14 @@ class TableCommitSideEffectServiceTest {
     verify(materializeMetadataService, never()).materialize(any(), any(), any(), any());
   }
 
-  private TableMetadataView metadata(String metadataLocation) throws JsonProcessingException {
-    return mapper.readValue(
-        "{"
-            + "\"metadata-location\":\""
-            + metadataLocation
-            + "\",\"properties\":{\"existing\":\"value\"}}",
-        TableMetadataView.class);
+  private TableMetadataView metadata(String metadataLocation) {
+    TableMetadataView base =
+        TableMetadataBuilder.fromCatalog(
+            "orders",
+            FIXTURE.table(),
+            new LinkedHashMap<>(FIXTURE.table().getPropertiesMap()),
+            FIXTURE.metadata(),
+            FIXTURE.snapshots());
+    return base.withMetadataLocation(metadataLocation);
   }
 }

@@ -1,12 +1,13 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
+import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
+import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StageCreateResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
-import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
@@ -15,16 +16,17 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestC
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.NamespaceClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,9 +40,10 @@ public class TableCreateService {
       List.of(Map.of("type", "assert-create"));
 
   @Inject TableLifecycleService tableLifecycleService;
+  @Inject NamespaceClient namespaceClient;
+  @Inject IcebergGatewayConfig config;
   @Inject StagedTableService stagedTableService;
   @Inject AccountContext accountContext;
-  @Inject IcebergGatewayConfig config;
   @Inject ObjectMapper mapper;
 
   public Response create(
@@ -58,11 +61,11 @@ public class TableCreateService {
     if (!hasSchema(request)) {
       return IcebergErrorResponses.validation("schema is required");
     }
+    // Match the REST spec: name + schema are required; other fields are optional.
 
     String tableName = request.name().trim();
     TableRequests.Create effectiveReq =
-        applyDefaultLocationIfMissing(
-            namespaceContext.prefix(), namespaceContext.namespacePath(), tableName, request);
+        applyDefaultLocationIfMissing(namespaceContext, tableName, request);
     if (Boolean.TRUE.equals(effectiveReq.stageCreate())) {
       return handleStageCreate(
           namespaceContext, tableName, effectiveReq, transactionId, idempotencyKey, tableSupport);
@@ -79,34 +82,20 @@ public class TableCreateService {
     } catch (IllegalArgumentException | JsonProcessingException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
-    String specMetadataLocation = MetadataLocationUtil.metadataLocation(spec.getPropertiesMap());
-    effectiveReq = ensureMetadataLocation(effectiveReq, specMetadataLocation);
-
     Table created = tableLifecycleService.createTable(spec, idempotencyKey);
-    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
     Map<String, String> tableConfig = tableSupport.defaultTableConfig();
     List<StorageCredentialDto> credentials = tableSupport.defaultCredentials();
     LoadTableResultDto loadResult;
-    if (metadata == null && request != null) {
-      try {
-        loadResult =
-            TableResponseMapper.toLoadResultFromCreate(
-                tableName, created, effectiveReq, tableConfig, credentials);
-      } catch (IllegalArgumentException e) {
-        return IcebergErrorResponses.validation(e.getMessage());
-      }
-    } else {
+    try {
       loadResult =
-          TableResponseMapper.toLoadResult(
-              tableName, created, metadata, List.of(), tableConfig, credentials);
+          TableResponseMapper.toLoadResultFromCreate(
+              tableName, created, effectiveReq, tableConfig, credentials);
+    } catch (IllegalArgumentException e) {
+      return IcebergErrorResponses.validation(e.getMessage());
     }
 
-    TableMetadataView responseMetadata = loadResult.metadata();
+    var responseMetadata = loadResult.metadata();
     String responseMetadataLocation = loadResult.metadataLocation();
-    String actualMetadataLocation = metadataLocation(created, metadata);
-    if (actualMetadataLocation != null && !actualMetadataLocation.isBlank()) {
-      responseMetadataLocation = actualMetadataLocation;
-    }
     if (responseMetadata != null && responseMetadataLocation != null) {
       responseMetadata = responseMetadata.withMetadataLocation(responseMetadataLocation);
     }
@@ -136,10 +125,7 @@ public class TableCreateService {
         loadResult.config().keySet());
 
     Response.ResponseBuilder builder = Response.ok(loadResult);
-    String etagValue =
-        responseMetadataLocation != null && !responseMetadataLocation.isBlank()
-            ? responseMetadataLocation
-            : metadataLocation(created, metadata);
+    String etagValue = responseMetadataLocation;
     if (etagValue != null) {
       builder.tag(etagValue);
     }
@@ -157,8 +143,7 @@ public class TableCreateService {
       return IcebergErrorResponses.validation("stage-create requires a request body");
     }
     TableRequests.Create effectiveReq =
-        applyDefaultLocationIfMissing(
-            namespaceContext.prefix(), namespaceContext.namespacePath(), tableName, request);
+        applyDefaultLocationIfMissing(namespaceContext, tableName, request);
     if (effectiveReq.location() == null || effectiveReq.location().isBlank()) {
       LOG.warnf(
           "Stage-create request missing location prefix=%s namespace=%s table=%s payload=%s",
@@ -166,7 +151,6 @@ public class TableCreateService {
           namespaceContext.namespacePath(),
           tableName,
           safeSerializeCreate(request));
-      return IcebergErrorResponses.validation("location is required");
     }
     String accountId = accountContext.getAccountId();
     if (accountId == null || accountId.isBlank()) {
@@ -193,10 +177,6 @@ public class TableCreateService {
               tableName,
               effectiveReq);
       TableSpec spec = specBuilder.build();
-      String stagedMetadataLocation =
-          MetadataLocationUtil.metadataLocation(spec.getPropertiesMap());
-      TableRequests.Create normalizedReq =
-          ensureMetadataLocation(effectiveReq, stagedMetadataLocation);
       StagedTableEntry entry =
           new StagedTableEntry(
               new StagedTableKey(
@@ -207,7 +187,7 @@ public class TableCreateService {
                   stageId),
               namespaceContext.catalogId(),
               namespaceContext.namespaceId(),
-              normalizedReq,
+              effectiveReq,
               spec,
               STAGE_CREATE_REQUIREMENTS,
               StageState.STAGED,
@@ -234,16 +214,16 @@ public class TableCreateService {
           TableResponseMapper.toLoadResultFromCreate(
               tableName,
               stubTable,
-              normalizedReq,
+              effectiveReq,
               tableSupport.defaultTableConfig(),
               tableSupport.defaultCredentials());
       LOG.infof(
           "Stage-create metadata resolved stageId=%s location=%s requestProperty=%s",
           stored.key().stageId(),
           loadResult.metadataLocation(),
-          normalizedReq.properties() == null
+          effectiveReq.properties() == null
               ? "<none>"
-              : normalizedReq.properties().get("metadata-location"));
+              : effectiveReq.properties().get("metadata-location"));
       LOG.infof(
           "Stage-create response stageId=%s metadataLocation=%s configKeys=%s",
           stored.key().stageId(), loadResult.metadataLocation(), loadResult.config().keySet());
@@ -262,81 +242,104 @@ public class TableCreateService {
   }
 
   private TableRequests.Create applyDefaultLocationIfMissing(
-      String prefix, List<String> namespacePath, String tableName, TableRequests.Create request) {
+      NamespaceRequestContext namespaceContext, String tableName, TableRequests.Create request) {
     if (request == null) {
       return null;
     }
     if (request.location() != null && !request.location().isBlank()) {
       return request;
     }
-    String base = config.defaultWarehousePath().orElse(null);
-    if (base == null || base.isBlank()) {
+    String resolved = resolveDefaultLocation(namespaceContext, tableName);
+    if (resolved == null || resolved.isBlank()) {
       return request;
     }
-    String resolvedName = (tableName == null || tableName.isBlank()) ? "table" : tableName.trim();
-    StringBuilder builder = new StringBuilder(ensureEndsWithSlash(base.trim()));
-    if (prefix != null && !prefix.isBlank()) {
-      builder.append(trimSlashes(prefix)).append('/');
-    }
-    if (namespacePath != null && !namespacePath.isEmpty()) {
-      builder.append(String.join("/", namespacePath)).append('/');
-    }
-    builder.append(resolvedName);
-    String computedLocation = builder.toString();
     return new TableRequests.Create(
         request.name(),
         request.schemaJson(),
         request.schema(),
-        computedLocation,
+        resolved,
         request.properties(),
         request.partitionSpec(),
         request.writeOrder(),
         request.stageCreate());
   }
 
-  private static String ensureEndsWithSlash(String base) {
+  private String resolveDefaultLocation(
+      NamespaceRequestContext namespaceContext, String tableName) {
+    if (namespaceContext == null || tableName == null || tableName.isBlank()) {
+      return null;
+    }
+    String namespaceLocation = resolveNamespaceLocation(namespaceContext);
+    if (namespaceLocation != null && !namespaceLocation.isBlank()) {
+      return joinLocation(namespaceLocation, List.of(tableName));
+    }
+    String warehouse = config.defaultWarehousePath().orElse(null);
+    if (warehouse == null || warehouse.isBlank()) {
+      return null;
+    }
+    return joinLocation(warehouse, joinNamespaceParts(namespaceContext.namespacePath(), tableName));
+  }
+
+  private String resolveNamespaceLocation(NamespaceRequestContext namespaceContext) {
+    if (namespaceContext == null || namespaceContext.namespaceId() == null) {
+      return null;
+    }
+    try {
+      Namespace namespace =
+          namespaceClient
+              .getNamespace(
+                  GetNamespaceRequest.newBuilder()
+                      .setNamespaceId(namespaceContext.namespaceId())
+                      .build())
+              .getNamespace();
+      if (namespace == null) {
+        return null;
+      }
+      Map<String, String> props = namespace.getPropertiesMap();
+      if (props == null || props.isEmpty()) {
+        return null;
+      }
+      return firstNonBlank(props.get("location"), props.get("warehouse"));
+    } catch (Exception e) {
+      LOG.debugf(
+          e, "Failed to resolve namespace location for %s", namespaceContext.namespacePath());
+      return null;
+    }
+  }
+
+  private List<String> joinNamespaceParts(List<String> namespacePath, String tableName) {
+    List<String> parts = namespacePath == null ? new ArrayList<>() : new ArrayList<>(namespacePath);
+    if (tableName != null && !tableName.isBlank()) {
+      parts.add(tableName);
+    }
+    return parts;
+  }
+
+  private String joinLocation(String base, List<String> parts) {
     if (base == null || base.isBlank()) {
-      return "";
+      return base;
     }
-    return base.endsWith("/") ? base : base + "/";
+    String normalized = base;
+    while (normalized.endsWith("/") && normalized.length() > 1) {
+      normalized = normalized.substring(0, normalized.length() - 1);
+    }
+    String suffix =
+        parts == null
+            ? ""
+            : parts.stream()
+                .filter(part -> part != null && !part.isBlank())
+                .reduce("", (left, right) -> left.isEmpty() ? right : left + "/" + right);
+    if (suffix.isBlank()) {
+      return normalized;
+    }
+    return normalized + "/" + suffix;
   }
 
-  private static String trimSlashes(String text) {
-    if (text == null) {
-      return "";
+  private String firstNonBlank(String primary, String fallback) {
+    if (primary != null && !primary.isBlank()) {
+      return primary;
     }
-    String trimmed = text.trim();
-    while (trimmed.startsWith("/")) {
-      trimmed = trimmed.substring(1);
-    }
-    while (trimmed.endsWith("/") && !trimmed.isEmpty()) {
-      trimmed = trimmed.substring(0, trimmed.length() - 1);
-    }
-    return trimmed;
-  }
-
-  private static TableRequests.Create ensureMetadataLocation(
-      TableRequests.Create request, String metadataLocation) {
-    if (request == null || metadataLocation == null || metadataLocation.isBlank()) {
-      return request;
-    }
-    Map<String, String> props = request.properties();
-    String existing = MetadataLocationUtil.metadataLocation(props);
-    if (metadataLocation.equals(existing)) {
-      return request;
-    }
-    Map<String, String> updated =
-        props == null || props.isEmpty() ? new LinkedHashMap<>() : new LinkedHashMap<>(props);
-    MetadataLocationUtil.setMetadataLocation(updated, metadataLocation);
-    return new TableRequests.Create(
-        request.name(),
-        request.schemaJson(),
-        request.schema(),
-        request.location(),
-        Map.copyOf(updated),
-        request.partitionSpec(),
-        request.writeOrder(),
-        request.stageCreate());
+    return fallback != null && !fallback.isBlank() ? fallback : null;
   }
 
   private String safeSerializeCreate(TableRequests.Create request) {
@@ -358,25 +361,5 @@ public class TableCreateService {
       return true;
     }
     return request.schema() != null && !request.schema().isNull();
-  }
-
-  private String metadataLocation(Table table, IcebergMetadata metadata) {
-    Map<String, String> props =
-        table == null || table.getPropertiesMap() == null ? Map.of() : table.getPropertiesMap();
-    String propertyLocation = MetadataLocationUtil.metadataLocation(props);
-    if (propertyLocation != null
-        && !propertyLocation.isBlank()
-        && !MetadataLocationUtil.isPointer(propertyLocation)) {
-      return propertyLocation;
-    }
-    if (metadata != null
-        && metadata.getMetadataLocation() != null
-        && !metadata.getMetadataLocation().isBlank()) {
-      return metadata.getMetadataLocation();
-    }
-    if (propertyLocation != null && !propertyLocation.isBlank()) {
-      return propertyLocation;
-    }
-    return table != null && table.hasResourceId() ? table.getResourceId().getId() : null;
   }
 }

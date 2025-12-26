@@ -17,8 +17,29 @@ public class TableMetricsService {
   @Inject ObjectMapper mapper;
 
   public Response publish(TableRequestContext tableContext, MetricsRequests.Report request) {
-    if (request == null || request.snapshotId() == null) {
+    if (request == null) {
+      return IcebergErrorResponses.validation("Request body is required");
+    }
+    if (isBlank(request.reportType())) {
+      return IcebergErrorResponses.validation("report-type is required");
+    }
+    if (isBlank(request.tableName())) {
+      return IcebergErrorResponses.validation("table-name is required");
+    }
+    if (request.snapshotId() == null) {
       return IcebergErrorResponses.validation("snapshot-id is required");
+    }
+    if (request.metrics() == null) {
+      return IcebergErrorResponses.validation("metrics is required");
+    }
+    boolean scanReport =
+        request.filter() != null
+            && request.schemaId() != null
+            && !isEmpty(request.projectedFieldIds())
+            && !isEmpty(request.projectedFieldNames());
+    boolean commitReport = request.sequenceNumber() != null && !isBlank(request.operation());
+    if (!scanReport && !commitReport) {
+      return IcebergErrorResponses.validation("metrics report missing required fields");
     }
     try {
       LOG.infof(
@@ -30,5 +51,13 @@ public class TableMetricsService {
           tableContext.namespaceName(), tableContext.table(), String.valueOf(request));
     }
     return Response.noContent().build();
+  }
+
+  private boolean isBlank(String value) {
+    return value == null || value.isBlank();
+  }
+
+  private boolean isEmpty(java.util.List<?> values) {
+    return values == null || values.isEmpty();
   }
 }

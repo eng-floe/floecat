@@ -22,7 +22,10 @@ public class ViewCreateService {
   public Response create(
       NamespaceRequestContext namespaceContext, String idempotencyKey, ViewRequests.Create req) {
     List<String> namespacePath = namespaceContext.namespacePath();
-    String viewName = req != null && req.name() != null ? req.name() : "view";
+    if (req == null || req.name() == null || req.name().isBlank()) {
+      return IcebergErrorResponses.validation("name is required");
+    }
+    String viewName = req.name().trim();
 
     MetadataContext metadataContext;
     try {
