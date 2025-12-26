@@ -281,6 +281,7 @@ public final class ProtoStatsBuilder {
               .setTableId(tableId)
               .setSnapshotId(snapshotId)
               .setFilePath(fa.path())
+              .setFileFormat(fa.format())
               .setRowCount(fa.rowCount())
               .setSizeBytes(fa.sizeBytes())
               .setPartitionDataJson(fa.partitionDataJson() == null ? "" : fa.partitionDataJson())

@@ -39,6 +39,7 @@ import java.util.stream.Collectors;
 import org.apache.parquet.io.InputFile;
 
 final class DeltaPlanner implements Planner<String> {
+  private static final String PARQUET_FORMAT = "PARQUET";
 
   private final List<PlannedFile<String>> files = new ArrayList<>();
   private final Map<String, LogicalType> nameToLogical = new LinkedHashMap<>();
@@ -197,6 +198,7 @@ final class DeltaPlanner implements Planner<String> {
             files.add(
                 new PlannedFile<>(
                     path,
+                    PARQUET_FORMAT,
                     rowCount,
                     sizeBytes,
                     valueCounts,

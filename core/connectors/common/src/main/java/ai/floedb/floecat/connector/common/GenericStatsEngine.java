@@ -108,6 +108,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       fileAggs.add(
           new FileAggImpl<>(
               file.path(),
+              file.format(),
               file.rowCount(),
               file.sizeBytes(),
               fileCols,
@@ -293,6 +294,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
 
   private static final class FileAggImpl<K> implements FileAgg<K> {
     private final String path;
+    private final String format;
     private final long rowCount;
     private final long sizeBytes;
     private final Map<K, ColumnAgg> columns;
@@ -301,12 +303,14 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
 
     FileAggImpl(
         String path,
+        String format,
         long rowCount,
         long sizeBytes,
         Map<K, ColumnAgg> columns,
         String partitionDataJson,
         int partitionSpecId) {
       this.path = path;
+      this.format = format;
       this.rowCount = rowCount;
       this.sizeBytes = sizeBytes;
       this.columns = columns;
@@ -317,6 +321,11 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     @Override
     public String path() {
       return path;
+    }
+
+    @Override
+    public String format() {
+      return format;
     }
 
     @Override

@@ -4,6 +4,7 @@ import java.util.Map;
 
 public record PlannedFile<K>(
     String path,
+    String format,
     long rowCount,
     long sizeBytes,
     Map<K, Long> valueCounts,
