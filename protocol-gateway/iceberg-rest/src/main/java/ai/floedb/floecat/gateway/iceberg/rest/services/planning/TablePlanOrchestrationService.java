@@ -1,9 +1,13 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.planning;
 
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
+import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ContentFileDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FileScanTaskDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.PlanRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
@@ -16,6 +20,8 @@ import java.util.List;
 public class TablePlanOrchestrationService {
   @Inject TablePlanService tablePlanService;
   @Inject PlanTaskManager planTaskManager;
+  @Inject IcebergGatewayConfig config;
+  @Inject GrpcWithHeaders grpc;
 
   public Response plan(
       TableRequestContext tableContext,
@@ -38,9 +44,11 @@ public class TablePlanOrchestrationService {
         request.caseSensitive() == null || Boolean.TRUE.equals(request.caseSensitive());
     boolean useSnapshotSchema = Boolean.TRUE.equals(request.useSnapshotSchema());
     try {
+      ResourceId catalogId =
+          CatalogResolver.resolveCatalogId(grpc, config, tableContext.catalog().catalogName());
       var handle =
           tablePlanService.startPlan(
-              tableContext.catalog().catalogName(),
+              catalogId,
               tableContext.tableId(),
               copyOfOrNull(request.select()),
               startSnapshotId,

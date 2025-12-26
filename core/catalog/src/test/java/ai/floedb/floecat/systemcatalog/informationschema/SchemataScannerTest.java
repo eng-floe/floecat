@@ -3,7 +3,7 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 import static org.assertj.core.api.Assertions.*;
 
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
-import ai.floedb.floecat.systemcatalog.utilities.TestScanContextBuilder;
+import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -18,18 +18,9 @@ class SchemataScannerTest {
 
   @Test
   void scan_returnsAllNamespacesInCatalog() {
-    var builder =
-        TestScanContextBuilder.builder()
-            .withCatalog("main_catalog")
-            .withNamespaces(
-                List.of(
-                    TestScanContextBuilder.builder()
-                        .withCatalog("main_catalog")
-                        .newNamespace("public"),
-                    TestScanContextBuilder.builder()
-                        .withCatalog("main_catalog")
-                        .newNamespace("sales")));
-
+    var builder = TestTableScanContextBuilder.builder("main_catalog");
+    builder.addNamespace("public");
+    builder.addNamespace("sales");
     SystemObjectScanContext ctx = builder.build();
 
     var rows = new SchemataScanner().scan(ctx).map(r -> List.of(r.values())).toList();
@@ -41,15 +32,8 @@ class SchemataScannerTest {
 
   @Test
   void scan_usesCanonicalSchemaPathForNestedNamespaces() {
-    var builder =
-        TestScanContextBuilder.builder()
-            .withCatalog("main_catalog")
-            .withNamespaces(
-                List.of(
-                    TestScanContextBuilder.builder()
-                        .withCatalog("main_catalog")
-                        .newNamespace("finance.sales")));
-
+    var builder = TestTableScanContextBuilder.builder("main_catalog");
+    builder.addNamespace("finance.sales");
     SystemObjectScanContext ctx = builder.build();
 
     var rows = new SchemataScanner().scan(ctx).map(r -> List.of(r.values())).toList();

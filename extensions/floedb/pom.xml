@@ -27,6 +27,7 @@
         <maven.compiler.target>${proto.compiler.release}</maven.compiler.target>
 
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <floedb.proto.dir>src/main/proto</floedb.proto.dir>
     </properties>
 
     <!-- ================================================================ -->
@@ -113,7 +114,7 @@
                     </additionalProtoPathElements>
 
                     <!-- Floe plugin's local proto directory -->
-                    <protoSourceRoot>src/main/proto</protoSourceRoot>
+                    <protoSourceRoot>${project.basedir}/${floedb.proto.dir}</protoSourceRoot>
                 </configuration>
 
                 <executions>

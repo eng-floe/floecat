@@ -3,6 +3,7 @@ package ai.floedb.floecat.systemcatalog.provider;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.informationschema.InformationSchemaProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
@@ -63,9 +64,18 @@ public final class ServiceLoaderSystemCatalogProvider implements SystemCatalogPr
   }
 
   @Override
+  public List<String> engineKinds() {
+    return plugins.keySet().stream().sorted().toList();
+  }
+
+  @Override
   public SystemEngineCatalog load(String engineKind) {
+    // Blank engineKind = engine-agnostic catalog (information_schema only)
     if (engineKind == null || engineKind.isBlank()) {
-      throw new IllegalArgumentException("engine_kind must be provided");
+      SystemCatalogData data =
+          mergeProviderDefinitions(
+              SystemNodeRegistry.FLOECAT_DEFAULT_CATALOG, SystemCatalogData.empty());
+      return SystemEngineCatalog.from(SystemNodeRegistry.FLOECAT_DEFAULT_CATALOG, data);
     }
 
     EngineSystemCatalogExtension ext = plugins.get(engineKind.toLowerCase(Locale.ROOT));

@@ -5,7 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
-import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.service.testsupport.TestNodes;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
@@ -68,7 +68,7 @@ class GraphCacheManagerTest {
     assertThat(disabled.get(tableId, key)).isNull();
   }
 
-  private TableNode tableNode(ResourceId tableId) {
+  private UserTableNode tableNode(ResourceId tableId) {
     return TestNodes.tableNode(tableId, "{}");
   }
 

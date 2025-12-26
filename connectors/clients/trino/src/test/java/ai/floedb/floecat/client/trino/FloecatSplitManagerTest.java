@@ -3,6 +3,12 @@ package ai.floedb.floecat.client.trino;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveCatalogResponse;
+import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.Operator;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
@@ -35,6 +41,7 @@ import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
 
 import io.trino.spi.security.ConnectorIdentity;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.TimeZoneKey;
 
@@ -59,16 +66,19 @@ class FloecatSplitManagerTest {
     private static LifecycleStub lifecycleStub;
     private static SchemaStub schemaStub;
     private static ScanStub scanStub;
+    private static DirectoryStub directoryStub;
 
     private static QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schema;
     private static QueryScanServiceGrpc.QueryScanServiceBlockingStub scans;
     private static QueryServiceGrpc.QueryServiceBlockingStub lifecycle;
+    private static DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
     @BeforeAll
     static void startServer() throws Exception {
         lifecycleStub = new LifecycleStub();
         schemaStub = new SchemaStub();
         scanStub = new ScanStub();
+        directoryStub = new DirectoryStub();
 
         String serverName = InProcessServerBuilder.generateName();
         server =
@@ -76,6 +86,7 @@ class FloecatSplitManagerTest {
                 .addService(lifecycleStub)
                 .addService(schemaStub)
                 .addService(scanStub)
+                .addService(directoryStub)
                 .build()
                 .start();
 
@@ -83,6 +94,7 @@ class FloecatSplitManagerTest {
         lifecycle = QueryServiceGrpc.newBlockingStub(channel);
         scans = QueryScanServiceGrpc.newBlockingStub(channel);
         schema = QuerySchemaServiceGrpc.newBlockingStub(channel);
+        directory = DirectoryServiceGrpc.newBlockingStub(channel);
     }
 
     @AfterAll
@@ -107,6 +119,8 @@ class FloecatSplitManagerTest {
               lifecycle,
               scans,
               schema,
+              directory,
+              new CatalogName("test-catalog"),
               new FloecatConfig());
 
         FloecatTableHandle handle =
@@ -140,6 +154,13 @@ class FloecatSplitManagerTest {
         QueryInput input = schemaStub.lastDescribe.getInputs(0);
         assertTrue(input.hasSnapshot());
         assertEquals(123L, input.getSnapshot().getSnapshotId());
+
+        ResourceId expectedCatalogId = ResourceId.newBuilder()
+            .setId("catalog-id")
+            .setAccountId("account")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+        assertEquals(expectedCatalogId, lifecycleStub.lastBegin.getDefaultCatalogId());
     }
 
     @Test
@@ -149,6 +170,8 @@ class FloecatSplitManagerTest {
                 lifecycle,
                 scans,
                 schema,
+                directory,
+                new CatalogName("test-catalog"),
                 new FloecatConfig());
 
         long asOf = 1_700_000_000_000L;
@@ -186,6 +209,13 @@ class FloecatSplitManagerTest {
         long millis = ts.getSeconds() * 1000L + ts.getNanos() / 1_000_000;
 
         assertEquals(asOf, millis);
+
+        ResourceId expectedCatalogId = ResourceId.newBuilder()
+            .setId("catalog-id")
+            .setAccountId("account")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+        assertEquals(expectedCatalogId, lifecycleStub.lastBegin.getDefaultCatalogId());
     }
 
     @Test
@@ -195,6 +225,8 @@ class FloecatSplitManagerTest {
                 lifecycle,
                 scans,
                 schema,
+                directory,
+                new CatalogName("test-catalog"),
                 new FloecatConfig());
 
         IcebergColumnHandle idCol =
@@ -275,6 +307,13 @@ class FloecatSplitManagerTest {
         List<ConnectorSplit> splits =
             splitSource.getNextBatch(10).get().getSplits();
         assertEquals(1, splits.size());
+
+        ResourceId expectedCatalogId = ResourceId.newBuilder()
+            .setId("catalog-id")
+            .setAccountId("account")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+        assertEquals(expectedCatalogId, lifecycleStub.lastBegin.getDefaultCatalogId());
     }
 
     @Test
@@ -287,6 +326,8 @@ class FloecatSplitManagerTest {
                 lifecycle,
                 scans,
                 schema,
+                directory,
+                new CatalogName("test-catalog"),
                 new FloecatConfig());
 
         FloecatTableHandle handle =
@@ -328,6 +369,13 @@ class FloecatSplitManagerTest {
 
         assertEquals("{\"partitionValues\":[]}", iceberg.getPartitionDataJson());
         assertEquals(IcebergFileFormat.ORC, iceberg.getFileFormat());
+
+        ResourceId expectedCatalogId = ResourceId.newBuilder()
+            .setId("catalog-id")
+            .setAccountId("account")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+        assertEquals(expectedCatalogId, lifecycleStub.lastBegin.getDefaultCatalogId());
     }
 
     private static class SimpleSession implements ConnectorSession {
@@ -342,6 +390,20 @@ class FloecatSplitManagerTest {
         @Override public Instant getStart() { return Instant.EPOCH; }
         @SuppressWarnings("unchecked")
         @Override public <T> T getProperty(String name, Class<T> type) { return (T) props.get(name); }
+    }
+
+    private static class DirectoryStub extends DirectoryServiceGrpc.DirectoryServiceImplBase {
+        public void resolveCatalog(
+            ResolveCatalogRequest request,
+            StreamObserver<ResolveCatalogResponse> responseObserver) {
+            ResourceId catalogId = ResourceId.newBuilder()
+                .setId("catalog-id")
+                .setAccountId("account")
+                .setKind(ResourceKind.RK_CATALOG)
+                .build();
+            responseObserver.onNext(ResolveCatalogResponse.newBuilder().setResourceId(catalogId).build());
+            responseObserver.onCompleted();
+        }
     }
 
     private static class LifecycleStub extends QueryServiceGrpc.QueryServiceImplBase {

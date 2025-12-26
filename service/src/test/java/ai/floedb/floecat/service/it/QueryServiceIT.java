@@ -93,7 +93,12 @@ class QueryServiceIT {
     //
     // === NEW API: BeginQuery takes no inputs ===
     //
-    var begin = queries.beginQuery(BeginQueryRequest.newBuilder().setTtlSeconds(2).build());
+    var begin =
+        queries.beginQuery(
+            BeginQueryRequest.newBuilder()
+                .setDefaultCatalogId(cat.getResourceId())
+                .setTtlSeconds(2)
+                .build());
 
     assertTrue(begin.hasQuery());
     var query = begin.getQuery();

@@ -54,6 +54,7 @@ public class SnapshotResolverTest {
         .expiresAtMs(10)
         .state(QueryContext.State.ACTIVE)
         .version(1)
+        .queryDefaultCatalogId(ResourceId.newBuilder().setId("cat-it").build())
         .build();
   }
 

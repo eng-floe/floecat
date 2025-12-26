@@ -107,11 +107,16 @@ class SystemNodeRegistryTest {
   }
 
   @Test
-  void missingEngineVersionReturnsEmpty() {
+  void missingEngineVersionMeansAnyVersion() {
     var registry = registryWithCatalogs();
     var nodeRegistry = new SystemNodeRegistry(registry);
 
-    assertThat(nodeRegistry.nodesFor(FLOE_KIND, "").functions()).isEmpty();
+    assertThat(nodeRegistry.nodesFor(FLOE_KIND, "").functions())
+        .extracting(fn -> fn.displayName())
+        .contains(
+            "pg_catalog.shared_fn",
+            "pg_catalog.pg_legacy" // maxVersion applies only when version is known
+            );
   }
 
   @Test

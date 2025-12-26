@@ -98,7 +98,9 @@ class QueryScanServiceIT {
     var name =
         NameRef.newBuilder().setCatalog(catName).addPath("scan").setName("scan_orders").build();
 
-    var begin = lifecycle.beginQuery(BeginQueryRequest.newBuilder().build());
+    var begin =
+        lifecycle.beginQuery(
+            BeginQueryRequest.newBuilder().setDefaultCatalogId(cat.getResourceId()).build());
 
     var queryId = begin.getQuery().getQueryId();
 
@@ -164,7 +166,9 @@ class QueryScanServiceIT {
     attachConnectorToTable(tblA.getResourceId(), connector);
 
     // Start query
-    var begin = lifecycle.beginQuery(BeginQueryRequest.newBuilder().build());
+    var begin =
+        lifecycle.beginQuery(
+            BeginQueryRequest.newBuilder().setDefaultCatalogId(cat.getResourceId()).build());
 
     var queryId = begin.getQuery().getQueryId();
 

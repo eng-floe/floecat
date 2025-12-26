@@ -21,6 +21,11 @@ public record CastNode(
   }
 
   @Override
+  public String displayName() {
+    return sourceType + " TO " + targetType;
+  }
+
+  @Override
   public GraphNodeKind kind() {
     return GraphNodeKind.CAST;
   }

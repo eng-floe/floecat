@@ -3,6 +3,7 @@ package ai.floedb.floecat.systemcatalog.registry;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
@@ -13,9 +14,17 @@ final class SystemDefinitionRegistryTest {
     AtomicInteger loadCount = new AtomicInteger();
 
     SystemCatalogProvider provider =
-        engineKind -> {
-          loadCount.incrementAndGet();
-          return SystemEngineCatalog.empty(engineKind);
+        new SystemCatalogProvider() {
+          @Override
+          public SystemEngineCatalog load(String engineKind) {
+            loadCount.incrementAndGet();
+            return SystemEngineCatalog.empty(engineKind);
+          }
+
+          @Override
+          public List<String> engineKinds() {
+            return List.of("spark");
+          }
         };
 
     SystemDefinitionRegistry registry = new SystemDefinitionRegistry(provider);
@@ -37,9 +46,17 @@ final class SystemDefinitionRegistryTest {
     AtomicInteger loadCount = new AtomicInteger();
 
     SystemCatalogProvider provider =
-        engineKind -> {
-          loadCount.incrementAndGet();
-          return SystemEngineCatalog.empty(engineKind);
+        new SystemCatalogProvider() {
+          @Override
+          public SystemEngineCatalog load(String engineKind) {
+            loadCount.incrementAndGet();
+            return SystemEngineCatalog.empty(engineKind);
+          }
+
+          @Override
+          public List<String> engineKinds() {
+            return List.of("spark");
+          }
         };
 
     SystemDefinitionRegistry registry = new SystemDefinitionRegistry(provider);

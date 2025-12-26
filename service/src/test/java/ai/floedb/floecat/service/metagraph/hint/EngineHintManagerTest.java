@@ -11,7 +11,7 @@ import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
-import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.util.List;
@@ -28,7 +28,7 @@ class EngineHintManagerTest {
     EngineHintManager manager =
         new EngineHintManager(List.of(provider), new SimpleMeterRegistry(), 1024);
 
-    TableNode node = tableNode(1L);
+    UserTableNode node = tableNode(1L);
     EngineKey key = new EngineKey("floedb", "1.0.0");
 
     EngineHint hint1 = manager.get(node, key, "test", "cid").orElseThrow();
@@ -37,7 +37,7 @@ class EngineHintManagerTest {
     assertThat(hint2.payload()).isEqualTo(hint1.payload());
 
     manager.invalidate(node.id());
-    TableNode nodeUpdated = tableNode(2L);
+    UserTableNode nodeUpdated = tableNode(2L);
     manager.get(nodeUpdated, key, "test", "cid").orElseThrow();
     assertThat(provider.computeCount.get()).isEqualTo(2);
   }
@@ -49,7 +49,7 @@ class EngineHintManagerTest {
         .isEmpty();
   }
 
-  private static TableNode tableNode(long version) {
+  private static UserTableNode tableNode(long version) {
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId("account")
@@ -68,7 +68,7 @@ class EngineHintManagerTest {
             .setId("namespace")
             .setKind(ResourceKind.RK_NAMESPACE)
             .build();
-    return new TableNode(
+    return new UserTableNode(
         tableId,
         version,
         Instant.now(),

@@ -3,6 +3,7 @@ package ai.floedb.floecat.systemcatalog.provider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -13,6 +14,11 @@ public final class StaticSystemCatalogProvider implements SystemCatalogProvider 
 
   public StaticSystemCatalogProvider(Map<String, SystemCatalogData> input) {
     input.forEach((kind, data) -> catalogs.put(kind.toLowerCase(Locale.ROOT), data));
+  }
+
+  @Override
+  public List<String> engineKinds() {
+    return catalogs.keySet().stream().sorted().toList();
   }
 
   @Override

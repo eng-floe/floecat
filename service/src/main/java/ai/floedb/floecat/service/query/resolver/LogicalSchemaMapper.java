@@ -2,7 +2,7 @@ package ai.floedb.floecat.service.query.resolver;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
-import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -49,8 +49,8 @@ public class LogicalSchemaMapper {
     return mapInternal(fmt, schemaJson, partitionKeys, fieldIds);
   }
 
-  /** Builds a logical schema descriptor directly from a cached {@link TableNode}. */
-  public SchemaDescriptor map(TableNode node, String overrideSchemaJson) {
+  /** Builds a logical schema descriptor directly from a cached {@link UserTableNode}. */
+  public SchemaDescriptor map(UserTableNode node, String overrideSchemaJson) {
     String schemaJson =
         (overrideSchemaJson == null || overrideSchemaJson.isBlank())
             ? node.schemaJson()
@@ -65,7 +65,7 @@ public class LogicalSchemaMapper {
         new HashMap<>(node.fieldIdByPath()));
   }
 
-  public SchemaDescriptor map(TableNode node) {
+  public SchemaDescriptor map(UserTableNode node) {
     return map(node, node.schemaJson());
   }
 

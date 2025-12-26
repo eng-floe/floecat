@@ -16,7 +16,7 @@ import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
-import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
@@ -71,7 +71,7 @@ public class NodeLoader {
         .map(ns -> toNamespaceNode(ns, namespaceRepository.metaForSafe(id)));
   }
 
-  public Optional<TableNode> table(ResourceId id) {
+  public Optional<UserTableNode> table(ResourceId id) {
     if (id.getKind() != ResourceKind.RK_TABLE) return Optional.empty();
     return tableRepository.getById(id).map(t -> toTableNode(t, tableRepository.metaForSafe(id)));
   }
@@ -136,11 +136,11 @@ public class NodeLoader {
         NO_ENGINE_HINTS);
   }
 
-  private TableNode toTableNode(Table table, MutationMeta meta) {
+  private UserTableNode toTableNode(Table table, MutationMeta meta) {
     UpstreamRef upstream =
         table.hasUpstream() ? table.getUpstream() : UpstreamRef.getDefaultInstance();
     TableFormat format = upstream.getFormat();
-    return new TableNode(
+    return new UserTableNode(
         table.getResourceId(),
         meta.getPointerVersion(),
         toInstant(meta.getUpdatedAt()),

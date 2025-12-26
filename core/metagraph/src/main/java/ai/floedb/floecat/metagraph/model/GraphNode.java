@@ -21,6 +21,9 @@ public interface GraphNode {
   /** Pointer version/Etag used for cache invalidation. */
   long version();
 
+  /** Human-readable name for display purposes. */
+  String displayName();
+
   /**
    * Timestamp of the last metadata mutation for this node.
    *

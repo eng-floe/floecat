@@ -124,7 +124,12 @@ class QueryServiceSchemaIT {
     // ------------------------------
     // BeginQuery (no inputs)
     // ------------------------------
-    var begin = queries.beginQuery(BeginQueryRequest.newBuilder().setTtlSeconds(10).build());
+    var begin =
+        queries.beginQuery(
+            BeginQueryRequest.newBuilder()
+                .setDefaultCatalogId(cat.getResourceId())
+                .setTtlSeconds(10)
+                .build());
 
     String qid = begin.getQuery().getQueryId();
     assertFalse(qid.isBlank(), "BeginQuery must return queryId");
@@ -186,7 +191,12 @@ class QueryServiceSchemaIT {
             .setName(createdView.getDisplayName())
             .build();
 
-    var begin = queries.beginQuery(BeginQueryRequest.newBuilder().setTtlSeconds(10).build());
+    var begin =
+        queries.beginQuery(
+            BeginQueryRequest.newBuilder()
+                .setDefaultCatalogId(cat.getResourceId())
+                .setTtlSeconds(10)
+                .build());
     String qid = begin.getQuery().getQueryId();
 
     var response =

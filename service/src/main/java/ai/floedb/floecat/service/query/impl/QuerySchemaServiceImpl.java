@@ -11,13 +11,13 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.overlay.CatalogOverlay;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.service.query.resolver.ObligationsResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.query.resolver.SnapshotResolver;
 import ai.floedb.floecat.service.query.resolver.ViewExpansionResolver;
+import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -135,7 +135,9 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   private SchemaDescriptor describeView(String correlationId, ResourceId rid) {
     ViewNode viewNode =
         catalogOverlay
-            .tryView(rid)
+            .resolve(rid)
+            .filter(ViewNode.class::isInstance)
+            .map(ViewNode.class::cast)
             .orElseThrow(
                 () ->
                     GrpcErrors.notFound(

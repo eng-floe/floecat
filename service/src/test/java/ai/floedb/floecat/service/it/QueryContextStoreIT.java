@@ -43,7 +43,16 @@ class QueryContextStoreIT {
   }
 
   private static QueryContext newQuery(String queryId, long ttlMs) {
-    return QueryContext.newActive(queryId, pc(queryId), null, null, null, null, ttlMs, 1);
+    return QueryContext.newActive(
+        queryId,
+        pc(queryId),
+        null,
+        null,
+        null,
+        null,
+        ttlMs,
+        1,
+        ResourceId.newBuilder().setId("cat-it").build());
   }
 
   @Inject TestDataResetter resetter;

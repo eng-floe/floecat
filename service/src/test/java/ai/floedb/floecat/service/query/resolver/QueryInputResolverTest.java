@@ -11,7 +11,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.query.rpc.QueryInput;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.service.testsupport.TestCatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;

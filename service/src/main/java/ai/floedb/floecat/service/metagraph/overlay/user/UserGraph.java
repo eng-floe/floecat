@@ -65,6 +65,20 @@ public final class UserGraph {
   // Constructor
   // ----------------------------------------------------------------------
 
+  /**
+   * Constructs a UserGraph for managing user-defined catalog objects.
+   *
+   * @param catalogRepo repository for catalog operations
+   * @param nsRepo repository for namespace operations
+   * @param snapshotRepo repository for snapshot operations
+   * @param tableRepo repository for table operations
+   * @param viewRepo repository for view operations
+   * @param snapshotStub gRPC client for snapshot service
+   * @param meter metrics registry for performance monitoring
+   * @param principal provider for current principal context
+   * @param cacheMaxSize maximum size of the graph cache
+   * @param engineHints manager for engine-specific hints
+   */
   @Inject
   public UserGraph(
       CatalogRepository catalogRepo,
@@ -120,20 +134,44 @@ public final class UserGraph {
     cache.invalidate(id);
   }
 
+  /**
+   * Gets the current account ID from the principal context.
+   *
+   * @return the current account ID
+   * @throws IllegalStateException if no account context is available
+   */
   public String currentAccountId() {
     return requireAccountId("internal");
   }
 
+  /**
+   * Lists all catalog IDs for the specified account.
+   *
+   * @param accountId the account ID to list catalogs for
+   * @return list of catalog resource IDs
+   */
   public List<ResourceId> listAllCatalogIds(String accountId) {
     return nodes.listCatalogIds(accountId);
   }
 
+  /**
+   * Gets the fully qualified name of a namespace by its resource ID.
+   *
+   * @param id the namespace resource ID
+   * @return the fully qualified name reference, or empty if not found
+   */
   public Optional<NameRef> namespaceName(ResourceId id) {
     return namespace(id)
         .flatMap(
             ns -> catalog(ns.catalogId()).map(cat -> buildNamespaceNameRef(ns, cat.displayName())));
   }
 
+  /**
+   * Gets the fully qualified name of a table by its resource ID.
+   *
+   * @param id the table resource ID
+   * @return the fully qualified name reference, or empty if not found
+   */
   public Optional<NameRef> tableName(ResourceId id) {
     return table(id)
         .flatMap(
@@ -148,6 +186,12 @@ public final class UserGraph {
                                             tbl.displayName(), tbl.id(), ns, cat.displayName()))));
   }
 
+  /**
+   * Gets the fully qualified name of a view by its resource ID.
+   *
+   * @param id the view resource ID
+   * @return the fully qualified name reference, or empty if not found
+   */
   public Optional<NameRef> viewName(ResourceId id) {
     return view(id)
         .flatMap(
@@ -173,6 +217,14 @@ public final class UserGraph {
   // Node resolution (cached)
   // ----------------------------------------------------------------------
 
+  /**
+   * Resolves a graph node by ID with caching.
+   *
+   * <p>Loads nodes from repositories on cache miss and stores them for future access.
+   *
+   * @param id the resource ID to resolve
+   * @return the resolved graph node, or empty if not found
+   */
   public Optional<GraphNode> resolve(ResourceId id) {
 
     // ----- Regular nodes (cached in graph) ------------------------------------
@@ -195,19 +247,42 @@ public final class UserGraph {
     return loaded;
   }
 
-  // Convenience typed resolvers
+  /**
+   * Resolves a catalog node by ID.
+   *
+   * @param id the catalog resource ID
+   * @return the catalog node, or empty if not found
+   */
   public Optional<CatalogNode> catalog(ResourceId id) {
     return resolve(id).map(CatalogNode.class::cast);
   }
 
+  /**
+   * Resolves a namespace node by ID.
+   *
+   * @param id the namespace resource ID
+   * @return the namespace node, or empty if not found
+   */
   public Optional<NamespaceNode> namespace(ResourceId id) {
     return resolve(id).map(NamespaceNode.class::cast);
   }
 
-  public Optional<TableNode> table(ResourceId id) {
-    return resolve(id).filter(TableNode.class::isInstance).map(TableNode.class::cast);
+  /**
+   * Resolves a table node by ID.
+   *
+   * @param id the table resource ID
+   * @return the table node, or empty if not found
+   */
+  public Optional<UserTableNode> table(ResourceId id) {
+    return resolve(id).filter(UserTableNode.class::isInstance).map(UserTableNode.class::cast);
   }
 
+  /**
+   * Resolves a view node by ID.
+   *
+   * @param id the view resource ID
+   * @return the view node, or empty if not found
+   */
   public Optional<ViewNode> view(ResourceId id) {
     return resolve(id).filter(ViewNode.class::isInstance).map(ViewNode.class::cast);
   }
@@ -216,12 +291,31 @@ public final class UserGraph {
   // Snapshot resolution
   // ----------------------------------------------------------------------
 
+  /**
+   * Gets the snapshot pin for a table.
+   *
+   * @param cid correlation ID for error reporting
+   * @param tableId the table resource ID
+   * @param override explicit snapshot override, if any
+   * @param asOfDefault default timestamp for time travel queries
+   * @return the snapshot pin for the table
+   */
   public SnapshotPin snapshotPinFor(
       String cid, ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOfDefault) {
 
     return snapshots.snapshotPinFor(cid, tableId, override, asOfDefault);
   }
 
+  /**
+   * Resolves a relation (table or view) by name reference.
+   *
+   * <p>Checks both tables and views, throwing an error if both match or neither matches.
+   *
+   * @param cid correlation ID for error reporting
+   * @param ref the name reference to resolve
+   * @return the resolved resource ID
+   * @throws GrpcErrors if the name is ambiguous or not found
+   */
   public ResourceId resolveName(String cid, NameRef ref) {
     validateNameRef(cid, ref);
     String accountId = requireAccountId(cid);
@@ -243,18 +337,34 @@ public final class UserGraph {
                     cid, "query.input.unresolved", Map.of("name", ref.toString())));
   }
 
-  public String schemaJsonFor(String cid, TableNode tbl, SnapshotRef snapshot) {
+  /**
+   * Gets the schema JSON for a table at a specific snapshot.
+   *
+   * @param cid correlation ID for error reporting
+   * @param tbl the table node
+   * @param snapshot the snapshot reference
+   * @return the schema JSON string
+   */
+  public String schemaJsonFor(String cid, UserTableNode tbl, SnapshotRef snapshot) {
     return snapshots.schemaJsonFor(cid, tbl, snapshot, tbl::schemaJson);
   }
 
+  /**
+   * Gets the schema resolution for a table at a specific snapshot.
+   *
+   * @param cid correlation ID for error reporting
+   * @param tblId the table resource ID
+   * @param snapshot the snapshot reference
+   * @return the schema resolution containing the table and schema JSON
+   */
   public SchemaResolution schemaFor(String cid, ResourceId tblId, SnapshotRef snapshot) {
-    TableNode tbl =
+    UserTableNode tbl =
         table(tblId)
             .orElseThrow(() -> GrpcErrors.notFound(cid, "table", Map.of("id", tblId.getId())));
     return new SchemaResolution(tbl, schemaJsonFor(cid, tbl, snapshot));
   }
 
-  public record SchemaResolution(TableNode table, String schemaJson) {}
+  public record SchemaResolution(UserTableNode table, String schemaJson) {}
 
   // ----------------------------------------------------------------------
   // Name resolution
@@ -279,6 +389,70 @@ public final class UserGraph {
     validateNameRef(cid, ref);
     validateRelationName(cid, ref, "view");
     return names.resolveViewId(cid, requireAccountId(cid), ref);
+  }
+
+  // ----------------------------------------------------------------------
+  // Try resolve (non-throwing variants)
+  // ----------------------------------------------------------------------
+
+  /**
+   * Attempts to resolve a namespace by name reference without throwing exceptions.
+   *
+   * @param cid correlation ID for error reporting
+   * @param ref the name reference to resolve
+   * @return the resolved resource ID, or empty if not found or invalid
+   */
+  public Optional<ResourceId> tryResolveNamespace(String cid, NameRef ref) {
+    try {
+      return Optional.of(resolveNamespace(cid, ref));
+    } catch (Exception e) {
+      return Optional.empty();
+    }
+  }
+
+  /**
+   * Attempts to resolve a table by name reference without throwing exceptions.
+   *
+   * @param cid correlation ID for error reporting
+   * @param ref the name reference to resolve
+   * @return the resolved resource ID, or empty if not found or invalid
+   */
+  public Optional<ResourceId> tryResolveTable(String cid, NameRef ref) {
+    try {
+      return Optional.of(resolveTable(cid, ref));
+    } catch (Exception e) {
+      return Optional.empty();
+    }
+  }
+
+  /**
+   * Attempts to resolve a view by name reference without throwing exceptions.
+   *
+   * @param cid correlation ID for error reporting
+   * @param ref the name reference to resolve
+   * @return the resolved resource ID, or empty if not found or invalid
+   */
+  public Optional<ResourceId> tryResolveView(String cid, NameRef ref) {
+    try {
+      return Optional.of(resolveView(cid, ref));
+    } catch (Exception e) {
+      return Optional.empty();
+    }
+  }
+
+  /**
+   * Attempts to resolve a relation (table or view) by name reference without throwing exceptions.
+   *
+   * @param cid correlation ID for error reporting
+   * @param ref the name reference to resolve
+   * @return the resolved resource ID, or empty if not found, invalid, or ambiguous
+   */
+  public Optional<ResourceId> tryResolveName(String cid, NameRef ref) {
+    try {
+      return Optional.of(resolveName(cid, ref));
+    } catch (Exception e) {
+      return Optional.empty();
+    }
   }
 
   // ----------------------------------------------------------------------
@@ -315,6 +489,12 @@ public final class UserGraph {
   // Unified relation listing (tables + views)
   // ----------------------------------------------------------------------
 
+  /**
+   * Lists all relations (tables and views) in the specified catalog.
+   *
+   * @param catalogId the catalog to list relations from
+   * @return list of all relations in the catalog
+   */
   public List<GraphNode> listRelations(ResourceId catalogId) {
     List<GraphNode> out = new ArrayList<>(128);
 
@@ -336,6 +516,13 @@ public final class UserGraph {
     return out;
   }
 
+  /**
+   * Lists all relations (tables and views) in the specified namespace.
+   *
+   * @param catalogId the catalog containing the namespace
+   * @param namespaceId the namespace to list relations from
+   * @return list of all relations in the namespace
+   */
   public List<GraphNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
     List<GraphNode> out = new ArrayList<>(32);
 
@@ -356,17 +543,27 @@ public final class UserGraph {
     return out;
   }
 
+  public List<FunctionNode> listFunctions(ResourceId namespaceId) {
+    // User-defined functions are not yet implemented
+    return List.of();
+  }
+
+  public List<TypeNode> listTypes(ResourceId catalogId) {
+    // User-defined functions are not yet implemented
+    return List.of();
+  }
+
   public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
     List<ResourceId> ids = names.listNamespaces(catalogId.getAccountId(), catalogId.getId());
     return ids.stream().map(this::namespace).flatMap(Optional::stream).toList();
   }
 
-  public List<TableNode> listTablesInCatalog(ResourceId catalogId) {
+  public List<UserTableNode> listTablesInCatalog(ResourceId catalogId) {
     List<ResourceId> ids = names.listTableIds(catalogId.getAccountId(), catalogId.getId());
     return ids.stream().map(this::table).flatMap(Optional::stream).toList();
   }
 
-  public List<TableNode> listTablesInNamespace(ResourceId namespaceId) {
+  public List<UserTableNode> listTablesInNamespace(ResourceId namespaceId) {
     List<ResourceId> ids =
         namespace(namespaceId)
             .map(

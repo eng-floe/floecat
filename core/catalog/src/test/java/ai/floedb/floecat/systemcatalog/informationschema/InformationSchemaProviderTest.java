@@ -48,7 +48,7 @@ class InformationSchemaProviderTest {
 
     List<SchemaColumn> cols = tables.columns();
     assertThat(cols).hasSize(TablesScanner.SCHEMA.size());
-    assertThat(cols.get(0).getName()).isEqualTo("table_schema");
+    assertThat(cols.get(0).getName()).isEqualTo("table_catalog");
   }
 
   @Test
@@ -109,7 +109,7 @@ class InformationSchemaProviderTest {
   // ------------------------------------------------------------------------
   @Test
   void provide_returnsCorrectScannerForTables() {
-    Optional<SystemObjectScanner> scanner = provider.provide("tables", "spark", "3.5.0");
+    Optional<SystemObjectScanner> scanner = provider.provide("tables_scanner", "spark", "3.5.0");
 
     assertThat(scanner).isPresent();
     assertThat(scanner.get()).isInstanceOf(TablesScanner.class);
@@ -117,7 +117,7 @@ class InformationSchemaProviderTest {
 
   @Test
   void provide_returnsCorrectScannerForColumns() {
-    Optional<SystemObjectScanner> scanner = provider.provide("columns", "spark", "3.5.0");
+    Optional<SystemObjectScanner> scanner = provider.provide("columns_scanner", "spark", "3.5.0");
 
     assertThat(scanner).isPresent();
     assertThat(scanner.get()).isInstanceOf(ColumnsScanner.class);
@@ -125,7 +125,7 @@ class InformationSchemaProviderTest {
 
   @Test
   void provide_returnsCorrectScannerForSchemata() {
-    Optional<SystemObjectScanner> scanner = provider.provide("schemata", "spark", "3.5.0");
+    Optional<SystemObjectScanner> scanner = provider.provide("schemata_scanner", "spark", "3.5.0");
 
     assertThat(scanner).isPresent();
     assertThat(scanner.get()).isInstanceOf(SchemataScanner.class);
@@ -133,7 +133,7 @@ class InformationSchemaProviderTest {
 
   @Test
   void provide_returnsEmptyForUnknownObject() {
-    Optional<SystemObjectScanner> scanner = provider.provide("nope", "spark", "3.5.0");
+    Optional<SystemObjectScanner> scanner = provider.provide("nope_scanner", "spark", "3.5.0");
 
     assertThat(scanner).isEmpty();
   }
@@ -145,7 +145,7 @@ class InformationSchemaProviderTest {
 
   @Test
   void provide_isCaseInsensitive() {
-    Optional<SystemObjectScanner> scanner = provider.provide("TaBlEs", "spark", "3.5.0");
+    Optional<SystemObjectScanner> scanner = provider.provide("TaBlEs_scanner", "spark", "3.5.0");
     assertThat(scanner).isPresent();
     assertThat(scanner.get()).isInstanceOf(TablesScanner.class);
   }
@@ -158,6 +158,6 @@ class InformationSchemaProviderTest {
     NameRef ref = NameRefUtil.name("information_schema", "tables");
 
     assertThat(provider.supports(ref, "duckdb")).isTrue();
-    assertThat(provider.provide("tables", "trino", "450")).isPresent();
+    assertThat(provider.provide("tables_scanner", "trino", "450")).isPresent();
   }
 }

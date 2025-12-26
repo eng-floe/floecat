@@ -19,33 +19,26 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
-import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
-import ai.floedb.floecat.service.repo.impl.CatalogRepository;
-import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
-import ai.floedb.floecat.service.repo.impl.TableRepository;
-import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.testsupport.FakeCatalogRepository;
+import ai.floedb.floecat.service.testsupport.FakeNamespaceRepository;
+import ai.floedb.floecat.service.testsupport.FakeTableRepository;
+import ai.floedb.floecat.service.testsupport.FakeViewRepository;
 import ai.floedb.floecat.service.testsupport.SecurityTestSupport.FakePrincipalProvider;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
-import ai.floedb.floecat.storage.InMemoryBlobStore;
-import ai.floedb.floecat.storage.InMemoryPointerStore;
-import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-class MetadataGraphTest {
+class UserGraphTest {
 
   FakeCatalogRepository catalogRepository;
   FakeNamespaceRepository namespaceRepository;
@@ -86,7 +79,7 @@ class MetadataGraphTest {
   @Test
   void schemaJsonHelperFallsBackToTable() {
     var ids = seedTable("base-schema", "{}");
-    TableNode node = graph.table(ids.tableId()).orElseThrow();
+    UserTableNode node = graph.table(ids.tableId()).orElseThrow();
 
     String schema = graph.schemaJsonFor("corr", node, null);
 
@@ -96,7 +89,7 @@ class MetadataGraphTest {
   @Test
   void schemaJsonHelperUsesSnapshotOverrides() {
     var ids = seedTable("snap-schema", "{\"fields\":[{\"name\":\"id\"}]}");
-    TableNode node = graph.table(ids.tableId()).orElseThrow();
+    UserTableNode node = graph.table(ids.tableId()).orElseThrow();
 
     Snapshot snapshot =
         Snapshot.newBuilder()
@@ -115,7 +108,7 @@ class MetadataGraphTest {
   @Test
   void schemaJsonHelperSupportsAsOf() {
     var ids = seedTable("asof", "{\"type\":\"struct\"}");
-    TableNode node = graph.table(ids.tableId()).orElseThrow();
+    UserTableNode node = graph.table(ids.tableId()).orElseThrow();
 
     Snapshot oldSnapshot =
         Snapshot.newBuilder()
@@ -143,7 +136,7 @@ class MetadataGraphTest {
   @Test
   void schemaJsonHelperThrowsWhenSnapshotMissing() {
     var ids = seedTable("missing", "{}");
-    TableNode node = graph.table(ids.tableId()).orElseThrow();
+    UserTableNode node = graph.table(ids.tableId()).orElseThrow();
     SnapshotRef ref = SnapshotRef.newBuilder().setSnapshotId(404L).build();
 
     assertThatThrownBy(() -> graph.schemaJsonFor("cid", node, ref))
@@ -173,15 +166,15 @@ class MetadataGraphTest {
 
     tableRepository.put(table, meta);
 
-    Optional<TableNode> first = graph.table(tableId);
-    Optional<TableNode> second = graph.table(tableId);
+    Optional<UserTableNode> first = graph.table(tableId);
+    Optional<UserTableNode> second = graph.table(tableId);
 
     assertThat(first).isPresent();
     assertThat(second).containsSame(first.get());
     assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(1);
 
     graph.invalidate(tableId);
-    Optional<TableNode> third = graph.table(tableId);
+    Optional<UserTableNode> third = graph.table(tableId);
     assertThat(third).isPresent();
     assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(2);
   }
@@ -491,96 +484,6 @@ class MetadataGraphTest {
         .isEqualTo(SpecialSnapshot.SS_CURRENT);
   }
 
-  private static MutationMeta mutationMeta(long version, Instant updatedAt) {
-    Timestamp ts =
-        Timestamp.newBuilder()
-            .setSeconds(updatedAt.getEpochSecond())
-            .setNanos(updatedAt.getNano())
-            .build();
-    return MutationMeta.newBuilder().setPointerVersion(version).setUpdatedAt(ts).build();
-  }
-
-  private static ResourceId rid(String account, String id, ResourceKind kind) {
-    return ResourceId.newBuilder().setAccountId(account).setId(id).setKind(kind).build();
-  }
-
-  private static Timestamp ts(Instant instant) {
-    return Timestamp.newBuilder()
-        .setSeconds(instant.getEpochSecond())
-        .setNanos(instant.getNano())
-        .build();
-  }
-
-  private TableIds seedTable(String name, String schemaJson) {
-    return seedTableForAccount("account", "cat", "ns", name, schemaJson);
-  }
-
-  private TableIds seedTableForAccount(
-      String accountId,
-      String catalogName,
-      String namespaceName,
-      String tableName,
-      String schemaJson) {
-    ResourceId catalogId = rid(accountId, catalogName, ResourceKind.RK_CATALOG);
-    ResourceId namespaceId = rid(accountId, namespaceName, ResourceKind.RK_NAMESPACE);
-    ResourceId tableId =
-        ResourceId.newBuilder()
-            .setAccountId(accountId)
-            .setId("table-" + tableName)
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    catalogRepository.put(
-        Catalog.newBuilder().setResourceId(catalogId).setDisplayName(catalogName).build(),
-        mutationMeta(1L, Instant.now()));
-    namespaceRepository.put(
-        Namespace.newBuilder()
-            .setResourceId(namespaceId)
-            .setCatalogId(catalogId)
-            .setDisplayName(namespaceName)
-            .build(),
-        mutationMeta(1L, Instant.now()));
-    tableRepository.put(
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setCatalogId(catalogId)
-            .setNamespaceId(namespaceId)
-            .setDisplayName(tableName)
-            .setSchemaJson(schemaJson)
-            .setUpstream(
-                UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).setUri("s3://x").build())
-            .build(),
-        mutationMeta(1L, Instant.now()));
-    return new TableIds(catalogId, namespaceId, tableId);
-  }
-
-  private ResourceId seedView(String name) {
-    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
-    ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);
-    ResourceId viewId = rid("account", "view-" + name, ResourceKind.RK_VIEW);
-
-    catalogRepository.put(
-        Catalog.newBuilder().setResourceId(catalogId).setDisplayName("cat").build(),
-        mutationMeta(1L, Instant.now()));
-    namespaceRepository.put(
-        Namespace.newBuilder()
-            .setResourceId(namespaceId)
-            .setCatalogId(catalogId)
-            .setDisplayName("ns")
-            .build(),
-        mutationMeta(1L, Instant.now()));
-    viewRepository.put(
-        View.newBuilder()
-            .setResourceId(viewId)
-            .setCatalogId(catalogId)
-            .setNamespaceId(namespaceId)
-            .setDisplayName(name)
-            .setSql("select 1")
-            .build(),
-        mutationMeta(1L, Instant.now()));
-
-    return viewId;
-  }
-
   @Test
   void resolveNamePrefersTablesWhenOnlyTableExists() {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("tbl").build();
@@ -685,6 +588,125 @@ class MetadataGraphTest {
 
     assertThatThrownBy(() -> graph.resolveName("corr", ref))
         .isInstanceOf(StatusRuntimeException.class);
+  }
+
+  @Test
+  void tryResolveTable_returnsTableIdWhenExists() {
+    var ids = seedTable("try_resolve_table", "{}");
+    NameRef ref =
+        NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("try_resolve_table").build();
+
+    Optional<ResourceId> result = graph.tryResolveTable("corr", ref);
+
+    assertThat(result).isPresent();
+    assertThat(result.get()).isEqualTo(ids.tableId());
+  }
+
+  @Test
+  void tryResolveTable_returnsEmptyWhenNotExists() {
+    NameRef ref =
+        NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("nonexistent_table").build();
+
+    Optional<ResourceId> result = graph.tryResolveTable("corr", ref);
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  void tryResolveView_returnsViewIdWhenExists() {
+    ResourceId viewId = seedView("try_resolve_view");
+    NameRef ref =
+        NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("try_resolve_view").build();
+
+    Optional<ResourceId> result = graph.tryResolveView("corr", ref);
+
+    assertThat(result).isPresent();
+    assertThat(result.get()).isEqualTo(viewId);
+  }
+
+  @Test
+  void tryResolveView_returnsEmptyWhenNotExists() {
+    NameRef ref =
+        NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("nonexistent_view").build();
+
+    Optional<ResourceId> result = graph.tryResolveView("corr", ref);
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  void tryResolveNamespace_returnsNamespaceIdWhenExists() {
+    ResourceId namespaceId = seedNamespace("try_resolve_ns");
+    NameRef ref = NameRef.newBuilder().setCatalog("cat").setName("try_resolve_ns").build();
+
+    Optional<ResourceId> result = graph.tryResolveNamespace("corr", ref);
+
+    assertThat(result).isPresent();
+    assertThat(result.get()).isEqualTo(namespaceId);
+  }
+
+  @Test
+  void tryResolveNamespace_returnsEmptyWhenNotExists() {
+    NameRef ref = NameRef.newBuilder().setCatalog("cat").setName("nonexistent_ns").build();
+
+    Optional<ResourceId> result = graph.tryResolveNamespace("corr", ref);
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  void tryResolveName_returnsTableIdWhenOnlyTableExists() {
+    var ids = seedTable("try_resolve_name_table", "{}");
+    NameRef ref =
+        NameRef.newBuilder()
+            .setCatalog("cat")
+            .addPath("ns")
+            .setName("try_resolve_name_table")
+            .build();
+
+    Optional<ResourceId> result = graph.tryResolveName("corr", ref);
+
+    assertThat(result).isPresent();
+    assertThat(result.get()).isEqualTo(ids.tableId());
+  }
+
+  @Test
+  void tryResolveName_returnsViewIdWhenOnlyViewExists() {
+    ResourceId viewId = seedView("try_resolve_name_view");
+    NameRef ref =
+        NameRef.newBuilder()
+            .setCatalog("cat")
+            .addPath("ns")
+            .setName("try_resolve_name_view")
+            .build();
+
+    Optional<ResourceId> result = graph.tryResolveName("corr", ref);
+
+    assertThat(result).isPresent();
+    assertThat(result.get()).isEqualTo(viewId);
+  }
+
+  @Test
+  void tryResolveName_returnsEmptyWhenAmbiguous() {
+    NameRef ref =
+        NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("ambiguous_obj").build();
+    // Create both table and view with same name
+    seedTable("ambiguous_obj", "{}");
+    seedView("ambiguous_obj");
+
+    Optional<ResourceId> result = graph.tryResolveName("corr", ref);
+
+    assertThat(result).isEmpty(); // Should return empty for ambiguous names
+  }
+
+  @Test
+  void tryResolveName_returnsEmptyWhenNotExists() {
+    NameRef ref =
+        NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("nonexistent_obj").build();
+
+    Optional<ResourceId> result = graph.tryResolveName("corr", ref);
+
+    assertThat(result).isEmpty();
   }
 
   @Test
@@ -843,296 +865,116 @@ class MetadataGraphTest {
   }
 
   // ----------------------------------------------------------------------
-  // Test doubles
+  // Test Helpers
   // ----------------------------------------------------------------------
 
-  static final class FakeCatalogRepository extends CatalogRepository {
-    private final Map<ResourceId, Catalog> entries = new HashMap<>();
-    private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
-    private final Map<ResourceId, Integer> gets = new HashMap<>();
-
-    FakeCatalogRepository() {
-      super(new InMemoryPointerStore(), new InMemoryBlobStore());
-    }
-
-    void put(Catalog catalog, MutationMeta meta) {
-      entries.put(catalog.getResourceId(), catalog);
-      metas.put(catalog.getResourceId(), meta);
-    }
-
-    void putMeta(ResourceId id, MutationMeta meta) {
-      metas.put(id, meta);
-    }
-
-    @Override
-    public Optional<Catalog> getById(ResourceId id) {
-      gets.merge(id, 1, Integer::sum);
-      return Optional.ofNullable(entries.get(id));
-    }
-
-    @Override
-    public Optional<Catalog> getByName(String accountId, String displayName) {
-      return entries.values().stream()
-          .filter(
-              c ->
-                  accountId.equals(c.getResourceId().getAccountId())
-                      && displayName.equals(c.getDisplayName()))
-          .findFirst();
-    }
-
-    @Override
-    public MutationMeta metaForSafe(ResourceId id) {
-      MutationMeta meta = metas.get(id);
-      if (meta == null) {
-        throw new StorageNotFoundException("missing catalog meta");
-      }
-      return meta;
-    }
-
-    int getByIdCount(ResourceId id) {
-      return gets.getOrDefault(id, 0);
-    }
+  private static MutationMeta mutationMeta(long version, Instant updatedAt) {
+    Timestamp ts =
+        Timestamp.newBuilder()
+            .setSeconds(updatedAt.getEpochSecond())
+            .setNanos(updatedAt.getNano())
+            .build();
+    return MutationMeta.newBuilder().setPointerVersion(version).setUpdatedAt(ts).build();
   }
 
-  static final class FakeNamespaceRepository extends NamespaceRepository {
-    private final Map<ResourceId, Namespace> entries = new HashMap<>();
-    private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
+  private static ResourceId rid(String account, String id, ResourceKind kind) {
+    return ResourceId.newBuilder().setAccountId(account).setId(id).setKind(kind).build();
+  }
 
-    FakeNamespaceRepository() {
-      super(new InMemoryPointerStore(), new InMemoryBlobStore());
-    }
+  private static Timestamp ts(Instant instant) {
+    return Timestamp.newBuilder()
+        .setSeconds(instant.getEpochSecond())
+        .setNanos(instant.getNano())
+        .build();
+  }
 
-    void put(Namespace namespace, MutationMeta meta) {
-      entries.put(namespace.getResourceId(), namespace);
-      metas.put(namespace.getResourceId(), meta);
-    }
+  private TableIds seedTable(String name, String schemaJson) {
+    return seedTableForAccount("account", "cat", "ns", name, schemaJson);
+  }
 
-    @Override
-    public Optional<Namespace> getById(ResourceId id) {
-      return Optional.ofNullable(entries.get(id));
-    }
+  private TableIds seedTableForAccount(
+      String accountId,
+      String catalogName,
+      String namespaceName,
+      String tableName,
+      String schemaJson) {
+    ResourceId catalogId = rid(accountId, catalogName, ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid(accountId, namespaceName, ResourceKind.RK_NAMESPACE);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId("table-" + tableName)
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    catalogRepository.put(
+        Catalog.newBuilder().setResourceId(catalogId).setDisplayName(catalogName).build(),
+        mutationMeta(1L, Instant.now()));
+    namespaceRepository.put(
+        Namespace.newBuilder()
+            .setResourceId(namespaceId)
+            .setCatalogId(catalogId)
+            .setDisplayName(namespaceName)
+            .build(),
+        mutationMeta(1L, Instant.now()));
+    tableRepository.put(
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName(tableName)
+            .setSchemaJson(schemaJson)
+            .setUpstream(
+                UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).setUri("s3://x").build())
+            .build(),
+        mutationMeta(1L, Instant.now()));
+    return new TableIds(catalogId, namespaceId, tableId);
+  }
 
-    @Override
-    public Optional<Namespace> getByPath(String accountId, String catalogId, List<String> path) {
-      return entries.values().stream()
-          .filter(
-              ns ->
-                  accountId.equals(ns.getResourceId().getAccountId())
-                      && catalogId.equals(ns.getCatalogId().getId())
-                      && matchesPath(ns, path))
-          .findFirst();
-    }
+  private ResourceId seedView(String name) {
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);
+    ResourceId viewId = rid("account", "view-" + name, ResourceKind.RK_VIEW);
 
-    @Override
-    public MutationMeta metaForSafe(ResourceId id) {
-      MutationMeta meta = metas.get(id);
-      if (meta == null) {
-        throw new StorageNotFoundException("missing namespace meta");
-      }
-      return meta;
-    }
+    catalogRepository.put(
+        Catalog.newBuilder().setResourceId(catalogId).setDisplayName("cat").build(),
+        mutationMeta(1L, Instant.now()));
+    namespaceRepository.put(
+        Namespace.newBuilder()
+            .setResourceId(namespaceId)
+            .setCatalogId(catalogId)
+            .setDisplayName("ns")
+            .build(),
+        mutationMeta(1L, Instant.now()));
+    viewRepository.put(
+        View.newBuilder()
+            .setResourceId(viewId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName(name)
+            .setSql("select 1")
+            .build(),
+        mutationMeta(1L, Instant.now()));
 
-    private boolean matchesPath(Namespace namespace, List<String> path) {
-      if (path.isEmpty()) {
-        return namespace.getDisplayName().isBlank() && namespace.getParentsCount() == 0;
-      }
-      List<String> parents = path.subList(0, path.size() - 1);
-      String name = path.get(path.size() - 1);
-      return parents.equals(namespace.getParentsList()) && name.equals(namespace.getDisplayName());
-    }
+    return viewId;
+  }
+
+  private ResourceId seedNamespace(String name) {
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid("account", "ns-" + name, ResourceKind.RK_NAMESPACE);
+
+    catalogRepository.put(
+        Catalog.newBuilder().setResourceId(catalogId).setDisplayName("cat").build(),
+        mutationMeta(1L, Instant.now()));
+    namespaceRepository.put(
+        Namespace.newBuilder()
+            .setResourceId(namespaceId)
+            .setCatalogId(catalogId)
+            .setDisplayName(name)
+            .build(),
+        mutationMeta(1L, Instant.now()));
+
+    return namespaceId;
   }
 
   record TableIds(ResourceId catalogId, ResourceId namespaceId, ResourceId tableId) {}
-
-  static final class FakeTableRepository extends TableRepository {
-    private final Map<ResourceId, Table> entries = new HashMap<>();
-    private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
-    private final Map<ResourceId, Integer> gets = new HashMap<>();
-
-    FakeTableRepository() {
-      super(new InMemoryPointerStore(), new InMemoryBlobStore());
-    }
-
-    void put(Table table, MutationMeta meta) {
-      entries.put(table.getResourceId(), table);
-      metas.put(table.getResourceId(), meta);
-    }
-
-    void putMeta(ResourceId id, MutationMeta meta) {
-      metas.put(id, meta);
-    }
-
-    @Override
-    public Optional<Table> getById(ResourceId id) {
-      gets.merge(id, 1, Integer::sum);
-      return Optional.ofNullable(entries.get(id));
-    }
-
-    @Override
-    public Optional<Table> getByName(
-        String accountId, String catalogId, String namespaceId, String displayName) {
-      return entries.values().stream()
-          .filter(
-              t ->
-                  accountId.equals(t.getResourceId().getAccountId())
-                      && catalogId.equals(t.getCatalogId().getId())
-                      && namespaceId.equals(t.getNamespaceId().getId())
-                      && displayName.equals(t.getDisplayName()))
-          .findFirst();
-    }
-
-    @Override
-    public List<Table> list(
-        String accountId,
-        String catalogId,
-        String namespaceId,
-        int limit,
-        String pageToken,
-        StringBuilder nextOut) {
-      List<Table> sorted = matchingTables(accountId, catalogId, namespaceId);
-      int start = startIndexForToken(sorted, pageToken);
-      int want = Math.max(1, limit);
-      int end = Math.min(sorted.size(), start + want);
-      List<Table> slice = new ArrayList<>(sorted.subList(start, end));
-      nextOut.setLength(0);
-      if (end < sorted.size()) {
-        nextOut.append(sorted.get(end - 1).getDisplayName());
-      }
-      return slice;
-    }
-
-    @Override
-    public int count(String accountId, String catalogId, String namespaceId) {
-      return matchingTables(accountId, catalogId, namespaceId).size();
-    }
-
-    @Override
-    public MutationMeta metaForSafe(ResourceId id) {
-      MutationMeta meta = metas.get(id);
-      if (meta == null) {
-        throw new StorageNotFoundException("missing table meta");
-      }
-      return meta;
-    }
-
-    int getByIdCount(ResourceId id) {
-      return gets.getOrDefault(id, 0);
-    }
-
-    private List<Table> matchingTables(String accountId, String catalogId, String namespaceId) {
-      return entries.values().stream()
-          .filter(
-              t ->
-                  accountId.equals(t.getResourceId().getAccountId())
-                      && catalogId.equals(t.getCatalogId().getId())
-                      && namespaceId.equals(t.getNamespaceId().getId()))
-          .sorted(Comparator.comparing(Table::getDisplayName))
-          .toList();
-    }
-
-    private int startIndexForToken(List<Table> sorted, String token) {
-      if (token == null || token.isBlank()) {
-        return 0;
-      }
-      for (int i = 0; i < sorted.size(); i++) {
-        if (sorted.get(i).getDisplayName().equals(token)) {
-          return i + 1;
-        }
-      }
-      throw new IllegalArgumentException("bad token");
-    }
-  }
-
-  static final class FakeViewRepository extends ViewRepository {
-    private final Map<ResourceId, View> entries = new HashMap<>();
-    private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
-
-    FakeViewRepository() {
-      super(new InMemoryPointerStore(), new InMemoryBlobStore());
-    }
-
-    void put(View view, MutationMeta meta) {
-      entries.put(view.getResourceId(), view);
-      metas.put(view.getResourceId(), meta);
-    }
-
-    void putMeta(ResourceId id, MutationMeta meta) {
-      metas.put(id, meta);
-    }
-
-    @Override
-    public Optional<View> getById(ResourceId id) {
-      return Optional.ofNullable(entries.get(id));
-    }
-
-    @Override
-    public Optional<View> getByName(
-        String accountId, String catalogId, String namespaceId, String displayName) {
-      return entries.values().stream()
-          .filter(
-              v ->
-                  accountId.equals(v.getResourceId().getAccountId())
-                      && catalogId.equals(v.getCatalogId().getId())
-                      && namespaceId.equals(v.getNamespaceId().getId())
-                      && displayName.equals(v.getDisplayName()))
-          .findFirst();
-    }
-
-    @Override
-    public List<View> list(
-        String accountId,
-        String catalogId,
-        String namespaceId,
-        int limit,
-        String pageToken,
-        StringBuilder nextOut) {
-      List<View> sorted = matchingViews(accountId, catalogId, namespaceId);
-      int start = startIndexForToken(sorted, pageToken);
-      int want = Math.max(1, limit);
-      int end = Math.min(sorted.size(), start + want);
-      List<View> slice = new ArrayList<>(sorted.subList(start, end));
-      nextOut.setLength(0);
-      if (end < sorted.size()) {
-        nextOut.append(sorted.get(end - 1).getDisplayName());
-      }
-      return slice;
-    }
-
-    @Override
-    public int count(String accountId, String catalogId, String namespaceId) {
-      return matchingViews(accountId, catalogId, namespaceId).size();
-    }
-
-    @Override
-    public MutationMeta metaForSafe(ResourceId id) {
-      MutationMeta meta = metas.get(id);
-      if (meta == null) {
-        throw new StorageNotFoundException("missing view meta");
-      }
-      return meta;
-    }
-
-    private List<View> matchingViews(String accountId, String catalogId, String namespaceId) {
-      return entries.values().stream()
-          .filter(
-              v ->
-                  accountId.equals(v.getResourceId().getAccountId())
-                      && catalogId.equals(v.getCatalogId().getId())
-                      && namespaceId.equals(v.getNamespaceId().getId()))
-          .sorted(Comparator.comparing(View::getDisplayName))
-          .toList();
-    }
-
-    private int startIndexForToken(List<View> sorted, String token) {
-      if (token == null || token.isBlank()) {
-        return 0;
-      }
-      for (int i = 0; i < sorted.size(); i++) {
-        if (sorted.get(i).getDisplayName().equals(token)) {
-          return i + 1;
-        }
-      }
-      throw new IllegalArgumentException("bad token");
-    }
-  }
 }

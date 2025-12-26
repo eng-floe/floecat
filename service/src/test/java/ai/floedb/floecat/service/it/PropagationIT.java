@@ -113,7 +113,17 @@ class PropagationIT {
     String queryId = "query-" + UUID.randomUUID();
     var seededPc = pc().toBuilder().setQueryId(queryId).build();
 
-    queryStore.put(QueryContext.newActive(queryId, seededPc, null, null, null, null, 60_000L, 1L));
+    queryStore.put(
+        QueryContext.newActive(
+            queryId,
+            seededPc,
+            null,
+            null,
+            null,
+            null,
+            60_000L,
+            1L,
+            ResourceId.newBuilder().setId("cat-it").build()));
 
     String corr = "it-corr-" + UUID.randomUUID();
 

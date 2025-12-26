@@ -21,7 +21,6 @@ import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificMatcher;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
-import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
@@ -48,6 +47,8 @@ import java.util.concurrent.ConcurrentMap;
  */
 public class SystemNodeRegistry {
 
+  public static final String SYSTEM_ACCOUNT = "_system";
+  public static final String FLOECAT_DEFAULT_CATALOG = "floecat_internal";
   private final SystemDefinitionRegistry definitionRegistry;
 
   /*
@@ -76,11 +77,14 @@ public class SystemNodeRegistry {
           List.of(),
           EMPTY_CATALOG);
 
+  public List<String> engineKinds() {
+    return definitionRegistry.engineKinds();
+  }
+
   public BuiltinNodes nodesFor(String engineKind, String engineVersion) {
-    if (engineKind == null || engineKind.isBlank()) return EMPTY_NODES;
-    if (engineVersion == null || engineVersion.isBlank()) return EMPTY_NODES;
-    String normalizedKind = engineKind.toLowerCase(Locale.ROOT);
-    VersionKey key = new VersionKey(normalizedKind, engineVersion);
+    String normalizedKind = engineKind == null ? "" : engineKind.toLowerCase(Locale.ROOT);
+    String normalizedVersion = engineVersion == null ? "" : engineVersion;
+    VersionKey key = new VersionKey(normalizedKind, normalizedVersion);
     return cache.computeIfAbsent(key, k -> buildNodes(k.engineKind(), k.engineVersion()));
   }
 
@@ -380,10 +384,12 @@ public class SystemNodeRegistry {
   // =======================================================================
 
   public static ResourceId resourceId(String engineKind, ResourceKind kind, NameRef name) {
+    String engine =
+        (engineKind == null || engineKind.isBlank()) ? FLOECAT_DEFAULT_CATALOG : engineKind;
     return ResourceId.newBuilder()
-        .setAccountId("_system")
+        .setAccountId(SYSTEM_ACCOUNT)
         .setKind(kind)
-        .setId(engineKind + ":" + safeName(name))
+        .setId(engine + ":" + safeName(name))
         .build();
   }
 

@@ -1,6 +1,7 @@
 package ai.floedb.floecat.systemcatalog.provider;
 
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
+import java.util.List;
 
 /**
  * Provides system objects metadata catalogs per engine.
@@ -12,4 +13,6 @@ public interface SystemCatalogProvider {
 
   /** Loads the catalog for the given engine kind. */
   SystemEngineCatalog load(String engineKind);
+
+  List<String> engineKinds();
 }

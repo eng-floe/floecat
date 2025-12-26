@@ -33,7 +33,17 @@ class QueryContextTest {
   void newActive_valid() {
     ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
     var pc = pc(accountId, "alice", "query-123");
-    var ctx = QueryContext.newActive("query-123", pc, null, null, null, null, 1_000, 1);
+    var ctx =
+        QueryContext.newActive(
+            "query-123",
+            pc,
+            null,
+            null,
+            null,
+            null,
+            1_000,
+            1,
+            ResourceId.newBuilder().setId("cat-it").build());
 
     assertEquals("query-123", ctx.getQueryId());
     assertEquals(pc, ctx.getPrincipal());
@@ -63,7 +73,17 @@ class QueryContextTest {
   void extendLease_isMonotonic() {
     ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
     var pc = pc(accountId, "alice", "p1");
-    var ctx = QueryContext.newActive("p1", pc, null, null, null, null, 200, 1);
+    var ctx =
+        QueryContext.newActive(
+            "p1",
+            pc,
+            null,
+            null,
+            null,
+            null,
+            200,
+            1,
+            ResourceId.newBuilder().setId("cat-it").build());
     long originalExp = ctx.getExpiresAtMs();
 
     var same = ctx.extendLease(originalExp - 50, 2);
@@ -79,7 +99,17 @@ class QueryContextTest {
   void end_commit_setsStateAndGrace() {
     ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
     var pc = pc(accountId, "alice", "p1");
-    var ctx = QueryContext.newActive("p1", pc, null, null, null, null, 100, 1);
+    var ctx =
+        QueryContext.newActive(
+            "p1",
+            pc,
+            null,
+            null,
+            null,
+            null,
+            100,
+            1,
+            ResourceId.newBuilder().setId("cat-it").build());
     long targetGrace = clock.millis() + 500;
     var ended = ctx.end(true, targetGrace, 2);
 
@@ -92,7 +122,17 @@ class QueryContextTest {
   void asExpired_onlyIfActive() {
     ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
     var pc = pc(accountId, "alice", "p1");
-    var ctx = QueryContext.newActive("p1", pc, null, null, null, null, 100, 1);
+    var ctx =
+        QueryContext.newActive(
+            "p1",
+            pc,
+            null,
+            null,
+            null,
+            null,
+            100,
+            1,
+            ResourceId.newBuilder().setId("cat-it").build());
 
     var expired = ctx.asExpired(2);
     assertEquals(QueryContext.State.EXPIRED, expired.getState());
@@ -113,7 +153,16 @@ class QueryContextTest {
             .addPins(SnapshotPin.newBuilder().setTableId(tableId).setSnapshotId(77).build())
             .build();
     var ctx =
-        QueryContext.newActive("p-lookup", pc, null, snapshots.toByteArray(), null, null, 500, 1);
+        QueryContext.newActive(
+            "p-lookup",
+            pc,
+            null,
+            snapshots.toByteArray(),
+            null,
+            null,
+            500,
+            1,
+            ResourceId.newBuilder().setId("cat-it").build());
 
     var pin = ctx.requireSnapshotPin(tableId, "corr-123");
     assertEquals(77, pin.getSnapshotId());
@@ -134,7 +183,16 @@ class QueryContextTest {
             .build();
 
     var ctx =
-        QueryContext.newActive("p-missing", pc, null, snapshots.toByteArray(), null, null, 500, 1);
+        QueryContext.newActive(
+            "p-missing",
+            pc,
+            null,
+            snapshots.toByteArray(),
+            null,
+            null,
+            500,
+            1,
+            ResourceId.newBuilder().setId("cat-it").build());
 
     StatusRuntimeException err =
         assertThrows(

@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package ai.floedb.floecat.common;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.common.rpc";
+option java_outer_classname = "PredicateProto";
+
+/**
+ * Logical predicate operators.
+ *
+ * Semantics:
+ *   - These operators express logical intent.
+ *   - Evaluation semantics depend on the consumer:
+ *       * File-level pruning (min/max, conservative)
+ *       * Row-level filtering (exact)
+ */
+enum Operator {
+  OP_EQ          = 0;
+  OP_NEQ         = 1;
+  OP_LT          = 2;
+  OP_LTE         = 3;
+  OP_GT          = 4;
+  OP_GTE         = 5;
+  OP_BETWEEN     = 6;
+  OP_IN          = 7;
+  OP_IS_NULL     = 8;
+  OP_IS_NOT_NULL = 9;
+}
+
+/**
+ * A logical predicate applied to a column.
+ *
+ * IMPORTANT:
+ *   - Column names are logical (not physical).
+ *   - Values are string-encoded and interpreted by the evaluator.
+ */
+message Predicate {
+  string column = 1;
+  Operator op = 2;
+  repeated string values = 3;
+}

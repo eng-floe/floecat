@@ -12,6 +12,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
@@ -72,7 +73,7 @@ class TablePlanServiceTest {
 
     TablePlanService.PlanHandle handle =
         service.startPlan(
-            "cat",
+            ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
             tableId,
             List.of("id", "total"),
             null,
@@ -119,7 +120,17 @@ class TablePlanServiceTest {
                 Map.of("type", "is-null", "term", "DeletedFlag")));
 
     service.startPlan(
-        "cat", tableId, List.of("id"), null, null, 3L, null, filter, false, true, 10L);
+        ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
+        tableId,
+        List.of("id"),
+        null,
+        null,
+        3L,
+        null,
+        filter,
+        false,
+        true,
+        10L);
 
     ScanFile data =
         ScanFile.newBuilder()
@@ -169,7 +180,18 @@ class TablePlanServiceTest {
     when(queryStub.beginQuery(any()))
         .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    service.startPlan("cat", tableId, null, null, null, null, null, null, true, false, null);
+    service.startPlan(
+        ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
+        tableId,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        true,
+        false,
+        null);
 
     ScanBundle bundle = ScanBundle.newBuilder().build();
     when(scanStub.fetchScanBundle(any()))
@@ -187,7 +209,18 @@ class TablePlanServiceTest {
     when(queryStub.beginQuery(any()))
         .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    service.startPlan("cat", tableId, null, null, null, null, null, null, true, false, null);
+    service.startPlan(
+        ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
+        tableId,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        true,
+        false,
+        null);
 
     service.cancelPlan("plan-4");
 
@@ -213,7 +246,17 @@ class TablePlanServiceTest {
         IllegalArgumentException.class,
         () ->
             service.startPlan(
-                "cat", tableId, null, null, null, null, null, filter, false, false, null));
+                ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
+                tableId,
+                null,
+                null,
+                null,
+                null,
+                null,
+                filter,
+                false,
+                false,
+                null));
     verify(queryStub, times(0)).beginQuery(any());
   }
 }

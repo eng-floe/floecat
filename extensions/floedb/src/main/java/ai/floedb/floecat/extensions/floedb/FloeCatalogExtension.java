@@ -1,14 +1,17 @@
 package ai.floedb.floecat.extensions.floedb;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.*;
+
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.extensions.floedb.proto.*;
+import ai.floedb.floecat.extensions.floedb.utils.PayloadDescriptor;
 import ai.floedb.floecat.query.rpc.*;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
-import com.google.protobuf.ByteString;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import com.google.protobuf.ExtensionRegistry;
 import com.google.protobuf.TextFormat;
 import java.io.InputStream;
@@ -149,28 +152,27 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
     // Extract Floe extensions (proto2 extensions registered in ExtensionRegistry)
     // These are the proper way to handle structured Floe-specific data
     if (es.hasExtension(EngineFloe.floeFunction)) {
-      FloeFunctionSpecific spec = es.getExtension(EngineFloe.floeFunction);
-      return rewriteExtension(es, spec, "floe.function+proto");
+      return rewriteExtension(es, es.getExtension(EngineFloe.floeFunction), FUNCTION);
     }
+
     if (es.hasExtension(EngineFloe.floeOperator)) {
-      FloeOperatorSpecific spec = es.getExtension(EngineFloe.floeOperator);
-      return rewriteExtension(es, spec, "floe.operator+proto");
+      return rewriteExtension(es, es.getExtension(EngineFloe.floeOperator), OPERATOR);
     }
-    if (es.hasExtension(EngineFloe.floeCast)) {
-      FloeCastSpecific spec = es.getExtension(EngineFloe.floeCast);
-      return rewriteExtension(es, spec, "floe.cast+proto");
-    }
+
     if (es.hasExtension(EngineFloe.floeType)) {
-      FloeTypeSpecific spec = es.getExtension(EngineFloe.floeType);
-      return rewriteExtension(es, spec, "floe.type+proto");
+      return rewriteExtension(es, es.getExtension(EngineFloe.floeType), TYPE);
     }
+
     if (es.hasExtension(EngineFloe.floeAggregate)) {
-      FloeAggregateSpecific spec = es.getExtension(EngineFloe.floeAggregate);
-      return rewriteExtension(es, spec, "floe.aggregate+proto");
+      return rewriteExtension(es, es.getExtension(EngineFloe.floeAggregate), AGGREGATE);
     }
+
     if (es.hasExtension(EngineFloe.floeCollation)) {
-      FloeCollationSpecific spec = es.getExtension(EngineFloe.floeCollation);
-      return rewriteExtension(es, spec, "floe.collation+proto");
+      return rewriteExtension(es, es.getExtension(EngineFloe.floeCollation), COLLATION);
+    }
+
+    if (es.hasExtension(EngineFloe.floeCast)) {
+      return rewriteExtension(es, es.getExtension(EngineFloe.floeCast), CAST);
     }
 
     // No Floe extensions found - return unmodified
@@ -179,19 +181,17 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
 
   /** Rewrite a proto2 extension into opaque payload bytes. */
   protected <T extends com.google.protobuf.Message> EngineSpecific rewriteExtension(
-      EngineSpecific es, T extension, String type) {
+      EngineSpecific es, T extension, PayloadDescriptor<T> descriptor) {
+
     try {
-      // Canonical binary serialization
-      ByteString payload = extension.toByteString();
-
       return es.toBuilder()
-          .setPayloadType(type)
-          .setPayload(payload)
-          .clearEngineKind() // engineKind comes from plugin
+          .setPayloadType(descriptor.type())
+          .setPayload(extension.toByteString())
+          .clearEngineKind()
           .build();
-
     } catch (Exception e) {
-      throw new IllegalStateException("Failed to rewrite extension payload type=" + type, e);
+      throw new IllegalStateException(
+          "Failed to rewrite extension payload type=" + descriptor.type(), e);
     }
   }
 
@@ -202,12 +202,24 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
 
   @Override
   public boolean supportsEngine(String engineKind) {
-    return engineKind.equalsIgnoreCase(engineKind());
+    return engineKind != null && engineKind.equalsIgnoreCase(engineKind());
   }
 
   @Override
   public boolean supports(NameRef name, String engineKind) {
-    return supportsEngine(engineKind); // TODO: Validate the name is in the definitions
+    if (!supportsEngine(engineKind) || name == null) {
+      return false;
+    }
+
+    String requested = NameRefUtil.canonical(name);
+    if (requested.isEmpty()) {
+      return false;
+    }
+
+    return definitions().stream()
+        .map(SystemObjectDef::name)
+        .map(NameRefUtil::canonical)
+        .anyMatch(requested::equals);
   }
 
   @Override

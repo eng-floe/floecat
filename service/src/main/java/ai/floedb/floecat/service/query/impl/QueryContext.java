@@ -72,6 +72,7 @@ public final class QueryContext {
   private final long expiresAtMs;
   private final State state;
   private final long version;
+  private final ResourceId queryDefaultCatalogId;
 
   private static final Clock clock = Clock.systemUTC();
 
@@ -101,6 +102,8 @@ public final class QueryContext {
 
     this.state = Objects.requireNonNull(b.state, "state");
     this.version = Math.max(0, b.version);
+    this.queryDefaultCatalogId =
+        Objects.requireNonNull(b.queryDefaultCatalogId, "queryDefaultCatalogId");
   }
 
   /**
@@ -117,7 +120,8 @@ public final class QueryContext {
       byte[] obligations,
       byte[] asOfDefault,
       long ttlMs,
-      long version) {
+      long version,
+      ResourceId queryDefaultCatalogId) {
 
     long now = clock.millis();
 
@@ -132,6 +136,7 @@ public final class QueryContext {
         .expiresAtMs(now + Math.max(1, ttlMs))
         .state(State.ACTIVE)
         .version(version)
+        .queryDefaultCatalogId(queryDefaultCatalogId)
         .build();
   }
 
@@ -154,7 +159,8 @@ public final class QueryContext {
         .createdAtMs(createdAtMs)
         .expiresAtMs(expiresAtMs)
         .state(state)
-        .version(version);
+        .version(version)
+        .queryDefaultCatalogId(queryDefaultCatalogId);
   }
 
   public static final class Builder {
@@ -168,6 +174,7 @@ public final class QueryContext {
     private long expiresAtMs;
     private State state = State.ACTIVE;
     private long version;
+    private ResourceId queryDefaultCatalogId;
 
     private Builder() {}
 
@@ -219,6 +226,11 @@ public final class QueryContext {
 
     public Builder version(long v) {
       this.version = v;
+      return this;
+    }
+
+    public Builder queryDefaultCatalogId(ResourceId v) {
+      this.queryDefaultCatalogId = v;
       return this;
     }
 
@@ -379,6 +391,10 @@ public final class QueryContext {
 
   public long getVersion() {
     return version;
+  }
+
+  public ResourceId getQueryDefaultCatalogId() {
+    return queryDefaultCatalogId;
   }
 
   // ----------------------------------------------------------------------

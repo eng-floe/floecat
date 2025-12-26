@@ -16,13 +16,13 @@ public final class NameRefUtil {
   public static String canonical(NameRef ref) {
     if (ref == null) return "";
 
-    String name = ref.getName().trim();
+    String name = ref.getName().trim().toLowerCase();
     var path = ref.getPathList();
 
     if (path.isEmpty()) {
-      return name.toLowerCase();
+      return name;
     }
-    return (String.join(".", path).toLowerCase() + "." + name.toLowerCase());
+    return (String.join(".", path).toLowerCase() + "." + name);
   }
 
   public static NameRef fromCanonical(String canonical) {
@@ -35,6 +35,17 @@ public final class NameRefUtil {
       b.addPath(parts[i]);
     }
     return b.build();
+  }
+
+  /** Returns the canonical namespace part (path only), or empty if none */
+  public static String namespaceCanonical(NameRef ref) {
+    if (ref == null || ref.getPathCount() == 0) return "";
+    return String.join(".", ref.getPathList()).toLowerCase();
+  }
+
+  public static String namespaceFromCanonical(String canonical) {
+    int idx = canonical.lastIndexOf('.');
+    return idx < 0 ? "" : canonical.substring(0, idx);
   }
 
   /**

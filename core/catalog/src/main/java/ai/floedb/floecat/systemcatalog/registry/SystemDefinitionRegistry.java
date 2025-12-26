@@ -1,6 +1,7 @@
 package ai.floedb.floecat.systemcatalog.registry;
 
 import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -20,9 +21,6 @@ public final class SystemDefinitionRegistry {
   }
 
   public SystemEngineCatalog catalog(String engineKind) {
-    if (engineKind == null || engineKind.isBlank()) {
-      throw new IllegalArgumentException("engine_kind must be provided");
-    }
     String key = engineKind.toLowerCase(Locale.ROOT);
     return cache.computeIfAbsent(key, provider::load);
   }
@@ -30,5 +28,9 @@ public final class SystemDefinitionRegistry {
   /** Test-only: clears catalog cache. */
   public void clear() {
     cache.clear();
+  }
+
+  public List<String> engineKinds() {
+    return provider.engineKinds();
   }
 }
