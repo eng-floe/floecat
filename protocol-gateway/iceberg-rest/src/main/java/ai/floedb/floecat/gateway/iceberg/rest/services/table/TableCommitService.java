@@ -101,10 +101,8 @@ public class TableCommitService {
         containsSnapshotUpdates(req)
             ? initialResponse
             : preferStageMetadata(initialResponse, stageMaterialization);
-    stageAwareResponse =
-        normalizeMetadataLocation(tableSupport, committedTable, stageAwareResponse);
-    stageAwareResponse =
-        preferRequestedMetadata(tableSupport, stageAwareResponse, requestedMetadataOverride);
+    stageAwareResponse = normalizeMetadataLocation(stageAwareResponse);
+    stageAwareResponse = preferRequestedMetadata(stageAwareResponse, requestedMetadataOverride);
     stageAwareResponse = preferRequestedSequence(stageAwareResponse, req);
     stageAwareResponse = preferSnapshotSequence(stageAwareResponse, req);
     stageAwareResponse = mergeSnapshotUpdates(stageAwareResponse, req);
@@ -173,14 +171,13 @@ public class TableCommitService {
       if (finalMetadata != null) {
         finalMetadata = finalMetadata.withMetadataLocation(preferredLocation);
       }
-      finalResponse = new CommitTableResponseDto(preferredLocation, finalMetadata);
+      finalResponse = commitResponse(finalMetadata);
     } else {
       if (!containsSnapshotUpdates(req)) {
         finalResponse = preferStageMetadata(finalResponse, stageMaterialization);
       }
-      finalResponse = normalizeMetadataLocation(tableSupport, committedTable, finalResponse);
-      finalResponse =
-          preferRequestedMetadata(tableSupport, finalResponse, requestedMetadataOverride);
+      finalResponse = normalizeMetadataLocation(finalResponse);
+      finalResponse = preferRequestedMetadata(finalResponse, requestedMetadataOverride);
     }
 
     Response.ResponseBuilder builder = Response.ok(finalResponse);
@@ -309,10 +306,7 @@ public class TableCommitService {
       TableRequests.Commit req,
       String idempotencyKey) {
     String metadataLocation = responseDto == null ? null : responseDto.metadataLocation();
-    if (metadataLocation != null && !metadataLocation.isBlank()) {
-      metadataLocation = tableSupport.stripMetadataMirrorPrefix(metadataLocation);
-    }
-    if (!isExternalLocationTable(committedTable, metadataLocation, tableSupport)) {
+    if (!isExternalLocationTable(committedTable, metadataLocation)) {
       return;
     }
     if (metadataLocation == null || metadataLocation.isBlank()) {
@@ -322,9 +316,6 @@ public class TableCommitService {
         committedTable == null
             ? null
             : MetadataLocationUtil.metadataLocation(committedTable.getPropertiesMap());
-    if (previousLocation != null && !previousLocation.isBlank()) {
-      previousLocation = tableSupport.stripMetadataMirrorPrefix(previousLocation);
-    }
     if (previousLocation != null && metadataLocation.equals(previousLocation)) {
       return;
     }
@@ -368,9 +359,6 @@ public class TableCommitService {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return;
     }
-    if (tableSupport != null) {
-      metadataLocation = tableSupport.stripMetadataMirrorPrefix(metadataLocation);
-    }
     Map<String, String> ioProps =
         committedTable == null
             ? Map.of()
@@ -396,16 +384,12 @@ public class TableCommitService {
     }
   }
 
-  private boolean isExternalLocationTable(
-      Table table, String metadataLocation, TableGatewaySupport tableSupport) {
+  private boolean isExternalLocationTable(Table table, String metadataLocation) {
     if (table == null) {
       return false;
     }
     if (!table.hasUpstream()) {
-      if (metadataLocation == null || metadataLocation.isBlank()) {
-        return false;
-      }
-      return tableSupport == null || !tableSupport.isMirrorMetadataLocation(metadataLocation);
+      return metadataLocation != null && !metadataLocation.isBlank();
     }
     String uri = table.getUpstream().getUri();
     return uri != null && !uri.isBlank();
@@ -438,8 +422,7 @@ public class TableCommitService {
       if (!responseIncomplete) {
         return response;
       }
-      String responseLocation = response == null ? null : response.metadataLocation();
-      return new CommitTableResponseDto(responseLocation, stagedMetadata);
+      return commitResponse(stagedMetadata);
     }
     String originalLocation = response == null ? "<null>" : response.metadataLocation();
     LOG.infof(
@@ -454,47 +437,35 @@ public class TableCommitService {
       return response;
     }
     LOG.infof("Preferring staged metadata location %s over %s", stagedLocation, originalLocation);
-    return new CommitTableResponseDto(stagedLocation, stagedMetadata);
+    return commitResponse(stagedMetadata);
   }
 
   private CommitTableResponseDto preferRequestedMetadata(
-      TableGatewaySupport tableSupport,
-      CommitTableResponseDto response,
-      String requestedMetadataLocation) {
+      CommitTableResponseDto response, String requestedMetadataLocation) {
     if (requestedMetadataLocation == null || requestedMetadataLocation.isBlank()) {
-      return response;
-    }
-    String resolved = tableSupport.stripMetadataMirrorPrefix(requestedMetadataLocation);
-    if (resolved == null || resolved.isBlank()) {
       return response;
     }
     TableMetadataView metadata = response == null ? null : response.metadata();
     if (metadata != null) {
-      metadata = metadata.withMetadataLocation(resolved);
+      metadata = metadata.withMetadataLocation(requestedMetadataLocation);
     }
-    if (response != null && resolved.equals(response.metadataLocation())) {
+    if (response != null && requestedMetadataLocation.equals(response.metadataLocation())) {
       if (Objects.equals(metadata, response.metadata())) {
         return response;
       }
     }
-    return new CommitTableResponseDto(resolved, metadata);
+    return commitResponse(metadata);
   }
 
-  private CommitTableResponseDto normalizeMetadataLocation(
-      TableGatewaySupport tableSupport, Table tableRecord, CommitTableResponseDto response) {
-    if (response == null || response.metadataLocation() == null) {
-      return response;
+  private CommitTableResponseDto normalizeMetadataLocation(CommitTableResponseDto response) {
+    return response;
+  }
+
+  private CommitTableResponseDto commitResponse(TableMetadataView metadata) {
+    if (metadata == null) {
+      return new CommitTableResponseDto(null, null);
     }
-    String metadataLocation = response.metadataLocation();
-    if (!tableSupport.isMirrorMetadataLocation(metadataLocation)) {
-      return response;
-    }
-    String resolvedLocation = tableSupport.stripMetadataMirrorPrefix(metadataLocation);
-    TableMetadataView metadata = response.metadata();
-    if (metadata != null) {
-      metadata = metadata.withMetadataLocation(resolvedLocation);
-    }
-    return new CommitTableResponseDto(resolvedLocation, metadata);
+    return new CommitTableResponseDto(metadata.metadataLocation(), metadata);
   }
 
   private CommitTableResponseDto preferSnapshotSequence(
@@ -536,7 +507,7 @@ public class TableCommitService {
             metadata.statistics(),
             metadata.partitionStatistics(),
             metadata.snapshots());
-    return new CommitTableResponseDto(response.metadataLocation(), updated);
+    return commitResponse(updated);
   }
 
   private CommitTableResponseDto preferRequestedSequence(
@@ -582,7 +553,7 @@ public class TableCommitService {
             metadata.statistics(),
             metadata.partitionStatistics(),
             metadata.snapshots());
-    return new CommitTableResponseDto(response.metadataLocation(), updated);
+    return commitResponse(updated);
   }
 
   private Long requestedSequenceNumber(TableRequests.Commit req) {
@@ -718,7 +689,7 @@ public class TableCommitService {
             metadata.statistics(),
             metadata.partitionStatistics(),
             updatedSnapshots);
-    return new CommitTableResponseDto(response.metadataLocation(), updated);
+    return commitResponse(updated);
   }
 
   private List<Map<String, Object>> extractSnapshots(List<Map<String, Object>> updates) {

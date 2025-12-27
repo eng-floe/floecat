@@ -64,19 +64,19 @@ class TableResponseMapperTest {
   }
 
   @Test
-  void writeMetadataPathStripsMirrorPrefix() {
+  void writeMetadataPathUsesMetadataLocation() {
     Table table =
         FIXTURE.table().toBuilder()
             .setDisplayName("orders")
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
             .putProperties(
                 "metadata-location",
-                "s3://yb-iceberg-tpcds/.floecat-metadata/trino_test/metadata/00000-abc.metadata.json")
+                "s3://yb-iceberg-tpcds/trino_test/metadata/00000-abc.metadata.json")
             .build();
     IcebergMetadata metadata =
         FIXTURE.metadata().toBuilder()
             .setMetadataLocation(
-                "s3://yb-iceberg-tpcds/.floecat-metadata/trino_test/metadata/00000-abc.metadata.json")
+                "s3://yb-iceberg-tpcds/trino_test/metadata/00000-abc.metadata.json")
             .build();
 
     LoadTableResultDto result =

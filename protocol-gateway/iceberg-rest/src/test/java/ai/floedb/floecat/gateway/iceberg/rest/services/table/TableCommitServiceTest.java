@@ -8,7 +8,6 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -83,8 +82,6 @@ class TableCommitServiceTest {
     when(grpc.withHeaders(snapshotStub)).thenReturn(snapshotStub);
     when(snapshotStub.listSnapshots(any(ListSnapshotsRequest.class)))
         .thenReturn(ListSnapshotsResponse.newBuilder().build());
-    when(tableSupport.stripMetadataMirrorPrefix(any())).thenAnswer(inv -> inv.getArgument(0));
-    when(tableSupport.isMirrorMetadataLocation(any())).thenReturn(false);
     when(stageMaterializationService.resolveStageId(any(), any())).thenReturn(null);
     when(sideEffectService.finalizeCommitResponse(any(), any(), any(), any(), any(), anyBoolean()))
         .thenAnswer(inv -> PostCommitResult.success(inv.getArgument(4)));
@@ -315,7 +312,6 @@ class TableCommitServiceTest {
 
     CommitTableResponseDto dto = (CommitTableResponseDto) response.getEntity();
     assertEquals(requested, dto.metadataLocation());
-    verify(tableSupport, times(3)).stripMetadataMirrorPrefix(requested);
   }
 
   private TableRequests.Commit emptyCommitRequest() {

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -163,26 +164,72 @@ class TableCommitSideEffectServiceTest {
     TableMetadataView original = metadata("s3://orig/location");
     CommitTableResponseDto response = new CommitTableResponseDto("s3://orig/location", original);
 
-    TableMetadataView mirrored = original.withMetadataLocation("s3://new/location");
-    MaterializeMetadataResult mirror =
-        MaterializeMetadataResult.success(mirrored, "s3://new/location");
+    TableMetadataView materialized = original.withMetadataLocation("s3://new/location");
+    MaterializeMetadataResult materializedResult =
+        MaterializeMetadataResult.success(materialized, "s3://new/location");
 
-    CommitTableResponseDto updated = service.applyMaterializationResult(response, mirror);
+    CommitTableResponseDto updated =
+        service.applyMaterializationResult(response, materializedResult);
 
     assertEquals("s3://new/location", updated.metadataLocation());
-    assertSame(mirrored, updated.metadata());
+    assertSame(materialized, updated.metadata());
+  }
+
+  @Test
+  void applyMaterializationResultPreservesLocationWhenResultIsBlank() throws Exception {
+    TableMetadataView original = metadata("s3://orig/location");
+    CommitTableResponseDto response = new CommitTableResponseDto("s3://orig/location", original);
+    MaterializeMetadataResult materializedResult =
+        MaterializeMetadataResult.success(original, null);
+
+    CommitTableResponseDto updated =
+        service.applyMaterializationResult(response, materializedResult);
+
+    assertEquals("s3://orig/location", updated.metadataLocation());
+    assertSame(original, updated.metadata());
   }
 
   @Test
   void applyMaterializationResultReturnsOriginalWhenUnchanged() throws Exception {
     TableMetadataView original = metadata("s3://orig/location");
     CommitTableResponseDto response = new CommitTableResponseDto("s3://orig/location", original);
-    MaterializeMetadataResult mirror =
+    MaterializeMetadataResult materializedResult =
         MaterializeMetadataResult.success(original, "s3://orig/location");
 
-    CommitTableResponseDto result = service.applyMaterializationResult(response, mirror);
+    CommitTableResponseDto result =
+        service.applyMaterializationResult(response, materializedResult);
 
     assertSame(response, result);
+  }
+
+  @Test
+  void synchronizeConnectorUsesMetadataViewWhenLocationMissing() {
+    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+    when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
+    TableMetadataView metadata = metadata("s3://metadata/location");
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .setFormat(TableFormat.TF_ICEBERG)
+                    .setConnectorId(ResourceId.newBuilder().setId("connector-1").build())
+                    .build())
+            .build();
+
+    service.synchronizeConnector(
+        tableSupport,
+        "core",
+        List.of("db"),
+        ResourceId.newBuilder().setId("ns").build(),
+        ResourceId.newBuilder().setId("cat").build(),
+        "orders",
+        table,
+        metadata,
+        null,
+        "idem");
+
+    verify(tableSupport).updateConnectorMetadata(any(), eq("s3://metadata/location"));
   }
 
   @Test

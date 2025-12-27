@@ -948,11 +948,11 @@ class IcebergRestFixtureIT {
                   stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build())
                       .getTable());
       Assertions.assertNotNull(tableRecord, "Table should be retrievable via table service");
-      String mirroredMetadata = tableRecord.getPropertiesMap().get("metadata-location");
-      Assertions.assertNotNull(mirroredMetadata, "metadata-location property should exist");
+      String metadataLocation = tableRecord.getPropertiesMap().get("metadata-location");
+      Assertions.assertNotNull(metadataLocation, "metadata-location property should exist");
       Assertions.assertTrue(
-          mirroredMetadata.startsWith(FIXTURE_METADATA_PREFIX),
-          () -> "metadata-location should reside under fixture bucket: " + mirroredMetadata);
+          metadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
+          () -> "metadata-location should reside under fixture bucket: " + metadataLocation);
       Assertions.assertTrue(
           tableRecord.hasUpstream() && tableRecord.getUpstream().hasConnectorId(),
           "Upstream connector identifier must be populated");

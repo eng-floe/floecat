@@ -175,7 +175,7 @@ public class TableGatewaySupport {
       int slash = metadataLocation.lastIndexOf('/');
       base = slash > 0 ? metadataLocation.substring(0, slash) : metadataLocation;
     }
-    return stripMetadataMirrorPrefix(base);
+    return base;
   }
 
   public boolean connectorIntegrationEnabled() {
@@ -584,14 +584,6 @@ public class TableGatewaySupport {
       }
     }
     return out;
-  }
-
-  public boolean isMirrorMetadataLocation(String metadataLocation) {
-    return MetadataLocationUtil.isMirrorMetadataLocation(metadataLocation);
-  }
-
-  public String stripMetadataMirrorPrefix(String location) {
-    return MetadataLocationUtil.stripMetadataMirrorPrefix(location);
   }
 
   private static Long propertyLong(Map<String, String> props, String key) {
