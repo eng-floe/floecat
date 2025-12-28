@@ -85,4 +85,11 @@ public final class TableMappingUtil {
   public static String asString(Object value) {
     return value == null ? null : String.valueOf(value);
   }
+
+  public static String firstNonBlank(String first, String second) {
+    if (first != null && !first.isBlank()) {
+      return first;
+    }
+    return (second == null || second.isBlank()) ? null : second;
+  }
 }

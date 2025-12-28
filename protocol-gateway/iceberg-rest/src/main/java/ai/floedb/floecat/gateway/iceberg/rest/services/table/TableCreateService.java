@@ -1,5 +1,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonBlank;
+
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -61,7 +63,6 @@ public class TableCreateService {
     if (!hasSchema(request)) {
       return IcebergErrorResponses.validation("schema is required");
     }
-    // Match the REST spec: name + schema are required; other fields are optional.
 
     String tableName = request.name().trim();
     TableRequests.Create effectiveReq =
@@ -333,13 +334,6 @@ public class TableCreateService {
       return normalized;
     }
     return normalized + "/" + suffix;
-  }
-
-  private String firstNonBlank(String primary, String fallback) {
-    if (primary != null && !primary.isBlank()) {
-      return primary;
-    }
-    return fallback != null && !fallback.isBlank() ? fallback : null;
   }
 
   private String safeSerializeCreate(TableRequests.Create request) {

@@ -1,5 +1,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.planning;
 
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
+
 import ai.floedb.floecat.common.rpc.Operator;
 import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -481,9 +483,7 @@ public class TablePlanService {
     return out;
   }
 
-  private String asString(Object value) {
-    return value == null ? null : value.toString();
-  }
+  // TableMappingUtil provides asString.
 
   private record PlanContext(
       ResourceId tableId,
