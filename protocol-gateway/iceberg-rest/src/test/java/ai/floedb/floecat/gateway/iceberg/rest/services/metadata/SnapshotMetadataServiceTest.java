@@ -11,7 +11,6 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
@@ -34,9 +33,11 @@ class SnapshotMetadataServiceTest {
   @BeforeEach
   void setUp() {
     service = new SnapshotMetadataService();
-    service.grpc = mock(GrpcWithHeaders.class);
-    service.mapper = new ObjectMapper();
     service.snapshotClient = mock(SnapshotClient.class);
+    SnapshotUpdateService updateService = new SnapshotUpdateService();
+    updateService.mapper = new ObjectMapper();
+    updateService.snapshotClient = service.snapshotClient;
+    service.updateService = updateService;
     tableSupport = mock(TableGatewaySupport.class);
   }
 

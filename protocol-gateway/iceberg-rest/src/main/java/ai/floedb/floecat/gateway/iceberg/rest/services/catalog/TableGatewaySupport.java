@@ -1,7 +1,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
-import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
@@ -30,6 +29,7 @@ import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
@@ -39,9 +39,7 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.storage.spi.io.RuntimeFileIoOverrides;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
-import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.StatusRuntimeException;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -55,7 +53,6 @@ public class TableGatewaySupport {
       List.of(new StorageCredentialDto("*", Map.of("type", "static")));
   private static final String CONNECTOR_CAPTURE_STATS_PROPERTY =
       "floecat.connector.capture-statistics";
-  private static final String ICEBERG_METADATA_KEY = "iceberg";
 
   private final GrpcWithHeaders grpc;
   private final IcebergGatewayConfig config;
@@ -129,14 +126,7 @@ public class TableGatewaySupport {
   }
 
   public String metadataLocationFromCreate(TableRequests.Create req) {
-    if (req == null || req.properties() == null || req.properties().isEmpty()) {
-      return null;
-    }
-    String location = req.properties().get("metadata-location");
-    if (location == null || location.isBlank()) {
-      return null;
-    }
-    return location;
+    return MetadataLocationUtil.metadataLocation(req == null ? null : req.properties());
   }
 
   private Map<String, String> sanitizeCreateProperties(Map<String, String> props) {
@@ -296,7 +286,7 @@ public class TableGatewaySupport {
           && snapshot.getSnapshotId() != propertySnapshotId) {
         return loadSnapshotById(table.getResourceId(), propertySnapshotId);
       }
-      return parseSnapshotMetadata(snapshot);
+      return SnapshotMetadataUtil.parseSnapshotMetadata(snapshot);
     } catch (StatusRuntimeException primaryFailure) {
       return loadSnapshotByProperty(table);
     }
@@ -326,7 +316,7 @@ public class TableGatewaySupport {
       return null;
     }
     var snapshot = response.getSnapshot();
-    return parseSnapshotMetadata(snapshot);
+    return SnapshotMetadataUtil.parseSnapshotMetadata(snapshot);
   }
 
   public IcebergGatewayConfig.RegisterConnectorTemplate connectorTemplateFor(String prefix) {
@@ -598,19 +588,5 @@ public class TableGatewaySupport {
     }
   }
 
-  private IcebergMetadata parseSnapshotMetadata(Snapshot snapshot) {
-    if (snapshot == null) {
-      return null;
-    }
-    ByteString raw = snapshot.getFormatMetadataOrDefault(ICEBERG_METADATA_KEY, ByteString.EMPTY);
-    if (raw == null || raw.isEmpty()) {
-      return null;
-    }
-    try {
-      return IcebergMetadata.parseFrom(raw);
-    } catch (InvalidProtocolBufferException e) {
-      throw new IllegalStateException(
-          "Failed to parse Iceberg metadata for snapshot " + snapshot.getSnapshotId(), e);
-    }
-  }
+  // Snapshot metadata parsing lives in SnapshotMetadataUtil.
 }

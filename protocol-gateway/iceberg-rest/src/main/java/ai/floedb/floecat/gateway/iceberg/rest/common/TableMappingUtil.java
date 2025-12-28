@@ -3,10 +3,10 @@ package ai.floedb.floecat.gateway.iceberg.rest.common;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-final class TableMappingUtil {
+public final class TableMappingUtil {
   private TableMappingUtil() {}
 
-  static Map<String, Object> asObjectMap(Object value) {
+  public static Map<String, Object> asObjectMap(Object value) {
     if (!(value instanceof Map<?, ?> map)) {
       return null;
     }
@@ -20,7 +20,7 @@ final class TableMappingUtil {
     return out;
   }
 
-  static Long asLong(Object value) {
+  public static Long asLong(Object value) {
     if (value == null) {
       return null;
     }
@@ -38,7 +38,7 @@ final class TableMappingUtil {
     }
   }
 
-  static Integer asInteger(Object value) {
+  public static Integer asInteger(Object value) {
     if (value == null) {
       return null;
     }
@@ -56,7 +56,7 @@ final class TableMappingUtil {
     }
   }
 
-  static Integer maybeInt(String value) {
+  public static Integer maybeInt(String value) {
     if (value == null || value.isBlank()) {
       return null;
     }
@@ -67,7 +67,7 @@ final class TableMappingUtil {
     }
   }
 
-  static Long maybeLong(String value) {
+  public static Long maybeLong(String value) {
     if (value == null || value.isBlank()) {
       return null;
     }
@@ -78,7 +78,11 @@ final class TableMappingUtil {
     }
   }
 
-  static Object firstNonNull(Object first, Object second) {
+  public static Object firstNonNull(Object first, Object second) {
     return first != null ? first : second;
+  }
+
+  public static String asString(Object value) {
+    return value == null ? null : String.valueOf(value);
   }
 }

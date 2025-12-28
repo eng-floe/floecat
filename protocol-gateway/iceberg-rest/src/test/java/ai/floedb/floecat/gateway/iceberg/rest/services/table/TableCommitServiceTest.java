@@ -53,6 +53,7 @@ class TableCommitServiceTest {
   private final GrpcClients grpcClients = mock(GrpcClients.class);
   private final SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub =
       mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+  private final CommitResponseBuilder responseBuilder = new CommitResponseBuilder();
   private final TableLifecycleService tableLifecycleService = mock(TableLifecycleService.class);
   private final TableCommitSideEffectService sideEffectService =
       mock(TableCommitSideEffectService.class);
@@ -69,7 +70,8 @@ class TableCommitServiceTest {
   @BeforeEach
   void setUp() {
     service.grpc = grpc;
-    service.snapshotClient = new SnapshotClient(grpc);
+    responseBuilder.setSnapshotClient(new SnapshotClient(grpc));
+    service.responseBuilder = responseBuilder;
     service.tableLifecycleService = tableLifecycleService;
     service.sideEffectService = sideEffectService;
     service.stageMaterializationService = stageMaterializationService;

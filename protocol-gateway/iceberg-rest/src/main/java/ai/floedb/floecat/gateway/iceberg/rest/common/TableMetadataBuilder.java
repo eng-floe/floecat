@@ -378,11 +378,7 @@ public final class TableMetadataBuilder {
   }
 
   private static String metadataLocationFromRequest(TableRequests.Create request) {
-    if (request == null || request.properties() == null || request.properties().isEmpty()) {
-      return null;
-    }
-    String location = request.properties().get("metadata-location");
-    return (location == null || location.isBlank()) ? null : location;
+    return MetadataLocationUtil.metadataLocation(request == null ? null : request.properties());
   }
 
   private static Map<String, Object> mergePropertyRefs(
