@@ -1,5 +1,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonBlank;
+
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -212,12 +214,7 @@ public class MaterializeMetadataService {
     }
   }
 
-  private static String firstNonBlank(String first, String second) {
-    if (first != null && !first.isBlank()) {
-      return first;
-    }
-    return (second == null || second.isBlank()) ? null : second;
-  }
+  // TableMappingUtil provides firstNonBlank.
 
   private Map<String, String> sanitizeProperties(Map<String, String> props) {
     Map<String, String> sanitized = new LinkedHashMap<>();

@@ -1,5 +1,9 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asInteger;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asLong;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
+
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -163,20 +167,6 @@ public class CommitRequirementService {
     return null;
   }
 
-  private static String asString(Object value) {
-    return value == null ? null : value.toString();
-  }
-
-  private static Integer asInteger(Object value) {
-    if (value instanceof Number number) {
-      return number.intValue();
-    }
-    if (value instanceof String text && !text.isBlank()) {
-      return Integer.parseInt(text);
-    }
-    return null;
-  }
-
   private static String resolveTableUuid(Table table) {
     if (table == null) {
       return null;
@@ -194,13 +184,5 @@ public class CommitRequirementService {
     return null;
   }
 
-  private static Long asLong(Object value) {
-    if (value instanceof Number number) {
-      return number.longValue();
-    }
-    if (value instanceof String text && !text.isBlank()) {
-      return Long.parseLong(text);
-    }
-    return null;
-  }
+  // TableMappingUtil provides common parsing helpers.
 }

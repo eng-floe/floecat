@@ -1,5 +1,10 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asInteger;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asLong;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonNull;
+
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -182,10 +187,6 @@ public class TableUpdatePlanner {
     return null;
   }
 
-  private static String asString(Object value) {
-    return value == null ? null : String.valueOf(value);
-  }
-
   private Map<String, String> applyRefPropertyUpdates(
       Map<String, String> mergedProps,
       Supplier<Table> tableSupplier,
@@ -324,35 +325,5 @@ public class TableUpdatePlanner {
     return mergedProps;
   }
 
-  private static Object firstNonNull(Object first, Object second) {
-    return first != null ? first : second;
-  }
-
-  private static Long asLong(Object value) {
-    if (value instanceof Number number) {
-      return number.longValue();
-    }
-    if (value instanceof String str) {
-      try {
-        return Long.parseLong(str);
-      } catch (NumberFormatException ignored) {
-        return null;
-      }
-    }
-    return null;
-  }
-
-  private static Integer asInteger(Object value) {
-    if (value instanceof Number number) {
-      return number.intValue();
-    }
-    if (value instanceof String str) {
-      try {
-        return Integer.parseInt(str);
-      } catch (NumberFormatException ignored) {
-        return null;
-      }
-    }
-    return null;
-  }
+  // TableMappingUtil provides common parsing helpers.
 }

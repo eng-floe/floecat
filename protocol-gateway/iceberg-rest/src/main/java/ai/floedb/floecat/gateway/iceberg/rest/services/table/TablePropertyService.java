@@ -1,5 +1,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
+
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
@@ -175,7 +177,5 @@ public class TablePropertyService {
         .toList();
   }
 
-  private static String asString(Object value) {
-    return value == null ? null : String.valueOf(value);
-  }
+  // TableMappingUtil provides asString.
 }
