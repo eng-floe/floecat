@@ -33,7 +33,7 @@ class SystemResourceTest extends AbstractRestResourceTest {
         .get("/v1/config")
         .then()
         .statusCode(200)
-        .body("defaults.'catalog-name'", equalTo("sales"))
+        .body("defaults.'catalog-name'", equalTo("examples"))
         .body(
             "endpoints",
             hasItems("POST /v1/{prefix}/tables/rename", "POST /v1/{prefix}/views/rename"));
