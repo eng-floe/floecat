@@ -17,6 +17,7 @@ import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -48,7 +49,9 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class SeedRunner {
   private static final Logger LOG = Logger.getLogger(SeedRunner.class);
-  private static final List<String> CORE_NAMESPACE = List.of("core");
+  private static final String EXAMPLES_CATALOG = "examples";
+  private static final List<String> ICEBERG_NAMESPACE = List.of("iceberg");
+  private static final List<String> DELTA_NAMESPACE = List.of("delta");
   private static final AtomicBoolean SEEDED = new AtomicBoolean(false);
   private static final int SEED_SYNC_MAX_ATTEMPTS = 6;
   private static final long SEED_SYNC_INITIAL_BACKOFF_MS = 250L;
@@ -112,17 +115,30 @@ public class SeedRunner {
 
     var accountId = seedAccount("t-0001", "First account", now);
 
-    var salesId = seedCatalog(accountId.getId(), "sales", "Sales catalog", now);
+    var examplesId = seedCatalog(accountId.getId(), EXAMPLES_CATALOG, "Examples catalog", now);
 
-    var salesCoreNsId = seedNamespace(accountId.getId(), salesId, null, "core", now);
-    seedFixtureTables(accountId, salesId, now);
+    var icebergNsId =
+        seedNamespace(
+            accountId.getId(),
+            examplesId,
+            List.of(ICEBERG_NAMESPACE.get(0)),
+            ICEBERG_NAMESPACE.get(0),
+            now);
+    seedNamespace(
+        accountId.getId(),
+        examplesId,
+        List.of(DELTA_NAMESPACE.get(0)),
+        DELTA_NAMESPACE.get(0),
+        now);
+    seedFixtureTables(accountId, examplesId, now);
+    seedDeltaFixtureTables(accountId, examplesId, now);
 
     seedView(
         accountId.getId(),
-        salesId,
-        salesCoreNsId.getId(),
+        examplesId,
+        icebergNsId.getId(),
         "fixture_preview",
-        "SELECT i FROM sales.core.trino_test WHERE i IS NOT NULL",
+        "SELECT i FROM examples.iceberg.trino_test WHERE i IS NOT NULL",
         Map.of("seeded", "true", "source", "iceberg-fixtures"),
         now);
   }
@@ -133,44 +149,52 @@ public class SeedRunner {
 
     var accountId = seedAccount("t-0001", "First account", now);
 
-    var salesId = seedCatalog(accountId.getId(), "sales", "Sales catalog", now);
-    var salesCoreNsId = seedNamespace(accountId.getId(), salesId, null, "core", now);
-    var ordersId = seedFakeTable(accountId.getId(), salesId, salesCoreNsId.getId(), "orders", now);
-    seedFakeTable(accountId.getId(), salesId, salesCoreNsId.getId(), "lineitem", now);
+    var examplesId = seedCatalog(accountId.getId(), EXAMPLES_CATALOG, "Examples catalog", now);
+    var icebergNsId =
+        seedNamespace(
+            accountId.getId(),
+            examplesId,
+            List.of(ICEBERG_NAMESPACE.get(0)),
+            ICEBERG_NAMESPACE.get(0),
+            now);
+    seedNamespace(
+        accountId.getId(),
+        examplesId,
+        List.of(DELTA_NAMESPACE.get(0)),
+        DELTA_NAMESPACE.get(0),
+        now);
+    var ordersId = seedFakeTable(accountId.getId(), examplesId, icebergNsId.getId(), "orders", now);
+    seedFakeTable(accountId.getId(), examplesId, icebergNsId.getId(), "lineitem", now);
     seedSnapshot(accountId.getId(), ordersId, 101L, now - 60_000L, now - 100_000L);
     seedSnapshot(accountId.getId(), ordersId, 102L, now, now - 80_000L);
     seedView(
         accountId.getId(),
-        salesId,
-        salesCoreNsId.getId(),
+        examplesId,
+        icebergNsId.getId(),
         "recent_orders",
-        "SELECT o.order_key, o.customer_key, o.order_status FROM sales.core.orders o WHERE"
+        "SELECT o.order_key, o.customer_key, o.order_status FROM examples.iceberg.orders o WHERE"
             + " o.order_date >= date_sub(current_date, interval '30' day)",
         Map.of("seeded", "true"),
         now);
 
-    var salesStg25NsId = seedNamespace(accountId.getId(), salesId, List.of("staging"), "2025", now);
-    seedFakeTable(accountId.getId(), salesId, salesStg25NsId.getId(), "orders_2025", now);
-    seedFakeTable(accountId.getId(), salesId, salesStg25NsId.getId(), "staging_events", now);
+    var salesStg25NsId =
+        seedNamespace(
+            accountId.getId(), examplesId, List.of("iceberg", "staging", "2025"), "2025", now);
+    seedFakeTable(accountId.getId(), examplesId, salesStg25NsId.getId(), "orders_2025", now);
+    seedFakeTable(accountId.getId(), examplesId, salesStg25NsId.getId(), "staging_events", now);
     seedView(
         accountId.getId(),
-        salesId,
+        examplesId,
         salesStg25NsId.getId(),
         "orders_with_events",
         """
         SELECT o.order_id, o.customer_id, e.event_type, e.event_ts
-        FROM sales.staging.2025.orders_2025 o
-        JOIN sales.staging.2025.staging_events e
+        FROM examples.iceberg.staging.2025.orders_2025 o
+        JOIN examples.iceberg.staging.2025.staging_events e
           ON o.order_id = e.order_id
         """,
         Map.of("materialized", "false", "seeded", "true"),
         now);
-
-    var financeId = seedCatalog(accountId.getId(), "finance", "Finance catalog", now);
-    var financeCoreNsId = seedNamespace(accountId.getId(), financeId, null, "core", now);
-    var glEntriesId =
-        seedFakeTable(accountId.getId(), financeId, financeCoreNsId.getId(), "gl_entries", now);
-    seedSnapshot(accountId.getId(), glEntriesId, 201L, now, now - 20_000L);
   }
 
   private ResourceId seedAccount(String displayName, String description, long now) {
@@ -347,7 +371,7 @@ public class SeedRunner {
                 TestS3Fixtures.bucketUri(null),
                 "fixtures.simple",
                 "trino_test",
-                CORE_NAMESPACE),
+                ICEBERG_NAMESPACE),
             new FixtureConfig(
                 "fixture-types",
                 "Trino types Iceberg fixture table",
@@ -355,7 +379,7 @@ public class SeedRunner {
                 "s3://floecat/sales/us/trino_types",
                 "sales.us",
                 "trino_types",
-                CORE_NAMESPACE));
+                ICEBERG_NAMESPACE));
 
     for (FixtureConfig fixture : fixtures) {
       ResourceId connectorId =
@@ -424,9 +448,78 @@ public class SeedRunner {
     return props;
   }
 
+  private void seedDeltaFixtureTables(ResourceId accountId, ResourceId catalogId, long now) {
+    TestDeltaFixtures.seedFixturesOnce();
+
+    var fixture =
+        new DeltaFixtureConfig(
+            "fixture-delta-call-center",
+            "Delta call_center fixture table",
+            TestDeltaFixtures.tableUri(),
+            "examples.delta",
+            "call_center",
+            DELTA_NAMESPACE);
+
+    ResourceId connectorId = seedDeltaConnector(accountId, catalogId, fixture, now);
+    syncConnector(connectorId, fixture.tableName(), fixture.destinationNamespace());
+  }
+
+  private ResourceId seedDeltaConnector(
+      ResourceId accountId, ResourceId catalogId, DeltaFixtureConfig fixture, long now) {
+    String connectorUuid = uuidFor(accountId.getId() + "/connector:" + fixture.connectorName());
+    var connectorRid =
+        ResourceId.newBuilder()
+            .setAccountId(accountId.getId())
+            .setId(connectorUuid)
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .build();
+
+    List<String> sourceSegments = namespaceSegments(fixture.sourceNamespace());
+    var sourceNs = NamespacePath.newBuilder().addAllSegments(sourceSegments).build();
+    var destNs = NamespacePath.newBuilder().addAllSegments(fixture.destinationNamespace()).build();
+
+    var connector =
+        Connector.newBuilder()
+            .setResourceId(connectorRid)
+            .setDisplayName(fixture.connectorName())
+            .setDescription(fixture.description())
+            .setKind(ConnectorKind.CK_DELTA)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setUri("http://localhost")
+            .setSource(
+                SourceSelector.newBuilder().setNamespace(sourceNs).setTable(fixture.tableName()))
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(catalogId)
+                    .setNamespace(destNs)
+                    .setTableDisplayName(fixture.tableName()))
+            .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+            .setCreatedAt(Timestamps.fromMillis(now))
+            .setUpdatedAt(Timestamps.fromMillis(now))
+            .putAllProperties(deltaConnectorProperties(fixture));
+
+    connectorRepo.create(connector.build());
+    LOG.infov(
+        "Seeded connector {0} for delta fixture table {1}",
+        fixture.connectorName(), fixture.tableName());
+    return connectorRid;
+  }
+
+  private Map<String, String> deltaConnectorProperties(DeltaFixtureConfig fixture) {
+    Map<String, String> props = new LinkedHashMap<>();
+    props.put("delta.table-root", fixture.tableRoot());
+    props.put("stats.ndv.enabled", "false");
+    props.putAll(TestDeltaFixtures.s3Options());
+    return props;
+  }
+
   private void syncConnector(ResourceId connectorId, FixtureConfig fixture) {
-    var scope =
-        ReconcileScope.of(List.of(fixture.destinationNamespace()), fixture.tableName(), List.of());
+    syncConnector(connectorId, fixture.tableName(), fixture.destinationNamespace());
+  }
+
+  private void syncConnector(
+      ResourceId connectorId, String tableName, List<String> destinationNamespace) {
+    var scope = ReconcileScope.of(List.of(destinationNamespace), tableName, List.of());
     long backoffMs = SEED_SYNC_INITIAL_BACKOFF_MS;
     for (int attempt = 1; attempt <= SEED_SYNC_MAX_ATTEMPTS; attempt++) {
       try {
@@ -436,7 +529,7 @@ public class SeedRunner {
         if (result.ok()) {
           LOG.infov(
               "Populated fixture table {0} (scanned={1}, changed={2})",
-              fixture.tableName(), result.scanned, result.changed);
+              tableName, result.scanned, result.changed);
           return;
         }
         if (result.error != null && isRetryableSeedSyncError(result.error)) {
@@ -444,22 +537,19 @@ public class SeedRunner {
             LOG.warnf(
                 result.error,
                 "Failed to populate fixture table {0}: {1}",
-                fixture.tableName(),
+                tableName,
                 result.message());
             return;
           }
           LOG.warnf(
               "Retrying fixture sync for %s (attempt %d/%d) after %dms due to: %s",
-              fixture.tableName(), attempt, SEED_SYNC_MAX_ATTEMPTS, backoffMs, result.message());
+              tableName, attempt, SEED_SYNC_MAX_ATTEMPTS, backoffMs, result.message());
           LockSupport.parkNanos(backoffMs * 1_000_000L);
           backoffMs = Math.min(backoffMs * 2, SEED_SYNC_MAX_BACKOFF_MS);
           continue;
         }
         LOG.warnf(
-            result.error,
-            "Failed to populate fixture table {0}: {1}",
-            fixture.tableName(),
-            result.message());
+            result.error, "Failed to populate fixture table {0}: {1}", tableName, result.message());
         return;
       } catch (RuntimeException e) {
         if (!isRetryableSeedSyncError(e) || attempt == SEED_SYNC_MAX_ATTEMPTS) {
@@ -467,7 +557,7 @@ public class SeedRunner {
         }
         LOG.warnf(
             "Retrying fixture sync for %s (attempt %d/%d) after %dms due to: %s",
-            fixture.tableName(), attempt, SEED_SYNC_MAX_ATTEMPTS, backoffMs, e.getMessage());
+            tableName, attempt, SEED_SYNC_MAX_ATTEMPTS, backoffMs, e.getMessage());
         LockSupport.parkNanos(backoffMs * 1_000_000L);
         backoffMs = Math.min(backoffMs * 2, SEED_SYNC_MAX_BACKOFF_MS);
       }
@@ -498,6 +588,14 @@ public class SeedRunner {
       String description,
       String metadataLocation,
       String upstreamUri,
+      String sourceNamespace,
+      String tableName,
+      List<String> destinationNamespace) {}
+
+  private record DeltaFixtureConfig(
+      String connectorName,
+      String description,
+      String tableRoot,
       String sourceNamespace,
       String tableName,
       List<String> destinationNamespace) {}

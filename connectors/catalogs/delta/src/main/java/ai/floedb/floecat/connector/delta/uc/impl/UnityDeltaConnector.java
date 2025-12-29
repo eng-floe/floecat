@@ -14,6 +14,7 @@ import ai.floedb.floecat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.floecat.connector.spi.AuthProvider;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.storage.spi.io.RuntimeFileIoOverrides;
 import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -56,6 +57,7 @@ public final class UnityDeltaConnector implements FloecatConnector {
   private final boolean ndvEnabled;
   private final double ndvSampleFraction;
   private final long ndvMaxFiles;
+  private final String tableRootOverride;
 
   private UnityDeltaConnector(
       String connectorId,
@@ -65,7 +67,8 @@ public final class UnityDeltaConnector implements FloecatConnector {
       Function<String, InputFile> parquetInput,
       boolean ndvEnabled,
       double ndvSampleFraction,
-      long ndvMaxFiles) {
+      long ndvMaxFiles,
+      String tableRootOverride) {
     this.connectorId = connectorId;
     this.ucHttp = ucHttp;
     this.sql = sql;
@@ -74,61 +77,78 @@ public final class UnityDeltaConnector implements FloecatConnector {
     this.ndvEnabled = ndvEnabled;
     this.ndvSampleFraction = ndvSampleFraction;
     this.ndvMaxFiles = ndvMaxFiles;
+    this.tableRootOverride = tableRootOverride;
   }
 
   public static FloecatConnector create(
       String uri, Map<String, String> options, AuthProvider authProvider) {
     Objects.requireNonNull(uri, "Unity base uri");
     String host = uri.endsWith("/") ? uri.substring(0, uri.length() - 1) : uri;
-    int connectMs = Integer.parseInt(options.getOrDefault("http.connect.ms", "10000"));
-    int readMs = Integer.parseInt(options.getOrDefault("http.read.ms", "60000"));
-    String warehouse = options.getOrDefault("databricks.sql.warehouse_id", "");
+    Map<String, String> effectiveOptions =
+        options == null ? new LinkedHashMap<>() : new LinkedHashMap<>(options);
+    if (Boolean.parseBoolean(System.getProperty("floecat.connector.fileio.overrides", "true"))) {
+      RuntimeFileIoOverrides.mergeInto(effectiveOptions);
+    }
+
+    int connectMs = Integer.parseInt(effectiveOptions.getOrDefault("http.connect.ms", "10000"));
+    int readMs = Integer.parseInt(effectiveOptions.getOrDefault("http.read.ms", "60000"));
+    String warehouse = effectiveOptions.getOrDefault("databricks.sql.warehouse_id", "");
 
     var region =
         Region.of(
             resolveOption(
-                options,
+                effectiveOptions,
                 "s3.region",
                 "aws.region",
                 "floecat.fileio.override.s3.region",
                 "us-east-1"));
 
-    boolean pathStyle =
-        Boolean.parseBoolean(
-            resolveOption(
-                options,
-                "s3.path-style-access",
-                "floecat.fileio.override.s3.path-style-access",
-                "false"));
-
-    var s3Builder =
-        S3Client.builder()
-            .region(region)
-            .serviceConfiguration(
-                S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build())
-            .credentialsProvider(resolveCredentials(options));
-
-    String endpoint =
-        resolveOption(options, "s3.endpoint", "floecat.fileio.override.s3.endpoint", null);
-    if (endpoint != null && !endpoint.isBlank()) {
-      s3Builder.endpointOverride(URI.create(endpoint));
-    }
-
-    var s3 = s3Builder.build();
-
-    var engine = DefaultEngine.create(new S3V2FileSystemClient(s3));
-
+    String localRoot = effectiveOptions.getOrDefault("fs.floecat.test-root", "");
     var uc = new UcHttp(host, connectMs, readMs, authProvider);
     var sql = warehouse.isBlank() ? null : new SqlStmtClient(host, authProvider, warehouse, readMs);
 
-    Function<String, InputFile> inputFn = p -> new ParquetS3V2InputFile(s3, p);
+    final Engine engine;
+    final Function<String, InputFile> inputFn;
 
-    boolean ndvEnabled = Boolean.parseBoolean(options.getOrDefault("stats.ndv.enabled", "false"));
+    if (localRoot != null && !localRoot.isBlank()) {
+      var root = java.nio.file.Path.of(localRoot).toAbsolutePath();
+      engine = DefaultEngine.create(new LocalFileSystemClient(root));
+      inputFn = p -> new ParquetLocalInputFile(root, p);
+    } else {
+      boolean pathStyle =
+          Boolean.parseBoolean(
+              resolveOption(
+                  effectiveOptions,
+                  "s3.path-style-access",
+                  "floecat.fileio.override.s3.path-style-access",
+                  "false"));
+
+      var s3Builder =
+          S3Client.builder()
+              .region(region)
+              .serviceConfiguration(
+                  S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build())
+              .credentialsProvider(resolveCredentials(effectiveOptions));
+
+      String endpoint =
+          resolveOption(
+              effectiveOptions, "s3.endpoint", "floecat.fileio.override.s3.endpoint", null);
+      if (endpoint != null && !endpoint.isBlank()) {
+        s3Builder.endpointOverride(URI.create(endpoint));
+      }
+
+      var s3 = s3Builder.build();
+      engine = DefaultEngine.create(new S3V2FileSystemClient(s3));
+      inputFn = p -> new ParquetS3V2InputFile(s3, p);
+    }
+
+    boolean ndvEnabled =
+        Boolean.parseBoolean(effectiveOptions.getOrDefault("stats.ndv.enabled", "false"));
 
     double ndvSampleFraction = 1.0;
     try {
       ndvSampleFraction =
-          Double.parseDouble(options.getOrDefault("stats.ndv.sample_fraction", "1.0"));
+          Double.parseDouble(effectiveOptions.getOrDefault("stats.ndv.sample_fraction", "1.0"));
       if (ndvSampleFraction <= 0.0 || ndvSampleFraction > 1.0) {
         ndvSampleFraction = 1.0;
       }
@@ -137,13 +157,23 @@ public final class UnityDeltaConnector implements FloecatConnector {
 
     long ndvMaxFiles = 0L;
     try {
-      ndvMaxFiles = Long.parseLong(options.getOrDefault("stats.ndv.max_files", "0"));
+      ndvMaxFiles = Long.parseLong(effectiveOptions.getOrDefault("stats.ndv.max_files", "0"));
       if (ndvMaxFiles < 0) ndvMaxFiles = 0;
     } catch (NumberFormatException ignore) {
     }
 
+    String tableRootOverride = effectiveOptions.getOrDefault("delta.table-root", "");
+
     return new UnityDeltaConnector(
-        "delta-unity", uc, sql, engine, inputFn, ndvEnabled, ndvSampleFraction, ndvMaxFiles);
+        "delta-unity",
+        uc,
+        sql,
+        engine,
+        inputFn,
+        ndvEnabled,
+        ndvSampleFraction,
+        ndvMaxFiles,
+        tableRootOverride);
   }
 
   private static AwsCredentialsProvider resolveCredentials(Map<String, String> options) {
@@ -281,6 +311,10 @@ public final class UnityDeltaConnector implements FloecatConnector {
 
   @Override
   public TableDescriptor describe(String namespaceFq, String tableName) {
+    if (tableRootOverride != null && !tableRootOverride.isBlank()) {
+      return describeFromDelta(tableRootOverride, namespaceFq, tableName);
+    }
+
     try {
       String full = namespaceFq + "." + tableName;
       var meta =
@@ -429,6 +463,9 @@ public final class UnityDeltaConnector implements FloecatConnector {
   public void close() {}
 
   private String storageLocation(String namespaceFq, String tableName) {
+    if (tableRootOverride != null && !tableRootOverride.isBlank()) {
+      return tableRootOverride;
+    }
     try {
       String full = namespaceFq + "." + tableName;
       var meta =
@@ -442,6 +479,39 @@ public final class UnityDeltaConnector implements FloecatConnector {
     } catch (Exception e) {
       throw new RuntimeException(
           "Failed to resolve storage_location for " + namespaceFq + "." + tableName, e);
+    }
+  }
+
+  private TableDescriptor describeFromDelta(
+      String tableRoot, String namespaceFq, String tableName) {
+    try {
+      Table table = Table.forPath(engine, tableRoot);
+      Snapshot snapshot = table.getLatestSnapshot(engine);
+      StructType kernelSchema = snapshot.getSchema();
+
+      var fields = M.createArrayNode();
+      var kernelFields = kernelSchema.fields();
+      for (int i = 0; i < kernelFields.size(); i++) {
+        var c = kernelFields.get(i);
+        var n = M.createObjectNode();
+        n.put("name", c.getName());
+        n.put("type", c.getDataType().toString());
+        n.put("nullable", c.isNullable());
+        n.set("metadata", M.createObjectNode());
+        fields.add(n);
+      }
+      var schemaNode = M.createObjectNode();
+      schemaNode.put("type", "struct");
+      schemaNode.set("fields", fields);
+
+      Map<String, String> props = new LinkedHashMap<>();
+      props.put("data_source_format", "DELTA");
+      props.put("storage_location", tableRoot);
+
+      return new TableDescriptor(
+          namespaceFq, tableName, tableRoot, schemaNode.toString(), List.of(), props);
+    } catch (Exception e) {
+      throw new RuntimeException("describe failed", e);
     }
   }
 

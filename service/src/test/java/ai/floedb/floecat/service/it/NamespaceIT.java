@@ -30,7 +30,7 @@ class NamespaceIT {
 
   @Test
   void listAndGetNamespaces() {
-    var ref = NameRef.newBuilder().setCatalog("sales").build();
+    var ref = NameRef.newBuilder().setCatalog("examples").build();
     var r = directory.resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(ref).build());
 
     var list =

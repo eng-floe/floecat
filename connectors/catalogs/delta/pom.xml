@@ -42,6 +42,11 @@
       <artifactId>floecat-connectors-common</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-storage-spi</artifactId>
+      <version>${project.version}</version>
+    </dependency>
 
     <dependency>
       <groupId>io.delta</groupId>

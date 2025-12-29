@@ -76,6 +76,7 @@ public final class TestDeltaFixtures {
   }
 
   private static void seedFixturesLocal() {
+    System.setProperty("fs.floecat.test-root", TARGET_ROOT.toAbsolutePath().toString());
     Path targetRoot = TARGET_ROOT.resolve(Path.of(BUCKET, PREFIX));
     try {
       if (Files.exists(targetRoot)) {

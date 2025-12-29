@@ -569,7 +569,7 @@ public class ReconcilerService {
   }
 
   private boolean statsAlreadyCaptured(ResourceId tableId, long snapshotId) {
-    if (snapshotId <= 0) {
+    if (snapshotId < 0) {
       return false;
     }
 

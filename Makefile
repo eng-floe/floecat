@@ -265,6 +265,8 @@ run-service: $(PROTO_JAR)
 	@echo "==> [DEV] quarkus:dev (profile=$(QUARKUS_PROFILE))"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+	  -Dfloecat.seed.enabled=true \
+	  -Dfloecat.seed.mode=iceberg \
 	  $(QUARKUS_DEV_ARGS) \
 	  $(REACTOR_SERVICE) \
 	  $(QUARKUS_DEV_GOAL)

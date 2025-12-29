@@ -117,7 +117,7 @@ public class ConnectorIT {
                 .setDisplayName("dummy-conn2")
                 .setKind(ConnectorKind.CK_UNITY)
                 .setUri("dummy://ignored")
-                .setSource(source(List.of("analytics", "sales")))
+                .setSource(source(List.of("examples", "iceberg")))
                 .setDestination(dest("cat-e2e"))
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
                 .build());
@@ -135,7 +135,7 @@ public class ConnectorIT {
         namespaces.getByPath(accountId.getId(), catId.getId(), List.of("db")).orElseThrow();
     var anaNsId =
         namespaces
-            .getByPath(accountId.getId(), catId.getId(), List.of("analytics", "sales"))
+            .getByPath(accountId.getId(), catId.getId(), List.of("examples", "iceberg"))
             .orElseThrow();
 
     assertEquals(
@@ -253,7 +253,7 @@ public class ConnectorIT {
         DestinationTarget.newBuilder()
             .setCatalogDisplayName("cat-dest-table")
             .setNamespace(
-                NamespacePath.newBuilder().addSegments("analytics").addSegments("sales").build())
+                NamespacePath.newBuilder().addSegments("examples").addSegments("iceberg").build())
             .setTableDisplayName("my_events_copy")
             .build();
 
@@ -284,7 +284,7 @@ public class ConnectorIT {
 
     var ns =
         namespaces
-            .getByPath(accountId.getId(), catId.getId(), List.of("analytics", "sales"))
+            .getByPath(accountId.getId(), catId.getId(), List.of("examples", "iceberg"))
             .orElseThrow();
 
     var outTables =

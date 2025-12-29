@@ -40,11 +40,12 @@ class ResourceAccessIT {
 
   @Test
   void getCatalogNotFound() throws Exception {
-    var salesId = TestSupport.resolveCatalogId(directory, "sales");
-    var sales = catalog.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(salesId).build());
-    assertEquals("sales", sales.getCatalog().getDisplayName());
+    var examplesId = TestSupport.resolveCatalogId(directory, "examples");
+    var examples =
+        catalog.getCatalog(GetCatalogRequest.newBuilder().setCatalogId(examplesId).build());
+    assertEquals("examples", examples.getCatalog().getDisplayName());
 
-    var missingRid = salesId.toBuilder().setId("00000000-0000-0000-0000-000000000000").build();
+    var missingRid = examplesId.toBuilder().setId("00000000-0000-0000-0000-000000000000").build();
 
     StatusRuntimeException ex =
         assertThrows(

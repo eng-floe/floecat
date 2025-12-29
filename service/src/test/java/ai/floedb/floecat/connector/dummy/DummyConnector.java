@@ -62,14 +62,14 @@ public final class DummyConnector implements FloecatConnector {
 
   @Override
   public List<String> listNamespaces() {
-    return List.of("db", "analytics.sales");
+    return List.of("db", "examples.iceberg");
   }
 
   @Override
   public List<String> listTables(String namespaceFq) {
     return switch (namespaceFq) {
       case "db" -> List.of("events", "users");
-      case "analytics.sales" -> List.of("orders");
+      case "examples.iceberg" -> List.of("orders");
       default -> List.of();
     };
   }
