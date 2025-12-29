@@ -23,6 +23,7 @@ import io.delta.kernel.defaults.engine.DefaultEngine;
 import io.delta.kernel.engine.Engine;
 import io.delta.kernel.internal.actions.DeletionVectorDescriptor;
 import io.delta.kernel.types.StructType;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -33,9 +34,15 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.apache.parquet.io.InputFile;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.S3Configuration;
 
 public final class UnityDeltaConnector implements FloecatConnector {
 
@@ -79,13 +86,35 @@ public final class UnityDeltaConnector implements FloecatConnector {
 
     var region =
         Region.of(
-            options.getOrDefault("s3.region", options.getOrDefault("aws.region", "us-east-1")));
+            resolveOption(
+                options,
+                "s3.region",
+                "aws.region",
+                "floecat.fileio.override.s3.region",
+                "us-east-1"));
 
-    var s3 =
+    boolean pathStyle =
+        Boolean.parseBoolean(
+            resolveOption(
+                options,
+                "s3.path-style-access",
+                "floecat.fileio.override.s3.path-style-access",
+                "false"));
+
+    var s3Builder =
         S3Client.builder()
             .region(region)
-            .credentialsProvider(DefaultCredentialsProvider.builder().build())
-            .build();
+            .serviceConfiguration(
+                S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build())
+            .credentialsProvider(resolveCredentials(options));
+
+    String endpoint =
+        resolveOption(options, "s3.endpoint", "floecat.fileio.override.s3.endpoint", null);
+    if (endpoint != null && !endpoint.isBlank()) {
+      s3Builder.endpointOverride(URI.create(endpoint));
+    }
+
+    var s3 = s3Builder.build();
 
     var engine = DefaultEngine.create(new S3V2FileSystemClient(s3));
 
@@ -115,6 +144,69 @@ public final class UnityDeltaConnector implements FloecatConnector {
 
     return new UnityDeltaConnector(
         "delta-unity", uc, sql, engine, inputFn, ndvEnabled, ndvSampleFraction, ndvMaxFiles);
+  }
+
+  private static AwsCredentialsProvider resolveCredentials(Map<String, String> options) {
+    String access =
+        resolveOption(
+            options, "s3.access-key-id", "floecat.fileio.override.s3.access-key-id", null);
+    String secret =
+        resolveOption(
+            options, "s3.secret-access-key", "floecat.fileio.override.s3.secret-access-key", null);
+    String token =
+        resolveOption(
+            options, "s3.session-token", "floecat.fileio.override.s3.session-token", null);
+
+    if (access != null && !access.isBlank() && secret != null && !secret.isBlank()) {
+      AwsCredentials creds =
+          (token != null && !token.isBlank())
+              ? AwsSessionCredentials.create(access, secret, token)
+              : AwsBasicCredentials.create(access, secret);
+      return StaticCredentialsProvider.create(creds);
+    }
+    return DefaultCredentialsProvider.builder().build();
+  }
+
+  private static String resolveOption(
+      Map<String, String> options, String key, String sysProp, String defaultValue) {
+    if (options != null) {
+      String opt = options.get(key);
+      if (opt != null && !opt.isBlank()) {
+        return opt;
+      }
+    }
+    if (sysProp != null && !sysProp.isBlank()) {
+      String prop = System.getProperty(sysProp);
+      if (prop != null && !prop.isBlank()) {
+        return prop;
+      }
+    }
+    return defaultValue;
+  }
+
+  private static String resolveOption(
+      Map<String, String> options,
+      String key,
+      String fallbackKey,
+      String sysProp,
+      String defaultValue) {
+    if (options != null) {
+      String opt = options.get(key);
+      if (opt != null && !opt.isBlank()) {
+        return opt;
+      }
+      String fallback = options.get(fallbackKey);
+      if (fallback != null && !fallback.isBlank()) {
+        return fallback;
+      }
+    }
+    if (sysProp != null && !sysProp.isBlank()) {
+      String prop = System.getProperty(sysProp);
+      if (prop != null && !prop.isBlank()) {
+        return prop;
+      }
+    }
+    return defaultValue;
   }
 
   @Override
