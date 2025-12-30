@@ -13,6 +13,7 @@ import ai.floedb.floecat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.floecat.catalog.rpc.ListCatalogsResponse;
 import ai.floedb.floecat.catalog.rpc.UpdateCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateCatalogResponse;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -24,6 +25,7 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
@@ -284,6 +286,18 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var id = request.getCatalogId();
                   ensureKind(id, ResourceKind.RK_CATALOG, "catalog_id", correlationId);
 
+                  MutationMeta meta;
+                  try {
+                    meta = catalogRepo.metaFor(id);
+                  } catch (BaseResourceRepository.NotFoundException missing) {
+                    var safe = catalogRepo.metaForSafe(id);
+                    MutationOps.BaseServiceChecks.enforcePreconditions(
+                        correlationId, safe, request.getPrecondition());
+                    catalogRepo.delete(id);
+                    metadataGraph.invalidate(id);
+                    return DeleteCatalogResponse.newBuilder().setMeta(safe).build();
+                  }
+
                   if (namespaceRepo.count(id.getAccountId(), id.getId(), List.of()) > 0) {
                     var currentCatalog = catalogRepo.getById(id).orElse(null);
                     var displayName =
@@ -294,9 +308,9 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                         correlationId, "catalog.not_empty", Map.of("display_name", displayName));
                   }
 
-                  var meta =
+                  var out =
                       MutationOps.deleteWithPreconditions(
-                          () -> catalogRepo.metaFor(id),
+                          () -> meta,
                           request.getPrecondition(),
                           expected -> catalogRepo.deleteWithPrecondition(id, expected),
                           () -> catalogRepo.metaForSafe(id),
@@ -305,7 +319,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                           Map.of("id", id.getId()));
 
                   metadataGraph.invalidate(id);
-                  return DeleteCatalogResponse.newBuilder().setMeta(meta).build();
+                  return DeleteCatalogResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())
         .onFailure()
@@ -370,6 +384,12 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   }
 
   private static byte[] canonicalFingerprint(CatalogSpec s) {
-    return new Canonicalizer().scalar("name", normalizeName(s.getDisplayName())).bytes();
+    return new Canonicalizer()
+        .scalar("name", normalizeName(s.getDisplayName()))
+        .scalar("description", s.getDescription())
+        .scalar("connector_ref", s.getConnectorRef())
+        .scalar("policy_ref", s.getPolicyRef())
+        .map("properties", s.getPropertiesMap())
+        .bytes();
   }
 }

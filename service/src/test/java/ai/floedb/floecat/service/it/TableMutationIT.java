@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.rpc.*;
 import ai.floedb.floecat.common.rpc.ErrorCode;
+import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.Precondition;
@@ -243,6 +244,76 @@ class TableMutationIT {
         "version should not bump on identical rename");
     assertEquals(
         before.getEtag(), noop.getMeta().getEtag(), "etag should not change on identical rename");
+  }
+
+  @Test
+  void tableDeleteIsIdempotent() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, tablePrefix + "cat_del", "tcat-del");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_tbl"), "ns for del");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "orders",
+            "s3://bucket/orders",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "none");
+
+    assertDoesNotThrow(
+        () ->
+            table.deleteTable(
+                DeleteTableRequest.newBuilder().setTableId(tbl.getResourceId()).build()));
+    assertDoesNotThrow(
+        () ->
+            table.deleteTable(
+                DeleteTableRequest.newBuilder().setTableId(tbl.getResourceId()).build()));
+  }
+
+  @Test
+  void createTableIdempotencyMismatchOnSchema() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, tablePrefix + "cat_idem", "idem");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_tbl"), "ns for idem");
+
+    var upstream =
+        UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).setUri("s3://b/p").build();
+
+    var key = IdempotencyKey.newBuilder().setKey(tablePrefix + "k-table-1").build();
+
+    var specA =
+        TableSpec.newBuilder()
+            .setCatalogId(cat.getResourceId())
+            .setNamespaceId(ns.getResourceId())
+            .setDisplayName("idem_tbl")
+            .setUpstream(upstream)
+            .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
+            .build();
+
+    var specB =
+        TableSpec.newBuilder()
+            .setCatalogId(cat.getResourceId())
+            .setNamespaceId(ns.getResourceId())
+            .setDisplayName("idem_tbl")
+            .setUpstream(upstream)
+            .setSchemaJson(
+                "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"},{\"name\":\"qty\",\"type\":\"int\"}]}")
+            .build();
+
+    table.createTable(CreateTableRequest.newBuilder().setSpec(specA).setIdempotency(key).build());
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                table.createTable(
+                    CreateTableRequest.newBuilder().setSpec(specB).setIdempotency(key).build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
   }
 
   @Test

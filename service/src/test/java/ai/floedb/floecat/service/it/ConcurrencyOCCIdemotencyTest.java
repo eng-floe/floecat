@@ -271,9 +271,11 @@ class ConcurrencyOCCIdempotencyIT {
 
     for (ResourceId id : createdTableIds) {
       var canonKey = Keys.tablePointerById(id.getAccountId(), id.getId());
-      var blobUri = Keys.tableBlobUri(id.getAccountId(), id.getId());
-      assertTrue(ptr.get(canonKey).isPresent(), "canon pointer must exist for created table");
-      assertTrue(blobs.head(blobUri).isPresent(), "blob must exist for created table");
+      var ptrRec = ptr.get(canonKey);
+      assertTrue(ptrRec.isPresent(), "canon pointer must exist for created table");
+      assertTrue(
+          blobs.head(ptrRec.orElseThrow().getBlobUri()).isPresent(),
+          "blob must exist for created table");
     }
 
     if (ptr.get(canonSeed).isPresent()) {

@@ -383,12 +383,12 @@ public final class TestSupport {
     var nsAccount = nsRid.getAccountId();
 
     var nsPtrKey = Keys.namespacePointerById(nsAccount, nsRid.getId());
-    var nsBlob = Keys.namespaceBlobUri(nsAccount, nsRid.getId());
 
     var nsPtr =
         ptr.get(nsPtrKey)
             .orElseThrow(
                 () -> new AssertionError("namespace canonical pointer missing: " + nsPtrKey));
+    var nsBlob = nsPtr.getBlobUri();
     var hdr =
         blobs
             .head(nsBlob)
@@ -407,11 +407,11 @@ public final class TestSupport {
 
     var account = tableId.getAccountId();
     var tblPtrKey = Keys.tablePointerById(account, tableId.getId());
-    var tblBlob = Keys.tableBlobUri(account, tableId.getId());
 
     var tblPtr =
         ptr.get(tblPtrKey)
             .orElseThrow(() -> new AssertionError("table pointer missing: " + tblPtrKey));
+    var tblBlob = tblPtr.getBlobUri();
     var hdr =
         blobs
             .head(tblBlob)
@@ -429,11 +429,11 @@ public final class TestSupport {
   public static MutationMeta metaForView(PointerStore ptr, BlobStore blobs, ResourceId viewId) {
     var account = viewId.getAccountId();
     var viewPtrKey = Keys.viewPointerById(account, viewId.getId());
-    var viewBlob = Keys.viewBlobUri(account, viewId.getId());
 
     var viewPtr =
         ptr.get(viewPtrKey)
             .orElseThrow(() -> new AssertionError("view pointer missing: " + viewPtrKey));
+    var viewBlob = viewPtr.getBlobUri();
     var hdr =
         blobs
             .head(viewBlob)

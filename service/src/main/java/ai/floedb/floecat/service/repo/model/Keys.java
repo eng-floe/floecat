@@ -78,9 +78,10 @@ public final class Keys {
     return "/accounts/by-name/";
   }
 
-  public static String accountBlobUri(String accountId) {
+  public static String accountBlobUri(String accountId, String sha256) {
     String tid = req("account_id", accountId);
-    return "/accounts/" + encode(tid) + "/account.pb";
+    String sha = req("sha256", sha256);
+    return String.format("/accounts/%s/account/%s.pb", encode(tid), encode(sha));
   }
 
   // ===== Catalog =====
@@ -102,10 +103,12 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/catalogs/by-name/";
   }
 
-  public static String catalogBlobUri(String accountId, String catalogId) {
+  public static String catalogBlobUri(String accountId, String catalogId, String sha256) {
     String tid = req("account_id", accountId);
     String cid = req("catalog_id", catalogId);
-    return "/accounts/" + encode(tid) + "/catalogs/" + encode(cid) + "/catalog.pb";
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/catalogs/%s/catalog/%s.pb", encode(tid), encode(cid), encode(sha));
   }
 
   // ===== Namespace =====
@@ -145,10 +148,12 @@ public final class Keys {
         + suffix;
   }
 
-  public static String namespaceBlobUri(String accountId, String namespaceId) {
+  public static String namespaceBlobUri(String accountId, String namespaceId, String sha256) {
     String tid = req("account_id", accountId);
     String nid = req("namespace_id", namespaceId);
-    return "/accounts/" + encode(tid) + "/namespaces/" + encode(nid) + "/namespace.pb";
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/namespaces/%s/namespace/%s.pb", encode(tid), encode(nid), encode(sha));
   }
 
   // ===== Table =====
@@ -189,10 +194,12 @@ public final class Keys {
         + "/tables/by-name/";
   }
 
-  public static String tableBlobUri(String accountId, String tableId) {
+  public static String tableBlobUri(String accountId, String tableId, String sha256) {
     String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
-    return "/accounts/" + encode(tid) + "/tables/" + encode(tbid) + "/table.pb";
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/tables/%s/table/%s.pb", encode(tid), encode(tbid), encode(sha));
   }
 
   // ===== Snapshot =====
@@ -229,12 +236,18 @@ public final class Keys {
     return String.format("/accounts/%s/tables/%s/snapshots/by-time/", encode(tid), encode(tbid));
   }
 
-  public static String snapshotBlobUri(String accountId, String tableId, long snapshotId) {
+  public static String snapshotBlobUri(
+      String accountId, String tableId, long snapshotId, String sha256) {
     String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     long sid = reqNonNegative("snapshot_id", snapshotId);
+    String sha = req("sha256", sha256);
     return String.format(
-        "/accounts/%s/tables/%s/snapshots/%019d/snapshot.pb", encode(tid), encode(tbid), sid);
+        "/accounts/%s/tables/%s/snapshots/%019d/snapshot/%s.pb",
+        encode(tid),
+        encode(tbid),
+        sid,
+        encode(sha));
   }
 
   // ===== Snapshot Stats =====
@@ -357,10 +370,11 @@ public final class Keys {
         + "/views/by-name/";
   }
 
-  public static String viewBlobUri(String accountId, String viewId) {
+  public static String viewBlobUri(String accountId, String viewId, String sha256) {
     String tid = req("account_id", accountId);
     String vid = req("view_id", viewId);
-    return "/accounts/" + encode(tid) + "/views/" + encode(vid) + "/view.pb";
+    String sha = req("sha256", sha256);
+    return String.format("/accounts/%s/views/%s/view/%s.pb", encode(tid), encode(vid), encode(sha));
   }
 
   // ===== Connector =====
@@ -382,10 +396,12 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/connectors/by-name/";
   }
 
-  public static String connectorBlobUri(String accountId, String connectorId) {
+  public static String connectorBlobUri(String accountId, String connectorId, String sha256) {
     String tid = req("account_id", accountId);
     String cid = req("connector_id", connectorId);
-    return "/accounts/" + encode(tid) + "/connectors/" + encode(cid) + "/connector.pb";
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/connectors/%s/connector/%s.pb", encode(tid), encode(cid), encode(sha));
   }
 
   // ===== Idempotency =====

@@ -569,6 +569,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   if (catalogId == null) {
                     var safe = namespaceRepo.metaForSafe(namespaceId);
+                    MutationOps.BaseServiceChecks.enforcePreconditions(
+                        correlationId, safe, request.getPrecondition());
                     namespaceRepo.delete(namespaceId);
                     metadataGraph.invalidate(namespaceId);
                     return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();

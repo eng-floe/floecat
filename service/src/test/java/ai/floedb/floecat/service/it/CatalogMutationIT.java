@@ -344,6 +344,42 @@ class CatalogMutationIT {
         ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
   }
 
+  @Test
+  void catalogCreateIdempotencyMismatchOnDescription() throws Exception {
+    var key = IdempotencyKey.newBuilder().setKey(catalogPrefix + "k-cat-3").build();
+
+    CreateCatalogResponse ccr =
+        catalog.createCatalog(
+            CreateCatalogRequest.newBuilder()
+                .setSpec(
+                    CatalogSpec.newBuilder()
+                        .setDisplayName(catalogPrefix + "idem_cat3")
+                        .setDescription("desc-a")
+                        .build())
+                .setIdempotency(key)
+                .build());
+
+    ResourceId catId = ccr.getCatalog().getResourceId();
+    awaitIdemVisible(catId.getAccountId(), "CreateCatalog", key.getKey(), Duration.ofSeconds(2));
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                catalog.createCatalog(
+                    CreateCatalogRequest.newBuilder()
+                        .setSpec(
+                            CatalogSpec.newBuilder()
+                                .setDisplayName(catalogPrefix + "idem_cat3")
+                                .setDescription("desc-b")
+                                .build())
+                        .setIdempotency(key)
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
+  }
+
   private void awaitIdemVisible(String account, String op, String key, Duration timeout)
       throws InterruptedException {
     long until = System.currentTimeMillis() + timeout.toMillis();

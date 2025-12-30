@@ -13,6 +13,7 @@ import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.account.rpc.ListAccountsResponse;
 import ai.floedb.floecat.account.rpc.UpdateAccountRequest;
 import ai.floedb.floecat.account.rpc.UpdateAccountResponse;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.AccountIds;
@@ -25,6 +26,7 @@ import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
@@ -283,6 +285,17 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   var accountId = request.getAccountId();
                   ensureKind(accountId, ResourceKind.RK_ACCOUNT, "account_id", corr);
 
+                  MutationMeta meta;
+                  try {
+                    meta = accountRepo.metaFor(accountId);
+                  } catch (BaseResourceRepository.NotFoundException missing) {
+                    var safe = accountRepo.metaForSafe(accountId);
+                    MutationOps.BaseServiceChecks.enforcePreconditions(
+                        corr, safe, request.getPrecondition());
+                    accountRepo.delete(accountId);
+                    return DeleteAccountResponse.newBuilder().setMeta(safe).build();
+                  }
+
                   if (catalogRepo.count(accountId.getId()) > 0) {
                     var cur = accountRepo.getById(accountId).orElse(null);
                     var name =
@@ -293,9 +306,9 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                         corr, "account.not_empty", Map.of("display_name", name));
                   }
 
-                  var meta =
+                  var out =
                       MutationOps.deleteWithPreconditions(
-                          () -> accountRepo.metaFor(accountId),
+                          () -> meta,
                           request.getPrecondition(),
                           expected -> accountRepo.deleteWithPrecondition(accountId, expected),
                           () -> accountRepo.metaForSafe(accountId),
@@ -303,7 +316,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                           "account",
                           Map.of("id", accountId.getId()));
 
-                  return DeleteAccountResponse.newBuilder().setMeta(meta).build();
+                  return DeleteAccountResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())
         .onFailure()
@@ -348,6 +361,9 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   }
 
   private static byte[] canonicalFingerprint(AccountSpec s) {
-    return new Canonicalizer().scalar("name", normalizeName(s.getDisplayName())).bytes();
+    return new Canonicalizer()
+        .scalar("name", normalizeName(s.getDisplayName()))
+        .scalar("description", s.getDescription())
+        .bytes();
   }
 }

@@ -80,10 +80,9 @@ class BackendStorageIT {
     String keyNsByPath =
         Keys.namespacePointerByPath(cat.getResourceId().getAccountId(), catId.getId(), fullPath);
     String keyNsPtr = Keys.namespacePointerById(cat.getResourceId().getAccountId(), nsId.getId());
-    String keyNsBlob = Keys.namespaceBlobUri(cat.getResourceId().getAccountId(), nsId.getId());
     assertTrue(ptr.get(keyNsByPath).isPresent(), "namespace by-path pointer missing");
-    assertTrue(ptr.get(keyNsPtr).isPresent(), "namespace canonical pointer missing");
-    assertTrue(blobs.head(keyNsBlob).isPresent(), "namespace blob missing");
+    var nsPtr = ptr.get(keyNsPtr).orElseThrow();
+    assertTrue(blobs.head(nsPtr.getBlobUri()).isPresent(), "namespace blob missing");
     assertTrue(ptr.get(keyNsByPath).isPresent(), "namespace by-path (parents) index missing");
 
     var nsLookup =
@@ -105,11 +104,10 @@ class BackendStorageIT {
         Keys.tablePointerByName(
             cat.getResourceId().getAccountId(), catId.getId(), nsId.getId(), "it_tbl");
     String keyTblCanon = Keys.tablePointerById(cat.getResourceId().getAccountId(), tblId.getId());
-    String tblBlobUri = Keys.tableBlobUri(cat.getResourceId().getAccountId(), tblId.getId());
 
     assertTrue(ptr.get(keyTblByName).isPresent(), "table by-name pointer missing");
-    assertTrue(ptr.get(keyTblCanon).isPresent(), "table canonical pointer missing");
-    assertTrue(blobs.head(tblBlobUri).isPresent(), "table blob header missing");
+    var tblPtr = ptr.get(keyTblCanon).orElseThrow();
+    assertTrue(blobs.head(tblPtr.getBlobUri()).isPresent(), "table blob header missing");
 
     var tblLookup =
         directory.lookupTable(LookupTableRequest.newBuilder().setResourceId(tblId).build());
@@ -120,8 +118,8 @@ class BackendStorageIT {
     String canonPtrKey = Keys.tablePointerById(tblId.getAccountId(), tblId.getId());
     Pointer tpCanon =
         ptr.get(canonPtrKey).orElseThrow(() -> new AssertionError("canonical pointer missing"));
-    assertEquals(tblBlobUri, tpCanon.getBlobUri());
-    assertTrue(blobs.head(tblBlobUri).isPresent(), "table blob header missing");
+    assertTrue(blobs.head(tpCanon.getBlobUri()).isPresent(), "table blob header missing");
+    String blobBefore = tpCanon.getBlobUri();
 
     long verCanonBefore = tpCanon.getVersion();
     String schemaV2 =
@@ -133,8 +131,8 @@ class BackendStorageIT {
 
     Pointer tpCanonAfter = ptr.get(canonPtrKey).orElseThrow();
     assertTrue(tpCanonAfter.getVersion() > verCanonBefore, "version must bump on content change");
-    assertEquals(
-        tblBlobUri, tpCanonAfter.getBlobUri(), "blob URI stable; content updated behind it");
+    assertNotEquals(
+        blobBefore, tpCanonAfter.getBlobUri(), "blob URI should change when content changes");
 
     long verBeforeIdempotent = tpCanonAfter.getVersion();
     TestSupport.updateSchema(table, tblId, schemaV2);
@@ -143,6 +141,10 @@ class BackendStorageIT {
         tpCanonAfterIdem.getVersion(),
         verBeforeIdempotent,
         "version must not bump on identical content");
+    assertEquals(
+        tpCanonAfter.getBlobUri(),
+        tpCanonAfterIdem.getBlobUri(),
+        "blob URI should remain stable on identical content");
 
     String oldName = tbl.getDisplayName();
     String newName = "it_tbl_renamed";
@@ -157,12 +159,10 @@ class BackendStorageIT {
     TestSupport.deleteTable(table, nsId, tblId);
     assertTrue(ptr.get(keyTblCanon).isEmpty());
     assertTrue(ptr.get(keyTblByName).isEmpty());
-    assertTrue(blobs.head(tblBlobUri).isEmpty());
 
     TestSupport.deleteNamespace(namespace, nsId, true);
     assertTrue(ptr.get(keyNsByPath).isEmpty(), "ns by-path pointer should be deleted");
     assertTrue(ptr.get(keyNsPtr).isEmpty(), "ns canonical pointer should be deleted");
-    assertTrue(blobs.head(keyNsBlob).isEmpty(), "ns blob should be deleted");
 
     var schemaNsId =
         TestSupport.resolveNamespaceId(
@@ -175,10 +175,8 @@ class BackendStorageIT {
     TestSupport.deleteCatalog(catalog, catId, true);
     String catByIdKey = Keys.catalogPointerById(catId.getAccountId(), catId.getId());
     String catByNameKey = Keys.catalogPointerByName(catId.getAccountId(), catName);
-    String catBlobUri = Keys.catalogBlobUri(catId.getAccountId(), catId.getId());
     assertTrue(ptr.get(catByIdKey).isEmpty());
     assertTrue(ptr.get(catByNameKey).isEmpty());
-    assertTrue(blobs.head(catBlobUri).isEmpty());
   }
 
   @Test
@@ -337,12 +335,13 @@ class BackendStorageIT {
             "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
             "d");
     var tid = tbl.getResourceId();
-    String blob = Keys.tableBlobUri(tbl.getResourceId().getAccountId(), tid.getId());
-
+    var blob = ptr.get(Keys.tablePointerById(tid.getAccountId(), tid.getId())).orElseThrow().getBlobUri();
     var e1 = blobs.head(blob).orElseThrow().getEtag();
     TestSupport.updateSchema(
         table, tid, "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}");
-    var e2 = blobs.head(blob).orElseThrow().getEtag();
+    var blob2 =
+        ptr.get(Keys.tablePointerById(tid.getAccountId(), tid.getId())).orElseThrow().getBlobUri();
+    var e2 = blobs.head(blob2).orElseThrow().getEtag();
     assertEquals(e1, e2);
 
     TestSupport.updateSchema(
@@ -351,7 +350,9 @@ class BackendStorageIT {
         "{\"type\":\"struct\",\"fields\""
             + ":[{\"name\":\"id\",\"type\":\"long\"},{\"name\":\"y\",\"type\":\"double\"}]}");
 
-    var e3 = blobs.head(blob).orElseThrow().getEtag();
+    var blob3 =
+        ptr.get(Keys.tablePointerById(tid.getAccountId(), tid.getId())).orElseThrow().getBlobUri();
+    var e3 = blobs.head(blob3).orElseThrow().getEtag();
     assertNotEquals(e2, e3);
   }
 
@@ -375,19 +376,12 @@ class BackendStorageIT {
 
     Keys.tablePointerById(tbl.getResourceId().getAccountId(), tbl.getResourceId().getId());
 
-    // Simulate blob missing
-    assertTrue(
-        blobs.delete(
-            Keys.tableBlobUri(tbl.getResourceId().getAccountId(), tbl.getResourceId().getId())));
-
-    var bad =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                table.deleteTable(
-                    DeleteTableRequest.newBuilder().setTableId(tbl.getResourceId()).build()));
-
-    TestSupport.assertGrpcAndMc(bad, Status.Code.INTERNAL, ErrorCode.MC_INTERNAL, "Internal error");
+    var blobUri =
+        ptr.get(Keys.tablePointerById(tbl.getResourceId().getAccountId(), tbl.getResourceId().getId()))
+            .orElseThrow()
+            .getBlobUri();
+    assertTrue(blobs.delete(blobUri));
+    table.deleteTable(DeleteTableRequest.newBuilder().setTableId(tbl.getResourceId()).build());
 
     var tbl2 =
         TestSupport.createTable(
@@ -403,12 +397,7 @@ class BackendStorageIT {
 
     // Simulate canonical ptr missing
     assertTrue(ptr.delete(canon2));
-    bad =
-        assertThrows(
-            StatusRuntimeException.class,
-            () -> TestSupport.deleteTable(table, ns.getResourceId(), tid2));
-    TestSupport.assertGrpcAndMc(
-        bad, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Table not found");
+    table.deleteTable(DeleteTableRequest.newBuilder().setTableId(tid2).build());
   }
 
   @Test
@@ -560,9 +549,8 @@ class BackendStorageIT {
     assertEquals(t1.getId(), t2.getId(), "idempotent create must return the same table id");
 
     var canonPtrKey = Keys.tablePointerById(cat.getResourceId().getAccountId(), t1.getId());
-    var blobUri = Keys.tableBlobUri(cat.getResourceId().getAccountId(), t1.getId());
-    assertTrue(ptr.get(canonPtrKey).isPresent(), "canonical pointer missing");
-    assertTrue(blobs.head(blobUri).isPresent(), "blob missing");
+    var ptr1 = ptr.get(canonPtrKey).orElseThrow();
+    assertTrue(blobs.head(ptr1.getBlobUri()).isPresent(), "blob missing");
 
     var idxByName =
         Keys.tablePointerByName(
@@ -686,8 +674,7 @@ class BackendStorageIT {
 
     var tid = a.getTable().getResourceId();
     var canonPtrKey = Keys.tablePointerById(cat.getResourceId().getAccountId(), tid.getId());
-    var blobUri = Keys.tableBlobUri(cat.getResourceId().getAccountId(), tid.getId());
-    assertTrue(ptr.get(canonPtrKey).isPresent());
-    assertTrue(blobs.head(blobUri).isPresent());
+    var ptr1 = ptr.get(canonPtrKey).orElseThrow();
+    assertTrue(blobs.head(ptr1.getBlobUri()).isPresent());
   }
 }

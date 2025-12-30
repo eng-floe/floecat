@@ -89,6 +89,7 @@ Each repository extends `BaseResourceRepository<T>`:
 - Writes blobs with checksum verification (`sha256B64`).
 - Maintains `MutationMeta` (pointer key, blob URI, pointer version, ETag, timestamp).
 - Provides convenience accessors such as `getByName`, `getById`, `list`, and `metaForSafe`.
+- Deletes tolerate missing blobs when cleaning up pointers, so skewed pointer/blob states can still be removed safely.
 
 `BaseResourceRepository` also exposes `reserveAllOrRollback` for multi-key updates, and
 `compareAndDelete` semantics for CAS-based deletions. Tests ensure parity between in-memory and AWS

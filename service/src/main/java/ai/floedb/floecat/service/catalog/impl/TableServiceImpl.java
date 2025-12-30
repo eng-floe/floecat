@@ -14,6 +14,7 @@ import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -181,14 +182,25 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                   "catalog",
                                   Map.of("id", request.getSpec().getCatalogId().getId())));
 
-                  namespaceRepo
-                      .getById(request.getSpec().getNamespaceId())
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  corr,
-                                  "namespace",
-                                  Map.of("id", request.getSpec().getNamespaceId().getId())));
+                  var ns =
+                      namespaceRepo
+                          .getById(request.getSpec().getNamespaceId())
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      corr,
+                                      "namespace",
+                                      Map.of("id", request.getSpec().getNamespaceId().getId())));
+                  var catId = request.getSpec().getCatalogId();
+                  if (!ns.getCatalogId().getId().equals(catId.getId())) {
+                    throw GrpcErrors.invalidArgument(
+                        corr,
+                        "namespace.catalog_mismatch",
+                        Map.of(
+                            "namespace_id", ns.getResourceId().getId(),
+                            "namespace.catalog_id", ns.getCatalogId().getId(),
+                            "catalog_id", catId.getId()));
+                  }
 
                   var tsNow = nowTs();
 
@@ -216,6 +228,9 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           .setUpstream(spec.getUpstream())
                           .putAllProperties(spec.getPropertiesMap())
                           .build();
+                  if (spec.hasUpstream()) {
+                    validateUpstreamRef(spec.getUpstream(), corr);
+                  }
 
                   if (idempotencyKey == null) {
                     var existing =
@@ -354,27 +369,30 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var tableId = request.getTableId();
                   ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
 
+                  MutationMeta meta;
                   try {
-                    var meta =
-                        MutationOps.deleteWithPreconditions(
-                            () -> tableRepo.metaFor(tableId),
-                            request.getPrecondition(),
-                            expected -> tableRepo.deleteWithPrecondition(tableId, expected),
-                            () -> tableRepo.metaForSafe(tableId),
-                            correlationId,
-                            "table",
-                            Map.of("id", tableId.getId()));
-
-                    metadataGraph.invalidate(tableId);
-                    return DeleteTableResponse.newBuilder().setMeta(meta).build();
-
-                  } catch (BaseResourceRepository.NotFoundException pointerMissing) {
+                    meta = tableRepo.metaFor(tableId);
+                  } catch (BaseResourceRepository.NotFoundException missing) {
+                    var safe = tableRepo.metaForSafe(tableId);
+                    MutationOps.BaseServiceChecks.enforcePreconditions(
+                        correlationId, safe, request.getPrecondition());
                     tableRepo.delete(tableId);
                     metadataGraph.invalidate(tableId);
-                    return DeleteTableResponse.newBuilder()
-                        .setMeta(tableRepo.metaForSafe(tableId))
-                        .build();
+                    return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   }
+
+                  var out =
+                      MutationOps.deleteWithPreconditions(
+                          () -> meta,
+                          request.getPrecondition(),
+                          expected -> tableRepo.deleteWithPrecondition(tableId, expected),
+                          () -> tableRepo.metaForSafe(tableId),
+                          correlationId,
+                          "table",
+                          Map.of("id", tableId.getId()));
+
+                  metadataGraph.invalidate(tableId);
+                  return DeleteTableResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())
         .onFailure()
@@ -413,7 +431,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
       if (!spec.hasDisplayName()) {
         throw GrpcErrors.invalidArgument(corr, "display_name.cannot_clear", Map.of());
       }
-      b.setDisplayName(mustNonEmpty(spec.getDisplayName(), "spec.display_name", corr));
+      b.setDisplayName(
+          normalizeName(mustNonEmpty(spec.getDisplayName(), "spec.display_name", corr)));
     }
 
     if (maskTargets(mask, "description")) {
@@ -576,21 +595,20 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   }
 
   private void validateUpstreamRef(UpstreamRef up, String corr) {
-    if (!up.hasConnectorId() || up.getConnectorId().getId().isBlank()) {
-      throw GrpcErrors.invalidArgument(corr, "upstream.connector_id.required", Map.of());
-    }
-
-    if (up.getNamespacePathCount() == 0) {
-      throw GrpcErrors.invalidArgument(corr, "upstream.namespace_path.required", Map.of());
-    }
-    for (var seg : up.getNamespacePathList()) {
-      if (seg == null || seg.isBlank()) {
-        throw GrpcErrors.invalidArgument(corr, "upstream.namespace_path.segment.blank", Map.of());
+    if (up.hasConnectorId()) {
+      if (up.getConnectorId().getId().isBlank()) {
+        throw GrpcErrors.invalidArgument(corr, "upstream.connector_id.required", Map.of());
       }
+      ensureKind(
+          up.getConnectorId(), ResourceKind.RK_CONNECTOR, "spec.upstream.connector_id", corr);
     }
 
-    if (up.getTableDisplayName().isBlank()) {
-      throw GrpcErrors.invalidArgument(corr, "upstream.table_display_name.required", Map.of());
+    if (up.getNamespacePathCount() > 0) {
+      for (var seg : up.getNamespacePathList()) {
+        if (seg == null || seg.isBlank()) {
+          throw GrpcErrors.invalidArgument(corr, "upstream.namespace_path.segment.blank", Map.of());
+        }
+      }
     }
 
     for (var e : up.getFieldIdByPathMap().entrySet()) {
@@ -608,10 +626,23 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   }
 
   private static byte[] canonicalFingerprint(TableSpec s) {
+    UpstreamRef up = s.getUpstream();
     return new Canonicalizer()
         .scalar("cat", nullSafeId(s.getCatalogId()))
         .scalar("ns", nullSafeId(s.getNamespaceId()))
         .scalar("name", normalizeName(s.getDisplayName()))
+        .scalar("schema_json", s.getSchemaJson())
+        .group(
+            "upstream",
+            c ->
+                c.scalar("connector_id", nullSafeId(up.getConnectorId()))
+                    .scalar("uri", up.getUri())
+                    .list("namespace_path", up.getNamespacePathList())
+                    .scalar("table_display_name", up.getTableDisplayName())
+                    .scalar("format", up.getFormat())
+                    .list("partition_keys", up.getPartitionKeysList())
+                    .map("field_id_by_path", up.getFieldIdByPathMap()))
+        .map("properties", s.getPropertiesMap())
         .bytes();
   }
 }

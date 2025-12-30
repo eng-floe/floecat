@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.rpc.*;
 import ai.floedb.floecat.common.rpc.ErrorCode;
+import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.Precondition;
@@ -307,5 +308,45 @@ class ViewMutationIT {
                 .setPage(PageRequest.newBuilder().setPageSize(10).build())
                 .build());
     assertEquals(0, emptyList.getViewsCount());
+  }
+
+  @Test
+  void viewCreateIdempotencyMismatchOnSql() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, viewPrefix + "cat_idem", "view-idem");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "views_ns", List.of("db_view"), "namespace for views");
+
+    var key = IdempotencyKey.newBuilder().setKey(viewPrefix + "k-view-1").build();
+
+    var specA =
+        ViewSpec.newBuilder()
+            .setCatalogId(cat.getResourceId())
+            .setNamespaceId(ns.getResourceId())
+            .setDisplayName("idem_view")
+            .setDescription("desc-a")
+            .setSql("SELECT 1")
+            .build();
+
+    var specB =
+        ViewSpec.newBuilder()
+            .setCatalogId(cat.getResourceId())
+            .setNamespaceId(ns.getResourceId())
+            .setDisplayName("idem_view")
+            .setDescription("desc-a")
+            .setSql("SELECT 2")
+            .build();
+
+    view.createView(CreateViewRequest.newBuilder().setSpec(specA).setIdempotency(key).build());
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                view.createView(
+                    CreateViewRequest.newBuilder().setSpec(specB).setIdempotency(key).build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
   }
 }

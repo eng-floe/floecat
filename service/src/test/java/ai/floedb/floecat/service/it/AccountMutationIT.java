@@ -251,4 +251,36 @@ class AccountMutationIT {
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
   }
+
+  @Test
+  void accountCreateIdempotencyMismatchOnDescription() throws Exception {
+    var key = IdempotencyKey.newBuilder().setKey(accountPrefix + "k-ten-3").build();
+
+    tenancy.createAccount(
+        CreateAccountRequest.newBuilder()
+            .setSpec(
+                AccountSpec.newBuilder()
+                    .setDisplayName(accountPrefix + "idem_account3")
+                    .setDescription("desc-a")
+                    .build())
+            .setIdempotency(key)
+            .build());
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                tenancy.createAccount(
+                    CreateAccountRequest.newBuilder()
+                        .setSpec(
+                            AccountSpec.newBuilder()
+                                .setDisplayName(accountPrefix + "idem_account3")
+                                .setDescription("desc-b")
+                                .build())
+                        .setIdempotency(key)
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
+  }
 }
