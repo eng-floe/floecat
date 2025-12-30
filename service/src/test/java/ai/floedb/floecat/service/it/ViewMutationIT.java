@@ -67,7 +67,7 @@ class ViewMutationIT {
             cat.getResourceId(),
             nsId,
             "recent_orders",
-            "SELECT order_id, customer_id FROM sales.core.orders "
+            "SELECT order_id, customer_id FROM examples.iceberg.orders "
                 + "WHERE order_date >= current_date - INTERVAL '7' DAY",
             "recent orders view");
 
@@ -95,7 +95,7 @@ class ViewMutationIT {
             nsId,
             "weekly_summary",
             "SELECT customer_id, count(*) AS weekly_orders "
-                + "FROM sales.core.orders GROUP BY customer_id",
+                + "FROM examples.iceberg.orders GROUP BY customer_id",
             "weekly summary");
     var weeklyId = weekly.getResourceId();
 
@@ -208,7 +208,7 @@ class ViewMutationIT {
                 .setSpec(
                     ViewSpec.newBuilder()
                         .setSql(
-                            "SELECT order_id, customer_id, total_price FROM sales.core.orders "
+                            "SELECT order_id, customer_id, total_price FROM examples.iceberg.orders "
                                 + "WHERE order_date >= current_date - INTERVAL '14' DAY")
                         .build())
                 .setUpdateMask(mask_sql)
@@ -219,7 +219,7 @@ class ViewMutationIT {
                         .build())
                 .build());
     assertEquals(
-        "SELECT order_id, customer_id, total_price FROM sales.core.orders WHERE order_date >="
+        "SELECT order_id, customer_id, total_price FROM examples.iceberg.orders WHERE order_date >="
             + " current_date - INTERVAL '14' DAY",
         sqlUpdate.getView().getSql());
     assertTrue(sqlUpdate.getMeta().getPointerVersion() > beforeSql.getPointerVersion());
@@ -252,7 +252,7 @@ class ViewMutationIT {
                     ViewSpec.newBuilder()
                         .setDisplayName("recent_orders_v2")
                         .setSql(
-                            "SELECT order_id, customer_id, total_price FROM sales.core.orders "
+                            "SELECT order_id, customer_id, total_price FROM examples.iceberg.orders "
                                 + "WHERE order_date >= current_date - INTERVAL '14' DAY")
                         .build())
                 .setUpdateMask(mask_all)

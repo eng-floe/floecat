@@ -121,6 +121,11 @@
       <artifactId>floecat-connectors-iceberg</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-connectors-delta</artifactId>
+      <version>${project.version}</version>
+    </dependency>
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>

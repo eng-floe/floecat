@@ -110,7 +110,11 @@ class DirectoryIT {
   @Test
   void resolveTableNotFound() {
     var missing =
-        NameRef.newBuilder().setCatalog("sales").addPath("core").setName("does_not_exist").build();
+        NameRef.newBuilder()
+            .setCatalog("examples")
+            .addPath("iceberg")
+            .setName("does_not_exist")
+            .build();
 
     var ex =
         assertThrows(

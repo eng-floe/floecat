@@ -208,7 +208,7 @@ class QueryScanServiceIT {
 
     var source =
         SourceSelector.newBuilder()
-            .setNamespace(NamespacePath.newBuilder().addSegments("analytics").addSegments("sales"))
+            .setNamespace(NamespacePath.newBuilder().addSegments("examples").addSegments("iceberg"))
             .build();
 
     var destination =
@@ -235,8 +235,8 @@ class QueryScanServiceIT {
             .setUri("dummy://ignored")
             .setTableDisplayName(connector.getDisplayName() + "_src")
             .setFormat(TableFormat.TF_ICEBERG)
-            .addNamespacePath("analytics")
-            .addNamespacePath("sales")
+            .addNamespacePath("examples")
+            .addNamespacePath("iceberg")
             .build();
 
     var spec = TableSpec.newBuilder().setUpstream(upstream).build();

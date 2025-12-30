@@ -88,7 +88,7 @@ class IcebergRestFixtureIT {
   private static final String DEFAULT_ACCOUNT = "5eaa9cd5-7d08-3750-9457-cfe800b0b9d2";
   private static final String NAMESPACE_PREFIX = "fixture_ns_";
   private static final String TABLE_PREFIX = "fixture_tbl_";
-  private static final String CATALOG = "sales";
+  private static final String CATALOG = "examples";
   private static final String FIXTURE_METADATA_PREFIX = TestS3Fixtures.bucketUri("metadata/");
   private static final String METADATA_V1 =
       "metadata/00000-16393a9a-3433-440c-98f4-fe023ed03973.metadata.json";
@@ -547,7 +547,7 @@ class IcebergRestFixtureIT {
         .get("/v1/" + CATALOG + "/namespaces")
         .then()
         .statusCode(200)
-        .body("namespaces*.get(0)", hasItem("core"));
+        .body("namespaces*.get(0)", hasItem("iceberg"));
   }
 
   @Test
@@ -655,7 +655,7 @@ class IcebergRestFixtureIT {
               "report-type",
               "commit-report",
               "table-name",
-              "sales_rest." + namespace + "." + table,
+              CATALOG + "_rest." + namespace + "." + table,
               "snapshot-id",
               snapshotId,
               "sequence-number",
@@ -899,7 +899,7 @@ class IcebergRestFixtureIT {
   @Test
   void listsTablesInSeededNamespace() {
     registerTable(
-        "core",
+        "iceberg",
         "trino_test",
         "metadata/00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json",
         false);
@@ -907,7 +907,7 @@ class IcebergRestFixtureIT {
     given()
         .spec(spec)
         .when()
-        .get("/v1/" + CATALOG + "/namespaces/core/tables")
+        .get("/v1/" + CATALOG + "/namespaces/iceberg/tables")
         .then()
         .statusCode(200)
         .body("identifiers.name", hasItems("trino_test"));
@@ -915,7 +915,7 @@ class IcebergRestFixtureIT {
     given()
         .spec(spec)
         .when()
-        .get("/v1/" + CATALOG + "/namespaces/core/tables/trino_test")
+        .get("/v1/" + CATALOG + "/namespaces/iceberg/tables/trino_test")
         .then()
         .statusCode(200)
         .body("metadata.location", equalTo("s3://yb-iceberg-tpcds/trino_test"))
@@ -923,7 +923,8 @@ class IcebergRestFixtureIT {
         .body("metadata.'format-version'", equalTo(2));
 
     if (connectorIntegrationEnabled) {
-      Connector connector = awaitConnectorForTable("core", "trino_test", Duration.ofSeconds(20));
+      Connector connector =
+          awaitConnectorForTable("iceberg", "trino_test", Duration.ofSeconds(20));
       Assertions.assertNotNull(connector, "Connector should be created for trino_test");
 
       withConnectorsClient(
@@ -941,7 +942,7 @@ class IcebergRestFixtureIT {
             return null;
           });
 
-      ResourceId tableId = resolveTableId("core", "trino_test");
+      ResourceId tableId = resolveTableId("iceberg", "trino_test");
       Table tableRecord =
           withTableClient(
               stub ->

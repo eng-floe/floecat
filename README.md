@@ -121,12 +121,23 @@ make stop
 make logs
 
 # Run service wired to LocalStack (DynamoDB + S3 backends)
-make run-aws
+make run-localstack-localstack
 
-# Run service tests (service module) against LocalStack
-make test-aws
+# Run service wired to LocalStack upstream + real AWS catalog
+make run-localstack-aws
 
-# Stop the LocalStack container (if you launched it via the Make targets)
+# Run service wired to real AWS upstream + LocalStack catalog
+make run-aws-localstack
+
+# Run service wired to real AWS upstream + real AWS catalog
+make run-aws-aws
+
+# Run REST gateway (foreground, in-memory) or alongside the service
+make run-rest
+make run-all
+
+# Start/stop the LocalStack container (if you launched it via the Make targets)
+make localstack-up
 make localstack-down
 ```
 
@@ -136,8 +147,11 @@ catalogs, namespaces, tables, and snapshots.
 Testing:
 
 ```bash
-# Unit + integration tests across modules
+# Unit + integration tests across modules (in-memory)
 make test
+
+# Run full test suite against LocalStack (upstream + catalog)
+make test-localstack
 
 # Only run unit or integration suites
 make unit-test

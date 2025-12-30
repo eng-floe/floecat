@@ -18,6 +18,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.*;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
 import ai.floedb.floecat.reconciler.impl.ReconcilerScheduler;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
@@ -25,11 +26,16 @@ import ai.floedb.floecat.service.repo.impl.*;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import com.google.protobuf.FieldMask;
+import com.sun.net.httpserver.HttpServer;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
@@ -111,7 +117,7 @@ public class ConnectorIT {
                 .setDisplayName("dummy-conn2")
                 .setKind(ConnectorKind.CK_UNITY)
                 .setUri("dummy://ignored")
-                .setSource(source(List.of("analytics", "sales")))
+                .setSource(source(List.of("examples", "iceberg")))
                 .setDestination(dest("cat-e2e"))
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
                 .build());
@@ -129,7 +135,7 @@ public class ConnectorIT {
         namespaces.getByPath(accountId.getId(), catId.getId(), List.of("db")).orElseThrow();
     var anaNsId =
         namespaces
-            .getByPath(accountId.getId(), catId.getId(), List.of("analytics", "sales"))
+            .getByPath(accountId.getId(), catId.getId(), List.of("examples", "iceberg"))
             .orElseThrow();
 
     assertEquals(
@@ -247,7 +253,7 @@ public class ConnectorIT {
         DestinationTarget.newBuilder()
             .setCatalogDisplayName("cat-dest-table")
             .setNamespace(
-                NamespacePath.newBuilder().addSegments("analytics").addSegments("sales").build())
+                NamespacePath.newBuilder().addSegments("examples").addSegments("iceberg").build())
             .setTableDisplayName("my_events_copy")
             .build();
 
@@ -278,7 +284,7 @@ public class ConnectorIT {
 
     var ns =
         namespaces
-            .getByPath(accountId.getId(), catId.getId(), List.of("analytics", "sales"))
+            .getByPath(accountId.getId(), catId.getId(), List.of("examples", "iceberg"))
             .orElseThrow();
 
     var outTables =
@@ -292,6 +298,61 @@ public class ConnectorIT {
 
     assertEquals(1, outTables.size(), "expected exactly one table in destination namespace");
     assertEquals("my_events_copy", outTables.get(0).getDisplayName());
+  }
+
+  @Test
+  void deltaConnectorEndToEnd() throws Exception {
+    Assumptions.assumeTrue(
+        TestDeltaFixtures.useAwsFixtures(), "Delta fixtures require S3/localstack");
+
+    TestDeltaFixtures.seedFixturesOnce();
+
+    var accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    TestSupport.createCatalog(catalogService, "cat-delta", "");
+
+    try (UcStubServer uc = UcStubServer.start(TestDeltaFixtures.tableUri())) {
+      var spec =
+          ConnectorSpec.newBuilder()
+              .setDisplayName("delta-conn")
+              .setKind(ConnectorKind.CK_DELTA)
+              .setUri(uc.baseUri())
+              .setSource(
+                  SourceSelector.newBuilder()
+                      .setNamespace(
+                          NamespacePath.newBuilder()
+                              .addSegments("main")
+                              .addSegments("tpcds")
+                              .build())
+                      .setTable("call_center"))
+              .setDestination(dest("cat-delta"))
+              .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+              .putAllProperties(TestDeltaFixtures.s3Options())
+              .build();
+
+      var conn = TestSupport.createConnector(connectors, spec);
+      var job = runReconcile(conn.getResourceId());
+      assertNotNull(job);
+      assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
+
+      var catId = catalogs.getByName(accountId.getId(), "cat-delta").orElseThrow().getResourceId();
+
+      var ns =
+          namespaces
+              .getByPath(accountId.getId(), catId.getId(), List.of("main", "tpcds"))
+              .orElseThrow();
+
+      var outTables =
+          tables.list(
+              accountId.getId(),
+              catId.getId(),
+              ns.getResourceId().getId(),
+              50,
+              "",
+              new StringBuilder());
+
+      assertEquals(1, outTables.size(), "expected exactly one table in destination namespace");
+      assertEquals("call_center", outTables.get(0).getDisplayName());
+    }
   }
 
   @Test
@@ -370,6 +431,61 @@ public class ConnectorIT {
     }
 
     return job;
+  }
+
+  private static final class UcStubServer implements AutoCloseable {
+    private final HttpServer server;
+    private final String baseUri;
+
+    private UcStubServer(HttpServer server) {
+      this.server = server;
+      this.baseUri = "http://localhost:" + server.getAddress().getPort();
+    }
+
+    static UcStubServer start(String storageLocation) throws IOException {
+      HttpServer server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+
+      String catalogsJson = "{\"catalogs\":[{\"name\":\"main\"}]}";
+      String schemasJson = "{\"schemas\":[{\"name\":\"tpcds\"}]}";
+      String tablesJson =
+          "{\"tables\":[{\"name\":\"call_center\",\"table_type\":\"TABLE\",\"data_source_format\":\"DELTA\"}]}";
+      String tableJson =
+          """
+          {"name":"call_center","catalog_name":"main","schema_name":"tpcds","table_type":"MANAGED","data_source_format":"DELTA","storage_location":"%s","columns":[{"name":"cc_call_center_sk","type_text":"int","nullable":true},{"name":"cc_call_center_id","type_text":"string","nullable":true}]}
+          """
+              .formatted(storageLocation);
+
+      server.createContext(
+          "/api/2.1/unity-catalog/catalogs", exchange -> writeJson(exchange, catalogsJson));
+      server.createContext(
+          "/api/2.1/unity-catalog/schemas", exchange -> writeJson(exchange, schemasJson));
+      server.createContext(
+          "/api/2.1/unity-catalog/tables", exchange -> writeJson(exchange, tablesJson));
+      server.createContext(
+          "/api/2.1/unity-catalog/tables/", exchange -> writeJson(exchange, tableJson));
+
+      server.start();
+      return new UcStubServer(server);
+    }
+
+    String baseUri() {
+      return baseUri;
+    }
+
+    @Override
+    public void close() {
+      server.stop(0);
+    }
+
+    private static void writeJson(com.sun.net.httpserver.HttpExchange exchange, String body)
+        throws IOException {
+      byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+      exchange.getResponseHeaders().add("Content-Type", "application/json");
+      exchange.sendResponseHeaders(200, bytes.length);
+      try (OutputStream out = exchange.getResponseBody()) {
+        out.write(bytes);
+      }
+    }
   }
 
   @Test

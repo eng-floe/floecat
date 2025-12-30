@@ -97,11 +97,22 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     }
 
     var pointer = pointerStoreOpt.get();
+    byte[] bytes;
 
     try {
-      byte[] bytes = blobStore.get(pointer.getBlobUri());
+      bytes = blobStore.get(pointer.getBlobUri());
+      if (bytes == null) {
+        if (pointerChangedOrDeleted(key, pointer)) {
+          return Optional.empty();
+        }
+        throw new CorruptionException(
+            "dangling pointer, missing blob: " + pointer.getBlobUri(), null);
+      }
       return Optional.of(parser.parse(bytes));
     } catch (StorageNotFoundException snf) {
+      if (pointerChangedOrDeleted(key, pointer)) {
+        return Optional.empty();
+      }
       throw new CorruptionException("dangling pointer, missing blob: " + pointer.getBlobUri(), snf);
     } catch (InvalidProtocolBufferException ipbe) {
       throw new CorruptionException("parse failed: " + pointer.getBlobUri(), ipbe);
@@ -110,6 +121,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     } catch (Exception e) {
       throw new CorruptionException("parse failed: " + pointer.getBlobUri(), e);
     }
+  }
+
+  private boolean pointerChangedOrDeleted(String key, Pointer before) {
+    var after = pointerStore.get(key).orElse(null);
+    return after == null || !Objects.equals(after.getBlobUri(), before.getBlobUri());
   }
 
   private boolean reserveIndexOrIdempotent(String key, String blobUri) {
