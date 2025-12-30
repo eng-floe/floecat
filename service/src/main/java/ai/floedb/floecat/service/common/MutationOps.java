@@ -7,7 +7,6 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
-import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.Message;
 import com.google.protobuf.Timestamp;
 import java.util.Map;
@@ -53,8 +52,7 @@ public final class MutationOps {
       IdempotencyRepository idemStore,
       Timestamp now,
       long ttlSeconds,
-      Supplier<String> corrIdSupplier,
-      Function<IdempotencyRecord, Boolean> canReplay) {
+      Supplier<String> corrIdSupplier) {
 
     T body =
         IdempotencyGuard.runOnce(
@@ -69,8 +67,7 @@ public final class MutationOps {
             idemStore,
             ttlSeconds,
             now,
-            corrIdSupplier,
-            canReplay);
+            corrIdSupplier);
 
     return new OpResult<>(body, metaOf.apply(body));
   }
@@ -86,8 +83,7 @@ public final class MutationOps {
       Timestamp now,
       long ttlSeconds,
       Supplier<String> correlationIdSupplier,
-      ThrowingParser<T> parser,
-      Function<IdempotencyRecord, Boolean> canReplay) {
+      ThrowingParser<T> parser) {
 
     return create(
         account,
@@ -107,8 +103,7 @@ public final class MutationOps {
         idempotencyStore,
         now,
         ttlSeconds,
-        correlationIdSupplier,
-        canReplay);
+        correlationIdSupplier);
   }
 
   public static final class PageIn {

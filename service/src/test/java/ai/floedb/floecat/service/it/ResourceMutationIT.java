@@ -51,29 +51,41 @@ class ResourceMutationIT {
   @Test
   void resourcesExist() throws Exception {
     var cat = TestSupport.createCatalog(catalog, "cat1", "cat1");
-    assertDoesNotThrow(() -> TestSupport.createCatalog(catalog, "cat1", "cat1 catalog"));
+    var exCat =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> TestSupport.createCatalog(catalog, "cat1", "cat1 catalog"));
+    TestSupport.assertGrpcAndMc(
+        exCat, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
 
     var ns =
         TestSupport.createNamespace(
             namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
-    assertDoesNotThrow(
-        () ->
-            TestSupport.createNamespace(
-                namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 namespace"));
+    var exNs =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                TestSupport.createNamespace(
+                    namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 namespace"));
+    TestSupport.assertGrpcAndMc(exNs, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
 
     TestSupport.createTable(
         table, cat.getResourceId(), ns.getResourceId(), "events", "s3://events", "{}", "none");
 
-    assertDoesNotThrow(
-        () ->
-            TestSupport.createTable(
-                table,
-                cat.getResourceId(),
-                ns.getResourceId(),
-                "events",
-                "s3://events",
-                "{}",
-                "A description"));
+    var exTable =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                TestSupport.createTable(
+                    table,
+                    cat.getResourceId(),
+                    ns.getResourceId(),
+                    "events",
+                    "s3://events",
+                    "{}",
+                    "A description"));
+    TestSupport.assertGrpcAndMc(
+        exTable, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
   }
 
   @Test

@@ -104,9 +104,14 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   public boolean delete(K key) {
     String canonicalPointer = schema.canonicalPointerForKey.apply(key);
-    String blobUri = schema.blobUriForKey.apply(key);
+    String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
 
-    Optional<T> currentValue = getByKey(key);
+    Optional<T> currentValue;
+    try {
+      currentValue = getByKey(key);
+    } catch (CorruptionException e) {
+      currentValue = Optional.empty();
+    }
     Set<String> currentSecondary =
         currentValue
             .map(schema.secondaryPointersFromValue)
@@ -120,7 +125,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       pointerStore.get(p).ifPresent(ptr -> compareAndDeleteOrFalse(p, ptr.getVersion()));
     }
 
-    if (!schema.casBlobs) {
+    if (!schema.casBlobs && !blobUri.isBlank()) {
       deleteQuietly(() -> blobStore.delete(blobUri));
     }
     return true;
@@ -128,9 +133,14 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   public boolean deleteWithPrecondition(K key, long expectedCanonicalVersion) {
     String canonicalPointer = schema.canonicalPointerForKey.apply(key);
-    String blobUri = schema.blobUriForKey.apply(key);
+    String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
 
-    Optional<T> currentValue = getByKey(key);
+    Optional<T> currentValue;
+    try {
+      currentValue = getByKey(key);
+    } catch (CorruptionException e) {
+      currentValue = Optional.empty();
+    }
     Set<String> currentSecondary =
         currentValue
             .map(schema.secondaryPointersFromValue)
@@ -145,7 +155,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       pointerStore.get(p).ifPresent(ptr -> compareAndDeleteOrFalse(p, ptr.getVersion()));
     }
 
-    if (!schema.casBlobs) {
+    if (!schema.casBlobs && !blobUri.isBlank()) {
       deleteQuietly(() -> blobStore.delete(blobUri));
     }
     return true;
@@ -174,10 +184,35 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   public MutationMeta metaForSafe(K key, Timestamp nowTs) {
     String canonical = schema.canonicalPointerForKey.apply(key);
     var ptrOpt = pointerStore.get(canonical);
-    String blobUri = schema.blobUriForKey.apply(key);
-    if (schema.casBlobs && ptrOpt.isPresent() && ptrOpt.get().getBlobUri() != null) {
-      blobUri = ptrOpt.get().getBlobUri();
+    if (schema.casBlobs && ptrOpt.isEmpty()) {
+      return MutationMeta.newBuilder()
+          .setPointerKey(canonical)
+          .setBlobUri("")
+          .setPointerVersion(0L)
+          .setEtag("")
+          .setUpdatedAt(nowTs)
+          .build();
+    }
+    String blobUri;
+    if (schema.casBlobs) {
+      blobUri =
+          (ptrOpt.isPresent() && ptrOpt.get().getBlobUri() != null)
+              ? ptrOpt.get().getBlobUri()
+              : "";
+    } else {
+      blobUri = schema.blobUriForKey.apply(key);
     }
     return safeMetaOrDefault(canonical, blobUri, nowTs);
+  }
+
+  private String resolveBlobUriForDelete(K key, String canonicalPointer) {
+    if (schema.casBlobs) {
+      var ptrOpt = pointerStore.get(canonicalPointer);
+      if (ptrOpt.isPresent() && ptrOpt.get().getBlobUri() != null) {
+        return ptrOpt.get().getBlobUri();
+      }
+      return "";
+    }
+    return schema.blobUriForKey.apply(key);
   }
 }

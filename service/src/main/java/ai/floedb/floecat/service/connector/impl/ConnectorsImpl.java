@@ -1,5 +1,6 @@
 package ai.floedb.floecat.service.connector.impl;
 
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -48,6 +49,7 @@ import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
@@ -187,14 +189,14 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   authz.require(pc, "connector.manage");
 
                   var tsNow = nowTs();
-                  var fp = canonicalFingerprint(request.getSpec());
+                  var spec = request.getSpec();
+                  var fp = canonicalFingerprint(spec);
                   var explicitKey =
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
                   var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
                   var connectorId = randomResourceId(accountId, ResourceKind.RK_CONNECTOR);
 
-                  var spec = request.getSpec();
                   var display = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
                   var uri = mustNonEmpty(spec.getUri(), "uri", corr);
 
@@ -310,11 +312,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   if (idempotencyKey == null) {
                     var existing = connectorRepo.getByName(accountId, display);
                     if (existing.isPresent()) {
-                      var meta = connectorRepo.metaFor(existing.get().getResourceId());
-                      return CreateConnectorResponse.newBuilder()
-                          .setConnector(existing.get())
-                          .setMeta(meta)
-                          .build();
+                      throw GrpcErrors.conflict(
+                          corr, "connector.already_exists", Map.of("display_name", display));
                     }
                     connectorRepo.create(connector);
                     var meta = connectorRepo.metaFor(connectorId);
@@ -342,8 +341,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                   tsNow,
                                   idempotencyTtlSeconds(),
                                   this::correlationId,
-                                  Connector::parseFrom,
-                                  rec -> connectorRepo.getById(rec.getResourceId()).isPresent()));
+                                  Connector::parseFrom));
 
                   return CreateConnectorResponse.newBuilder()
                       .setConnector(result.body)
@@ -439,9 +437,20 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   var connectorId = request.getConnectorId();
                   ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", corr);
 
-                  var meta =
+                  MutationMeta meta;
+                  try {
+                    meta = connectorRepo.metaFor(connectorId);
+                  } catch (BaseResourceRepository.NotFoundException missing) {
+                    var safe = connectorRepo.metaForSafe(connectorId);
+                    MutationOps.BaseServiceChecks.enforcePreconditions(
+                        corr, safe, request.getPrecondition());
+                    connectorRepo.delete(connectorId);
+                    return DeleteConnectorResponse.newBuilder().setMeta(safe).build();
+                  }
+
+                  var out =
                       MutationOps.deleteWithPreconditions(
-                          () -> connectorRepo.metaFor(connectorId),
+                          () -> meta,
                           request.getPrecondition(),
                           expected -> connectorRepo.deleteWithPrecondition(connectorId, expected),
                           () -> connectorRepo.metaForSafe(connectorId),
@@ -449,7 +458,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           "connector",
                           Map.of("id", connectorId.getId()));
 
-                  return DeleteConnectorResponse.newBuilder().setMeta(meta).build();
+                  return DeleteConnectorResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())
         .onFailure()
@@ -995,6 +1004,52 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   }
 
   private static byte[] canonicalFingerprint(ConnectorSpec s) {
-    return new Canonicalizer().scalar("name", normalizeName(s.getDisplayName())).bytes();
+    var c = new Canonicalizer();
+    c.scalar("name", normalizeName(s.getDisplayName()))
+        .scalar("description", s.getDescription())
+        .scalar("kind", s.getKind())
+        .scalar("uri", s.getUri());
+
+    var source = s.getSource();
+    c.group(
+        "source",
+        g ->
+            g.list("namespace", source.getNamespace().getSegmentsList())
+                .scalar("table", source.getTable())
+                .list("columns", source.getColumnsList()));
+
+    var dest = s.getDestination();
+    c.group(
+        "destination",
+        g ->
+            g.scalar("catalog_id", nullSafeId(dest.getCatalogId()))
+                .scalar("catalog_display_name", dest.getCatalogDisplayName())
+                .scalar("namespace_id", nullSafeId(dest.getNamespaceId()))
+                .list("namespace", dest.getNamespace().getSegmentsList())
+                .scalar("table_id", nullSafeId(dest.getTableId()))
+                .scalar("table_display_name", dest.getTableDisplayName()));
+
+    var auth = s.getAuth();
+    c.group(
+        "auth",
+        g ->
+            g.scalar("scheme", auth.getScheme())
+                .scalar("secret_ref", auth.getSecretRef())
+                .map("header_hints", auth.getHeaderHintsMap())
+                .map("properties", auth.getPropertiesMap()));
+
+    var policy = s.getPolicy();
+    c.group(
+        "policy",
+        g ->
+            g.scalar("enabled", policy.getEnabled())
+                .scalar("max_parallel", policy.getMaxParallel())
+                .scalar("interval_seconds", policy.getInterval().getSeconds())
+                .scalar("interval_nanos", policy.getInterval().getNanos())
+                .scalar("not_before_seconds", policy.getNotBefore().getSeconds())
+                .scalar("not_before_nanos", policy.getNotBefore().getNanos()));
+
+    c.map("properties", s.getPropertiesMap());
+    return c.bytes();
   }
 }

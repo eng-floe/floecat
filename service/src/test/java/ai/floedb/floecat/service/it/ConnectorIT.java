@@ -609,6 +609,45 @@ public class ConnectorIT {
   }
 
   @Test
+  void createConnectorIdempotencyMismatchOnUri() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-idem-2", "");
+    var specA =
+        ConnectorSpec.newBuilder()
+            .setDisplayName("idem-2")
+            .setKind(ConnectorKind.CK_UNITY)
+            .setUri("dummy://x")
+            .setSource(source(List.of("a", "b")))
+            .setDestination(dest("cat-idem-2"))
+            .build();
+
+    var specB =
+        ConnectorSpec.newBuilder()
+            .setDisplayName("idem-2")
+            .setKind(ConnectorKind.CK_UNITY)
+            .setUri("dummy://y")
+            .setSource(source(List.of("a", "b")))
+            .setDestination(dest("cat-idem-2"))
+            .build();
+
+    var idem = IdempotencyKey.newBuilder().setKey("fixed-key-2").build();
+    connectors.createConnector(
+        CreateConnectorRequest.newBuilder().setSpec(specA).setIdempotency(idem).build());
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(specB)
+                        .setIdempotency(idem)
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
+  }
+
+  @Test
   void getConnectorNotFound() {
     var badRid =
         ResourceId.newBuilder()
@@ -757,15 +796,10 @@ public class ConnectorIT {
     connectors.deleteConnector(
         DeleteConnectorRequest.newBuilder().setConnectorId(c.getResourceId()).build());
 
-    var ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                connectors.deleteConnector(
-                    DeleteConnectorRequest.newBuilder().setConnectorId(c.getResourceId()).build()));
-
-    TestSupport.assertGrpcAndMc(
-        ex, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Connector not found");
+    assertDoesNotThrow(
+        () ->
+            connectors.deleteConnector(
+                DeleteConnectorRequest.newBuilder().setConnectorId(c.getResourceId()).build()));
   }
 
   @Test

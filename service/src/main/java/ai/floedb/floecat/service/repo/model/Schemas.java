@@ -11,6 +11,7 @@ import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.service.repo.util.ColumnStatsNormalizer;
+import ai.floedb.floecat.service.repo.util.ResourceHash;
 import ai.floedb.floecat.service.repo.util.TableStatsNormalizer;
 import com.google.protobuf.util.Timestamps;
 import java.util.ArrayList;
@@ -20,71 +21,98 @@ import java.util.Map;
 public final class Schemas {
 
   public static final ResourceSchema<Account, AccountKey> ACCOUNT =
-      ResourceSchema.of(
-          "account",
-          key -> Keys.accountPointerById(key.accountId()),
-          key -> Keys.accountBlobUri(key.accountId()),
-          v -> Map.of("byName", Keys.accountPointerByName(v.getDisplayName())),
-          v -> new AccountKey(v.getResourceId().getId()));
+      ResourceSchema.<Account, AccountKey>of(
+              "account",
+              key -> Keys.accountPointerById(key.accountId()),
+              key -> Keys.accountBlobUri(key.accountId(), key.sha256()),
+              v -> Map.of("byName", Keys.accountPointerByName(v.getDisplayName())),
+              v -> {
+                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                return new AccountKey(v.getResourceId().getId(), sha);
+              })
+          .withCasBlobs();
 
   public static final ResourceSchema<Catalog, CatalogKey> CATALOG =
-      ResourceSchema.of(
-          "catalog",
-          key -> Keys.catalogPointerById(key.accountId(), key.catalogId()),
-          key -> Keys.catalogBlobUri(key.accountId(), key.catalogId()),
-          v ->
-              Map.of(
-                  "byName",
-                  Keys.catalogPointerByName(v.getResourceId().getAccountId(), v.getDisplayName())),
-          v -> new CatalogKey(v.getResourceId().getAccountId(), v.getResourceId().getId()));
+      ResourceSchema.<Catalog, CatalogKey>of(
+              "catalog",
+              key -> Keys.catalogPointerById(key.accountId(), key.catalogId()),
+              key -> Keys.catalogBlobUri(key.accountId(), key.catalogId(), key.sha256()),
+              v ->
+                  Map.of(
+                      "byName",
+                      Keys.catalogPointerByName(
+                          v.getResourceId().getAccountId(), v.getDisplayName())),
+              v -> {
+                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                return new CatalogKey(
+                    v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
+              })
+          .withCasBlobs();
 
   public static final ResourceSchema<Namespace, NamespaceKey> NAMESPACE =
-      ResourceSchema.of(
-          "namespace",
-          key -> Keys.namespacePointerById(key.accountId(), key.namespaceId()),
-          key -> Keys.namespaceBlobUri(key.accountId(), key.namespaceId()),
-          v -> {
-            List<String> fullPath = new ArrayList<>(v.getParentsList());
-            fullPath.add(v.getDisplayName());
-            return Map.of(
-                "byPath",
-                Keys.namespacePointerByPath(
-                    v.getResourceId().getAccountId(), v.getCatalogId().getId(), fullPath));
-          },
-          v -> new NamespaceKey(v.getResourceId().getAccountId(), v.getResourceId().getId()));
+      ResourceSchema.<Namespace, NamespaceKey>of(
+              "namespace",
+              key -> Keys.namespacePointerById(key.accountId(), key.namespaceId()),
+              key -> Keys.namespaceBlobUri(key.accountId(), key.namespaceId(), key.sha256()),
+              v -> {
+                List<String> fullPath = new ArrayList<>(v.getParentsList());
+                fullPath.add(v.getDisplayName());
+                return Map.of(
+                    "byPath",
+                    Keys.namespacePointerByPath(
+                        v.getResourceId().getAccountId(), v.getCatalogId().getId(), fullPath));
+              },
+              v -> {
+                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                return new NamespaceKey(
+                    v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
+              })
+          .withCasBlobs();
 
   public static final ResourceSchema<Table, TableKey> TABLE =
-      ResourceSchema.of(
-          "table",
-          key -> Keys.tablePointerById(key.accountId(), key.tableId()),
-          key -> Keys.tableBlobUri(key.accountId(), key.tableId()),
-          v ->
-              Map.of(
-                  "byName",
-                  Keys.tablePointerByName(
-                      v.getResourceId().getAccountId(),
-                      v.getCatalogId().getId(),
-                      v.getNamespaceId().getId(),
-                      v.getDisplayName())),
-          v -> new TableKey(v.getResourceId().getAccountId(), v.getResourceId().getId()));
+      ResourceSchema.<Table, TableKey>of(
+              "table",
+              key -> Keys.tablePointerById(key.accountId(), key.tableId()),
+              key -> Keys.tableBlobUri(key.accountId(), key.tableId(), key.sha256()),
+              v ->
+                  Map.of(
+                      "byName",
+                      Keys.tablePointerByName(
+                          v.getResourceId().getAccountId(),
+                          v.getCatalogId().getId(),
+                          v.getNamespaceId().getId(),
+                          v.getDisplayName())),
+              v -> {
+                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                return new TableKey(
+                    v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
+              })
+          .withCasBlobs();
 
   public static final ResourceSchema<Snapshot, SnapshotKey> SNAPSHOT =
-      ResourceSchema.of(
-          "snapshot",
-          key -> Keys.snapshotPointerById(key.accountId(), key.tableId(), key.snapshotId()),
-          key -> Keys.snapshotBlobUri(key.accountId(), key.tableId(), key.snapshotId()),
-          v ->
-              Map.of(
-                  "byId",
-                      Keys.snapshotPointerById(
-                          v.getTableId().getAccountId(), v.getTableId().getId(), v.getSnapshotId()),
-                  "byTime",
-                      Keys.snapshotPointerByTime(
-                          v.getTableId().getAccountId(), v.getTableId().getId(),
-                          v.getSnapshotId(), Timestamps.toMillis(v.getUpstreamCreatedAt()))),
-          v ->
-              new SnapshotKey(
-                  v.getTableId().getAccountId(), v.getTableId().getId(), v.getSnapshotId()));
+      ResourceSchema.<Snapshot, SnapshotKey>of(
+              "snapshot",
+              key -> Keys.snapshotPointerById(key.accountId(), key.tableId(), key.snapshotId()),
+              key ->
+                  Keys.snapshotBlobUri(
+                      key.accountId(), key.tableId(), key.snapshotId(), key.sha256()),
+              v ->
+                  Map.of(
+                      "byId",
+                          Keys.snapshotPointerById(
+                              v.getTableId().getAccountId(),
+                              v.getTableId().getId(),
+                              v.getSnapshotId()),
+                      "byTime",
+                          Keys.snapshotPointerByTime(
+                              v.getTableId().getAccountId(), v.getTableId().getId(),
+                              v.getSnapshotId(), Timestamps.toMillis(v.getUpstreamCreatedAt()))),
+              v -> {
+                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                return new SnapshotKey(
+                    v.getTableId().getAccountId(), v.getTableId().getId(), v.getSnapshotId(), sha);
+              })
+          .withCasBlobs();
 
   public static final ResourceSchema<TableStats, TableStatsKey> TABLE_STATS =
       ResourceSchema.<TableStats, TableStatsKey>of(
@@ -147,29 +175,39 @@ public final class Schemas {
           .withCasBlobs();
 
   public static final ResourceSchema<View, ViewKey> VIEW =
-      ResourceSchema.of(
-          "view",
-          key -> Keys.viewPointerById(key.accountId(), key.viewId()),
-          key -> Keys.viewBlobUri(key.accountId(), key.viewId()),
-          v ->
-              Map.of(
-                  "byName",
-                  Keys.viewPointerByName(
-                      v.getResourceId().getAccountId(),
-                      v.getCatalogId().getId(),
-                      v.getNamespaceId().getId(),
-                      v.getDisplayName())),
-          v -> new ViewKey(v.getResourceId().getAccountId(), v.getResourceId().getId()));
+      ResourceSchema.<View, ViewKey>of(
+              "view",
+              key -> Keys.viewPointerById(key.accountId(), key.viewId()),
+              key -> Keys.viewBlobUri(key.accountId(), key.viewId(), key.sha256()),
+              v ->
+                  Map.of(
+                      "byName",
+                      Keys.viewPointerByName(
+                          v.getResourceId().getAccountId(),
+                          v.getCatalogId().getId(),
+                          v.getNamespaceId().getId(),
+                          v.getDisplayName())),
+              v -> {
+                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                return new ViewKey(
+                    v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
+              })
+          .withCasBlobs();
 
   public static final ResourceSchema<Connector, ConnectorKey> CONNECTOR =
-      ResourceSchema.of(
-          "connector",
-          key -> Keys.connectorPointerById(key.accountId(), key.connectorId()),
-          key -> Keys.connectorBlobUri(key.accountId(), key.connectorId()),
-          v ->
-              Map.of(
-                  "byName",
-                  Keys.connectorPointerByName(
-                      v.getResourceId().getAccountId(), v.getDisplayName())),
-          v -> new ConnectorKey(v.getResourceId().getAccountId(), v.getResourceId().getId()));
+      ResourceSchema.<Connector, ConnectorKey>of(
+              "connector",
+              key -> Keys.connectorPointerById(key.accountId(), key.connectorId()),
+              key -> Keys.connectorBlobUri(key.accountId(), key.connectorId(), key.sha256()),
+              v ->
+                  Map.of(
+                      "byName",
+                      Keys.connectorPointerByName(
+                          v.getResourceId().getAccountId(), v.getDisplayName())),
+              v -> {
+                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                return new ConnectorKey(
+                    v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
+              })
+          .withCasBlobs();
 }

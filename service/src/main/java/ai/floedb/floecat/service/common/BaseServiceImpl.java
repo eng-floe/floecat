@@ -38,6 +38,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -182,10 +183,35 @@ public abstract class BaseServiceImpl {
         return supplier.get();
       } catch (StatusRuntimeException sre) {
         if (sre.getStatus().getCode() == Status.Code.ABORTED && attempts++ < RETRIES) {
+          sleepBackoff(attempts);
           continue;
         }
         throw sre;
+      } catch (StorageAbortRetryableException sare) {
+        if (attempts++ < RETRIES) {
+          sleepBackoff(attempts);
+          continue;
+        }
+        throw sare;
       }
+    }
+  }
+
+  private void sleepBackoff(int attempts) {
+    long baseMs = BACKOFF_MIN.toMillis();
+    long maxMs = BACKOFF_MAX.toMillis();
+    long delayMs = Math.max(1L, baseMs);
+    int steps = Math.min(attempts, 10);
+    for (int i = 0; i < steps && delayMs < maxMs; i++) {
+      delayMs = Math.min(maxMs, delayMs * 2L);
+    }
+    double jitter = 1.0 + ((ThreadLocalRandom.current().nextDouble() * 2.0 - 1.0) * JITTER);
+    long sleepMs = Math.max(1L, (long) (delayMs * jitter));
+    try {
+      Thread.sleep(sleepMs);
+    } catch (InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      throw new RuntimeException("idempotent retry backoff interrupted", ie);
     }
   }
 

@@ -281,11 +281,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                   tsNow,
                                   idempotencyTtlSeconds(),
                                   this::correlationId,
-                                  Snapshot::parseFrom,
-                                  rec ->
-                                      snapshotRepo
-                                          .getById(rec.getResourceId(), snap.getSnapshotId())
-                                          .isPresent()));
+                                  Snapshot::parseFrom));
 
                   return CreateSnapshotResponse.newBuilder()
                       .setSnapshot(result.body)

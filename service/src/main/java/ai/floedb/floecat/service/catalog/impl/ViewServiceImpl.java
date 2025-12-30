@@ -13,6 +13,7 @@ import ai.floedb.floecat.catalog.rpc.UpdateViewResponse;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewService;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -196,8 +197,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
                   var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
-                  var fingerprint =
-                      canonicalFingerprint(spec.toBuilder().setDisplayName(normName).build());
+                  var normalizedSpec = spec.toBuilder().setDisplayName(normName).build();
+                  var fingerprint = canonicalFingerprint(normalizedSpec);
 
                   var accountId = pc.getAccountId();
                   var viewResourceId = randomResourceId(accountId, ResourceKind.RK_VIEW);
@@ -222,11 +223,13 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                             spec.getNamespaceId().getId(),
                             normName);
                     if (existing.isPresent()) {
-                      var meta = viewRepo.metaForSafe(existing.get().getResourceId());
-                      return CreateViewResponse.newBuilder()
-                          .setView(existing.get())
-                          .setMeta(meta)
-                          .build();
+                      throw GrpcErrors.conflict(
+                          corr,
+                          "view.already_exists",
+                          Map.of(
+                              "display_name", normName,
+                              "catalog_id", spec.getCatalogId().getId(),
+                              "namespace_id", spec.getNamespaceId().getId()));
                     }
                     viewRepo.create(view);
                     metadataGraph.invalidate(viewResourceId);
@@ -253,8 +256,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                   tsNow,
                                   idempotencyTtlSeconds(),
                                   this::correlationId,
-                                  View::parseFrom,
-                                  rec -> viewRepo.getById(rec.getResourceId()).isPresent()));
+                                  View::parseFrom));
 
                   return CreateViewResponse.newBuilder()
                       .setView(result.body)
@@ -349,26 +351,30 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   var viewId = request.getViewId();
                   ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", correlationId);
 
+                  MutationMeta meta;
                   try {
-                    var meta =
-                        MutationOps.deleteWithPreconditions(
-                            () -> viewRepo.metaFor(viewId),
-                            request.getPrecondition(),
-                            expected -> viewRepo.deleteWithPrecondition(viewId, expected),
-                            () -> viewRepo.metaForSafe(viewId),
-                            correlationId,
-                            "view",
-                            Map.of("id", viewId.getId()));
-
-                    metadataGraph.invalidate(viewId);
-                    return DeleteViewResponse.newBuilder().setMeta(meta).build();
+                    meta = viewRepo.metaFor(viewId);
                   } catch (BaseResourceRepository.NotFoundException missing) {
+                    var safe = viewRepo.metaForSafe(viewId);
+                    MutationOps.BaseServiceChecks.enforcePreconditions(
+                        correlationId, safe, request.getPrecondition());
                     viewRepo.delete(viewId);
                     metadataGraph.invalidate(viewId);
-                    return DeleteViewResponse.newBuilder()
-                        .setMeta(viewRepo.metaForSafe(viewId))
-                        .build();
+                    return DeleteViewResponse.newBuilder().setMeta(safe).build();
                   }
+
+                  var out =
+                      MutationOps.deleteWithPreconditions(
+                          () -> meta,
+                          request.getPrecondition(),
+                          expected -> viewRepo.deleteWithPrecondition(viewId, expected),
+                          () -> viewRepo.metaForSafe(viewId),
+                          correlationId,
+                          "view",
+                          Map.of("id", viewId.getId()));
+
+                  metadataGraph.invalidate(viewId);
+                  return DeleteViewResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())
         .onFailure()
@@ -490,6 +496,9 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
         .scalar("cat", nullSafeId(s.getCatalogId()))
         .scalar("ns", nullSafeId(s.getNamespaceId()))
         .scalar("name", normalizeName(s.getDisplayName()))
+        .scalar("description", s.getDescription())
+        .scalar("sql", s.getSql())
+        .map("properties", s.getPropertiesMap())
         .bytes();
   }
 }

@@ -64,20 +64,21 @@ class CatalogMutationIT {
   }
 
   @Test
-  void createSameNameReturnsExistingWithoutIdempotency() {
-    var c1 = TestSupport.createCatalog(catalog, catalogPrefix + "same_name", "d1");
-    var c2 =
-        catalog.createCatalog(
-            CreateCatalogRequest.newBuilder()
-                .setSpec(
-                    CatalogSpec.newBuilder()
-                        .setDisplayName(catalogPrefix + "same_name")
-                        .setDescription("d2")
-                        .build())
-                .build());
-
-    assertEquals(c1.getResourceId().getId(), c2.getCatalog().getResourceId().getId());
-    assertNotNull(c2.getMeta().getPointerKey());
+  void createSameNameReturnsExistingWithoutIdempotency() throws Exception {
+    TestSupport.createCatalog(catalog, catalogPrefix + "same_name", "d1");
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                catalog.createCatalog(
+                    CreateCatalogRequest.newBuilder()
+                        .setSpec(
+                            CatalogSpec.newBuilder()
+                                .setDisplayName(catalogPrefix + "same_name")
+                                .setDescription("d1")
+                                .build())
+                        .build()));
+    TestSupport.assertGrpcAndMc(ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
   }
 
   @Test
@@ -164,8 +165,22 @@ class CatalogMutationIT {
 
   @Test
   void CatalogIdempotentCreateReturnsSameResult() throws Exception {
-    var first = TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1");
-    var second = TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1");
+    var key = IdempotencyKey.newBuilder().setKey(catalogPrefix + "k-cat-1").build();
+    var spec =
+        CatalogSpec.newBuilder()
+            .setDisplayName(catalogPrefix + "cat1")
+            .setDescription("cat1")
+            .build();
+    var first =
+        catalog
+            .createCatalog(
+                CreateCatalogRequest.newBuilder().setSpec(spec).setIdempotency(key).build())
+            .getCatalog();
+    var second =
+        catalog
+            .createCatalog(
+                CreateCatalogRequest.newBuilder().setSpec(spec).setIdempotency(key).build())
+            .getCatalog();
 
     assertEquals(first.getResourceId(), second.getResourceId());
   }
@@ -191,8 +206,11 @@ class CatalogMutationIT {
   void CatalogExistsConflictWhenDifferentSpec() throws Exception {
     TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1");
 
-    assertDoesNotThrow(
-        () -> TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1 catalog"));
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1 catalog"));
+    TestSupport.assertGrpcAndMc(ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
   }
 
   @Test
@@ -340,6 +358,42 @@ class CatalogMutationIT {
                                 .build())
                         .setIdempotency(key)
                         .build()));
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
+  }
+
+  @Test
+  void catalogCreateIdempotencyMismatchOnDescription() throws Exception {
+    var key = IdempotencyKey.newBuilder().setKey(catalogPrefix + "k-cat-3").build();
+
+    CreateCatalogResponse ccr =
+        catalog.createCatalog(
+            CreateCatalogRequest.newBuilder()
+                .setSpec(
+                    CatalogSpec.newBuilder()
+                        .setDisplayName(catalogPrefix + "idem_cat3")
+                        .setDescription("desc-a")
+                        .build())
+                .setIdempotency(key)
+                .build());
+
+    ResourceId catId = ccr.getCatalog().getResourceId();
+    awaitIdemVisible(catId.getAccountId(), "CreateCatalog", key.getKey(), Duration.ofSeconds(2));
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                catalog.createCatalog(
+                    CreateCatalogRequest.newBuilder()
+                        .setSpec(
+                            CatalogSpec.newBuilder()
+                                .setDisplayName(catalogPrefix + "idem_cat3")
+                                .setDescription("desc-b")
+                                .build())
+                        .setIdempotency(key)
+                        .build()));
+
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
   }
