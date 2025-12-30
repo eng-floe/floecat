@@ -638,7 +638,10 @@ public class ConnectorIT {
             StatusRuntimeException.class,
             () ->
                 connectors.createConnector(
-                    CreateConnectorRequest.newBuilder().setSpec(specB).setIdempotency(idem).build()));
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(specB)
+                        .setIdempotency(idem)
+                        .build()));
 
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");

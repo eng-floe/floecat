@@ -137,7 +137,8 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
                   final String idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
-                  final byte[] fingerprint = canonicalFingerprint(spec);
+                  final var normalizedSpec = spec.toBuilder().setDisplayName(normName).build();
+                  final byte[] fingerprint = canonicalFingerprint(normalizedSpec);
 
                   final String accountUuid = AccountIds.deterministicAccountId(normName);
                   final var resourceId =
@@ -158,12 +159,8 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   if (idempotencyKey == null) {
                     var existingOpt = accountRepo.getByName(normName);
                     if (existingOpt.isPresent()) {
-                      var existing = existingOpt.get();
-                      var meta = accountRepo.metaForSafe(existing.getResourceId());
-                      return CreateAccountResponse.newBuilder()
-                          .setAccount(existing)
-                          .setMeta(meta)
-                          .build();
+                      throw GrpcErrors.conflict(
+                          corr, "account.already_exists", Map.of("display_name", normName));
                     }
 
                     accountRepo.create(desiredAccount);
@@ -192,8 +189,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                                   tsNow,
                                   idempotencyTtlSeconds(),
                                   this::correlationId,
-                                  Account::parseFrom,
-                                  rec -> accountRepo.getById(rec.getResourceId()).isPresent()));
+                                  Account::parseFrom));
 
                   return CreateAccountResponse.newBuilder()
                       .setAccount(result.body)

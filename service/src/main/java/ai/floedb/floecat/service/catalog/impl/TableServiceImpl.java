@@ -212,8 +212,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
                   var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
-                  var fingerprint =
-                      canonicalFingerprint(spec.toBuilder().setDisplayName(normName).build());
+                  var normalizedSpec = spec.toBuilder().setDisplayName(normName).build();
+                  var fingerprint = canonicalFingerprint(normalizedSpec);
                   var tableResourceId = randomResourceId(accountId, ResourceKind.RK_TABLE);
 
                   var table =
@@ -240,11 +240,13 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                             spec.getNamespaceId().getId(),
                             normName);
                     if (existing.isPresent()) {
-                      var meta = tableRepo.metaForSafe(existing.get().getResourceId());
-                      return CreateTableResponse.newBuilder()
-                          .setTable(existing.get())
-                          .setMeta(meta)
-                          .build();
+                      throw GrpcErrors.conflict(
+                          corr,
+                          "table.already_exists",
+                          Map.of(
+                              "display_name", normName,
+                              "catalog_id", spec.getCatalogId().getId(),
+                              "namespace_id", spec.getNamespaceId().getId()));
                     }
                     tableRepo.create(table);
                     metadataGraph.invalidate(tableResourceId);
@@ -271,8 +273,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                   tsNow,
                                   idempotencyTtlSeconds(),
                                   this::correlationId,
-                                  Table::parseFrom,
-                                  rec -> tableRepo.getById(rec.getResourceId()).isPresent()));
+                                  Table::parseFrom));
 
                   return CreateTableResponse.newBuilder()
                       .setTable(result.body)
@@ -631,6 +632,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         .scalar("cat", nullSafeId(s.getCatalogId()))
         .scalar("ns", nullSafeId(s.getNamespaceId()))
         .scalar("name", normalizeName(s.getDisplayName()))
+        .scalar("description", s.getDescription())
         .scalar("schema_json", s.getSchemaJson())
         .group(
             "upstream",

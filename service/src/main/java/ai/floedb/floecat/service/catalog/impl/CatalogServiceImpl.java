@@ -145,7 +145,8 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
                   var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
-                  var fingerprint = canonicalFingerprint(spec);
+                  var normalizedSpec = spec.toBuilder().setDisplayName(normName).build();
+                  var fingerprint = canonicalFingerprint(normalizedSpec);
                   var catalogId = randomResourceId(accountId, ResourceKind.RK_CATALOG);
 
                   var built =
@@ -159,12 +160,10 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   if (idempotencyKey == null) {
                     var existing = catalogRepo.getByName(accountId, normName);
                     if (existing.isPresent()) {
-                      var meta = catalogRepo.metaForSafe(existing.get().getResourceId());
-                      return CreateCatalogResponse.newBuilder()
-                          .setCatalog(existing.get())
-                          .setMeta(meta)
-                          .build();
+                      throw GrpcErrors.conflict(
+                          corr, "catalog.already_exists", Map.of("display_name", normName));
                     }
+
                     catalogRepo.create(built);
                     metadataGraph.invalidate(catalogId);
                     var meta = catalogRepo.metaForSafe(catalogId);
@@ -192,8 +191,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                                   tsNow,
                                   idempotencyTtlSeconds(),
                                   this::correlationId,
-                                  Catalog::parseFrom,
-                                  rec -> catalogRepo.getById(rec.getResourceId()).isPresent()));
+                                  Catalog::parseFrom));
 
                   return CreateCatalogResponse.newBuilder()
                       .setCatalog(result.body)

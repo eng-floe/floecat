@@ -7,7 +7,6 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
-import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.Duration;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
@@ -17,9 +16,12 @@ import java.util.Base64;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import org.jboss.logging.Logger;
 
 public final class IdempotencyGuard {
   public record CreateResult<T>(T resource, ResourceId resourceId) {}
+
+  private static final Logger LOG = Logger.getLogger(IdempotencyGuard.class);
 
   public static <T> T runOnce(
       String accountId,
@@ -33,8 +35,7 @@ public final class IdempotencyGuard {
       IdempotencyRepository store,
       long ttlSeconds,
       Timestamp now,
-      Supplier<String> corrId,
-      Function<IdempotencyRecord, Boolean> canReplay) {
+      Supplier<String> corrId) {
 
     if (idempotencyKey == null || idempotencyKey.isBlank()) {
       return creator.get().resource();
@@ -54,15 +55,7 @@ public final class IdempotencyGuard {
 
       switch (rec.getStatus()) {
         case SUCCEEDED -> {
-          boolean replayOk = (canReplay == null) || Boolean.TRUE.equals(canReplay.apply(rec));
-          if (replayOk) {
-            return parser.apply(rec.getPayload().toByteArray());
-          }
-
-          throw GrpcErrors.conflict(
-              corrId.get(),
-              "idempotency_already_succeeded_not_replayable",
-              Map.of("op", opName, "key", idempotencyKey));
+          return parser.apply(rec.getPayload().toByteArray());
         }
         case PENDING ->
             throw new StorageAbortRetryableException("idempotency record pending: key=" + key);
@@ -96,15 +89,7 @@ public final class IdempotencyGuard {
 
       switch (again.getStatus()) {
         case SUCCEEDED -> {
-          boolean replayOk = (canReplay == null) || Boolean.TRUE.equals(canReplay.apply(again));
-          if (replayOk) {
-            return parser.apply(again.getPayload().toByteArray());
-          }
-
-          throw GrpcErrors.conflict(
-              corrId.get(),
-              "idempotency_already_succeeded_not_replayable",
-              Map.of("op", opName, "key", idempotencyKey));
+          return parser.apply(again.getPayload().toByteArray());
         }
         case PENDING ->
             throw new StorageAbortRetryableException("idempotency record pending: key=" + key);
@@ -127,7 +112,11 @@ public final class IdempotencyGuard {
           (t instanceof BaseResourceRepository.AbortRetryableException)
               || (t instanceof StorageAbortRetryableException);
       if (!retryable) {
-        store.delete(key);
+        try {
+          store.delete(key);
+        } catch (Throwable deleteError) {
+          LOG.warnf(deleteError, "idempotency.delete_failed key=%s corr=%s", key, corrId.get());
+        }
       }
       throw t;
     }

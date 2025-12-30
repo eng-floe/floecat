@@ -196,7 +196,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     String blobUri;
     if (schema.casBlobs) {
       blobUri =
-          (ptrOpt.isPresent() && ptrOpt.get().getBlobUri() != null) ? ptrOpt.get().getBlobUri() : "";
+          (ptrOpt.isPresent() && ptrOpt.get().getBlobUri() != null)
+              ? ptrOpt.get().getBlobUri()
+              : "";
     } else {
       blobUri = schema.blobUriForKey.apply(key);
     }

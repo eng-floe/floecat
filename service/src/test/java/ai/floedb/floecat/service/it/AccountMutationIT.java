@@ -63,11 +63,15 @@ class AccountMutationIT {
     var newSpec =
         AccountSpec.newBuilder()
             .setDisplayName(accountPrefix + "t1")
-            .setDescription("description")
+            .setDescription("desc")
             .build();
 
-    assertDoesNotThrow(
-        () -> tenancy.createAccount(CreateAccountRequest.newBuilder().setSpec(newSpec).build()));
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                tenancy.createAccount(CreateAccountRequest.newBuilder().setSpec(newSpec).build()));
+    TestSupport.assertGrpcAndMc(ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
   }
 
   @Test

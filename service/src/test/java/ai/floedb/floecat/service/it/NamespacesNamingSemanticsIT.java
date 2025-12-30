@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.rpc.*;
 import ai.floedb.floecat.common.rpc.ErrorCode;
+import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -123,15 +124,34 @@ class NamespacesNamingSemanticsIT {
   @ParameterizedTest(name = "[{index}] {2}")
   @MethodSource("roundTripCases")
   void names_roundTripResolve(RoundTripCase c) {
-    var ns = TestSupport.createNamespace(namespaces, catalogId, c.display, c.parents, c.note);
+    var catName = "cat-rt-" + Integer.toHexString((c.display + c.parents).hashCode());
+    var cat = TestSupport.createCatalog(catalogs, catName, "roundtrip");
+    var localCatalogId = cat.getResourceId();
+    var key = IdempotencyKey.newBuilder().setKey("ns-roundtrip-" + catName).build();
+    var spec =
+        NamespaceSpec.newBuilder()
+            .setCatalogId(localCatalogId)
+            .setDisplayName(c.display)
+            .addAllPath(c.parents)
+            .setDescription(c.note)
+            .build();
+    var ns =
+        namespaces
+            .createNamespace(
+                CreateNamespaceRequest.newBuilder().setSpec(spec).setIdempotency(key).build())
+            .getNamespace();
 
     assertEquals(c.parents, ns.getParentsList(), "parents must round-trip");
     assertEquals(c.display, ns.getDisplayName(), "display must round-trip");
 
-    var ns2 = TestSupport.createNamespace(namespaces, catalogId, c.display, c.parents, "retry");
+    var ns2 =
+        namespaces
+            .createNamespace(
+                CreateNamespaceRequest.newBuilder().setSpec(spec).setIdempotency(key).build())
+            .getNamespace();
     assertEquals(ns.getResourceId().getId(), ns2.getResourceId().getId(), "RID must be stable");
 
-    var rid = resolve("cat-names", c.parents, c.display);
+    var rid = resolve(catName, c.parents, c.display);
     assertEquals(ns.getResourceId().getId(), rid.getId(), "resolveNamespace must match RID");
   }
 
@@ -290,13 +310,25 @@ class NamespacesNamingSemanticsIT {
   @Test
   void namesWithSpacesRoundTripIempotent() {
     var cat = TestSupport.createCatalog(catalogs, "My Catalog", "");
+    var key = IdempotencyKey.newBuilder().setKey("ns-spaces-roundtrip").build();
+    var spec =
+        NamespaceSpec.newBuilder()
+            .setCatalogId(cat.getResourceId())
+            .setDisplayName("Orders 2025")
+            .addAllPath(List.of("Prod West"))
+            .setDescription("spaced")
+            .build();
     var ns1 =
-        TestSupport.createNamespace(
-            namespaces, cat.getResourceId(), "Orders 2025", List.of("Prod West"), "spaced");
+        namespaces
+            .createNamespace(
+                CreateNamespaceRequest.newBuilder().setSpec(spec).setIdempotency(key).build())
+            .getNamespace();
 
     var ns2 =
-        TestSupport.createNamespace(
-            namespaces, cat.getResourceId(), "Orders 2025", List.of("Prod West"), "retry");
+        namespaces
+            .createNamespace(
+                CreateNamespaceRequest.newBuilder().setSpec(spec).setIdempotency(key).build())
+            .getNamespace();
 
     assertEquals(ns1.getResourceId().getId(), ns2.getResourceId().getId());
     assertEquals(List.of("Prod West"), ns1.getParentsList());

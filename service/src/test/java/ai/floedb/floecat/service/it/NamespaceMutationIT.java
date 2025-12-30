@@ -60,10 +60,13 @@ class NamespaceMutationIT {
     TestSupport.createNamespace(
         namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
 
-    assertDoesNotThrow(
-        () ->
-            TestSupport.createNamespace(
-                namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 namespace"));
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                TestSupport.createNamespace(
+                    namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 namespace"));
+    TestSupport.assertGrpcAndMc(ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
   }
 
   @Test

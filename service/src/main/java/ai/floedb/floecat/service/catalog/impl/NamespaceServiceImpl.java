@@ -372,16 +372,26 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   fullPath.add(display);
 
                   final byte[] fingerprint =
-                      new Canonicalizer()
-                          .scalar("cat", nullSafeId(spec.getCatalogId()))
-                          .list("parents", parents)
-                          .scalar("name", display)
-                          .bytes();
+                      canonicalFingerprint(spec.getCatalogId(), parents, display, spec);
+
+                  if (!request.hasIdempotency() || request.getIdempotency().getKey().isBlank()) {
+                    var existing =
+                        namespaceRepo.getByPath(accountId, spec.getCatalogId().getId(), fullPath);
+                    if (existing.isPresent()) {
+                      throw GrpcErrors.conflict(
+                          correlationId,
+                          "namespace.already_exists",
+                          Map.of(
+                              "display_name", display,
+                              "catalog_id", spec.getCatalogId().getId(),
+                              "path", String.join(".", fullPath)));
+                    }
+                  }
 
                   final String idempotencyKey =
                       request.hasIdempotency() && !request.getIdempotency().getKey().isBlank()
                           ? request.getIdempotency().getKey()
-                          : hashFingerprint(fingerprint);
+                          : null;
 
                   var namespaceProto =
                       runIdempotentCreate(
@@ -424,8 +434,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                   tsNow,
                                   idempotencyTtlSeconds(),
                                   this::correlationId,
-                                  Namespace::parseFrom,
-                                  rec -> namespaceRepo.getById(rec.getResourceId()).isPresent()));
+                                  Namespace::parseFrom));
 
                   return CreateNamespaceResponse.newBuilder()
                       .setNamespace(namespaceProto.body)
@@ -631,6 +640,18 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
       }
     }
     return false;
+  }
+
+  private static byte[] canonicalFingerprint(
+      ResourceId catalogId, List<String> parents, String display, NamespaceSpec spec) {
+    return new Canonicalizer()
+        .scalar("cat", nullSafeId(catalogId))
+        .list("parents", parents)
+        .scalar("name", display)
+        .scalar("description", spec.getDescription())
+        .scalar("policy_ref", spec.getPolicyRef())
+        .map("properties", spec.getPropertiesMap())
+        .bytes();
   }
 
   private Namespace applyNamespaceSpecPatch(

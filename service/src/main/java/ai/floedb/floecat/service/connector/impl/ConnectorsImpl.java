@@ -189,14 +189,14 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   authz.require(pc, "connector.manage");
 
                   var tsNow = nowTs();
-                  var fp = canonicalFingerprint(request.getSpec());
+                  var spec = request.getSpec();
+                  var fp = canonicalFingerprint(spec);
                   var explicitKey =
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
                   var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
                   var connectorId = randomResourceId(accountId, ResourceKind.RK_CONNECTOR);
 
-                  var spec = request.getSpec();
                   var display = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
                   var uri = mustNonEmpty(spec.getUri(), "uri", corr);
 
@@ -312,11 +312,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   if (idempotencyKey == null) {
                     var existing = connectorRepo.getByName(accountId, display);
                     if (existing.isPresent()) {
-                      var meta = connectorRepo.metaFor(existing.get().getResourceId());
-                      return CreateConnectorResponse.newBuilder()
-                          .setConnector(existing.get())
-                          .setMeta(meta)
-                          .build();
+                      throw GrpcErrors.conflict(
+                          corr, "connector.already_exists", Map.of("display_name", display));
                     }
                     connectorRepo.create(connector);
                     var meta = connectorRepo.metaFor(connectorId);
@@ -344,8 +341,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                   tsNow,
                                   idempotencyTtlSeconds(),
                                   this::correlationId,
-                                  Connector::parseFrom,
-                                  rec -> connectorRepo.getById(rec.getResourceId()).isPresent()));
+                                  Connector::parseFrom));
 
                   return CreateConnectorResponse.newBuilder()
                       .setConnector(result.body)

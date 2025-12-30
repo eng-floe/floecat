@@ -27,7 +27,8 @@ public class CasBlobGc {
 
   public Result runForAccount(String accountId) {
     final var cfg = ConfigProvider.getConfig();
-    final int pageSize = cfg.getOptionalValue("floecat.gc.cas.page-size", Integer.class).orElse(500);
+    final int pageSize =
+        cfg.getOptionalValue("floecat.gc.cas.page-size", Integer.class).orElse(500);
 
     Set<String> referenced = new HashSet<>();
     List<String> tableIds = new ArrayList<>();
@@ -44,8 +45,7 @@ public class CasBlobGc {
     pointersScanned +=
         collectPointers(accountPrefix(accountId, "/namespaces/by-id/"), referenced, null, pageSize);
     pointersScanned +=
-        collectPointers(
-            accountPrefix(accountId, "/tables/by-id/"), referenced, tableIds, pageSize);
+        collectPointers(accountPrefix(accountId, "/tables/by-id/"), referenced, tableIds, pageSize);
     pointersScanned +=
         collectPointers(accountPrefix(accountId, "/views/by-id/"), referenced, null, pageSize);
     pointersScanned +=
@@ -55,11 +55,7 @@ public class CasBlobGc {
     for (String tableId : tableIds) {
       tablesScanned++;
       String prefix =
-          "/accounts/"
-              + encode(accountId)
-              + "/tables/"
-              + encode(tableId)
-              + "/snapshots/by-id/";
+          "/accounts/" + encode(accountId) + "/tables/" + encode(tableId) + "/snapshots/by-id/";
       pointersScanned += collectPointers(prefix, referenced, null, pageSize);
     }
 
@@ -102,11 +98,12 @@ public class CasBlobGc {
     blobsScanned += tables.scanned();
     blobsDeleted += tables.deleted();
 
-    var snapshots = deleteUnreferenced(
-        accountPrefix(accountId, "/tables/"),
-        referenced,
-        key -> key.contains("/snapshots/") && key.contains("/snapshot/"),
-        pageSize);
+    var snapshots =
+        deleteUnreferenced(
+            accountPrefix(accountId, "/tables/"),
+            referenced,
+            key -> key.contains("/snapshots/") && key.contains("/snapshot/"),
+            pageSize);
     blobsScanned += snapshots.scanned();
     blobsDeleted += snapshots.deleted();
 
@@ -119,15 +116,17 @@ public class CasBlobGc {
     blobsScanned += views.scanned();
     blobsDeleted += views.deleted();
 
-    var connectors = deleteUnreferenced(
-        accountPrefix(accountId, "/connectors/"),
-        referenced,
-        key -> key.contains("/connector/"),
-        pageSize);
+    var connectors =
+        deleteUnreferenced(
+            accountPrefix(accountId, "/connectors/"),
+            referenced,
+            key -> key.contains("/connector/"),
+            pageSize);
     blobsScanned += connectors.scanned();
     blobsDeleted += connectors.deleted();
 
-    return new Result(pointersScanned, blobsScanned, blobsDeleted, referenced.size(), tablesScanned);
+    return new Result(
+        pointersScanned, blobsScanned, blobsDeleted, referenced.size(), tablesScanned);
   }
 
   private int collectPointers(
@@ -162,10 +161,7 @@ public class CasBlobGc {
   private record DeleteResult(int scanned, int deleted) {}
 
   private DeleteResult deleteUnreferenced(
-      String prefix,
-      Set<String> referenced,
-      Predicate<String> isCandidate,
-      int pageSize) {
+      String prefix, Set<String> referenced, Predicate<String> isCandidate, int pageSize) {
     String token = "";
     int scanned = 0;
     int deleted = 0;

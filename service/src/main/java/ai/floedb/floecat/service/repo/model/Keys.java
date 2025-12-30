@@ -244,10 +244,7 @@ public final class Keys {
     String sha = req("sha256", sha256);
     return String.format(
         "/accounts/%s/tables/%s/snapshots/%019d/snapshot/%s.pb",
-        encode(tid),
-        encode(tbid),
-        sid,
-        encode(sha));
+        encode(tid), encode(tbid), sid, encode(sha));
   }
 
   // ===== Snapshot Stats =====

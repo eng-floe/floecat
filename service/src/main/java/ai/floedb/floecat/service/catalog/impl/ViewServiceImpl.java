@@ -197,8 +197,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
                   var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
-                  var fingerprint =
-                      canonicalFingerprint(spec.toBuilder().setDisplayName(normName).build());
+                  var normalizedSpec = spec.toBuilder().setDisplayName(normName).build();
+                  var fingerprint = canonicalFingerprint(normalizedSpec);
 
                   var accountId = pc.getAccountId();
                   var viewResourceId = randomResourceId(accountId, ResourceKind.RK_VIEW);
@@ -223,11 +223,13 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                             spec.getNamespaceId().getId(),
                             normName);
                     if (existing.isPresent()) {
-                      var meta = viewRepo.metaForSafe(existing.get().getResourceId());
-                      return CreateViewResponse.newBuilder()
-                          .setView(existing.get())
-                          .setMeta(meta)
-                          .build();
+                      throw GrpcErrors.conflict(
+                          corr,
+                          "view.already_exists",
+                          Map.of(
+                              "display_name", normName,
+                              "catalog_id", spec.getCatalogId().getId(),
+                              "namespace_id", spec.getNamespaceId().getId()));
                     }
                     viewRepo.create(view);
                     metadataGraph.invalidate(viewResourceId);
@@ -254,8 +256,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                   tsNow,
                                   idempotencyTtlSeconds(),
                                   this::correlationId,
-                                  View::parseFrom,
-                                  rec -> viewRepo.getById(rec.getResourceId()).isPresent()));
+                                  View::parseFrom));
 
                   return CreateViewResponse.newBuilder()
                       .setView(result.body)

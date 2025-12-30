@@ -3,7 +3,6 @@ package ai.floedb.floecat.service.it;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.rpc.*;
-import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
@@ -15,8 +14,6 @@ import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.BlobStore;
 import ai.floedb.floecat.storage.PointerStore;
-import io.grpc.Status;
-import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -335,7 +332,8 @@ class BackendStorageIT {
             "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
             "d");
     var tid = tbl.getResourceId();
-    var blob = ptr.get(Keys.tablePointerById(tid.getAccountId(), tid.getId())).orElseThrow().getBlobUri();
+    var blob =
+        ptr.get(Keys.tablePointerById(tid.getAccountId(), tid.getId())).orElseThrow().getBlobUri();
     var e1 = blobs.head(blob).orElseThrow().getEtag();
     TestSupport.updateSchema(
         table, tid, "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}");
@@ -377,7 +375,9 @@ class BackendStorageIT {
     Keys.tablePointerById(tbl.getResourceId().getAccountId(), tbl.getResourceId().getId());
 
     var blobUri =
-        ptr.get(Keys.tablePointerById(tbl.getResourceId().getAccountId(), tbl.getResourceId().getId()))
+        ptr.get(
+                Keys.tablePointerById(
+                    tbl.getResourceId().getAccountId(), tbl.getResourceId().getId()))
             .orElseThrow()
             .getBlobUri();
     assertTrue(blobs.delete(blobUri));
