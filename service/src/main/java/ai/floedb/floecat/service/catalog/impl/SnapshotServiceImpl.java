@@ -249,6 +249,16 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   if (idempotencyKey == null) {
                     var existing = snapshotRepo.getById(tableId, snap.getSnapshotId());
                     if (existing.isPresent()) {
+                      var stored = normalizeSnapshotForComparison(existing.get());
+                      var incoming = normalizeSnapshotForComparison(snap);
+                      if (!stored.equals(incoming)) {
+                        throw GrpcErrors.conflict(
+                            corr,
+                            "snapshot.mismatch",
+                            Map.of(
+                                "table_id", tableId.getId(),
+                                "snapshot_id", Long.toString(snap.getSnapshotId())));
+                      }
                       var meta = snapshotRepo.metaForSafe(tableId, snap.getSnapshotId());
                       return CreateSnapshotResponse.newBuilder()
                           .setSnapshot(existing.get())
@@ -541,5 +551,9 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
       }
     }
     return builder.build();
+  }
+
+  private static Snapshot normalizeSnapshotForComparison(Snapshot snapshot) {
+    return snapshot.toBuilder().clearIngestedAt().build();
   }
 }

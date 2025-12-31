@@ -487,10 +487,17 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
               .setDisplayName(display)
               .setCreatedAt(tsNow)
               .build();
-      namespaceRepo.create(ns);
-      markerStore.bumpCatalogMarker(catalogId);
-      bumpParentNamespaceMarker(accountId, catalogId, parentList);
-      metadataGraph.invalidate(rid);
+      try {
+        namespaceRepo.create(ns);
+        markerStore.bumpCatalogMarker(catalogId);
+        bumpParentNamespaceMarker(accountId, catalogId, parentList);
+        metadataGraph.invalidate(rid);
+      } catch (BaseResourceRepository.NameConflictException nce) {
+        if (namespaceRepo.getByPath(accountId, catalogId.getId(), chain).isPresent()) {
+          continue;
+        }
+        throw nce;
+      }
     }
   }
 

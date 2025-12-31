@@ -111,16 +111,26 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   private void refreshSecondaryPointer(String key, String blobUri) {
-    var ptr = pointerStore.get(key).orElse(null);
-    if (ptr == null) {
-      Pointer reserve = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
-      pointerStore.compareAndSet(key, 0L, reserve);
-      return;
+    for (int i = 0; i < CAS_MAX; i++) {
+      var ptr = pointerStore.get(key).orElse(null);
+      if (ptr == null) {
+        Pointer reserve =
+            Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
+        if (pointerStore.compareAndSet(key, 0L, reserve)) {
+          return;
+        }
+        continue;
+      }
+      if (Objects.equals(ptr.getBlobUri(), blobUri)) {
+        return;
+      }
+      try {
+        advancePointer(key, blobUri, ptr.getVersion());
+        return;
+      } catch (PreconditionFailedException ignore) {
+        // retry on concurrent update
+      }
     }
-    if (Objects.equals(ptr.getBlobUri(), blobUri)) {
-      return;
-    }
-    advancePointer(key, blobUri, ptr.getVersion());
   }
 
   public boolean delete(K key) {

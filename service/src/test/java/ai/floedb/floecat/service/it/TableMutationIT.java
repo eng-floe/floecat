@@ -16,6 +16,7 @@ import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.BlobStore;
 import ai.floedb.floecat.storage.PointerStore;
 import com.google.protobuf.FieldMask;
+import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -569,5 +570,49 @@ class TableMutationIT {
                     .build())
             .getSnapshot()
             .getSchemaJson());
+  }
+
+  @Test
+  void snapshotCreateMismatch() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, "snapcat_mismatch", "");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "sch", List.of("db"), "");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "orders",
+            "s3://bucket/orders",
+            SchemaParser.toJson(SCHEMA_V1),
+            "desc");
+
+    long snapId = 42L;
+    var spec1 =
+        SnapshotSpec.newBuilder()
+            .setTableId(tbl.getResourceId())
+            .setSnapshotId(snapId)
+            .setUpstreamCreatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
+            .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
+            .build();
+    snapshot.createSnapshot(CreateSnapshotRequest.newBuilder().setSpec(spec1).build());
+
+    var spec2 =
+        SnapshotSpec.newBuilder()
+            .setTableId(tbl.getResourceId())
+            .setSnapshotId(snapId)
+            .setUpstreamCreatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
+            .setSchemaJson(
+                "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"},"
+                    + "{\"name\":\"x\",\"type\":\"double\"}]}")
+            .build();
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                snapshot.createSnapshot(CreateSnapshotRequest.newBuilder().setSpec(spec2).build()));
+    TestSupport.assertGrpcAndMc(ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, null);
+    var mc = TestSupport.unpackMcError(ex);
+    assertNotNull(mc);
+    assertEquals("snapshot.mismatch", mc.getMessageKey());
   }
 }
