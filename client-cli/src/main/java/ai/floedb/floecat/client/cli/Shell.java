@@ -2824,19 +2824,12 @@ public class Shell implements Runnable {
 
       String destCat = "";
       if (c.hasDestination()) {
-        try {
-          var resp =
-              directory.lookupCatalog(
-                  LookupCatalogRequest.newBuilder()
-                      .setResourceId(c.getDestination().getCatalogId())
-                      .build());
-          destCat = resp.getDisplayName();
-        } catch (StatusRuntimeException e) {
-          if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
-            throw e;
-          }
-          destCat = rid(c.getDestination().getCatalogId());
-        }
+        var resp =
+            directory.lookupCatalog(
+                LookupCatalogRequest.newBuilder()
+                    .setResourceId(c.getDestination().getCatalogId())
+                    .build());
+        destCat = resp.getDisplayName();
       }
 
       String state = c.getState().name();
@@ -2860,54 +2853,33 @@ public class Shell implements Runnable {
         String destTableDisplay = null;
 
         if (c.getDestination().hasCatalogId()) {
-          try {
-            var resp =
-                directory.lookupCatalog(
-                    LookupCatalogRequest.newBuilder()
-                        .setResourceId(c.getDestination().getCatalogId())
-                        .build());
-            destCatDisplay = resp.getDisplayName();
-          } catch (StatusRuntimeException e) {
-            if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
-              throw e;
-            }
-            destCatDisplay = rid(c.getDestination().getCatalogId());
-          }
+          var resp =
+              directory.lookupCatalog(
+                  LookupCatalogRequest.newBuilder()
+                      .setResourceId(c.getDestination().getCatalogId())
+                      .build());
+          destCatDisplay = resp.getDisplayName();
         }
 
         if (c.getDestination().hasNamespaceId()) {
-          try {
-            var nsResp =
-                directory.lookupNamespace(
-                    LookupNamespaceRequest.newBuilder()
-                        .setResourceId(c.getDestination().getNamespaceId())
-                        .build());
-            var ref = nsResp.getRef();
-            ArrayList<String> parts = new ArrayList<>(ref.getPathList());
-            if (!ref.getName().isBlank()) parts.add(ref.getName());
-            destNsParts = parts;
-          } catch (StatusRuntimeException e) {
-            if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
-              throw e;
-            }
-            destNsParts = List.of(rid(c.getDestination().getNamespaceId()));
-          }
+          var nsResp =
+              directory.lookupNamespace(
+                  LookupNamespaceRequest.newBuilder()
+                      .setResourceId(c.getDestination().getNamespaceId())
+                      .build());
+          var ref = nsResp.getRef();
+          ArrayList<String> parts = new ArrayList<>(ref.getPathList());
+          if (!ref.getName().isBlank()) parts.add(ref.getName());
+          destNsParts = parts;
         }
 
         if (c.getDestination().hasTableId()) {
-          try {
-            var tblResp =
-                directory.lookupTable(
-                    LookupTableRequest.newBuilder()
-                        .setResourceId(c.getDestination().getTableId())
-                        .build());
-            destTableDisplay = tblResp.getName().getName();
-          } catch (StatusRuntimeException e) {
-            if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
-              throw e;
-            }
-            destTableDisplay = rid(c.getDestination().getTableId());
-          }
+          var tblResp =
+              directory.lookupTable(
+                  LookupTableRequest.newBuilder()
+                      .setResourceId(c.getDestination().getTableId())
+                      .build());
+          destTableDisplay = tblResp.getName().getName();
         }
 
         if (!destCatDisplay.isBlank()) {

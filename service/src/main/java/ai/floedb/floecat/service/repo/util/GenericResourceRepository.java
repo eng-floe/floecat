@@ -1,6 +1,7 @@
 package ai.floedb.floecat.service.repo.util;
 
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.ResourceKey;
 import ai.floedb.floecat.service.repo.model.ResourceSchema;
 import ai.floedb.floecat.storage.BlobStore;
@@ -64,6 +65,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
                 () ->
                     new NotFoundException(
                         schema.resourceName + " not found for canonical: " + canonicalPointer));
+    String currentBlobUri = schema.blobUriForKey.apply(schema.keyFromValue.apply(currentValue));
 
     Set<String> currentSecondary =
         new HashSet<>(schema.secondaryPointersFromValue.apply(currentValue).values());
@@ -95,11 +97,30 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       return false;
     }
 
+    if (schema.casBlobs && !Objects.equals(currentBlobUri, blobUri)) {
+      for (String p : nextSecondary) {
+        refreshSecondaryPointer(p, blobUri);
+      }
+    }
+
     for (String p : toDelete) {
       pointerStore.get(p).ifPresent(ptr -> compareAndDeleteOrFalse(p, ptr.getVersion()));
     }
 
     return true;
+  }
+
+  private void refreshSecondaryPointer(String key, String blobUri) {
+    var ptr = pointerStore.get(key).orElse(null);
+    if (ptr == null) {
+      Pointer reserve = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
+      pointerStore.compareAndSet(key, 0L, reserve);
+      return;
+    }
+    if (Objects.equals(ptr.getBlobUri(), blobUri)) {
+      return;
+    }
+    advancePointer(key, blobUri, ptr.getVersion());
   }
 
   public boolean delete(K key) {
