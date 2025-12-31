@@ -48,6 +48,8 @@ import software.amazon.awssdk.services.s3.S3Configuration;
 public final class UnityDeltaConnector implements FloecatConnector {
 
   private static final ObjectMapper M = new ObjectMapper();
+  private static final boolean FILEIO_OVERRIDES_ENABLED =
+      Boolean.parseBoolean(System.getProperty("floecat.connector.fileio.overrides", "true"));
 
   private final String connectorId;
   private final UcHttp ucHttp;
@@ -205,7 +207,7 @@ public final class UnityDeltaConnector implements FloecatConnector {
         return opt;
       }
     }
-    if (sysProp != null && !sysProp.isBlank()) {
+    if (FILEIO_OVERRIDES_ENABLED && sysProp != null && !sysProp.isBlank()) {
       String prop = System.getProperty(sysProp);
       if (prop != null && !prop.isBlank()) {
         return prop;
@@ -230,7 +232,7 @@ public final class UnityDeltaConnector implements FloecatConnector {
         return fallback;
       }
     }
-    if (sysProp != null && !sysProp.isBlank()) {
+    if (FILEIO_OVERRIDES_ENABLED && sysProp != null && !sysProp.isBlank()) {
       String prop = System.getProperty(sysProp);
       if (prop != null && !prop.isBlank()) {
         return prop;
