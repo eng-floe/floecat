@@ -158,6 +158,7 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
     var uri = p.get().getBlobUri();
     var ok = ptr.delete(key);
     blobs.delete(uri);
+    blobs.deletePrefix(Keys.idempotencyBlobPrefixForPointerKey(key));
 
     return ok;
   }

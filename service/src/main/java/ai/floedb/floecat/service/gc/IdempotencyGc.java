@@ -66,6 +66,7 @@ public class IdempotencyGc {
           if (blobStore.delete(p.getBlobUri())) {
             blobDeleted++;
           }
+          blobStore.deletePrefix(Keys.idempotencyBlobPrefixForPointerKey(p.getKey()));
           continue;
         }
 
@@ -99,6 +100,7 @@ public class IdempotencyGc {
               if (blobStore.delete(p.getBlobUri())) {
                 blobDeleted++;
               }
+              blobStore.deletePrefix(Keys.idempotencyBlobPrefixForPointerKey(p.getKey()));
             }
           }
         }

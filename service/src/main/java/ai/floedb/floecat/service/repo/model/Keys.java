@@ -429,6 +429,28 @@ public final class Keys {
         + ".pb";
   }
 
+  public static String idempotencyBlobPrefix(String accountId, String key) {
+    String tid = req("account_id", accountId);
+    String k = req("key", key);
+    return "/accounts/" + encode(tid) + "/idempotency/" + encode(k) + "/";
+  }
+
+  public static String idempotencyBlobPrefixForPointerKey(String pointerKey) {
+    String k = req("pointer_key", pointerKey);
+    String normalized = k.startsWith("/") ? k : "/" + k;
+    int accountsIdx = normalized.indexOf("/accounts/");
+    if (accountsIdx < 0) {
+      throw new IllegalArgumentException("pointer key missing /accounts/ segment");
+    }
+    int start = accountsIdx + "/accounts/".length();
+    int idempIdx = normalized.indexOf("/idempotency/", start);
+    if (idempIdx < 0) {
+      throw new IllegalArgumentException("pointer key missing /idempotency/ segment");
+    }
+    String accountEncoded = normalized.substring(start, idempIdx);
+    return "/accounts/" + accountEncoded + "/idempotency/" + encode(normalized) + "/";
+  }
+
   public static String idempotencyPrefixAccount(String accountId) {
     String tid = req("account_id", accountId);
     return "/accounts/" + encode(tid) + "/idempotency/";
