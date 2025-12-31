@@ -455,4 +455,18 @@ public final class Keys {
     String tid = req("account_id", accountId);
     return "/accounts/" + encode(tid) + "/idempotency/";
   }
+
+  // ===== Markers =====
+
+  public static String catalogChildrenMarker(String accountId, String catalogId) {
+    String tid = req("account_id", accountId);
+    String cid = req("catalog_id", catalogId);
+    return "/accounts/" + encode(tid) + "/catalogs/" + encode(cid) + "/markers/children";
+  }
+
+  public static String namespaceChildrenMarker(String accountId, String namespaceId) {
+    String tid = req("account_id", accountId);
+    String nid = req("namespace_id", namespaceId);
+    return "/accounts/" + encode(tid) + "/namespaces/" + encode(nid) + "/markers/children";
+  }
 }

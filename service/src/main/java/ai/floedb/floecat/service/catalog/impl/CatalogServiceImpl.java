@@ -26,6 +26,7 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
@@ -46,6 +47,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
+  @Inject MarkerStore markerStore;
 
   private static final Set<String> CATALOG_MUTABLE_PATHS =
       Set.of("display_name", "description", "connector_ref", "properties", "policy_ref");
@@ -304,6 +306,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   authz.require(principalContext, "catalog.write");
                   var id = request.getCatalogId();
                   ensureKind(id, ResourceKind.RK_CATALOG, "catalog_id", correlationId);
+                  long markerVersion = markerStore.catalogMarkerVersion(id);
 
                   MutationMeta meta;
                   try {
@@ -325,6 +328,11 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                             : id.getId();
                     throw GrpcErrors.conflict(
                         correlationId, "catalog.not_empty", Map.of("display_name", displayName));
+                  }
+
+                  if (!markerStore.advanceCatalogMarker(id, markerVersion)) {
+                    throw GrpcErrors.preconditionFailed(
+                        correlationId, "catalog.children_changed", Map.of());
                   }
 
                   var out =

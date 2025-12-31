@@ -324,7 +324,10 @@ class ConcurrencyOCCIdempotencyIT {
     return switch (op) {
       case CREATE_IDEMPOTENT -> c == Status.Code.ABORTED || c == Status.Code.FAILED_PRECONDITION;
 
-      case UPDATE_SCHEMA -> c == Status.Code.FAILED_PRECONDITION || c == Status.Code.NOT_FOUND;
+      case UPDATE_SCHEMA ->
+          c == Status.Code.FAILED_PRECONDITION
+              || c == Status.Code.NOT_FOUND
+              || c == Status.Code.ABORTED;
 
       case RENAME, MOVE ->
           c == Status.Code.FAILED_PRECONDITION

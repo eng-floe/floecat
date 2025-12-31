@@ -27,6 +27,7 @@ import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
@@ -50,6 +51,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
+  @Inject MarkerStore markerStore;
 
   private static final Set<String> NAMESPACE_MUTABLE_PATHS =
       Set.of("display_name", "description", "path", "policy_ref", "properties", "catalog_id");
@@ -427,6 +429,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                             .build();
 
                                     namespaceRepo.create(built);
+                                    markerStore.bumpCatalogMarker(spec.getCatalogId());
+                                    bumpParentNamespaceMarker(
+                                        accountId, spec.getCatalogId(), parents);
                                     metadataGraph.invalidate(namespaceId);
                                     return new IdempotencyGuard.CreateResult<>(built, namespaceId);
                                   },
@@ -483,6 +488,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
               .setCreatedAt(tsNow)
               .build();
       namespaceRepo.create(ns);
+      markerStore.bumpCatalogMarker(catalogId);
+      bumpParentNamespaceMarker(accountId, catalogId, parentList);
       metadataGraph.invalidate(rid);
     }
   }
@@ -563,6 +570,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   var outMeta = namespaceRepo.metaForSafe(nsId);
                   var latest = namespaceRepo.getById(nsId).orElse(desired);
 
+                  bumpParentMoveMarkers(current, desired);
                   return UpdateNamespaceResponse.newBuilder()
                       .setNamespace(latest)
                       .setMeta(outMeta)
@@ -604,6 +612,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
                   }
 
+                  long markerVersion = markerStore.namespaceMarkerVersion(namespaceId);
+
                   if (tableRepo.count(
                           catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())
                       > 0) {
@@ -622,6 +632,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                         correlationId, "namespace.not_empty", Map.of("display_name", pretty));
                   }
 
+                  if (!markerStore.advanceNamespaceMarker(namespaceId, markerVersion)) {
+                    throw GrpcErrors.preconditionFailed(
+                        correlationId, "namespace.children_changed", Map.of());
+                  }
+
                   var meta =
                       MutationOps.deleteWithPreconditions(
                           () -> namespaceRepo.metaFor(namespaceId),
@@ -633,6 +648,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           Map.of("id", namespaceId.getId()));
 
                   metadataGraph.invalidate(namespaceId);
+                  markerStore.bumpCatalogMarker(catalogId);
+                  bumpParentNamespaceMarker(
+                      catalogId.getAccountId(), catalogId, namespace.getParentsList());
                   return DeleteNamespaceResponse.newBuilder().setMeta(meta).build();
                 }),
             correlationId())
@@ -750,6 +768,38 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     }
 
     return b.build();
+  }
+
+  private void bumpParentNamespaceMarker(
+      String accountId, ResourceId catalogId, List<String> parentPath) {
+    if (parentPath == null || parentPath.isEmpty()) {
+      return;
+    }
+    namespaceRepo
+        .getByPath(accountId, catalogId.getId(), parentPath)
+        .ifPresent(ns -> markerStore.bumpNamespaceMarker(ns.getResourceId()));
+  }
+
+  private void bumpParentMoveMarkers(Namespace before, Namespace after) {
+    if (before == null || after == null) {
+      return;
+    }
+
+    var beforeCat = before.getCatalogId();
+    var afterCat = after.getCatalogId();
+
+    if (!beforeCat.getId().equals(afterCat.getId())) {
+      markerStore.bumpCatalogMarker(beforeCat);
+      markerStore.bumpCatalogMarker(afterCat);
+    }
+
+    var beforeParent = before.getParentsList();
+    var afterParent = after.getParentsList();
+
+    if (!beforeParent.equals(afterParent) || !beforeCat.getId().equals(afterCat.getId())) {
+      bumpParentNamespaceMarker(beforeCat.getAccountId(), beforeCat, beforeParent);
+      bumpParentNamespaceMarker(afterCat.getAccountId(), afterCat, afterParent);
+    }
   }
 
   private static String encodeNsToken(String resumeAfterRel) {

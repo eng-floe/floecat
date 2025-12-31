@@ -28,6 +28,7 @@ import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
@@ -49,6 +50,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
+  @Inject MarkerStore markerStore;
 
   private static final Set<String> TABLE_MUTABLE_PATHS =
       Set.of(
@@ -249,6 +251,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
                     tableRepo.create(table);
+                    markerStore.bumpNamespaceMarker(table.getNamespaceId());
                     metadataGraph.invalidate(tableResourceId);
                     var meta = tableRepo.metaForSafe(tableResourceId);
                     return CreateTableResponse.newBuilder().setTable(table).setMeta(meta).build();
@@ -264,6 +267,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                   () -> fingerprint,
                                   () -> {
                                     tableRepo.create(table);
+                                    markerStore.bumpNamespaceMarker(table.getNamespaceId());
                                     metadataGraph.invalidate(tableResourceId);
                                     return new IdempotencyGuard.CreateResult<>(
                                         table, tableResourceId);
@@ -370,6 +374,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   }
                   metadataGraph.invalidate(tableId);
 
+                  if (!current.getNamespaceId().getId().equals(desired.getNamespaceId().getId())) {
+                    markerStore.bumpNamespaceMarker(current.getNamespaceId());
+                    markerStore.bumpNamespaceMarker(desired.getNamespaceId());
+                  }
+
                   var outMeta = tableRepo.metaForSafe(tableId);
                   var latest = tableRepo.getById(tableId).orElse(desired);
 
@@ -396,6 +405,13 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var tableId = request.getTableId();
                   ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
 
+                  Table existing = null;
+                  try {
+                    existing = tableRepo.getById(tableId).orElse(null);
+                  } catch (BaseResourceRepository.CorruptionException ignore) {
+                    // marker bump is best-effort; allow delete to proceed even if blob is missing
+                  }
+
                   MutationMeta meta;
                   try {
                     meta = tableRepo.metaFor(tableId);
@@ -405,6 +421,9 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                         correlationId, safe, request.getPrecondition());
                     tableRepo.delete(tableId);
                     metadataGraph.invalidate(tableId);
+                    if (existing != null) {
+                      markerStore.bumpNamespaceMarker(existing.getNamespaceId());
+                    }
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -419,6 +438,9 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           Map.of("id", tableId.getId()));
 
                   metadataGraph.invalidate(tableId);
+                  if (existing != null) {
+                    markerStore.bumpNamespaceMarker(existing.getNamespaceId());
+                  }
                   return DeleteTableResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())
