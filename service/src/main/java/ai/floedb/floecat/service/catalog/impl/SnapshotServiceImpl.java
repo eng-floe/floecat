@@ -389,6 +389,9 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                     throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
                   }
 
+                  var meta = snapshotRepo.metaFor(tableId, snapshotId);
+                  enforcePreconditions(corr, meta, request.getPrecondition());
+
                   var existing =
                       snapshotRepo
                           .getById(tableId, snapshotId)
@@ -418,14 +421,28 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                           "table_id", tableId.getId(),
                           "snapshot_id", Long.toString(snapshotId));
 
-                  MutationOps.updateWithPreconditions(
-                      () -> snapshotRepo.metaFor(tableId, snapshotId),
-                      request.getPrecondition(),
-                      expected -> snapshotRepo.update(desired, expected),
-                      () -> snapshotRepo.metaForSafe(tableId, snapshotId),
-                      corr,
-                      "snapshot",
-                      conflictInfo);
+                  try {
+                    boolean ok = snapshotRepo.update(desired, meta.getPointerVersion());
+                    if (!ok) {
+                      var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
+                      throw GrpcErrors.preconditionFailed(
+                          corr,
+                          "version_mismatch",
+                          Map.of(
+                              "expected", Long.toString(meta.getPointerVersion()),
+                              "actual", Long.toString(nowMeta.getPointerVersion())));
+                    }
+                  } catch (BaseResourceRepository.NameConflictException nce) {
+                    throw GrpcErrors.conflict(corr, "snapshot.already_exists", conflictInfo);
+                  } catch (BaseResourceRepository.PreconditionFailedException pfe) {
+                    var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
+                    throw GrpcErrors.preconditionFailed(
+                        corr,
+                        "version_mismatch",
+                        Map.of(
+                            "expected", Long.toString(meta.getPointerVersion()),
+                            "actual", Long.toString(nowMeta.getPointerVersion())));
+                  }
 
                   var outMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
 

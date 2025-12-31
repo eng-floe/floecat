@@ -26,6 +26,7 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
@@ -500,6 +501,14 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   var nsId = request.getNamespaceId();
                   ensureKind(nsId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
 
+                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
+                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                  }
+
+                  var meta = namespaceRepo.metaFor(nsId);
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      corr, meta, request.getPrecondition());
+
                   var current =
                       namespaceRepo
                           .getById(nsId)
@@ -507,10 +516,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                               () ->
                                   GrpcErrors.notFound(
                                       corr, "namespace", Map.of("id", nsId.getId())));
-
-                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
-                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
-                  }
 
                   var desired =
                       applyNamespaceSpecPatch(
@@ -531,14 +536,28 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           "display_name", desired.getDisplayName(),
                           "catalog_id", desired.getCatalogId().getId());
 
-                  MutationOps.updateWithPreconditions(
-                      () -> namespaceRepo.metaFor(nsId),
-                      request.getPrecondition(),
-                      expected -> namespaceRepo.update(desired, expected),
-                      () -> namespaceRepo.metaForSafe(nsId),
-                      corr,
-                      "namespace",
-                      conflictInfo);
+                  try {
+                    boolean ok = namespaceRepo.update(desired, meta.getPointerVersion());
+                    if (!ok) {
+                      var nowMeta = namespaceRepo.metaForSafe(nsId);
+                      throw GrpcErrors.preconditionFailed(
+                          corr,
+                          "version_mismatch",
+                          Map.of(
+                              "expected", Long.toString(meta.getPointerVersion()),
+                              "actual", Long.toString(nowMeta.getPointerVersion())));
+                    }
+                  } catch (BaseResourceRepository.NameConflictException nce) {
+                    throw GrpcErrors.conflict(corr, "namespace.already_exists", conflictInfo);
+                  } catch (BaseResourceRepository.PreconditionFailedException pfe) {
+                    var nowMeta = namespaceRepo.metaForSafe(nsId);
+                    throw GrpcErrors.preconditionFailed(
+                        corr,
+                        "version_mismatch",
+                        Map.of(
+                            "expected", Long.toString(meta.getPointerVersion()),
+                            "actual", Long.toString(nowMeta.getPointerVersion())));
+                  }
                   metadataGraph.invalidate(nsId);
 
                   var outMeta = namespaceRepo.metaForSafe(nsId);

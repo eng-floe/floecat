@@ -316,6 +316,18 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var spec = request.getSpec();
                   var mask = request.getUpdateMask();
 
+                  var meta = tableRepo.metaFor(tableId);
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      corr, meta, request.getPrecondition());
+
+                  current =
+                      tableRepo
+                          .getById(tableId)
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      corr, "table", Map.of("id", tableId.getId())));
+
                   var desired = applyTableSpecPatch(current, spec, mask, corr);
 
                   if (desired.equals(current)) {
@@ -334,14 +346,28 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           "catalog_id", desired.getCatalogId().getId(),
                           "namespace_id", desired.getNamespaceId().getId());
 
-                  MutationOps.updateWithPreconditions(
-                      () -> tableRepo.metaFor(tableId),
-                      request.getPrecondition(),
-                      expectedVersion -> tableRepo.update(desired, expectedVersion),
-                      () -> tableRepo.metaForSafe(tableId),
-                      corr,
-                      "table",
-                      conflictInfo);
+                  try {
+                    boolean ok = tableRepo.update(desired, meta.getPointerVersion());
+                    if (!ok) {
+                      var nowMeta = tableRepo.metaForSafe(tableId);
+                      throw GrpcErrors.preconditionFailed(
+                          corr,
+                          "version_mismatch",
+                          Map.of(
+                              "expected", Long.toString(meta.getPointerVersion()),
+                              "actual", Long.toString(nowMeta.getPointerVersion())));
+                    }
+                  } catch (BaseResourceRepository.NameConflictException nce) {
+                    throw GrpcErrors.conflict(corr, "table.already_exists", conflictInfo);
+                  } catch (BaseResourceRepository.PreconditionFailedException pfe) {
+                    var nowMeta = tableRepo.metaForSafe(tableId);
+                    throw GrpcErrors.preconditionFailed(
+                        corr,
+                        "version_mismatch",
+                        Map.of(
+                            "expected", Long.toString(meta.getPointerVersion()),
+                            "actual", Long.toString(nowMeta.getPointerVersion())));
+                  }
                   metadataGraph.invalidate(tableId);
 
                   var outMeta = tableRepo.metaForSafe(tableId);
