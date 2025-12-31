@@ -8,16 +8,20 @@ import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
+import ai.floedb.floecat.catalog.rpc.PartitionField;
+import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotService;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotResponse;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
+import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
@@ -30,9 +34,11 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
+import com.google.protobuf.Timestamp;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -211,7 +217,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
                   var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
-                  var fingerprint = request.getSpec().toBuilder().build().toByteArray();
+                  var fingerprint = canonicalFingerprint(request.getSpec());
 
                   var spec = request.getSpec();
                   var snapBuilder =
@@ -555,5 +561,98 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
   private static Snapshot normalizeSnapshotForComparison(Snapshot snapshot) {
     return snapshot.toBuilder().clearIngestedAt().build();
+  }
+
+  private static byte[] canonicalFingerprint(SnapshotSpec spec) {
+    var c = new Canonicalizer();
+    canonicalResourceId(c, "table_id", spec.getTableId());
+    c.scalar("snapshot_id", spec.getSnapshotId());
+    canonicalTimestamp(c, "upstream_created_at", spec.getUpstreamCreatedAt());
+    canonicalTimestamp(c, "ingested_at", spec.getIngestedAt());
+    c.scalar("parent_snapshot_id", spec.getParentSnapshotId());
+    if (spec.hasSchemaJson()) {
+      c.scalar("schema_json", spec.getSchemaJson());
+    }
+    if (spec.hasPartitionSpec()) {
+      canonicalPartitionSpec(c, "partition_spec", spec.getPartitionSpec());
+    }
+    if (spec.hasSequenceNumber()) {
+      c.scalar("sequence_number", spec.getSequenceNumber());
+    }
+    if (spec.hasManifestList()) {
+      c.scalar("manifest_list", spec.getManifestList());
+    }
+    c.map("summary", spec.getSummaryMap());
+    if (spec.hasSchemaId()) {
+      c.scalar("schema_id", spec.getSchemaId());
+    }
+    canonicalFormatMetadata(c, "format_metadata", spec.getFormatMetadataMap());
+    return c.bytes();
+  }
+
+  private static void canonicalResourceId(Canonicalizer c, String key, ResourceId id) {
+    c.group(
+        key,
+        g -> {
+          if (id == null) {
+            return;
+          }
+          g.scalar("account_id", id.getAccountId());
+          g.scalar("id", id.getId());
+          g.scalar("kind", id.getKind().name());
+        });
+  }
+
+  private static void canonicalTimestamp(Canonicalizer c, String key, Timestamp ts) {
+    if (ts == null) {
+      return;
+    }
+    c.group(
+        key,
+        g -> {
+          g.scalar("seconds", ts.getSeconds());
+          g.scalar("nanos", ts.getNanos());
+        });
+  }
+
+  private static void canonicalPartitionSpec(Canonicalizer c, String key, PartitionSpecInfo spec) {
+    c.group(
+        key,
+        g -> {
+          g.scalar("spec_id", spec.getSpecId());
+          g.scalar("spec_name", spec.getSpecName());
+          int idx = 0;
+          for (PartitionField f : spec.getFieldsList()) {
+            final int fieldIndex = idx++;
+            g.group(
+                "field_" + fieldIndex,
+                fg -> {
+                  fg.scalar("field_id", f.getFieldId());
+                  fg.scalar("name", f.getName());
+                  fg.scalar("transform", f.getTransform());
+                });
+          }
+        });
+  }
+
+  private static void canonicalFormatMetadata(
+      Canonicalizer c, String key, Map<String, com.google.protobuf.ByteString> fm) {
+    if (fm == null || fm.isEmpty()) {
+      return;
+    }
+    c.group(
+        key,
+        g ->
+            fm.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(
+                    e -> g.scalar("[" + e.getKey() + "]", bytesToB64(e.getValue().toByteArray()))));
+  }
+
+  private static String bytesToB64(byte[] data) {
+    if (data == null || data.length == 0) {
+      return "";
+    }
+    return Base64.getEncoder().encodeToString(data);
   }
 }

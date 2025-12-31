@@ -8,6 +8,9 @@ import ai.floedb.floecat.catalog.rpc.ListColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListColumnStatsResponse;
 import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsResponse;
+import ai.floedb.floecat.catalog.rpc.Ndv;
+import ai.floedb.floecat.catalog.rpc.NdvApprox;
+import ai.floedb.floecat.catalog.rpc.NdvSketch;
 import ai.floedb.floecat.catalog.rpc.PutColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.PutColumnStatsResponse;
 import ai.floedb.floecat.catalog.rpc.PutFileColumnStatsRequest;
@@ -17,11 +20,13 @@ import ai.floedb.floecat.catalog.rpc.PutTableStatsResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsService;
 import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
+import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
@@ -36,6 +41,10 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Comparator;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -292,7 +301,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                         request.getTableId().getId(), request.getSnapshotId());
                   }
 
-                  var fingerprint = request.getStats().toByteArray();
+                  var fingerprint = canonicalFingerprint(request.getStats());
                   var explicitKey =
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
                   var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
@@ -482,7 +491,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     for (var raw : req.getColumnsList()) {
       var columnStats =
           raw.toBuilder().setTableId(next.tableId()).setSnapshotId(next.snapshotId()).build();
-      var fingerprint = raw.toByteArray();
+      var fingerprint = canonicalFingerprint(columnStats);
 
       if (next.idempotencyKey() == null) {
         stats.putColumnStats(next.tableId(), next.snapshotId(), columnStats);
@@ -490,12 +499,13 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
         continue;
       }
 
+      var itemKey = itemIdempotencyKey(next.idempotencyKey(), "col", raw.getColumnId());
       runIdempotentCreate(
           () ->
               MutationOps.createProto(
                   accountId,
                   "PutColumnStats",
-                  next.idempotencyKey(),
+                  itemKey,
                   () -> fingerprint,
                   () -> {
                     stats.putColumnStats(next.tableId(), next.snapshotId(), columnStats);
@@ -533,7 +543,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     for (var raw : req.getFilesList()) {
       var fileStats =
           raw.toBuilder().setTableId(next.tableId()).setSnapshotId(next.snapshotId()).build();
-      var fingerprint = raw.toByteArray();
+      var fingerprint = canonicalFingerprint(fileStats);
 
       if (next.idempotencyKey() == null) {
         stats.putFileColumnStats(next.tableId(), next.snapshotId(), fileStats);
@@ -541,12 +551,14 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
         continue;
       }
 
+      var itemKey =
+          itemIdempotencyKey(next.idempotencyKey(), "file", hashFilePath(raw.getFilePath()));
       runIdempotentCreate(
           () ->
               MutationOps.createProto(
                   accountId,
                   "PutFileColumnStats",
-                  next.idempotencyKey(),
+                  itemKey,
                   () -> fingerprint,
                   () -> {
                     stats.putFileColumnStats(next.tableId(), next.snapshotId(), fileStats);
@@ -564,5 +576,170 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
       upserted.incrementAndGet();
     }
     return Boolean.TRUE;
+  }
+
+  private static String itemIdempotencyKey(String baseKey, String kind, Object itemId) {
+    return baseKey + ":" + kind + ":" + String.valueOf(itemId);
+  }
+
+  private static String hashFilePath(String filePath) {
+    if (filePath == null || filePath.isBlank()) {
+      return "empty";
+    }
+    return hashFingerprint(filePath.getBytes(StandardCharsets.UTF_8));
+  }
+
+  private static byte[] canonicalFingerprint(TableStats stats) {
+    var c = new Canonicalizer();
+    canonicalResourceId(c, "table_id", stats.getTableId());
+    c.scalar("snapshot_id", stats.getSnapshotId());
+    canonicalUpstream(c, "upstream", stats.hasUpstream() ? stats.getUpstream() : null);
+    c.scalar("row_count", stats.getRowCount());
+    c.scalar("data_file_count", stats.getDataFileCount());
+    c.scalar("total_size_bytes", stats.getTotalSizeBytes());
+    canonicalNdv(c, "ndv", stats.hasNdv() ? stats.getNdv() : null);
+    c.map("properties", stats.getPropertiesMap());
+    return c.bytes();
+  }
+
+  private static byte[] canonicalFingerprint(ColumnStats stats) {
+    var c = new Canonicalizer();
+    canonicalResourceId(c, "table_id", stats.getTableId());
+    c.scalar("snapshot_id", stats.getSnapshotId());
+    c.scalar("column_id", stats.getColumnId());
+    c.scalar("column_name", stats.getColumnName());
+    c.scalar("logical_type", stats.getLogicalType());
+    canonicalUpstream(c, "upstream", stats.hasUpstream() ? stats.getUpstream() : null);
+    c.scalar("value_count", stats.getValueCount());
+    c.scalar("null_count", stats.getNullCount());
+    c.scalar("nan_count", stats.getNanCount());
+    canonicalNdv(c, "ndv", stats.hasNdv() ? stats.getNdv() : null);
+    c.scalar("min", stats.getMin());
+    c.scalar("max", stats.getMax());
+    c.scalar("histogram_b64", bytesToB64(stats.getHistogram().toByteArray()));
+    c.scalar("tdigest_b64", bytesToB64(stats.getTdigest().toByteArray()));
+    c.map("properties", stats.getPropertiesMap());
+    return c.bytes();
+  }
+
+  private static byte[] canonicalFingerprint(FileColumnStats stats) {
+    var c = new Canonicalizer();
+    canonicalResourceId(c, "table_id", stats.getTableId());
+    c.scalar("snapshot_id", stats.getSnapshotId());
+    c.scalar("file_path", stats.getFilePath());
+    c.scalar("file_format", stats.getFileFormat());
+    c.scalar("row_count", stats.getRowCount());
+    c.scalar("size_bytes", stats.getSizeBytes());
+    c.scalar("file_content", stats.getFileContent().name());
+    c.scalar("partition_data_json", stats.getPartitionDataJson());
+    c.scalar("partition_spec_id", stats.getPartitionSpecId());
+
+    var eqIds = new ArrayList<Integer>(stats.getEqualityFieldIdsList());
+    eqIds.sort(Comparator.naturalOrder());
+    c.list("equality_field_ids", eqIds);
+
+    var cols = new ArrayList<>(stats.getColumnsList());
+    cols.sort(
+        Comparator.comparingInt(ColumnStats::getColumnId)
+            .thenComparing(ColumnStats::getColumnName));
+    for (var col : cols) {
+      c.group(
+          "column_" + col.getColumnId(),
+          g -> g.scalar("fp_b64", bytesToB64(canonicalFingerprint(col))));
+    }
+
+    return c.bytes();
+  }
+
+  private static void canonicalResourceId(Canonicalizer c, String key, ResourceId id) {
+    c.group(
+        key,
+        g -> {
+          if (id == null) {
+            return;
+          }
+          g.scalar("account_id", id.getAccountId());
+          g.scalar("id", id.getId());
+          g.scalar("kind", id.getKind().name());
+        });
+  }
+
+  private static void canonicalUpstream(Canonicalizer c, String key, UpstreamStamp up) {
+    if (up == null) {
+      return;
+    }
+    c.group(
+        key,
+        g -> {
+          g.scalar("system", up.getSystem().name());
+          g.scalar("table_native_id", up.getTableNativeId());
+          g.scalar("commit_ref", up.getCommitRef());
+          g.scalar("fetched_at_seconds", up.hasFetchedAt() ? up.getFetchedAt().getSeconds() : 0L);
+          g.scalar("fetched_at_nanos", up.hasFetchedAt() ? up.getFetchedAt().getNanos() : 0);
+          g.map("properties", up.getPropertiesMap());
+        });
+  }
+
+  private static void canonicalNdv(Canonicalizer c, String key, Ndv ndv) {
+    if (ndv == null) {
+      return;
+    }
+    c.group(
+        key,
+        g -> {
+          g.scalar("mode", ndv.getModeCase().name());
+          if (ndv.hasExact()) {
+            g.scalar("exact", ndv.getExact());
+          }
+          if (ndv.hasApprox()) {
+            canonicalNdvApprox(g, "approx", ndv.getApprox());
+          }
+          var sketches = new ArrayList<>(ndv.getSketchesList());
+          sketches.sort(
+              Comparator.comparing(NdvSketch::getType)
+                  .thenComparing(NdvSketch::getEncoding)
+                  .thenComparing(NdvSketch::getCompression)
+                  .thenComparingInt(NdvSketch::getVersion)
+                  .thenComparing(s -> bytesToB64(s.getData().toByteArray())));
+          for (var sketch : sketches) {
+            canonicalNdvSketch(g, "sketch_" + sketch.getType(), sketch);
+          }
+        });
+  }
+
+  private static void canonicalNdvApprox(Canonicalizer c, String key, NdvApprox approx) {
+    c.group(
+        key,
+        g -> {
+          g.scalar("estimate", approx.getEstimate());
+          g.scalar("relative_standard_error", approx.getRelativeStandardError());
+          g.scalar("confidence_lower", approx.getConfidenceLower());
+          g.scalar("confidence_upper", approx.getConfidenceUpper());
+          g.scalar("confidence_level", approx.getConfidenceLevel());
+          g.scalar("rows_seen", approx.getRowsSeen());
+          g.scalar("rows_total", approx.getRowsTotal());
+          g.scalar("method", approx.getMethod());
+          g.map("properties", approx.getPropertiesMap());
+        });
+  }
+
+  private static void canonicalNdvSketch(Canonicalizer c, String key, NdvSketch sketch) {
+    c.group(
+        key,
+        g -> {
+          g.scalar("type", sketch.getType());
+          g.scalar("encoding", sketch.getEncoding());
+          g.scalar("compression", sketch.getCompression());
+          g.scalar("version", sketch.getVersion());
+          g.scalar("data_b64", bytesToB64(sketch.getData().toByteArray()));
+          g.map("properties", sketch.getPropertiesMap());
+        });
+  }
+
+  private static String bytesToB64(byte[] data) {
+    if (data == null || data.length == 0) {
+      return "";
+    }
+    return Base64.getEncoder().encodeToString(data);
   }
 }
