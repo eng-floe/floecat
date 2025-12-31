@@ -416,6 +416,19 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/idempotency/" + encode(k) + "/idempotency.pb";
   }
 
+  public static String idempotencyBlobUri(String accountId, String key, String suffix) {
+    String tid = req("account_id", accountId);
+    String k = req("key", key);
+    String s = req("suffix", suffix);
+    return "/accounts/"
+        + encode(tid)
+        + "/idempotency/"
+        + encode(k)
+        + "/idempotency-"
+        + encode(s)
+        + ".pb";
+  }
+
   public static String idempotencyPrefixAccount(String accountId) {
     String tid = req("account_id", accountId);
     return "/accounts/" + encode(tid) + "/idempotency/";

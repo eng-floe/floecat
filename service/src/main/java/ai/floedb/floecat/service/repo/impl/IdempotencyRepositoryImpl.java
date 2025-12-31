@@ -16,6 +16,7 @@ import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Optional;
+import java.util.UUID;
 
 @ApplicationScoped
 public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
@@ -68,8 +69,7 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
             .setExpiresAt(expiresAt)
             .build();
 
-    String uri = Keys.idempotencyBlobUri(accountId, key);
-
+    String uri = Keys.idempotencyBlobUri(accountId, key, "pending-" + UUID.randomUUID());
     blobs.put(uri, rec.toByteArray(), "application/x-protobuf");
 
     var pendingPointer =
@@ -86,10 +86,12 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
       }
 
       if (ptr.get(key).isPresent()) {
+        blobs.delete(uri);
         return false;
       }
     }
 
+    blobs.delete(uri);
     throw new StorageAbortRetryableException("idempotency pointer not yet visible: key=" + key);
   }
 
@@ -116,11 +118,14 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
             .setExpiresAt(expiresAt)
             .build();
 
-    String uri = Keys.idempotencyBlobUri(accountId, key);
+    String uri = Keys.idempotencyBlobUri(accountId, key, "success-" + UUID.randomUUID());
     blobs.put(uri, rec.toByteArray(), "application/x-protobuf");
 
+    Pointer previous = null;
+    boolean updated = false;
     for (int i = 0; i < CAS_MAX; i++) {
-      long expected = ptr.get(key).map(Pointer::getVersion).orElse(0L);
+      var current = ptr.get(key).orElse(null);
+      long expected = current != null ? current.getVersion() : 0L;
       var next =
           Pointer.newBuilder()
               .setKey(key)
@@ -129,8 +134,17 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
               .setVersion(expected + 1)
               .build();
       if (ptr.compareAndSet(key, expected, next)) {
+        previous = current;
+        updated = true;
         break;
       }
+    }
+    if (!updated) {
+      blobs.delete(uri);
+      throw new StorageAbortRetryableException("idempotency pointer not yet visible: key=" + key);
+    }
+    if (previous != null && !previous.getBlobUri().equals(uri)) {
+      blobs.delete(previous.getBlobUri());
     }
   }
 
