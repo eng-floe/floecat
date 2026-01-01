@@ -35,6 +35,7 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
@@ -428,7 +429,40 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                             .setCreatedAt(tsNow)
                                             .build();
 
-                                    namespaceRepo.create(built);
+                                    try {
+                                      namespaceRepo.create(built);
+                                    } catch (BaseResourceRepository.NameConflictException nce) {
+                                      var existingOpt =
+                                          namespaceRepo.getByPath(
+                                              accountId, spec.getCatalogId().getId(), fullPath);
+                                      if (existingOpt.isPresent()) {
+                                        var existing = existingOpt.get();
+                                        var existingSpec = specFromNamespace(existing);
+                                        var existingFingerprint =
+                                            canonicalFingerprint(
+                                                existing.getCatalogId(),
+                                                existing.getParentsList(),
+                                                existing.getDisplayName(),
+                                                existingSpec);
+                                        if (Arrays.equals(fingerprint, existingFingerprint)) {
+                                          markerStore.bumpCatalogMarker(existing.getCatalogId());
+                                          bumpParentNamespaceMarker(
+                                              accountId,
+                                              existing.getCatalogId(),
+                                              existing.getParentsList());
+                                          metadataGraph.invalidate(existing.getResourceId());
+                                          return new IdempotencyGuard.CreateResult<>(
+                                              existing, existing.getResourceId());
+                                        }
+                                      }
+                                      throw GrpcErrors.conflict(
+                                          correlationId,
+                                          "namespace.already_exists",
+                                          Map.of(
+                                              "display_name", display,
+                                              "catalog_id", spec.getCatalogId().getId(),
+                                              "path", String.join(".", fullPath)));
+                                    }
                                     markerStore.bumpCatalogMarker(spec.getCatalogId());
                                     bumpParentNamespaceMarker(
                                         accountId, spec.getCatalogId(), parents);
@@ -533,10 +567,19 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   var desired =
                       applyNamespaceSpecPatch(
-                          current, request.getSpec(), request.getUpdateMask(), corr);
+                          current, request.getSpec(), normalizeMask(request.getUpdateMask()), corr);
 
                   if (desired.equals(current)) {
-                    var metaNoop = namespaceRepo.metaForSafe(nsId);
+                    var metaNoop = namespaceRepo.metaFor(nsId);
+                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                    if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
+                      throw GrpcErrors.preconditionFailed(
+                          corr,
+                          "version_mismatch",
+                          Map.of(
+                              "expected", Long.toString(meta.getPointerVersion()),
+                              "actual", Long.toString(metaNoop.getPointerVersion())));
+                    }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, metaNoop, request.getPrecondition());
                     return UpdateNamespaceResponse.newBuilder()
@@ -612,9 +655,13 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   if (catalogId == null) {
                     var safe = namespaceRepo.metaForSafe(namespaceId);
+                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                    if (callerCares && safe.getPointerVersion() == 0L) {
+                      throw GrpcErrors.notFound(
+                          correlationId, "namespace", Map.of("id", namespaceId.getId()));
+                    }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
-                    namespaceRepo.delete(namespaceId);
                     metadataGraph.invalidate(namespaceId);
                     return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
                   }
@@ -698,8 +745,18 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         .bytes();
   }
 
+  private static NamespaceSpec specFromNamespace(Namespace namespace) {
+    return NamespaceSpec.newBuilder()
+        .setDisplayName(normalizeName(namespace.getDisplayName()))
+        .setDescription(namespace.getDescription())
+        .setPolicyRef(namespace.getPolicyRef())
+        .putAllProperties(namespace.getPropertiesMap())
+        .build();
+  }
+
   private Namespace applyNamespaceSpecPatch(
       Namespace current, NamespaceSpec spec, FieldMask mask, String corr) {
+    mask = normalizeMask(mask);
 
     var paths = normalizedMaskPaths(mask);
     if (paths.isEmpty()) {
@@ -775,6 +832,23 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     }
 
     return b.build();
+  }
+
+  private static FieldMask normalizeMask(FieldMask mask) {
+    if (mask == null) {
+      return null;
+    }
+    var out = FieldMask.newBuilder();
+    for (var p : mask.getPathsList()) {
+      if (p == null) {
+        continue;
+      }
+      var t = p.trim().toLowerCase();
+      if (!t.isEmpty()) {
+        out.addPaths(t);
+      }
+    }
+    return out.build();
   }
 
   private void bumpParentNamespaceMarker(

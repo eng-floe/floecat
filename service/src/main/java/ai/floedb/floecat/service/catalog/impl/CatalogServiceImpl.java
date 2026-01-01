@@ -33,6 +33,7 @@ import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -184,7 +185,25 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                                   idempotencyKey,
                                   () -> fingerprint,
                                   () -> {
-                                    catalogRepo.create(built);
+                                    try {
+                                      catalogRepo.create(built);
+                                    } catch (BaseResourceRepository.NameConflictException nce) {
+                                      var existingOpt = catalogRepo.getByName(accountId, normName);
+                                      if (existingOpt.isPresent()) {
+                                        var existingSpec = specFromCatalog(existingOpt.get());
+                                        if (Arrays.equals(
+                                            fingerprint, canonicalFingerprint(existingSpec))) {
+                                          metadataGraph.invalidate(
+                                              existingOpt.get().getResourceId());
+                                          return new IdempotencyGuard.CreateResult<>(
+                                              existingOpt.get(), existingOpt.get().getResourceId());
+                                        }
+                                      }
+                                      throw GrpcErrors.conflict(
+                                          corr,
+                                          "catalog.already_exists",
+                                          Map.of("display_name", normName));
+                                    }
                                     metadataGraph.invalidate(catalogId);
                                     return new IdempotencyGuard.CreateResult<>(built, catalogId);
                                   },
@@ -226,7 +245,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   }
 
                   var spec = request.getSpec();
-                  var mask = request.getUpdateMask();
+                  var mask = normalizeMask(request.getUpdateMask());
 
                   var meta = catalogRepo.metaFor(catalogId);
                   MutationOps.BaseServiceChecks.enforcePreconditions(
@@ -243,7 +262,16 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var desired = applyCatalogSpecPatch(current, spec, mask, corr);
 
                   if (desired.equals(current)) {
-                    var metaNoop = catalogRepo.metaForSafe(catalogId);
+                    var metaNoop = catalogRepo.metaFor(catalogId);
+                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                    if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
+                      throw GrpcErrors.preconditionFailed(
+                          corr,
+                          "version_mismatch",
+                          Map.of(
+                              "expected", Long.toString(meta.getPointerVersion()),
+                              "actual", Long.toString(metaNoop.getPointerVersion())));
+                    }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, metaNoop, request.getPrecondition());
                     return UpdateCatalogResponse.newBuilder()
@@ -313,9 +341,12 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                     meta = catalogRepo.metaFor(id);
                   } catch (BaseResourceRepository.NotFoundException missing) {
                     var safe = catalogRepo.metaForSafe(id);
+                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                    if (callerCares && safe.getPointerVersion() == 0L) {
+                      throw GrpcErrors.notFound(correlationId, "catalog", Map.of("id", id.getId()));
+                    }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
-                    catalogRepo.delete(id);
                     metadataGraph.invalidate(id);
                     return DeleteCatalogResponse.newBuilder().setMeta(safe).build();
                   }
@@ -357,6 +388,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
 
   private Catalog applyCatalogSpecPatch(
       Catalog current, CatalogSpec spec, FieldMask mask, String corr) {
+    mask = normalizeMask(mask);
 
     var paths = normalizedMaskPaths(mask);
     if (paths.isEmpty()) {
@@ -410,6 +442,23 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
     return b.build();
   }
 
+  private static FieldMask normalizeMask(FieldMask mask) {
+    if (mask == null) {
+      return null;
+    }
+    var out = FieldMask.newBuilder();
+    for (var p : mask.getPathsList()) {
+      if (p == null) {
+        continue;
+      }
+      var t = p.trim().toLowerCase();
+      if (!t.isEmpty()) {
+        out.addPaths(t);
+      }
+    }
+    return out.build();
+  }
+
   private static byte[] canonicalFingerprint(CatalogSpec s) {
     return new Canonicalizer()
         .scalar("name", normalizeName(s.getDisplayName()))
@@ -418,5 +467,15 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
         .scalar("policy_ref", s.getPolicyRef())
         .map("properties", s.getPropertiesMap())
         .bytes();
+  }
+
+  private static CatalogSpec specFromCatalog(Catalog catalog) {
+    return CatalogSpec.newBuilder()
+        .setDisplayName(normalizeName(catalog.getDisplayName()))
+        .setDescription(catalog.getDescription())
+        .setConnectorRef(catalog.getConnectorRef())
+        .setPolicyRef(catalog.getPolicyRef())
+        .putAllProperties(catalog.getPropertiesMap())
+        .build();
   }
 }
