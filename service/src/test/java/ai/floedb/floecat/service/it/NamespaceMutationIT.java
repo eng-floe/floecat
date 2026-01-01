@@ -22,6 +22,8 @@ import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -329,5 +331,70 @@ class NamespaceMutationIT {
                         .build()));
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
+  }
+
+  @Test
+  void namespaceConcurrentParentCreation() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, namespacePrefix + "cat_conc", "cat_conc");
+    var parents = List.of("db_conc", "sch_conc");
+
+    var outA = new AtomicReference<Namespace>();
+    var outB = new AtomicReference<Namespace>();
+    var err = new AtomicReference<Throwable>();
+    var start = new CountDownLatch(1);
+
+    Runnable r =
+        () -> {
+          try {
+            start.await();
+            outA.set(
+                TestSupport.createNamespace(
+                    namespace, cat.getResourceId(), "ns_a", parents, "ns a"));
+          } catch (Throwable t) {
+            err.compareAndSet(null, t);
+          }
+        };
+
+    Runnable s =
+        () -> {
+          try {
+            start.await();
+            outB.set(
+                TestSupport.createNamespace(
+                    namespace, cat.getResourceId(), "ns_b", parents, "ns b"));
+          } catch (Throwable t) {
+            err.compareAndSet(null, t);
+          }
+        };
+
+    var t1 = new Thread(r);
+    var t2 = new Thread(s);
+    t1.start();
+    t2.start();
+    start.countDown();
+    t1.join();
+    t2.join();
+
+    assertNull(err.get(), "unexpected error in concurrent parent chain creation");
+    assertNotNull(outA.get());
+    assertNotNull(outB.get());
+
+    var pathA = new ArrayList<>(parents);
+    pathA.add("ns_a");
+    var resolvedA =
+        directory.resolveNamespace(
+            ResolveNamespaceRequest.newBuilder()
+                .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(pathA))
+                .build());
+    assertEquals(outA.get().getResourceId().getId(), resolvedA.getResourceId().getId());
+
+    var pathB = new ArrayList<>(parents);
+    pathB.add("ns_b");
+    var resolvedB =
+        directory.resolveNamespace(
+            ResolveNamespaceRequest.newBuilder()
+                .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(pathB))
+                .build());
+    assertEquals(outB.get().getResourceId().getId(), resolvedB.getResourceId().getId());
   }
 }

@@ -123,4 +123,32 @@ class CatalogRepositoryTest {
     next.setLength(0);
     assertTrue(token.isEmpty());
   }
+
+  @Test
+  void updateRefreshesSecondaryPointerForCas() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var rid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    var cat =
+        Catalog.newBuilder()
+            .setResourceId(rid)
+            .setDisplayName("sales")
+            .setDescription("v1")
+            .build();
+
+    catalogRepo.create(cat);
+    var before = catalogRepo.getByName(account, "sales").orElseThrow();
+    assertEquals("v1", before.getDescription());
+
+    var meta = catalogRepo.metaFor(rid);
+    var updated = cat.toBuilder().setDescription("v2").build();
+    assertTrue(catalogRepo.update(updated, meta.getPointerVersion()));
+
+    var after = catalogRepo.getByName(account, "sales").orElseThrow();
+    assertEquals("v2", after.getDescription());
+  }
 }

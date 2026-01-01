@@ -284,19 +284,23 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   var viewId = request.getViewId();
                   ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", corr);
 
-                  var current =
-                      viewRepo
-                          .getById(viewId)
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(corr, "view", Map.of("id", viewId.getId())));
-
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
                     throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
                   }
 
                   var spec = request.getSpec();
                   var mask = request.getUpdateMask();
+
+                  var meta = viewRepo.metaFor(viewId);
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      corr, meta, request.getPrecondition());
+
+                  var current =
+                      viewRepo
+                          .getById(viewId)
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(corr, "view", Map.of("id", viewId.getId())));
 
                   var desired = applyViewSpecPatch(current, spec, mask, corr);
 
@@ -316,14 +320,28 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           "catalog_id", desired.getCatalogId().getId(),
                           "namespace_id", desired.getNamespaceId().getId());
 
-                  MutationOps.updateWithPreconditions(
-                      () -> viewRepo.metaFor(viewId),
-                      request.getPrecondition(),
-                      expectedVersion -> viewRepo.update(desired, expectedVersion),
-                      () -> viewRepo.metaForSafe(viewId),
-                      corr,
-                      "view",
-                      conflictInfo);
+                  try {
+                    boolean ok = viewRepo.update(desired, meta.getPointerVersion());
+                    if (!ok) {
+                      var nowMeta = viewRepo.metaForSafe(viewId);
+                      throw GrpcErrors.preconditionFailed(
+                          corr,
+                          "version_mismatch",
+                          Map.of(
+                              "expected", Long.toString(meta.getPointerVersion()),
+                              "actual", Long.toString(nowMeta.getPointerVersion())));
+                    }
+                  } catch (BaseResourceRepository.NameConflictException nce) {
+                    throw GrpcErrors.conflict(corr, "view.already_exists", conflictInfo);
+                  } catch (BaseResourceRepository.PreconditionFailedException pfe) {
+                    var nowMeta = viewRepo.metaForSafe(viewId);
+                    throw GrpcErrors.preconditionFailed(
+                        corr,
+                        "version_mismatch",
+                        Map.of(
+                            "expected", Long.toString(meta.getPointerVersion()),
+                            "actual", Long.toString(nowMeta.getPointerVersion())));
+                  }
                   metadataGraph.invalidate(viewId);
 
                   var outMeta = viewRepo.metaForSafe(viewId);

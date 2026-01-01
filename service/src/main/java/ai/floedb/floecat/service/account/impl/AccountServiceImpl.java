@@ -217,6 +217,17 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   var accountId = request.getAccountId();
                   ensureKind(accountId, ResourceKind.RK_ACCOUNT, "account_id", corr);
 
+                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
+                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                  }
+
+                  var spec = request.getSpec();
+                  var mask = request.getUpdateMask();
+
+                  var meta = accountRepo.metaFor(accountId);
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      corr, meta, request.getPrecondition());
+
                   var current =
                       accountRepo
                           .getById(accountId)
@@ -224,13 +235,6 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                               () ->
                                   GrpcErrors.notFound(
                                       corr, "account", Map.of("id", accountId.getId())));
-
-                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
-                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
-                  }
-
-                  var spec = request.getSpec();
-                  var mask = request.getUpdateMask();
 
                   var desired = applyAccountSpecPatch(current, spec, mask, corr);
 
@@ -244,14 +248,31 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                         .build();
                   }
 
-                  MutationOps.updateWithPreconditions(
-                      () -> accountRepo.metaFor(accountId),
-                      request.getPrecondition(),
-                      expected -> accountRepo.update(desired, expected),
-                      () -> accountRepo.metaForSafe(accountId),
-                      corr,
-                      "account",
-                      Map.of("display_name", desired.getDisplayName()));
+                  try {
+                    boolean ok = accountRepo.update(desired, meta.getPointerVersion());
+                    if (!ok) {
+                      var nowMeta = accountRepo.metaForSafe(accountId);
+                      throw GrpcErrors.preconditionFailed(
+                          corr,
+                          "version_mismatch",
+                          Map.of(
+                              "expected", Long.toString(meta.getPointerVersion()),
+                              "actual", Long.toString(nowMeta.getPointerVersion())));
+                    }
+                  } catch (BaseResourceRepository.NameConflictException nce) {
+                    throw GrpcErrors.conflict(
+                        corr,
+                        "account.already_exists",
+                        Map.of("display_name", desired.getDisplayName()));
+                  } catch (BaseResourceRepository.PreconditionFailedException pfe) {
+                    var nowMeta = accountRepo.metaForSafe(accountId);
+                    throw GrpcErrors.preconditionFailed(
+                        corr,
+                        "version_mismatch",
+                        Map.of(
+                            "expected", Long.toString(meta.getPointerVersion()),
+                            "actual", Long.toString(nowMeta.getPointerVersion())));
+                  }
 
                   var outMeta = accountRepo.metaForSafe(accountId);
                   var latest = accountRepo.getById(accountId).orElse(desired);

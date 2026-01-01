@@ -26,6 +26,7 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
@@ -46,6 +47,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
+  @Inject MarkerStore markerStore;
 
   private static final Set<String> CATALOG_MUTABLE_PATHS =
       Set.of("display_name", "description", "connector_ref", "properties", "policy_ref");
@@ -219,6 +221,17 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var catalogId = request.getCatalogId();
                   ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", corr);
 
+                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
+                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                  }
+
+                  var spec = request.getSpec();
+                  var mask = request.getUpdateMask();
+
+                  var meta = catalogRepo.metaFor(catalogId);
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      corr, meta, request.getPrecondition());
+
                   var current =
                       catalogRepo
                           .getById(catalogId)
@@ -226,13 +239,6 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                               () ->
                                   GrpcErrors.notFound(
                                       corr, "catalog", Map.of("id", catalogId.getId())));
-
-                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
-                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
-                  }
-
-                  var spec = request.getSpec();
-                  var mask = request.getUpdateMask();
 
                   var desired = applyCatalogSpecPatch(current, spec, mask, corr);
 
@@ -246,14 +252,31 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                         .build();
                   }
 
-                  MutationOps.updateWithPreconditions(
-                      () -> catalogRepo.metaFor(catalogId),
-                      request.getPrecondition(),
-                      expectedVersion -> catalogRepo.update(desired, expectedVersion),
-                      () -> catalogRepo.metaForSafe(catalogId),
-                      corr,
-                      "catalog",
-                      Map.of("display_name", desired.getDisplayName()));
+                  try {
+                    boolean ok = catalogRepo.update(desired, meta.getPointerVersion());
+                    if (!ok) {
+                      var nowMeta = catalogRepo.metaForSafe(catalogId);
+                      throw GrpcErrors.preconditionFailed(
+                          corr,
+                          "version_mismatch",
+                          Map.of(
+                              "expected", Long.toString(meta.getPointerVersion()),
+                              "actual", Long.toString(nowMeta.getPointerVersion())));
+                    }
+                  } catch (BaseResourceRepository.NameConflictException nce) {
+                    throw GrpcErrors.conflict(
+                        corr,
+                        "catalog.already_exists",
+                        Map.of("display_name", desired.getDisplayName()));
+                  } catch (BaseResourceRepository.PreconditionFailedException pfe) {
+                    var nowMeta = catalogRepo.metaForSafe(catalogId);
+                    throw GrpcErrors.preconditionFailed(
+                        corr,
+                        "version_mismatch",
+                        Map.of(
+                            "expected", Long.toString(meta.getPointerVersion()),
+                            "actual", Long.toString(nowMeta.getPointerVersion())));
+                  }
                   metadataGraph.invalidate(catalogId);
 
                   var outMeta = catalogRepo.metaForSafe(catalogId);
@@ -283,6 +306,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   authz.require(principalContext, "catalog.write");
                   var id = request.getCatalogId();
                   ensureKind(id, ResourceKind.RK_CATALOG, "catalog_id", correlationId);
+                  long markerVersion = markerStore.catalogMarkerVersion(id);
 
                   MutationMeta meta;
                   try {
@@ -304,6 +328,11 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                             : id.getId();
                     throw GrpcErrors.conflict(
                         correlationId, "catalog.not_empty", Map.of("display_name", displayName));
+                  }
+
+                  if (!markerStore.advanceCatalogMarker(id, markerVersion)) {
+                    throw GrpcErrors.preconditionFailed(
+                        correlationId, "catalog.children_changed", Map.of());
                   }
 
                   var out =

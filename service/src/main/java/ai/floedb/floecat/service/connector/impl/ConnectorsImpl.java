@@ -369,6 +369,14 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   var connectorId = request.getConnectorId();
                   ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", corr);
 
+                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
+                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                  }
+
+                  var meta = connectorRepo.metaFor(connectorId);
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      corr, meta, request.getPrecondition());
+
                   var current =
                       connectorRepo
                           .getById(connectorId)
@@ -376,10 +384,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                               () ->
                                   GrpcErrors.notFound(
                                       corr, "connector", Map.of("id", connectorId.getId())));
-
-                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
-                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
-                  }
 
                   var desired =
                       applyConnectorSpecPatch(
@@ -398,14 +402,31 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                         .build();
                   }
 
-                  MutationOps.updateWithPreconditions(
-                      () -> connectorRepo.metaFor(connectorId),
-                      request.getPrecondition(),
-                      expected -> connectorRepo.update(desired, expected),
-                      () -> connectorRepo.metaForSafe(connectorId),
-                      corr,
-                      "connector",
-                      Map.of("display_name", desired.getDisplayName()));
+                  try {
+                    boolean ok = connectorRepo.update(desired, meta.getPointerVersion());
+                    if (!ok) {
+                      var nowMeta = connectorRepo.metaForSafe(connectorId);
+                      throw GrpcErrors.preconditionFailed(
+                          corr,
+                          "version_mismatch",
+                          Map.of(
+                              "expected", Long.toString(meta.getPointerVersion()),
+                              "actual", Long.toString(nowMeta.getPointerVersion())));
+                    }
+                  } catch (BaseResourceRepository.NameConflictException nce) {
+                    throw GrpcErrors.conflict(
+                        corr,
+                        "connector.already_exists",
+                        Map.of("display_name", desired.getDisplayName()));
+                  } catch (BaseResourceRepository.PreconditionFailedException pfe) {
+                    var nowMeta = connectorRepo.metaForSafe(connectorId);
+                    throw GrpcErrors.preconditionFailed(
+                        corr,
+                        "version_mismatch",
+                        Map.of(
+                            "expected", Long.toString(meta.getPointerVersion()),
+                            "actual", Long.toString(nowMeta.getPointerVersion())));
+                  }
 
                   var outMeta = connectorRepo.metaForSafe(connectorId);
                   var outConnector = connectorRepo.getById(connectorId).orElse(desired);

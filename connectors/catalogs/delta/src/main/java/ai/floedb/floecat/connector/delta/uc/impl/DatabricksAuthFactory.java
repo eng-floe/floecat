@@ -30,6 +30,18 @@ public final class DatabricksAuthFactory {
                       require(props, "oauth.client_id"),
                       require(props, "oauth.client_secret"),
                       props.getOrDefault("oauth.scope", "all-apis")));
+          case "wif" ->
+              new OAuth2BearerAuthProvider(
+                  new DatabricksWifTokenProvider(
+                      require(props, "host"),
+                      require(props, "oauth.client_id"),
+                      props.getOrDefault("oauth.scope", "all-apis"),
+                      props.get("oauth.subject_token"),
+                      props.get("oauth.subject_token_file"),
+                      props.getOrDefault(
+                          "oauth.subject_token_type", "urn:ietf:params:oauth:token-type:jwt"),
+                      props.get("oauth.requested_token_type"),
+                      props.get("oauth.audience")));
           default -> new OAuth2BearerAuthProvider(() -> require(props, "token"));
         };
       }

@@ -26,6 +26,8 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
@@ -49,6 +51,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
+  @Inject MarkerStore markerStore;
 
   private static final Set<String> NAMESPACE_MUTABLE_PATHS =
       Set.of("display_name", "description", "path", "policy_ref", "properties", "catalog_id");
@@ -426,6 +429,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                             .build();
 
                                     namespaceRepo.create(built);
+                                    markerStore.bumpCatalogMarker(spec.getCatalogId());
+                                    bumpParentNamespaceMarker(
+                                        accountId, spec.getCatalogId(), parents);
                                     metadataGraph.invalidate(namespaceId);
                                     return new IdempotencyGuard.CreateResult<>(built, namespaceId);
                                   },
@@ -481,8 +487,17 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
               .setDisplayName(display)
               .setCreatedAt(tsNow)
               .build();
-      namespaceRepo.create(ns);
-      metadataGraph.invalidate(rid);
+      try {
+        namespaceRepo.create(ns);
+        markerStore.bumpCatalogMarker(catalogId);
+        bumpParentNamespaceMarker(accountId, catalogId, parentList);
+        metadataGraph.invalidate(rid);
+      } catch (BaseResourceRepository.NameConflictException nce) {
+        if (namespaceRepo.getByPath(accountId, catalogId.getId(), chain).isPresent()) {
+          continue;
+        }
+        throw nce;
+      }
     }
   }
 
@@ -500,6 +515,14 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   var nsId = request.getNamespaceId();
                   ensureKind(nsId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
 
+                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
+                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                  }
+
+                  var meta = namespaceRepo.metaFor(nsId);
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      corr, meta, request.getPrecondition());
+
                   var current =
                       namespaceRepo
                           .getById(nsId)
@@ -507,10 +530,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                               () ->
                                   GrpcErrors.notFound(
                                       corr, "namespace", Map.of("id", nsId.getId())));
-
-                  if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
-                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
-                  }
 
                   var desired =
                       applyNamespaceSpecPatch(
@@ -531,19 +550,34 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           "display_name", desired.getDisplayName(),
                           "catalog_id", desired.getCatalogId().getId());
 
-                  MutationOps.updateWithPreconditions(
-                      () -> namespaceRepo.metaFor(nsId),
-                      request.getPrecondition(),
-                      expected -> namespaceRepo.update(desired, expected),
-                      () -> namespaceRepo.metaForSafe(nsId),
-                      corr,
-                      "namespace",
-                      conflictInfo);
+                  try {
+                    boolean ok = namespaceRepo.update(desired, meta.getPointerVersion());
+                    if (!ok) {
+                      var nowMeta = namespaceRepo.metaForSafe(nsId);
+                      throw GrpcErrors.preconditionFailed(
+                          corr,
+                          "version_mismatch",
+                          Map.of(
+                              "expected", Long.toString(meta.getPointerVersion()),
+                              "actual", Long.toString(nowMeta.getPointerVersion())));
+                    }
+                  } catch (BaseResourceRepository.NameConflictException nce) {
+                    throw GrpcErrors.conflict(corr, "namespace.already_exists", conflictInfo);
+                  } catch (BaseResourceRepository.PreconditionFailedException pfe) {
+                    var nowMeta = namespaceRepo.metaForSafe(nsId);
+                    throw GrpcErrors.preconditionFailed(
+                        corr,
+                        "version_mismatch",
+                        Map.of(
+                            "expected", Long.toString(meta.getPointerVersion()),
+                            "actual", Long.toString(nowMeta.getPointerVersion())));
+                  }
                   metadataGraph.invalidate(nsId);
 
                   var outMeta = namespaceRepo.metaForSafe(nsId);
                   var latest = namespaceRepo.getById(nsId).orElse(desired);
 
+                  bumpParentMoveMarkers(current, desired);
                   return UpdateNamespaceResponse.newBuilder()
                       .setNamespace(latest)
                       .setMeta(outMeta)
@@ -585,6 +619,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
                   }
 
+                  long markerVersion = markerStore.namespaceMarkerVersion(namespaceId);
+
                   if (tableRepo.count(
                           catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())
                       > 0) {
@@ -603,6 +639,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                         correlationId, "namespace.not_empty", Map.of("display_name", pretty));
                   }
 
+                  if (!markerStore.advanceNamespaceMarker(namespaceId, markerVersion)) {
+                    throw GrpcErrors.preconditionFailed(
+                        correlationId, "namespace.children_changed", Map.of());
+                  }
+
                   var meta =
                       MutationOps.deleteWithPreconditions(
                           () -> namespaceRepo.metaFor(namespaceId),
@@ -614,6 +655,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           Map.of("id", namespaceId.getId()));
 
                   metadataGraph.invalidate(namespaceId);
+                  markerStore.bumpCatalogMarker(catalogId);
+                  bumpParentNamespaceMarker(
+                      catalogId.getAccountId(), catalogId, namespace.getParentsList());
                   return DeleteNamespaceResponse.newBuilder().setMeta(meta).build();
                 }),
             correlationId())
@@ -731,6 +775,38 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     }
 
     return b.build();
+  }
+
+  private void bumpParentNamespaceMarker(
+      String accountId, ResourceId catalogId, List<String> parentPath) {
+    if (parentPath == null || parentPath.isEmpty()) {
+      return;
+    }
+    namespaceRepo
+        .getByPath(accountId, catalogId.getId(), parentPath)
+        .ifPresent(ns -> markerStore.bumpNamespaceMarker(ns.getResourceId()));
+  }
+
+  private void bumpParentMoveMarkers(Namespace before, Namespace after) {
+    if (before == null || after == null) {
+      return;
+    }
+
+    var beforeCat = before.getCatalogId();
+    var afterCat = after.getCatalogId();
+
+    if (!beforeCat.getId().equals(afterCat.getId())) {
+      markerStore.bumpCatalogMarker(beforeCat);
+      markerStore.bumpCatalogMarker(afterCat);
+    }
+
+    var beforeParent = before.getParentsList();
+    var afterParent = after.getParentsList();
+
+    if (!beforeParent.equals(afterParent) || !beforeCat.getId().equals(afterCat.getId())) {
+      bumpParentNamespaceMarker(beforeCat.getAccountId(), beforeCat, beforeParent);
+      bumpParentNamespaceMarker(afterCat.getAccountId(), afterCat, afterParent);
+    }
   }
 
   private static String encodeNsToken(String resumeAfterRel) {

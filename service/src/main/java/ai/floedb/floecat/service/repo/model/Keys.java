@@ -416,8 +416,57 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/idempotency/" + encode(k) + "/idempotency.pb";
   }
 
+  public static String idempotencyBlobUri(String accountId, String key, String suffix) {
+    String tid = req("account_id", accountId);
+    String k = req("key", key);
+    String s = req("suffix", suffix);
+    return "/accounts/"
+        + encode(tid)
+        + "/idempotency/"
+        + encode(k)
+        + "/idempotency-"
+        + encode(s)
+        + ".pb";
+  }
+
+  public static String idempotencyBlobPrefix(String accountId, String key) {
+    String tid = req("account_id", accountId);
+    String k = req("key", key);
+    return "/accounts/" + encode(tid) + "/idempotency/" + encode(k) + "/";
+  }
+
+  public static String idempotencyBlobPrefixForPointerKey(String pointerKey) {
+    String k = req("pointer_key", pointerKey);
+    String normalized = k.startsWith("/") ? k : "/" + k;
+    int accountsIdx = normalized.indexOf("/accounts/");
+    if (accountsIdx < 0) {
+      throw new IllegalArgumentException("pointer key missing /accounts/ segment");
+    }
+    int start = accountsIdx + "/accounts/".length();
+    int idempIdx = normalized.indexOf("/idempotency/", start);
+    if (idempIdx < 0) {
+      throw new IllegalArgumentException("pointer key missing /idempotency/ segment");
+    }
+    String accountEncoded = normalized.substring(start, idempIdx);
+    return "/accounts/" + accountEncoded + "/idempotency/" + encode(normalized) + "/";
+  }
+
   public static String idempotencyPrefixAccount(String accountId) {
     String tid = req("account_id", accountId);
     return "/accounts/" + encode(tid) + "/idempotency/";
+  }
+
+  // ===== Markers =====
+
+  public static String catalogChildrenMarker(String accountId, String catalogId) {
+    String tid = req("account_id", accountId);
+    String cid = req("catalog_id", catalogId);
+    return "/accounts/" + encode(tid) + "/catalogs/" + encode(cid) + "/markers/children";
+  }
+
+  public static String namespaceChildrenMarker(String accountId, String namespaceId) {
+    String tid = req("account_id", accountId);
+    String nid = req("namespace_id", namespaceId);
+    return "/accounts/" + encode(tid) + "/namespaces/" + encode(nid) + "/markers/children";
   }
 }

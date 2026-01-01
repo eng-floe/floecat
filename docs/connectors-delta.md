@@ -39,9 +39,9 @@ classes manage OAuth2/SP token acquisition, Databricks SQL execution, and custom
 
 ## Important Internal Details
 
-- **Authentication** – Supports OAuth2 bearer tokens, Databricks CLI profiles, and service principal
-  tokens. `DatabricksAuthFactory` inspects connector properties such as `auth.scheme`, `auth.secret`
-  references, or CLI hints.
+- **Authentication** – Supports OAuth2 bearer tokens, Databricks CLI profiles, service principal
+  tokens, and workload identity federation (WIF) via token exchange. `DatabricksAuthFactory`
+  inspects connector properties such as `auth.scheme` and `auth.properties`.
 - **HTTP & SQL clients** – `UcHttp` centralises base URI, connect/read timeouts, and error mapping.
   `SqlStmtClient` optionally executes SQL statements (for example to inspect statistics tables) via
   Databricks SQL warehouses.
@@ -78,7 +78,8 @@ Important connector properties:
 - `s3.region` / `aws.region` – Region for the S3 client used to read Parquet files.
 - `stats.ndv.*` – Sampling knobs identical to the Iceberg connector.
 - Authentication-specific options (`auth.scheme`, `auth.properties`) – See
-  `DatabricksAuthFactory` for supported schemes (OAuth2, service principal, CLI profile).
+  `DatabricksAuthFactory` for supported schemes (OAuth2 static token, service principal, CLI
+  profile, WIF token exchange).
 
 Extensibility points:
 
@@ -104,6 +105,17 @@ Extensibility points:
     },
     "auth":{"scheme":"oauth2","properties":{"token":"..."}}
   }
+  ```
+
+- **CLI example (WIF token exchange)** – Using the `connector` CLI with a workload identity token:
+
+  ```bash
+  connector create "Unity Delta TPC-DS (WIF)" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
+    "cusack.ext_tpcds" tpcds --dest-ns federated --source-table store_sales \
+    --auth-scheme oauth2 --auth mode=wif \
+    --auth host=https://dbc-d382c535-b2a9.cloud.databricks.com \
+    --auth oauth.client_id=<client-id> \
+    --auth oauth.subject_token_file=/path/to/subject_token.jwt
   ```
 
 - **Full reconciliation** – `ReconcilerService` enters full-rescan mode (`fullRescan=true`), so the
