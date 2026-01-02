@@ -176,6 +176,17 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var corr = pc.getCorrelationId();
                   authz.require(pc, "table.write");
 
+                  ensureKind(
+                      request.getSpec().getCatalogId(),
+                      ResourceKind.RK_CATALOG,
+                      "spec.catalog_id",
+                      corr);
+                  ensureKind(
+                      request.getSpec().getNamespaceId(),
+                      ResourceKind.RK_NAMESPACE,
+                      "spec.namespace_id",
+                      corr);
+
                   catalogRepo
                       .getById(request.getSpec().getCatalogId())
                       .orElseThrow(
@@ -219,7 +230,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var fingerprint = canonicalFingerprint(normalizedSpec);
                   var tableResourceId = randomResourceId(accountId, ResourceKind.RK_TABLE);
 
-                  var table =
+                  var tableBuilder =
                       Table.newBuilder()
                           .setResourceId(tableResourceId)
                           .setDisplayName(normName)
@@ -228,12 +239,12 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           .setNamespaceId(spec.getNamespaceId())
                           .setCreatedAt(tsNow)
                           .setSchemaJson(mustNonEmpty(spec.getSchemaJson(), "schema_json", corr))
-                          .setUpstream(spec.getUpstream())
-                          .putAllProperties(spec.getPropertiesMap())
-                          .build();
+                          .putAllProperties(spec.getPropertiesMap());
                   if (spec.hasUpstream()) {
                     validateUpstreamRef(spec.getUpstream(), corr);
+                    tableBuilder.setUpstream(spec.getUpstream());
                   }
+                  var table = tableBuilder.build();
 
                   if (idempotencyKey == null) {
                     var existing =
@@ -251,7 +262,17 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               "catalog_id", spec.getCatalogId().getId(),
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
-                    tableRepo.create(table);
+                    try {
+                      tableRepo.create(table);
+                    } catch (BaseResourceRepository.NameConflictException nce) {
+                      throw GrpcErrors.conflict(
+                          corr,
+                          "table.already_exists",
+                          Map.of(
+                              "display_name", normName,
+                              "catalog_id", spec.getCatalogId().getId(),
+                              "namespace_id", spec.getNamespaceId().getId()));
+                    }
                     markerStore.bumpNamespaceMarker(table.getNamespaceId());
                     metadataGraph.invalidate(tableResourceId);
                     var meta = tableRepo.metaForSafe(tableResourceId);
@@ -615,10 +636,20 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
     if (maskTargets(mask, "upstream")) {
       if (!spec.hasUpstream()) {
-        throw GrpcErrors.invalidArgument(corr, "upstream.missing_for_replacement", Map.of());
+        b.clearUpstream();
+        return b.build();
       }
       mergedUp = inUp;
     } else if (maskTargetsUnder(mask, "upstream")) {
+      if (!spec.hasUpstream()) {
+        throw GrpcErrors.invalidArgument(corr, "upstream.missing_for_replacement", Map.of());
+      }
+      if (!current.hasUpstream()) {
+        throw GrpcErrors.invalidArgument(
+            corr,
+            "upstream.missing_for_replacement",
+            Map.of("hint", "use update_mask ['upstream'] to set"));
+      }
       var ub = currentUp.toBuilder();
 
       if (maskTargets(mask, "upstream.connector_id")) {
@@ -663,8 +694,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     boolean touched = upstreamTouched(mask);
     if (touched) {
       validateUpstreamRef(mergedUp, corr);
+      b.setUpstream(mergedUp);
     }
-    b.setUpstream(mergedUp);
 
     return b.build();
   }

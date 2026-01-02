@@ -344,6 +344,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   authz.require(princ, "namespace.write");
 
                   var spec = request.getSpec();
+                  ensureKind(
+                      spec.getCatalogId(),
+                      ResourceKind.RK_CATALOG,
+                      "spec.catalog_id",
+                      correlationId);
                   catalogRepo
                       .getById(spec.getCatalogId())
                       .orElseThrow(
@@ -364,14 +369,16 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     throw GrpcErrors.invalidArgument(
                         correlationId, "display_name.cannot_clear", Map.of());
                   }
+                  var normalizedParents = new ArrayList<String>(parentsWork.size());
                   for (String seg : parentsWork) {
                     var s = normalizeName(seg);
                     if (s.isBlank()) {
                       throw GrpcErrors.invalidArgument(
                           correlationId, "path.segment.blank", Map.of());
                     }
+                    normalizedParents.add(s);
                   }
-                  final List<String> parents = List.copyOf(parentsWork);
+                  final List<String> parents = List.copyOf(normalizedParents);
                   final List<String> fullPath = new ArrayList<>(parents);
                   fullPath.add(display);
 
@@ -690,6 +697,26 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     throw GrpcErrors.preconditionFailed(
                         correlationId, "namespace.children_changed", Map.of());
                   }
+                  var markerAfterAdvance = markerStore.namespaceMarkerVersion(namespaceId);
+                  if (markerAfterAdvance != markerVersion + 1) {
+                    throw GrpcErrors.preconditionFailed(
+                        correlationId, "namespace.children_changed", Map.of());
+                  }
+                  if (tableRepo.count(
+                          catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())
+                      > 0) {
+                    var pretty =
+                        prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
+                    throw GrpcErrors.conflict(
+                        correlationId, "namespace.not_empty", Map.of("display_name", pretty));
+                  }
+                  if (hasImmediateChildren(
+                      catalogId.getAccountId(), catalogId.getId(), parentPath)) {
+                    var pretty =
+                        prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
+                    throw GrpcErrors.conflict(
+                        correlationId, "namespace.not_empty", Map.of("display_name", pretty));
+                  }
 
                   var meta =
                       MutationOps.deleteWithPreconditions(
@@ -815,17 +842,19 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
     if (maskTargets(mask, "path")) {
       var path = spec.getPathList();
+      var normalizedPath = new ArrayList<String>(path.size());
       for (var seg : path) {
         var s = normalizeName(seg);
         if (s.isBlank()) {
           throw GrpcErrors.invalidArgument(corr, "path.segment.blank", Map.of());
         }
+        normalizedPath.add(s);
       }
-      if (path.isEmpty()) {
+      if (normalizedPath.isEmpty()) {
         b.clearParents();
       } else {
-        var leaf = normalizeName(path.get(path.size() - 1));
-        var parentsOnly = path.subList(0, path.size() - 1);
+        var leaf = normalizedPath.get(normalizedPath.size() - 1);
+        var parentsOnly = normalizedPath.subList(0, normalizedPath.size() - 1);
         b.setDisplayName(leaf);
         b.clearParents().addAllParents(parentsOnly);
       }

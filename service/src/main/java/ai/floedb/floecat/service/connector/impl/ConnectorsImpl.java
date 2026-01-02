@@ -291,6 +291,28 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     }
                   }
 
+                  if (destB.hasCatalogId()) {
+                    ensureKind(
+                        destB.getCatalogId(),
+                        ResourceKind.RK_CATALOG,
+                        "spec.destination.catalog_id",
+                        corr);
+                  }
+                  if (destB.hasNamespaceId()) {
+                    ensureKind(
+                        destB.getNamespaceId(),
+                        ResourceKind.RK_NAMESPACE,
+                        "spec.destination.namespace_id",
+                        corr);
+                  }
+                  if (destB.hasTableId()) {
+                    ensureKind(
+                        destB.getTableId(),
+                        ResourceKind.RK_TABLE,
+                        "spec.destination.table_id",
+                        corr);
+                  }
+
                   var builder =
                       Connector.newBuilder()
                           .setResourceId(connectorId)
