@@ -57,6 +57,7 @@ import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -290,6 +291,28 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     }
                   }
 
+                  if (destB.hasCatalogId()) {
+                    ensureKind(
+                        destB.getCatalogId(),
+                        ResourceKind.RK_CATALOG,
+                        "spec.destination.catalog_id",
+                        corr);
+                  }
+                  if (destB.hasNamespaceId()) {
+                    ensureKind(
+                        destB.getNamespaceId(),
+                        ResourceKind.RK_NAMESPACE,
+                        "spec.destination.namespace_id",
+                        corr);
+                  }
+                  if (destB.hasTableId()) {
+                    ensureKind(
+                        destB.getTableId(),
+                        ResourceKind.RK_TABLE,
+                        "spec.destination.table_id",
+                        corr);
+                  }
+
                   var builder =
                       Connector.newBuilder()
                           .setResourceId(connectorId)
@@ -332,7 +355,22 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                   idempotencyKey,
                                   () -> fp,
                                   () -> {
-                                    connectorRepo.create(connector);
+                                    try {
+                                      connectorRepo.create(connector);
+                                    } catch (BaseResourceRepository.NameConflictException nce) {
+                                      var existingOpt = connectorRepo.getByName(accountId, display);
+                                      if (existingOpt.isPresent()) {
+                                        var existingSpec = specFromConnector(existingOpt.get());
+                                        if (Arrays.equals(fp, canonicalFingerprint(existingSpec))) {
+                                          return new IdempotencyGuard.CreateResult<>(
+                                              existingOpt.get(), existingOpt.get().getResourceId());
+                                        }
+                                      }
+                                      throw GrpcErrors.conflict(
+                                          corr,
+                                          "connector.already_exists",
+                                          Map.of("display_name", display));
+                                    }
                                     return new IdempotencyGuard.CreateResult<>(
                                         connector, connectorId);
                                   },
@@ -387,13 +425,25 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   var desired =
                       applyConnectorSpecPatch(
-                              current, request.getSpec(), request.getUpdateMask(), corr)
+                              current,
+                              request.getSpec(),
+                              normalizeMask(request.getUpdateMask()),
+                              corr)
                           .toBuilder()
                           .setUpdatedAt(nowTs())
                           .build();
 
                   if (desired.equals(current)) {
-                    var metaNoop = connectorRepo.metaForSafe(connectorId);
+                    var metaNoop = connectorRepo.metaFor(connectorId);
+                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                    if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
+                      throw GrpcErrors.preconditionFailed(
+                          corr,
+                          "version_mismatch",
+                          Map.of(
+                              "expected", Long.toString(meta.getPointerVersion()),
+                              "actual", Long.toString(metaNoop.getPointerVersion())));
+                    }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, metaNoop, request.getPrecondition());
                     return UpdateConnectorResponse.newBuilder()
@@ -463,9 +513,13 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     meta = connectorRepo.metaFor(connectorId);
                   } catch (BaseResourceRepository.NotFoundException missing) {
                     var safe = connectorRepo.metaForSafe(connectorId);
+                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                    if (callerCares && safe.getPointerVersion() == 0L) {
+                      throw GrpcErrors.notFound(
+                          corr, "connector", Map.of("id", connectorId.getId()));
+                    }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, safe, request.getPrecondition());
-                    connectorRepo.delete(connectorId);
                     return DeleteConnectorResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -745,6 +799,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
   private Connector applyConnectorSpecPatch(
       Connector current, ConnectorSpec spec, FieldMask mask, String corr) {
+    mask = normalizeMask(mask);
 
     var paths = normalizedMaskPaths(mask);
     if (paths.isEmpty()) {
@@ -1024,6 +1079,23 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     return out;
   }
 
+  private static FieldMask normalizeMask(FieldMask mask) {
+    if (mask == null) {
+      return null;
+    }
+    var out = FieldMask.newBuilder();
+    for (var p : mask.getPathsList()) {
+      if (p == null) {
+        continue;
+      }
+      var t = p.trim().toLowerCase();
+      if (!t.isEmpty()) {
+        out.addPaths(t);
+      }
+    }
+    return out.build();
+  }
+
   private static byte[] canonicalFingerprint(ConnectorSpec s) {
     var c = new Canonicalizer();
     c.scalar("name", normalizeName(s.getDisplayName()))
@@ -1072,5 +1144,28 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
     c.map("properties", s.getPropertiesMap());
     return c.bytes();
+  }
+
+  private static ConnectorSpec specFromConnector(Connector connector) {
+    var b =
+        ConnectorSpec.newBuilder()
+            .setDisplayName(normalizeName(connector.getDisplayName()))
+            .setDescription(connector.getDescription())
+            .setKind(connector.getKind())
+            .setUri(connector.getUri())
+            .putAllProperties(connector.getPropertiesMap());
+    if (connector.hasSource()) {
+      b.setSource(connector.getSource());
+    }
+    if (connector.hasDestination()) {
+      b.setDestination(connector.getDestination());
+    }
+    if (connector.hasAuth()) {
+      b.setAuth(connector.getAuth());
+    }
+    if (connector.hasPolicy()) {
+      b.setPolicy(connector.getPolicy());
+    }
+    return b.build();
   }
 }

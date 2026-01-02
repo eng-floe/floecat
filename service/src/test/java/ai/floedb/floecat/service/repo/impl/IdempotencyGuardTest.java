@@ -67,7 +67,7 @@ public class IdempotencyGuardTest {
             NOW,
             () -> "corr");
 
-    assertThat(out).isEqualTo("R1");
+    assertThat(out.resource()).isEqualTo("R1");
   }
 
   @Test
@@ -93,7 +93,7 @@ public class IdempotencyGuardTest {
             300,
             NOW,
             () -> "corr");
-    assertThat(r1).isEqualTo("R1");
+    assertThat(r1.resource()).isEqualTo("R1");
 
     assertThat(repo.get(Keys.idempotencyKey(ACCOUNT, OP, idemKey)))
         .get()
@@ -114,7 +114,7 @@ public class IdempotencyGuardTest {
             300,
             NOW,
             () -> "corr");
-    assertThat(r2).isEqualTo("R1");
+    assertThat(r2.resource()).isEqualTo("R1");
   }
 
   @Test
@@ -204,7 +204,7 @@ public class IdempotencyGuardTest {
         resourceId("rid-old"),
         meta(1));
 
-    String out =
+    var out =
         IdempotencyGuard.runOnce(
             ACCOUNT,
             OP,
@@ -219,7 +219,7 @@ public class IdempotencyGuardTest {
             NOW,
             () -> "corr");
 
-    assertThat(out).isEqualTo("OLD");
+    assertThat(out.resource()).isEqualTo("OLD");
     var rec = repo.get(Keys.idempotencyKey(ACCOUNT, OP, idemKey)).orElseThrow();
     assertThat(rec.getStatus()).isEqualTo(IdempotencyRecord.Status.SUCCEEDED);
     assertThat(rec.getPayload().toStringUtf8()).isEqualTo("OLD");
@@ -281,7 +281,7 @@ public class IdempotencyGuardTest {
         resourceId("rid-old"),
         meta(1));
 
-    String out =
+    var out =
         IdempotencyGuard.runOnce(
             ACCOUNT,
             OP,
@@ -298,7 +298,7 @@ public class IdempotencyGuardTest {
             NOW,
             () -> "corr");
 
-    assertThat(out).isEqualTo("OLD");
+    assertThat(out.resource()).isEqualTo("OLD");
     assertThat(repo.get(Keys.idempotencyKey(ACCOUNT, OP, idemKey))).isPresent();
   }
 

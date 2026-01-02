@@ -21,9 +21,11 @@ import org.jboss.logging.Logger;
 public final class IdempotencyGuard {
   public record CreateResult<T>(T resource, ResourceId resourceId) {}
 
+  public record Result<T>(T resource, MutationMeta meta) {}
+
   private static final Logger LOG = Logger.getLogger(IdempotencyGuard.class);
 
-  public static <T> T runOnce(
+  public static <T> Result<T> runOnce(
       String accountId,
       String opName,
       String idempotencyKey,
@@ -38,7 +40,9 @@ public final class IdempotencyGuard {
       Supplier<String> corrId) {
 
     if (idempotencyKey == null || idempotencyKey.isBlank()) {
-      return creator.get().resource();
+      var created = creator.get();
+      var meta = metaExtractor.apply(created.resource());
+      return new Result<>(created.resource(), meta);
     }
 
     final String key = Keys.idempotencyKey(accountId, opName, idempotencyKey);
@@ -55,7 +59,12 @@ public final class IdempotencyGuard {
 
       switch (rec.getStatus()) {
         case SUCCEEDED -> {
-          return parser.apply(rec.getPayload().toByteArray());
+          if (!rec.hasMeta()) {
+            throw new BaseResourceRepository.CorruptionException(
+                "idempotency meta missing for succeeded record: key=" + key, null);
+          }
+          var resource = parser.apply(rec.getPayload().toByteArray());
+          return new Result<>(resource, rec.getMeta());
         }
         case PENDING ->
             throw new StorageAbortRetryableException("idempotency record pending: key=" + key);
@@ -89,7 +98,12 @@ public final class IdempotencyGuard {
 
       switch (again.getStatus()) {
         case SUCCEEDED -> {
-          return parser.apply(again.getPayload().toByteArray());
+          if (!again.hasMeta()) {
+            throw new BaseResourceRepository.CorruptionException(
+                "idempotency meta missing for succeeded record: key=" + key, null);
+          }
+          var resource = parser.apply(again.getPayload().toByteArray());
+          return new Result<>(resource, again.getMeta());
         }
         case PENDING ->
             throw new StorageAbortRetryableException("idempotency record pending: key=" + key);
@@ -106,7 +120,7 @@ public final class IdempotencyGuard {
       store.finalizeSuccess(
           accountId, key, opName, requestHash, created.resourceId(), meta, payload, now, expiresAt);
 
-      return created.resource();
+      return new Result<>(created.resource(), meta);
     } catch (Throwable t) {
       boolean retryable =
           (t instanceof BaseResourceRepository.AbortRetryableException)

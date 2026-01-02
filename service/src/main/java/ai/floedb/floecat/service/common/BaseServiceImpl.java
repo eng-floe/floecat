@@ -162,6 +162,14 @@ public abstract class BaseServiceImpl {
     }
   }
 
+  protected static boolean hasMeaningfulPrecondition(Precondition precondition) {
+    if (precondition == null) {
+      return false;
+    }
+    return precondition.getExpectedVersion() != 0L
+        || (precondition.getExpectedEtag() != null && !precondition.getExpectedEtag().isBlank());
+  }
+
   protected String correlationId() {
     var pctx = principal != null ? principal.get() : null;
     return pctx != null ? pctx.getCorrelationId() : "";

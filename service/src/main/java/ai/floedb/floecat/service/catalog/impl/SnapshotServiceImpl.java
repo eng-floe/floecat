@@ -288,7 +288,26 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                   idempotencyKey,
                                   () -> fingerprint,
                                   () -> {
-                                    snapshotRepo.create(snap);
+                                    try {
+                                      snapshotRepo.create(snap);
+                                    } catch (BaseResourceRepository.NameConflictException nce) {
+                                      var existing =
+                                          snapshotRepo.getById(tableId, snap.getSnapshotId());
+                                      if (existing.isPresent()) {
+                                        var stored = normalizeSnapshotForComparison(existing.get());
+                                        var incoming = normalizeSnapshotForComparison(snap);
+                                        if (stored.equals(incoming)) {
+                                          return new IdempotencyGuard.CreateResult<>(
+                                              existing.get(), existing.get().getTableId());
+                                        }
+                                      }
+                                      throw GrpcErrors.conflict(
+                                          corr,
+                                          "snapshot.mismatch",
+                                          Map.of(
+                                              "table_id", tableId.getId(),
+                                              "snapshot_id", Long.toString(snap.getSnapshotId())));
+                                    }
                                     return new IdempotencyGuard.CreateResult<>(
                                         snap, snap.getTableId());
                                   },
@@ -331,6 +350,10 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   try {
                     meta = snapshotRepo.metaFor(tableId, snapshotId);
                   } catch (BaseResourceRepository.NotFoundException e) {
+                    if (hasMeaningfulPrecondition(request.getPrecondition())) {
+                      throw GrpcErrors.notFound(
+                          correlationId, "snapshot", Map.of("id", Long.toString(snapshotId)));
+                    }
                     statsRepo.deleteAllStatsForSnapshot(tableId, snapshotId);
                     return DeleteSnapshotResponse.newBuilder().build();
                   }
@@ -421,10 +444,20 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                           "snapshot_id", Long.toString(snapshotId))));
 
                   var desired =
-                      applySnapshotSpecPatch(existing, spec, request.getUpdateMask(), corr);
+                      applySnapshotSpecPatch(
+                          existing, spec, normalizeMask(request.getUpdateMask()), corr);
 
                   if (desired.equals(existing)) {
-                    var noopMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
+                    var noopMeta = snapshotRepo.metaFor(tableId, snapshotId);
+                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                    if (callerCares && noopMeta.getPointerVersion() != meta.getPointerVersion()) {
+                      throw GrpcErrors.preconditionFailed(
+                          corr,
+                          "version_mismatch",
+                          Map.of(
+                              "expected", Long.toString(meta.getPointerVersion()),
+                              "actual", Long.toString(noopMeta.getPointerVersion())));
+                    }
                     enforcePreconditions(corr, noopMeta, request.getPrecondition());
                     return UpdateSnapshotResponse.newBuilder()
                         .setSnapshot(existing)
@@ -488,6 +521,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
   private Snapshot applySnapshotSpecPatch(
       Snapshot current, SnapshotSpec spec, FieldMask mask, String corr) {
+    mask = normalizeMask(mask);
     var paths = normalizedMaskPaths(mask);
     if (paths.isEmpty()) {
       throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
@@ -557,6 +591,23 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
       }
     }
     return builder.build();
+  }
+
+  private static FieldMask normalizeMask(FieldMask mask) {
+    if (mask == null) {
+      return null;
+    }
+    var out = FieldMask.newBuilder();
+    for (var p : mask.getPathsList()) {
+      if (p == null) {
+        continue;
+      }
+      var t = p.trim().toLowerCase();
+      if (!t.isEmpty()) {
+        out.addPaths(t);
+      }
+    }
+    return out.build();
   }
 
   private static Snapshot normalizeSnapshotForComparison(Snapshot snapshot) {

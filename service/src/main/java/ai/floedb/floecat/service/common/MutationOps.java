@@ -54,7 +54,7 @@ public final class MutationOps {
       long ttlSeconds,
       Supplier<String> corrIdSupplier) {
 
-    T body =
+    var result =
         IdempotencyGuard.runOnce(
             account,
             operationName,
@@ -69,7 +69,7 @@ public final class MutationOps {
             now,
             corrIdSupplier);
 
-    return new OpResult<>(body, metaOf.apply(body));
+    return new OpResult<>(result.resource(), result.meta());
   }
 
   public static <T extends Message> OpResult<T> createProto(
@@ -192,12 +192,19 @@ public final class MutationOps {
     }
 
     BaseServiceChecks.enforcePreconditions(correlationId, meta, precondition);
+    boolean callerCares = BaseServiceImpl.hasMeaningfulPrecondition(precondition);
     final long expected = meta.getPointerVersion();
 
     try {
       boolean ok = attempt.run(expected);
       if (!ok) {
         final var nowMeta = safeMetaSupplier.get();
+        if (!callerCares) {
+          return nowMeta;
+        }
+        if (nowMeta.getPointerVersion() == 0L) {
+          throw GrpcErrors.notFound(correlationId, entity, notFoundKVs);
+        }
         throw GrpcErrors.preconditionFailed(
             correlationId,
             "version_mismatch",
@@ -209,6 +216,12 @@ public final class MutationOps {
       throw GrpcErrors.notFound(correlationId, entity, notFoundKVs);
     } catch (BaseResourceRepository.PreconditionFailedException pfe) {
       final var nowMeta = safeMetaSupplier.get();
+      if (!callerCares) {
+        return nowMeta;
+      }
+      if (nowMeta.getPointerVersion() == 0L) {
+        throw GrpcErrors.notFound(correlationId, entity, notFoundKVs);
+      }
       throw GrpcErrors.preconditionFailed(
           correlationId,
           "version_mismatch",

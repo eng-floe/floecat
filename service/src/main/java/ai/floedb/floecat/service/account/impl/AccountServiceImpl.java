@@ -33,6 +33,7 @@ import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -180,7 +181,23 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                                   idempotencyKey,
                                   () -> fingerprint,
                                   () -> {
-                                    accountRepo.create(desiredAccount);
+                                    try {
+                                      accountRepo.create(desiredAccount);
+                                    } catch (BaseResourceRepository.NameConflictException nce) {
+                                      var existingOpt = accountRepo.getByName(normName);
+                                      if (existingOpt.isPresent()) {
+                                        var existingSpec = specFromAccount(existingOpt.get());
+                                        if (Arrays.equals(
+                                            fingerprint, canonicalFingerprint(existingSpec))) {
+                                          return new IdempotencyGuard.CreateResult<>(
+                                              existingOpt.get(), existingOpt.get().getResourceId());
+                                        }
+                                      }
+                                      throw GrpcErrors.conflict(
+                                          corr,
+                                          "account.already_exists",
+                                          Map.of("display_name", normName));
+                                    }
                                     return new IdempotencyGuard.CreateResult<>(
                                         desiredAccount, resourceId);
                                   },
@@ -222,7 +239,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   }
 
                   var spec = request.getSpec();
-                  var mask = request.getUpdateMask();
+                  var mask = normalizeMask(request.getUpdateMask());
 
                   var meta = accountRepo.metaFor(accountId);
                   MutationOps.BaseServiceChecks.enforcePreconditions(
@@ -239,7 +256,16 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   var desired = applyAccountSpecPatch(current, spec, mask, corr);
 
                   if (desired.equals(current)) {
-                    var metaNoop = accountRepo.metaForSafe(accountId);
+                    var metaNoop = accountRepo.metaFor(accountId);
+                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                    if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
+                      throw GrpcErrors.preconditionFailed(
+                          corr,
+                          "version_mismatch",
+                          Map.of(
+                              "expected", Long.toString(meta.getPointerVersion()),
+                              "actual", Long.toString(metaNoop.getPointerVersion())));
+                    }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, metaNoop, request.getPrecondition());
                     return UpdateAccountResponse.newBuilder()
@@ -307,9 +333,12 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                     meta = accountRepo.metaFor(accountId);
                   } catch (BaseResourceRepository.NotFoundException missing) {
                     var safe = accountRepo.metaForSafe(accountId);
+                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                    if (callerCares && safe.getPointerVersion() == 0L) {
+                      throw GrpcErrors.notFound(corr, "account", Map.of("id", accountId.getId()));
+                    }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, safe, request.getPrecondition());
-                    accountRepo.delete(accountId);
                     return DeleteAccountResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -344,6 +373,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
 
   private Account applyAccountSpecPatch(
       Account current, AccountSpec spec, FieldMask mask, String corr) {
+    mask = normalizeMask(mask);
 
     var paths = normalizedMaskPaths(mask);
     if (paths.isEmpty()) {
@@ -377,10 +407,34 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     return b.build();
   }
 
+  private static FieldMask normalizeMask(FieldMask mask) {
+    if (mask == null) {
+      return null;
+    }
+    var out = FieldMask.newBuilder();
+    for (var p : mask.getPathsList()) {
+      if (p == null) {
+        continue;
+      }
+      var t = p.trim().toLowerCase();
+      if (!t.isEmpty()) {
+        out.addPaths(t);
+      }
+    }
+    return out.build();
+  }
+
   private static byte[] canonicalFingerprint(AccountSpec s) {
     return new Canonicalizer()
         .scalar("name", normalizeName(s.getDisplayName()))
         .scalar("description", s.getDescription())
         .bytes();
+  }
+
+  private static AccountSpec specFromAccount(Account account) {
+    return AccountSpec.newBuilder()
+        .setDisplayName(normalizeName(account.getDisplayName()))
+        .setDescription(account.getDescription())
+        .build();
   }
 }

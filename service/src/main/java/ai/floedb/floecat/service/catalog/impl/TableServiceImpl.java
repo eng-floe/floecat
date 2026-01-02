@@ -35,6 +35,7 @@ import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -175,6 +176,17 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var corr = pc.getCorrelationId();
                   authz.require(pc, "table.write");
 
+                  ensureKind(
+                      request.getSpec().getCatalogId(),
+                      ResourceKind.RK_CATALOG,
+                      "spec.catalog_id",
+                      corr);
+                  ensureKind(
+                      request.getSpec().getNamespaceId(),
+                      ResourceKind.RK_NAMESPACE,
+                      "spec.namespace_id",
+                      corr);
+
                   catalogRepo
                       .getById(request.getSpec().getCatalogId())
                       .orElseThrow(
@@ -218,7 +230,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var fingerprint = canonicalFingerprint(normalizedSpec);
                   var tableResourceId = randomResourceId(accountId, ResourceKind.RK_TABLE);
 
-                  var table =
+                  var tableBuilder =
                       Table.newBuilder()
                           .setResourceId(tableResourceId)
                           .setDisplayName(normName)
@@ -227,12 +239,12 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           .setNamespaceId(spec.getNamespaceId())
                           .setCreatedAt(tsNow)
                           .setSchemaJson(mustNonEmpty(spec.getSchemaJson(), "schema_json", corr))
-                          .setUpstream(spec.getUpstream())
-                          .putAllProperties(spec.getPropertiesMap())
-                          .build();
+                          .putAllProperties(spec.getPropertiesMap());
                   if (spec.hasUpstream()) {
                     validateUpstreamRef(spec.getUpstream(), corr);
+                    tableBuilder.setUpstream(spec.getUpstream());
                   }
+                  var table = tableBuilder.build();
 
                   if (idempotencyKey == null) {
                     var existing =
@@ -250,7 +262,17 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               "catalog_id", spec.getCatalogId().getId(),
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
-                    tableRepo.create(table);
+                    try {
+                      tableRepo.create(table);
+                    } catch (BaseResourceRepository.NameConflictException nce) {
+                      throw GrpcErrors.conflict(
+                          corr,
+                          "table.already_exists",
+                          Map.of(
+                              "display_name", normName,
+                              "catalog_id", spec.getCatalogId().getId(),
+                              "namespace_id", spec.getNamespaceId().getId()));
+                    }
                     markerStore.bumpNamespaceMarker(table.getNamespaceId());
                     metadataGraph.invalidate(tableResourceId);
                     var meta = tableRepo.metaForSafe(tableResourceId);
@@ -266,7 +288,35 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                   idempotencyKey,
                                   () -> fingerprint,
                                   () -> {
-                                    tableRepo.create(table);
+                                    try {
+                                      tableRepo.create(table);
+                                    } catch (BaseResourceRepository.NameConflictException nce) {
+                                      var existingOpt =
+                                          tableRepo.getByName(
+                                              accountId,
+                                              spec.getCatalogId().getId(),
+                                              spec.getNamespaceId().getId(),
+                                              normName);
+                                      if (existingOpt.isPresent()) {
+                                        var existingSpec = specFromTable(existingOpt.get());
+                                        if (Arrays.equals(
+                                            fingerprint, canonicalFingerprint(existingSpec))) {
+                                          markerStore.bumpNamespaceMarker(
+                                              existingOpt.get().getNamespaceId());
+                                          metadataGraph.invalidate(
+                                              existingOpt.get().getResourceId());
+                                          return new IdempotencyGuard.CreateResult<>(
+                                              existingOpt.get(), existingOpt.get().getResourceId());
+                                        }
+                                      }
+                                      throw GrpcErrors.conflict(
+                                          corr,
+                                          "table.already_exists",
+                                          Map.of(
+                                              "display_name", normName,
+                                              "catalog_id", spec.getCatalogId().getId(),
+                                              "namespace_id", spec.getNamespaceId().getId()));
+                                    }
                                     markerStore.bumpNamespaceMarker(table.getNamespaceId());
                                     metadataGraph.invalidate(tableResourceId);
                                     return new IdempotencyGuard.CreateResult<>(
@@ -318,7 +368,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   }
 
                   var spec = request.getSpec();
-                  var mask = request.getUpdateMask();
+                  var mask = normalizeMask(request.getUpdateMask());
 
                   var meta = tableRepo.metaFor(tableId);
                   MutationOps.BaseServiceChecks.enforcePreconditions(
@@ -335,7 +385,16 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var desired = applyTableSpecPatch(current, spec, mask, corr);
 
                   if (desired.equals(current)) {
-                    var metaNoop = tableRepo.metaForSafe(tableId);
+                    var metaNoop = tableRepo.metaFor(tableId);
+                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                    if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
+                      throw GrpcErrors.preconditionFailed(
+                          corr,
+                          "version_mismatch",
+                          Map.of(
+                              "expected", Long.toString(meta.getPointerVersion()),
+                              "actual", Long.toString(metaNoop.getPointerVersion())));
+                    }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, metaNoop, request.getPrecondition());
                     return UpdateTableResponse.newBuilder()
@@ -417,9 +476,13 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     meta = tableRepo.metaFor(tableId);
                   } catch (BaseResourceRepository.NotFoundException missing) {
                     var safe = tableRepo.metaForSafe(tableId);
+                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                    if (callerCares && safe.getPointerVersion() == 0L) {
+                      throw GrpcErrors.notFound(
+                          correlationId, "table", Map.of("id", tableId.getId()));
+                    }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
-                    tableRepo.delete(tableId);
                     metadataGraph.invalidate(tableId);
                     if (existing != null) {
                       markerStore.bumpNamespaceMarker(existing.getNamespaceId());
@@ -472,6 +535,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   }
 
   private Table applyTableSpecPatch(Table current, TableSpec spec, FieldMask mask, String corr) {
+    mask = normalizeMask(mask);
     validateTableMaskOrThrow(mask, corr);
 
     var b = current.toBuilder();
@@ -572,10 +636,20 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
     if (maskTargets(mask, "upstream")) {
       if (!spec.hasUpstream()) {
-        throw GrpcErrors.invalidArgument(corr, "upstream.missing_for_replacement", Map.of());
+        b.clearUpstream();
+        return b.build();
       }
       mergedUp = inUp;
     } else if (maskTargetsUnder(mask, "upstream")) {
+      if (!spec.hasUpstream()) {
+        throw GrpcErrors.invalidArgument(corr, "upstream.missing_for_replacement", Map.of());
+      }
+      if (!current.hasUpstream()) {
+        throw GrpcErrors.invalidArgument(
+            corr,
+            "upstream.missing_for_replacement",
+            Map.of("hint", "use update_mask ['upstream'] to set"));
+      }
       var ub = currentUp.toBuilder();
 
       if (maskTargets(mask, "upstream.connector_id")) {
@@ -620,8 +694,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     boolean touched = upstreamTouched(mask);
     if (touched) {
       validateUpstreamRef(mergedUp, corr);
+      b.setUpstream(mergedUp);
     }
-    b.setUpstream(mergedUp);
 
     return b.build();
   }
@@ -641,6 +715,23 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
       }
     }
     return false;
+  }
+
+  private static FieldMask normalizeMask(FieldMask mask) {
+    if (mask == null) {
+      return null;
+    }
+    var out = FieldMask.newBuilder();
+    for (var p : mask.getPathsList()) {
+      if (p == null) {
+        continue;
+      }
+      var t = p.trim().toLowerCase();
+      if (!t.isEmpty()) {
+        out.addPaths(t);
+      }
+    }
+    return out.build();
   }
 
   private void validateUpstreamRef(UpstreamRef up, String corr) {
@@ -674,25 +765,43 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     }
   }
 
+  private static TableSpec specFromTable(Table table) {
+    var b =
+        TableSpec.newBuilder()
+            .setCatalogId(table.getCatalogId())
+            .setNamespaceId(table.getNamespaceId())
+            .setDisplayName(normalizeName(table.getDisplayName()))
+            .setDescription(table.getDescription())
+            .setSchemaJson(table.getSchemaJson())
+            .putAllProperties(table.getPropertiesMap());
+    if (table.hasUpstream()) {
+      b.setUpstream(table.getUpstream());
+    }
+    return b.build();
+  }
+
   private static byte[] canonicalFingerprint(TableSpec s) {
-    UpstreamRef up = s.getUpstream();
-    return new Canonicalizer()
-        .scalar("cat", nullSafeId(s.getCatalogId()))
-        .scalar("ns", nullSafeId(s.getNamespaceId()))
-        .scalar("name", normalizeName(s.getDisplayName()))
-        .scalar("description", s.getDescription())
-        .scalar("schema_json", s.getSchemaJson())
-        .group(
-            "upstream",
-            c ->
-                c.scalar("connector_id", nullSafeId(up.getConnectorId()))
-                    .scalar("uri", up.getUri())
-                    .list("namespace_path", up.getNamespacePathList())
-                    .scalar("table_display_name", up.getTableDisplayName())
-                    .scalar("format", up.getFormat())
-                    .list("partition_keys", up.getPartitionKeysList())
-                    .map("field_id_by_path", up.getFieldIdByPathMap()))
-        .map("properties", s.getPropertiesMap())
-        .bytes();
+    var c =
+        new Canonicalizer()
+            .scalar("cat", nullSafeId(s.getCatalogId()))
+            .scalar("ns", nullSafeId(s.getNamespaceId()))
+            .scalar("name", normalizeName(s.getDisplayName()))
+            .scalar("description", s.getDescription())
+            .scalar("schema_json", s.getSchemaJson())
+            .map("properties", s.getPropertiesMap());
+    if (s.hasUpstream()) {
+      UpstreamRef up = s.getUpstream();
+      c.group(
+          "upstream",
+          g ->
+              g.scalar("connector_id", nullSafeId(up.getConnectorId()))
+                  .scalar("uri", up.getUri())
+                  .list("namespace_path", up.getNamespacePathList())
+                  .scalar("table_display_name", up.getTableDisplayName())
+                  .scalar("format", up.getFormat())
+                  .list("partition_keys", up.getPartitionKeysList())
+                  .map("field_id_by_path", up.getFieldIdByPathMap()));
+    }
+    return c.bytes();
   }
 }

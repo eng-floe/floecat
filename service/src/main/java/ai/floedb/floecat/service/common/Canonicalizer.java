@@ -12,8 +12,9 @@ public final class Canonicalizer {
   private final Deque<String> prefix = new ArrayDeque<>();
 
   private String buildKey(String k) {
+    String key = (k == null) ? "" : k.trim();
     if (prefix.isEmpty()) {
-      return k;
+      return key;
     }
 
     var it = prefix.descendingIterator();
@@ -22,25 +23,28 @@ public final class Canonicalizer {
       if (full.length() > 0) full.append('.');
       full.append(it.next());
     }
-    if (k != null && !k.isBlank()) {
+    if (!key.isBlank()) {
       if (full.length() > 0) full.append('.');
-      full.append(k);
+      full.append(key);
     }
     return full.toString();
   }
 
   public Canonicalizer group(String k, Consumer<Canonicalizer> nested) {
-    if (k != null && !k.isBlank()) prefix.push(k);
+    String key = (k == null) ? "" : k.trim();
+    if (!key.isBlank()) prefix.push(key);
     try {
       nested.accept(this);
     } finally {
-      if (k != null && !k.isBlank()) prefix.pop();
+      if (!key.isBlank()) prefix.pop();
     }
     return this;
   }
 
   public Canonicalizer scalar(String k, Object v) {
-    sb.append(buildKey(k)).append('=').append(v == null ? "" : v).append('\n');
+    sb.append(buildKey(k)).append('=');
+    appendValue(v);
+    sb.append('\n');
     return this;
   }
 
@@ -48,7 +52,9 @@ public final class Canonicalizer {
     if (vs != null) {
       String key = buildKey(k);
       for (Object v : vs) {
-        sb.append(key).append("[]=").append(v == null ? "" : v).append('\n');
+        sb.append(key).append("[]=");
+        appendValue(v);
+        sb.append('\n');
       }
     }
     return this;
@@ -60,18 +66,27 @@ public final class Canonicalizer {
       m.entrySet().stream()
           .sorted(Map.Entry.comparingByKey())
           .forEach(
-              e ->
-                  sb.append(key)
-                      .append('[')
-                      .append(e.getKey())
-                      .append("]=")
-                      .append(e.getValue() == null ? "" : e.getValue())
-                      .append('\n'));
+              e -> {
+                sb.append(key).append("[]k=");
+                appendValue(e.getKey());
+                sb.append(" v=");
+                appendValue(e.getValue());
+                sb.append('\n');
+              });
     }
     return this;
   }
 
   public byte[] bytes() {
     return sb.toString().getBytes(StandardCharsets.UTF_8);
+  }
+
+  private void appendValue(Object v) {
+    sb.append(valueToken(v));
+  }
+
+  private static String valueToken(Object v) {
+    String s = (v == null) ? "" : v.toString();
+    return s.length() + ":" + s;
   }
 }

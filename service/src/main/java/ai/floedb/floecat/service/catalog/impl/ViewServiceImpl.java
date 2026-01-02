@@ -33,6 +33,7 @@ import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.Set;
 import org.jboss.logging.Logger;
@@ -246,7 +247,33 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                   idempotencyKey,
                                   () -> fingerprint,
                                   () -> {
-                                    viewRepo.create(view);
+                                    try {
+                                      viewRepo.create(view);
+                                    } catch (BaseResourceRepository.NameConflictException nce) {
+                                      var existingOpt =
+                                          viewRepo.getByName(
+                                              accountId,
+                                              spec.getCatalogId().getId(),
+                                              spec.getNamespaceId().getId(),
+                                              normName);
+                                      if (existingOpt.isPresent()) {
+                                        var existingSpec = specFromView(existingOpt.get());
+                                        if (Arrays.equals(
+                                            fingerprint, canonicalFingerprint(existingSpec))) {
+                                          metadataGraph.invalidate(
+                                              existingOpt.get().getResourceId());
+                                          return new IdempotencyGuard.CreateResult<>(
+                                              existingOpt.get(), existingOpt.get().getResourceId());
+                                        }
+                                      }
+                                      throw GrpcErrors.conflict(
+                                          corr,
+                                          "view.already_exists",
+                                          Map.of(
+                                              "display_name", normName,
+                                              "catalog_id", spec.getCatalogId().getId(),
+                                              "namespace_id", spec.getNamespaceId().getId()));
+                                    }
                                     metadataGraph.invalidate(viewResourceId);
                                     return new IdempotencyGuard.CreateResult<>(
                                         view, viewResourceId);
@@ -289,7 +316,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   }
 
                   var spec = request.getSpec();
-                  var mask = request.getUpdateMask();
+                  var mask = normalizeMask(request.getUpdateMask());
 
                   var meta = viewRepo.metaFor(viewId);
                   MutationOps.BaseServiceChecks.enforcePreconditions(
@@ -305,7 +332,16 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   var desired = applyViewSpecPatch(current, spec, mask, corr);
 
                   if (desired.equals(current)) {
-                    var metaNoop = viewRepo.metaForSafe(viewId);
+                    var metaNoop = viewRepo.metaFor(viewId);
+                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                    if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
+                      throw GrpcErrors.preconditionFailed(
+                          corr,
+                          "version_mismatch",
+                          Map.of(
+                              "expected", Long.toString(meta.getPointerVersion()),
+                              "actual", Long.toString(metaNoop.getPointerVersion())));
+                    }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, metaNoop, request.getPrecondition());
                     return UpdateViewResponse.newBuilder()
@@ -374,9 +410,13 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                     meta = viewRepo.metaFor(viewId);
                   } catch (BaseResourceRepository.NotFoundException missing) {
                     var safe = viewRepo.metaForSafe(viewId);
+                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                    if (callerCares && safe.getPointerVersion() == 0L) {
+                      throw GrpcErrors.notFound(
+                          correlationId, "view", Map.of("id", viewId.getId()));
+                    }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
-                    viewRepo.delete(viewId);
                     metadataGraph.invalidate(viewId);
                     return DeleteViewResponse.newBuilder().setMeta(safe).build();
                   }
@@ -414,6 +454,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   }
 
   private View applyViewSpecPatch(View current, ViewSpec spec, FieldMask mask, String corr) {
+    mask = normalizeMask(mask);
     validateViewMaskOrThrow(mask, corr);
 
     var b = current.toBuilder();
@@ -509,6 +550,23 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
     return b.build();
   }
 
+  private static FieldMask normalizeMask(FieldMask mask) {
+    if (mask == null) {
+      return null;
+    }
+    var out = FieldMask.newBuilder();
+    for (var p : mask.getPathsList()) {
+      if (p == null) {
+        continue;
+      }
+      var t = p.trim().toLowerCase();
+      if (!t.isEmpty()) {
+        out.addPaths(t);
+      }
+    }
+    return out.build();
+  }
+
   private static byte[] canonicalFingerprint(ViewSpec s) {
     return new Canonicalizer()
         .scalar("cat", nullSafeId(s.getCatalogId()))
@@ -518,5 +576,16 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
         .scalar("sql", s.getSql())
         .map("properties", s.getPropertiesMap())
         .bytes();
+  }
+
+  private static ViewSpec specFromView(View view) {
+    return ViewSpec.newBuilder()
+        .setCatalogId(view.getCatalogId())
+        .setNamespaceId(view.getNamespaceId())
+        .setDisplayName(normalizeName(view.getDisplayName()))
+        .setDescription(view.getDescription())
+        .setSql(view.getSql())
+        .putAllProperties(view.getPropertiesMap())
+        .build();
   }
 }
