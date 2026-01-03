@@ -29,6 +29,9 @@ public class CasBlobGc {
     final var cfg = ConfigProvider.getConfig();
     final int pageSize =
         cfg.getOptionalValue("floecat.gc.cas.page-size", Integer.class).orElse(500);
+    final long minAgeMs =
+        cfg.getOptionalValue("floecat.gc.cas.min-age-ms", Long.class).orElse(30_000L);
+    final long nowMs = System.currentTimeMillis();
 
     Set<String> referenced = new HashSet<>();
     List<String> tableIds = new ArrayList<>();
@@ -67,7 +70,9 @@ public class CasBlobGc {
             accountPrefix(accountId, "/account/"),
             referenced,
             key -> key.contains("/account/"),
-            pageSize);
+            pageSize,
+            nowMs,
+            minAgeMs);
     blobsScanned += account.scanned();
     blobsDeleted += account.deleted();
 
@@ -76,7 +81,9 @@ public class CasBlobGc {
             accountPrefix(accountId, "/catalogs/"),
             referenced,
             key -> key.contains("/catalog/"),
-            pageSize);
+            pageSize,
+            nowMs,
+            minAgeMs);
     blobsScanned += catalogs.scanned();
     blobsDeleted += catalogs.deleted();
 
@@ -85,7 +92,9 @@ public class CasBlobGc {
             accountPrefix(accountId, "/namespaces/"),
             referenced,
             key -> key.contains("/namespace/"),
-            pageSize);
+            pageSize,
+            nowMs,
+            minAgeMs);
     blobsScanned += namespaces.scanned();
     blobsDeleted += namespaces.deleted();
 
@@ -94,7 +103,9 @@ public class CasBlobGc {
             accountPrefix(accountId, "/tables/"),
             referenced,
             key -> key.contains("/table/"),
-            pageSize);
+            pageSize,
+            nowMs,
+            minAgeMs);
     blobsScanned += tables.scanned();
     blobsDeleted += tables.deleted();
 
@@ -103,7 +114,9 @@ public class CasBlobGc {
             accountPrefix(accountId, "/tables/"),
             referenced,
             key -> key.contains("/snapshots/") && key.contains("/snapshot/"),
-            pageSize);
+            pageSize,
+            nowMs,
+            minAgeMs);
     blobsScanned += snapshots.scanned();
     blobsDeleted += snapshots.deleted();
 
@@ -112,7 +125,9 @@ public class CasBlobGc {
             accountPrefix(accountId, "/views/"),
             referenced,
             key -> key.contains("/view/"),
-            pageSize);
+            pageSize,
+            nowMs,
+            minAgeMs);
     blobsScanned += views.scanned();
     blobsDeleted += views.deleted();
 
@@ -121,7 +136,9 @@ public class CasBlobGc {
             accountPrefix(accountId, "/connectors/"),
             referenced,
             key -> key.contains("/connector/"),
-            pageSize);
+            pageSize,
+            nowMs,
+            minAgeMs);
     blobsScanned += connectors.scanned();
     blobsDeleted += connectors.deleted();
 
@@ -161,7 +178,12 @@ public class CasBlobGc {
   private record DeleteResult(int scanned, int deleted) {}
 
   private DeleteResult deleteUnreferenced(
-      String prefix, Set<String> referenced, Predicate<String> isCandidate, int pageSize) {
+      String prefix,
+      Set<String> referenced,
+      Predicate<String> isCandidate,
+      int pageSize,
+      long nowMs,
+      long minAgeMs) {
     String token = "";
     int scanned = 0;
     int deleted = 0;
@@ -175,6 +197,15 @@ public class CasBlobGc {
           continue;
         }
         if (!referenced.contains(normalized)) {
+          if (minAgeMs > 0) {
+            var header = blobStore.head(key).orElse(null);
+            if (header != null) {
+              long lastModified = header.getLastModifiedAt().getSeconds() * 1000L;
+              if (nowMs - lastModified < minAgeMs) {
+                continue;
+              }
+            }
+          }
           if (blobStore.delete(key)) {
             deleted++;
           }
