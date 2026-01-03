@@ -633,6 +633,9 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     c.scalar("file_content", stats.getFileContent().name());
     c.scalar("partition_data_json", stats.getPartitionDataJson());
     c.scalar("partition_spec_id", stats.getPartitionSpecId());
+    if (stats.hasSequenceNumber()) {
+      c.scalar("sequence_number", stats.getSequenceNumber());
+    }
 
     var eqIds = new ArrayList<Integer>(stats.getEqualityFieldIdsList());
     eqIds.sort(Comparator.naturalOrder());

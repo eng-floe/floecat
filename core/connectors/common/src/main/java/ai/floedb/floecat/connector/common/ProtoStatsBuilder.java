@@ -276,7 +276,7 @@ public final class ProtoStatsBuilder {
         cols.add(colBuilder.build());
       }
 
-      out.add(
+      FileColumnStats.Builder builder =
           FileColumnStats.newBuilder()
               .setTableId(tableId)
               .setSnapshotId(snapshotId)
@@ -292,8 +292,12 @@ public final class ProtoStatsBuilder {
                           ? FileContent.FC_EQUALITY_DELETES
                           : FileContent.FC_POSITION_DELETES)
                       : FileContent.FC_DATA)
-              .addAllColumns(cols)
-              .build());
+              .addAllColumns(cols);
+      Long sequenceNumber = fa.sequenceNumber();
+      if (sequenceNumber != null && sequenceNumber > 0) {
+        builder.setSequenceNumber(sequenceNumber);
+      }
+      out.add(builder.build());
     }
 
     return out;

@@ -67,6 +67,10 @@ public interface StatsEngine<K> {
       return 0;
     }
 
+    default Long sequenceNumber() {
+      return null;
+    }
+
     default boolean isDelete() {
       return false;
     }

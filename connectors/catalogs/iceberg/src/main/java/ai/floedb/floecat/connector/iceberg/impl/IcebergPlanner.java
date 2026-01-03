@@ -141,6 +141,10 @@ final class IcebergPlanner implements Planner<Integer> {
 
     PartitionSpec spec = specsById.getOrDefault(dataFile.specId(), defaultSpec);
     String partJson = partitionJson(spec, dataFile.partition());
+    Long sequenceNumber = dataFile.fileSequenceNumber();
+    if (sequenceNumber != null && sequenceNumber <= 0) {
+      sequenceNumber = null;
+    }
 
     return new PlannedFile<>(
         dataFile.location().toString(),
@@ -153,7 +157,8 @@ final class IcebergPlanner implements Planner<Integer> {
         lowers,
         uppers,
         partJson,
-        spec == null ? 0 : spec.specId());
+        spec == null ? 0 : spec.specId(),
+        sequenceNumber);
   }
 
   private Map<Integer, Object> decodeBounds(Map<Integer, ByteBuffer> raw) {

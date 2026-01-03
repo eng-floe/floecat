@@ -62,6 +62,9 @@ message ScanFile {
 
   // For equality delete files: IDs of equality columns.
   repeated int32 equality_field_ids = 9;
+
+  // Iceberg file sequence number (if known).
+  optional int64 sequence_number = 10;
 }
 
 /**

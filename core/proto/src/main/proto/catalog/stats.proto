@@ -94,6 +94,7 @@ message FileColumnStats {
   string partition_data_json = 9;
   int32 partition_spec_id = 10;
   repeated int32 equality_field_ids = 11;
+  optional int64 sequence_number = 12;
 }
 
 enum FileContent {
