@@ -290,9 +290,7 @@ class TableRepositoryTest {
                   var curMeta = tableRepo.metaFor(tblId);
                   var curOpt = tableRepo.getById(tblId);
                   if (curOpt.isEmpty()) {
-                    expectedCounts
-                        .computeIfAbsent("NotFound", k -> new LongAdder())
-                        .increment();
+                    expectedCounts.computeIfAbsent("NotFound", k -> new LongAdder()).increment();
                     continue;
                   }
                   var cur = curOpt.get();
@@ -318,9 +316,7 @@ class TableRepositoryTest {
                   var curMeta = tableRepo.metaFor(tblId);
                   var curOpt = tableRepo.getById(tblId);
                   if (curOpt.isEmpty()) {
-                    expectedCounts
-                        .computeIfAbsent("NotFound", k -> new LongAdder())
-                        .increment();
+                    expectedCounts.computeIfAbsent("NotFound", k -> new LongAdder()).increment();
                     continue;
                   }
                   var cur = curOpt.get();
@@ -340,9 +336,7 @@ class TableRepositoryTest {
                   var curMeta = tableRepo.metaFor(tblId);
                   var curOpt = tableRepo.getById(tblId);
                   if (curOpt.isEmpty()) {
-                    expectedCounts
-                        .computeIfAbsent("NotFound", k -> new LongAdder())
-                        .increment();
+                    expectedCounts.computeIfAbsent("NotFound", k -> new LongAdder()).increment();
                     continue;
                   }
                   var cur = curOpt.get();
