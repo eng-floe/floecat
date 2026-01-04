@@ -297,17 +297,28 @@ public class Shell implements Runnable {
     }
 
     Throwable root = chain.get(chain.size() - 1);
-    String msg =
-        (root.getMessage() != null && !root.getMessage().isBlank())
-            ? root.getMessage()
-            : (t.getMessage() != null ? t.getMessage() : "An error occurred");
+    String msg = messageFor(root);
+    if (msg == null || msg.isBlank()) {
+      msg = messageFor(t);
+    }
+    if (msg == null || msg.isBlank()) {
+      msg = "An error occurred";
+    }
 
-    System.out.println("! " + msg);
+    var lines = splitErrorLines(msg);
+    if (lines.isEmpty()) {
+      lines = List.of("An error occurred");
+    }
+    System.out.println("! " + lines.get(0));
+    for (int i = 1; i < lines.size(); i++) {
+      System.out.println("!   " + lines.get(i));
+    }
 
     for (int i = chain.size() - 2; i >= 0; i--) {
       var c = chain.get(i);
-      if (c.getMessage() != null && !c.getMessage().isBlank()) {
-        System.out.println("! caused by: " + c.getMessage());
+      String rendered = renderThrowable(c);
+      if (rendered != null && !rendered.isBlank()) {
+        System.out.println("! caused by: " + rendered);
       }
     }
 
@@ -318,6 +329,83 @@ public class Shell implements Runnable {
       }
       t.printStackTrace(System.out);
     }
+  }
+
+  private static String messageFor(Throwable t) {
+    if (t == null) {
+      return "";
+    }
+    if (t instanceof StatusRuntimeException sre) {
+      var status = sre.getStatus();
+      String desc = status.getDescription();
+      if (desc == null || desc.isBlank()) {
+        desc = sre.getMessage();
+      }
+      if (desc == null || desc.isBlank()) {
+        return "grpc=" + status.getCode();
+      }
+      return desc;
+    }
+    return t.getMessage();
+  }
+
+  private static String renderThrowable(Throwable t) {
+    if (t == null) {
+      return "";
+    }
+    if (t instanceof StatusRuntimeException sre) {
+      var status = sre.getStatus();
+      String desc = status.getDescription();
+      if (desc == null || desc.isBlank()) {
+        desc = sre.getMessage();
+      }
+      if (desc == null || desc.isBlank()) {
+        return "grpc=" + status.getCode();
+      }
+      return "grpc=" + status.getCode() + " desc=" + desc;
+    }
+    String msg = t.getMessage();
+    String cls = t.getClass().getSimpleName();
+    if (msg == null || msg.isBlank()) {
+      return cls;
+    }
+    return cls + ": " + msg;
+  }
+
+  private static List<String> splitErrorLines(String msg) {
+    if (msg == null) {
+      return List.of();
+    }
+    String normalized = msg.replace("\r\n", "\n").replace("\r", "\n");
+    if (normalized.contains("\n")) {
+      var out = new ArrayList<String>();
+      for (String line : normalized.split("\n")) {
+        if (!line.isBlank()) {
+          out.add(stripBullet(line.trim()));
+        }
+      }
+      return out;
+    }
+    if (normalized.contains(" | ")) {
+      var out = new ArrayList<String>();
+      for (String part : normalized.split("\\s\\|\\s")) {
+        if (!part.isBlank()) {
+          out.add(stripBullet(part.trim()));
+        }
+      }
+      return out;
+    }
+    return List.of(stripBullet(normalized.trim()));
+  }
+
+  private static String stripBullet(String line) {
+    if (line.startsWith("- ")) {
+      return line.substring(2).trim();
+    }
+    if (line.startsWith("* ")) {
+      return line.substring(2).trim();
+    }
+    return line;
   }
 
   private void printHelp() {
@@ -1578,17 +1666,29 @@ public class Shell implements Runnable {
             connectors.getReconcileJob(
                 GetReconcileJobRequest.newBuilder().setJobId(Quotes.unquote(args.get(1))).build());
         out.printf(
-            "job_id=%s connector_id=%s state=%s message=%s started=%s finished=%s scanned=%d"
+            "job_id=%s connector_id=%s state=%s started=%s finished=%s scanned=%d"
                 + " changed=%d errors=%d%n",
             resp.getJobId(),
             resp.getConnectorId(),
             resp.getState().name(),
-            resp.getMessage(),
             ts(resp.getStartedAt()),
             ts(resp.getFinishedAt()),
             resp.getTablesScanned(),
             resp.getTablesChanged(),
             resp.getErrors());
+        if (resp.getMessage() != null && !resp.getMessage().isBlank()) {
+          var lines = splitErrorLines(resp.getMessage());
+          if (lines.isEmpty()) {
+            out.println("message: " + resp.getMessage());
+          } else if (lines.size() == 1) {
+            out.println("message: " + lines.get(0));
+          } else {
+            out.println("message:");
+            for (String line : lines) {
+              out.println("  - " + line);
+            }
+          }
+        }
       }
 
       default -> out.println("unknown subcommand");

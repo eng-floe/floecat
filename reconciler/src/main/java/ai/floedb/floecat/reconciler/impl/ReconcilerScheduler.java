@@ -54,11 +54,46 @@ public class ReconcilerScheduler {
               result.errors);
         }
       } catch (Exception e) {
-        var msg = e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage());
+        var msg = describeFailure(e);
         jobs.markFailed(lease.jobId, System.currentTimeMillis(), msg, 0, 0, 1);
       }
     } finally {
       running.set(false);
     }
+  }
+
+  private static String describeFailure(Throwable t) {
+    if (t == null) {
+      return "Unknown error";
+    }
+    var seen = new java.util.HashSet<Throwable>();
+    var parts = new java.util.ArrayList<String>();
+    Throwable cur = t;
+    while (cur != null && !seen.contains(cur)) {
+      seen.add(cur);
+      parts.add(renderThrowable(cur));
+      cur = cur.getCause();
+    }
+    return String.join(" | caused by: ", parts);
+  }
+
+  private static String renderThrowable(Throwable t) {
+    if (t instanceof io.grpc.StatusRuntimeException sre) {
+      var status = sre.getStatus();
+      String desc = status.getDescription();
+      if (desc == null || desc.isBlank()) {
+        desc = sre.getMessage();
+      }
+      if (desc == null || desc.isBlank()) {
+        return "grpc=" + status.getCode();
+      }
+      return "grpc=" + status.getCode() + " desc=" + desc;
+    }
+    String msg = t.getMessage();
+    String cls = t.getClass().getSimpleName();
+    if (msg == null || msg.isBlank()) {
+      return cls;
+    }
+    return cls + ": " + msg;
   }
 }
