@@ -1,0 +1,112 @@
+package ai.floedb.floecat.service.query.catalog;
+
+import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.query.rpc.ColumnInfo;
+import ai.floedb.floecat.query.rpc.Origin;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
+import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/** Shared helpers used by catalog bundle builders. */
+public final class CatalogBundleUtils {
+
+  private CatalogBundleUtils() {}
+
+  public static NameRef parseNameRef(
+      String candidate, String defaultCatalog, String correlationId) {
+    if (candidate == null) {
+      throw GrpcErrors.invalidArgument(correlationId, "catalog_bundle.candidate.empty", Map.of());
+    }
+    String trimmed = candidate.trim();
+    if (trimmed.isBlank()) {
+      throw GrpcErrors.invalidArgument(correlationId, "catalog_bundle.candidate.empty", Map.of());
+    }
+    String[] parts = trimmed.split("\\.");
+    NameRef.Builder builder = NameRef.newBuilder();
+    if (parts.length == 1) {
+      builder.setName(parts[0]);
+    } else if (parts.length == 2) {
+      builder.addPath(parts[0]);
+      builder.setName(parts[1]);
+    } else {
+      builder.setCatalog(parts[0]);
+      for (int i = 1; i < parts.length - 1; i++) {
+        builder.addPath(parts[i]);
+      }
+      builder.setName(parts[parts.length - 1]);
+    }
+    if (builder.getCatalog().isEmpty() && defaultCatalog != null && !defaultCatalog.isBlank()) {
+      builder.setCatalog(defaultCatalog);
+    }
+    return builder.build();
+  }
+
+  public static List<SchemaColumn> pruneSchema(
+      List<SchemaColumn> schema, TableReferenceCandidate candidate, String correlationId) {
+    if (candidate.getWantsAllColumns() || candidate.getInitialColumnsCount() == 0) {
+      return schema;
+    }
+    var columns = new ArrayList<SchemaColumn>();
+    var lookup = new HashMap<String, SchemaColumn>();
+    for (SchemaColumn column : schema) {
+      if (lookup.put(column.getName(), column) != null) {
+        throw GrpcErrors.invalidArgument(
+            correlationId,
+            "catalog_bundle.schema.duplicate_column",
+            Map.of("column", column.getName()));
+      }
+    }
+    for (String name : candidate.getInitialColumnsList()) {
+      SchemaColumn column = lookup.get(name);
+      if (column == null) {
+        throw GrpcErrors.invalidArgument(
+            correlationId, "catalog_bundle.schema.unknown_column", Map.of("column", name));
+      }
+      columns.add(column);
+    }
+    return columns;
+  }
+
+  public static ColumnInfo columnInfo(SchemaColumn column, int ordinal, Origin origin) {
+    return ColumnInfo.newBuilder()
+        .setName(column.getName())
+        .setType(NameRefUtil.name(column.getLogicalType()))
+        .setNullable(column.getNullable())
+        .setOrdinal(ordinal)
+        .setOrigin(origin)
+        .setFieldId(column.getFieldId())
+        .setPhysicalPath(column.getPhysicalPath())
+        .build();
+  }
+
+  public static List<ColumnInfo> columnsFor(
+      List<SchemaColumn> schema, List<SchemaColumn> pruned, Origin origin, String correlationId) {
+    List<ColumnInfo> columns = new ArrayList<>(Math.max(0, pruned.size()));
+
+    // Ordinals must reflect the physical/stable schema layout (not the pruned list order).
+    var ordinalMap = new HashMap<String, Integer>(Math.max(16, schema.size() * 2));
+    for (int i = 0; i < schema.size(); i++) {
+      ordinalMap.put(schema.get(i).getName(), i + 1);
+    }
+
+    for (SchemaColumn column : pruned) {
+      Integer ordinal = ordinalMap.get(column.getName());
+      if (ordinal == null) {
+        // This should never happen unless the caller passes a pruned list that is not derived
+        // from the provided schema. Fail fast rather than emitting incorrect ordinals.
+        throw GrpcErrors.internal(
+            correlationId,
+            "catalog_bundle.schema.ordinal_missing",
+            Map.of("column", column.getName()));
+      }
+      columns.add(columnInfo(column, ordinal, origin));
+    }
+
+    return columns;
+  }
+}
