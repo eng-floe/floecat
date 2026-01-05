@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package ai.floedb.floecat.query;
+
+import "common/common.proto";
+import "query/engine_specific.proto";
+import "query/sql_objects.proto";
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.query.rpc";
+option java_outer_classname = "QueryCatalogProto";
+
+service QueryCatalogService {
+  rpc GetCatalogBundle(GetCatalogBundleRequest) returns (stream CatalogBundleChunk);
+}
+
+message TableReferenceCandidate {
+  repeated string fq_candidates = 1;
+  repeated string initial_columns = 2;
+  bool wants_all_columns = 3;
+}
+
+message GetCatalogBundleRequest {
+  string query_id = 1;
+  repeated TableReferenceCandidate tables = 2;
+}
+
+message CatalogBundleChunk {
+  string query_id = 1;
+  uint64 seq = 2;
+
+  oneof payload {
+    CatalogBundleHeader header = 10;
+    RelationInfo relation = 20;
+    ai.floedb.floecat.query.SqlType type = 30;
+    ai.floedb.floecat.query.SqlFunction function = 31;
+    ai.floedb.floecat.query.SqlOperator operator = 32;
+    ai.floedb.floecat.query.SqlCast cast = 33;
+    ai.floedb.floecat.query.SqlCollation collation = 34;
+    ai.floedb.floecat.query.SqlAggregate aggregate = 35;
+    CatalogBundleEnd end = 90;
+  }
+}
+
+message CatalogBundleHeader {
+  repeated ResolutionWarning warnings = 1;
+}
+
+message CatalogBundleEnd {
+  uint32 relation_count = 1;
+  uint32 custom_object_count = 2;
+}
+
+message ResolutionWarning {
+  string code = 1;
+  string message = 2;
+}
+
+enum RelationKind {
+  RELATION_KIND_UNSPECIFIED = 0;
+  RELATION_KIND_TABLE = 1;
+  RELATION_KIND_VIEW = 2;
+  RELATION_KIND_SYSTEM_VIEW = 3;
+  RELATION_KIND_TEMP = 4;
+}
+
+message RelationInfo {
+  ai.floedb.floecat.common.ResourceId relation_id = 1;
+  ai.floedb.floecat.common.NameRef name = 2;
+  RelationKind kind = 3;
+  ai.floedb.floecat.query.Origin origin = 10;
+  repeated ColumnInfo columns = 4;
+  ViewDefinition view_definition = 5;
+  repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
+}
+
+message ColumnInfo {
+  string name = 1;
+  ai.floedb.floecat.common.NameRef type = 2;
+  bool nullable = 3;
+  int32 ordinal = 10;
+  int32 field_id = 11;
+  string physical_path = 12;
+  ai.floedb.floecat.query.Origin origin = 20;
+  repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
+}
+
+message ViewDefinition {
+  string canonical_sql = 1;
+  string dialect = 2;
+  repeated ai.floedb.floecat.common.ResourceId base_relations = 3;
+  repeated string creation_search_path = 4;
+  repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
+}

@@ -181,6 +181,15 @@ the graph defines the single source of truth for list/prefix resolution.
 - **Attach engine hints sparingly**. Hints should be small (think JSON blobs or compact protobufs)
   and versioned so planners/executors can safely down-level or up-level between releases.
 
+## Query Catalog Service
+`QueryCatalogService.GetCatalogBundle` now streams `CatalogBundleChunk`s directly from the metadata
+graph. Each chunk carries a header, relation rows (`RelationInfo`), optional custom objects
+(`SqlType`, `SqlFunction`, etc.), and a final summary, so a planner can start binding as soon as the
+first relation arrives. The service shares the same `QueryContext` as the other query RPCs and
+relies on `CatalogOverlay.resolve`, `snapshotPinFor`, and view metadata stored in `ViewNode` to
+produce canonical names, pruned schemas, and view definitions without issuing a second RPC batch.
+Builtins remain behind `GetBuiltinCatalog`.
+
 ## Metrics
 The graph surfaces a couple of Micrometer gauges so operators can verify cache state at runtime:
 
