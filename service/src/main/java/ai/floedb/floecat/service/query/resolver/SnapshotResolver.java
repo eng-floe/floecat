@@ -16,9 +16,9 @@
 
 package ai.floedb.floecat.service.query.resolver;
 
+import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.query.rpc.QueryInput;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.impl.QueryContext;

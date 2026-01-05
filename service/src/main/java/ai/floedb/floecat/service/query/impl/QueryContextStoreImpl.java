@@ -26,6 +26,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.UnaryOperator;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
@@ -149,6 +150,22 @@ public class QueryContextStoreImpl implements QueryContextStore {
   @Override
   public void replace(QueryContext ctx) {
     cache.asMap().put(ctx.getQueryId(), ctx);
+  }
+
+  @Override
+  public Optional<QueryContext> update(String queryId, UnaryOperator<QueryContext> fn) {
+    return Optional.ofNullable(
+        cache
+            .asMap()
+            .computeIfPresent(
+                queryId,
+                (k, ctx) -> {
+                  QueryContext updated = fn.apply(ctx);
+                  if (updated == null || updated == ctx) {
+                    return ctx;
+                  }
+                  return updated.toBuilder().version(versionGen.incrementAndGet()).build();
+                }));
   }
 
   @PreDestroy

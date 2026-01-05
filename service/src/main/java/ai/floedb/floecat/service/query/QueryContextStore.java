@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.query;
 
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import java.util.Optional;
+import java.util.function.UnaryOperator;
 
 /**
  * Storage abstraction for server-side QueryContext.
@@ -54,6 +55,14 @@ public interface QueryContextStore extends AutoCloseable {
    * <p>Unlike put(), this MUST overwrite the existing context.
    */
   void replace(QueryContext ctx);
+
+  /**
+   * Atomically update a stored context, using the provided function.
+   *
+   * <p>If the function returns the same reference or throws, the store remains unchanged. The
+   * resulting context version is bumped automatically.
+   */
+  Optional<QueryContext> update(String queryId, UnaryOperator<QueryContext> fn);
 
   @Override
   void close();

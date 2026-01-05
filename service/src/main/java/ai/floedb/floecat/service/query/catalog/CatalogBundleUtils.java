@@ -17,29 +17,8 @@ public final class CatalogBundleUtils {
 
   private CatalogBundleUtils() {}
 
-  public static NameRef parseNameRef(
-      String candidate, String defaultCatalog, String correlationId) {
-    if (candidate == null) {
-      throw GrpcErrors.invalidArgument(correlationId, "catalog_bundle.candidate.empty", Map.of());
-    }
-    String trimmed = candidate.trim();
-    if (trimmed.isBlank()) {
-      throw GrpcErrors.invalidArgument(correlationId, "catalog_bundle.candidate.empty", Map.of());
-    }
-    String[] parts = trimmed.split("\\.");
-    NameRef.Builder builder = NameRef.newBuilder();
-    if (parts.length == 1) {
-      builder.setName(parts[0]);
-    } else if (parts.length == 2) {
-      builder.addPath(parts[0]);
-      builder.setName(parts[1]);
-    } else {
-      builder.setCatalog(parts[0]);
-      for (int i = 1; i < parts.length - 1; i++) {
-        builder.addPath(parts[i]);
-      }
-      builder.setName(parts[parts.length - 1]);
-    }
+  public static NameRef applyDefaultCatalog(NameRef ref, String defaultCatalog) {
+    NameRef.Builder builder = ref.toBuilder();
     if (builder.getCatalog().isEmpty() && defaultCatalog != null && !defaultCatalog.isBlank()) {
       builder.setCatalog(defaultCatalog);
     }

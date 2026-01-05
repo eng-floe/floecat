@@ -46,18 +46,6 @@ import "google/protobuf/timestamp.proto";
  *   - QueryScanService
  */
 
-message QueryInput {
-  // A referenced table or view.
-  oneof target {
-    ai.floedb.floecat.common.NameRef name = 1;
-    ai.floedb.floecat.common.ResourceId table_id = 2;
-    ai.floedb.floecat.common.ResourceId view_id = 3;
-  }
-
-  // Optional: per-input snapshot override.
-  ai.floedb.floecat.common.SnapshotRef snapshot = 10;
-}
-
 enum QueryStatus {
   SUBMITTED = 0;
   COMPLETED = 1;

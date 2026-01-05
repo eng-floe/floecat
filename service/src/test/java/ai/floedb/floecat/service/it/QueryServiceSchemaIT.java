@@ -20,10 +20,10 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.rpc.*;
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
-import ai.floedb.floecat.query.rpc.QueryInput;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
@@ -227,5 +227,74 @@ class QueryServiceSchemaIT {
         0,
         response.getSchemas(0).getColumnsCount(),
         "view schema should currently be empty (no stored output columns)");
+  }
+
+  @Test
+  void describeInputsReturnsSchemasInRequestOrder() {
+    var cat = TestSupport.createCatalog(catalog, catalogPrefix + "table_view", "");
+    var ns =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "sch", List.of("db"), "desc");
+    Schema schema = new Schema(Types.NestedField.required(1, "id", Types.LongType.get()));
+
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "orders_multi",
+            "s3://bucket/orders_multi",
+            SchemaParser.toJson(schema),
+            "desc");
+    var snap =
+        TestSupport.createSnapshot(
+            snapshot, tbl.getResourceId(), 1L, System.currentTimeMillis() - 5_000L);
+
+    var viewNode =
+        TestSupport.createView(
+            view,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "orders_view_multi",
+            "select 1 as view_id",
+            "desc");
+
+    var tableName =
+        NameRef.newBuilder()
+            .setCatalog(cat.getDisplayName())
+            .addPath("db")
+            .addPath("sch")
+            .setName(tbl.getDisplayName())
+            .build();
+    var viewName =
+        NameRef.newBuilder()
+            .setCatalog(cat.getDisplayName())
+            .addPath("db")
+            .addPath("sch")
+            .setName(viewNode.getDisplayName())
+            .build();
+
+    var begin =
+        queries.beginQuery(
+            BeginQueryRequest.newBuilder()
+                .setDefaultCatalogId(cat.getResourceId())
+                .setTtlSeconds(10)
+                .build());
+    String qid = begin.getQuery().getQueryId();
+
+    var resp =
+        schemaSvc.describeInputs(
+            DescribeInputsRequest.newBuilder()
+                .setQueryId(qid)
+                .addInputs(
+                    QueryInput.newBuilder()
+                        .setName(tableName)
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snap.getSnapshotId())))
+                .addInputs(QueryInput.newBuilder().setName(viewName))
+                .build());
+
+    assertEquals(2, resp.getSchemasCount());
+    assertTrue(resp.getSchemas(0).getColumnsCount() > 0, "first schema should correspond to table");
+    assertEquals(
+        0, resp.getSchemas(1).getColumnsCount(), "second schema is the view and currently empty");
   }
 }

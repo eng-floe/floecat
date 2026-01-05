@@ -16,9 +16,11 @@
 
 package ai.floedb.floecat.service.query.resolver;
 
+import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.query.rpc.QueryInput;
+import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -27,9 +29,12 @@ import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * QueryInputResolver
@@ -72,6 +77,44 @@ public class QueryInputResolver {
   public record ResolutionResult(
       List<ResourceId> resolved, SnapshotSet snapshotSet, byte[] asOfDefaultBytes) {}
 
+  // Helper method to compute effective as-of timestamp for dependency pinning
+  private Optional<Timestamp> effectiveAsOf(SnapshotRef override, Optional<Timestamp> asOfDefault) {
+    if (override != null && override.hasAsOf()) {
+      return Optional.of(override.getAsOf());
+    }
+    return asOfDefault;
+  }
+
+  private void validateViewOverride(String correlationId, ResourceId viewId, SnapshotRef override) {
+    if (override != null && override.hasSnapshotId()) {
+      throw GrpcErrors.invalidArgument(
+          correlationId, "query.input.view.cannot_use_snapshot_id", Map.of("id", viewId.getId()));
+    }
+  }
+
+  private void addResolvedAndPins(
+      String correlationId,
+      ResourceId rid,
+      SnapshotRef override,
+      Optional<Timestamp> asOfDefault,
+      List<ResourceId> resolved,
+      Map<ResourceId, SnapshotPin> pinByTableId) {
+
+    resolved.add(rid);
+
+    if (rid.getKind() == ResourceKind.RK_VIEW) {
+      // Views are not pinned directly. We only pin their base tables.
+      // Reject snapshot_id overrides for views; allow AS-OF and apply it to dependency pins.
+      validateViewOverride(correlationId, rid, override);
+      collectBaseTables(
+          correlationId, rid, effectiveAsOf(override, asOfDefault), new HashSet<>(), pinByTableId);
+      return;
+    }
+
+    SnapshotPin pin = pinForResource(correlationId, rid, override, asOfDefault);
+    mergePin(pinByTableId, pin);
+  }
+
   // =============================================================================
   // Main resolution entrypoint
   // =============================================================================
@@ -91,32 +134,26 @@ public class QueryInputResolver {
       String correlationId, List<QueryInput> inputs, Optional<Timestamp> asOfDefault) {
 
     List<ResourceId> resolved = new ArrayList<>();
-    List<SnapshotPin> pins = new ArrayList<>();
+    // Keep snapshots in insertion order (matching input order) while deduplicating by table ID.
+    Map<ResourceId, SnapshotPin> pinByTableId = new LinkedHashMap<>();
 
     for (QueryInput in : inputs) {
-
-      ResourceId rid;
+      SnapshotRef override = in.getSnapshot();
 
       switch (in.getTargetCase()) {
         case NAME -> {
-          rid = metadataGraph.resolveName(correlationId, in.getName());
-          resolved.add(rid);
-
-          pins.add(pinForResource(correlationId, rid, in.getSnapshot(), asOfDefault));
+          ResourceId rid = metadataGraph.resolveName(correlationId, in.getName());
+          addResolvedAndPins(correlationId, rid, override, asOfDefault, resolved, pinByTableId);
         }
 
         case TABLE_ID -> {
-          rid = in.getTableId();
-          resolved.add(rid);
-
-          pins.add(pinForResource(correlationId, rid, in.getSnapshot(), asOfDefault));
+          ResourceId rid = in.getTableId();
+          addResolvedAndPins(correlationId, rid, override, asOfDefault, resolved, pinByTableId);
         }
 
         case VIEW_ID -> {
-          rid = in.getViewId();
-          resolved.add(rid);
-
-          pins.add(pinForResource(correlationId, rid, in.getSnapshot(), asOfDefault));
+          ResourceId rid = in.getViewId();
+          addResolvedAndPins(correlationId, rid, override, asOfDefault, resolved, pinByTableId);
         }
 
         default -> throw GrpcErrors.invalidArgument(correlationId, "query.input.invalid", Map.of());
@@ -125,7 +162,7 @@ public class QueryInputResolver {
 
     return new ResolutionResult(
         resolved,
-        SnapshotSet.newBuilder().addAllPins(pins).build(),
+        SnapshotSet.newBuilder().addAllPins(pinByTableId.values()).build(),
         asOfDefault.map(Timestamp::toByteArray).orElse(null));
   }
 
@@ -137,28 +174,69 @@ public class QueryInputResolver {
       String correlationId, ResourceId rid, SnapshotRef override, Optional<Timestamp> asOfDefault) {
     return switch (rid.getKind()) {
       case RK_TABLE -> metadataGraph.snapshotPinFor(correlationId, rid, override, asOfDefault);
-      case RK_VIEW -> buildViewPin(correlationId, rid, override, asOfDefault);
+      case RK_VIEW -> {
+        // Views are not pinned directly. Dependency pinning is handled by the caller.
+        validateViewOverride(correlationId, rid, override);
+        yield null;
+      }
       default ->
           throw GrpcErrors.invalidArgument(
               correlationId, "query.input.invalid", Map.of("resource_id", rid.getId()));
     };
   }
 
-  private SnapshotPin buildViewPin(
-      String correlationId, ResourceId rid, SnapshotRef override, Optional<Timestamp> asOfDefault) {
-    if (override != null && override.hasSnapshotId()) {
-      throw GrpcErrors.invalidArgument(
-          correlationId, "query.input.view.cannot_use_snapshot_id", Map.of("id", rid.getId()));
+  private void collectBaseTables(
+      String correlationId,
+      ResourceId relationId,
+      Optional<Timestamp> effectiveAsOf,
+      Set<String> seen,
+      Map<ResourceId, SnapshotPin> pinByTableId) {
+    String key = relationId.getKind().name() + ":" + relationId.getId();
+    if (!seen.add(key)) {
+      return;
     }
-
-    SnapshotPin.Builder builder = SnapshotPin.newBuilder().setTableId(rid);
-
-    if (override != null && override.hasAsOf()) {
-      builder.setAsOf(override.getAsOf());
-      return builder.build();
+    if (relationId.getKind() == ResourceKind.RK_TABLE) {
+      SnapshotPin pin = pinForResource(correlationId, relationId, null, effectiveAsOf);
+      mergePin(pinByTableId, pin);
+      return;
     }
+    metadataGraph
+        .resolve(relationId)
+        .filter(ViewNode.class::isInstance)
+        .map(ViewNode.class::cast)
+        .ifPresent(
+            view -> {
+              for (ResourceId base : view.baseRelations()) {
+                collectBaseTables(correlationId, base, effectiveAsOf, seen, pinByTableId);
+              }
+            });
+  }
 
-    asOfDefault.ifPresent(builder::setAsOf);
-    return builder.build();
+  private void mergePin(Map<ResourceId, SnapshotPin> pinByTableId, SnapshotPin pin) {
+    if (pin == null) {
+      return;
+    }
+    SnapshotPin existing = pinByTableId.get(pin.getTableId());
+    // Keep the strongest pin (snapshot_id > as_of > none) when multiple records target the same
+    // table.
+    if (existing == null || pinStrength(pin) > pinStrength(existing)) {
+      pinByTableId.put(pin.getTableId(), pin);
+    }
+  }
+
+  private static int pinStrength(SnapshotPin pin) {
+    if (pin == null) {
+      return -1;
+    }
+    if (pin.hasSnapshotId() && pin.getSnapshotId() > 0) {
+      return 3;
+    }
+    if (pin.hasAsOf()) {
+      return 2;
+    }
+    if (pin.hasSnapshotId()) {
+      return 1;
+    }
+    return 0;
   }
 }

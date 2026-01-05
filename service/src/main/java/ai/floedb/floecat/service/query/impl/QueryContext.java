@@ -93,8 +93,7 @@ public final class QueryContext {
   private static final Clock clock = Clock.systemUTC();
 
   /** Planning completion state for external monitoring. */
-  private final AtomicReference<QueryStatus> queryStatus =
-      new AtomicReference<>(QueryStatus.SUBMITTED);
+  private final AtomicReference<QueryStatus> queryStatus;
 
   // ----------------------------------------------------------------------
   //  Construction
@@ -120,6 +119,7 @@ public final class QueryContext {
     this.version = Math.max(0, b.version);
     this.queryDefaultCatalogId =
         Objects.requireNonNull(b.queryDefaultCatalogId, "queryDefaultCatalogId");
+    this.queryStatus = new AtomicReference<>(Objects.requireNonNull(b.queryStatus, "queryStatus"));
   }
 
   /**
@@ -176,7 +176,8 @@ public final class QueryContext {
         .expiresAtMs(expiresAtMs)
         .state(state)
         .version(version)
-        .queryDefaultCatalogId(queryDefaultCatalogId);
+        .queryDefaultCatalogId(queryDefaultCatalogId)
+        .queryStatus(queryStatus.get());
   }
 
   public static final class Builder {
@@ -191,6 +192,7 @@ public final class QueryContext {
     private State state = State.ACTIVE;
     private long version;
     private ResourceId queryDefaultCatalogId;
+    private QueryStatus queryStatus = QueryStatus.SUBMITTED;
 
     private Builder() {}
 
@@ -242,6 +244,11 @@ public final class QueryContext {
 
     public Builder version(long v) {
       this.version = v;
+      return this;
+    }
+
+    public Builder queryStatus(QueryStatus v) {
+      this.queryStatus = Objects.requireNonNull(v, "queryStatus");
       return this;
     }
 

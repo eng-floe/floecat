@@ -183,12 +183,14 @@ the graph defines the single source of truth for list/prefix resolution.
 
 ## Query Catalog Service
 `QueryCatalogService.GetCatalogBundle` now streams `CatalogBundleChunk`s directly from the metadata
-graph. Each chunk carries a header, relation rows (`RelationInfo`), optional custom objects
-(`SqlType`, `SqlFunction`, etc.), and a final summary, so a planner can start binding as soon as the
-first relation arrives. The service shares the same `QueryContext` as the other query RPCs and
-relies on `CatalogOverlay.resolve`, `snapshotPinFor`, and view metadata stored in `ViewNode` to
+graph. Each chunk carries a header, batched relation resolutions (`RelationResolutions`), optional
+custom objects (`SqlType`, `SqlFunction`, etc.), and a final summary, so planners can start binding as soon as the
+service resolves each relation. The service shares the same `QueryContext` as the other query RPCs
+and relies on `CatalogOverlay.resolve`, `snapshotPinFor`, and view metadata stored in `ViewNode` to
 produce canonical names, pruned schemas, and view definitions without issuing a second RPC batch.
-Builtins remain behind `GetBuiltinCatalog`.
+Resolved tables/views also go through `QueryInputResolver` so their snapshot pins are merged into
+`QueryContext` before the response hits the planner—`FetchScanBundle` can therefore find the same
+pins later in the lifecycle. Builtins remain behind `GetBuiltinCatalog`.
 
 ## Metrics
 The graph surfaces a couple of Micrometer gauges so operators can verify cache state at runtime:

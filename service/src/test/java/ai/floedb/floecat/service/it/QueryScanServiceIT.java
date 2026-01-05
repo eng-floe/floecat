@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.floecat.catalog.rpc.*;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.rpc.*;

@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.service.query.resolver;
 
-import ai.floedb.floecat.query.rpc.QueryInput;
+import ai.floedb.floecat.common.rpc.QueryInput;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
 

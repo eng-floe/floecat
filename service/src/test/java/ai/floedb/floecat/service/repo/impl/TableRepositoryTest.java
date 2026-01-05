@@ -380,7 +380,8 @@ class TableRepositoryTest {
               } catch (BaseResourceRepository.PreconditionFailedException
                   | BaseResourceRepository.NameConflictException
                   | BaseResourceRepository.NotFoundException
-                  | BaseResourceRepository.AbortRetryableException e) {
+                  | BaseResourceRepository.AbortRetryableException
+                  | java.util.NoSuchElementException e) {
                 expectedCounts
                     .computeIfAbsent(e.getClass().getSimpleName(), k -> new LongAdder())
                     .increment();

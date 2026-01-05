@@ -31,14 +31,15 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.service.query.resolver.ObligationsResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
-import ai.floedb.floecat.service.query.resolver.SnapshotResolver;
 import ai.floedb.floecat.service.query.resolver.ViewExpansionResolver;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import org.jboss.logging.Logger;
 
 /**
@@ -56,7 +57,6 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   private static final Logger LOG = Logger.getLogger(QuerySchemaServiceImpl.class);
 
   @Inject QueryInputResolver inputResolver;
-  @Inject SnapshotResolver snapshotResolver;
   @Inject LogicalSchemaMapper schemaMapper;
   @Inject ObligationsResolver obligations;
   @Inject ViewExpansionResolver expansions;
@@ -81,18 +81,24 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
 
                   var asOfDefault = ctx.parseAsOfDefault(correlationId());
 
-                  // Resolve inputs → snapshot pins
+                  // Resolve inputs → resolved ids + snapshot pins (tables and/or view base tables)
                   var rr =
                       inputResolver.resolveInputs(
                           correlationId(), request.getInputsList(), asOfDefault);
 
                   List<SnapshotPin> pins = rr.snapshotSet().getPinsList();
 
+                  // Index pins by table_id for quick lookup when describing tables.
+                  Map<ResourceId, SnapshotPin> pinByTableId = new HashMap<>();
+                  for (SnapshotPin pin : pins) {
+                    pinByTableId.put(pin.getTableId(), pin);
+                  }
+
                   DescribeInputsResponse.Builder out = DescribeInputsResponse.newBuilder();
 
-                  for (SnapshotPin pin : pins) {
-                    SchemaDescriptor descriptor = schemaForPin(correlationId(), pin);
-                    out.addSchemas(descriptor);
+                  // IMPORTANT: one schema per input (resolved id), in order
+                  for (ResourceId rid : rr.resolved()) {
+                    out.addSchemas(schemaForResolvedInput(correlationId(), rid, pinByTableId));
                   }
 
                   // Compute expansions + obligations and store updated context
@@ -130,10 +136,21 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
     return null;
   }
 
-  private SchemaDescriptor schemaForPin(String correlationId, SnapshotPin pin) {
-    ResourceId rid = pin.getTableId();
+  private SchemaDescriptor schemaForResolvedInput(
+      String correlationId, ResourceId rid, Map<ResourceId, SnapshotPin> pinByTableId) {
+
     return switch (rid.getKind()) {
-      case RK_TABLE -> describeTable(correlationId, rid, pin);
+      case RK_TABLE -> {
+        SnapshotPin pin = pinByTableId.get(rid);
+        if (pin == null) {
+          // Should never happen because resolveInputs attaches pins for every table input; treat as
+          // an
+          // internal invariant failure if it does.
+          throw GrpcErrors.internal(
+              correlationId, "query.table_not_pinned", java.util.Map.of("table_id", rid.getId()));
+        }
+        yield describeTable(correlationId, rid, pin);
+      }
       case RK_VIEW -> describeView(correlationId, rid);
       default ->
           throw GrpcErrors.invalidArgument(
