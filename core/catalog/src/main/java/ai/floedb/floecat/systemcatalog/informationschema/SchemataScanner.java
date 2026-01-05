@@ -4,10 +4,10 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.systemcatalog.columnar.AbstractArrowBatchBuilder;
 import ai.floedb.floecat.systemcatalog.columnar.ArrowSchemaUtil;
 import ai.floedb.floecat.systemcatalog.columnar.ArrowValueWriters;
 import ai.floedb.floecat.systemcatalog.columnar.ColumnarBatch;
-import ai.floedb.floecat.systemcatalog.columnar.SimpleColumnarBatch;
 import ai.floedb.floecat.systemcatalog.expr.Expr;
 import ai.floedb.floecat.systemcatalog.spi.scanner.ScanOutputFormat;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
@@ -29,7 +29,6 @@ import java.util.stream.StreamSupport;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VarCharVector;
-import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 
 /** information_schema.schemata */
@@ -140,65 +139,42 @@ public final class SchemataScanner implements SystemObjectScanner {
     return StreamSupport.stream(spliterator, false);
   }
 
-  private static final class SchemataBatchBuilder {
+  private static final class SchemataBatchBuilder extends AbstractArrowBatchBuilder {
 
-    private final VectorSchemaRoot root;
     private final VarCharVector catalogName;
     private final VarCharVector schemaName;
-    private int rowCount;
-
     private final boolean includeCatalog;
     private final boolean includeSchema;
 
     private SchemataBatchBuilder(BufferAllocator allocator, Set<String> requiredColumns) {
-      this.root = VectorSchemaRoot.create(ARROW_SCHEMA, allocator);
-      this.root.allocateNew();
-      List<FieldVector> vectors = root.getFieldVectors();
+      super(ARROW_SCHEMA, allocator);
+      List<FieldVector> vectors = root().getFieldVectors();
       this.catalogName = (VarCharVector) vectors.get(0);
       this.schemaName = (VarCharVector) vectors.get(1);
-      this.consumed = false;
       this.includeCatalog = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "catalog_name");
       this.includeSchema = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "schema_name");
     }
 
     private boolean isFull() {
-      return rowCount >= ARROW_BATCH_SIZE;
-    }
-
-    private boolean isEmpty() {
-      return rowCount == 0;
+      return rowCount() >= ARROW_BATCH_SIZE;
     }
 
     private void append(String catalog, String schema) {
       if (includeCatalog) {
-        ArrowValueWriters.writeVarChar(catalogName, rowCount, catalog);
+        ArrowValueWriters.writeVarChar(catalogName, rowCount(), catalog);
       } else {
-        catalogName.setNull(rowCount);
+        catalogName.setNull(rowCount());
       }
       if (includeSchema) {
-        ArrowValueWriters.writeVarChar(schemaName, rowCount, schema);
+        ArrowValueWriters.writeVarChar(schemaName, rowCount(), schema);
       } else {
-        schemaName.setNull(rowCount);
+        schemaName.setNull(rowCount());
       }
-      rowCount++;
+      incrementRow();
     }
 
     private ColumnarBatch build() {
-      for (FieldVector vector : root.getFieldVectors()) {
-        vector.setValueCount(rowCount);
-      }
-      root.setRowCount(rowCount);
-      consumed = true;
-      return new SimpleColumnarBatch(root);
+      return super.buildBatch();
     }
-
-    private void release() {
-      if (!consumed) {
-        consumed = true;
-        root.close();
-      }
-    }
-
-    private boolean consumed;
   }
 }

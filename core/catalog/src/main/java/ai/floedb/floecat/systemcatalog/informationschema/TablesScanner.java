@@ -5,10 +5,10 @@ import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.systemcatalog.columnar.AbstractArrowBatchBuilder;
 import ai.floedb.floecat.systemcatalog.columnar.ArrowSchemaUtil;
 import ai.floedb.floecat.systemcatalog.columnar.ArrowValueWriters;
 import ai.floedb.floecat.systemcatalog.columnar.ColumnarBatch;
-import ai.floedb.floecat.systemcatalog.columnar.SimpleColumnarBatch;
 import ai.floedb.floecat.systemcatalog.expr.Expr;
 import ai.floedb.floecat.systemcatalog.spi.scanner.ScanOutputFormat;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
@@ -32,7 +32,6 @@ import java.util.stream.StreamSupport;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VarCharVector;
-import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 
 /** information_schema.tables */
@@ -206,29 +205,24 @@ public final class TablesScanner implements SystemObjectScanner {
     return String.join(".", segments);
   }
 
-  private static final class TablesBatchBuilder {
+  private static final class TablesBatchBuilder extends AbstractArrowBatchBuilder {
 
-    private final VectorSchemaRoot root;
     private final VarCharVector tableCatalog;
     private final VarCharVector tableSchema;
     private final VarCharVector tableName;
     private final VarCharVector tableType;
-    private int rowCount;
-
     private final boolean includeCatalog;
     private final boolean includeSchema;
     private final boolean includeName;
     private final boolean includeType;
 
     private TablesBatchBuilder(BufferAllocator allocator, Set<String> requiredColumns) {
-      this.root = VectorSchemaRoot.create(ARROW_SCHEMA, allocator);
-      this.root.allocateNew();
-      List<FieldVector> vectors = root.getFieldVectors();
+      super(ARROW_SCHEMA, allocator);
+      List<FieldVector> vectors = root().getFieldVectors();
       this.tableCatalog = (VarCharVector) vectors.get(0);
       this.tableSchema = (VarCharVector) vectors.get(1);
       this.tableName = (VarCharVector) vectors.get(2);
       this.tableType = (VarCharVector) vectors.get(3);
-      this.consumed = false;
       this.includeCatalog = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_catalog");
       this.includeSchema = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_schema");
       this.includeName = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_name");
@@ -236,53 +230,35 @@ public final class TablesScanner implements SystemObjectScanner {
     }
 
     private boolean isFull() {
-      return rowCount >= ARROW_BATCH_SIZE;
-    }
-
-    private boolean isEmpty() {
-      return rowCount == 0;
+      return rowCount() >= ARROW_BATCH_SIZE;
     }
 
     private void append(String catalog, String schema, String name, String type) {
       if (includeCatalog) {
-        ArrowValueWriters.writeVarChar(tableCatalog, rowCount, catalog);
+        ArrowValueWriters.writeVarChar(tableCatalog, rowCount(), catalog);
       } else {
-        tableCatalog.setNull(rowCount);
+        tableCatalog.setNull(rowCount());
       }
       if (includeSchema) {
-        ArrowValueWriters.writeVarChar(tableSchema, rowCount, schema);
+        ArrowValueWriters.writeVarChar(tableSchema, rowCount(), schema);
       } else {
-        tableSchema.setNull(rowCount);
+        tableSchema.setNull(rowCount());
       }
       if (includeName) {
-        ArrowValueWriters.writeVarChar(tableName, rowCount, name);
+        ArrowValueWriters.writeVarChar(tableName, rowCount(), name);
       } else {
-        tableName.setNull(rowCount);
+        tableName.setNull(rowCount());
       }
       if (includeType) {
-        ArrowValueWriters.writeVarChar(tableType, rowCount, type);
+        ArrowValueWriters.writeVarChar(tableType, rowCount(), type);
       } else {
-        tableType.setNull(rowCount);
+        tableType.setNull(rowCount());
       }
-      rowCount++;
+      incrementRow();
     }
 
     private ColumnarBatch build() {
-      for (FieldVector vector : root.getFieldVectors()) {
-        vector.setValueCount(rowCount);
-      }
-      root.setRowCount(rowCount);
-      consumed = true;
-      return new SimpleColumnarBatch(root);
+      return super.buildBatch();
     }
-
-    private void release() {
-      if (!consumed) {
-        consumed = true;
-        root.close();
-      }
-    }
-
-    private boolean consumed;
   }
 }

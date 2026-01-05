@@ -8,10 +8,10 @@ import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.systemcatalog.columnar.AbstractArrowBatchBuilder;
 import ai.floedb.floecat.systemcatalog.columnar.ArrowSchemaUtil;
 import ai.floedb.floecat.systemcatalog.columnar.ArrowValueWriters;
 import ai.floedb.floecat.systemcatalog.columnar.ColumnarBatch;
-import ai.floedb.floecat.systemcatalog.columnar.SimpleColumnarBatch;
 import ai.floedb.floecat.systemcatalog.expr.Expr;
 import ai.floedb.floecat.systemcatalog.spi.scanner.ScanOutputFormat;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
@@ -36,7 +36,6 @@ import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.VarCharVector;
-import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 
 /** information_schema.columns */
@@ -368,17 +367,14 @@ public final class ColumnsScanner implements SystemObjectScanner {
     }
   }
 
-  private static final class ColumnsBatchBuilder {
+  private static final class ColumnsBatchBuilder extends AbstractArrowBatchBuilder {
 
-    private final VectorSchemaRoot root;
     private final VarCharVector tableCatalog;
     private final VarCharVector tableSchema;
     private final VarCharVector tableName;
     private final VarCharVector columnName;
     private final VarCharVector dataType;
     private final IntVector ordinalPosition;
-    private int rowCount;
-
     private final boolean includeCatalog;
     private final boolean includeSchema;
     private final boolean includeTable;
@@ -387,16 +383,14 @@ public final class ColumnsScanner implements SystemObjectScanner {
     private final boolean includeOrdinal;
 
     private ColumnsBatchBuilder(BufferAllocator allocator, Set<String> requiredColumns) {
-      this.root = VectorSchemaRoot.create(ARROW_SCHEMA, allocator);
-      this.root.allocateNew();
-      List<FieldVector> vectors = root.getFieldVectors();
+      super(ARROW_SCHEMA, allocator);
+      List<FieldVector> vectors = root().getFieldVectors();
       this.tableCatalog = (VarCharVector) vectors.get(0);
       this.tableSchema = (VarCharVector) vectors.get(1);
       this.tableName = (VarCharVector) vectors.get(2);
       this.columnName = (VarCharVector) vectors.get(3);
       this.dataType = (VarCharVector) vectors.get(4);
       this.ordinalPosition = (IntVector) vectors.get(5);
-      this.consumed = false;
       this.includeCatalog = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_catalog");
       this.includeSchema = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_schema");
       this.includeTable = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_name");
@@ -407,63 +401,45 @@ public final class ColumnsScanner implements SystemObjectScanner {
     }
 
     private boolean isFull() {
-      return rowCount >= ARROW_BATCH_SIZE;
-    }
-
-    private boolean isEmpty() {
-      return rowCount == 0;
+      return rowCount() >= ARROW_BATCH_SIZE;
     }
 
     private void append(ColumnEntry entry) {
       if (includeCatalog) {
-        ArrowValueWriters.writeVarChar(tableCatalog, rowCount, entry.tableCatalog);
+        ArrowValueWriters.writeVarChar(tableCatalog, rowCount(), entry.tableCatalog);
       } else {
-        tableCatalog.setNull(rowCount);
+        tableCatalog.setNull(rowCount());
       }
       if (includeSchema) {
-        ArrowValueWriters.writeVarChar(tableSchema, rowCount, entry.tableSchema);
+        ArrowValueWriters.writeVarChar(tableSchema, rowCount(), entry.tableSchema);
       } else {
-        tableSchema.setNull(rowCount);
+        tableSchema.setNull(rowCount());
       }
       if (includeTable) {
-        ArrowValueWriters.writeVarChar(tableName, rowCount, entry.tableName);
+        ArrowValueWriters.writeVarChar(tableName, rowCount(), entry.tableName);
       } else {
-        tableName.setNull(rowCount);
+        tableName.setNull(rowCount());
       }
       if (includeColumn) {
-        ArrowValueWriters.writeVarChar(columnName, rowCount, entry.columnName);
+        ArrowValueWriters.writeVarChar(columnName, rowCount(), entry.columnName);
       } else {
-        columnName.setNull(rowCount);
+        columnName.setNull(rowCount());
       }
       if (includeType) {
-        ArrowValueWriters.writeVarChar(dataType, rowCount, entry.dataType);
+        ArrowValueWriters.writeVarChar(dataType, rowCount(), entry.dataType);
       } else {
-        dataType.setNull(rowCount);
+        dataType.setNull(rowCount());
       }
       if (includeOrdinal) {
-        ordinalPosition.setSafe(rowCount, entry.ordinalPosition);
+        ordinalPosition.setSafe(rowCount(), entry.ordinalPosition);
       } else {
-        ordinalPosition.setNull(rowCount);
+        ordinalPosition.setNull(rowCount());
       }
-      rowCount++;
+      incrementRow();
     }
 
     private ColumnarBatch build() {
-      for (FieldVector vector : root.getFieldVectors()) {
-        vector.setValueCount(rowCount);
-      }
-      root.setRowCount(rowCount);
-      consumed = true;
-      return new SimpleColumnarBatch(root);
+      return super.buildBatch();
     }
-
-    private void release() {
-      if (!consumed) {
-        consumed = true;
-        root.close();
-      }
-    }
-
-    private boolean consumed;
   }
 }
