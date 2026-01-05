@@ -1,11 +1,18 @@
 package ai.floedb.floecat.service.query.impl;
 
+import static java.util.Objects.requireNonNullElse;
+
+import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.query.impl.arrow.ArrowScanPlan;
+import ai.floedb.floecat.service.query.impl.arrow.ArrowScanPlanner;
+import ai.floedb.floecat.service.query.impl.arrow.ArrowSink;
+import ai.floedb.floecat.service.query.impl.arrow.GrpcArrowSink;
 import ai.floedb.floecat.service.query.resolver.SystemScannerResolver;
 import ai.floedb.floecat.service.query.system.SystemRowFilter;
 import ai.floedb.floecat.service.query.system.SystemRowMappers;
@@ -14,31 +21,27 @@ import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.system.rpc.OutputFormat;
 import ai.floedb.floecat.system.rpc.QuerySystemScanService;
+import ai.floedb.floecat.system.rpc.ScanSystemTableChunk;
 import ai.floedb.floecat.system.rpc.ScanSystemTableRequest;
-import ai.floedb.floecat.system.rpc.ScanSystemTableResponse;
-import ai.floedb.floecat.systemcatalog.columnar.ArrowFilterOperator;
-import ai.floedb.floecat.systemcatalog.columnar.ArrowProjectOperator;
-import ai.floedb.floecat.systemcatalog.columnar.ColumnarBatch;
-import ai.floedb.floecat.systemcatalog.columnar.RowStreamToArrowBatchAdapter;
+import ai.floedb.floecat.system.rpc.SystemTableRow;
 import ai.floedb.floecat.systemcatalog.expr.Expr;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
-import ai.floedb.floecat.systemcatalog.spi.scanner.ScanOutputFormat;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
-import com.google.protobuf.ByteString;
 import io.quarkus.grpc.GrpcService;
-import io.smallrye.mutiny.Uni;
+import io.smallrye.mutiny.Multi;
+import io.smallrye.mutiny.infrastructure.Infrastructure;
+import io.smallrye.mutiny.subscription.MultiEmitter;
 import jakarta.inject.Inject;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.nio.channels.Channels;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
-import org.apache.arrow.vector.VectorSchemaRoot;
-import org.apache.arrow.vector.ipc.ArrowStreamWriter;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -50,164 +53,93 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
   @Inject SystemScannerResolver scanners;
   @Inject QueryContextStore queryStore;
 
+  @ConfigProperty(name = "ai.floedb.floecat.arrow.max-bytes", defaultValue = "1073741824")
+  long arrowMaxBytes;
+
   private static final Logger LOG = Logger.getLogger(QuerySystemScanServiceImpl.class);
-  private static final int DEFAULT_ARROW_BATCH_SIZE = 512;
-  private static final boolean ARROW_FILTER_ENABLED =
-      Boolean.getBoolean("ai.floedb.floecat.arrow-filter-enabled");
+
+  private final ArrowScanPlanner arrowPlanner = new ArrowScanPlanner();
+  private final ArrowSink arrowSink = new GrpcArrowSink();
 
   @Override
-  public Uni<ScanSystemTableResponse> scanSystemTable(ScanSystemTableRequest request) {
-
+  public Multi<ScanSystemTableChunk> scanSystemTable(ScanSystemTableRequest request) {
     var L = LogHelper.start(LOG, "ScanSystemTable");
-
-    return mapFailures(
-            run(
-                () -> {
-                  var principalContext = principal.get();
-                  var correlationId = principalContext.getCorrelationId();
-
-                  authz.require(principalContext, "catalog.read");
-
-                  String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
-
-                  var ctxOpt = queryStore.get(queryId);
-                  if (ctxOpt.isEmpty()) {
-                    throw GrpcErrors.notFound(
-                        correlationId, "query.not_found", Map.of("query_id", queryId));
-                  }
-                  var queryCtx = ctxOpt.get();
-
-                  if (!request.hasTableId()) {
-                    throw GrpcErrors.invalidArgument(
-                        correlationId, "system.table_id.required", Map.of());
-                  }
-
-                  ResourceId tableId = request.getTableId();
-
-                  // 1. Resolve scanner
-                  SystemObjectScanner scanner = scanners.resolve(correlationId, tableId);
-
-                  // For system scans, engine scoping is implicit via CatalogOverlay.
-                  // The catalogId here must represent the *current query catalog/database*.
-                  SystemObjectScanContext ctx =
-                      new SystemObjectScanContext(graph, null, queryCtx.getQueryDefaultCatalogId());
-
-                  List<SchemaColumn> schema = scanner.schema();
-                  List<String> requiredColumns = request.getRequiredColumnsList();
-                  OutputFormat format = request.getOutputFormat();
-                  if (format == OutputFormat.UNRECOGNIZED) {
-                    throw GrpcErrors.invalidArgument(
-                        correlationId,
-                        "system.output_format.unrecognized",
-                        Map.of("output_format", format.toString()));
-                  }
-                  boolean arrowRequested = format != OutputFormat.ROWS;
-                  // OutputFormat.ARROW_IPC is the default path today. When scanners opt into
-                  // ScanOutputFormat.ARROW_IPC we stream ColumnarBatch objects directly from
-                  // the scanner implementation (native Arrow path). Otherwise we fall back to
-                  // the row+adapter flow that reuses SystemRowFilter/Projector and converts
-                  // to Arrow batches via the RowStreamToArrowBatchAdapter before encoding.
-                  Expr arrowExpr =
-                      arrowRequested
-                          ? SystemRowFilter.EXPRESSION_PROVIDER.toExpr(request.getPredicatesList())
-                          : null;
-
-                  if (arrowRequested
-                      && scanner.supportedFormats().contains(ScanOutputFormat.ARROW_IPC)) {
-                    return arrowResponseFromScanner(scanner, ctx, arrowExpr, requiredColumns);
-                  }
-
-                  var rows = scanner.scan(ctx).toList();
-
-                  if (!arrowRequested) {
-                    var filtered =
-                        SystemRowFilter.applyPredicates(
-                            rows, scanner.schema(), request.getPredicatesList());
-
-                    var projected =
-                        SystemRowProjector.project(filtered, scanner.schema(), requiredColumns);
-
-                    return ScanSystemTableResponse.newBuilder()
-                        .addAllRows(projected.stream().map(SystemRowMappers::toProto).toList())
-                        .build();
-                  }
-
-                  return arrowResponse(rows, schema, arrowExpr, requiredColumns);
-                }),
-            correlationId())
+    return Multi.createFrom()
+        .<ScanSystemTableChunk>emitter(emitter -> execute(request, emitter))
+        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
         .onFailure()
         .invoke(L::fail)
-        .onItem()
+        .onCompletion()
         .invoke(L::ok);
   }
 
-  private static ScanSystemTableResponse arrowResponse(
-      List<SystemObjectRow> rows,
-      List<SchemaColumn> schema,
-      Expr arrowExpr,
-      List<String> requiredColumns) {
-    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
-      RowStreamToArrowBatchAdapter adapter =
-          new RowStreamToArrowBatchAdapter(allocator, schema, DEFAULT_ARROW_BATCH_SIZE);
-      List<ByteString> batches =
-          adapter
-              .adapt(rows.stream())
-              .map(batch -> applyArrowFilter(batch, arrowExpr, allocator))
-              .map(batch -> applyArrowProjection(batch, requiredColumns, allocator))
-              .map(QuerySystemScanServiceImpl::serializeArrowBatch)
-              .toList();
-      return ScanSystemTableResponse.newBuilder().addAllArrowBatches(batches).build();
-    }
-  }
+  private void execute(
+      ScanSystemTableRequest request, MultiEmitter<? super ScanSystemTableChunk> emitter) {
+    AtomicReference<String> correlationIdHolder = new AtomicReference<>("unknown");
+    try {
+      var principalContext = principal.get();
+      correlationIdHolder.set(principalContext.getCorrelationId());
+      authz.require(principalContext, "catalog.read");
 
-  private static ScanSystemTableResponse arrowResponseFromScanner(
-      SystemObjectScanner scanner,
-      SystemObjectScanContext ctx,
-      Expr arrowExpr,
-      List<String> requiredColumns) {
-    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
-      List<ByteString> batches =
-          scanner
-              .scanArrow(ctx, arrowExpr, requiredColumns, allocator)
-              .map(batch -> applyArrowFilter(batch, arrowExpr, allocator))
-              .map(batch -> applyArrowProjection(batch, requiredColumns, allocator))
-              .map(QuerySystemScanServiceImpl::serializeArrowBatch)
-              .toList();
-      return ScanSystemTableResponse.newBuilder().addAllArrowBatches(batches).build();
-    }
-  }
+      String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationIdHolder.get());
+      var ctxOpt = queryStore.get(queryId);
+      if (ctxOpt.isEmpty()) {
+        throw GrpcErrors.notFound(
+            correlationIdHolder.get(), "query.not_found", Map.of("query_id", queryId));
+      }
+      var queryCtx = ctxOpt.get();
 
-  private static ColumnarBatch applyArrowFilter(
-      ColumnarBatch batch, Expr arrowExpr, BufferAllocator allocator) {
-    if (!ARROW_FILTER_ENABLED || arrowExpr == null) {
-      return batch;
-    }
-    return ArrowFilterOperator.filter(batch, arrowExpr, allocator);
-  }
+      if (!request.hasTableId()) {
+        throw GrpcErrors.invalidArgument(
+            correlationIdHolder.get(), "system.table_id.required", Map.of());
+      }
 
-  private static ColumnarBatch applyArrowProjection(
-      ColumnarBatch batch, List<String> requiredColumns, BufferAllocator allocator) {
-    if (requiredColumns.isEmpty()) {
-      return batch;
-    }
-    return ArrowProjectOperator.project(batch, requiredColumns, allocator);
-  }
+      ResourceId tableId = request.getTableId();
+      SystemObjectScanner scanner = scanners.resolve(correlationIdHolder.get(), tableId);
+      SystemObjectScanContext ctx =
+          new SystemObjectScanContext(graph, null, queryCtx.getQueryDefaultCatalogId());
+      List<SchemaColumn> schema = scanner.schema();
+      List<String> requiredColumns = request.getRequiredColumnsList();
+      List<Predicate> predicates = request.getPredicatesList();
+      OutputFormat format = request.getOutputFormat();
+      if (format == OutputFormat.UNRECOGNIZED) {
+        throw GrpcErrors.invalidArgument(
+            correlationIdHolder.get(),
+            "system.output_format.unrecognized",
+            Map.of("output_format", format.toString()));
+      }
+      boolean arrowRequested = format != OutputFormat.ROWS;
+      Expr arrowExpr =
+          arrowRequested ? SystemRowFilter.EXPRESSION_PROVIDER.toExpr(predicates) : null;
 
-  private static ByteString serializeArrowBatch(ColumnarBatch batch) {
-    try (batch) {
-      return serializeArrowRoot(batch.root());
-    }
-  }
+      if (arrowRequested) {
+        BufferAllocator allocator = new RootAllocator(arrowMaxBytes);
+        ArrowScanPlan plan =
+            arrowPlanner.plan(
+                scanner, ctx, schema, predicates, requiredColumns, arrowExpr, allocator);
+        arrowSink.sink(
+            emitter,
+            plan,
+            allocator,
+            t -> toStatus(t, requireNonNullElse(correlationIdHolder.get(), "unknown")));
+        return;
+      }
 
-  private static ByteString serializeArrowRoot(VectorSchemaRoot root) {
-    try (ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ArrowStreamWriter writer = new ArrowStreamWriter(root, null, Channels.newChannel(out))) {
-      writer.start();
-      writer.writeBatch();
-      writer.end();
-      return ByteString.copyFrom(out.toByteArray());
-    } catch (IOException e) {
-      throw new IllegalStateException("Failed to serialize Arrow batch", e);
+      try (Stream<SystemObjectRow> rows = scanner.scan(ctx);
+          Stream<SystemObjectRow> filtered = SystemRowFilter.filter(rows, schema, predicates);
+          Stream<SystemObjectRow> projected =
+              SystemRowProjector.project(filtered, schema, requiredColumns)) {
+        Iterator<SystemObjectRow> iterator = projected.iterator();
+        while (!emitter.isCancelled() && iterator.hasNext()) {
+          SystemTableRow row = SystemRowMappers.toProto(iterator.next());
+          emitter.emit(ScanSystemTableChunk.newBuilder().setRow(row).build());
+        }
+        if (!emitter.isCancelled()) {
+          emitter.complete();
+        }
+      }
+    } catch (Throwable t) {
+      emitter.fail(toStatus(t, requireNonNullElse(correlationIdHolder.get(), "unknown")));
     }
   }
 }

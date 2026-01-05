@@ -3,6 +3,7 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 import static org.assertj.core.api.Assertions.*;
 
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.systemcatalog.columnar.ColumnarBatch;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
 import java.nio.charset.StandardCharsets;
@@ -10,12 +11,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.junit.jupiter.api.Test;
 
 class ColumnsScannerTest {
@@ -120,6 +123,35 @@ class ColumnsScannerTest {
               .toList();
 
       assertThat(arrowRows).isEqualTo(expected);
+    }
+  }
+
+  @Test
+  void scanArrow_schemaMatchesDefinitionOrder() {
+    var builder = TestTableScanContextBuilder.builder("marketing");
+    var ns = builder.addNamespace("finance.sales");
+    builder.addTable(ns, "orders", Map.of("id", 1, "stats.sales", 2), Map.of("id", "long"));
+    SystemObjectScanContext ctx = builder.build();
+
+    var scanner = new ColumnsScanner();
+    List<String> expected = scanner.schema().stream().map(SchemaColumn::getName).toList();
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        Stream<ColumnarBatch> batches = scanner.scanArrow(ctx, null, List.of(), allocator)) {
+      List<String> fields =
+          batches
+              .map(
+                  batch -> {
+                    try (batch) {
+                      return batch.root().getSchema().getFields().stream()
+                          .map(Field::getName)
+                          .toList();
+                    }
+                  })
+              .findFirst()
+              .orElseThrow();
+
+      assertThat(fields).isEqualTo(expected);
     }
   }
 

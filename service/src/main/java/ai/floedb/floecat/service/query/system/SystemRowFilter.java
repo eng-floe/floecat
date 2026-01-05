@@ -6,6 +6,7 @@ import ai.floedb.floecat.systemcatalog.expr.Expr;
 import ai.floedb.floecat.systemcatalog.expr.PredicateExpressionProvider;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import java.util.List;
+import java.util.stream.Stream;
 
 public final class SystemRowFilter {
 
@@ -16,7 +17,13 @@ public final class SystemRowFilter {
 
     if (predicates.isEmpty()) return rows;
 
-    return rows.stream().filter(row -> matchesAll(row, schema, predicates)).toList();
+    return filter(rows.stream(), schema, predicates).toList();
+  }
+
+  public static Stream<SystemObjectRow> filter(
+      Stream<SystemObjectRow> rows, List<SchemaColumn> schema, List<Predicate> predicates) {
+    if (predicates.isEmpty()) return rows;
+    return rows.filter(row -> matchesAll(row, schema, predicates));
   }
 
   private static boolean matchesAll(

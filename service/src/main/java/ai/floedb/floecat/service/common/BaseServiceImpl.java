@@ -81,7 +81,7 @@ public abstract class BaseServiceImpl {
     return u.onFailure().transform(t -> toStatus(t, corrId));
   }
 
-  private StatusRuntimeException toStatus(Throwable t, String corrId) {
+  protected StatusRuntimeException toStatus(Throwable t, String corrId) {
     if (t instanceof StatusRuntimeException sre) {
       return sre;
     }

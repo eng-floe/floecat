@@ -2,7 +2,10 @@ package ai.floedb.floecat.systemcatalog.columnar;
 
 import org.apache.arrow.vector.VectorSchemaRoot;
 
-/** Represents a reference-counted batch of columnar data produced by a system scanner. */
+/**
+ * Represents a owned batch of columnar data produced by a system scanner. Must be closed exactly
+ * once.
+ */
 public interface ColumnarBatch extends AutoCloseable {
 
   /** Returns the Arrow schema + vectors backing this batch. */

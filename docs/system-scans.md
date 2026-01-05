@@ -1,36 +1,47 @@
 # System table scanning
 
-This document explains the current system-table scan paths. Arrow IPC is now the default response format, but `ROWS` is still available as a compatibility option for clients that rely on the legacy text-based serialization. For background on system object definitions, scanners, and providers, see [System Objects](system-objects.md).
+This document explains the current streaming system-table scan contract. Arrow IPC is the default response format, but the legacy `ROWS` path remains available for clients that still expect text-like row payloads. For background on system object definitions, scanners, and providers, see [System Objects](system-objects.md).
 
-## Output formats
+## RPC contract
 
-`ScanSystemTableRequest` supports an `OutputFormat` enum (`ROWS` vs. `ARROW_IPC`). `ARROW_IPC` is the default, so omitting the field behaves the same as explicitly requesting Arrow batches. If the caller explicitly sets `output_format = ROWS`, the request is routed to the legacy row production path (`SystemRowFilter`, `SystemRowProjector`, etc.) and the response returns `rows`. Each response still contains both `rows` and `arrow_batches`, but only one field is populated depending on the requested format.
+`ScanSystemTableRequest` takes:
+1. `query_id` – the caller’s query context.
+2. `table_id` – the system table being queried.
+3. `required_columns` – optional projection.
+4. `predicates` – canonical filters exported from `SystemRowFilter`.
+5. `output_format` – prefers `ROWS` vs `ARROW_IPC`. Unspecified defaults to Arrow.
 
-## Arrow-capable scanners
+The service no longer returns a single response message. Instead it streams `ScanSystemTableChunk` messages:
 
-Scanners can now declare which formats they support via `ScanOutputFormat`. The default implementation only supports `ROWS`, but Arrow-native scanners override `supportedFormats()` and implement `scanArrow(ctx, predicate, requiredColumns, allocator)` so the service can stream `ColumnarBatch` objects directly. `QuerySystemScanServiceImpl` prefers this Arrow stream when the request asks for Arrow, falling back to rows and the adapter otherwise.
+```
+message ScanSystemTableChunk {
+  oneof payload {
+    bytes arrow_schema_ipc = 1;
+    bytes arrow_batch_ipc = 2;
+    SystemTableRow row = 3;
+  }
+}
+```
 
-## Rows execution path
+When Arrow is requested, the stream always begins with `arrow_schema_ipc`, then the remaining batches appear as `arrow_batch_ipc`. When `output_format = ROWS`, the stream only emits row chunks, one per `SystemTableRow`.
 
-The row path is retained so existing clients receive the familiar list of `SystemTableRow` objects. When `ROWS` is selected, the service materializes `SystemObjectRow`s, applies `SystemRowFilter`/`SystemRowProjector`, maps them to RPC rows via `SystemRowMappers`, and returns the `rows` list in `ScanSystemTableResponse`. This path is marked as compatibility-only; the Arrow path shares the same reference filter/projector logic to keep semantics identical, then converts the remaining rows into columnar batches before applying any Arrow-native filtering or projection.
+## Execution paths
 
-## Arrow execution path
+### Arrow-first path (default)
 
-If the scanner supports `ScanOutputFormat.ARROW_IPC`, the service calls `scanArrow(...)` and streams the batches directly (via `arrowResponseFromScanner`). Otherwise, it still materializes `SystemObjectRow`s and reuses the adapter-based path below.
+1. `QuerySystemScanServiceImpl` resolves the scanner, gathers the predicates/projections, and produces an `ArrowScanPlan`. The RootAllocator size caps itself via `ai.floedb.floecat.arrow.max-bytes` (default **1 GiB**) so a single scan cannot exhaust native memory.
+2. If the scanner advertises `ScanOutputFormat.ARROW_IPC`, the scanner itself emits `ColumnarBatch` instances that already respect the schema. Otherwise the adapter takes the filtered/projected `SystemObjectRow` stream, batches it (`RowStreamToArrowBatchAdapter`), and builds Arrow `VectorSchemaRoot` objects.
+3. Each `ColumnarBatch` flows through optional `ArrowFilterOperator` (vectorized mask evaluation) and optional `ArrowProjectOperator` (zero-copy `TransferPair` projection), then the Arrow IPC message serializer emits a schema message once, followed by record-batch messages for each batch.
+4. The first streamed chunk carries that schema message, subsequent `arrow_batch_ipc` chunks carry only the record-batch bodies, and the allocator is closed at the end so no native buffers leak.
 
-1. `QuerySystemScanServiceImpl` resolves the scanner, runs `SystemRowFilter`/`SystemRowProjector` for semantic parity, and hands the resulting `SystemObjectRow` stream to `RowStreamToArrowBatchAdapter` when the scanner only produces rows.
-2. The adapter batches rows (default size 512), normalizes array-valued columns, builds an Arrow `Schema` from the scanner’s `SchemaColumn` metadata, and populates a `VectorSchemaRoot` via `ArrowConversion.fill()`.
-3. Each `ColumnarBatch` (implements `AutoCloseable`) flows through the optional `ArrowFilterOperator`, optional `ArrowProjectOperator`, and `serializeArrowBatch`, which writes the root with `ArrowStreamWriter`.
-4. The service closes the batch immediately after serialization and streams the serialized IPC batches back to the caller.
+### Row compatibility path
 
-`ColumnarBatch` owns its vectors, and the allocator used by `arrowResponse` is closed before the RPC returns, so the Arrow path never leaks native buffers.
+When `output_format = ROWS`, the service now streams `SystemObjectRow`s directly: the scanner `Stream` feeds `SystemRowFilter.filter(...)` and `SystemRowProjector.project(...)`, and each projected row is emitted as a `row` chunk without Arrow conversion. This path remains compatibility-only; Arrow consumers route through the columnar pipeline to benefit from zero-copy projection and vectorized filtering.
 
-## Arrow filtering & projection
+## Predicate & projection semantics
 
-When the system property `ai.floedb.floecat.arrow-filter-enabled` is `true`, `ArrowFilterOperator` evaluates the predicate `Expr` tree (exported by `SystemRowFilter.EXPRESSION_PROVIDER`) directly against the vectors, builds a boolean mask, copies the selected vectors into a fresh `VectorSchemaRoot`, and produces the filtered batch for serialization.
+`ArrowFilterOperator` sees the `Expr` tree produced by `SystemRowFilter.EXPRESSION_PROVIDER`, evaluates each leaf over typed vectors (integer, float, varchar, boolean, `IS NULL`), builds a boolean mask, and copies the matching vectors into a new root. Invalid boolean literals (anything other than `true`/`false`, case-insensitive) produce zero matches, and numeric comparisons are exact (floating-point predicates require exact equality). `ArrowProjectOperator` transfers only the requested columns via `TransferPair`, so projection is always zero-copy even when the order changes; unknown columns are ignored and simply dropped from the output batch.
 
-`ArrowProjectOperator` only runs when the caller requested a subset of columns. It transfers the requested vectors via `TransferPair`, so projection is zero-copy even when the requested order differs from the schema. If `required_columns` is empty, the projection step is skipped and the original vectors flow through.
+## Streaming guarantees & testing
 
-## Compatibility & testing
-
-`ROWS` remains the compatibility mode: tests that need row-based assertions request `OutputFormat.ROWS` explicitly, while the new `informationSchemaReturnsArrowBatchesForQueryCatalog` integration test covers the Arrow output path end-to-end and inspects the decoded batches. Arrow-specific unit tests include `RowStreamToArrowBatchAdapterTest`, `ArrowFilterOperatorTest`, and `ArrowProjectOperatorTest`.
+`QuerySystemScanServiceIT` validates the new server-streaming contract (rows in `ROWS` mode, schema followed by batches in Arrow mode, and Arrow as the default when unspecified). Arrow-specific unit tests include `RowStreamToArrowBatchAdapterTest`, `ArrowFilterOperatorTest`, and `ArrowProjectOperatorTest`. This layered approach keeps the legacy predicate/projector logic as the truth while shipping a fully Arrow-native execution lane on the default path.

@@ -14,10 +14,9 @@ import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.system.rpc.OutputFormat;
 import ai.floedb.floecat.system.rpc.QuerySystemScanServiceGrpc;
+import ai.floedb.floecat.system.rpc.ScanSystemTableChunk;
 import ai.floedb.floecat.system.rpc.ScanSystemTableRequest;
-import ai.floedb.floecat.system.rpc.ScanSystemTableResponse;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import com.google.protobuf.ByteString;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -26,8 +25,10 @@ import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
@@ -108,16 +109,17 @@ public class QuerySystemScanServiceIT {
 
     ResourceId systemTableId = systemTable("pg", "information_schema", "tables");
     var stub = withEngine(systemScan, "pg");
-    ScanSystemTableResponse resp =
-        stub.scanSystemTable(
+    List<ScanSystemTableChunk> chunks =
+        collectChunks(
+            stub,
             ScanSystemTableRequest.newBuilder()
                 .setQueryId(beginQuery(cat.getResourceId()))
                 .setTableId(systemTableId)
                 .setOutputFormat(OutputFormat.ROWS)
                 .build());
 
-    assertTrue(resp.getRowsCount() > 0);
-    List<List<String>> rows = rows(resp);
+    List<List<String>> rows = rows(chunks);
+    assertTrue(rows.size() > 0);
     List<List<String>> ordersRows =
         rows.stream().filter(r -> r.size() > 2 && "orders".equals(r.get(2))).toList();
     assertEquals(1, ordersRows.size(), "There should be exactly one 'orders' table row");
@@ -158,15 +160,16 @@ public class QuerySystemScanServiceIT {
     ResourceId systemTableId = systemTable("trino", "information_schema", "tables");
 
     var stub = withEngine(systemScan, "trino");
-    ScanSystemTableResponse resp =
-        stub.scanSystemTable(
+    List<ScanSystemTableChunk> chunks =
+        collectChunks(
+            stub,
             ScanSystemTableRequest.newBuilder()
                 .setQueryId(beginQuery(catB.getResourceId()))
                 .setTableId(systemTableId)
                 .setOutputFormat(OutputFormat.ROWS)
                 .build());
 
-    List<List<String>> rows = rows(resp);
+    List<List<String>> rows = rows(chunks);
     assertFalse(
         rows.stream().anyMatch(r -> r.size() > 2 && "foo".equals(r.get(2))),
         "Rows should not contain 'foo'");
@@ -182,15 +185,17 @@ public class QuerySystemScanServiceIT {
     ResourceId systemTableId = systemTable("", "pg_catalog", "pg_class");
 
     var stub = withEngine(systemScan, "");
+    Iterator<ScanSystemTableChunk> stream =
+        stub.scanSystemTable(
+            ScanSystemTableRequest.newBuilder()
+                .setQueryId(beginQuery(cat.getResourceId()))
+                .setTableId(systemTableId)
+                .build());
     StatusRuntimeException ex =
         assertThrows(
             StatusRuntimeException.class,
-            () ->
-                stub.scanSystemTable(
-                    ScanSystemTableRequest.newBuilder()
-                        .setQueryId(beginQuery(cat.getResourceId()))
-                        .setTableId(systemTableId)
-                        .build()));
+            stream::next,
+            "Streaming RPC should report invalid argument");
 
     assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
   }
@@ -204,16 +209,16 @@ public class QuerySystemScanServiceIT {
     ResourceId systemTableId = systemTable(engineKind, "information_schema", "schemata");
 
     var stub = withEngine(systemScan, engineKind);
-    ScanSystemTableResponse resp =
-        stub.scanSystemTable(
+    List<ScanSystemTableChunk> chunks =
+        collectChunks(
+            stub,
             ScanSystemTableRequest.newBuilder()
                 .setQueryId(beginQuery(cat.getResourceId()))
                 .setTableId(systemTableId)
                 .setOutputFormat(OutputFormat.ROWS)
                 .build());
 
-    assertTrue(resp.getRowsCount() > 0);
-    List<List<String>> rows = rows(resp);
+    List<List<String>> rows = rows(chunks);
     boolean found =
         rows.stream()
             .anyMatch(
@@ -243,50 +248,114 @@ public class QuerySystemScanServiceIT {
 
     ResourceId systemTableId = systemTable("pg", "information_schema", "tables");
     var stub = withEngine(systemScan, "pg");
-    ScanSystemTableResponse resp =
-        stub.scanSystemTable(
+    List<ScanSystemTableChunk> chunks =
+        collectChunks(
+            stub,
             ScanSystemTableRequest.newBuilder()
                 .setQueryId(beginQuery(cat.getResourceId()))
                 .setTableId(systemTableId)
                 .setOutputFormat(OutputFormat.ARROW_IPC)
                 .build());
 
-    assertEquals(0, resp.getRowsCount());
-    assertTrue(resp.getArrowBatchesCount() > 0);
-    List<List<String>> rows = arrowRows(resp);
+    assertFalse(chunks.isEmpty(), "Should receive at least one chunk");
+    assertTrue(chunks.get(0).hasArrowSchemaIpc(), "First chunk should be the schema");
+    List<List<String>> rows = arrowRows(chunks);
     assertTrue(
         rows.stream().anyMatch(row -> row.size() > 2 && "orders".equals(row.get(2))),
         "Arrow payload must include the 'orders' table");
   }
 
+  @Test
+  void arrowOutputIsDefaultWhenUnspecified() throws IOException {
+    var catName = catalogPrefix + "defaultArrow";
+    var cat = TestSupport.createCatalog(catalog, catName, "");
+    var ns =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "ns", List.of("analytics"), "");
+    TestSupport.createTable(
+        table,
+        cat.getResourceId(),
+        ns.getResourceId(),
+        "shipments",
+        "s3://bucket/shipments",
+        "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+        "shipments table");
+
+    ResourceId systemTableId = systemTable("pg", "information_schema", "tables");
+    var stub = withEngine(systemScan, "pg");
+    List<ScanSystemTableChunk> chunks =
+        collectChunks(
+            stub,
+            ScanSystemTableRequest.newBuilder()
+                .setQueryId(beginQuery(cat.getResourceId()))
+                .setTableId(systemTableId)
+                .build());
+
+    assertFalse(chunks.isEmpty(), "Arrow default stream must contain at least one chunk");
+    assertTrue(chunks.get(0).hasArrowSchemaIpc(), "Default stream begins with schema");
+    List<List<String>> rows = arrowRows(chunks);
+    assertTrue(
+        rows.stream().anyMatch(row -> row.size() > 2 && "shipments".equals(row.get(2))),
+        "Default Arrow payload must include the 'shipments' table");
+  }
+
   // ------------------------------------------------------------------------
   // Helpers
   // ------------------------------------------------------------------------
-  private List<List<String>> rows(ScanSystemTableResponse resp) {
-    return resp.getRowsList().stream().map(r -> List.copyOf(r.getValuesList())).toList();
+  private List<List<String>> rows(List<ScanSystemTableChunk> chunks) {
+    return chunks.stream()
+        .filter(ScanSystemTableChunk::hasRow)
+        .map(chunk -> List.copyOf(chunk.getRow().getValuesList()))
+        .toList();
   }
 
-  private List<List<String>> arrowRows(ScanSystemTableResponse resp) throws IOException {
+  private List<List<String>> arrowRows(List<ScanSystemTableChunk> chunks) throws IOException {
     List<List<String>> rows = new ArrayList<>();
-    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
-      for (ByteString batch : resp.getArrowBatchesList()) {
-        try (ArrowStreamReader reader =
-            new ArrowStreamReader(new ByteArrayInputStream(batch.toByteArray()), allocator)) {
-          VectorSchemaRoot root = reader.getVectorSchemaRoot();
-          while (reader.loadNextBatch()) {
-            for (int rowIndex = 0; rowIndex < root.getRowCount(); rowIndex++) {
-              List<String> row = new ArrayList<>();
-              for (FieldVector vector : root.getFieldVectors()) {
-                Object value = vector.getObject(rowIndex);
-                row.add(value == null ? null : value.toString());
-              }
-              rows.add(row);
-            }
+    ByteArrayOutputStream combined = new ByteArrayOutputStream();
+    int schemaCount = 0;
+    int schemaIndex = -1;
+    for (int i = 0; i < chunks.size(); i++) {
+      ScanSystemTableChunk chunk = chunks.get(i);
+      if (chunk.hasArrowSchemaIpc()) {
+        schemaCount++;
+        schemaIndex = i;
+        assertEquals(
+            0, schemaIndex, "Arrow schema chunk must be emitted as the first chunk in the stream");
+        assertTrue(schemaCount <= 1, "Exactly one schema chunk is allowed");
+        combined.write(chunk.getArrowSchemaIpc().toByteArray());
+        continue;
+      }
+      if (chunk.hasArrowBatchIpc()) {
+        combined.write(chunk.getArrowBatchIpc().toByteArray());
+      }
+    }
+    assertEquals(1, schemaCount, "Arrow stream must contain exactly one schema chunk");
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        ArrowStreamReader reader =
+            new ArrowStreamReader(new ByteArrayInputStream(combined.toByteArray()), allocator)) {
+      VectorSchemaRoot root = reader.getVectorSchemaRoot();
+      while (reader.loadNextBatch()) {
+        for (int rowIndex = 0; rowIndex < root.getRowCount(); rowIndex++) {
+          List<String> row = new ArrayList<>();
+          for (FieldVector vector : root.getFieldVectors()) {
+            Object value = vector.getObject(rowIndex);
+            row.add(value == null ? null : value.toString());
           }
+          rows.add(row);
         }
       }
     }
     return rows;
+  }
+
+  private List<ScanSystemTableChunk> collectChunks(
+      QuerySystemScanServiceGrpc.QuerySystemScanServiceBlockingStub stub,
+      ScanSystemTableRequest request) {
+    Iterator<ScanSystemTableChunk> iterator = stub.scanSystemTable(request);
+    List<ScanSystemTableChunk> chunks = new ArrayList<>();
+    while (iterator.hasNext()) {
+      chunks.add(iterator.next());
+    }
+    return chunks;
   }
 
   private static final Metadata.Key<String> ENGINE_KIND_HEADER =

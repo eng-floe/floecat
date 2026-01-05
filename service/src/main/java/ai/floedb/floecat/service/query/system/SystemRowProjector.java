@@ -3,6 +3,7 @@ package ai.floedb.floecat.service.query.system;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import java.util.List;
+import java.util.stream.Stream;
 
 public final class SystemRowProjector {
 
@@ -11,10 +12,18 @@ public final class SystemRowProjector {
 
     if (requiredColumns.isEmpty()) return rows;
 
+    return project(rows.stream(), schema, requiredColumns).toList();
+  }
+
+  public static Stream<SystemObjectRow> project(
+      Stream<SystemObjectRow> rows, List<SchemaColumn> schema, List<String> requiredColumns) {
+
+    if (requiredColumns.isEmpty()) return rows;
+
     int[] indexes =
         requiredColumns.stream().mapToInt(c -> indexOf(schema, c)).filter(i -> i >= 0).toArray();
 
-    return rows.stream().map(r -> projectRow(r, indexes)).toList();
+    return rows.map(r -> projectRow(r, indexes));
   }
 
   private static SystemObjectRow projectRow(SystemObjectRow row, int[] idxs) {

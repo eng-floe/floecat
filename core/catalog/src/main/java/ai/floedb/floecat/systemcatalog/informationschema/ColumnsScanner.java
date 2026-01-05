@@ -26,6 +26,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.function.Consumer;
@@ -112,6 +113,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
     Objects.requireNonNull(ctx, "ctx");
     Objects.requireNonNull(allocator, "allocator");
     Objects.requireNonNull(requiredColumns, "requiredColumns");
+    Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(requiredColumns);
     List<NamespaceNode> namespaces = ctx.listNamespaces();
     Iterator<NamespaceNode> namespaceIterator = namespaces.iterator();
     Spliterator<ColumnarBatch> spliterator =
@@ -125,26 +127,35 @@ public final class ColumnsScanner implements SystemObjectScanner {
 
           @Override
           public boolean tryAdvance(Consumer<? super ColumnarBatch> action) {
-            ColumnsBatchBuilder builder = new ColumnsBatchBuilder(allocator);
-            while (true) {
-              if (columnIter.hasNext()) {
-                builder.append(columnIter.next());
-                if (builder.isFull()) {
+            ColumnsBatchBuilder builder = null;
+            try {
+              while (true) {
+                if (columnIter.hasNext()) {
+                  if (builder == null) {
+                    builder = new ColumnsBatchBuilder(allocator, requiredSet);
+                  }
+                  builder.append(columnIter.next());
+                  if (builder.isFull()) {
+                    action.accept(builder.build());
+                    return true;
+                  }
+                  continue;
+                }
+                GraphNode relation = nextRelation(ctx);
+                if (relation == null) {
+                  if (builder == null || builder.isEmpty()) {
+                    return false;
+                  }
                   action.accept(builder.build());
                   return true;
                 }
-                continue;
+                columnIter =
+                    columnsForRelation(ctx, currentNamespace, relation, catalogNames).iterator();
               }
-              GraphNode relation = nextRelation(ctx);
-              if (relation == null) {
-                if (builder.isEmpty()) {
-                  return false;
-                }
-                action.accept(builder.build());
-                return true;
+            } finally {
+              if (builder != null) {
+                builder.release();
               }
-              columnIter =
-                  columnsForRelation(ctx, currentNamespace, relation, catalogNames).iterator();
             }
           }
 
@@ -368,8 +379,16 @@ public final class ColumnsScanner implements SystemObjectScanner {
     private final IntVector ordinalPosition;
     private int rowCount;
 
-    private ColumnsBatchBuilder(BufferAllocator allocator) {
+    private final boolean includeCatalog;
+    private final boolean includeSchema;
+    private final boolean includeTable;
+    private final boolean includeColumn;
+    private final boolean includeType;
+    private final boolean includeOrdinal;
+
+    private ColumnsBatchBuilder(BufferAllocator allocator, Set<String> requiredColumns) {
       this.root = VectorSchemaRoot.create(ARROW_SCHEMA, allocator);
+      this.root.allocateNew();
       List<FieldVector> vectors = root.getFieldVectors();
       this.tableCatalog = (VarCharVector) vectors.get(0);
       this.tableSchema = (VarCharVector) vectors.get(1);
@@ -377,6 +396,14 @@ public final class ColumnsScanner implements SystemObjectScanner {
       this.columnName = (VarCharVector) vectors.get(3);
       this.dataType = (VarCharVector) vectors.get(4);
       this.ordinalPosition = (IntVector) vectors.get(5);
+      this.consumed = false;
+      this.includeCatalog = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_catalog");
+      this.includeSchema = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_schema");
+      this.includeTable = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_name");
+      this.includeColumn = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "column_name");
+      this.includeType = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "data_type");
+      this.includeOrdinal =
+          ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "ordinal_position");
     }
 
     private boolean isFull() {
@@ -388,12 +415,36 @@ public final class ColumnsScanner implements SystemObjectScanner {
     }
 
     private void append(ColumnEntry entry) {
-      ArrowValueWriters.writeVarChar(tableCatalog, rowCount, entry.tableCatalog);
-      ArrowValueWriters.writeVarChar(tableSchema, rowCount, entry.tableSchema);
-      ArrowValueWriters.writeVarChar(tableName, rowCount, entry.tableName);
-      ArrowValueWriters.writeVarChar(columnName, rowCount, entry.columnName);
-      ArrowValueWriters.writeVarChar(dataType, rowCount, entry.dataType);
-      ordinalPosition.setSafe(rowCount, entry.ordinalPosition);
+      if (includeCatalog) {
+        ArrowValueWriters.writeVarChar(tableCatalog, rowCount, entry.tableCatalog);
+      } else {
+        tableCatalog.setNull(rowCount);
+      }
+      if (includeSchema) {
+        ArrowValueWriters.writeVarChar(tableSchema, rowCount, entry.tableSchema);
+      } else {
+        tableSchema.setNull(rowCount);
+      }
+      if (includeTable) {
+        ArrowValueWriters.writeVarChar(tableName, rowCount, entry.tableName);
+      } else {
+        tableName.setNull(rowCount);
+      }
+      if (includeColumn) {
+        ArrowValueWriters.writeVarChar(columnName, rowCount, entry.columnName);
+      } else {
+        columnName.setNull(rowCount);
+      }
+      if (includeType) {
+        ArrowValueWriters.writeVarChar(dataType, rowCount, entry.dataType);
+      } else {
+        dataType.setNull(rowCount);
+      }
+      if (includeOrdinal) {
+        ordinalPosition.setSafe(rowCount, entry.ordinalPosition);
+      } else {
+        ordinalPosition.setNull(rowCount);
+      }
       rowCount++;
     }
 
@@ -402,7 +453,17 @@ public final class ColumnsScanner implements SystemObjectScanner {
         vector.setValueCount(rowCount);
       }
       root.setRowCount(rowCount);
+      consumed = true;
       return new SimpleColumnarBatch(root);
     }
+
+    private void release() {
+      if (!consumed) {
+        consumed = true;
+        root.close();
+      }
+    }
+
+    private boolean consumed;
   }
 }

@@ -7,7 +7,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.Spliterator;
 import java.util.Spliterators;
@@ -16,10 +15,6 @@ import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
-import org.apache.arrow.vector.types.FloatingPointPrecision;
-import org.apache.arrow.vector.types.pojo.ArrowType;
-import org.apache.arrow.vector.types.pojo.Field;
-import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.types.pojo.Schema;
 
 /**
@@ -31,6 +26,7 @@ public final class RowStreamToArrowBatchAdapter {
   private final Schema arrowSchema;
   private final boolean[] stringifyArrays;
   private final int batchSize;
+  private final boolean hasArrayColumns;
 
   public RowStreamToArrowBatchAdapter(
       BufferAllocator allocator, List<SchemaColumn> schema, int batchSize) {
@@ -40,14 +36,17 @@ public final class RowStreamToArrowBatchAdapter {
       throw new IllegalArgumentException("batchSize must be positive");
     }
     this.batchSize = batchSize;
-    List<Field> fields = new ArrayList<>(schema.size());
+    boolean hasArray = false;
     this.stringifyArrays = new boolean[schema.size()];
     for (int i = 0; i < schema.size(); i++) {
-      SchemaColumn column = schema.get(i);
-      fields.add(new Field(column.getName(), fieldType(column), List.of()));
-      stringifyArrays[i] = isArrayType(column.getLogicalType());
+      boolean arrayType = isArrayType(schema.get(i).getLogicalType());
+      stringifyArrays[i] = arrayType;
+      if (arrayType) {
+        hasArray = true;
+      }
     }
-    this.arrowSchema = new Schema(fields);
+    this.hasArrayColumns = hasArray;
+    this.arrowSchema = ArrowSchemaUtil.toArrowSchema(schema);
   }
 
   public Stream<ColumnarBatch> adapt(Stream<SystemObjectRow> rows) {
@@ -66,23 +65,46 @@ public final class RowStreamToArrowBatchAdapter {
               return false;
             }
             VectorSchemaRoot root = VectorSchemaRoot.create(arrowSchema, allocator);
-            ArrowConversion.fill(root, batch);
-            action.accept(new SimpleColumnarBatch(root));
-            return true;
+            try {
+              root.allocateNew();
+              ArrowConversion.fill(root, batch);
+              action.accept(new SimpleColumnarBatch(root));
+              return true;
+            } catch (Exception e) {
+              root.close();
+              throw new IllegalStateException("Failed to adapt row stream to Arrow batch", e);
+            }
           }
         };
-    return StreamSupport.stream(spliterator, false);
+    return StreamSupport.stream(spliterator, false).onClose(rows::close);
   }
 
   private SystemObjectRow normalize(SystemObjectRow row) {
+    if (!hasArrayColumns) {
+      return row;
+    }
     Object[] values = row.values();
-    Object[] normalized = Arrays.copyOf(values, values.length);
+    boolean needsCopy = false;
     for (int i = 0; i < values.length && i < stringifyArrays.length; i++) {
+      if (stringifyArrays[i] && isArray(values[i])) {
+        needsCopy = true;
+        break;
+      }
+    }
+    if (!needsCopy) {
+      return row;
+    }
+    Object[] normalized = Arrays.copyOf(values, values.length);
+    for (int i = 0; i < normalized.length && i < stringifyArrays.length; i++) {
       if (stringifyArrays[i]) {
-        normalized[i] = stringify(values[i]);
+        normalized[i] = stringify(normalized[i]);
       }
     }
     return new SystemObjectRow(normalized);
+  }
+
+  private static boolean isArray(Object value) {
+    return value != null && value.getClass().isArray();
   }
 
   private static Object stringify(Object value) {
@@ -118,30 +140,6 @@ public final class RowStreamToArrowBatchAdapter {
       return Arrays.toString((double[]) value);
     }
     return Arrays.deepToString((Object[]) value);
-  }
-
-  private static FieldType fieldType(SchemaColumn column) {
-    ArrowType arrowType = arrowType(column.getLogicalType());
-    return new FieldType(column.getNullable(), arrowType, null);
-  }
-
-  private static ArrowType arrowType(String logicalType) {
-    if (logicalType == null) {
-      return new ArrowType.Utf8();
-    }
-    String normalized = logicalType.toUpperCase(Locale.ROOT).trim();
-    if (normalized.endsWith("[]")) {
-      return new ArrowType.Utf8();
-    }
-    return switch (normalized) {
-      case "INT", "INTEGER" -> new ArrowType.Int(32, true);
-      case "BIGINT" -> new ArrowType.Int(64, true);
-      case "SMALLINT" -> new ArrowType.Int(16, true);
-      case "FLOAT", "FLOAT4", "REAL" -> new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE);
-      case "DOUBLE", "FLOAT8" -> new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
-      case "BOOLEAN", "BOOL" -> ArrowType.Bool.INSTANCE;
-      default -> new ArrowType.Utf8();
-    };
   }
 
   private static boolean isArrayType(String logicalType) {

@@ -2,12 +2,12 @@ package ai.floedb.floecat.systemcatalog.columnar;
 
 import ai.floedb.floecat.systemcatalog.expr.Expr;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.function.IntBinaryOperator;
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.BitVector;
@@ -18,7 +18,14 @@ import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 
-/** Vectorized filter processor for {@link ColumnarBatch} inputs. */
+/**
+ * Vectorized filter processor for {@link ColumnarBatch} inputs.
+ *
+ * <p>The caller hands ownership of {@code batch} into {@link #filter}. The filter closes the input
+ * unless it is returned directly (all rows pass). Any returned batch owns its {@link
+ * VectorSchemaRoot} and must be closed by the caller; inputs returned empty have a new root that
+ * also must be closed.
+ */
 public final class ArrowFilterOperator {
 
   private ArrowFilterOperator() {}
@@ -30,48 +37,62 @@ public final class ArrowFilterOperator {
 
     VectorSchemaRoot root = batch.root();
     try (BitVector mask = ArrowExprEvaluator.evaluate(root, expr, allocator)) {
+      int rowCount = root.getRowCount();
+      int[] selectedRows = new int[rowCount];
+      int selectedCount = 0;
+      for (int rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+        if (mask.get(rowIndex) != 0) {
+          selectedRows[selectedCount++] = rowIndex;
+        }
+      }
+
+      if (selectedCount == rowCount) {
+        return batch;
+      }
+
+      if (selectedCount == 0) {
+        batch.close();
+        VectorSchemaRoot emptyRoot = VectorSchemaRoot.create(root.getSchema(), allocator);
+        emptyRoot.allocateNew();
+        emptyRoot.setRowCount(0);
+        for (FieldVector vector : emptyRoot.getFieldVectors()) {
+          vector.setValueCount(0);
+        }
+        return new SimpleColumnarBatch(emptyRoot);
+      }
+
       VectorSchemaRoot filteredRoot = VectorSchemaRoot.create(root.getSchema(), allocator);
       boolean copied = false;
       try {
-        copySelection(root, filteredRoot, mask);
+        copySelection(root, filteredRoot, selectedRows, selectedCount);
         copied = true;
+        batch.close();
         return new SimpleColumnarBatch(filteredRoot);
       } finally {
         if (!copied) {
           filteredRoot.close();
         }
       }
-    } finally {
-      batch.close();
     }
   }
 
   private static void copySelection(
-      VectorSchemaRoot src, VectorSchemaRoot dst, BitVector selectionMask) {
+      VectorSchemaRoot src, VectorSchemaRoot dst, int[] selectedRows, int selectedCount) {
     List<FieldVector> srcVectors = src.getFieldVectors();
     List<FieldVector> dstVectors = dst.getFieldVectors();
     for (FieldVector vector : dstVectors) {
       vector.allocateNew();
     }
 
-    int outputRow = 0;
-    int rowCount = src.getRowCount();
-    for (int rowIndex = 0; rowIndex < rowCount; rowIndex++) {
-      if (selectionMask.get(rowIndex) == 0) {
-        continue;
+    for (int columnIndex = 0; columnIndex < srcVectors.size(); columnIndex++) {
+      FieldVector source = srcVectors.get(columnIndex);
+      FieldVector target = dstVectors.get(columnIndex);
+      for (int i = 0; i < selectedCount; i++) {
+        target.copyFromSafe(selectedRows[i], i, source);
       }
-      for (int columnIndex = 0; columnIndex < srcVectors.size(); columnIndex++) {
-        FieldVector source = srcVectors.get(columnIndex);
-        FieldVector target = dstVectors.get(columnIndex);
-        target.copyFromSafe(rowIndex, outputRow, source);
-      }
-      outputRow++;
+      target.setValueCount(selectedCount);
     }
-
-    for (FieldVector vector : dstVectors) {
-      vector.setValueCount(outputRow);
-    }
-    dst.setRowCount(outputRow);
+    dst.setRowCount(selectedCount);
   }
 
   private static final class ArrowExprEvaluator {
@@ -136,7 +157,7 @@ public final class ArrowFilterOperator {
         return compareLong(bigIntVector, value);
       }
       if (vector instanceof Float4Vector float4Vector) {
-        Double value = parseDouble(literal);
+        Float value = parseFloat(literal);
         if (value == null) {
           return falseMask();
         }
@@ -169,32 +190,44 @@ public final class ArrowFilterOperator {
         return falseMask();
       }
       FieldVector vector = pair.column();
-      Double literalValue = parseDouble(pair.literal());
-      if (literalValue == null) {
-        return falseMask();
-      }
+      String literal = pair.literal();
       if (vector instanceof IntVector intVector) {
-        return greaterThanInt(intVector, literalValue);
+        Integer value = parseInteger(literal);
+        if (value == null) {
+          return falseMask();
+        }
+        return greaterThanInt(intVector, value);
       }
       if (vector instanceof BigIntVector bigIntVector) {
-        return greaterThanLong(bigIntVector, literalValue);
+        Long value = parseLong(literal);
+        if (value == null) {
+          return falseMask();
+        }
+        return greaterThanLong(bigIntVector, value);
       }
       if (vector instanceof Float4Vector float4Vector) {
-        return greaterThanFloat(float4Vector, literalValue);
+        Float value = parseFloat(literal);
+        if (value == null) {
+          return falseMask();
+        }
+        return greaterThanFloat(float4Vector, value);
       }
       if (vector instanceof Float8Vector float8Vector) {
-        return greaterThanDouble(float8Vector, literalValue);
+        Double value = parseDouble(literal);
+        if (value == null) {
+          return falseMask();
+        }
+        return greaterThanDouble(float8Vector, value);
       }
       return falseMask();
     }
 
     private BitVector isNullMask(Expr expr) {
       FieldVector vector = columnVector(expr);
-      BitVector mask = newMask();
       if (vector == null) {
-        mask.setValueCount(rowCount);
-        return mask;
+        return falseMask();
       }
+      BitVector mask = newMask();
       for (int rowIndex = 0; rowIndex < rowCount; rowIndex++) {
         mask.setSafe(rowIndex, vector.isNull(rowIndex) ? 1 : 0);
       }
@@ -252,7 +285,12 @@ public final class ArrowFilterOperator {
       return mask;
     }
 
-    private BitVector compareFloat(Float4Vector vector, double literal) {
+    /**
+     * Floating-point equality follows Java/IEEE semantics. NaN never matches itself and infinities
+     * match only their like-sign counterparts; invalid literals produce {@code null} and therefore
+     * no matches.
+     */
+    private BitVector compareFloat(Float4Vector vector, float literal) {
       BitVector mask = newMask();
       for (int rowIndex = 0; rowIndex < rowCount; rowIndex++) {
         if (vector.isNull(rowIndex)) {
@@ -280,16 +318,39 @@ public final class ArrowFilterOperator {
 
     private BitVector compareVarChar(VarCharVector vector, byte[] literal) {
       BitVector mask = newMask();
+      // Avoid VarCharVector.get(i) because it allocates a new byte[] for each row.
+      // Instead, compare the underlying data buffer slice [start, end) against the literal bytes.
+      ArrowBuf offsets = vector.getOffsetBuffer();
+      ArrowBuf data = vector.getDataBuffer();
+
       for (int rowIndex = 0; rowIndex < rowCount; rowIndex++) {
         if (vector.isNull(rowIndex)) {
           mask.setSafe(rowIndex, 0);
           continue;
         }
-        byte[] value = vector.get(rowIndex);
-        mask.setSafe(rowIndex, Arrays.equals(value, literal) ? 1 : 0);
+
+        int start = offsets.getInt((long) rowIndex * 4);
+        int end = offsets.getInt((long) (rowIndex + 1) * 4);
+        mask.setSafe(rowIndex, equalsSlice(data, start, end, literal) ? 1 : 0);
       }
+
       mask.setValueCount(rowCount);
       return mask;
+    }
+
+    private static boolean equalsSlice(ArrowBuf data, int start, int end, byte[] literal) {
+      int len = end - start;
+      if (len != literal.length) {
+        return false;
+      }
+      // Compare byte-by-byte without allocating.
+      long pos = start;
+      for (int i = 0; i < len; i++) {
+        if (data.getByte(pos + i) != literal[i]) {
+          return false;
+        }
+      }
+      return true;
     }
 
     private BitVector compareBit(BitVector vector, boolean literal) {
@@ -306,7 +367,7 @@ public final class ArrowFilterOperator {
       return mask;
     }
 
-    private BitVector greaterThanInt(IntVector vector, double literal) {
+    private BitVector greaterThanInt(IntVector vector, int literal) {
       BitVector mask = newMask();
       for (int rowIndex = 0; rowIndex < rowCount; rowIndex++) {
         if (vector.isNull(rowIndex) || vector.get(rowIndex) <= literal) {
@@ -319,7 +380,7 @@ public final class ArrowFilterOperator {
       return mask;
     }
 
-    private BitVector greaterThanLong(BigIntVector vector, double literal) {
+    private BitVector greaterThanLong(BigIntVector vector, long literal) {
       BitVector mask = newMask();
       for (int rowIndex = 0; rowIndex < rowCount; rowIndex++) {
         if (vector.isNull(rowIndex) || vector.get(rowIndex) <= literal) {
@@ -332,7 +393,7 @@ public final class ArrowFilterOperator {
       return mask;
     }
 
-    private BitVector greaterThanFloat(Float4Vector vector, double literal) {
+    private BitVector greaterThanFloat(Float4Vector vector, float literal) {
       BitVector mask = newMask();
       for (int rowIndex = 0; rowIndex < rowCount; rowIndex++) {
         if (vector.isNull(rowIndex) || vector.get(rowIndex) <= literal) {
@@ -366,7 +427,8 @@ public final class ArrowFilterOperator {
       if (name == null) {
         return null;
       }
-      return vectorsByName.get(name.toLowerCase(Locale.ROOT));
+      String normalized = name.trim().toLowerCase(Locale.ROOT);
+      return vectorsByName.get(normalized);
     }
 
     private ColumnLiteral columnLiteralPair(Expr left, Expr right) {
@@ -418,6 +480,21 @@ public final class ArrowFilterOperator {
       }
     }
 
+    private static Float parseFloat(String value) {
+      if (value == null) {
+        return null;
+      }
+      try {
+        return Float.parseFloat(value);
+      } catch (NumberFormatException e) {
+        return null;
+      }
+    }
+
+    /**
+     * Parses numeric literals exactly; invalid values (including unsupported representations)
+     * return {@code null} so the corresponding predicate becomes an empty mask.
+     */
     private static Double parseDouble(String value) {
       if (value == null) {
         return null;
@@ -433,7 +510,14 @@ public final class ArrowFilterOperator {
       if (value == null) {
         return null;
       }
-      return Boolean.parseBoolean(value);
+      String normalized = value.trim().toLowerCase(Locale.ROOT);
+      return switch (normalized) {
+        case "true" -> Boolean.TRUE;
+        case "t" -> Boolean.TRUE;
+        case "false" -> Boolean.FALSE;
+        case "f" -> Boolean.FALSE;
+        default -> null;
+      };
     }
 
     private record ColumnLiteral(FieldVector column, String literal) {}

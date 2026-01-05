@@ -22,6 +22,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.function.Consumer;
@@ -101,6 +102,7 @@ public final class TablesScanner implements SystemObjectScanner {
     Objects.requireNonNull(ctx, "ctx");
     Objects.requireNonNull(allocator, "allocator");
     Objects.requireNonNull(requiredColumns, "requiredColumns");
+    Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(requiredColumns);
     if (predicate != null) {
       // TODO: predicate handling is delegated to the arrow filter operator downstream
     }
@@ -118,28 +120,37 @@ public final class TablesScanner implements SystemObjectScanner {
 
           @Override
           public boolean tryAdvance(Consumer<? super ColumnarBatch> action) {
-            TablesBatchBuilder builder = new TablesBatchBuilder(allocator);
-            while (true) {
-              GraphNode relation = nextRelation(ctx);
-              if (relation != null) {
-                ResourceId catalogId = currentNamespace.catalogId();
-                String catalogName =
-                    catalogNames.computeIfAbsent(
-                        catalogId, id -> ((CatalogNode) ctx.resolve(id)).displayName());
-                String schemaName = schemaByNamespace.getOrDefault(currentNamespace.id(), "");
-                builder.append(
-                    catalogName, schemaName, relation.displayName(), relationKind(relation));
-                if (builder.isFull()) {
-                  action.accept(builder.build());
-                  return true;
+            TablesBatchBuilder builder = null;
+            try {
+              while (true) {
+                GraphNode relation = nextRelation(ctx);
+                if (relation != null) {
+                  if (builder == null) {
+                    builder = new TablesBatchBuilder(allocator, requiredSet);
+                  }
+                  ResourceId catalogId = currentNamespace.catalogId();
+                  String catalogName =
+                      catalogNames.computeIfAbsent(
+                          catalogId, id -> ((CatalogNode) ctx.resolve(id)).displayName());
+                  String schemaName = schemaByNamespace.getOrDefault(currentNamespace.id(), "");
+                  builder.append(
+                      catalogName, schemaName, relation.displayName(), relationKind(relation));
+                  if (builder.isFull()) {
+                    action.accept(builder.build());
+                    return true;
+                  }
+                  continue;
                 }
-                continue;
+                if (builder == null || builder.isEmpty()) {
+                  return false;
+                }
+                action.accept(builder.build());
+                return true;
               }
-              if (builder.isEmpty()) {
-                return false;
+            } finally {
+              if (builder != null) {
+                builder.release();
               }
-              action.accept(builder.build());
-              return true;
             }
           }
 
@@ -204,13 +215,24 @@ public final class TablesScanner implements SystemObjectScanner {
     private final VarCharVector tableType;
     private int rowCount;
 
-    private TablesBatchBuilder(BufferAllocator allocator) {
+    private final boolean includeCatalog;
+    private final boolean includeSchema;
+    private final boolean includeName;
+    private final boolean includeType;
+
+    private TablesBatchBuilder(BufferAllocator allocator, Set<String> requiredColumns) {
       this.root = VectorSchemaRoot.create(ARROW_SCHEMA, allocator);
+      this.root.allocateNew();
       List<FieldVector> vectors = root.getFieldVectors();
       this.tableCatalog = (VarCharVector) vectors.get(0);
       this.tableSchema = (VarCharVector) vectors.get(1);
       this.tableName = (VarCharVector) vectors.get(2);
       this.tableType = (VarCharVector) vectors.get(3);
+      this.consumed = false;
+      this.includeCatalog = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_catalog");
+      this.includeSchema = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_schema");
+      this.includeName = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_name");
+      this.includeType = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_type");
     }
 
     private boolean isFull() {
@@ -222,10 +244,26 @@ public final class TablesScanner implements SystemObjectScanner {
     }
 
     private void append(String catalog, String schema, String name, String type) {
-      ArrowValueWriters.writeVarChar(tableCatalog, rowCount, catalog);
-      ArrowValueWriters.writeVarChar(tableSchema, rowCount, schema);
-      ArrowValueWriters.writeVarChar(tableName, rowCount, name);
-      ArrowValueWriters.writeVarChar(tableType, rowCount, type);
+      if (includeCatalog) {
+        ArrowValueWriters.writeVarChar(tableCatalog, rowCount, catalog);
+      } else {
+        tableCatalog.setNull(rowCount);
+      }
+      if (includeSchema) {
+        ArrowValueWriters.writeVarChar(tableSchema, rowCount, schema);
+      } else {
+        tableSchema.setNull(rowCount);
+      }
+      if (includeName) {
+        ArrowValueWriters.writeVarChar(tableName, rowCount, name);
+      } else {
+        tableName.setNull(rowCount);
+      }
+      if (includeType) {
+        ArrowValueWriters.writeVarChar(tableType, rowCount, type);
+      } else {
+        tableType.setNull(rowCount);
+      }
       rowCount++;
     }
 
@@ -234,7 +272,17 @@ public final class TablesScanner implements SystemObjectScanner {
         vector.setValueCount(rowCount);
       }
       root.setRowCount(rowCount);
+      consumed = true;
       return new SimpleColumnarBatch(root);
     }
+
+    private void release() {
+      if (!consumed) {
+        consumed = true;
+        root.close();
+      }
+    }
+
+    private boolean consumed;
   }
 }

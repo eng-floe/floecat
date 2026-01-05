@@ -20,17 +20,22 @@ public interface SystemObjectScanner {
   List<SchemaColumn> schema();
 
   /** Lazily streams rows as lightweight wrappers around Object[]. */
-  default Stream<SystemObjectRow> scan(SystemObjectScanContext ctx) {
-    throw new UnsupportedOperationException("Row scan not implemented");
-  }
+  Stream<SystemObjectRow> scan(SystemObjectScanContext ctx);
 
-  /** Arrow-native scan. */
+  /**
+   * Arrow-native scan.
+   *
+   * <p>The {@code predicate} argument represents the expression that will be evaluated downstream
+   * by the engine; implementations are free to ignore it today since filtering happens later.
+   * {@code requiredColumns} may be restricted by the caller and duplicates/unknown names are
+   * allowed—they will be filtered out by the projector.
+   */
   default Stream<ColumnarBatch> scanArrow(
       SystemObjectScanContext ctx,
       Expr predicate,
       List<String> requiredColumns,
       BufferAllocator allocator) {
-    throw new UnsupportedOperationException("Arrow scan not implemented");
+    return Stream.empty();
   }
 
   /** Declares supported execution formats. */

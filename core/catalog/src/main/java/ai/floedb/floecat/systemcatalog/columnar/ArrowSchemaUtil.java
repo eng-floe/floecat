@@ -2,9 +2,12 @@ package ai.floedb.floecat.systemcatalog.columnar;
 
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 import org.apache.arrow.vector.types.FloatingPointPrecision;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
@@ -51,5 +54,30 @@ public final class ArrowSchemaUtil {
       case "BOOLEAN", "BOOL" -> ArrowType.Bool.INSTANCE;
       default -> new ArrowType.Utf8();
     };
+  }
+
+  /** Normalize the user-requested projection list so it can be compared case-insensitively. */
+  public static Set<String> normalizeRequiredColumns(List<String> requiredColumns) {
+    if (requiredColumns.isEmpty()) {
+      return Collections.emptySet();
+    }
+    Set<String> normalized = new HashSet<>(requiredColumns.size());
+    for (String column : requiredColumns) {
+      if (column == null) {
+        continue;
+      }
+      String normalizedColumn = column.trim().toLowerCase(Locale.ROOT);
+      if (normalizedColumn.isEmpty()) {
+        continue;
+      }
+      normalized.add(normalizedColumn);
+    }
+    return normalized;
+  }
+
+  /** Returns {@code true} when the column should be populated given the normalized required set. */
+  public static boolean shouldIncludeColumn(Set<String> normalizedRequired, String columnName) {
+    String normalized = columnName.trim().toLowerCase(Locale.ROOT);
+    return normalizedRequired.isEmpty() || normalizedRequired.contains(normalized);
   }
 }

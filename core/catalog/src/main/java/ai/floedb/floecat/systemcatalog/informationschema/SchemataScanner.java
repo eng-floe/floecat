@@ -20,6 +20,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.function.Consumer;
@@ -94,6 +95,7 @@ public final class SchemataScanner implements SystemObjectScanner {
     Objects.requireNonNull(ctx, "ctx");
     Objects.requireNonNull(allocator, "allocator");
     Objects.requireNonNull(requiredColumns, "requiredColumns");
+    Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(requiredColumns);
     List<NamespaceNode> namespaces = ctx.listNamespaces();
     Iterator<NamespaceNode> namespaceIterator = namespaces.iterator();
     Spliterator<ColumnarBatch> spliterator =
@@ -104,24 +106,33 @@ public final class SchemataScanner implements SystemObjectScanner {
 
           @Override
           public boolean tryAdvance(Consumer<? super ColumnarBatch> action) {
-            SchemataBatchBuilder builder = new SchemataBatchBuilder(allocator);
-            while (true) {
-              if (!nsIter.hasNext()) {
-                if (builder.isEmpty()) {
-                  return false;
+            SchemataBatchBuilder builder = null;
+            try {
+              while (true) {
+                if (!nsIter.hasNext()) {
+                  if (builder == null || builder.isEmpty()) {
+                    return false;
+                  }
+                  action.accept(builder.build());
+                  return true;
                 }
-                action.accept(builder.build());
-                return true;
+                if (builder == null) {
+                  builder = new SchemataBatchBuilder(allocator, requiredSet);
+                }
+                NamespaceNode namespace = nsIter.next();
+                ResourceId catalogId = namespace.catalogId();
+                String catalogName =
+                    catalogNames.computeIfAbsent(
+                        catalogId, id -> ((CatalogNode) ctx.resolve(id)).displayName());
+                builder.append(catalogName, schemaName(namespace));
+                if (builder.isFull()) {
+                  action.accept(builder.build());
+                  return true;
+                }
               }
-              NamespaceNode namespace = nsIter.next();
-              ResourceId catalogId = namespace.catalogId();
-              String catalogName =
-                  catalogNames.computeIfAbsent(
-                      catalogId, id -> ((CatalogNode) ctx.resolve(id)).displayName());
-              builder.append(catalogName, schemaName(namespace));
-              if (builder.isFull()) {
-                action.accept(builder.build());
-                return true;
+            } finally {
+              if (builder != null) {
+                builder.release();
               }
             }
           }
@@ -136,11 +147,18 @@ public final class SchemataScanner implements SystemObjectScanner {
     private final VarCharVector schemaName;
     private int rowCount;
 
-    private SchemataBatchBuilder(BufferAllocator allocator) {
+    private final boolean includeCatalog;
+    private final boolean includeSchema;
+
+    private SchemataBatchBuilder(BufferAllocator allocator, Set<String> requiredColumns) {
       this.root = VectorSchemaRoot.create(ARROW_SCHEMA, allocator);
+      this.root.allocateNew();
       List<FieldVector> vectors = root.getFieldVectors();
       this.catalogName = (VarCharVector) vectors.get(0);
       this.schemaName = (VarCharVector) vectors.get(1);
+      this.consumed = false;
+      this.includeCatalog = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "catalog_name");
+      this.includeSchema = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "schema_name");
     }
 
     private boolean isFull() {
@@ -152,8 +170,16 @@ public final class SchemataScanner implements SystemObjectScanner {
     }
 
     private void append(String catalog, String schema) {
-      ArrowValueWriters.writeVarChar(catalogName, rowCount, catalog);
-      ArrowValueWriters.writeVarChar(schemaName, rowCount, schema);
+      if (includeCatalog) {
+        ArrowValueWriters.writeVarChar(catalogName, rowCount, catalog);
+      } else {
+        catalogName.setNull(rowCount);
+      }
+      if (includeSchema) {
+        ArrowValueWriters.writeVarChar(schemaName, rowCount, schema);
+      } else {
+        schemaName.setNull(rowCount);
+      }
       rowCount++;
     }
 
@@ -162,7 +188,17 @@ public final class SchemataScanner implements SystemObjectScanner {
         vector.setValueCount(rowCount);
       }
       root.setRowCount(rowCount);
+      consumed = true;
       return new SimpleColumnarBatch(root);
     }
+
+    private void release() {
+      if (!consumed) {
+        consumed = true;
+        root.close();
+      }
+    }
+
+    private boolean consumed;
   }
 }

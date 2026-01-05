@@ -51,12 +51,15 @@ message SystemTableRow {
   repeated string values = 1;
 }
 
-message ScanSystemTableResponse {
-  repeated SystemTableRow rows = 1;
-  repeated bytes arrow_batches = 2;
+message ScanSystemTableChunk {
+  oneof payload {
+    bytes arrow_schema_ipc = 1;
+    bytes arrow_batch_ipc = 2;
+    SystemTableRow row = 3;
+  }
 }
 
 service QuerySystemScanService {
   rpc ScanSystemTable(ScanSystemTableRequest)
-      returns (ScanSystemTableResponse);
+      returns (stream ScanSystemTableChunk);
 }
