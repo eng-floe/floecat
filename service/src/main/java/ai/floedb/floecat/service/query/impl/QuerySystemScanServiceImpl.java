@@ -1,26 +1,47 @@
 package ai.floedb.floecat.service.query.impl;
 
+import static java.util.Objects.requireNonNullElse;
+
+import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.query.impl.arrow.ArrowScanPlan;
+import ai.floedb.floecat.service.query.impl.arrow.ArrowScanPlanner;
+import ai.floedb.floecat.service.query.impl.arrow.ArrowSink;
+import ai.floedb.floecat.service.query.impl.arrow.GrpcArrowSink;
 import ai.floedb.floecat.service.query.resolver.SystemScannerResolver;
 import ai.floedb.floecat.service.query.system.SystemRowFilter;
 import ai.floedb.floecat.service.query.system.SystemRowMappers;
 import ai.floedb.floecat.service.query.system.SystemRowProjector;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.system.rpc.OutputFormat;
 import ai.floedb.floecat.system.rpc.QuerySystemScanService;
+import ai.floedb.floecat.system.rpc.ScanSystemTableChunk;
 import ai.floedb.floecat.system.rpc.ScanSystemTableRequest;
-import ai.floedb.floecat.system.rpc.ScanSystemTableResponse;
+import ai.floedb.floecat.system.rpc.SystemTableRow;
+import ai.floedb.floecat.systemcatalog.expr.Expr;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
+import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
 import io.quarkus.grpc.GrpcService;
-import io.smallrye.mutiny.Uni;
+import io.smallrye.mutiny.Multi;
+import io.smallrye.mutiny.infrastructure.Infrastructure;
+import io.smallrye.mutiny.subscription.MultiEmitter;
 import jakarta.inject.Inject;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.RootAllocator;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -32,67 +53,93 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
   @Inject SystemScannerResolver scanners;
   @Inject QueryContextStore queryStore;
 
+  @ConfigProperty(name = "ai.floedb.floecat.arrow.max-bytes", defaultValue = "1073741824")
+  long arrowMaxBytes;
+
   private static final Logger LOG = Logger.getLogger(QuerySystemScanServiceImpl.class);
 
+  private final ArrowScanPlanner arrowPlanner = new ArrowScanPlanner();
+  private final ArrowSink arrowSink = new GrpcArrowSink();
+
   @Override
-  public Uni<ScanSystemTableResponse> scanSystemTable(ScanSystemTableRequest request) {
-
+  public Multi<ScanSystemTableChunk> scanSystemTable(ScanSystemTableRequest request) {
     var L = LogHelper.start(LOG, "ScanSystemTable");
-
-    return mapFailures(
-            run(
-                () -> {
-                  var principalContext = principal.get();
-                  var correlationId = principalContext.getCorrelationId();
-
-                  authz.require(principalContext, "catalog.read");
-
-                  String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
-
-                  var ctxOpt = queryStore.get(queryId);
-                  if (ctxOpt.isEmpty()) {
-                    throw GrpcErrors.notFound(
-                        correlationId, "query.not_found", Map.of("query_id", queryId));
-                  }
-                  var queryCtx = ctxOpt.get();
-
-                  if (!request.hasTableId()) {
-                    throw GrpcErrors.invalidArgument(
-                        correlationId, "system.table_id.required", Map.of());
-                  }
-
-                  ResourceId tableId = request.getTableId();
-
-                  // 1. Resolve scanner
-                  SystemObjectScanner scanner = scanners.resolve(correlationId, tableId);
-
-                  // For system scans, engine scoping is implicit via CatalogOverlay.
-                  // The catalogId here must represent the *current query catalog/database*.
-                  SystemObjectScanContext ctx =
-                      new SystemObjectScanContext(graph, null, queryCtx.getQueryDefaultCatalogId());
-
-                  // 3. Scan rows
-                  var rows = scanner.scan(ctx).toList();
-
-                  // 4. Apply predicates (exact)
-                  rows =
-                      SystemRowFilter.applyPredicates(
-                          rows, scanner.schema(), request.getPredicatesList());
-
-                  // 5. Apply projection
-                  rows =
-                      SystemRowProjector.project(
-                          rows, scanner.schema(), request.getRequiredColumnsList());
-
-                  // 6. Build response
-                  return ScanSystemTableResponse.newBuilder()
-                      .addAllRows(rows.stream().map(SystemRowMappers::toProto).toList())
-                      .build();
-                }),
-            correlationId())
+    return Multi.createFrom()
+        .<ScanSystemTableChunk>emitter(emitter -> execute(request, emitter))
+        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
         .onFailure()
         .invoke(L::fail)
-        .onItem()
+        .onCompletion()
         .invoke(L::ok);
+  }
+
+  private void execute(
+      ScanSystemTableRequest request, MultiEmitter<? super ScanSystemTableChunk> emitter) {
+    AtomicReference<String> correlationIdHolder = new AtomicReference<>("unknown");
+    try {
+      var principalContext = principal.get();
+      correlationIdHolder.set(principalContext.getCorrelationId());
+      authz.require(principalContext, "catalog.read");
+
+      String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationIdHolder.get());
+      var ctxOpt = queryStore.get(queryId);
+      if (ctxOpt.isEmpty()) {
+        throw GrpcErrors.notFound(
+            correlationIdHolder.get(), "query.not_found", Map.of("query_id", queryId));
+      }
+      var queryCtx = ctxOpt.get();
+
+      if (!request.hasTableId()) {
+        throw GrpcErrors.invalidArgument(
+            correlationIdHolder.get(), "system.table_id.required", Map.of());
+      }
+
+      ResourceId tableId = request.getTableId();
+      SystemObjectScanner scanner = scanners.resolve(correlationIdHolder.get(), tableId);
+      SystemObjectScanContext ctx =
+          new SystemObjectScanContext(graph, null, queryCtx.getQueryDefaultCatalogId());
+      List<SchemaColumn> schema = scanner.schema();
+      List<String> requiredColumns = request.getRequiredColumnsList();
+      List<Predicate> predicates = request.getPredicatesList();
+      OutputFormat format = request.getOutputFormat();
+      if (format == OutputFormat.UNRECOGNIZED) {
+        throw GrpcErrors.invalidArgument(
+            correlationIdHolder.get(),
+            "system.output_format.unrecognized",
+            Map.of("output_format", format.toString()));
+      }
+      boolean arrowRequested = format != OutputFormat.ROWS;
+      Expr arrowExpr =
+          arrowRequested ? SystemRowFilter.EXPRESSION_PROVIDER.toExpr(predicates) : null;
+
+      if (arrowRequested) {
+        BufferAllocator allocator = new RootAllocator(arrowMaxBytes);
+        ArrowScanPlan plan =
+            arrowPlanner.plan(
+                scanner, ctx, schema, predicates, requiredColumns, arrowExpr, allocator);
+        arrowSink.sink(
+            emitter,
+            plan,
+            allocator,
+            t -> toStatus(t, requireNonNullElse(correlationIdHolder.get(), "unknown")));
+        return;
+      }
+
+      try (Stream<SystemObjectRow> rows = scanner.scan(ctx);
+          Stream<SystemObjectRow> filtered = SystemRowFilter.filter(rows, schema, predicates);
+          Stream<SystemObjectRow> projected =
+              SystemRowProjector.project(filtered, schema, requiredColumns)) {
+        Iterator<SystemObjectRow> iterator = projected.iterator();
+        while (!emitter.isCancelled() && iterator.hasNext()) {
+          SystemTableRow row = SystemRowMappers.toProto(iterator.next());
+          emitter.emit(ScanSystemTableChunk.newBuilder().setRow(row).build());
+        }
+        if (!emitter.isCancelled()) {
+          emitter.complete();
+        }
+      }
+    } catch (Throwable t) {
+      emitter.fail(toStatus(t, requireNonNullElse(correlationIdHolder.get(), "unknown")));
+    }
   }
 }
