@@ -6,9 +6,11 @@ import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
+import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
+import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
 import ai.floedb.floecat.catalog.rpc.PutColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.PutFileColumnStatsRequest;
@@ -122,7 +124,7 @@ public class ReconcilerService {
 
       if (dest.hasNamespaceId()) {
         destNamespaceId = dest.getNamespaceId();
-        destNsFq = null;
+        destNsFq = resolveNamespaceFq(destNamespaceId);
       } else {
         destNsFq =
             (dest.hasNamespace() && !dest.getNamespace().getSegmentsList().isEmpty())
@@ -258,13 +260,12 @@ public class ReconcilerService {
       if (errors == 0) {
         return new Result(scanned, changed, 0, null);
       } else {
-        int limit = Math.min(5, errSummaries.size());
-        String summary =
-            "Partial failure ("
-                + errors
-                + "): "
-                + String.join(" | ", errSummaries.subList(0, limit));
-        return new Result(scanned, changed, errors, new RuntimeException(summary));
+        var summary = new StringBuilder();
+        summary.append("Partial failure (errors=").append(errors).append("):");
+        for (String s : errSummaries) {
+          summary.append("\n - ").append(s);
+        }
+        return new Result(scanned, changed, errors, new RuntimeException(summary.toString()));
       }
 
     } catch (Exception e) {
@@ -466,12 +467,23 @@ public class ReconcilerService {
       mask.addPaths("format_metadata");
     }
     SnapshotSpec snapshotSpec = spec.build();
-    boolean exists = existingSnapshot != null;
-    if (!exists) {
+    long snapshotId = snapshotBundle.snapshotId();
+    var updateMask = mask.build();
+
+    if (snapshotId <= 0) {
       var request = CreateSnapshotRequest.newBuilder().setSpec(snapshotSpec).build();
-      clients.snapshot().createSnapshot(request);
-    } else {
-      var updateMask = mask.build();
+      try {
+        clients.snapshot().createSnapshot(request);
+      } catch (StatusRuntimeException e) {
+        var code = e.getStatus().getCode();
+        if (code != Status.Code.ABORTED && code != Status.Code.ALREADY_EXISTS) {
+          throw e;
+        }
+      }
+      return;
+    }
+
+    if (existingSnapshot != null) {
       if (updateMask.getPathsCount() > 0) {
         var updateReq =
             UpdateSnapshotRequest.newBuilder()
@@ -479,6 +491,33 @@ public class ReconcilerService {
                 .setUpdateMask(updateMask)
                 .build();
         clients.snapshot().updateSnapshot(updateReq);
+      }
+      return;
+    }
+
+    if (updateMask.getPathsCount() > 0) {
+      try {
+        var updateReq =
+            UpdateSnapshotRequest.newBuilder()
+                .setSpec(snapshotSpec)
+                .setUpdateMask(updateMask)
+                .build();
+        clients.snapshot().updateSnapshot(updateReq);
+        return;
+      } catch (StatusRuntimeException e) {
+        if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
+          throw e;
+        }
+      }
+    }
+
+    var request = CreateSnapshotRequest.newBuilder().setSpec(snapshotSpec).build();
+    try {
+      clients.snapshot().createSnapshot(request);
+    } catch (StatusRuntimeException e) {
+      var code = e.getStatus().getCode();
+      if (code != Status.Code.ABORTED && code != Status.Code.ALREADY_EXISTS) {
+        throw e;
       }
     }
   }
@@ -672,10 +711,60 @@ public class ReconcilerService {
   }
 
   private static String rootCauseMessage(Throwable t) {
-    Throwable r = t;
-    while (r.getCause() != null) r = r.getCause();
-    String m = r.getMessage();
-    return (m == null || m.isBlank()) ? r.getClass().getSimpleName() : m;
+    if (t == null) {
+      return "unknown error";
+    }
+    var seen = new HashSet<Throwable>();
+    var parts = new ArrayList<String>();
+    Throwable cur = t;
+    while (cur != null && !seen.contains(cur)) {
+      seen.add(cur);
+      parts.add(renderThrowable(cur));
+      cur = cur.getCause();
+    }
+    return String.join(" | caused by: ", parts);
+  }
+
+  private String resolveNamespaceFq(ResourceId namespaceId) {
+    try {
+      Namespace ns =
+          clients
+              .namespace()
+              .getNamespace(GetNamespaceRequest.newBuilder().setNamespaceId(namespaceId).build())
+              .getNamespace();
+      var segs = new ArrayList<String>(ns.getParentsCount() + 1);
+      segs.addAll(ns.getParentsList());
+      if (ns.getDisplayName() != null && !ns.getDisplayName().isBlank()) {
+        segs.add(ns.getDisplayName());
+      }
+      return fq(segs);
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        throw new IllegalArgumentException(
+            "Destination namespace not found: " + namespaceId.getId(), e);
+      }
+      throw e;
+    }
+  }
+
+  private static String renderThrowable(Throwable t) {
+    if (t instanceof StatusRuntimeException sre) {
+      var status = sre.getStatus();
+      String desc = status.getDescription();
+      if (desc == null || desc.isBlank()) {
+        desc = sre.getMessage();
+      }
+      if (desc == null || desc.isBlank()) {
+        return "grpc=" + status.getCode();
+      }
+      return "grpc=" + status.getCode() + " desc=" + desc;
+    }
+    String m = t.getMessage();
+    String cls = t.getClass().getSimpleName();
+    if (m == null || m.isBlank()) {
+      return cls;
+    }
+    return cls + ": " + m;
   }
 
   private static String fq(List<String> segments) {
@@ -719,7 +808,7 @@ public class ReconcilerService {
     }
 
     public String message() {
-      return ok() ? "OK" : error.getMessage();
+      return ok() ? "OK" : rootCauseMessage(error);
     }
   }
 }

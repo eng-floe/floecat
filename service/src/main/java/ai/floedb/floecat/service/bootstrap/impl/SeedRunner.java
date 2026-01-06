@@ -198,6 +198,10 @@ public class SeedRunner {
   }
 
   private ResourceId seedAccount(String displayName, String description, long now) {
+    var existing = accounts.getByName(displayName).orElse(null);
+    if (existing != null) {
+      return existing.getResourceId();
+    }
     String id = uuidFor("/account:" + displayName);
     var rid =
         ResourceId.newBuilder().setAccountId(id).setId(id).setKind(ResourceKind.RK_ACCOUNT).build();
@@ -213,6 +217,10 @@ public class SeedRunner {
   }
 
   private ResourceId seedCatalog(String account, String displayName, String description, long now) {
+    var existing = catalogs.getByName(account, displayName).orElse(null);
+    if (existing != null) {
+      return existing.getResourceId();
+    }
     String id = uuidFor(account + "/catalog:" + displayName);
     var rid =
         ResourceId.newBuilder()
@@ -234,6 +242,10 @@ public class SeedRunner {
   private ResourceId seedNamespace(
       String account, ResourceId catalogId, List<String> path, String display, long now) {
     List<String> clean = (path == null) ? List.of() : path;
+    var existing = namespaces.getByPath(account, catalogId.getId(), clean).orElse(null);
+    if (existing != null) {
+      return existing.getResourceId();
+    }
     List<String> parents = clean.isEmpty() ? List.of() : clean.subList(0, clean.size() - 1);
     String leaf = clean.isEmpty() ? display : clean.get(clean.size() - 1);
 
@@ -268,6 +280,10 @@ public class SeedRunner {
       String sql,
       Map<String, String> properties,
       long now) {
+    var existing = views.getByName(account, catalogId.getId(), namespaceId, name).orElse(null);
+    if (existing != null) {
+      return existing.getResourceId();
+    }
     String viewId = uuidFor(account + "/view:" + name);
     var viewRid =
         ResourceId.newBuilder()
@@ -300,6 +316,10 @@ public class SeedRunner {
 
   private ResourceId seedFakeTable(
       String account, ResourceId catalogId, String namespaceId, String name, long now) {
+    var existing = tables.getByName(account, catalogId.getId(), namespaceId, name).orElse(null);
+    if (existing != null) {
+      return existing.getResourceId();
+    }
     String tableId = uuidFor(account + "/tbl:" + name);
     var tableRid =
         ResourceId.newBuilder()
@@ -346,6 +366,9 @@ public class SeedRunner {
       long snapshotId,
       long ingestedAtMs,
       long upstreamCreatedAt) {
+    if (snapshots.getById(tableId, snapshotId).isPresent()) {
+      return;
+    }
     var snap =
         Snapshot.newBuilder()
             .setTableId(tableId)
@@ -394,6 +417,10 @@ public class SeedRunner {
       FixtureConfig fixture,
       String fixtureRoot,
       long now) {
+    var existing = connectorRepo.getByName(accountId.getId(), fixture.connectorName()).orElse(null);
+    if (existing != null) {
+      return existing.getResourceId();
+    }
 
     String connectorUuid = uuidFor(accountId.getId() + "/connector:" + fixture.connectorName());
     var connectorRid =
@@ -466,6 +493,10 @@ public class SeedRunner {
 
   private ResourceId seedDeltaConnector(
       ResourceId accountId, ResourceId catalogId, DeltaFixtureConfig fixture, long now) {
+    var existing = connectorRepo.getByName(accountId.getId(), fixture.connectorName()).orElse(null);
+    if (existing != null) {
+      return existing.getResourceId();
+    }
     String connectorUuid = uuidFor(accountId.getId() + "/connector:" + fixture.connectorName());
     var connectorRid =
         ResourceId.newBuilder()
