@@ -24,6 +24,7 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.util.ThreadNamer;
 import io.grpc.Context;
 import io.grpc.Contexts;
 import io.grpc.ForwardingServerCall.SimpleForwardingServerCall;
@@ -248,14 +249,16 @@ public class InboundContextInterceptor implements ServerInterceptor {
   }
 
   private void validateAccount(String accountId) {
-    ResourceId accountRid =
-        ResourceId.newBuilder().setId(accountId).setKind(ResourceKind.RK_ACCOUNT).build();
-    if (accountId == null
-        || isBlank(accountId)
-        || accountRepository.getById(accountRid).isEmpty()) {
-      throw Status.UNAUTHENTICATED
-          .withDescription("invalid or unknown account: " + accountId)
-          .asRuntimeException();
+    try (var _ = new ThreadNamer("floecat.")) { // Avoid vert.x async/blocking guard
+      ResourceId accountRid =
+          ResourceId.newBuilder().setId(accountId).setKind(ResourceKind.RK_ACCOUNT).build();
+      if (accountId == null
+          || isBlank(accountId)
+          || accountRepository.getById(accountRid).isEmpty()) {
+        throw Status.UNAUTHENTICATED
+            .withDescription("invalid or unknown account: " + accountId)
+            .asRuntimeException();
+      }
     }
   }
 

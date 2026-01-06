@@ -29,12 +29,20 @@ public class TestDataResetter {
   @Inject BlobStore blobs;
 
   private static final String GLOBAL_ACCOUNTS_BY_ID_PREFIX = "/accounts/by-id/";
+  private static final String GLOBAL_ACCOUNTS_BY_NAME_PREFIX = "/accounts/by-name/";
 
   public void wipeAll() {
+    if (false) ptr.dump("BEFORE WIPE");
     var accountIds = listAccountIds();
+    var accountNames = listAccountNames();
 
     for (var tid : accountIds) {
       ptr.deleteByPrefix("/accounts/" + tid + "/");
+      ptr.deleteByPrefix(GLOBAL_ACCOUNTS_BY_ID_PREFIX + tid);
+      ptr.delete(GLOBAL_ACCOUNTS_BY_ID_PREFIX + tid);
+    }
+    for (var nm : accountNames) {
+      ptr.delete(GLOBAL_ACCOUNTS_BY_NAME_PREFIX + nm);
     }
     ptr.deleteByPrefix("/accounts/");
 
@@ -42,6 +50,10 @@ public class TestDataResetter {
       blobs.deletePrefix("/accounts/" + tid + "/");
     }
     blobs.deletePrefix("/accounts/");
+
+    if (!ptr.isEmpty()) {
+      ptr.dump("AFTER WIPE, NON-EMPTY");
+    }
   }
 
   private List<String> listAccountIds() {
@@ -51,14 +63,38 @@ public class TestDataResetter {
       var next = new StringBuilder();
       var rows = ptr.listPointersByPrefix(GLOBAL_ACCOUNTS_BY_ID_PREFIX, 200, token, next);
       for (var r : rows) {
-        var k = r.getKey();
-        int idx = k.lastIndexOf('/');
-        if (idx > 0 && idx + 1 < k.length()) {
-          ids.add(k.substring(idx + 1));
+        var k =
+            r.getKey()
+                .replace(GLOBAL_ACCOUNTS_BY_ID_PREFIX, "")
+                .replace(GLOBAL_ACCOUNTS_BY_ID_PREFIX.substring(1), "");
+        var parts = k.split("/");
+        if (parts.length > 0) {
+          ids.add(parts[0]);
         }
       }
       token = next.toString();
     } while (!token.isBlank());
     return ids;
+  }
+
+  private List<String> listAccountNames() {
+    var names = new ArrayList<String>();
+    String token = "";
+    do {
+      var next = new StringBuilder();
+      var rows = ptr.listPointersByPrefix(GLOBAL_ACCOUNTS_BY_NAME_PREFIX, 200, token, next);
+      for (var r : rows) {
+        var k =
+            r.getKey()
+                .replace(GLOBAL_ACCOUNTS_BY_NAME_PREFIX, "")
+                .replace(GLOBAL_ACCOUNTS_BY_NAME_PREFIX.substring(1), "");
+        var parts = k.split("/");
+        if (parts.length > 0) {
+          names.add(parts[0]);
+        }
+      }
+      token = next.toString();
+    } while (!token.isBlank());
+    return names;
   }
 }

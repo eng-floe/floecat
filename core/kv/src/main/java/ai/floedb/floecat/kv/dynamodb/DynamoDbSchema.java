@@ -13,19 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package ai.floedb.floecat.kv.dynamodb;
 
-package ai.floedb.floecat.storage.aws.dynamodb;
-
-import io.quarkus.arc.properties.IfBuildProperty;
-import jakarta.inject.Inject;
-import jakarta.inject.Singleton;
-
-@Singleton
-@IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
-public final class DynamoPointerStore extends KvPointerStore {
-
-  @Inject
-  public DynamoPointerStore(PointerStoreEntity pointers) {
-    super(pointers);
-  }
+public interface DynamoDbSchema {
+  String ATTR_PARTITION_KEY = "pk";
+  String ATTR_SORT_KEY = "sk";
+  String ATTR_KIND = "kind";
+  String ATTR_VALUE = "value";
+  String ATTR_VERSION = "version";
+  String ATTR_TTL = "ttl";
 }

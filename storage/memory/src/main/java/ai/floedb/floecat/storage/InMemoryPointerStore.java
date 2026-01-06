@@ -170,4 +170,16 @@ public class InMemoryPointerStore implements PointerStore {
 
     return deleted[0];
   }
+
+  @Override
+  public boolean isEmpty() {
+    return map.isEmpty();
+  }
+
+  @Override
+  public void dump(String header) {
+    for (Map.Entry<String, Pointer> entry : map.entrySet()) {
+      System.out.println("Key: " + entry.getKey() + ", Pointer: " + entry.getValue());
+    }
+  }
 }

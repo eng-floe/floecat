@@ -1,4 +1,47 @@
 {
-  "java.configuration.updateBuildConfiguration": "interactive",
-  "java.jdt.ls.vmargs": "-XX:+UseParallelGC -XX:GCTimeRatio=4 -XX:AdaptiveSizePolicyWeight=90 -Dsun.zip.disableMemoryMapping=true -Xmx16G -Xms100m -Xlog:disable"
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "java.compile.nullAnalysis.mode": "automatic",
+  "java.autobuild.enabled": false,
+  "java.jdt.ls.vmargs": "-XX:+UseParallelGC -XX:GCTimeRatio=4 -XX:AdaptiveSizePolicyWeight=90 -Dsun.zip.disableMemoryMapping=true -Xmx16G -Xms100m -Xlog:disable",
+  "java.format.enabled": false,
+  "[java]": {
+    "editor.defaultFormatter": "josevseb.google-java-format-for-vs-code",
+    "editor.formatOnSave": true,
+    "editor.tabSize": 2
+  },
+
+  "java.test.config": [
+    {
+      "name": "quarkusConfiguration",
+      "vmArgs": [
+        "-Xmx1g",
+
+        "-Dfloecat.fileio.override.io-impl=org.apache.iceberg.aws.s3.S3FileIO",
+        "-Dfloecat.fileio.override.s3.endpoint=http://localhost:4566",
+        "-Dfloecat.fileio.override.s3.region=us-east-1",
+        "-Dfloecat.fileio.override.s3.access-key-id=test",
+        "-Dfloecat.fileio.override.s3.secret-access-key=test",
+        "-Dfloecat.fileio.override.s3.path-style-access=true",
+
+        "-Dfloecat.kv=dynamodb",
+        "-Dfloecat.kv.table=floecat_pointers",
+        "-Dfloecat.kv.auto-create=true ",
+        "-Dfloecat.kv.ttl-enabled=true ",
+        "-Dfloecat.blob=s3",
+        "-Dfloecat.blob.s3.bucket=floecat-dev",
+                
+        "-Dfloecat.fileio.override.aws.dynamodb.endpoint-override=http://localhost:4566",
+        "-Dfloecat.fixtures.use-aws-s3=true",
+        "-Daws.requestChecksumCalculation=when_required",
+        "-Daws.responseChecksumValidation=when_required",
+
+        "-Djava.util.logging.manager=org.jboss.logmanager.LogManager",
+        "--add-reads=org.apache.arrow.flight.core=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED"
+      ]
+    }
+  ],
+  "java.test.defaultConfig": "quarkusConfiguration"
+
 }

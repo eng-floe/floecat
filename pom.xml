@@ -46,6 +46,7 @@
       <module>core/connectors/spi</module>
       <module>core/connectors/common</module>
       <module>core/storage-spi</module>
+      <module>core/kv</module>
 
       <!-- Connectors -->
       <module>connectors/catalogs/iceberg</module>
@@ -66,7 +67,7 @@
 
       <!-- CLI -->
       <module>client-cli</module>
-      
+
       <!-- Other -->
       <module>reconciler</module>
       <module>protocol-gateway</module>

@@ -221,6 +221,9 @@ test-localstack: $(PROTO_JAR) localstack-down localstack-up
 	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	  verify
 
+.PHONY: localstack-restart
+localstack-restart: localstack-down localstack-up
+
 unit-test:
 	@echo "==> [TEST] unit tests (service, REST gateway, client-cli)"
 	$(MVN) $(MVN_TESTALL) \

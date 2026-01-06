@@ -90,3 +90,9 @@ nb-configuration.xml
 ## OS X
 ##############################
 .DS_Store
+
+##############################
+## DynamoDB local
+##############################
+**/dynamodb-local-metadata.json
+dynamodb-local/
