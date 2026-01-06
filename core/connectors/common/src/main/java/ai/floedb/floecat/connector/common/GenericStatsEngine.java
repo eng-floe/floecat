@@ -113,7 +113,8 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
               file.sizeBytes(),
               fileCols,
               file.partitionDataJson(),
-              file.partitionSpecId()));
+              file.partitionSpecId(),
+              file.sequenceNumber()));
     }
 
     final Map<K, ColumnAgg> out = new LinkedHashMap<>(acc.columns.size());
@@ -300,6 +301,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     private final Map<K, ColumnAgg> columns;
     private final String partitionDataJson;
     private final int partitionSpecId;
+    private final Long sequenceNumber;
 
     FileAggImpl(
         String path,
@@ -308,7 +310,8 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
         long sizeBytes,
         Map<K, ColumnAgg> columns,
         String partitionDataJson,
-        int partitionSpecId) {
+        int partitionSpecId,
+        Long sequenceNumber) {
       this.path = path;
       this.format = format;
       this.rowCount = rowCount;
@@ -316,6 +319,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       this.columns = columns;
       this.partitionDataJson = partitionDataJson;
       this.partitionSpecId = partitionSpecId;
+      this.sequenceNumber = sequenceNumber;
     }
 
     @Override
@@ -351,6 +355,11 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     @Override
     public int partitionSpecId() {
       return partitionSpecId;
+    }
+
+    @Override
+    public Long sequenceNumber() {
+      return sequenceNumber;
     }
   }
 

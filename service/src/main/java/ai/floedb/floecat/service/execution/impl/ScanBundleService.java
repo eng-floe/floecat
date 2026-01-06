@@ -77,7 +77,7 @@ public class ScanBundleService {
       var resp = stats.listFileColumnStats(req);
 
       for (FileColumnStats fcs : resp.getFileColumnsList()) {
-        var scanFile =
+        var builder =
             ScanFile.newBuilder()
                 .setFilePath(fcs.getFilePath())
                 .setFileFormat(fcs.getFileFormat())
@@ -87,8 +87,11 @@ public class ScanBundleService {
                 .setPartitionSpecId(fcs.getPartitionSpecId())
                 .addAllEqualityFieldIds(fcs.getEqualityFieldIdsList())
                 .setFileContent(mapContent(fcs.getFileContent()))
-                .addAllColumns(fcs.getColumnsList())
-                .build();
+                .addAllColumns(fcs.getColumnsList());
+        if (fcs.hasSequenceNumber()) {
+          builder.setSequenceNumber(fcs.getSequenceNumber());
+        }
+        var scanFile = builder.build();
 
         if (fcs.getFileContent() == FileContent.FC_DATA) {
           data.add(scanFile);

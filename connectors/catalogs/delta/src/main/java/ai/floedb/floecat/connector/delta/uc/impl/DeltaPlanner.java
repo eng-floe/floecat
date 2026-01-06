@@ -207,7 +207,8 @@ final class DeltaPlanner implements Planner<String> {
                     mins,
                     maxs,
                     partitionJson,
-                    0));
+                    0,
+                    null));
           }
         }
       }

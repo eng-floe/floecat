@@ -19,6 +19,7 @@ import ai.floedb.floecat.connector.rpc.*;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.reconciler.impl.ReconcilerScheduler;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
@@ -38,6 +39,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -242,6 +244,74 @@ public class ConnectorIT {
       assertEquals(0L, idCol.getNullCount());
       assertTrue(idCol.getValueCount() > 0, "value_count should be > 0 for id");
     }
+  }
+
+  @Test
+  void icebergFixtureFileStatsIncludeSequenceNumber() throws Exception {
+    TestS3Fixtures.seedFixturesOnce();
+
+    var accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    TestSupport.createCatalog(catalogService, "cat-iceberg-fixture", "");
+
+    var dest =
+        DestinationTarget.newBuilder()
+            .setCatalogDisplayName("cat-iceberg-fixture")
+            .setNamespace(NamespacePath.newBuilder().addSegments("iceberg").build())
+            .setTableDisplayName("trino_test")
+            .build();
+
+    var props = new HashMap<String, String>();
+    props.putAll(
+        TestS3Fixtures.fileIoProperties(
+            TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
+    props.put(
+        "external.metadata-location",
+        TestS3Fixtures.bucketUri(
+            "metadata/00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json"));
+    props.put("external.namespace", "fixtures.simple");
+    props.put("external.table-name", "trino_test");
+    props.put("stats.ndv.enabled", "false");
+
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("fixture-iceberg-simple")
+                .setKind(ConnectorKind.CK_ICEBERG)
+                .setUri(TestS3Fixtures.bucketUri(null))
+                .setSource(source(List.of("fixtures", "simple")))
+                .setDestination(dest)
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .putAllProperties(props)
+                .build());
+
+    var job = runReconcile(conn.getResourceId());
+    assertNotNull(job);
+    assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
+
+    var catId =
+        catalogs.getByName(accountId.getId(), "cat-iceberg-fixture").orElseThrow().getResourceId();
+    var ns =
+        namespaces.getByPath(accountId.getId(), catId.getId(), List.of("iceberg")).orElseThrow();
+    var table =
+        tables
+            .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "trino_test")
+            .orElseThrow();
+
+    var fileResp =
+        statsService.listFileColumnStats(
+            ListFileColumnStatsRequest.newBuilder()
+                .setTableId(table.getResourceId())
+                .setSnapshot(
+                    SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
+                .setPage(PageRequest.newBuilder().setPageSize(200))
+                .build());
+
+    assertTrue(fileResp.getFileColumnsCount() > 0, "expected file stats for iceberg fixture");
+    boolean hasSeq =
+        fileResp.getFileColumnsList().stream()
+            .anyMatch(f -> f.hasSequenceNumber() && f.getSequenceNumber() > 0);
+    assertTrue(hasSeq, "expected at least one file with sequence_number");
   }
 
   @Test

@@ -13,4 +13,5 @@ public record PlannedFile<K>(
     Map<K, Object> lowerBounds,
     Map<K, Object> upperBounds,
     String partitionDataJson,
-    int partitionSpecId) {}
+    int partitionSpecId,
+    Long sequenceNumber) {}

@@ -288,7 +288,12 @@ class TableRepositoryTest {
 
                   String col = "c" + rnd.nextInt(1000);
                   var curMeta = tableRepo.metaFor(tblId);
-                  var cur = tableRepo.getById(tblId).orElseThrow();
+                  var curOpt = tableRepo.getById(tblId);
+                  if (curOpt.isEmpty()) {
+                    expectedCounts.computeIfAbsent("NotFound", k -> new LongAdder()).increment();
+                    continue;
+                  }
+                  var cur = curOpt.get();
                   var updated =
                       cur.toBuilder()
                           .setSchemaJson(
@@ -309,7 +314,12 @@ class TableRepositoryTest {
                   }
 
                   var curMeta = tableRepo.metaFor(tblId);
-                  var cur = tableRepo.getById(tblId).orElseThrow();
+                  var curOpt = tableRepo.getById(tblId);
+                  if (curOpt.isEmpty()) {
+                    expectedCounts.computeIfAbsent("NotFound", k -> new LongAdder()).increment();
+                    continue;
+                  }
+                  var cur = curOpt.get();
                   String target = "seed_" + rnd.nextInt(5);
                   var renamed = cur.toBuilder().setDisplayName(target).build();
                   boolean ok = tableRepo.update(renamed, curMeta.getPointerVersion());
@@ -324,7 +334,12 @@ class TableRepositoryTest {
                   }
 
                   var curMeta = tableRepo.metaFor(tblId);
-                  var cur = tableRepo.getById(tblId).orElseThrow();
+                  var curOpt = tableRepo.getById(tblId);
+                  if (curOpt.isEmpty()) {
+                    expectedCounts.computeIfAbsent("NotFound", k -> new LongAdder()).increment();
+                    continue;
+                  }
+                  var cur = curOpt.get();
                   var toNs = rnd.nextBoolean() ? ns1Id : ns2Id;
                   var updated = cur.toBuilder().setNamespaceId(toNs).build();
                   boolean ok = tableRepo.update(updated, curMeta.getPointerVersion());

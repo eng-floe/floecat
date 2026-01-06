@@ -389,7 +389,7 @@ public final class IcebergConnector implements FloecatConnector {
                   df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
                       ? df.equalityFieldIds()
                       : List.of();
-              deleteStats.add(
+              var builder =
                   FileColumnStats.newBuilder()
                       .setTableId(destinationTableId)
                       .setSnapshotId(snapshotId)
@@ -400,8 +400,12 @@ public final class IcebergConnector implements FloecatConnector {
                       .setFileContent(
                           df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
                               ? FileContent.FC_EQUALITY_DELETES
-                              : FileContent.FC_POSITION_DELETES)
-                      .build());
+                              : FileContent.FC_POSITION_DELETES);
+              Long sequenceNumber = df.fileSequenceNumber();
+              if (sequenceNumber != null && sequenceNumber > 0) {
+                builder.setSequenceNumber(sequenceNumber);
+              }
+              deleteStats.add(builder.build());
             }
           }
         } catch (Exception e) {
