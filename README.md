@@ -322,6 +322,12 @@ Floecat enforces branch protections and CI. Preferred workflow:
 Follow conventional commits (`feat:`, `fix:`, etc.) and avoid embedding secrets. CI enforces Google
 Java Format via the Spotify `fmt` plugin. Use `.editorconfig` for whitespace settings.
 
+This project is licensed under the Apache License, Version 2.0.
+
+By submitting a pull request, you represent that you have the right to license your
+contribution to Yellowbrick Data, Inc. and the Apache Software Foundation, and you
+agree that your contribution will be licensed under the Apache License, Version 2.0.
+
 ## Observability & Operations
 
 - **Logging** – JSON console logs plus rotating files under `log/`. Audit logs route gRPC request
