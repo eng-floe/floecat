@@ -27,7 +27,7 @@ import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.floecat.common.rpc.Operator;
 import ai.floedb.floecat.common.rpc.Predicate;
-import ai.floedb.floecat.query.rpc.QueryInput;
+import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;

@@ -77,7 +77,15 @@ public abstract class BaseServiceImpl {
   }
 
   protected <T> Uni<T> run(Supplier<T> body) {
-    Uni<T> u = Uni.createFrom().item(body);
+    GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
+    Uni<T> u =
+        Uni.createFrom()
+            .item(
+                () ->
+                    grpcCtx.call(
+                        () -> {
+                          return body.get();
+                        }));
     return u.runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
 

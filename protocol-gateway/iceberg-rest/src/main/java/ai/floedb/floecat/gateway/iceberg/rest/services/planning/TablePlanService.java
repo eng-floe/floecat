@@ -20,6 +20,7 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asS
 
 import ai.floedb.floecat.common.rpc.Operator;
 import ai.floedb.floecat.common.rpc.Predicate;
+import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
@@ -39,7 +40,6 @@ import ai.floedb.floecat.query.rpc.EndQueryRequest;
 import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.floecat.query.rpc.GetQueryRequest;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
-import ai.floedb.floecat.query.rpc.QueryInput;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;

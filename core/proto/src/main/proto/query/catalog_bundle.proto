@@ -1,0 +1,208 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+syntax = "proto3";
+
+// Streams catalog metadata so planners see each resolved input as soon as it exists.
+// The protocol is header → zero-or-more RelationResolutions chunks → single end summary.
+package ai.floedb.floecat.query;
+
+import "common/common.proto";
+import "query/engine_specific.proto";
+import "query/sql_objects.proto";
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.query.rpc";
+option java_outer_classname = "QueryCatalogProto";
+
+service QueryCatalogService {
+  rpc GetCatalogBundle(GetCatalogBundleRequest) returns (stream CatalogBundleChunk);
+}
+
+/**
+ * One logical reference from the planner (e.g. "a" in SELECT ... FROM a).
+ * The planner expands search_path and sends ordered candidates to try.
+ *
+ * Example: candidates=[public1.a, pg.a]
+ */
+message TableReferenceCandidate {
+  // Ordered candidate inputs the planner is willing to accept for this logical reference.
+  repeated ai.floedb.floecat.common.QueryInput candidates = 1;
+
+  // Optional column list used by the planner to avoid re-requesting already-present columns.
+  repeated string initial_columns = 2;
+  // When true, the planner wants all columns regardless of `initial_columns`.
+  bool wants_all_columns = 3;
+}
+
+message GetCatalogBundleRequest {
+  // Query ID obtained from BeginQuery.
+  string query_id = 1;
+
+  // Planner references expressed as ordered candidates; responses include `input_index`.
+  repeated TableReferenceCandidate tables = 2;
+}
+
+message CatalogBundleChunk {
+  string query_id = 1;
+  uint64 seq = 2;
+
+  oneof payload {
+    CatalogBundleHeader header = 10;
+
+    // One chunk can carry multiple input resolution results for efficiency.
+    RelationResolutions resolutions = 20;
+
+    // (optional future) custom objects if/when you expand beyond tables/views
+    ai.floedb.floecat.query.SqlType type = 30;
+    ai.floedb.floecat.query.SqlFunction function = 31;
+    ai.floedb.floecat.query.SqlOperator operator = 32;
+    ai.floedb.floecat.query.SqlCast cast = 33;
+    ai.floedb.floecat.query.SqlCollation collation = 34;
+    ai.floedb.floecat.query.SqlAggregate aggregate = 35;
+
+  CatalogBundleEnd end = 90;
+  }
+}
+
+message CatalogBundleHeader {
+  // Optional warnings computed before streaming begins.
+  repeated ResolutionWarning warnings = 1;
+}
+
+message CatalogBundleEnd {
+  // Number of input references the server attempted to resolve (typically request.tables count).
+  uint32 resolution_count = 1;
+
+  // Number of inputs that resolved to an actual relation.
+  uint32 found_count = 2;
+
+  // Number of inputs that could not be resolved.
+  uint32 not_found_count = 3;
+
+  // Placeholder for other object types (types/functions/operators) if emitted in future.
+  uint32 custom_object_count = 10;
+}
+
+message ResolutionWarning {
+  // Machine-readable warning identifier.
+  string code = 1;
+  // Human-friendly warning message.
+  string message = 2;
+}
+
+enum ResolutionStatus {
+  RESOLUTION_STATUS_UNSPECIFIED = 0;
+  RESOLUTION_STATUS_FOUND = 1;
+  RESOLUTION_STATUS_NOT_FOUND = 2;
+  // Optional but useful so the stream can continue even if one input is invalid.
+  RESOLUTION_STATUS_ERROR = 3;
+}
+
+/**
+ * Result for ONE input entry from request.tables[].
+ * input_index ties the response back to the planner’s reference list.
+ */
+message RelationResolution {
+  // Index into request.tables[] so the planner can correlate responses.
+  uint32 input_index = 1;
+  // Resolution outcome.
+  ResolutionStatus status = 2;
+
+  // Populated when the status is FOUND.
+  RelationInfo relation = 10;
+
+  // Populated for NOT_FOUND/ERROR outcomes with diagnostics.
+  ResolutionFailure failure = 11;
+}
+
+/**
+ * Batch of resolution results carried by a single streamed chunk.
+ * Keeps client parsing simple.
+ */
+message RelationResolutions {
+  // Resolution results contained in a single chunk.
+  repeated RelationResolution items = 1;
+}
+
+/**
+ * Gives planner enough info to produce a useful error message and/or retry.
+ * attempted mirrors the candidate list the server tried (after defaults applied, if you want).
+ */
+message ResolutionFailure {
+  // Machine-readable failure code (e.g. "catalog_bundle.relation_not_found").
+  string code = 1;
+  // Human-readable summary of the failure.
+  string message = 2;
+  // Attempted inputs (after defaults) that the server tried for this logical reference.
+  repeated ai.floedb.floecat.common.QueryInput attempted = 3;
+
+  // Optional structured metadata to help debugging.
+  map<string, string> details = 10;
+}
+
+enum RelationKind {
+  RELATION_KIND_UNSPECIFIED = 0;
+  RELATION_KIND_TABLE = 1;
+  RELATION_KIND_VIEW = 2;
+  RELATION_KIND_SYSTEM_VIEW = 3;
+  RELATION_KIND_TEMP = 4;
+}
+
+message RelationInfo {
+  // Unique resource identity of the relation (table/view) resolved by the planner.
+  ai.floedb.floecat.common.ResourceId relation_id = 1;
+  // Canonical name of the relation for humans.
+  ai.floedb.floecat.common.NameRef name = 2;
+  // Relation kind (table, view, etc.) to help the planner decide how to bind.
+  RelationKind kind = 3;
+  // Origin indicates whether the relation is user-defined or builtin.
+  ai.floedb.floecat.query.Origin origin = 10;
+  // Columns describe the resolved projection metadata.
+  repeated ColumnInfo columns = 4;
+  // Optional view definition for relations of kind VIEW.
+  ViewDefinition view_definition = 5;
+  // Optional engine-specific metadata.
+  repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
+}
+
+message ColumnInfo {
+  // Column name.
+  string name = 1;
+  // Logical type identifier for the column.
+  ai.floedb.floecat.common.NameRef type = 2;
+  // Whether NULL is allowed.
+  bool nullable = 3;
+  // Ordinal position within the table schema.
+  int32 ordinal = 10;
+  // Unique field identifier if present.
+  int32 field_id = 11;
+  // Physical path pointing inside the storage format.
+  string physical_path = 12;
+  // Origin marks builtin vs user columns (propagated from relation origin).
+  ai.floedb.floecat.query.Origin origin = 20;
+  repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
+}
+
+message ViewDefinition {
+  // Canonical SQL definition of the view.
+  string canonical_sql = 1;
+  // Dialect used to produce the SQL.
+  string dialect = 2;
+  // Base relations that the view depends on.
+  repeated ai.floedb.floecat.common.ResourceId base_relations = 3;
+  // Search path from when the view was created.
+  repeated string creation_search_path = 4;
+  // Engine-specific metadata (collations, hints, etc.)
+  repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
+}

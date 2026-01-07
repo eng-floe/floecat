@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
+import ai.floedb.floecat.service.common.GrpcContextUtil;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
@@ -80,8 +81,10 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
   @Override
   public Multi<ScanSystemTableChunk> scanSystemTable(ScanSystemTableRequest request) {
     var L = LogHelper.start(LOG, "ScanSystemTable");
+    GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
+
     return Multi.createFrom()
-        .<ScanSystemTableChunk>emitter(emitter -> execute(request, emitter))
+        .<ScanSystemTableChunk>emitter(emitter -> grpcCtx.run(() -> execute(request, emitter)))
         .runSubscriptionOn(Infrastructure.getDefaultExecutor())
         .onFailure()
         .invoke(L::fail)

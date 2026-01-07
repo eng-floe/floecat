@@ -11,7 +11,7 @@ The contract files are organised by domain (`common/`, `catalog/`, `query/`, `ex
 packages and are consumed by the Quarkus service, connectors, CLI, and reconciler.
 
 ## Architecture & Responsibilities
-- **`common/common.proto`** – Defines `ResourceId`, `NameRef`, `SnapshotRef`, pagination, rich error
+- **`common/common.proto`** – Defines `QueryInput`, `ResourceId`, `NameRef`, `SnapshotRef`, pagination, rich error
   payloads, `PrincipalContext`, and idempotency/optimistic-concurrency helpers. Every other schema
   imports this file.
 - **`catalog/*.proto`** – CRUD APIs for catalogs, namespaces, tables, views, snapshots, directory
@@ -45,6 +45,8 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 | `AccountService` | Account CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `TriggerReconcile`, `GetReconcileJob`. |
 | `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`, `FetchScanBundle`. |
+| `QueryCatalogService` | `GetCatalogBundle` | Streams catalog metadata chunks (header → relations → end) as the service resolves each relation so planners can start binding earlier. |
+| &nbsp;&nbsp;&nbsp;— Consumption pattern | | Clients read `CatalogBundleChunk` in three phases: 1) header chunk (cheap metadata), 2) zero or more `resolutions` chunk batches where each `RelationResolution` carries `input_index` + FOUND/NOT_FOUND/ERROR, and 3) a single end chunk with summary counts. Use `input_index` to map back to planner `TableReferenceCandidate`s and bind as soon as a `FOUND` arrives. |
 | `BuiltinCatalogService` | `GetBuiltinCatalog` | Returns the builtin catalog filtered by the `x-engine-kind` / `x-engine-version` headers supplied with the request. |
 
 Each RPC requires a populated `account_id` within the `ResourceId`s; the Quarkus service checks this
@@ -52,7 +54,6 @@ before hitting repository storage.
 
 ### Planner Lifecycle & Execution Scan Schemas
 `query/lifecycle.proto` captures everything the planner needs to hold a lease:
-- `QueryInput` resolves tables/views by name or ID and optionally pins snapshots.
 - `QueryDescriptor` mirrors the live query context (IDs, expiry timestamps, snapshot pins, expansion
   maps, and table obligations). Per-table scan manifests are retrieved lazily via
   `QueryService.FetchScanBundle`, which returns the `execution/scan.proto` records for a specific

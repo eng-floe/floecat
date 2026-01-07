@@ -20,7 +20,7 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.query.rpc";
 option java_outer_classname = "QuerySchemaProto";
 
-import "query/lifecycle.proto";
+import "common/common.proto";
 
 /**
  * LOGICAL SCHEMA MODEL
@@ -68,7 +68,7 @@ message SchemaDescriptor {
  */
 message DescribeInputsRequest {
   string query_id = 1;                 // Must reference an active query.
-  repeated QueryInput inputs = 2;      // Inputs to resolve (tables or views).
+  repeated ai.floedb.floecat.common.QueryInput inputs = 2;      // Inputs to resolve (tables or views).
 }
 
 message DescribeInputsResponse {

@@ -22,14 +22,16 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.query.rpc.QueryInput;
+import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -239,20 +241,71 @@ public class QueryInputResolverTest {
     assertEquals(222, p.getSnapshotId());
   }
 
-  /** Views never have snapshots. A viewId must always produce a pin with snapshotId=0. */
+  /** Views are not pinned directly; only their base tables (if any) are pinned. */
   @Test
   void direct_view_id() {
     ResourceId rid = viewRid("VIEWX");
 
-    SnapshotPin p =
+    var res =
+        resolver.resolveInputs(
+            "cid", List.of(QueryInput.newBuilder().setViewId(rid).build()), Optional.empty());
+
+    assertEquals("VIEWX", res.resolved().get(0).getId());
+    assertTrue(res.snapshotSet().getPinsList().isEmpty());
+  }
+
+  @Test
+  void view_pins_cache_base_tables() {
+    ResourceId base1 = rid("BASE1");
+    ResourceId base2 = rid("BASE2");
+    ResourceId viewId = viewRid("VIEW_A");
+    metadataGraph.addNode(viewNode(viewId, List.of(base1, base2)));
+    metadataGraph.setCurrentSnapshot(base1, 101);
+    metadataGraph.setCurrentSnapshot(base2, 202);
+
+    List<SnapshotPin> pins =
         resolver
             .resolveInputs(
-                "cid", List.of(QueryInput.newBuilder().setViewId(rid).build()), Optional.empty())
+                "cid", List.of(QueryInput.newBuilder().setViewId(viewId).build()), Optional.empty())
             .snapshotSet()
-            .getPins(0);
+            .getPinsList();
 
-    assertEquals("VIEWX", p.getTableId().getId());
-    assertEquals(0L, p.getSnapshotId());
+    List<String> ids = pins.stream().map(pin -> pin.getTableId().getId()).toList();
+    assertTrue(ids.containsAll(List.of("BASE1", "BASE2")));
+    assertEquals(
+        2,
+        metadataGraph.pinCalls().stream()
+            .filter(call -> List.of("BASE1", "BASE2").contains(call.tableId().getId()))
+            .count());
+  }
+
+  @Test
+  void nested_view_pins_table_once() {
+    ResourceId table = rid("TABLE_B");
+    ResourceId innerView = viewRid("VIEW_INNER");
+    ResourceId outerView = viewRid("VIEW_OUTER");
+    metadataGraph.addNode(viewNode(innerView, List.of(table)));
+    metadataGraph.addNode(viewNode(outerView, List.of(innerView)));
+    metadataGraph.setCurrentSnapshot(table, 303);
+
+    List<SnapshotPin> pins =
+        resolver
+            .resolveInputs(
+                "cid",
+                List.of(QueryInput.newBuilder().setViewId(outerView).build()),
+                Optional.empty())
+            .snapshotSet()
+            .getPinsList();
+
+    assertTrue(
+        pins.stream()
+            .filter(pin -> pin.getTableId().getKind() == ResourceKind.RK_TABLE)
+            .allMatch(pin -> pin.getTableId().getId().equals("TABLE_B")));
+    long tablePinCount =
+        metadataGraph.pinCalls().stream()
+            .filter(call -> call.tableId().getId().equals("TABLE_B"))
+            .count();
+    assertEquals(1, tablePinCount);
   }
 
   /**
@@ -405,26 +458,91 @@ public class QueryInputResolverTest {
   }
 
   /**
-   * A view with an explicit AS OF override is legal but should still produce snapshotId=0, because
-   * views do not support storage snapshots.
+   * A view with an explicit AS OF override is legal. The override must be applied to base table
+   * dependency pins (views themselves are not pinned).
    */
   @Test
-  void view_with_asof_override_uses_timestamp() {
-    ResourceId rid = viewRid("V1");
+  void view_with_asof_override_applies_to_base_pins() {
+    ResourceId base = rid("BASE_ASOF");
+    ResourceId viewId = viewRid("V1");
+    metadataGraph.addNode(viewNode(viewId, List.of(base)));
+
     Timestamp ts = Timestamp.newBuilder().setSeconds(202).build();
 
     QueryInput qi =
         QueryInput.newBuilder()
-            .setViewId(rid)
+            .setViewId(viewId)
             .setSnapshot(SnapshotRef.newBuilder().setAsOf(ts))
             .build();
 
-    SnapshotPin pin =
-        resolver.resolveInputs("cid", List.of(qi), Optional.empty()).snapshotSet().getPins(0);
+    List<SnapshotPin> pins =
+        resolver.resolveInputs("cid", List.of(qi), Optional.empty()).snapshotSet().getPinsList();
 
-    assertEquals("V1", pin.getTableId().getId());
-    assertEquals(0, pin.getSnapshotId());
-    assertEquals(ts, pin.getAsOf());
+    assertEquals(1, pins.size());
+    assertEquals("BASE_ASOF", pins.get(0).getTableId().getId());
+    assertEquals(0L, pins.get(0).getSnapshotId());
+    assertEquals(ts, pins.get(0).getAsOf());
+
+    // Ensure the effective AS-OF was passed through to snapshotPinFor for the base table.
+    FakeGraph.PinCall call = metadataGraph.pinCalls().get(metadataGraph.pinCalls().size() - 1);
+    assertEquals("BASE_ASOF", call.tableId().getId());
+
+    // Dependency pinning uses the effective AS-OF as the "default" timestamp parameter.
+    assertTrue(call.asOfDefault().isPresent());
+    assertEquals(ts, call.asOfDefault().get());
+
+    // No explicit per-table override is passed when pinning view dependencies.
+    assertTrue(
+        call.override() == null
+            || call.override().getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET);
+  }
+
+  @Test
+  void view_with_snapshot_override_is_invalid() {
+    ResourceId base = rid("BASE_INVALID");
+    ResourceId viewId = viewRid("V_INVALID");
+    metadataGraph.addNode(viewNode(viewId, List.of(base)));
+
+    QueryInput qi =
+        QueryInput.newBuilder()
+            .setViewId(viewId)
+            .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(123))
+            .build();
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () -> resolver.resolveInputs("cid", List.of(qi), Optional.empty()));
+  }
+
+  @Test
+  void stronger_pin_wins_when_same_table_seen_twice() {
+    ResourceId base = rid("BASE_STRONG");
+    ResourceId viewId = viewRid("V_STRONG");
+    metadataGraph.addNode(viewNode(viewId, List.of(base)));
+
+    Timestamp ts = Timestamp.newBuilder().setSeconds(300).build();
+
+    List<SnapshotPin> pins =
+        resolver
+            .resolveInputs(
+                "cid",
+                List.of(
+                    QueryInput.newBuilder()
+                        .setViewId(viewId)
+                        .setSnapshot(SnapshotRef.newBuilder().setAsOf(ts))
+                        .build(),
+                    QueryInput.newBuilder()
+                        .setTableId(base)
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(888))
+                        .build()),
+                Optional.empty())
+            .snapshotSet()
+            .getPinsList();
+
+    assertEquals(1, pins.size());
+    assertEquals("BASE_STRONG", pins.get(0).getTableId().getId());
+    assertEquals(888, pins.get(0).getSnapshotId());
+    assertEquals(0, pins.get(0).getAsOf().getSeconds());
   }
 
   // ----------------------------------------------------------------------
@@ -506,5 +624,27 @@ public class QueryInputResolverTest {
         ResourceId tableId,
         SnapshotRef override,
         Optional<Timestamp> asOfDefault) {}
+  }
+
+  private ViewNode viewNode(ResourceId id, List<ResourceId> baseRelations) {
+    ResourceId catalog =
+        ResourceId.newBuilder().setId("catalog").setKind(ResourceKind.RK_CATALOG).build();
+    ResourceId namespace =
+        ResourceId.newBuilder().setId("namespace").setKind(ResourceKind.RK_NAMESPACE).build();
+    return new ViewNode(
+        id,
+        1L,
+        Instant.EPOCH,
+        catalog,
+        namespace,
+        "view",
+        "sql",
+        "dialect",
+        List.of(),
+        baseRelations,
+        List.of(),
+        Map.of(),
+        Optional.empty(),
+        Map.of());
   }
 }

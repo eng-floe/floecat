@@ -61,6 +61,23 @@ public final class TestSupport {
     return b.build();
   }
 
+  public static NameRef fq(String catalog, Namespace namespace, String name) {
+    List<String> path = new ArrayList<>(namespace.getParentsList());
+    if (namespace.getDisplayName() != null && !namespace.getDisplayName().isBlank()) {
+      path.add(namespace.getDisplayName());
+    }
+    return fq(catalog, path, name);
+  }
+
+  public static String fqName(NameRef ref) {
+    var parts = new ArrayList<>(ref.getPathList());
+    if (ref.getName() != null && !ref.getName().isBlank()) {
+      parts.add(ref.getName());
+    }
+    String suffix = parts.isEmpty() ? "" : "." + String.join(".", parts);
+    return ref.getCatalog() + suffix;
+  }
+
   public static ResourceId createAccountId(String tid) {
     String tidUUID = AccountIds.deterministicAccountId("/account:" + tid);
     ResourceId accountId =

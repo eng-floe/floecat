@@ -68,6 +68,20 @@ message SnapshotRef {
   }
 }
 
+/**
+ * Intent to resolve a table or view.
+ */
+message QueryInput {
+  oneof target {
+    NameRef name = 1;
+    ResourceId table_id = 2;
+    ResourceId view_id = 3;
+  }
+
+  // Optional snapshot override (default: QueryContext.as_of_default).
+  SnapshotRef snapshot = 10;
+}
+
 // ----- Pointers & Blobs -----
 
 message Pointer {
