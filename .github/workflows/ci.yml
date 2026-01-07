@@ -32,6 +32,9 @@ jobs:
           restore-keys: |
             maven-${{ runner.os }}-
 
+      - name: License Check
+        run: mvn apache-rat:check
+
       - name: Build
         run: make build
 
