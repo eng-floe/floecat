@@ -47,12 +47,6 @@
 
   <dependencies>
 
-    <!-- CDI -->
-    <dependency>
-      <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-arc</artifactId>
-    </dependency>
-
     <!-- gRPC (server) -->
     <dependency>
       <groupId>io.quarkus</groupId>

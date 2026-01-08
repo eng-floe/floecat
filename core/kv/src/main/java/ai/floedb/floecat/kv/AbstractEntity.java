@@ -18,7 +18,6 @@ package ai.floedb.floecat.kv;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageLite;
 import io.smallrye.mutiny.Uni;
-import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -45,7 +44,6 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
     M withVersion(M message, long newVersion);
   }
 
-  @Inject
   protected AbstractEntity(KvStore kv, M defaultInstance, VersionAccessor<M> versionAccessor) {
     this.kv = kv;
     this.defaultInstance = defaultInstance;
