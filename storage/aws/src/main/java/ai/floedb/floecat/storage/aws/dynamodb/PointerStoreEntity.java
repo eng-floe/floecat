@@ -112,10 +112,26 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     return new KvStore.Key("accounts/" + accountId, remainderPrefix);
   }
 
-  // ---- Disable values
-  @Override
-  protected Pointer valueOf(Pointer pointer) {
-    return pointer;
+  // ---- We won't use the "value" of the base entity; all data is in the Pointer message and
+  // attributes on the KV record.
+
+  protected byte[] encode(Pointer pointer) {
+    return null;
+  }
+
+  protected Pointer decode(KvStore.Record r) {
+    var builder =
+        Pointer.newBuilder()
+            .setKey(keyOf(r.key()))
+            .setBlobUri(r.attrs().getOrDefault(ATTR_BLOB_URI, ""))
+            .setVersion(r.version());
+    var expiresAtStr = r.attrs().get(ATTR_EXPIRES_AT);
+    if (expiresAtStr != null) {
+      long ts = Long.parseLong(expiresAtStr);
+      builder.setExpiresAt(Timestamps.fromMillis(ts * 1000L));
+    }
+
+    return builder.buildPartial();
   }
 
   // ---- Timestamp support

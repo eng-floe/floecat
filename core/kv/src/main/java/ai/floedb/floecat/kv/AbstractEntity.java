@@ -52,12 +52,7 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
     this.versionAccessor = versionAccessor;
   }
 
-  protected M valueOf(M message) {
-    return message;
-  }
-
   protected byte[] encode(M message) {
-    message = valueOf(message);
     return message != null ? message.toByteArray() : null;
   }
 

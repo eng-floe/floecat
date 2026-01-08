@@ -88,16 +88,20 @@ public class DynamoDbTablesBootstrap implements DynamoDbSchema {
 
     ddb.createTable(req).join();
 
-    DynamoDbAsyncWaiter waiter = ddb.waiter();
-    waiter
-        .waitUntilTableExists(DescribeTableRequest.builder().tableName(tableName).build())
-        .orTimeout(waitSeconds, TimeUnit.SECONDS)
-        .join();
+    if (waitSeconds > 0) {
+      DynamoDbAsyncWaiter waiter = ddb.waiter();
+      waiter
+          .waitUntilTableExists(DescribeTableRequest.builder().tableName(tableName).build())
+          .orTimeout(waitSeconds, TimeUnit.SECONDS)
+          .join();
 
-    // Optional: also wait until ACTIVE (Local usually is, AWS can lag briefly)
-    waitUntilActive(tableName);
+      // Optional: also wait until ACTIVE (Local usually is, AWS can lag briefly)
+      waitUntilActive(tableName);
 
-    log.info("DynamoDB table ready: {}", tableName);
+      log.info("DynamoDB table ready: {}", tableName);
+    } else {
+      log.info("Skipping wait for DynamoDB table to become active: {}", tableName);
+    }
   }
 
   private void ensureTtlEnabled(String tableName, String ttlAttrName) {

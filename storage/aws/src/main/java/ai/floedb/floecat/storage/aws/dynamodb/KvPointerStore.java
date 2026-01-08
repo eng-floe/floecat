@@ -17,7 +17,6 @@ package ai.floedb.floecat.storage.aws.dynamodb;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.storage.PointerStore;
-import io.smallrye.mutiny.infrastructure.Infrastructure;
 import java.util.List;
 import java.util.Optional;
 
@@ -35,38 +34,22 @@ abstract class KvPointerStore implements PointerStore {
 
   @Override
   public Optional<Pointer> get(String key) {
-    return pointers
-        .get(key)
-        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
-        .await()
-        .indefinitely();
+    return pointers.get(key).await().indefinitely();
   }
 
   @Override
   public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
-    return pointers
-        .compareAndSet(key, expectedVersion, next)
-        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
-        .await()
-        .indefinitely();
+    return pointers.compareAndSet(key, expectedVersion, next).await().indefinitely();
   }
 
   @Override
   public boolean delete(String key) {
-    return pointers
-        .delete(key)
-        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
-        .await()
-        .indefinitely();
+    return pointers.delete(key).await().indefinitely();
   }
 
   @Override
   public boolean compareAndDelete(String key, long expectedVersion) {
-    return pointers
-        .compareAndDelete(key, expectedVersion)
-        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
-        .await()
-        .indefinitely();
+    return pointers.compareAndDelete(key, expectedVersion).await().indefinitely();
   }
 
   @Override
@@ -76,12 +59,7 @@ abstract class KvPointerStore implements PointerStore {
     Optional<String> token =
         (pageToken == null || pageToken.isBlank()) ? Optional.empty() : Optional.of(pageToken);
 
-    var page =
-        pointers
-            .listByPrefix(prefix, limit, token)
-            .runSubscriptionOn(Infrastructure.getDefaultExecutor())
-            .await()
-            .indefinitely();
+    var page = pointers.listByPrefix(prefix, limit, token).await().indefinitely();
 
     nextTokenOut.setLength(0);
     page.nextToken().ifPresent(nextTokenOut::append);
@@ -95,12 +73,8 @@ abstract class KvPointerStore implements PointerStore {
 
     Optional<String> token = Optional.empty();
     do {
-      var page =
-          pointers
-              .listKeysByPrefix(prefix, 200, token)
-              .runSubscriptionOn(Infrastructure.getDefaultExecutor())
-              .await()
-              .indefinitely();
+      var page = pointers.listKeysByPrefix(prefix, 200, token).await().indefinitely();
+
       for (String key : page.items()) {
         if (pointers.delete(key).await().indefinitely()) deleted++;
       }
@@ -116,12 +90,8 @@ abstract class KvPointerStore implements PointerStore {
 
     Optional<String> token = Optional.empty();
     do {
-      var page =
-          pointers
-              .listKeysByPrefix(prefix, 500, token)
-              .runSubscriptionOn(Infrastructure.getDefaultExecutor())
-              .await()
-              .indefinitely();
+      var page = pointers.listKeysByPrefix(prefix, 500, token).await().indefinitely();
+
       count += page.items().size();
       token = page.nextToken();
     } while (token.isPresent());
@@ -136,11 +106,6 @@ abstract class KvPointerStore implements PointerStore {
 
   @Override
   public void dump(String header) {
-    pointers
-        .getKvStore()
-        .dump(header)
-        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
-        .await()
-        .indefinitely();
+    pointers.getKvStore().dump(header).await().indefinitely();
   }
 }
