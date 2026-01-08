@@ -96,14 +96,8 @@
 
     <!-- FloeCat-->
     <dependency>
-      <groupId>ai.floedb</groupId>
-      <artifactId>floedb-proto</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-
-    <dependency>
       <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-storage-spi</artifactId>
+      <artifactId>floecat-proto</artifactId>
       <version>${project.version}</version>
     </dependency>
 
