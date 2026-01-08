@@ -22,6 +22,7 @@ import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.systemcatalog.def.*;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import java.util.*;
 
 /* Publishes per-object builtin metadata as engine hints. */
@@ -103,7 +104,11 @@ public class SystemCatalogHintProvider implements EngineHintProvider {
       return null;
     }
 
-    var nodes = nodeRegistry.nodesFor(engineKey.engineKind(), engineKey.engineVersion());
+    EngineContext ctx =
+        engineKey == null
+            ? EngineContext.empty()
+            : EngineContext.of(engineKey.engineKind(), engineKey.engineVersion());
+    var nodes = nodeRegistry.nodesFor(ctx);
 
     List<? extends SystemObjectDef> defs =
         switch (node.kind()) {
@@ -116,7 +121,7 @@ public class SystemCatalogHintProvider implements EngineHintProvider {
           default -> List.of();
         };
 
-    String engineKind = engineKey.engineKind();
+    String engineKind = ctx.normalizedKind();
 
     @SuppressWarnings("unchecked")
     List<SystemObjectDef> candidates =

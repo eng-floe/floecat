@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
+import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -68,6 +69,19 @@ class ServiceLoaderSystemCatalogProviderTest {
 
     assertThat(catalog.tables()).isNotEmpty();
     assertThat(catalog.functions()).isEmpty();
+  }
+
+  @Test
+  void load_blankEngineKindDefaultsToFloecatCatalogWithoutDecorator() {
+    ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
+
+    SystemEngineCatalog catalog = provider.load(" ");
+
+    assertThat(catalog.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+    assertThat(catalog.namespaces())
+        .contains(
+            new SystemNamespaceDef(
+                NameRefUtil.name("information_schema"), "information_schema", List.of()));
   }
 
   @Test

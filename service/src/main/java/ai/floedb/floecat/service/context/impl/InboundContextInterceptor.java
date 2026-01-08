@@ -24,6 +24,7 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import io.grpc.Context;
 import io.grpc.Contexts;
 import io.grpc.ForwardingServerCall.SimpleForwardingServerCall;
@@ -61,6 +62,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
   public static final Context.Key<String> QUERY_KEY = Context.key("query_id");
   public static final Context.Key<String> ENGINE_VERSION_KEY = Context.key("engine_version");
   public static final Context.Key<String> ENGINE_KIND_KEY = Context.key("engine_kind");
+  public static final Context.Key<EngineContext> ENGINE_CONTEXT_KEY = Context.key("engine_context");
   public static final Context.Key<String> CORR_KEY = Context.key("correlation_id");
 
   private Clock clock = Clock.systemUTC();
@@ -78,13 +80,14 @@ public class InboundContextInterceptor implements ServerInterceptor {
             .orElse(UUID.randomUUID().toString());
 
     String queryIdHeader = Optional.ofNullable(headers.get(QUERY_ID_HEADER)).orElse("");
-    String engineVersion = Optional.ofNullable(headers.get(ENGINE_VERSION_HEADER)).orElse("");
-    String engineKind = Optional.ofNullable(headers.get(ENGINE_KIND_HEADER)).orElse("");
+    String engineVersion = readHeader(headers, ENGINE_VERSION_HEADER);
+    String engineKind = readHeader(headers, ENGINE_KIND_HEADER);
 
     ResolvedContext resolvedContext = resolvePrincipalAndQuery(headers, queryIdHeader);
 
     PrincipalContext principalContext = resolvedContext.pc();
     String queryId = resolvedContext.queryId();
+    EngineContext engineContext = EngineContext.of(engineKind, engineVersion);
 
     Context context =
         Context.current()
@@ -92,6 +95,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
             .withValue(QUERY_KEY, queryId)
             .withValue(ENGINE_VERSION_KEY, engineVersion)
             .withValue(ENGINE_KIND_KEY, engineKind)
+            .withValue(ENGINE_CONTEXT_KEY, engineContext)
             .withValue(CORR_KEY, correlationId);
 
     MDC.put("query_id", queryId);
@@ -105,10 +109,10 @@ public class InboundContextInterceptor implements ServerInterceptor {
       span.setAttribute("correlation_id", correlationId);
       span.setAttribute("account_id", principalContext.getAccountId());
       span.setAttribute("subject", principalContext.getSubject());
-      if (engineVersion != null && !engineVersion.isBlank()) {
+      if (!engineVersion.isBlank()) {
         span.setAttribute("engine_version", engineVersion);
       }
-      if (engineKind != null && !engineKind.isBlank()) {
+      if (!engineKind.isBlank()) {
         span.setAttribute("engine_kind", engineKind);
       }
     }
@@ -143,13 +147,11 @@ public class InboundContextInterceptor implements ServerInterceptor {
       span.setAttribute("correlation_id", correlationId);
       span.setAttribute("account_id", principalContext.getAccountId());
       span.setAttribute("subject", principalContext.getSubject());
-      String ev = ENGINE_VERSION_KEY.get();
-      if (ev != null && !ev.isBlank()) {
-        span.setAttribute("engine_version", ev);
+      if (!engineVersion.isBlank()) {
+        span.setAttribute("engine_version", engineVersion);
       }
-      String ek = ENGINE_KIND_KEY.get();
-      if (ek != null && !ek.isBlank()) {
-        span.setAttribute("engine_kind", ek);
+      if (!engineKind.isBlank()) {
+        span.setAttribute("engine_kind", engineKind);
       }
     }
 
@@ -223,6 +225,10 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
   private static boolean isBlank(String inputString) {
     return inputString == null || inputString.isBlank();
+  }
+
+  private static String readHeader(Metadata headers, Metadata.Key<String> key) {
+    return Optional.ofNullable(headers.get(key)).map(String::trim).orElse("");
   }
 
   private static PrincipalContext devContext() {

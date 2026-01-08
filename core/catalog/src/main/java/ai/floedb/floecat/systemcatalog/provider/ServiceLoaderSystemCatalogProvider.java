@@ -19,16 +19,17 @@ package ai.floedb.floecat.systemcatalog.provider;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
-import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.informationschema.InformationSchemaProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
+import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.stream.Collectors;
@@ -42,6 +43,9 @@ import org.jboss.logging.Logger;
 public final class ServiceLoaderSystemCatalogProvider implements SystemCatalogProvider {
 
   private static final Logger LOG = Logger.getLogger(ServiceLoaderSystemCatalogProvider.class);
+
+  private static final InformationSchemaProvider INFORMATION_SCHEMA_PROVIDER =
+      new InformationSchemaProvider();
 
   private final Map<String, EngineSystemCatalogExtension> plugins;
   private final List<SystemObjectScannerProvider> providers;
@@ -58,7 +62,18 @@ public final class ServiceLoaderSystemCatalogProvider implements SystemCatalogPr
       engineExtensions = List.of();
     }
     Map<String, EngineSystemCatalogExtension> tmp = new HashMap<>();
-    engineExtensions.forEach(ext -> tmp.put(ext.engineKind().toLowerCase(Locale.ROOT), ext));
+    for (EngineSystemCatalogExtension ext : engineExtensions) {
+      String normalizedKind = EngineContextNormalizer.normalizeEngineKind(ext.engineKind());
+      if (normalizedKind.isEmpty()) {
+        continue;
+      }
+      EngineSystemCatalogExtension previous = tmp.put(normalizedKind, ext);
+      if (previous != null) {
+        LOG.warnf(
+            "Replacing system catalog extension for engine_kind=%s (prev=%s, next=%s)",
+            normalizedKind, previous.getClass().getName(), ext.getClass().getName());
+      }
+    }
     this.plugins = Map.copyOf(tmp);
 
     /*
@@ -75,7 +90,7 @@ public final class ServiceLoaderSystemCatalogProvider implements SystemCatalogPr
         engineExtensions.stream().map(ext -> (SystemObjectScannerProvider) ext);
 
     this.providers =
-        Stream.concat(Stream.of(new InformationSchemaProvider()), extensionProviders)
+        Stream.concat(Stream.of(INFORMATION_SCHEMA_PROVIDER), extensionProviders)
             .collect(Collectors.toUnmodifiableList());
   }
 
@@ -86,46 +101,52 @@ public final class ServiceLoaderSystemCatalogProvider implements SystemCatalogPr
 
   @Override
   public SystemEngineCatalog load(String engineKind) {
-    // Blank engineKind = engine-agnostic catalog (information_schema only)
-    if (engineKind == null || engineKind.isBlank()) {
-      SystemCatalogData data =
-          mergeProviderDefinitions(
-              SystemNodeRegistry.FLOECAT_DEFAULT_CATALOG, SystemCatalogData.empty());
-      return SystemEngineCatalog.from(SystemNodeRegistry.FLOECAT_DEFAULT_CATALOG, data);
-    }
-
-    EngineSystemCatalogExtension ext = plugins.get(engineKind.toLowerCase(Locale.ROOT));
+    // Blank or missing engineKind returns the floecat internal catalog (FLOECAT_DEFAULT_CATALOG)
+    // so that information_schema and its overrides remain available even without an explicit
+    // engine header. Non-blank kinds still try to resolve an extension first.
+    EngineContext ctx = EngineContext.of(engineKind, "");
+    String normalizedKind = ctx.normalizedKind();
+    EngineSystemCatalogExtension ext = plugins.get(normalizedKind);
     SystemCatalogData catalog;
-    if (ext == null) {
-      LOG.warn(
-          "No system catalog plugin found for engine_kind="
-              + engineKind
-              + ", defaulting to empty catalog");
+    if (!ctx.hasEngineKind()) {
+      catalog = SystemCatalogData.empty();
+    } else if (ext == null) {
+      if (!EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(normalizedKind)) {
+        LOG.warn(
+            "No system catalog plugin found for engine_kind="
+                + normalizedKind
+                + " (raw="
+                + engineKind
+                + "), defaulting to empty catalog");
+      }
       catalog = SystemCatalogData.empty();
     } else {
-      LOG.info("Loading system catalog plugin for engine_kind=" + engineKind);
+      LOG.info(
+          "Loading system catalog plugin for engine_kind="
+              + normalizedKind
+              + " (raw="
+              + engineKind
+              + ")");
       catalog = ext.loadSystemCatalog();
     }
 
-    // Merge the scanner-provided namespace/table/view defs into the base catalog snapshot before
-    // materializing it so both sources share the same cache.
-    SystemCatalogData data = mergeProviderDefinitions(engineKind, catalog);
-    return SystemEngineCatalog.from(engineKind, data);
+    SystemCatalogData data = mergeProviderDefinitions(normalizedKind, catalog);
+    return SystemEngineCatalog.from(normalizedKind, data);
   }
 
   public List<SystemObjectScannerProvider> providers() {
     return providers;
   }
 
-  private SystemCatalogData mergeProviderDefinitions(String engineKind, SystemCatalogData base) {
+  private SystemCatalogData mergeProviderDefinitions(
+      String normalizedEngineKind, SystemCatalogData base) {
 
     Map<String, SystemNamespaceDef> namespaceByName = new LinkedHashMap<>();
     Map<String, SystemTableDef> tableByName = new LinkedHashMap<>();
     Map<String, SystemViewDef> viewByName = new LinkedHashMap<>();
 
     // Seed with InformationSchemaProvider definitions always by default
-    InformationSchemaProvider infoSchemaProvider = new InformationSchemaProvider();
-    for (var def : infoSchemaProvider.definitions()) {
+    for (var def : INFORMATION_SCHEMA_PROVIDER.definitions()) {
       if (def instanceof SystemNamespaceDef ns) {
         namespaceByName.put(NameRefUtil.canonical(ns.name()), ns);
       } else if (def instanceof SystemTableDef table) {
@@ -148,11 +169,11 @@ public final class ServiceLoaderSystemCatalogProvider implements SystemCatalogPr
     // Overlay provider definitions on top of the canonical catalog data, allowing last-wins
     // overrides per NameRef.
     for (SystemObjectScannerProvider provider : providers) {
-      if (!provider.supportsEngine(engineKind)) {
+      if (!provider.supportsEngine(normalizedEngineKind)) {
         continue;
       }
       for (var def : provider.definitions()) {
-        if (!provider.supports(def.name(), engineKind)) {
+        if (!provider.supports(def.name(), normalizedEngineKind)) {
           continue;
         }
 

@@ -18,7 +18,6 @@ package ai.floedb.floecat.service.metagraph.overlay;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -37,6 +36,7 @@ import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.query.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -51,6 +51,7 @@ class MetaGraphTest {
   SystemGraph system;
   MetaGraph meta;
   LogicalSchemaMapper schemaMapper;
+  EngineContext context;
 
   ResourceId sysTable =
       ResourceId.newBuilder()
@@ -80,9 +81,8 @@ class MetaGraphTest {
         };
 
     EngineContextProvider engine = mock(EngineContextProvider.class);
-    when(engine.engineKind()).thenReturn("engine");
-    when(engine.engineVersion()).thenReturn("1");
-    when(engine.isPresent()).thenReturn(true);
+    context = EngineContext.of("engine", "1");
+    when(engine.engineContext()).thenReturn(context);
 
     meta = new MetaGraph(user, schemaMapper, system, engine);
   }
@@ -95,7 +95,7 @@ class MetaGraphTest {
   @Test
   void systemFirstResolution_table() {
     NameRef ref = NameRef.newBuilder().setName("t").build();
-    when(system.resolveTable(ref, "engine", "1")).thenReturn(Optional.of(sysTable));
+    when(system.resolveTable(ref, context)).thenReturn(Optional.of(sysTable));
     when(user.tryResolveTable("c", ref)).thenReturn(Optional.empty());
 
     ResourceId out = meta.resolveTable("c", ref);
@@ -106,7 +106,7 @@ class MetaGraphTest {
   @Test
   void userResolutionWhenSystemAbsent_table() {
     NameRef ref = NameRef.newBuilder().setName("t").build();
-    when(system.resolveTable(ref, "engine", "1")).thenReturn(Optional.empty());
+    when(system.resolveTable(ref, context)).thenReturn(Optional.empty());
     when(user.tryResolveTable("c", ref)).thenReturn(Optional.of(usrTable));
 
     ResourceId out = meta.resolveTable("c", ref);
@@ -117,7 +117,7 @@ class MetaGraphTest {
   @Test
   void unresolvedThrowsError_table() {
     NameRef ref = NameRef.newBuilder().setName("x").build();
-    when(system.resolveTable(ref, "engine", "1")).thenReturn(Optional.empty());
+    when(system.resolveTable(ref, context)).thenReturn(Optional.empty());
     when(user.tryResolveTable("c", ref)).thenReturn(Optional.empty());
 
     assertThatThrownBy(() -> meta.resolveTable("c", ref)).isInstanceOf(RuntimeException.class);
@@ -200,7 +200,7 @@ class MetaGraphTest {
           }
         };
 
-    when(system.listRelations(any(), eq("engine"), eq("1"))).thenReturn(List.of(s));
+    when(system.listRelations(any(), same(context))).thenReturn(List.of(s));
     when(user.listRelations(any())).thenReturn(List.of(u));
 
     List<GraphNode> out = meta.listRelations(ResourceId.newBuilder().setId("cat").build());
@@ -239,7 +239,7 @@ class MetaGraphTest {
   @Test
   void resolveTable_throwsWhenBothSystemAndUserMatch() {
     NameRef ref = NameRef.newBuilder().setName("t").build();
-    when(system.resolveTable(ref, "engine", "1")).thenReturn(Optional.of(sysTable));
+    when(system.resolveTable(ref, context)).thenReturn(Optional.of(sysTable));
     when(user.tryResolveTable("c", ref)).thenReturn(Optional.of(usrTable));
 
     assertThatThrownBy(() -> meta.resolveTable("c", ref)).isInstanceOf(RuntimeException.class);
@@ -253,7 +253,7 @@ class MetaGraphTest {
     MetaGraph metaNoEngine = new MetaGraph(user, schemaMapper, system, engine);
 
     NameRef ref = NameRef.newBuilder().setName("t").build();
-    when(system.resolveTable(ref, null, null)).thenReturn(Optional.empty());
+    when(system.resolveTable(ref, EngineContext.empty())).thenReturn(Optional.empty());
     when(user.tryResolveTable("c", ref)).thenReturn(Optional.of(usrTable));
 
     ResourceId out = metaNoEngine.resolveTable("c", ref);

@@ -19,8 +19,11 @@ package ai.floedb.floecat.systemcatalog.registry;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
+import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 final class SystemDefinitionRegistryTest {
@@ -45,9 +48,9 @@ final class SystemDefinitionRegistryTest {
 
     SystemDefinitionRegistry registry = new SystemDefinitionRegistry(provider);
 
-    SystemEngineCatalog c1 = registry.catalog("Spark");
-    SystemEngineCatalog c2 = registry.catalog("spark");
-    SystemEngineCatalog c3 = registry.catalog("SPARK");
+    SystemEngineCatalog c1 = registry.catalog(EngineContext.of("Spark", ""));
+    SystemEngineCatalog c2 = registry.catalog(EngineContext.of("spark", ""));
+    SystemEngineCatalog c3 = registry.catalog(EngineContext.of("SPARK", ""));
 
     // Same instance due to lowercasing + caching
     assertThat(c1).isSameAs(c2);
@@ -77,16 +80,47 @@ final class SystemDefinitionRegistryTest {
 
     SystemDefinitionRegistry registry = new SystemDefinitionRegistry(provider);
 
-    SystemEngineCatalog first = registry.catalog("spark");
+    SystemEngineCatalog first = registry.catalog(EngineContext.of("spark", ""));
     assertThat(loadCount.get()).isEqualTo(1);
 
     // Clear cache
     registry.clear();
 
-    SystemEngineCatalog second = registry.catalog("spark");
+    SystemEngineCatalog second = registry.catalog(EngineContext.of("spark", ""));
     assertThat(loadCount.get()).isEqualTo(2);
 
     // Different instance after clear
     assertThat(second).isNotSameAs(first);
+  }
+
+  @Test
+  void catalog_blankEngineUsesInternalDefault() {
+    AtomicInteger loadCount = new AtomicInteger();
+    AtomicReference<String> lastKind = new AtomicReference<>();
+
+    SystemCatalogProvider provider =
+        new SystemCatalogProvider() {
+          @Override
+          public SystemEngineCatalog load(String engineKind) {
+            lastKind.set(engineKind);
+            loadCount.incrementAndGet();
+            return SystemEngineCatalog.from(
+                engineKind.isBlank() ? EngineCatalogNames.FLOECAT_DEFAULT_CATALOG : engineKind,
+                SystemCatalogData.empty());
+          }
+
+          @Override
+          public List<String> engineKinds() {
+            return List.of("floedb");
+          }
+        };
+
+    SystemDefinitionRegistry registry = new SystemDefinitionRegistry(provider);
+
+    SystemEngineCatalog catalog = registry.catalog(EngineContext.empty());
+
+    assertThat(loadCount.get()).isEqualTo(1);
+    assertThat(lastKind.get()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+    assertThat(catalog.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
   }
 }
