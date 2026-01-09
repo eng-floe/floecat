@@ -22,7 +22,20 @@ import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
 import java.util.List;
 import java.util.Optional;
 
-/** SPI for built-in and plugin providers of system objects scanner. */
+/**
+ * SPI for built-in and plugin providers of system objects scanner.
+ *
+ * <p>All definitions returned by this SPI are merged into {@link
+ * ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry#mergeCatalogData}, which seeds every
+ * request with the shared {@link ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider}
+ * (the `floecat_internal` base). Plugin and overlay providers should expect their canonical names
+ * to override the base definitions when an engine header is supplied.
+ *
+ * <p>If your definitions vary by version (via {@link #definitions(String, String)}), the
+ * corresponding {@link #provide(String, String, String)} call must resolve the `scannerId` to a
+ * scanner that produces rows matching the schema returned for the same `(engineKind,
+ * engineVersion)` tuple.
+ */
 public interface SystemObjectScannerProvider {
 
   /** All definitions provided by this provider (no filtering). */
@@ -33,6 +46,23 @@ public interface SystemObjectScannerProvider {
 
   /** Checks if this provider supports a given object based on a NameRef lookup. */
   boolean supports(NameRef name, String engineKind);
+
+  /**
+   * Version-aware definition set; defaults to {@link #definitions()} when a provider doesn't care
+   * about versions.
+   */
+  default List<SystemObjectDef> definitions(String engineKind, String engineVersion) {
+    return definitions();
+  }
+
+  /**
+   * Version-aware support check.
+   *
+   * <p>Defaults to {@link #supports(NameRef, String)} when versions are irrelevant.
+   */
+  default boolean supports(NameRef name, String engineKind, String engineVersion) {
+    return supports(name, engineKind);
+  }
 
   /** Resolves scanner by scannerId (for SystemObjectNode lookups). */
   Optional<SystemObjectScanner> provide(String scannerId, String engineKind, String engineVersion);
