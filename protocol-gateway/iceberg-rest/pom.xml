@@ -75,6 +75,10 @@
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-grpc</artifactId>
     </dependency>
+    <dependency>
+      <groupId>io.quarkus</groupId>
+      <artifactId>quarkus-container-image-jib</artifactId>
+    </dependency>
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>

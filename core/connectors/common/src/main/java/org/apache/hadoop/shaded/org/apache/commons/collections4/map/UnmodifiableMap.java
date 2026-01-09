@@ -27,22 +27,18 @@ import java.util.Set;
 /**
  * Minimal stand-in for Hadoop's relocated commons-collections class.
  *
- * <p>Only the static {@code unmodifiableMap} factory is required by Hadoop
- * configuration classes, so this implementation simply wraps the provided map
- * in an unmodifiable delegate from {@link java.util.Collections}.
+ * <p>Only the static {@code unmodifiableMap} factory is required by Hadoop configuration classes,
+ * so this implementation simply wraps the provided map in an unmodifiable delegate from {@link
+ * java.util.Collections}.
  */
-public final class UnmodifiableMap<K, V>
-    implements Map<K, V>, Serializable {
+public final class UnmodifiableMap<K, V> implements Map<K, V>, Serializable {
 
   private static final long serialVersionUID = 1L;
 
   private final Map<K, V> delegate;
 
   private UnmodifiableMap(Map<? extends K, ? extends V> source) {
-    Map<K, V> base =
-        source == null
-            ? Collections.emptyMap()
-            : new LinkedHashMap<>(source);
+    Map<K, V> base = source == null ? Collections.emptyMap() : new LinkedHashMap<>(source);
     this.delegate = Collections.unmodifiableMap(base);
   }
 

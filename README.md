@@ -48,8 +48,8 @@ The following modules compose the system (see linked docs for deep dives):
 | [`connectors/catalogs/delta/`](docs/connectors-delta.md) | Unity Catalog/Delta Lake connector using Delta Kernel + Databricks APIs. |
 | [`core/connectors/common/`](docs/connectors-common.md) | Shared connector utilities (Parquet stats, NDV sketches, planners). |
 | [`reconciler/`](docs/reconciler.md) | Connector scheduler/worker, reconciliation orchestration, job store. |
-| [`core/storage/spi/`](docs/storage-spi.md) | Blob/pointer persistence contracts shared by service and GC. |
-| [`core/storage/memory/`](docs/storage-memory.md) | In-memory dev/test stores (CAS semantics maintained). |
+| [`core/storage-spi/`](docs/storage-spi.md) | Blob/pointer persistence contracts shared by service and GC. |
+| [`storage/memory/`](docs/storage-memory.md) | In-memory dev/test stores (CAS semantics maintained). |
 | [`storage/aws/`](docs/storage-aws.md) | Production DynamoDB pointer store + S3 blob store. |
 | [`types/`](docs/types.md) | Logical type system utilities, coercions, min/max encoding. |
 | [`extensions/builtin/`](docs/builtin-catalog.md) | Plugin architecture for engine-specific builtin catalogs (functions, operators, types, etc.). |
@@ -143,6 +143,10 @@ make localstack-down
 
 Seed data is enabled by default (`floecat.seed.enabled=true`); the service starts with a demo account,
 catalogs, namespaces, tables, and snapshots.
+
+### Docker Compose Modes
+
+Docker build, compose modes, and AWS credential options live in [`docs/docker.md`](docs/docker.md).
 
 Testing:
 
@@ -291,18 +295,25 @@ All component references, extension points, APIs, and data-flow diagrams are cap
 
 ```
 docs/
+├── builtin-catalog.md
+├── client-cli.md
+├── connectors-common.md
+├── connectors-delta.md
+├── connectors-iceberg.md
+├── connectors-spi.md
+├── docker.md
+├── iceberg-rest-gateway.md
+├── log.md
+├── metadata-graph.md
+├── reconciler.md
 ├── proto.md
 ├── service.md
-├── client-cli.md
-├── connectors-spi.md
-├── connectors-iceberg.md
-├── connectors-delta.md
-├── reconciler.md
 ├── storage-spi.md
 ├── storage-memory.md
 ├── storage-aws.md
-├── types.md
-└── log.md
+├── system-objects.md
+├── system-scans.md
+└── types.md
 ```
 
 Cross-links between files describe how modules interact (for example, the scan bundle assembly

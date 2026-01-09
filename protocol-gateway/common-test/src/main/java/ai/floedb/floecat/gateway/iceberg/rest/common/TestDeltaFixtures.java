@@ -19,13 +19,19 @@ package ai.floedb.floecat.gateway.iceberg.rest.common;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.JarURLConnection;
 import java.net.URI;
+import java.net.URL;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
@@ -43,12 +49,10 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 public final class TestDeltaFixtures {
   private static final Path MODULE_RELATIVE = Path.of("protocol-gateway", "common-test");
-  private static final Path MODULE_ROOT = resolveModuleRoot();
-  private static final Path FIXTURE_ROOT =
-      MODULE_ROOT.resolve(Path.of("src", "main", "resources", "delta-fixtures"));
+  private static final Path FIXTURE_ROOT = resolveFixtureRoot("delta-fixtures");
   private static final Path CALL_CENTER_ROOT = FIXTURE_ROOT.resolve("call_center");
 
-  private static final Path TARGET_ROOT = MODULE_ROOT.resolve(Path.of("target", "test-fake-s3"));
+  private static final Path TARGET_ROOT = resolveTargetRoot();
   private static final String USE_AWS_FIXTURES_PROP = "floecat.fixtures.use-aws-s3";
 
   private static final String BUCKET = "floecat-delta";
@@ -277,19 +281,103 @@ public final class TestDeltaFixtures {
     }
   }
 
-  private static Path resolveModuleRoot() {
+  private static Optional<Path> findModuleRoot() {
     Path cwd = Path.of("").toAbsolutePath();
     while (cwd != null) {
       if (cwd.endsWith(MODULE_RELATIVE)) {
-        return cwd;
+        return Optional.of(cwd);
       }
       Path candidate = cwd.resolve(MODULE_RELATIVE);
       if (Files.isDirectory(candidate)) {
-        return candidate;
+        return Optional.of(candidate);
       }
       cwd = cwd.getParent();
     }
-    throw new IllegalStateException(
-        "Unable to locate module root for " + MODULE_RELATIVE.toString());
+    return Optional.empty();
+  }
+
+  private static Path resolveTargetRoot() {
+    Optional<Path> moduleRoot = findModuleRoot();
+    if (moduleRoot.isPresent()) {
+      return moduleRoot.get().resolve(Path.of("target", "test-fake-s3"));
+    }
+    try {
+      return Files.createTempDirectory("floecat-test-s3");
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to create temp fixture root", e);
+    }
+  }
+
+  private static Path resolveFixtureRoot(String resourceRoot) {
+    Optional<Path> moduleRoot = findModuleRoot();
+    if (moduleRoot.isPresent()) {
+      Path candidate = moduleRoot.get().resolve(Path.of("src", "main", "resources", resourceRoot));
+      if (Files.isDirectory(candidate)) {
+        return candidate;
+      }
+    }
+
+    URL url = TestDeltaFixtures.class.getClassLoader().getResource(resourceRoot);
+    if (url == null) {
+      throw new IllegalStateException("Unable to locate fixture resources: " + resourceRoot);
+    }
+    if ("file".equals(url.getProtocol())) {
+      try {
+        return Path.of(url.toURI());
+      } catch (Exception e) {
+        throw new IllegalStateException("Failed to resolve fixture resources", e);
+      }
+    }
+    if ("jar".equals(url.getProtocol())) {
+      return extractFromJar(resourceRoot, url);
+    }
+    return extractFromJar(resourceRoot, url);
+  }
+
+  private static Path extractFromJar(String resourceRoot, URL url) {
+    Path tempRoot;
+    try {
+      tempRoot = Files.createTempDirectory("floecat-fixtures");
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to create fixture temp directory", e);
+    }
+    Path targetRoot = tempRoot.resolve(resourceRoot);
+
+    try (JarFile jarFile = openJarFile(url)) {
+      Enumeration<JarEntry> entries = jarFile.entries();
+      String prefix = resourceRoot.endsWith("/") ? resourceRoot : resourceRoot + "/";
+      while (entries.hasMoreElements()) {
+        JarEntry entry = entries.nextElement();
+        String name = entry.getName();
+        if (!name.startsWith(prefix)) {
+          continue;
+        }
+        Path target = tempRoot.resolve(name);
+        if (entry.isDirectory()) {
+          Files.createDirectories(target);
+        } else {
+          Files.createDirectories(target.getParent());
+          try (var stream = jarFile.getInputStream(entry)) {
+            Files.copy(stream, target, StandardCopyOption.REPLACE_EXISTING);
+          }
+        }
+      }
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to extract fixture resources", e);
+    }
+    return targetRoot;
+  }
+
+  private static JarFile openJarFile(URL url) throws IOException {
+    if ("jar".equals(url.getProtocol())) {
+      JarURLConnection connection = (JarURLConnection) url.openConnection();
+      return connection.getJarFile();
+    }
+    URL codeSource = TestDeltaFixtures.class.getProtectionDomain().getCodeSource().getLocation();
+    try {
+      return new JarFile(Path.of(codeSource.toURI()).toFile());
+    } catch (Exception e) {
+      throw new IOException("Failed to resolve fixture jar path", e);
+    }
   }
 }
