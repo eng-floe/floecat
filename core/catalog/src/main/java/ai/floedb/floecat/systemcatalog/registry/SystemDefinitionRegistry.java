@@ -38,8 +38,18 @@ public final class SystemDefinitionRegistry {
 
   public SystemEngineCatalog catalog(EngineContext ctx) {
     EngineContext canonical = ctx == null ? EngineContext.empty() : ctx;
-    String normalizedKind = canonical.normalizedKind();
-    return cache.computeIfAbsent(normalizedKind, ignored -> provider.load(normalizedKind));
+    String requestedKey = canonical.effectiveEngineKind();
+    SystemEngineCatalog existing = cache.get(requestedKey);
+    if (existing != null) {
+      return existing;
+    }
+    SystemEngineCatalog loaded = provider.load(canonical);
+    String resolvedKey = loaded.engineKind();
+    SystemEngineCatalog winner = cache.computeIfAbsent(resolvedKey, ignored -> loaded);
+    if (!resolvedKey.equals(requestedKey)) {
+      cache.putIfAbsent(requestedKey, winner);
+    }
+    return winner;
   }
 
   /** Test-only: clears catalog cache. */

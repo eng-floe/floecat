@@ -23,6 +23,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -57,8 +58,8 @@ class StaticSystemCatalogProviderTest {
 
     StaticSystemCatalogProvider provider = new StaticSystemCatalogProvider(Map.of("SpArK", data));
 
-    SystemEngineCatalog lower = provider.load("spark");
-    SystemEngineCatalog upper = provider.load("SPARK");
+    SystemEngineCatalog lower = provider.load(EngineContext.of("spark", ""));
+    SystemEngineCatalog upper = provider.load(EngineContext.of("SPARK", ""));
 
     assertThat(lower.functions("f")).hasSize(1);
     assertThat(upper.functions("f")).hasSize(1);
@@ -68,7 +69,7 @@ class StaticSystemCatalogProviderTest {
   void load_unknownEngineReturnsEmptyCatalog() {
     StaticSystemCatalogProvider provider = new StaticSystemCatalogProvider(Map.of());
 
-    SystemEngineCatalog catalog = provider.load("unknown-engine");
+    SystemEngineCatalog catalog = provider.load(EngineContext.of("unknown-engine", ""));
 
     assertThat(catalog.functions()).isEmpty();
     assertThat(catalog.types()).isEmpty();
@@ -92,8 +93,8 @@ class StaticSystemCatalogProviderTest {
 
     StaticSystemCatalogProvider provider = new StaticSystemCatalogProvider(Map.of("spark", data));
 
-    SystemEngineCatalog c1 = provider.load("spark");
-    SystemEngineCatalog c2 = provider.load("spark");
+    SystemEngineCatalog c1 = provider.load(EngineContext.of("spark", ""));
+    SystemEngineCatalog c2 = provider.load(EngineContext.of("spark", ""));
 
     assertThat(c1).isNotSameAs(c2);
     assertThat(c1.fingerprint()).isEqualTo(c2.fingerprint());
@@ -105,7 +106,7 @@ class StaticSystemCatalogProviderTest {
         new StaticSystemCatalogProvider(Map.of("SPARK", SystemCatalogData.empty()));
 
     // Would fail if constructor didn't normalize keys
-    SystemEngineCatalog catalog = provider.load("spark");
+    SystemEngineCatalog catalog = provider.load(EngineContext.of("spark", ""));
 
     assertThat(catalog.fingerprint()).isNotBlank();
   }
