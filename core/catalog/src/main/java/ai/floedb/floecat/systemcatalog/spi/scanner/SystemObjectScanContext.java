@@ -24,7 +24,9 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -34,10 +36,30 @@ import java.util.Optional;
  * is safe, cache-aware, and keeps core decoupled from the full MetadataGraph implementation.
  */
 public record SystemObjectScanContext(
-    CatalogOverlay graph, NameRef name, ResourceId queryDefaultCatalogId) {
+    CatalogOverlay graph,
+    NameRef name,
+    ResourceId queryDefaultCatalogId,
+    EngineContext engineContext)
+    implements MetadataResolutionContext {
+
+  public SystemObjectScanContext {
+    Objects.requireNonNull(graph, "graph");
+    Objects.requireNonNull(queryDefaultCatalogId, "queryDefaultCatalogId");
+    engineContext = engineContext == null ? EngineContext.empty() : engineContext;
+  }
 
   public GraphNode resolve(ResourceId id) {
     return graph.resolve(id).orElseThrow();
+  }
+
+  @Override
+  public CatalogOverlay overlay() {
+    return graph;
+  }
+
+  @Override
+  public ResourceId catalogId() {
+    return queryDefaultCatalogId;
   }
 
   public Optional<GraphNode> tryResolve(ResourceId id) {

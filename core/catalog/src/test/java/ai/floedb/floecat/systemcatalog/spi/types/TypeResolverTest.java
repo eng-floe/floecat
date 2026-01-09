@@ -24,6 +24,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
@@ -37,7 +38,10 @@ final class TypeResolverTest {
 
   private final SystemObjectScanContext ctx =
       new SystemObjectScanContext(
-          new TestCatalogOverlay(), NameRef.getDefaultInstance(), catalogId());
+          new TestCatalogOverlay(),
+          NameRef.getDefaultInstance(),
+          catalogId(),
+          EngineContext.empty());
 
   @Test
   void resolve_returnsMappedTypeNode() {

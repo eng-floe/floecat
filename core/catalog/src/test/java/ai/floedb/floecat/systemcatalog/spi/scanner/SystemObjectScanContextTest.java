@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.*;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.*;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import java.time.Instant;
 import java.util.List;
@@ -36,7 +37,10 @@ class SystemObjectScanContextTest {
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view, NameRef.newBuilder().build(), ResourceId.getDefaultInstance());
+            view,
+            NameRef.newBuilder().build(),
+            ResourceId.getDefaultInstance(),
+            EngineContext.empty());
 
     assertThatThrownBy(() -> ctx.resolve(ResourceId.getDefaultInstance()))
         .isInstanceOf(Exception.class);
@@ -48,7 +52,10 @@ class SystemObjectScanContextTest {
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view, NameRef.newBuilder().build(), ResourceId.getDefaultInstance());
+            view,
+            NameRef.newBuilder().build(),
+            ResourceId.getDefaultInstance(),
+            EngineContext.empty());
 
     assertThat(ctx.tryResolve(ResourceId.getDefaultInstance())).isEmpty();
   }
@@ -80,7 +87,10 @@ class SystemObjectScanContextTest {
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view, NameRef.getDefaultInstance(), ResourceId.getDefaultInstance());
+            view,
+            NameRef.getDefaultInstance(),
+            ResourceId.getDefaultInstance(),
+            EngineContext.empty());
 
     assertThat(ctx.tryResolve(ResourceId.getDefaultInstance())).isPresent().containsSame(node);
   }
@@ -112,7 +122,10 @@ class SystemObjectScanContextTest {
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view, NameRef.getDefaultInstance(), ResourceId.getDefaultInstance());
+            view,
+            NameRef.getDefaultInstance(),
+            ResourceId.getDefaultInstance(),
+            EngineContext.empty());
 
     assertThat(ctx.resolve(ResourceId.getDefaultInstance())).isSameAs(node);
   }
@@ -131,7 +144,10 @@ class SystemObjectScanContextTest {
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view, NameRef.getDefaultInstance(), ResourceId.getDefaultInstance());
+            view,
+            NameRef.getDefaultInstance(),
+            ResourceId.getDefaultInstance(),
+            EngineContext.empty());
 
     assertThatThrownBy(() -> ctx.resolve(ResourceId.getDefaultInstance()))
         .isInstanceOf(ex.getClass())
@@ -165,7 +181,10 @@ class SystemObjectScanContextTest {
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view, NameRef.getDefaultInstance(), ResourceId.getDefaultInstance());
+            view,
+            NameRef.getDefaultInstance(),
+            ResourceId.getDefaultInstance(),
+            EngineContext.empty());
 
     assertThat(ctx.listTables(ResourceId.getDefaultInstance())).containsExactly(t);
   }
@@ -194,7 +213,10 @@ class SystemObjectScanContextTest {
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view, NameRef.getDefaultInstance(), ResourceId.getDefaultInstance());
+            view,
+            NameRef.getDefaultInstance(),
+            ResourceId.getDefaultInstance(),
+            EngineContext.empty());
 
     assertThat(ctx.listViews(ResourceId.getDefaultInstance())).containsExactly(v);
   }
@@ -219,7 +241,10 @@ class SystemObjectScanContextTest {
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            view, NameRef.getDefaultInstance(), ResourceId.getDefaultInstance());
+            view,
+            NameRef.getDefaultInstance(),
+            ResourceId.getDefaultInstance(),
+            EngineContext.empty());
 
     assertThat(ctx.listNamespaces()).containsExactly(n);
   }
@@ -230,7 +255,7 @@ class SystemObjectScanContextTest {
     ResourceId catalog = ResourceId.newBuilder().setId("cat").build();
 
     SystemObjectScanContext ctx =
-        new SystemObjectScanContext(new TestCatalogOverlay(), name, catalog);
+        new SystemObjectScanContext(new TestCatalogOverlay(), name, catalog, EngineContext.empty());
 
     assertThat(ctx.name()).isEqualTo(name);
     assertThat(ctx.queryDefaultCatalogId()).isEqualTo(catalog);
