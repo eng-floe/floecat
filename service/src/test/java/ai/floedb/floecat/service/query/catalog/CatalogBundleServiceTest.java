@@ -28,13 +28,16 @@ import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
+import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport.CancellingSubscriber;
 import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport.FakeCatalogOverlay;
 import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport.TestQueryContextStore;
 import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport.TestQueryInputResolver;
 import ai.floedb.floecat.service.query.impl.QueryContext;
+import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -62,6 +65,8 @@ class CatalogBundleServiceTest {
           .build();
 
   private final FakeCatalogOverlay overlay = new FakeCatalogOverlay();
+  private final EngineMetadataDecoratorProvider decoratorProvider = ctx -> Optional.empty();
+  private final EngineContextProvider engineContextProvider = new EngineContextProvider();
   private TestQueryInputResolver resolver;
   private TestQueryContextStore queryStore;
   private CatalogBundleService service;
@@ -98,7 +103,9 @@ class CatalogBundleServiceTest {
         NameRef.newBuilder().setCatalog("cat").setName("b").build());
     overlay.registerCatalog(DEFAULT_CATALOG, "cat");
     queryStore.seed(ctx);
-    service = new CatalogBundleService(overlay, resolver, queryStore);
+    service =
+        new CatalogBundleService(
+            overlay, resolver, queryStore, decoratorProvider, engineContextProvider, false);
   }
 
   @Test

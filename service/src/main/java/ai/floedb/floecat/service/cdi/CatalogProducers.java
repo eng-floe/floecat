@@ -39,8 +39,9 @@ public class CatalogProducers {
 
   @Produces
   @ApplicationScoped
-  public SystemNodeRegistry produceBuiltinNodeRegistry(SystemDefinitionRegistry defs) {
-    return new SystemNodeRegistry(defs);
+  public SystemNodeRegistry produceBuiltinNodeRegistry(
+      SystemDefinitionRegistry defs, List<SystemObjectScannerProvider> providers) {
+    return new SystemNodeRegistry(defs, providers);
   }
 
   @Produces
