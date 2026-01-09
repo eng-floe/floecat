@@ -15,6 +15,7 @@
  */
 package ai.floedb.floecat.kv.dynamodb;
 
+import ai.floedb.floecat.kv.KvAttributes;
 import ai.floedb.floecat.kv.KvStore;
 import io.smallrye.mutiny.Uni;
 import java.nio.charset.StandardCharsets;
@@ -26,7 +27,7 @@ import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
-public final class DynamoDbKvStore implements KvStore, DynamoDbSchema {
+public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
   private final DynamoDbAsyncClient ddb;
   private final String table;
@@ -203,31 +204,53 @@ public final class DynamoDbKvStore implements KvStore, DynamoDbSchema {
   public Uni<Page> queryByPartitionKeyPrefix(
       String pk, String skPrefix, int limit, Optional<String> pageToken) {
 
-    var qb = QueryRequest.builder().tableName(table).limit(limit);
+    // If we are needing to do a scan here?
+    if (pk == null || pk.isEmpty()) {
+      var sb = ScanRequest.builder().tableName(table).limit(limit);
 
-    if (skPrefix.isEmpty()) {
-      qb.expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
-          .keyConditionExpression("#pk = :pk")
-          .expressionAttributeValues(Map.of(":pk", S(pk)));
+      if (skPrefix != null && !skPrefix.isEmpty()) {
+        sb.expressionAttributeNames(Map.of("#sk", ATTR_SORT_KEY))
+            .filterExpression("begins_with(#sk, :skp)")
+            .expressionAttributeValues(Map.of(":skp", S(skPrefix)));
+      }
+
+      decodeToken(pageToken).ifPresent(sb::exclusiveStartKey);
+
+      return Uni.createFrom()
+          .completionStage(ddb.scan(sb.build()))
+          .map(
+              resp -> {
+                var items = new ArrayList<Record>(resp.items().size());
+                for (var it : resp.items()) items.add(avToRecord(it));
+                return new Page(items, encodeToken(resp.lastEvaluatedKey()));
+              });
     } else {
-      qb.expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY, "#sk", ATTR_SORT_KEY))
-          .keyConditionExpression("#pk = :pk AND begins_with(#sk, :skp)")
-          .expressionAttributeValues(
-              Map.of(
-                  ":pk", S(pk),
-                  ":skp", S(skPrefix)));
+      var qb = QueryRequest.builder().tableName(table).limit(limit);
+
+      if (skPrefix == null || skPrefix.isEmpty()) {
+        qb.expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
+            .keyConditionExpression("#pk = :pk")
+            .expressionAttributeValues(Map.of(":pk", S(pk)));
+      } else {
+        qb.expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY, "#sk", ATTR_SORT_KEY))
+            .keyConditionExpression("#pk = :pk AND begins_with(#sk, :skp)")
+            .expressionAttributeValues(
+                Map.of(
+                    ":pk", S(pk),
+                    ":skp", S(skPrefix)));
+      }
+
+      decodeToken(pageToken).ifPresent(qb::exclusiveStartKey);
+
+      return Uni.createFrom()
+          .completionStage(ddb.query(qb.build()))
+          .map(
+              resp -> {
+                var items = new ArrayList<Record>(resp.items().size());
+                for (var it : resp.items()) items.add(avToRecord(it));
+                return new Page(items, encodeToken(resp.lastEvaluatedKey()));
+              });
     }
-
-    decodeToken(pageToken).ifPresent(qb::exclusiveStartKey);
-
-    return Uni.createFrom()
-        .completionStage(ddb.query(qb.build()))
-        .map(
-            resp -> {
-              var items = new ArrayList<Record>(resp.items().size());
-              for (var it : resp.items()) items.add(avToRecord(it));
-              return new Page(items, encodeToken(resp.lastEvaluatedKey()));
-            });
   }
 
   // ---- Transactions (CAS-only)

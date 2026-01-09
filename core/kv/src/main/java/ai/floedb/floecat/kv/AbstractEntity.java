@@ -17,12 +17,16 @@ package ai.floedb.floecat.kv;
 
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageLite;
+import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Base class for KV-backed entities.
@@ -32,6 +36,7 @@ import java.util.Optional;
  */
 public abstract class AbstractEntity<M extends MessageLite> implements KvAttributes {
   protected final KvStore kv;
+  private final String kind;
   private final M defaultInstance;
   private final VersionAccessor<M> versionAccessor;
 
@@ -44,8 +49,10 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
     M withVersion(M message, long newVersion);
   }
 
-  protected AbstractEntity(KvStore kv, M defaultInstance, VersionAccessor<M> versionAccessor) {
+  protected AbstractEntity(
+      KvStore kv, String kind, M defaultInstance, VersionAccessor<M> versionAccessor) {
     this.kv = kv;
+    this.kind = kind;
     this.defaultInstance = defaultInstance;
     this.versionAccessor = versionAccessor;
   }
@@ -94,7 +101,7 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
   // ---- Reads
 
   protected Uni<Optional<M>> get(KvStore.Key key) {
-    return kv.get(key).map(opt -> opt.map(r -> decode(r)));
+    return kv.get(key).map(opt -> opt.map(this::decode));
   }
 
   // ---- CAS helpers
@@ -207,6 +214,67 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
                         return new EntityPage<M>(out, page.nextToken());
                       });
             });
+  }
+
+  /**
+   * Retrieve all entities with the given partition key and sort key prefix. Since this can be
+   * expensive in memory usage, should be used for testing only.
+   *
+   * @param partitionKey
+   * @param sortKeyPrefix
+   * @return Map of Key to M for all items with the given partition key and sort key prefix
+   */
+  public Uni<Map<KvStore.Key, M>> listEntities(String partitionKey, String sortKeyPrefix) {
+    var out = new LinkedHashMap<KvStore.Key, M>();
+    var tokenRef = new AtomicReference<Optional<String>>(Optional.empty());
+
+    return Multi.createBy()
+        .repeating()
+        .uni(() -> kv.queryByPartitionKeyPrefix(partitionKey, sortKeyPrefix, 100, tokenRef.get()))
+        .whilst(page -> tokenRef.get().isPresent())
+        .onItem()
+        .invoke(
+            page -> {
+              for (var r : page.items()) {
+                if (Objects.equals(r.kind(), kind)) {
+                  out.put(r.key(), decode(r));
+                }
+              }
+              tokenRef.set(page.nextToken());
+            })
+        .collect()
+        .asList()
+        .replaceWith(out);
+  }
+
+  /**
+   * Retrieve all records, including raw indices. Since this can be expensive in memory usage,
+   * should be used for testing only.
+   *
+   * @param partitionKey
+   * @param sortKeyPrefix
+   * @return Map of Key to Record for all items with the given partition key and sort key prefix
+   */
+  public Uni<Map<KvStore.Key, KvStore.Record>> listRecords(
+      String partitionKey, String sortKeyPrefix) {
+    var out = new LinkedHashMap<KvStore.Key, KvStore.Record>();
+    var tokenRef = new AtomicReference<Optional<String>>(Optional.empty());
+
+    return Multi.createBy()
+        .repeating()
+        .uni(() -> kv.queryByPartitionKeyPrefix(partitionKey, sortKeyPrefix, 100, tokenRef.get()))
+        .whilst(page -> tokenRef.get().isPresent())
+        .onItem()
+        .invoke(
+            page -> {
+              for (var r : page.items()) {
+                out.put(r.key(), r);
+              }
+              tokenRef.set(page.nextToken());
+            })
+        .collect()
+        .asList()
+        .replaceWith(out);
   }
 
   public boolean isEmpty() {

@@ -56,7 +56,11 @@ public final class KvObjectEntity extends AbstractEntity<KvObject> {
 
   @Inject
   public KvObjectEntity(@KvTable("floecat-test") KvStore kv) {
-    super(kv, KvObject.getDefaultInstance(), (o, v) -> o.toBuilder().setVersion(v).build());
+    super(
+        kv,
+        KIND_TEST_OBJECT,
+        KvObject.getDefaultInstance(),
+        (o, v) -> o.toBuilder().setVersion(v).build());
   }
 
   private static KvStore.Key canonicalKey(String id) {

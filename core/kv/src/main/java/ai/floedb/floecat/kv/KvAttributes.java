@@ -16,7 +16,14 @@
 package ai.floedb.floecat.kv;
 
 public interface KvAttributes {
+  String ATTR_PARTITION_KEY = "pk";
+  String ATTR_SORT_KEY = "sk";
+  String ATTR_KIND = "kind";
+  String ATTR_VALUE = "value";
+  String ATTR_VERSION = "version";
+  String ATTR_TTL = "ttl";
+  String ATTR_EXPIRES_AT = "timestamp";
+
   String TARGET_PARTITION_KEY = "targetPk";
   String TARGET_SORT_KEY = "targetSk";
-  String ATTR_EXPIRES_AT = "timestamp";
 }

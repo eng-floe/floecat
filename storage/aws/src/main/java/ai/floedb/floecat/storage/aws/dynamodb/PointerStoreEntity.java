@@ -54,7 +54,11 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
 
   @Inject
   public PointerStoreEntity(@KvTable("floecat") KvStore kv) {
-    super(kv, Pointer.getDefaultInstance(), (p, v) -> p.toBuilder().setVersion(v).build());
+    super(
+        kv,
+        KIND_POINTER,
+        Pointer.getDefaultInstance(),
+        (p, v) -> p.toBuilder().setVersion(v).build());
   }
 
   // ---- Keys
@@ -211,7 +215,7 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
         .map(
             page ->
                 new EntityPage<>(
-                    page.items().stream().map(r -> decode(r)).toList(), page.nextToken()));
+                    page.items().stream().map(this::decode).toList(), page.nextToken()));
   }
 
   /**
