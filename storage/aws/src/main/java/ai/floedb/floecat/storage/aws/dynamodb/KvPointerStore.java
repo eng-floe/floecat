@@ -69,19 +69,7 @@ abstract class KvPointerStore implements PointerStore {
 
   @Override
   public int deleteByPrefix(String prefix) {
-    int deleted = 0;
-
-    Optional<String> token = Optional.empty();
-    do {
-      var page = pointers.listKeysByPrefix(prefix, 200, token).await().indefinitely();
-
-      for (String key : page.items()) {
-        if (pointers.delete(key).await().indefinitely()) deleted++;
-      }
-      token = page.nextToken();
-    } while (token.isPresent());
-
-    return deleted;
+    return pointers.deleteByPrefix(prefix).await().indefinitely();
   }
 
   @Override

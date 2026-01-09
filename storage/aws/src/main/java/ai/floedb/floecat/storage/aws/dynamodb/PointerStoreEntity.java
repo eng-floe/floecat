@@ -235,6 +235,17 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
                     page.items().stream().map(r -> keyOf(r.key())).toList(), page.nextToken()));
   }
 
+  /**
+   * Delete pointer keys by prefix.
+   *
+   * @param prefix
+   * @return count of items deleted
+   */
+  public Uni<Integer> deleteByPrefix(String prefix) {
+    var prefixKey = prefixKey(prefix);
+    return kv.deleteByPrefix(prefixKey.partitionKey(), prefixKey.sortKey());
+  }
+
   // ---- Helpers (testing)
 
   private String keyOf(Key key) {

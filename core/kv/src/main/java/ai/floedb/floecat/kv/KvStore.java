@@ -95,6 +95,15 @@ public interface KvStore {
       String partitionKey, String sortKeyPrefix, int limit, Optional<String> pageToken);
 
   /**
+   * Remove items
+   *
+   * @param partitionKey
+   * @param sortKeyPrefix
+   * @return count of items removed
+   */
+  Uni<Integer> deleteByPrefix(String partitionKey, String sortKeyPrefix);
+
+  /**
    * Remove all records in store. <br>
    * NB: for testing purposes only.
    */

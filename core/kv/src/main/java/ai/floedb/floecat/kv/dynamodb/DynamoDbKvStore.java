@@ -17,12 +17,15 @@ package ai.floedb.floecat.kv.dynamodb;
 
 import ai.floedb.floecat.kv.KvAttributes;
 import ai.floedb.floecat.kv.KvStore;
+import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
@@ -251,6 +254,75 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
                 return new Page(items, encodeToken(resp.lastEvaluatedKey()));
               });
     }
+  }
+
+  @Override
+  public Uni<Integer> deleteByPrefix(String partitionKey, String sortKeyPrefix) {
+    final var totalDeleted = new AtomicInteger(0);
+    final var lekRef = new AtomicReference<Map<String, AttributeValue>>(null);
+
+    return Multi.createBy()
+        .repeating()
+        .uni(
+            () -> {
+              QueryRequest.Builder qb =
+                  QueryRequest.builder()
+                      .tableName(table)
+                      .projectionExpression("#pk,#sk")
+                      .expressionAttributeNames(
+                          Map.of("#pk", ATTR_PARTITION_KEY, "#sk", ATTR_SORT_KEY))
+                      .consistentRead(true)
+                      .limit(1000);
+
+              var lek = lekRef.get();
+              if (lek != null && !lek.isEmpty()) {
+                qb.exclusiveStartKey(lek);
+              }
+
+              if (sortKeyPrefix == null || sortKeyPrefix.isEmpty()) {
+                qb.keyConditionExpression("#pk = :pk")
+                    .expressionAttributeValues(Map.of(":pk", S(partitionKey)));
+              } else {
+                qb.keyConditionExpression("#pk = :pk AND begins_with(#sk, :skp)")
+                    .expressionAttributeValues(
+                        Map.of(
+                            ":pk", S(partitionKey),
+                            ":skp", S(sortKeyPrefix)));
+              }
+
+              return Uni.createFrom().completionStage(ddb.query(qb.build()));
+            })
+        .whilst(resp -> resp.lastEvaluatedKey() != null && !resp.lastEvaluatedKey().isEmpty())
+        .onItem()
+        .call(
+            resp -> {
+              // advance LEK for the next iteration
+              lekRef.set(resp.lastEvaluatedKey());
+
+              // build delete requests for this page
+              var deletes = new ArrayList<WriteRequest>(resp.items().size());
+              for (var item : resp.items()) {
+                var key =
+                    Map.of(
+                        ATTR_PARTITION_KEY, item.get(ATTR_PARTITION_KEY),
+                        ATTR_SORT_KEY, item.get(ATTR_SORT_KEY));
+                deletes.add(
+                    WriteRequest.builder()
+                        .deleteRequest(DeleteRequest.builder().key(key).build())
+                        .build());
+              }
+
+              return Uni.createFrom()
+                  .completionStage(
+                      ddb.batchWriteItem(
+                              BatchWriteItemRequest.builder()
+                                  .requestItems(Map.of(table, deletes))
+                                  .build())
+                          .thenAccept(_ -> totalDeleted.addAndGet(deletes.size())));
+            })
+        .collect()
+        .asList()
+        .replaceWith(totalDeleted.get());
   }
 
   // ---- Transactions (CAS-only)
