@@ -112,58 +112,6 @@ public final class ScannerUtils {
         .orElseGet(() -> new int[0]);
   }
 
-  // Legacy helpers – prefer PayloadDescriptor-based overloads
-
-  /**
-   * Decode an engine-specific payload once and return a typed value. Any exception or missing
-   * payload results in Optional.empty().
-   */
-  public static <T> Optional<T> payload(
-      SystemObjectScanContext ctx,
-      ResourceId id,
-      String payloadType,
-      ThrowingFunction<byte[], T> decoder) {
-    if (ctx == null) {
-      return Optional.empty();
-    }
-    return payload(
-        ctx.overlay(), id, PayloadDescriptor.of(payloadType, decoder), ctx.engineContext());
-  }
-
-  /**
-   * Resolve a PostgreSQL OID for a graph node.
-   *
-   * <p>Resolution order: 1. Engine-specific payload (if present and decodable) 2. Deterministic
-   * fallback based on ResourceId
-   */
-  public static int oid(
-      SystemObjectScanContext ctx,
-      ResourceId id,
-      String payloadType,
-      ThrowingFunction<byte[], Integer> extractor) {
-    if (ctx == null) {
-      return fallbackOid(id);
-    }
-    return payload(
-            ctx.overlay(), id, PayloadDescriptor.of(payloadType, extractor), ctx.engineContext())
-        .filter(v -> v > 0)
-        .orElseGet(() -> fallbackOid(id));
-  }
-
-  public static int[] array(
-      SystemObjectScanContext ctx,
-      ResourceId id,
-      String payloadType,
-      ThrowingFunction<byte[], int[]> extractor) {
-    if (ctx == null) {
-      return new int[0];
-    }
-    return payload(
-            ctx.overlay(), id, PayloadDescriptor.of(payloadType, extractor), ctx.engineContext())
-        .filter(arr -> arr != null && arr.length > 0)
-        .orElseGet(() -> new int[0]);
-  }
-
   /** Stable, deterministic fallback OID */
   public static int fallbackOid(ResourceId id) {
     return Math.abs(id.hashCode());
