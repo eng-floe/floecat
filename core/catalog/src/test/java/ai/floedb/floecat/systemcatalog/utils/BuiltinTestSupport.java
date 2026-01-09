@@ -20,7 +20,9 @@ import ai.floedb.floecat.common.rpc.*;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.hint.SystemCatalogHintProvider;
+import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
 import ai.floedb.floecat.systemcatalog.provider.StaticSystemCatalogProvider;
+import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import java.nio.charset.StandardCharsets;
@@ -41,7 +43,7 @@ public final class BuiltinTestSupport {
   public static SystemCatalogHintProvider providerFrom(String engine, SystemCatalogData data) {
     var registry =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(engine, data)));
-    var nodeRegistry = new SystemNodeRegistry(registry);
+    var nodeRegistry = new SystemNodeRegistry(registry, providers());
     return new SystemCatalogHintProvider(nodeRegistry);
   }
 
@@ -157,5 +159,9 @@ public final class BuiltinTestSupport {
         SystemNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, nr("state")),
         SystemNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, nr(ret)),
         Map.of());
+  }
+
+  private static List<SystemObjectScannerProvider> providers() {
+    return List.of(new FloecatInternalProvider());
   }
 }

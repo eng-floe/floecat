@@ -20,14 +20,25 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.TableBackendKind;
 import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
+import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
+import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
 import ai.floedb.floecat.systemcatalog.provider.StaticSystemCatalogProvider;
+import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
+import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
 class SystemNodeRegistryTest {
@@ -50,7 +61,7 @@ class SystemNodeRegistryTest {
   @Test
   void filtersByEngineKindAndVersion() {
     var registry = registryWithCatalogs();
-    var nodeRegistry = new SystemNodeRegistry(registry);
+    var nodeRegistry = new SystemNodeRegistry(registry, providers());
 
     // ---------------------------------
     // floe-demo / version 16.0
@@ -117,7 +128,7 @@ class SystemNodeRegistryTest {
   @Test
   void missingEngineKindFails() {
     var registry = registryWithCatalogs();
-    var nodeRegistry = new SystemNodeRegistry(registry);
+    var nodeRegistry = new SystemNodeRegistry(registry, providers());
 
     assertThat(nodeRegistry.nodesFor("", "16.0").functions()).isEmpty();
   }
@@ -125,7 +136,7 @@ class SystemNodeRegistryTest {
   @Test
   void missingEngineVersionMeansAnyVersion() {
     var registry = registryWithCatalogs();
-    var nodeRegistry = new SystemNodeRegistry(registry);
+    var nodeRegistry = new SystemNodeRegistry(registry, providers());
 
     assertThat(nodeRegistry.nodesFor(FLOE_KIND, "").functions())
         .extracting(fn -> fn.displayName())
@@ -138,7 +149,7 @@ class SystemNodeRegistryTest {
   @Test
   void engineKindIsLowercasedForCaching() {
     var registry = registryWithCatalogs();
-    var nodeRegistry = new SystemNodeRegistry(registry);
+    var nodeRegistry = new SystemNodeRegistry(registry, providers());
 
     var nodesLower = nodeRegistry.nodesFor("floe-demo", "16.0");
     var nodesUpper = nodeRegistry.nodesFor("FLOE-DEMO", "16.0");
@@ -154,6 +165,20 @@ class SystemNodeRegistryTest {
     assertThat(id.getAccountId()).isEqualTo("_system");
     assertThat(id.getKind()).isEqualTo(ResourceKind.RK_FUNCTION);
     assertThat(id.getId()).isEqualTo("floe:pg_catalog.abs");
+  }
+
+  @Test
+  void floecatInternalIncludesInformationSchemaTables() {
+    var registry = registryWithCatalogs();
+    var nodeRegistry = new SystemNodeRegistry(registry, providers());
+
+    var tables = canonicalTableNames(nodeRegistry.nodesFor("", ""));
+
+    assertThat(tables)
+        .contains(
+            "information_schema.tables",
+            "information_schema.columns",
+            "information_schema.schemata");
   }
 
   @Test
@@ -176,13 +201,51 @@ class SystemNodeRegistryTest {
             List.of());
     var registry =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
-    var nodes = new SystemNodeRegistry(registry).nodesFor(FLOE_KIND, "1.0");
+    var nodes = new SystemNodeRegistry(registry, providers()).nodesFor(FLOE_KIND, "1.0");
 
     var built = nodes.functions().get(0);
 
     assertThat(built.displayName()).isEqualTo("pg.abs");
     assertThat(built.argumentTypes().get(0).getId()).isEqualTo(FLOE_KIND + ":pg.int4");
     assertThat(built.returnType().getId()).isEqualTo(FLOE_KIND + ":pg.int4");
+  }
+
+  @Test
+  void providerDefinitionsCanVaryByVersion() {
+    var nodeRegistry =
+        new SystemNodeRegistry(
+            registryWithCatalogs(), providers(new VersionedTableProvider(FLOE_KIND)));
+
+    var tables16 = canonicalTableNames(nodeRegistry.nodesFor(FLOE_KIND, "16.0"));
+    var tables17 = canonicalTableNames(nodeRegistry.nodesFor(FLOE_KIND, "17.0"));
+    var table16 = FLOE_KIND + ".versioned_16.0";
+    var table17 = FLOE_KIND + ".versioned_17.0";
+
+    assertThat(tables16).contains(table16);
+    assertThat(tables17).contains(table17);
+    assertThat(tables16).doesNotContain(table17);
+    assertThat(tables17).doesNotContain(table16);
+  }
+
+  @Test
+  void providerDefinitionsSkippedWhenHeadersMissing() {
+    var provider = new VersionedTableProvider(FLOE_KIND);
+    var nodeRegistry = new SystemNodeRegistry(registryWithCatalogs(), providers(provider));
+
+    var tables = canonicalTableNames(nodeRegistry.nodesFor("", "16.0"));
+    assertThat(tables).doesNotContain(FLOE_KIND + ".versioned_16.0");
+    assertThat(provider.invocationCount()).isEqualTo(0);
+  }
+
+  @Test
+  void providerDefinitionsCachedPerVersion() {
+    var provider = new VersionedTableProvider(FLOE_KIND);
+    var nodeRegistry = new SystemNodeRegistry(registryWithCatalogs(), providers(provider));
+
+    nodeRegistry.nodesFor(FLOE_KIND, "16.0");
+    nodeRegistry.nodesFor(FLOE_KIND, "16.0");
+
+    assertThat(provider.invocationCount()).isEqualTo(1);
   }
 
   // -----------------------------------------------------
@@ -236,5 +299,73 @@ class SystemNodeRegistryTest {
             Map.of(
                 FLOE_KIND, catalog,
                 PG_KIND, catalog)));
+  }
+
+  private static List<SystemObjectScannerProvider> providers(
+      SystemObjectScannerProvider... extras) {
+    Stream<SystemObjectScannerProvider> base = Stream.of(new FloecatInternalProvider());
+    Stream<SystemObjectScannerProvider> extraStream = Arrays.stream(extras);
+    return Stream.concat(base, extraStream).toList();
+  }
+
+  private static List<String> canonicalTableNames(SystemNodeRegistry.BuiltinNodes nodes) {
+    return nodes.catalogData().tables().stream().map(t -> NameRefUtil.canonical(t.name())).toList();
+  }
+
+  private static final class VersionedTableProvider implements SystemObjectScannerProvider {
+
+    private final String engineKind;
+    private final AtomicInteger definitionsCalled = new AtomicInteger();
+
+    private VersionedTableProvider(String engineKind) {
+      this.engineKind = engineKind;
+    }
+
+    @Override
+    public List<SystemObjectDef> definitions() {
+      return definitions(engineKind, "");
+    }
+
+    @Override
+    public List<SystemObjectDef> definitions(String engineKind, String engineVersion) {
+      definitionsCalled.incrementAndGet();
+      return List.of(tableFor(engineKind, engineVersion));
+    }
+
+    @Override
+    public boolean supportsEngine(String engineKind) {
+      return this.engineKind.equals(engineKind);
+    }
+
+    @Override
+    public boolean supports(NameRef name, String engineKind) {
+      return this.engineKind.equals(engineKind);
+    }
+
+    @Override
+    public boolean supports(NameRef name, String engineKind, String engineVersion) {
+      return supports(name, engineKind);
+    }
+
+    @Override
+    public Optional<SystemObjectScanner> provide(
+        String scannerId, String engineKind, String engineVersion) {
+      return Optional.empty();
+    }
+
+    int invocationCount() {
+      return definitionsCalled.get();
+    }
+
+    private SystemTableDef tableFor(String engineKind, String engineVersion) {
+      String suffix = engineVersion == null || engineVersion.isEmpty() ? "default" : engineVersion;
+      return new SystemTableDef(
+          NameRefUtil.name(engineKind, "versioned_" + suffix),
+          "versioned_" + suffix,
+          List.of(),
+          TableBackendKind.FLOECAT,
+          "version-scanner",
+          List.of());
+    }
   }
 }

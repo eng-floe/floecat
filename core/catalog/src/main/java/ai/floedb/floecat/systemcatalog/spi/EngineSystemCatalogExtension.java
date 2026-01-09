@@ -18,6 +18,8 @@ package ai.floedb.floecat.systemcatalog.spi;
 
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
+import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
+import java.util.Optional;
 
 /**
  * SPI for engine-specific builtin catalogs.
@@ -38,5 +40,10 @@ public interface EngineSystemCatalogExtension extends SystemObjectScannerProvide
    */
   default void onLoadError(Exception e) {
     // default: no-op
+  }
+
+  /** Optional decorator for engine metadata sinks. */
+  default Optional<EngineMetadataDecorator> decorator() {
+    return Optional.empty();
   }
 }
