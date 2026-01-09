@@ -32,6 +32,7 @@ import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.spi.types.EngineTypeMapper;
 import ai.floedb.floecat.systemcatalog.spi.types.TypeLookup;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import ai.floedb.floecat.types.LogicalType;
 import java.time.Instant;
@@ -56,6 +57,8 @@ import org.junit.jupiter.api.Test;
 final class PgAttributeScannerTest {
 
   private static final EngineKey ENGINE = new EngineKey("floedb", "1.0");
+
+  private static final EngineContext ENGINE_CTX = EngineContext.of("floedb", "1.0");
 
   private final PgAttributeScanner scanner = new PgAttributeScanner(new TestTypeMapper());
 
@@ -223,7 +226,7 @@ final class PgAttributeScannerTest {
       overlay.setTableSchema(table.id(), schema);
     }
 
-    return new SystemObjectScanContext(overlay, null, catalogId());
+    return new SystemObjectScanContext(overlay, null, catalogId(), ENGINE_CTX);
   }
 
   private static TypeNode typeNode(NameRef name, Map<EngineKey, EngineHint> hints) {

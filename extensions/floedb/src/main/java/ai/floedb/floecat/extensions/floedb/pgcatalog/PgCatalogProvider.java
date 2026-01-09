@@ -17,7 +17,7 @@
 package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.extensions.floedb.FloeTypeMapper;
+import ai.floedb.floecat.extensions.floedb.engine.FloeTypeMapper;
 import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
 import ai.floedb.floecat.metagraph.model.TableBackendKind;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
@@ -45,7 +45,7 @@ import java.util.Set;
  */
 public final class PgCatalogProvider implements SystemObjectScannerProvider {
 
-  static final int PG_CATALOG_OID = 11;
+  public static final int PG_CATALOG_OID = 11;
   private static final Set<String> SUPPORTED_ENGINES = Set.of("floedb", "floe-demo");
 
   private final Map<String, SystemObjectScanner> scanners =

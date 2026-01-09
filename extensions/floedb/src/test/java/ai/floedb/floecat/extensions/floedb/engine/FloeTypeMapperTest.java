@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.extensions.floedb;
+package ai.floedb.floecat.extensions.floedb.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
