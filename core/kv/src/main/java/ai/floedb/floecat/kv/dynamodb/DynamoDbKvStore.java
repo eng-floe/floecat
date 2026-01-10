@@ -31,7 +31,8 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
 public final class DynamoDbKvStore implements KvStore, KvAttributes {
-
+  private static final int DELETE_BATCH_LIMIT =
+      Integer.getInteger("floedb.floecat.delete.batch.size", 25);
   private final DynamoDbAsyncClient ddb;
   private final String table;
 
@@ -272,7 +273,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
                       .expressionAttributeNames(
                           Map.of("#pk", ATTR_PARTITION_KEY, "#sk", ATTR_SORT_KEY))
                       .consistentRead(true)
-                      .limit(1000);
+                      .limit(DELETE_BATCH_LIMIT);
 
               var lek = lekRef.get();
               if (lek != null && !lek.isEmpty()) {
@@ -312,13 +313,18 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
                         .build());
               }
 
-              return Uni.createFrom()
-                  .completionStage(
-                      ddb.batchWriteItem(
-                              BatchWriteItemRequest.builder()
-                                  .requestItems(Map.of(table, deletes))
-                                  .build())
-                          .thenAccept(_ -> totalDeleted.addAndGet(deletes.size())));
+              // Batch deletes can't be empty, so handle this case.
+              if (deletes.isEmpty()) {
+                return Uni.createFrom().voidItem();
+              } else {
+                return Uni.createFrom()
+                    .completionStage(
+                        ddb.batchWriteItem(
+                                BatchWriteItemRequest.builder()
+                                    .requestItems(Map.of(table, deletes))
+                                    .build())
+                            .thenAccept(_ -> totalDeleted.addAndGet(deletes.size())));
+              }
             })
         .collect()
         .asList()
