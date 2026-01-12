@@ -231,7 +231,7 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
     return Multi.createBy()
         .repeating()
         .uni(() -> kv.queryByPartitionKeyPrefix(partitionKey, sortKeyPrefix, 100, tokenRef.get()))
-        .whilst(page -> tokenRef.get().isPresent())
+        .whilst(page -> page.nextToken() != null && !page.nextToken().isEmpty())
         .onItem()
         .invoke(
             page -> {
@@ -263,7 +263,7 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
     return Multi.createBy()
         .repeating()
         .uni(() -> kv.queryByPartitionKeyPrefix(partitionKey, sortKeyPrefix, 100, tokenRef.get()))
-        .whilst(page -> tokenRef.get().isPresent())
+        .whilst(page -> page.nextToken() != null && !page.nextToken().isEmpty())
         .onItem()
         .invoke(
             page -> {
