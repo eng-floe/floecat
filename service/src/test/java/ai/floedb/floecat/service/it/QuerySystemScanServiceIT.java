@@ -21,11 +21,17 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
+import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.query.catalog.StatsProviderFactory;
+import ai.floedb.floecat.service.query.impl.QueryContext;
+import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.system.rpc.OutputFormat;
@@ -81,6 +87,9 @@ public class QuerySystemScanServiceIT {
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
+  @Inject QueryContextStore queryStore;
+  @Inject StatsProviderFactory statsFactory;
+  @Inject StatsRepository statsRepository;
 
   private String catalogPrefix = getClass().getSimpleName() + "_";
 
@@ -194,6 +203,46 @@ public class QuerySystemScanServiceIT {
         rows.stream().filter(r -> r.size() > 2 && "bar".equals(r.get(2))).toList();
     assertEquals(1, barRows.size(), "There should be exactly one 'bar' table row");
     assertEquals("b.nsB", barRows.get(0).get(1), "Schema value for 'bar' should be 'b.nsB'");
+  }
+
+  @Test
+  void statsProviderIsBestEffortDuringSystemScan() throws IOException {
+    var cat = TestSupport.createCatalog(catalog, catalogPrefix + "stats", "");
+    String queryId = beginQuery(cat.getResourceId());
+    QueryContext preScan = queryStore.get(queryId).orElseThrow();
+    SnapshotSet preSnapshots = SnapshotSet.parseFrom(preScan.getSnapshotSet());
+    assertEquals(0, preSnapshots.getPinsCount(), "BeginQuery should start with zero pins");
+
+    ResourceId systemTableId = systemTable("pg", "information_schema", "tables");
+    TableStats stats =
+        TableStats.newBuilder()
+            .setTableId(systemTableId)
+            .setSnapshotId(987L)
+            .setRowCount(1)
+            .build();
+    statsRepository.putTableStats(systemTableId, 987L, stats);
+
+    var provider = statsFactory.forQuery(preScan, "corr-stats");
+    assertTrue(provider.tableStats(systemTableId).isEmpty(), "Unpinned tables should skip stats");
+
+    var stub = withEngine(systemScan, "pg");
+    List<ScanSystemTableChunk> chunks =
+        collectChunks(
+            stub,
+            ScanSystemTableRequest.newBuilder()
+                .setQueryId(queryId)
+                .setTableId(systemTableId)
+                .setOutputFormat(OutputFormat.ROWS)
+                .build());
+
+    assertFalse(
+        chunks.isEmpty(), "System scan should emit rows even when stats provider is active");
+    QueryContext postScan = queryStore.get(queryId).orElseThrow();
+    SnapshotSet postSnapshots = SnapshotSet.parseFrom(postScan.getSnapshotSet());
+    assertEquals(0, postSnapshots.getPinsCount(), "System scan must not add snapshot pins");
+    assertTrue(
+        statsFactory.forQuery(postScan, "corr-check").tableStats(systemTableId).isEmpty(),
+        "Stats provider still returns empty after scan");
   }
 
   @Test

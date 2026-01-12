@@ -39,13 +39,23 @@ public record SystemObjectScanContext(
     CatalogOverlay graph,
     NameRef name,
     ResourceId queryDefaultCatalogId,
-    EngineContext engineContext)
+    EngineContext engineContext,
+    StatsProvider statsProvider)
     implements MetadataResolutionContext {
 
   public SystemObjectScanContext {
     Objects.requireNonNull(graph, "graph");
     Objects.requireNonNull(queryDefaultCatalogId, "queryDefaultCatalogId");
     engineContext = engineContext == null ? EngineContext.empty() : engineContext;
+    statsProvider = statsProvider == null ? StatsProvider.NONE : statsProvider;
+  }
+
+  public SystemObjectScanContext(
+      CatalogOverlay graph,
+      NameRef name,
+      ResourceId queryDefaultCatalogId,
+      EngineContext engineContext) {
+    this(graph, name, queryDefaultCatalogId, engineContext, StatsProvider.NONE);
   }
 
   public GraphNode resolve(ResourceId id) {
@@ -97,5 +107,10 @@ public record SystemObjectScanContext(
 
   public List<TypeNode> listTypes() {
     return graph.listTypes(queryDefaultCatalogId);
+  }
+
+  @Override
+  public StatsProvider statsProvider() {
+    return statsProvider;
   }
 }

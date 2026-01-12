@@ -80,7 +80,15 @@ public final class CatalogBundleTestSupport {
 
     public void registerTable(
         ResourceId id, List<ai.floedb.floecat.query.rpc.SchemaColumn> schema, NameRef name) {
-      nodes.put(id.getId(), new SimpleGraphNode(id));
+      registerTable(id, schema, name, GraphNodeOrigin.USER);
+    }
+
+    public void registerTable(
+        ResourceId id,
+        List<ai.floedb.floecat.query.rpc.SchemaColumn> schema,
+        NameRef name,
+        GraphNodeOrigin origin) {
+      nodes.put(id.getId(), new SimpleGraphNode(id, origin));
       schemas.put(id.getId(), schema);
       names.put(id.getId(), name);
     }
@@ -242,9 +250,11 @@ public final class CatalogBundleTestSupport {
 
   private static final class SimpleGraphNode implements GraphNode {
     private final ResourceId id;
+    private final GraphNodeOrigin origin;
 
-    private SimpleGraphNode(ResourceId id) {
+    private SimpleGraphNode(ResourceId id, GraphNodeOrigin origin) {
       this.id = id;
+      this.origin = origin;
     }
 
     @Override
@@ -274,7 +284,7 @@ public final class CatalogBundleTestSupport {
 
     @Override
     public GraphNodeOrigin origin() {
-      return GraphNodeOrigin.USER;
+      return origin;
     }
 
     @Override
@@ -286,6 +296,12 @@ public final class CatalogBundleTestSupport {
   public static final class TestQueryInputResolver extends QueryInputResolver {
     private final List<List<QueryInput>> calls = new ArrayList<>();
     private int nextSnapshotId = 1;
+
+    public TestQueryInputResolver() {}
+
+    public TestQueryInputResolver(int nextSnapshotId) {
+      this.nextSnapshotId = nextSnapshotId;
+    }
 
     public List<List<QueryInput>> recordedInputs() {
       return new ArrayList<>(calls);
