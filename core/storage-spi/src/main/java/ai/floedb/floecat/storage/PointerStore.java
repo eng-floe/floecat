@@ -38,5 +38,5 @@ public interface PointerStore {
 
   boolean isEmpty();
 
-  void dump(String header);
+  default void dump(String header) {}
 }
