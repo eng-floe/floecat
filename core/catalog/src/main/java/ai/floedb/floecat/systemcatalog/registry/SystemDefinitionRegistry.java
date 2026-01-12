@@ -17,8 +17,8 @@
 package ai.floedb.floecat.systemcatalog.registry;
 
 import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -36,9 +36,10 @@ public final class SystemDefinitionRegistry {
     this.provider = Objects.requireNonNull(provider);
   }
 
-  public SystemEngineCatalog catalog(String engineKind) {
-    String key = engineKind.toLowerCase(Locale.ROOT);
-    return cache.computeIfAbsent(key, provider::load);
+  public SystemEngineCatalog catalog(EngineContext ctx) {
+    EngineContext canonical = ctx == null ? EngineContext.empty() : ctx;
+    String normalizedKind = canonical.normalizedKind();
+    return cache.computeIfAbsent(normalizedKind, ignored -> provider.load(normalizedKind));
   }
 
   /** Test-only: clears catalog cache. */

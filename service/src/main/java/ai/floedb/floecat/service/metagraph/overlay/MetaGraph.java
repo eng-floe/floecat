@@ -35,6 +35,7 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.query.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -83,7 +84,8 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public Optional<GraphNode> resolve(ResourceId id) {
-    Optional<GraphNode> sys = systemGraph.resolve(id, engine.engineKind(), engine.engineVersion());
+    EngineContext ctx = engine.engineContext();
+    Optional<GraphNode> sys = systemGraph.resolve(id, ctx);
     if (sys.isPresent()) {
       return sys;
     }
@@ -101,9 +103,9 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public List<GraphNode> listRelations(ResourceId catalogId) {
+    EngineContext ctx = engine.engineContext();
     return mergeLists(
-        () -> systemGraph.listRelations(catalogId, engine.engineKind(), engine.engineVersion()),
-        () -> userGraph.listRelations(catalogId));
+        () -> systemGraph.listRelations(catalogId, ctx), () -> userGraph.listRelations(catalogId));
   }
 
   /**
@@ -118,10 +120,9 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public List<GraphNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
+    EngineContext ctx = engine.engineContext();
     return mergeLists(
-        () ->
-            systemGraph.listRelationsInNamespace(
-                catalogId, namespaceId, engine.engineKind(), engine.engineVersion()),
+        () -> systemGraph.listRelationsInNamespace(catalogId, namespaceId, ctx),
         () -> userGraph.listRelationsInNamespace(catalogId, namespaceId));
   }
 
@@ -136,8 +137,9 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public List<FunctionNode> listFunctions(ResourceId catalogId, ResourceId namespaceId) {
+    EngineContext ctx = engine.engineContext();
     return mergeLists(
-        () -> systemGraph.listFunctions(namespaceId, engine.engineKind(), engine.engineVersion()),
+        () -> systemGraph.listFunctions(namespaceId, ctx),
         () -> userGraph.listFunctions(namespaceId));
   }
 
@@ -151,15 +153,16 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public List<TypeNode> listTypes(ResourceId catalogId) {
+    EngineContext ctx = engine.engineContext();
     return mergeLists(
-        () -> systemGraph.listTypes(catalogId, engine.engineKind(), engine.engineVersion()),
-        () -> userGraph.listTypes(catalogId));
+        () -> systemGraph.listTypes(catalogId, ctx), () -> userGraph.listTypes(catalogId));
   }
 
   @Override
   public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
+    EngineContext ctx = engine.engineContext();
     return mergeLists(
-        () -> systemGraph.listNamespaces(catalogId, engine.engineKind(), engine.engineVersion()),
+        () -> systemGraph.listNamespaces(catalogId, ctx),
         () -> userGraph.listNamespaces(catalogId));
   }
 
@@ -191,10 +194,11 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public ResourceId resolveNamespace(String correlationId, NameRef ref) {
+    EngineContext ctx = engine.engineContext();
     return resolveWithAmbiguityCheck(
         correlationId,
         ref,
-        () -> systemGraph.resolveNamespace(ref, engine.engineKind(), engine.engineVersion()),
+        () -> systemGraph.resolveNamespace(ref, ctx),
         () -> userGraph.tryResolveNamespace(correlationId, ref),
         "namespace");
   }
@@ -212,10 +216,11 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public ResourceId resolveTable(String correlationId, NameRef ref) {
+    EngineContext ctx = engine.engineContext();
     return resolveWithAmbiguityCheck(
         correlationId,
         ref,
-        () -> systemGraph.resolveTable(ref, engine.engineKind(), engine.engineVersion()),
+        () -> systemGraph.resolveTable(ref, ctx),
         () -> userGraph.tryResolveTable(correlationId, ref),
         "table");
   }
@@ -233,10 +238,11 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public ResourceId resolveView(String correlationId, NameRef ref) {
+    EngineContext ctx = engine.engineContext();
     return resolveWithAmbiguityCheck(
         correlationId,
         ref,
-        () -> systemGraph.resolveView(ref, engine.engineKind(), engine.engineVersion()),
+        () -> systemGraph.resolveView(ref, ctx),
         () -> userGraph.tryResolveView(correlationId, ref),
         "view");
   }
@@ -254,10 +260,11 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public ResourceId resolveName(String correlationId, NameRef ref) {
+    EngineContext ctx = engine.engineContext();
     return resolveWithAmbiguityCheck(
         correlationId,
         ref,
-        () -> systemGraph.resolveName(ref, engine.engineKind(), engine.engineVersion()),
+        () -> systemGraph.resolveName(ref, ctx),
         () -> userGraph.tryResolveName(correlationId, ref),
         "table");
   }
@@ -372,7 +379,8 @@ public final class MetaGraph implements CatalogOverlay {
     if (user.isPresent()) {
       return user;
     }
-    return systemGraph.namespaceName(id, engine.engineKind(), engine.engineVersion());
+    EngineContext ctx = engine.engineContext();
+    return systemGraph.namespaceName(id, ctx);
   }
 
   /**
@@ -389,7 +397,8 @@ public final class MetaGraph implements CatalogOverlay {
     if (user.isPresent()) {
       return user;
     }
-    return systemGraph.tableName(id, engine.engineKind(), engine.engineVersion());
+    EngineContext ctx = engine.engineContext();
+    return systemGraph.tableName(id, ctx);
   }
 
   /**
@@ -406,7 +415,8 @@ public final class MetaGraph implements CatalogOverlay {
     if (user.isPresent()) {
       return user;
     }
-    return systemGraph.viewName(id, engine.engineKind(), engine.engineVersion());
+    EngineContext ctx = engine.engineContext();
+    return systemGraph.viewName(id, ctx);
   }
 
   /**
@@ -423,7 +433,8 @@ public final class MetaGraph implements CatalogOverlay {
     if (user.isPresent()) {
       return user;
     }
-    return systemGraph.catalog(id, engine.engineKind(), engine.engineVersion());
+    EngineContext ctx = engine.engineContext();
+    return systemGraph.catalog(id, ctx);
   }
 
   /**

@@ -26,6 +26,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
+import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
 import java.util.Map;
@@ -112,7 +113,8 @@ public final class PgCatalogProvider implements SystemObjectScannerProvider {
 
   @Override
   public boolean supportsEngine(String engineKind) {
-    return engineKind != null && SUPPORTED_ENGINES.contains(engineKind.toLowerCase());
+    String normalized = EngineContextNormalizer.normalizeEngineKind(engineKind);
+    return SUPPORTED_ENGINES.contains(normalized);
   }
 
   @Override

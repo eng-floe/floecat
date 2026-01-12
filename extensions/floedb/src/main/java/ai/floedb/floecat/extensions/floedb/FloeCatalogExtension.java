@@ -27,6 +27,7 @@ import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
+import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import com.google.protobuf.ExtensionRegistry;
 import com.google.protobuf.TextFormat;
@@ -218,7 +219,8 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
 
   @Override
   public boolean supportsEngine(String engineKind) {
-    return engineKind != null && engineKind.equalsIgnoreCase(engineKind());
+    return EngineContextNormalizer.normalizeEngineKind(engineKind)
+        .equals(EngineContextNormalizer.normalizeEngineKind(this.engineKind()));
   }
 
   @Override

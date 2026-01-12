@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.context.impl;
 
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -49,18 +50,31 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
         next.newCall(method, callOptions)) {
 
       @Override
-      public void start(Listener<RespT> reponseListener, Metadata headers) {
+      public void start(Listener<RespT> responseListener, Metadata headers) {
         var principalContext = InboundContextInterceptor.PC_KEY.get();
         var queryId =
             Optional.ofNullable(InboundContextInterceptor.QUERY_KEY.get())
                 .orElseGet(() -> Baggage.current().getEntryValue("query_id"));
-        var engineKind =
-            Optional.ofNullable(InboundContextInterceptor.ENGINE_KIND_KEY.get())
-                .orElseGet(() -> Baggage.current().getEntryValue("engine_kind"));
 
-        var engineVersion =
-            Optional.ofNullable(InboundContextInterceptor.ENGINE_VERSION_KEY.get())
-                .orElseGet(() -> Baggage.current().getEntryValue("engine_version"));
+        EngineContext engineContext = InboundContextInterceptor.ENGINE_CONTEXT_KEY.get();
+
+        String engineKind =
+            firstNonBlank(
+                engineContext != null && engineContext.hasEngineKind()
+                    ? engineContext.engineKind()
+                    : null,
+                InboundContextInterceptor.ENGINE_KIND_KEY.get(),
+                Baggage.current().getEntryValue("engine_kind"));
+
+        // Only propagate an engine version if we are propagating an engine kind.
+        String engineVersion =
+            (engineKind == null || engineKind.isBlank())
+                ? null
+                : firstNonBlank(
+                    engineContext != null ? engineContext.engineVersion() : null,
+                    InboundContextInterceptor.ENGINE_VERSION_KEY.get(),
+                    Baggage.current().getEntryValue("engine_version"));
+
         var correlationId =
             Optional.ofNullable(InboundContextInterceptor.CORR_KEY.get())
                 .orElseGet(() -> Baggage.current().getEntryValue("correlation_id"));
@@ -69,23 +83,27 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
           headers.put(PRINC_BIN, principalContext.toByteArray());
         }
 
-        if (queryId != null && !queryId.isBlank()) {
-          headers.put(QUERY_ID, queryId);
-        }
-
-        if (engineKind != null && !engineKind.isBlank()) {
-          headers.put(ENGINE_KIND, engineKind);
-        }
-
-        if (engineVersion != null && !engineVersion.isBlank()) {
-          headers.put(ENGINE_VERSION, engineVersion);
-        }
-
-        if (correlationId != null && !correlationId.isBlank()) {
-          headers.put(CORR, correlationId);
-        }
-        super.start(reponseListener, headers);
+        putIfNonBlank(headers, QUERY_ID, queryId);
+        putIfNonBlank(headers, ENGINE_KIND, engineKind);
+        putIfNonBlank(headers, ENGINE_VERSION, engineVersion);
+        putIfNonBlank(headers, CORR, correlationId);
+        super.start(responseListener, headers);
       }
     };
+  }
+
+  private static void putIfNonBlank(Metadata headers, Metadata.Key<String> key, String value) {
+    if (value != null && !value.isBlank()) {
+      headers.put(key, value);
+    }
+  }
+
+  private static String firstNonBlank(String... candidates) {
+    for (String candidate : candidates) {
+      if (candidate != null && !candidate.isBlank()) {
+        return candidate;
+      }
+    }
+    return null;
   }
 }

@@ -33,6 +33,7 @@ import ai.floedb.floecat.system.rpc.QuerySystemScanServiceGrpc;
 import ai.floedb.floecat.system.rpc.ScanSystemTableChunk;
 import ai.floedb.floecat.system.rpc.ScanSystemTableRequest;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
+import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -86,7 +87,7 @@ public class QuerySystemScanServiceIT {
   private static ResourceId systemTable(String engineKind, String schema, String table) {
     String kind =
         (engineKind == null || engineKind.isBlank())
-            ? SystemNodeRegistry.FLOECAT_DEFAULT_CATALOG
+            ? EngineCatalogNames.FLOECAT_DEFAULT_CATALOG
             : engineKind;
     return ResourceId.newBuilder()
         .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)

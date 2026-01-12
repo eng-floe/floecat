@@ -29,6 +29,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
+import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,6 +46,7 @@ class SystemGraphTest {
   private ResourceId wrongCatalogId;
   private ResourceId namespaceId;
   private ResourceId tableId;
+  private ResourceId defaultTableId;
 
   @BeforeEach
   void setup() {
@@ -53,8 +55,7 @@ class SystemGraphTest {
     NameRef nsName = NameRefUtil.name("pg_catalog");
     NameRef tableName = NameRefUtil.name("pg_catalog", "pg_class");
 
-    registry.register(
-        ENGINE,
+    SystemCatalogData catalogData =
         new SystemCatalogData(
             List.of(), // functions
             List.of(), // operators
@@ -72,7 +73,10 @@ class SystemGraphTest {
                     "scanner",
                     List.of())),
             List.of() // views
-            ));
+            );
+
+    registry.register(ENGINE, catalogData);
+    registry.register(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, catalogData);
 
     systemGraph = new SystemGraph(registry, 16);
 
@@ -102,6 +106,12 @@ class SystemGraphTest {
             .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_TABLE)
             .setId(ENGINE + ":pg_catalog.pg_class")
+            .build();
+    defaultTableId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG + ":pg_catalog.pg_class")
             .build();
   }
 
@@ -163,8 +173,34 @@ class SystemGraphTest {
   }
 
   @Test
+  void tableName_withoutEngineUsesFloecatDefaultCatalog() {
+    assertThat(systemGraph.tableName(defaultTableId, "", ""))
+        .isPresent()
+        .get()
+        .satisfies(
+            ref ->
+                assertThat(ref.getCatalog()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG));
+  }
+
+  @Test
+  void tableName_withUppercaseEngineNormalizesCatalog() {
+    assertThat(systemGraph.tableName(tableId, "FLOEDB", VERSION))
+        .isPresent()
+        .get()
+        .satisfies(ref -> assertThat(ref.getCatalog()).isEqualTo("floedb"));
+  }
+
+  @Test
   void listCatalogs_returnsEngineCatalogs() {
-    assertThat(systemGraph.listCatalogs()).containsExactly(systemCatalogId);
+    ResourceId defaultCatalogId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG)
+            .build();
+
+    assertThat(systemGraph.listCatalogs())
+        .containsExactlyInAnyOrder(defaultCatalogId, systemCatalogId);
   }
 
   @Test

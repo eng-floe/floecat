@@ -40,9 +40,10 @@ import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
+import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import java.time.Instant;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -64,7 +65,6 @@ import java.util.concurrent.ConcurrentMap;
 public class SystemNodeRegistry {
 
   public static final String SYSTEM_ACCOUNT = "_system";
-  public static final String FLOECAT_DEFAULT_CATALOG = "floecat_internal";
   private final SystemDefinitionRegistry definitionRegistry;
 
   /*
@@ -98,94 +98,99 @@ public class SystemNodeRegistry {
   }
 
   public BuiltinNodes nodesFor(String engineKind, String engineVersion) {
-    String normalizedKind = engineKind == null ? "" : engineKind.toLowerCase(Locale.ROOT);
-    String normalizedVersion = engineVersion == null ? "" : engineVersion;
-    VersionKey key = new VersionKey(normalizedKind, normalizedVersion);
-    return cache.computeIfAbsent(key, k -> buildNodes(k.engineKind(), k.engineVersion()));
+    return nodesFor(EngineContext.of(engineKind, engineVersion));
   }
 
-  private BuiltinNodes buildNodes(String engineKind, String engineVersion) {
-    SystemEngineCatalog catalog = definitionRegistry.catalog(engineKind);
+  public BuiltinNodes nodesFor(EngineContext ctx) {
+    EngineContext canonical = ctx == null ? EngineContext.empty() : ctx;
+    VersionKey key = new VersionKey(canonical.normalizedKind(), canonical.normalizedVersion());
+    return cache.computeIfAbsent(key, ignored -> buildNodes(canonical));
+  }
+
+  private BuiltinNodes buildNodes(EngineContext canonical) {
+    SystemEngineCatalog catalog = definitionRegistry.catalog(canonical);
     long version = versionFromFingerprint(catalog.fingerprint());
+    String normalizedKind = canonical.normalizedKind();
+    String normalizedVersion = canonical.normalizedVersion();
 
     // --- Functions ---
     List<SystemFunctionDef> functionDefs =
         catalog.functions().stream()
-            .filter(def -> matches(def.engineSpecific(), engineKind, engineVersion))
-            .map(def -> withFunctionRules(def, engineKind, engineVersion))
+            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
+            .map(def -> withFunctionRules(def, normalizedKind, normalizedVersion))
             .toList();
     List<FunctionNode> functionNodes =
-        functionDefs.stream().map(def -> toFunctionNode(engineKind, version, def)).toList();
+        functionDefs.stream().map(def -> toFunctionNode(normalizedKind, version, def)).toList();
 
     // --- Operators ---
     List<SystemOperatorDef> operatorDefs =
         catalog.operators().stream()
-            .filter(def -> matches(def.engineSpecific(), engineKind, engineVersion))
-            .map(def -> withOperatorRules(def, engineKind, engineVersion))
+            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
+            .map(def -> withOperatorRules(def, normalizedKind, normalizedVersion))
             .toList();
     List<OperatorNode> operatorNodes =
-        operatorDefs.stream().map(def -> toOperatorNode(engineKind, version, def)).toList();
+        operatorDefs.stream().map(def -> toOperatorNode(normalizedKind, version, def)).toList();
 
     // --- Types ---
     List<SystemTypeDef> typeDefs =
         catalog.types().stream()
-            .filter(def -> matches(def.engineSpecific(), engineKind, engineVersion))
-            .map(def -> withTypeRules(def, engineKind, engineVersion))
+            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
+            .map(def -> withTypeRules(def, normalizedKind, normalizedVersion))
             .toList();
     List<TypeNode> typeNodes =
-        typeDefs.stream().map(def -> toTypeNode(engineKind, version, def)).toList();
+        typeDefs.stream().map(def -> toTypeNode(normalizedKind, version, def)).toList();
 
     // --- Casts ---
     List<SystemCastDef> castDefs =
         catalog.casts().stream()
-            .filter(def -> matches(def.engineSpecific(), engineKind, engineVersion))
-            .map(def -> withCastRules(def, engineKind, engineVersion))
+            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
+            .map(def -> withCastRules(def, normalizedKind, normalizedVersion))
             .toList();
     List<CastNode> castNodes =
-        castDefs.stream().map(def -> toCastNode(engineKind, version, def)).toList();
+        castDefs.stream().map(def -> toCastNode(normalizedKind, version, def)).toList();
 
     // --- Collations ---
     List<SystemCollationDef> collationDefs =
         catalog.collations().stream()
-            .filter(def -> matches(def.engineSpecific(), engineKind, engineVersion))
-            .map(def -> withCollationRules(def, engineKind, engineVersion))
+            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
+            .map(def -> withCollationRules(def, normalizedKind, normalizedVersion))
             .toList();
     List<CollationNode> collationNodes =
-        collationDefs.stream().map(def -> toCollationNode(engineKind, version, def)).toList();
+        collationDefs.stream().map(def -> toCollationNode(normalizedKind, version, def)).toList();
 
     // --- Aggregates ---
     List<SystemAggregateDef> aggregateDefs =
         catalog.aggregates().stream()
-            .filter(def -> matches(def.engineSpecific(), engineKind, engineVersion))
-            .map(def -> withAggregateRules(def, engineKind, engineVersion))
+            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
+            .map(def -> withAggregateRules(def, normalizedKind, normalizedVersion))
             .toList();
     List<AggregateNode> aggregateNodes =
-        aggregateDefs.stream().map(def -> toAggregateNode(engineKind, version, def)).toList();
+        aggregateDefs.stream().map(def -> toAggregateNode(normalizedKind, version, def)).toList();
 
     // --- Namespaces ---
     List<SystemNamespaceDef> namespaceDefs =
         catalog.namespaces().stream()
-            .filter(def -> matches(def.engineSpecific(), engineKind, engineVersion))
-            .map(def -> withNamespaceRules(def, engineKind, engineVersion))
+            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
+            .map(def -> withNamespaceRules(def, normalizedKind, normalizedVersion))
             .toList();
 
     // --- Tables ---
     List<SystemTableDef> tableDefs =
         catalog.tables().stream()
-            .filter(def -> matches(def.engineSpecific(), engineKind, engineVersion))
-            .map(def -> withTableRules(def, engineKind, engineVersion))
+            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
+            .map(def -> withTableRules(def, normalizedKind, normalizedVersion))
             .toList();
 
     // --- Views ---
     List<SystemViewDef> viewDefs =
         catalog.views().stream()
-            .filter(def -> matches(def.engineSpecific(), engineKind, engineVersion))
-            .map(def -> withViewRules(def, engineKind, engineVersion))
+            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
+            .map(def -> withViewRules(def, normalizedKind, normalizedVersion))
             .toList();
 
     return new BuiltinNodes(
-        engineKind,
-        engineVersion,
+        normalizedKind,
+        normalizedVersion,
         catalog.fingerprint(),
         functionNodes,
         operatorNodes,
@@ -401,7 +406,9 @@ public class SystemNodeRegistry {
 
   public static ResourceId resourceId(String engineKind, ResourceKind kind, NameRef name) {
     String engine =
-        (engineKind == null || engineKind.isBlank()) ? FLOECAT_DEFAULT_CATALOG : engineKind;
+        (engineKind == null || engineKind.isBlank())
+            ? EngineCatalogNames.FLOECAT_DEFAULT_CATALOG
+            : engineKind;
     return ResourceId.newBuilder()
         .setAccountId(SYSTEM_ACCOUNT)
         .setKind(kind)

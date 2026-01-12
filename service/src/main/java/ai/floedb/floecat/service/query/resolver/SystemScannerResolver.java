@@ -23,6 +23,7 @@ import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
@@ -55,8 +56,9 @@ public final class SystemScannerResolver {
           correlationId, "system.scan.missing_scanner", Map.of("table_id", tableId.getId()));
     }
 
-    String engineKind = engine.engineKind();
-    String engineVersion = engine.engineVersion();
+    EngineContext ctx = engine.engineContext();
+    String engineKind = ctx.normalizedKind();
+    String engineVersion = ctx.normalizedVersion();
 
     for (var provider : providers) {
       if (!provider.supportsEngine(engineKind)) {
@@ -74,8 +76,6 @@ public final class SystemScannerResolver {
         correlationId,
         "system.scan.scanner_not_found",
         Map.of(
-            "scanner_id", scannerId,
-            "engine_kind", engineKind,
-            "engine_version", engineVersion));
+            "scanner_id", scannerId, "engine_kind", engineKind, "engine_version", engineVersion));
   }
 }

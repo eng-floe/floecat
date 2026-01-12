@@ -21,9 +21,10 @@ import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
+import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
+import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -64,13 +65,17 @@ public final class FakeSystemNodeRegistry extends SystemNodeRegistry {
     private final Map<String, SystemEngineCatalog> catalogs = new HashMap<>();
 
     void register(String engineKind, SystemCatalogData data) {
-      String key = engineKind.toLowerCase(Locale.ROOT);
+      String key = EngineContextNormalizer.normalizeEngineKind(engineKind);
       catalogs.put(key, SystemEngineCatalog.from(key, data));
     }
 
     @Override
     public SystemEngineCatalog load(String engineKind) {
-      SystemEngineCatalog catalog = catalogs.get(engineKind.toLowerCase(Locale.ROOT));
+      String key = EngineContextNormalizer.normalizeEngineKind(engineKind);
+      if (key.isBlank()) {
+        key = EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
+      }
+      SystemEngineCatalog catalog = catalogs.get(key);
       if (catalog == null) {
         throw new IllegalStateException(
             "No fake system catalog registered for engine: " + engineKind);
