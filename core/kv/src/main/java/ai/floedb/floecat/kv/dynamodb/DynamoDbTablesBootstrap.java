@@ -44,7 +44,9 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
 
   public void ensureTableExists(String tableName, boolean withTtl) {
     ensureTableExists(tableName);
-    ensureTtlEnabled(tableName, ATTR_TTL);
+    if (withTtl) {
+      ensureTtlEnabled(tableName, ATTR_TTL);
+    }
   }
 
   private void ensureTableExists(String tableName) {
