@@ -49,6 +49,7 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
+import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import ai.floedb.floecat.systemcatalog.spi.scanner.MetadataResolutionContext;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
@@ -227,26 +228,41 @@ public class CatalogBundleService {
 
   private RelationInfo buildRelation(
       String correlationId, ResolvedRelation relation, QueryContext queryContext) {
+
     RelationKind kind = mapKind(relation.node().kind(), relation.node().origin());
     Origin origin = mapOrigin(relation.node().origin());
     NameRef name = canonicalName(relation.relationId(), relation.node());
+
     List<SchemaColumn> schemaColumns =
         relation.node() instanceof ViewNode view
             ? view.outputColumns()
             : overlay.tableSchema(relation.node().id());
+
     List<SchemaColumn> pruned =
         CatalogBundleUtils.pruneSchema(schemaColumns, relation.candidate(), correlationId);
+
     List<ColumnInfo> columns =
         CatalogBundleUtils.columnsFor(schemaColumns, pruned, origin, correlationId);
+
     RelationInfo.Builder builder =
         RelationInfo.newBuilder()
             .setRelationId(relation.relationId())
             .setName(name)
             .setKind(kind)
             .setOrigin(origin);
+
+    // If this is a view, keep a mutable builder around for decoration.
+    ViewDefinition.Builder viewBuilder = null;
+    if (relation.node() instanceof ViewNode view) {
+      viewBuilder = viewDefinitionBuilder(view);
+      builder.setViewDefinition(viewBuilder);
+    }
+
     List<ColumnInfo> decoratedColumns = columns;
+
     EngineContext ctx = engineContext.engineContext();
     Optional<EngineMetadataDecorator> decorator = currentDecorator(ctx);
+
     if (decorator.isPresent()) {
       MetadataResolutionContext resolutionContext =
           MetadataResolutionContext.of(
@@ -254,6 +270,7 @@ public class CatalogBundleService {
               Objects.requireNonNull(
                   queryContext.getQueryDefaultCatalogId(), "query default catalog id"),
               ctx);
+
       RelationDecoration relationDecoration =
           new RelationDecoration(
               builder,
@@ -262,10 +279,9 @@ public class CatalogBundleService {
               requireSchema(schemaColumns),
               requireSchema(pruned),
               resolutionContext);
+
       try {
-        decorator
-            .get()
-            .decorateRelation(ctx.normalizedKind(), ctx.normalizedVersion(), relationDecoration);
+        decorator.get().decorateRelation(ctx, relationDecoration);
       } catch (RuntimeException e) {
         LOG.debugf(
             e,
@@ -273,12 +289,29 @@ public class CatalogBundleService {
             relation.relationId(),
             ctx.normalizedKind());
       }
+
+      // Decorate columns
       decoratedColumns = decorateColumns(columns, pruned, relationDecoration, decorator.get(), ctx);
+
+      // decorate view
+      if (viewBuilder != null) {
+        ViewDecoration viewDecoration =
+            new ViewDecoration(
+                builder, viewBuilder, relation.relationId(), relation.node(), resolutionContext);
+
+        try {
+          decorator.get().decorateView(ctx, viewDecoration);
+        } catch (RuntimeException e) {
+          LOG.debugf(
+              e,
+              "Decorator threw while decorating view %s (engine=%s)",
+              relation.relationId(),
+              ctx.normalizedKind());
+        }
+      }
     }
+
     builder.addAllColumns(decoratedColumns);
-    if (relation.node() instanceof ViewNode view) {
-      builder.setViewDefinition(viewDefinition(view));
-    }
     return builder.build();
   }
 
@@ -306,7 +339,7 @@ public class CatalogBundleService {
           new ColumnDecoration(
               builder, schema, logicalType, column.getOrdinal(), relationDecoration);
       try {
-        decorator.decorateColumn(ctx.normalizedKind(), ctx.normalizedVersion(), columnDecoration);
+        decorator.decorateColumn(ctx, columnDecoration);
       } catch (RuntimeException e) {
         LOG.debugf(
             e,
@@ -376,12 +409,12 @@ public class CatalogBundleService {
     };
   }
 
-  private ViewDefinition viewDefinition(ViewNode view) {
+  private ViewDefinition.Builder viewDefinitionBuilder(ViewNode view) {
     ViewDefinition.Builder builder =
         ViewDefinition.newBuilder().setCanonicalSql(view.sql()).setDialect(view.dialect());
     builder.addAllBaseRelations(view.baseRelations());
     builder.addAllCreationSearchPath(view.creationSearchPath());
-    return builder.build();
+    return builder;
   }
 
   private RelationKind mapKind(GraphNodeKind kind, GraphNodeOrigin origin) {

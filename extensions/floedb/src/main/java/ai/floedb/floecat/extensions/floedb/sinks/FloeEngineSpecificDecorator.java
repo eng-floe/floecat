@@ -32,7 +32,7 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.scanner.MetadataResolutionContext;
 import ai.floedb.floecat.systemcatalog.spi.types.EngineTypeMapper;
 import ai.floedb.floecat.systemcatalog.spi.types.TypeResolver;
-import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import java.util.Optional;
 import org.jboss.logging.Logger;
 
@@ -50,8 +50,8 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
   private FloeEngineSpecificDecorator() {}
 
   @Override
-  public void decorateColumn(String engineKind, String engineVersion, ColumnDecoration column) {
-    String normalizedKind = EngineContextNormalizer.normalizeEngineKind(engineKind);
+  public void decorateColumn(EngineContext engineContext, ColumnDecoration column) {
+    String normalizedKind = engineContext.normalizedKind();
     if (normalizedKind == null || normalizedKind.isBlank()) {
       return;
     }
@@ -83,15 +83,14 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
           "Failed to decorate column %s.%s for engine %s@%s",
           relation.relationId(),
           schema.getName(),
-          engineKind,
-          engineVersion);
+          engineContext.engineKind(),
+          engineContext.engineVersion());
     }
   }
 
   @Override
-  public void decorateRelation(
-      String engineKind, String engineVersion, RelationDecoration relation) {
-    String normalizedKind = EngineContextNormalizer.normalizeEngineKind(engineKind);
+  public void decorateRelation(EngineContext engineContext, RelationDecoration relation) {
+    String normalizedKind = engineContext.normalizedKind();
     if (normalizedKind == null || normalizedKind.isBlank()) {
       return;
     }
@@ -108,8 +107,8 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
           e,
           "Failed to decorate relation %s for engine %s@%s",
           relation.relationId(),
-          engineKind,
-          engineVersion);
+          engineContext.engineKind(),
+          engineContext.engineVersion());
     }
   }
 

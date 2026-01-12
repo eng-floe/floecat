@@ -96,15 +96,6 @@ public final class EngineContext {
   }
 
   /**
-   * Returns a stable, per-context key that can be used to cache engine catalogs.
-   *
-   * <p>Includes the resolved engine kind and the normalized version.
-   */
-  public String cacheKey() {
-    return effectiveEngineKind() + "|" + normalizedVersion;
-  }
-
-  /**
    * Returns {@code true} when an engine plugin overlay should be applied.
    *
    * <p>Only engine-specific plugins (i.e., non-`floecat_internal`) trigger this.

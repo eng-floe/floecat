@@ -5,7 +5,7 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.types.LogicalType;
 
 /** Mutable view over a column while decorators add engine metadata. */
-public final class ColumnDecoration {
+public final class ColumnDecoration extends AbstractDecoration {
 
   private final ColumnInfo.Builder builder;
   private final SchemaColumn schemaColumn;
@@ -19,6 +19,7 @@ public final class ColumnDecoration {
       LogicalType logicalType,
       int ordinal,
       RelationDecoration relation) {
+    super(relation.resolutionContext());
     this.builder = builder;
     this.schemaColumn = schemaColumn;
     this.logicalType = logicalType;
