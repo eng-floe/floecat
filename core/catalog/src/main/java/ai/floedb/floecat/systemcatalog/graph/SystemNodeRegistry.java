@@ -299,7 +299,7 @@ public class SystemNodeRegistry {
       Map<String, T> target, String canonicalName, T def, String type) {
     T previous = target.put(canonicalName, def);
     if (previous != null) {
-      LOG.debugf(
+      LOG.infof(
           "Overriding %s definition for %s: %s -> %s",
           type, canonicalName, previous.getClass().getSimpleName(), def.getClass().getSimpleName());
     }
