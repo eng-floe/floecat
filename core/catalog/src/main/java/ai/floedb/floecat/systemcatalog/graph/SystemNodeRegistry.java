@@ -38,7 +38,6 @@ import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificMatcher;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
-import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
@@ -84,20 +83,13 @@ public class SystemNodeRegistry {
   private final ConcurrentMap<VersionKey, BuiltinNodes> cache = new ConcurrentHashMap<>();
 
   public SystemNodeRegistry(
-      SystemDefinitionRegistry definitionRegistry, List<SystemObjectScannerProvider> providers) {
+      SystemDefinitionRegistry definitionRegistry,
+      SystemObjectScannerProvider internalProvider,
+      List<SystemObjectScannerProvider> extensionProviders) {
     this.definitionRegistry = Objects.requireNonNull(definitionRegistry);
-    Objects.requireNonNull(providers, "providers");
-    List<SystemObjectScannerProvider> internals =
-        providers.stream().filter(p -> p instanceof FloecatInternalProvider).toList();
-    if (internals.isEmpty()) {
-      throw new IllegalStateException("Missing floecat_internal provider");
-    }
-    if (internals.size() > 1) {
-      throw new IllegalStateException("Duplicate floecat_internal providers found");
-    }
-    this.internalProvider = internals.get(0);
+    this.internalProvider = Objects.requireNonNull(internalProvider, "internalProvider");
     this.extensionProviders =
-        providers.stream().filter(p -> !(p instanceof FloecatInternalProvider)).toList();
+        List.copyOf(Objects.requireNonNull(extensionProviders, "extensionProviders"));
   }
 
   private static final SystemCatalogData EMPTY_CATALOG = SystemCatalogData.empty();

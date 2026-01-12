@@ -29,7 +29,6 @@ import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Stream;
 
 /**
  * Test-only SystemNodeRegistry backed by an in-memory SystemCatalogProvider.
@@ -45,17 +44,12 @@ public final class FakeSystemNodeRegistry extends SystemNodeRegistry {
   }
 
   public FakeSystemNodeRegistry(SystemObjectScannerProvider... extraProviders) {
-    this(new FakeSystemCatalogProvider(), Stream.of(extraProviders).toList());
+    this(new FakeSystemCatalogProvider(), List.of(extraProviders));
   }
 
   private FakeSystemNodeRegistry(
       FakeSystemCatalogProvider provider, List<SystemObjectScannerProvider> extraProviders) {
-    super(
-        new SystemDefinitionRegistry(provider),
-        Stream.concat(
-                Stream.of((SystemObjectScannerProvider) new FloecatInternalProvider()),
-                extraProviders.stream())
-            .toList());
+    super(new SystemDefinitionRegistry(provider), new FloecatInternalProvider(), extraProviders);
     this.provider = provider;
   }
 

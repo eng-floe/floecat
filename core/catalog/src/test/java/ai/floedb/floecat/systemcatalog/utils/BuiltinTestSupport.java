@@ -43,7 +43,7 @@ public final class BuiltinTestSupport {
   public static SystemCatalogHintProvider providerFrom(String engine, SystemCatalogData data) {
     var registry =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(engine, data)));
-    var nodeRegistry = new SystemNodeRegistry(registry, providers());
+    var nodeRegistry = new SystemNodeRegistry(registry, new FloecatInternalProvider(), providers());
     return new SystemCatalogHintProvider(nodeRegistry);
   }
 
@@ -162,6 +162,6 @@ public final class BuiltinTestSupport {
   }
 
   private static List<SystemObjectScannerProvider> providers() {
-    return List.of(new FloecatInternalProvider());
+    return List.of();
   }
 }

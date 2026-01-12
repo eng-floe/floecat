@@ -79,10 +79,10 @@ class ServiceLoaderSystemCatalogProviderTest {
   }
 
   @Test
-  void providers_includesFloecatInternalProvider() {
+  void internalProvider_isFloecatInternal() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
-    assertThat(provider.providers()).anyMatch(p -> p instanceof FloecatInternalProvider);
+    assertThat(provider.internalProvider()).isInstanceOf(FloecatInternalProvider.class);
   }
 
   @Test

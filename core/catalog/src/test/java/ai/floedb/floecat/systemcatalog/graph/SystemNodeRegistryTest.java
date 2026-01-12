@@ -33,7 +33,6 @@ import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -61,7 +60,7 @@ class SystemNodeRegistryTest {
   @Test
   void filtersByEngineKindAndVersion() {
     var registry = registryWithCatalogs();
-    var nodeRegistry = new SystemNodeRegistry(registry, providers());
+    var nodeRegistry = registryWith(registry);
 
     // ---------------------------------
     // floe-demo / version 16.0
@@ -128,7 +127,7 @@ class SystemNodeRegistryTest {
   @Test
   void missingEngineKindFails() {
     var registry = registryWithCatalogs();
-    var nodeRegistry = new SystemNodeRegistry(registry, providers());
+    var nodeRegistry = registryWith(registry);
 
     assertThat(nodeRegistry.nodesFor("", "16.0").functions()).isEmpty();
   }
@@ -136,7 +135,7 @@ class SystemNodeRegistryTest {
   @Test
   void missingEngineVersionMeansAnyVersion() {
     var registry = registryWithCatalogs();
-    var nodeRegistry = new SystemNodeRegistry(registry, providers());
+    var nodeRegistry = registryWith(registry);
 
     assertThat(nodeRegistry.nodesFor(FLOE_KIND, "").functions())
         .extracting(fn -> fn.displayName())
@@ -149,7 +148,7 @@ class SystemNodeRegistryTest {
   @Test
   void engineKindIsLowercasedForCaching() {
     var registry = registryWithCatalogs();
-    var nodeRegistry = new SystemNodeRegistry(registry, providers());
+    var nodeRegistry = registryWith(registry);
 
     var nodesLower = nodeRegistry.nodesFor("floe-demo", "16.0");
     var nodesUpper = nodeRegistry.nodesFor("FLOE-DEMO", "16.0");
@@ -170,7 +169,7 @@ class SystemNodeRegistryTest {
   @Test
   void floecatInternalIncludesInformationSchemaTables() {
     var registry = registryWithCatalogs();
-    var nodeRegistry = new SystemNodeRegistry(registry, providers());
+    var nodeRegistry = registryWith(registry);
 
     var tables = canonicalTableNames(nodeRegistry.nodesFor("", ""));
 
@@ -201,7 +200,8 @@ class SystemNodeRegistryTest {
             List.of());
     var registry =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
-    var nodes = new SystemNodeRegistry(registry, providers()).nodesFor(FLOE_KIND, "1.0");
+    var nodes =
+        registryWith(registry, new VersionedTableProvider(FLOE_KIND)).nodesFor(FLOE_KIND, "1.0");
 
     var built = nodes.functions().get(0);
 
@@ -212,9 +212,7 @@ class SystemNodeRegistryTest {
 
   @Test
   void providerDefinitionsCanVaryByVersion() {
-    var nodeRegistry =
-        new SystemNodeRegistry(
-            registryWithCatalogs(), providers(new VersionedTableProvider(FLOE_KIND)));
+    var nodeRegistry = registryWith(registryWithCatalogs(), new VersionedTableProvider(FLOE_KIND));
 
     var tables16 = canonicalTableNames(nodeRegistry.nodesFor(FLOE_KIND, "16.0"));
     var tables17 = canonicalTableNames(nodeRegistry.nodesFor(FLOE_KIND, "17.0"));
@@ -230,7 +228,7 @@ class SystemNodeRegistryTest {
   @Test
   void providerDefinitionsSkippedWhenHeadersMissing() {
     var provider = new VersionedTableProvider(FLOE_KIND);
-    var nodeRegistry = new SystemNodeRegistry(registryWithCatalogs(), providers(provider));
+    var nodeRegistry = registryWith(registryWithCatalogs(), provider);
 
     var tables = canonicalTableNames(nodeRegistry.nodesFor("", "16.0"));
     assertThat(tables).doesNotContain(FLOE_KIND + ".versioned_16.0");
@@ -240,7 +238,7 @@ class SystemNodeRegistryTest {
   @Test
   void providerDefinitionsCachedPerVersion() {
     var provider = new VersionedTableProvider(FLOE_KIND);
-    var nodeRegistry = new SystemNodeRegistry(registryWithCatalogs(), providers(provider));
+    var nodeRegistry = registryWith(registryWithCatalogs(), provider);
 
     nodeRegistry.nodesFor(FLOE_KIND, "16.0");
     nodeRegistry.nodesFor(FLOE_KIND, "16.0");
@@ -301,11 +299,9 @@ class SystemNodeRegistryTest {
                 PG_KIND, catalog)));
   }
 
-  private static List<SystemObjectScannerProvider> providers(
+  private static List<SystemObjectScannerProvider> extensionProviders(
       SystemObjectScannerProvider... extras) {
-    Stream<SystemObjectScannerProvider> base = Stream.of(new FloecatInternalProvider());
-    Stream<SystemObjectScannerProvider> extraStream = Arrays.stream(extras);
-    return Stream.concat(base, extraStream).toList();
+    return Stream.of(extras).toList();
   }
 
   private static List<String> canonicalTableNames(SystemNodeRegistry.BuiltinNodes nodes) {
@@ -367,5 +363,14 @@ class SystemNodeRegistryTest {
           "version-scanner",
           List.of());
     }
+  }
+
+  private static FloecatInternalProvider internalProvider() {
+    return new FloecatInternalProvider();
+  }
+
+  private static SystemNodeRegistry registryWith(
+      SystemDefinitionRegistry defs, SystemObjectScannerProvider... extras) {
+    return new SystemNodeRegistry(defs, internalProvider(), extensionProviders(extras));
   }
 }

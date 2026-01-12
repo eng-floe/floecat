@@ -42,7 +42,7 @@ public final class ServiceLoaderSystemCatalogProvider
 
   private static final Logger LOG = Logger.getLogger(ServiceLoaderSystemCatalogProvider.class);
 
-  private static final SystemObjectScannerProvider FLOECAT_INTERNAL_PROVIDER =
+  private static final FloecatInternalProvider FLOECAT_INTERNAL_PROVIDER =
       new FloecatInternalProvider();
 
   private final Map<String, EngineSystemCatalogExtension> plugins;
@@ -116,9 +116,7 @@ public final class ServiceLoaderSystemCatalogProvider
     List<SystemObjectScannerProvider> extensionProviders =
         engineExtensions.stream().map(ext -> (SystemObjectScannerProvider) ext).toList();
 
-    this.providers =
-        Stream.concat(Stream.of(FLOECAT_INTERNAL_PROVIDER), extensionProviders.stream())
-            .collect(Collectors.toUnmodifiableList());
+    this.providers = extensionProviders.stream().collect(Collectors.toUnmodifiableList());
   }
 
   @Override
@@ -169,6 +167,11 @@ public final class ServiceLoaderSystemCatalogProvider
 
   public List<SystemObjectScannerProvider> providers() {
     return providers;
+  }
+
+  /** Returns the floecat_internal provider that always seeds every catalog build. */
+  public FloecatInternalProvider internalProvider() {
+    return FLOECAT_INTERNAL_PROVIDER;
   }
 
   /** Returns the decorator registered for the given engine, if any. */
