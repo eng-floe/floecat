@@ -221,7 +221,6 @@ public class CatalogBundleService {
             .setResolutionCount(resolutionCount)
             .setFoundCount(foundCount)
             .setNotFoundCount(notFoundCount)
-            .setCustomObjectCount(0)
             .build();
     return CatalogBundleChunk.newBuilder().setQueryId(queryId).setSeq(seq).setEnd(end).build();
   }
@@ -370,7 +369,7 @@ public class CatalogBundleService {
   }
 
   private Optional<EngineMetadataDecorator> currentDecorator(EngineContext ctx) {
-    if (!engineSpecificEnabled || ctx == null || !ctx.hasEngineKind()) {
+    if (!engineSpecificEnabled || ctx == null || !ctx.enginePluginOverlaysEnabled()) {
       return Optional.empty();
     }
     return decoratorProvider.decorator(ctx);

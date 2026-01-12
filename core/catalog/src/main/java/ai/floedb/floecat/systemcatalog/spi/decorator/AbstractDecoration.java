@@ -1,9 +1,8 @@
 package ai.floedb.floecat.systemcatalog.spi.decorator;
 
 import ai.floedb.floecat.systemcatalog.spi.scanner.MetadataResolutionContext;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Shared base for decoration contexts.
@@ -14,7 +13,7 @@ import java.util.Objects;
 public abstract class AbstractDecoration {
 
   private final MetadataResolutionContext resolutionContext;
-  private final Map<String, Object> attributes = new HashMap<>();
+  private final ConcurrentHashMap<String, Object> attributes = new ConcurrentHashMap<>();
 
   protected AbstractDecoration(MetadataResolutionContext resolutionContext) {
     this.resolutionContext = Objects.requireNonNull(resolutionContext, "resolutionContext");
