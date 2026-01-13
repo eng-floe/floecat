@@ -24,6 +24,7 @@ import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import software.amazon.awssdk.core.SdkBytes;
@@ -313,22 +314,59 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
                         .build());
               }
 
-              // Batch deletes can't be empty, so handle this case.
-              if (deletes.isEmpty()) {
-                return Uni.createFrom().voidItem();
-              } else {
-                return Uni.createFrom()
-                    .completionStage(
-                        ddb.batchWriteItem(
-                                BatchWriteItemRequest.builder()
-                                    .requestItems(Map.of(table, deletes))
-                                    .build())
-                            .thenAccept(_ -> totalDeleted.addAndGet(deletes.size())));
-              }
+              return deleteBatchWithRetry(deletes, 0)
+                  .invoke(deleted -> totalDeleted.addAndGet(deleted))
+                  .replaceWithVoid();
             })
         .collect()
         .asList()
         .replaceWith(totalDeleted::get);
+  }
+
+  private Uni<Integer> deleteBatchWithRetry(List<WriteRequest> batch, int attempt) {
+    // Batch deletes can't be empty, so handle this case.
+    if (batch.isEmpty()) {
+      return Uni.createFrom().item(0);
+    }
+
+    // Attempt to delete this batch.
+    return Uni.createFrom()
+        .completionStage(
+            ddb.batchWriteItem(
+                BatchWriteItemRequest.builder().requestItems(Map.of(table, batch)).build()))
+        .onItem()
+        .transformToUni(
+            resp -> {
+
+              // Determine the unprocessed items, to send as subsequent batch.
+              var unprocessed =
+                  resp.unprocessedItems() == null
+                      ? List.<WriteRequest>of()
+                      : resp.unprocessedItems().getOrDefault(table, List.of());
+
+              int processedThisAttempt = batch.size() - unprocessed.size();
+
+              if (unprocessed.isEmpty()) {
+                return Uni.createFrom().item(processedThisAttempt);
+              }
+
+              // Figure out a backoff delay (jitter), in case the batch write is rate-limiting.
+              long baseMs = 25L;
+              long maxMs = 1000L;
+              long expMs = Math.min(maxMs, baseMs * (1L << Math.min(attempt, 6)));
+              long jitterMs = ThreadLocalRandom.current().nextLong(0, expMs + 1);
+
+              return Uni.createFrom()
+                  .voidItem()
+                  .onItem()
+                  .delayIt()
+                  .by(Duration.ofMillis(jitterMs))
+                  .replaceWith(unprocessed)
+                  .onItem()
+                  .transformToUni(next -> deleteBatchWithRetry(next, attempt + 1))
+                  .onItem()
+                  .transform(nextProcessed -> processedThisAttempt + nextProcessed);
+            });
   }
 
   // ---- Transactions (CAS-only)
