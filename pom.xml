@@ -46,7 +46,6 @@
       <module>core/connectors/spi</module>
       <module>core/connectors/common</module>
       <module>core/storage-spi</module>
-      <module>core/kv</module>
 
       <!-- Connectors -->
       <module>connectors/catalogs/iceberg</module>

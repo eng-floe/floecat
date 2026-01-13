@@ -59,12 +59,6 @@
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-kv</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-storage-common</artifactId>
       <version>${project.version}</version>
     </dependency>

@@ -13,21 +13,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package ai.floedb.floecat.storage.kv;
 
-package ai.floedb.floecat.storage.aws.dynamodb;
+public final class Keys {
+  private Keys() {}
 
-import ai.floedb.floecat.storage.kv.dynamodb.ps.KvPointerStore;
-import ai.floedb.floecat.storage.kv.dynamodb.ps.PointerStoreEntity;
-import io.quarkus.arc.properties.IfBuildProperty;
-import jakarta.inject.Inject;
-import jakarta.inject.Singleton;
+  public static final String SEP = "/";
 
-@Singleton
-@IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
-public final class DynamoPointerStore extends KvPointerStore {
+  public static String join(String... parts) {
+    return SEP + String.join(SEP, parts);
+  }
 
-  @Inject
-  public DynamoPointerStore(PointerStoreEntity pointers) {
-    super(pointers);
+  public static String prefix(String... parts) {
+    return join(parts) + SEP;
+  }
+
+  public static KvStore.Key key(String partitionKey, String sortKey) {
+    return new KvStore.Key(partitionKey, sortKey);
   }
 }

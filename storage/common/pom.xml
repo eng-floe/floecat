@@ -46,12 +46,6 @@
     </dependency>
 
     <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-kv</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-
-    <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-arc</artifactId>
     </dependency>
