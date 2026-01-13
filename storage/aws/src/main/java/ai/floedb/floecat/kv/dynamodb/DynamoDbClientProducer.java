@@ -38,10 +38,10 @@ public class DynamoDbClientProducer {
   @ConfigProperty(name = "floecat.fileio.override.s3.region", defaultValue = "us-east-1")
   Region region;
 
-  @ConfigProperty(name = "floecat.fileio.override.s3.access-key-id", defaultValue = "test")
+  @ConfigProperty(name = "floecat.fileio.override.s3.access-key-id")
   String accessKey;
 
-  @ConfigProperty(name = "floecat.fileio.override.s3.secret-access-key", defaultValue = "test")
+  @ConfigProperty(name = "floecat.fileio.override.s3.secret-access-key")
   String secretKey;
 
   @ConfigProperty(name = "floecat.fileio.override.s3.session-token")
@@ -75,7 +75,7 @@ public class DynamoDbClientProducer {
               .orElseGet(() -> AwsBasicCredentials.create(trimmedAccess, trimmedSecret));
       return StaticCredentialsProvider.create(creds);
     }
-    return DefaultCredentialsProvider.create();
+    return DefaultCredentialsProvider.builder().build();
   }
 
   private static String trim(String value) {
