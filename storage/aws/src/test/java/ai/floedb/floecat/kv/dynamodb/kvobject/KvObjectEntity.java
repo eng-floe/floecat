@@ -43,16 +43,20 @@ import java.util.Optional;
 @Singleton
 public final class KvObjectEntity extends AbstractEntity<KvObject> {
 
-  private static final String KIND_TEST_OBJECT = "KvObject";
-  private static final String KIND_INDEXREF = "IndexRef";
+  static final String KIND_TEST_OBJECT = "KvObject";
+  static final String KIND_INDEXREF = "IndexRef";
+  static final String KIND_SUB_OBJECT = "SubObject";
 
   // ---- Key conventions (string-only; portable)
 
-  private static final String PK_TESTOBJ = "testobj";
-  private static final String SK_META = "META";
+  static final String PK_TESTOBJ = "testobj";
+  static final String SK_META = "META";
+  static final String SK_SUB = "subobj";
 
-  private static final String DIM_VALUE1 = "by-value1";
-  private static final String DIM_VALUE2 = "by-value2";
+  static final String DIM_VALUE1 = "by-value1";
+  static final String DIM_VALUE2 = "by-value2";
+
+  static final String ATTR_SUBVALUE = "sub-key";
 
   @Inject
   public KvObjectEntity(@KvTable("floecat-test") KvStore kv) {
@@ -63,7 +67,7 @@ public final class KvObjectEntity extends AbstractEntity<KvObject> {
         (o, v) -> o.toBuilder().setVersion(v).build());
   }
 
-  private static KvStore.Key canonicalKey(String id) {
+  static KvStore.Key canonicalKey(String id) {
     return Keys.key(Keys.join(PK_TESTOBJ, normalize(id)), SK_META);
   }
 
@@ -112,6 +116,14 @@ public final class KvObjectEntity extends AbstractEntity<KvObject> {
             new KvStore.TxnPut(canonicalRec, expectedVersion),
             new KvStore.TxnPut(byV1, expectedVersion),
             new KvStore.TxnPut(byV2, expectedVersion)));
+  }
+
+  public Uni<Boolean> createSecondary(KvObject obj, String subKey, String subValue) {
+    String id = obj.getId();
+    var sKey = Keys.key(Keys.join(PK_TESTOBJ, normalize(id)), Keys.join(SK_SUB, subKey));
+    var rec =
+        new KvStore.Record(sKey, KIND_SUB_OBJECT, new byte[0], Map.of(ATTR_SUBVALUE, subValue), 1);
+    return kv.txnWriteCas(List.of(new KvStore.TxnPut(rec, 0)));
   }
 
   public Uni<Optional<KvObject>> getById(String id) {

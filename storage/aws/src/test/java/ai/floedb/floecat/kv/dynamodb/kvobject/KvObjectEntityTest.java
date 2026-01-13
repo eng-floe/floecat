@@ -18,11 +18,14 @@ package ai.floedb.floecat.kv.dynamodb.kvobject;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.kv.AbstractEntity;
+import ai.floedb.floecat.kv.Keys;
 import ai.floedb.floecat.kv.test.AbstractEntityTest;
 import ai.floedb.floecat.test.rpc.KvObject;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import java.util.HashSet;
 import java.util.Optional;
+import java.util.stream.Collectors;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
@@ -181,5 +184,68 @@ public class KvObjectEntityTest extends AbstractEntityTest<KvObject> {
             .indefinitely()
             .items()
             .isEmpty());
+  }
+
+  @Test
+  void large_listings() {
+
+    // Create a bunch of objects.
+    var expectedIds = new HashSet<String>();
+    var count = 200;
+    for (int i = 0; i < count; i++) {
+      var id = "obj-" + i;
+      expectedIds.add(id);
+      var created =
+          testObjects
+              .create(
+                  KvObject.newBuilder()
+                      .setId(id)
+                      .setValue1(i)
+                      .setValue2("v" + i)
+                      .setValue3((i % 2) == 0)
+                      .build())
+              .await()
+              .indefinitely();
+      assertTrue(created);
+    }
+
+    // Check that we can get them back with a listing.
+    var all = testObjects.listEntities(null, null).await().indefinitely();
+    assertEquals(count, all.size());
+    assertEquals(
+        expectedIds, all.values().stream().map(KvObject::getId).collect(Collectors.toSet()));
+
+    // Check that we have the correct indices returnable.
+    var recs = testObjects.listRecords(null, null).await().indefinitely();
+    assertEquals(3 * count, recs.size()); // Each KvObject has 2 indices
+
+    // Delete one item by prefix.
+    var iter = all.values().iterator();
+    var oneId = iter.next().getId();
+    var oneKey = Keys.join(KvObjectEntity.PK_TESTOBJ, oneId);
+    var deleted = testObjects.getKvStore().deleteByPrefix(oneKey, null).await().indefinitely();
+    assertEquals(1, deleted);
+    assertEquals(count - 1, testObjects.listEntities(null, null).await().indefinitely().size());
+    iter.remove();
+
+    // Now create secondary objects under one.
+    var oneObject = iter.next();
+    for (int i = 0; i < count; i++) {
+      assertTrue(
+          testObjects
+              .createSecondary(oneObject, "second-" + i, Integer.toString(i))
+              .await()
+              .indefinitely());
+    }
+
+    // Check we get the listing back with prefix.
+    var withSubObjectsKey = Keys.join(KvObjectEntity.PK_TESTOBJ, oneObject.getId());
+    assertEquals(
+        count + 1, testObjects.listRecords(withSubObjectsKey, null).await().indefinitely().size());
+
+    // Check we can bulk delete by prefix.
+    deleted =
+        testObjects.getKvStore().deleteByPrefix(withSubObjectsKey, null).await().indefinitely();
+    assertEquals(count + 1, deleted);
   }
 }
