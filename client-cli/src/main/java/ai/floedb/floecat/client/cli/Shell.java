@@ -131,6 +131,8 @@ import com.google.protobuf.FieldMask;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.JsonFormat;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -167,6 +169,16 @@ import picocli.CommandLine;
     description = "Interactive CLI to browse and manage catalogs/namespaces/tables/connectors")
 @jakarta.inject.Singleton
 public class Shell implements Runnable {
+
+  @CommandLine.Option(
+      names = {"--host"},
+      description = "gRPC host (default: localhost)")
+  String grpcHost;
+
+  @CommandLine.Option(
+      names = {"--port"},
+      description = "gRPC port (default: 9100)")
+  Integer grpcPort;
 
   @Inject
   @GrpcClient("floecat")
@@ -212,6 +224,8 @@ public class Shell implements Runnable {
   @GrpcClient("floecat")
   QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchema;
 
+  private ManagedChannel overrideChannel;
+
   private static final int DEFAULT_PAGE_SIZE = 1000;
 
   private final boolean debugErrors =
@@ -227,6 +241,7 @@ public class Shell implements Runnable {
   public void run() {
     out.println("Floecat Shell (type 'help' for commands, 'quit' to exit).");
     try {
+      configureGrpcChannel();
       Terminal terminal = TerminalBuilder.builder().system(true).build();
       Path historyPath = Paths.get(System.getProperty("user.home"), ".floecat_shell_history");
       var parser = new DefaultParser();
@@ -268,6 +283,9 @@ public class Shell implements Runnable {
                     try {
                       reader.getHistory().save();
                     } catch (Throwable ignore) {
+                    }
+                    if (overrideChannel != null) {
+                      overrideChannel.shutdownNow();
                     }
                   }));
       while (true) {
@@ -427,6 +445,10 @@ public class Shell implements Runnable {
   private void printHelp() {
     out.println(
 """
+         Options:
+         --host <host>   gRPC host (default: localhost)
+         --port <port>   gRPC port (default: 9100)
+
          Commands:
          account <id>
          catalogs
@@ -498,6 +520,26 @@ public class Shell implements Runnable {
          help
          quit
 """);
+  }
+
+  private void configureGrpcChannel() {
+    if (grpcHost == null && grpcPort == null) {
+      return;
+    }
+    String host = grpcHost == null || grpcHost.isBlank() ? "localhost" : grpcHost.trim();
+    int port = grpcPort == null ? 9100 : grpcPort;
+    overrideChannel = ManagedChannelBuilder.forAddress(host, port).usePlaintext().build();
+    catalogs = CatalogServiceGrpc.newBlockingStub(overrideChannel);
+    namespaces = NamespaceServiceGrpc.newBlockingStub(overrideChannel);
+    tables = TableServiceGrpc.newBlockingStub(overrideChannel);
+    directory = DirectoryServiceGrpc.newBlockingStub(overrideChannel);
+    statistics = TableStatisticsServiceGrpc.newBlockingStub(overrideChannel);
+    snapshots = SnapshotServiceGrpc.newBlockingStub(overrideChannel);
+    viewService = ViewServiceGrpc.newBlockingStub(overrideChannel);
+    connectors = ConnectorsGrpc.newBlockingStub(overrideChannel);
+    queries = QueryServiceGrpc.newBlockingStub(overrideChannel);
+    queryScan = QueryScanServiceGrpc.newBlockingStub(overrideChannel);
+    querySchema = QuerySchemaServiceGrpc.newBlockingStub(overrideChannel);
   }
 
   private void dispatch(String inputLine) {

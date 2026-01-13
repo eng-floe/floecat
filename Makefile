@@ -76,6 +76,21 @@ MVN_FLAGS   := -q -T 1C --no-transfer-progress -DskipTests -DskipUTs=true -Dskip
 MVN_TESTALL := --no-transfer-progress
 
 DOCKER_COMPOSE ?= docker compose
+DOCKER_COMPOSE_MAIN ?= $(DOCKER_COMPOSE) -f docker/docker-compose.yml
+DOCKER_COMPOSE_LOCALSTACK ?= $(DOCKER_COMPOSE) -f $(LOCALSTACK_COMPOSE)
+JIB_PLATFORMS ?=
+JIB_BASE_IMAGE ?= eclipse-temurin:25-jre
+UNAME_M := $(shell uname -m)
+
+ifeq ($(strip $(JIB_PLATFORMS)),)
+  ifeq ($(UNAME_M),arm64)
+    JIB_PLATFORMS := linux/arm64
+  else ifeq ($(UNAME_M),aarch64)
+    JIB_PLATFORMS := linux/arm64
+  else
+    JIB_PLATFORMS := linux/amd64
+  endif
+endif
 
 # ---------- Quarkus dev settings ----------
 QUARKUS_PROFILE  ?= dev
@@ -477,7 +492,7 @@ localstack-up:
 	  echo "==> [LOCALSTACK] already running at $(LOCALSTACK_ENDPOINT)"; \
 	else \
 	  echo "==> [LOCALSTACK] starting docker compose ($(LOCALSTACK_COMPOSE))"; \
-	  $(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) up -d; \
+	  $(DOCKER_COMPOSE_LOCALSTACK) -p $(LOCALSTACK_PROJECT) up -d; \
 	  echo "==> [LOCALSTACK] waiting for health endpoint"; \
 	  bash -c 'set -euo pipefail; for i in $$(seq 1 30); do \
 	    if curl -fs $(LOCALSTACK_HEALTH) >/dev/null 2>&1; then exit 0; fi; \
@@ -487,28 +502,28 @@ localstack-up:
 	  exit 1'; \
 	fi
 	@echo "==> [LOCALSTACK] ensuring S3 bucket $(LOCALSTACK_BUCKET) exists"
-	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
+	@$(DOCKER_COMPOSE_LOCALSTACK) -p $(LOCALSTACK_PROJECT) exec -T localstack \
 	  awslocal s3api create-bucket \
 	    --bucket $(LOCALSTACK_BUCKET) \
 	    --region $(LOCALSTACK_REGION) >/dev/null 2>&1 || true
 	@echo "==> [LOCALSTACK] ensuring S3 bucket bucket exists"
-	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
+	@$(DOCKER_COMPOSE_LOCALSTACK) -p $(LOCALSTACK_PROJECT) exec -T localstack \
 	  awslocal s3api create-bucket \
 	    --bucket bucket \
 	    --region $(LOCALSTACK_REGION) >/dev/null 2>&1 || true
 	@echo "==> [LOCALSTACK] ensuring S3 bucket warehouse exists"
-	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
+	@$(DOCKER_COMPOSE_LOCALSTACK) -p $(LOCALSTACK_PROJECT) exec -T localstack \
 	  awslocal s3api create-bucket \
 	    --bucket warehouse \
 	    --region $(LOCALSTACK_REGION) >/dev/null 2>&1 || true
 	@echo "==> [LOCALSTACK] ensuring DynamoDB table $(LOCALSTACK_TABLE) exists"
-	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
+	@$(DOCKER_COMPOSE_LOCALSTACK) -p $(LOCALSTACK_PROJECT) exec -T localstack \
 	  awslocal dynamodb create-table \
 	    --table-name $(LOCALSTACK_TABLE) \
 	    --attribute-definitions AttributeName=pk,AttributeType=S AttributeName=sk,AttributeType=S \
 	    --key-schema AttributeName=pk,KeyType=HASH AttributeName=sk,KeyType=RANGE \
 	    --billing-mode PAY_PER_REQUEST >/dev/null 2>&1 || true
-	@$(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) exec -T localstack \
+	@$(DOCKER_COMPOSE_LOCALSTACK) -p $(LOCALSTACK_PROJECT) exec -T localstack \
 	  awslocal dynamodb update-time-to-live \
 	    --table-name $(LOCALSTACK_TABLE) \
 	    --time-to-live-specification '{"Enabled":true,"AttributeName":"expires_at"}' >/dev/null 2>&1 || true
@@ -517,7 +532,7 @@ localstack-up:
 localstack-down:
 	@if curl -fs $(LOCALSTACK_HEALTH) >/dev/null 2>&1; then \
 	  echo "==> [LOCALSTACK] stopping docker compose ($(LOCALSTACK_PROJECT))"; \
-	  $(DOCKER_COMPOSE) -p $(LOCALSTACK_PROJECT) -f $(LOCALSTACK_COMPOSE) down; \
+	  $(DOCKER_COMPOSE_LOCALSTACK) -p $(LOCALSTACK_PROJECT) down; \
 	else \
 	  echo "==> [LOCALSTACK] not running"; \
 	fi
@@ -558,10 +573,50 @@ cli-test: $(PROTO_JAR)
 # ===================================================
 # Docker (Quarkus container-image)
 # ===================================================
-.PHONY: docker
-docker:
-	@echo "==> [DOCKER] quarkus container-image build"
-	$(MVN) -f service/pom.xml -DskipTests -Dquarkus.container-image.build=true package
+.PHONY: docker docker-service docker-iceberg-rest docker-cli compose-up compose-down compose-shell
+docker: docker-service docker-iceberg-rest docker-cli
+
+docker-service:
+	@echo "==> [DOCKER] service (jib -> docker daemon)"
+	$(MVN) -f ./pom.xml -pl service -am -DskipTests -Dmaven.test.skip=true \
+	  -DskipUTs=true -DskipITs=true \
+	  -Dquarkus.container-image.build=true \
+	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
+	  $(if $(JIB_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_PLATFORMS)) \
+	  -Dquarkus.container-image.image=floecat-service:local \
+	  package
+
+docker-iceberg-rest:
+	@echo "==> [DOCKER] iceberg-rest (jib -> docker daemon)"
+	$(MVN) -f ./pom.xml -pl protocol-gateway/iceberg-rest -am -DskipTests -Dmaven.test.skip=true \
+	  -DskipUTs=true -DskipITs=true \
+	  -Dquarkus.container-image.build=true \
+	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
+	  $(if $(JIB_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_PLATFORMS)) \
+	  -Dquarkus.container-image.image=floecat-iceberg-rest:local \
+	  package
+
+docker-cli:
+	@echo "==> [DOCKER] cli (jib -> docker daemon)"
+	$(MVN) -f ./pom.xml -pl client-cli -am -DskipTests -Dmaven.test.skip=true \
+	  -DskipUTs=true -DskipITs=true \
+	  -Dquarkus.container-image.build=true \
+	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
+	  $(if $(JIB_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_PLATFORMS)) \
+	  -Dquarkus.container-image.image=floecat-cli:local \
+	  package
+
+compose-up: docker
+	@echo "==> [COMPOSE] up"
+	$(DOCKER_COMPOSE_MAIN) up -d
+
+compose-down:
+	@echo "==> [COMPOSE] down"
+	$(DOCKER_COMPOSE_MAIN) down
+
+compose-shell:
+	@echo "==> [COMPOSE] shell"
+	COMPOSE_PROFILES=cli $(DOCKER_COMPOSE_MAIN) run --rm cli
 
 # ===================================================
 # Lint/format
