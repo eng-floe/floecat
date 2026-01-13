@@ -210,6 +210,8 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
       String pk, String skPrefix, int limit, Optional<String> pageToken) {
 
     // If we are needing to do a scan here?
+    // NB: a scan is not intended to be part of the api used by normal clients.
+    // Scans are currently used by integration tests to assert various conditions.
     if (pk == null || pk.isEmpty()) {
       var sb = ScanRequest.builder().tableName(table).limit(limit);
 
@@ -260,6 +262,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
   @Override
   public Uni<Integer> deleteByPrefix(String partitionKey, String sortKeyPrefix) {
+    Objects.requireNonNull(partitionKey, "Partition must be provided for delete by prefix");
     final var totalDeleted = new AtomicInteger(0);
     final var lekRef = new AtomicReference<Map<String, AttributeValue>>(null);
 
