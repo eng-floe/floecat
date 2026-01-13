@@ -328,7 +328,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
             })
         .collect()
         .asList()
-        .replaceWith(totalDeleted.get());
+        .replaceWith(totalDeleted::get);
   }
 
   // ---- Transactions (CAS-only)
