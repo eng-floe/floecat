@@ -13,13 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package ai.floedb.floecat.storage.aws.dynamodb;
+package ai.floedb.floecat.kv.dynamodb.ps;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.kv.AbstractEntity;
 import ai.floedb.floecat.kv.KvStore;
 import ai.floedb.floecat.kv.KvStore.Key;
-import ai.floedb.floecat.kv.KvTable;
+import ai.floedb.floecat.kv.cdi.KvTable;
 import com.google.protobuf.util.Timestamps;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;

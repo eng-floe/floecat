@@ -18,7 +18,7 @@ package ai.floedb.floecat.kv.dynamodb.kvobject;
 import ai.floedb.floecat.kv.AbstractEntity;
 import ai.floedb.floecat.kv.Keys;
 import ai.floedb.floecat.kv.KvStore;
-import ai.floedb.floecat.kv.KvTable;
+import ai.floedb.floecat.kv.cdi.KvTable;
 import ai.floedb.floecat.test.rpc.KvObject;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;

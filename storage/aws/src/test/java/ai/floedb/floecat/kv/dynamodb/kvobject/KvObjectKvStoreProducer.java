@@ -16,7 +16,7 @@
 package ai.floedb.floecat.kv.dynamodb.kvobject;
 
 import ai.floedb.floecat.kv.KvStore;
-import ai.floedb.floecat.kv.KvTable;
+import ai.floedb.floecat.kv.cdi.KvTable;
 import ai.floedb.floecat.kv.dynamodb.DynamoDbKvStore;
 import ai.floedb.floecat.kv.dynamodb.DynamoDbTablesBootstrap;
 import jakarta.enterprise.context.ApplicationScoped;

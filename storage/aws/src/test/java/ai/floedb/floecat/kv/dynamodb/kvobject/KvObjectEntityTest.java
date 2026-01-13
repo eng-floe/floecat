@@ -18,7 +18,7 @@ package ai.floedb.floecat.kv.dynamodb.kvobject;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.kv.AbstractEntity;
-import ai.floedb.floecat.kv.dynamodb.AbstractEntityTest;
+import ai.floedb.floecat.kv.test.AbstractEntityTest;
 import ai.floedb.floecat.test.rpc.KvObject;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;

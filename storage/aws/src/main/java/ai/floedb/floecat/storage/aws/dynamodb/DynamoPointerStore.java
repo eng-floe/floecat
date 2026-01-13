@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.storage.aws.dynamodb;
 
+import ai.floedb.floecat.kv.dynamodb.ps.KvPointerStore;
+import ai.floedb.floecat.kv.dynamodb.ps.PointerStoreEntity;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;

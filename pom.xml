@@ -53,6 +53,7 @@
       <module>connectors/catalogs/delta</module>
 
       <!-- Storage -->
+      <module>storage/common</module>
       <module>storage/memory</module>
       <module>storage/aws</module>
 

@@ -13,13 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package ai.floedb.floecat.storage.aws.dynamodb;
+package ai.floedb.floecat.kv.dynamodb.ps;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.kv.AbstractEntity;
-import ai.floedb.floecat.kv.dynamodb.AbstractEntityTest;
+import ai.floedb.floecat.kv.test.AbstractEntityTest;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.util.Optional;

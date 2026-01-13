@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package ai.floedb.floecat.kv;
+package ai.floedb.floecat.kv.cdi;
 
 import jakarta.inject.Qualifier;
 import java.lang.annotation.*;

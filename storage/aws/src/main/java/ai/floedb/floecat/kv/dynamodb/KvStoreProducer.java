@@ -13,12 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package ai.floedb.floecat.storage.aws.dynamodb;
+package ai.floedb.floecat.kv.dynamodb;
 
 import ai.floedb.floecat.kv.KvStore;
-import ai.floedb.floecat.kv.KvTable;
-import ai.floedb.floecat.kv.dynamodb.DynamoDbKvStore;
-import ai.floedb.floecat.kv.dynamodb.DynamoDbTablesBootstrap;
+import ai.floedb.floecat.kv.cdi.KvTable;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Inject;

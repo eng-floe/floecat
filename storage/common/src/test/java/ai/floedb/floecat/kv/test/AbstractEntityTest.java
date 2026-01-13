@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package ai.floedb.floecat.kv.dynamodb;
+package ai.floedb.floecat.kv.test;
 
 import ai.floedb.floecat.kv.AbstractEntity;
 import com.google.protobuf.MessageLite;

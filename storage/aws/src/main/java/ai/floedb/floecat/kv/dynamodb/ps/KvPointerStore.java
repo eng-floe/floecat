@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package ai.floedb.floecat.storage.aws.dynamodb;
+package ai.floedb.floecat.kv.dynamodb.ps;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.storage.PointerStore;
@@ -24,11 +24,11 @@ import java.util.Optional;
  * Synchronous adapter that preserves the existing {@link PointerStore} contract while delegating
  * storage to the Mutiny-based {@link PointerStoreEntity}.
  */
-abstract class KvPointerStore implements PointerStore {
+public abstract class KvPointerStore implements PointerStore {
 
   private final PointerStoreEntity pointers;
 
-  KvPointerStore(PointerStoreEntity pointers) {
+  public KvPointerStore(PointerStoreEntity pointers) {
     this.pointers = pointers;
   }
 

@@ -65,10 +65,16 @@
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-kv</artifactId>
+      <artifactId>floecat-storage-common</artifactId>
       <version>${project.version}</version>
-      <type>test-jar</type>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-storage-common</artifactId>
       <scope>test</scope>
+      <type>test-jar</type>
+      <version>${project.version}</version>
     </dependency>
 
     <dependency>
@@ -130,6 +136,17 @@
             <id>make-index</id>
             <goals>
               <goal>jandex</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>io.quarkus</groupId>
+        <artifactId>quarkus-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <goals>
+              <goal>generate-code-tests</goal>
             </goals>
           </execution>
         </executions>
