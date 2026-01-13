@@ -56,6 +56,22 @@ message FloeRelationSpecific {
   repeated string relacl = 12;
 }
 
+message FloeColumnSpecific {
+  optional int32 attrelid = 1;
+  optional string attname = 2;
+  optional int32 atttypid = 3;
+  optional int32 atttypmod = 4;
+  optional int32 attnum = 5;
+  optional int32 attlen = 6;
+  optional bool attnotnull = 7;
+  optional bool attisdropped = 8;
+  optional bool attbyval = 9;
+  optional string attalign = 10;
+  optional string attstorage = 11;
+  optional int32 attndims = 12;
+  optional int32 attcollation = 13;
+}
+
 message FloeFunctionSpecific {
   optional int32  oid = 100;
   optional string proname = 101;

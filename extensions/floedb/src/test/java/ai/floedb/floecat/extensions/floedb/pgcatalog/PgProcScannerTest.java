@@ -29,6 +29,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.spi.scanner.*;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import java.time.Instant;
 import java.util.List;
@@ -47,6 +48,7 @@ import org.junit.jupiter.api.Test;
 final class PgProcScannerTest {
 
   private final SystemObjectScanner scanner = new PgProcScanner();
+  private static final EngineContext ENGINE_CTX = EngineContext.of("floe-demo", "1.0");
 
   @Test
   void scan_emitsRowsForAllFunctions() {
@@ -220,7 +222,8 @@ final class PgProcScannerTest {
             .addFunction(namespaceId, textLength)
             .addFunction(namespaceId, sumState);
 
-    return new SystemObjectScanContext(graph, NameRef.getDefaultInstance(), ridCatalog());
+    return new SystemObjectScanContext(
+        graph, NameRef.getDefaultInstance(), ridCatalog(), ENGINE_CTX);
   }
 
   private static SystemObjectScanContext contextWithWindowFunction() {
@@ -313,7 +316,8 @@ final class PgProcScannerTest {
             .addFunction(namespaceId, sumState)
             .addFunction(namespaceId, myWindowFn);
 
-    return new SystemObjectScanContext(graph, NameRef.getDefaultInstance(), ridCatalog());
+    return new SystemObjectScanContext(
+        graph, NameRef.getDefaultInstance(), ridCatalog(), ENGINE_CTX);
   }
 
   private static ResourceId rid(String name) {

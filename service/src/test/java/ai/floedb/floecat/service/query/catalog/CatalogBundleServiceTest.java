@@ -28,13 +28,22 @@ import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
+import ai.floedb.floecat.service.context.EngineContextProvider;
+import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport.CancellingSubscriber;
 import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport.FakeCatalogOverlay;
 import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport.TestQueryContextStore;
 import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport.TestQueryInputResolver;
 import ai.floedb.floecat.service.query.impl.QueryContext;
+import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
+import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
+import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import io.grpc.Context;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -62,6 +71,8 @@ class CatalogBundleServiceTest {
           .build();
 
   private final FakeCatalogOverlay overlay = new FakeCatalogOverlay();
+  private final EngineMetadataDecoratorProvider decoratorProvider = ctx -> Optional.empty();
+  private final EngineContextProvider engineContextProvider = new EngineContextProvider();
   private TestQueryInputResolver resolver;
   private TestQueryContextStore queryStore;
   private CatalogBundleService service;
@@ -98,7 +109,9 @@ class CatalogBundleServiceTest {
         NameRef.newBuilder().setCatalog("cat").setName("b").build());
     overlay.registerCatalog(DEFAULT_CATALOG, "cat");
     queryStore.seed(ctx);
-    service = new CatalogBundleService(overlay, resolver, queryStore);
+    service =
+        new CatalogBundleService(
+            overlay, resolver, queryStore, decoratorProvider, engineContextProvider, false);
   }
 
   @Test
@@ -238,5 +251,73 @@ class CatalogBundleServiceTest {
     assertThat(resolution.getFailure().getCode()).isEqualTo("catalog_bundle.graph.missing_node");
     assertThat(chunks.get(2).getEnd().getFoundCount()).isZero();
     assertThat(chunks.get(2).getEnd().getResolutionCount()).isEqualTo(1);
+  }
+
+  @Test
+  void decoratorSkippedWhenHeadersMissing() {
+    AtomicInteger columnDecorations = new AtomicInteger();
+    EngineMetadataDecoratorProvider provider =
+        ctx -> Optional.of(new CountingDecorator(columnDecorations));
+    CatalogBundleService decoratedService =
+        new CatalogBundleService(
+            overlay, resolver, queryStore, provider, engineContextProvider, true);
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    decoratedService.stream("cid", ctx, List.of(candidate))
+        .collect()
+        .asList()
+        .await()
+        .indefinitely();
+
+    assertThat(columnDecorations.get()).isZero();
+  }
+
+  @Test
+  void decoratorInvokedWhenHeadersPresent() {
+    AtomicInteger columnDecorations = new AtomicInteger();
+    EngineMetadataDecoratorProvider provider =
+        ctx -> Optional.of(new CountingDecorator(columnDecorations));
+    CatalogBundleService decoratedService =
+        new CatalogBundleService(
+            overlay, resolver, queryStore, provider, engineContextProvider, true);
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
+            .build();
+
+    EngineContext engineContext = EngineContext.of("pg", "16.0");
+    Context context =
+        Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, engineContext);
+    Context previous = context.attach();
+    try {
+      decoratedService.stream("cid", ctx, List.of(candidate))
+          .collect()
+          .asList()
+          .await()
+          .indefinitely();
+    } finally {
+      context.detach(previous);
+    }
+
+    assertThat(columnDecorations.get()).isGreaterThan(0);
+  }
+
+  private static final class CountingDecorator implements EngineMetadataDecorator {
+
+    private final AtomicInteger columnDecorations;
+
+    private CountingDecorator(AtomicInteger columnDecorations) {
+      this.columnDecorations = columnDecorations;
+    }
+
+    @Override
+    public void decorateColumn(EngineContext ctx, ColumnDecoration columnDecoration) {
+      columnDecorations.incrementAndGet();
+    }
   }
 }

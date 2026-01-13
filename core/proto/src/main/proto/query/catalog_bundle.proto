@@ -63,15 +63,7 @@ message CatalogBundleChunk {
     // One chunk can carry multiple input resolution results for efficiency.
     RelationResolutions resolutions = 20;
 
-    // (optional future) custom objects if/when you expand beyond tables/views
-    ai.floedb.floecat.query.SqlType type = 30;
-    ai.floedb.floecat.query.SqlFunction function = 31;
-    ai.floedb.floecat.query.SqlOperator operator = 32;
-    ai.floedb.floecat.query.SqlCast cast = 33;
-    ai.floedb.floecat.query.SqlCollation collation = 34;
-    ai.floedb.floecat.query.SqlAggregate aggregate = 35;
-
-  CatalogBundleEnd end = 90;
+    CatalogBundleEnd end = 90;
   }
 }
 
@@ -89,9 +81,6 @@ message CatalogBundleEnd {
 
   // Number of inputs that could not be resolved.
   uint32 not_found_count = 3;
-
-  // Placeholder for other object types (types/functions/operators) if emitted in future.
-  uint32 custom_object_count = 10;
 }
 
 message ResolutionWarning {

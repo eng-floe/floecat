@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
+import ai.floedb.floecat.extensions.floedb.hints.FloeHintResolver;
 import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
@@ -48,21 +48,10 @@ public final class PgNamespaceScanner implements SystemObjectScanner {
   }
 
   private SystemObjectRow toRow(SystemObjectScanContext ctx, NamespaceNode ns) {
-    var specOpt = ScannerUtils.payload(ctx, ns.id(), FloePayloads.NAMESPACE);
-    FloeNamespaceSpecific spec = specOpt.orElse(null);
-
-    int oid = spec != null && spec.hasOid() ? spec.getOid() : ScannerUtils.fallbackOid(ns.id());
-
-    String name = spec != null && spec.hasNspname() ? spec.getNspname() : ns.displayName();
-
-    int owner =
-        spec != null && spec.hasNspowner() ? spec.getNspowner() : ScannerUtils.defaultOwnerOid();
-
+    FloeNamespaceSpecific spec = FloeHintResolver.namespaceSpecific(ctx, ns);
     String[] acl =
-        spec != null && spec.getNspaclCount() > 0
-            ? spec.getNspaclList().toArray(String[]::new)
-            : new String[0];
-
-    return new SystemObjectRow(new Object[] {oid, name, owner, acl});
+        spec.getNspaclCount() > 0 ? spec.getNspaclList().toArray(String[]::new) : new String[0];
+    return new SystemObjectRow(
+        new Object[] {spec.getOid(), spec.getNspname(), spec.getNspowner(), acl});
   }
 }

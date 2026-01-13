@@ -84,4 +84,28 @@ public final class EngineContext {
   public boolean hasEngineKind() {
     return hasEngineKind;
   }
+
+  /**
+   * Returns the engine ID used for catalog resolution.
+   *
+   * <p>If the request omitted engine headers, this returns {@code floecat_internal}; otherwise it
+   * returns the normalized engine kind.
+   */
+  public String effectiveEngineKind() {
+    return hasEngineKind ? normalizedKind : EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
+  }
+
+  /**
+   * Returns {@code true} when an engine plugin overlay should be applied.
+   *
+   * <p>Only engine-specific plugins (i.e., non-`floecat_internal`) trigger this.
+   */
+  public boolean enginePluginOverlaysEnabled() {
+    return hasEngineKind && !EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(normalizedKind);
+  }
+
+  /** Returns {@code true} when the request included engine headers. */
+  public boolean hasEngineHeaders() {
+    return hasEngineKind;
+  }
 }

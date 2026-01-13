@@ -16,10 +16,8 @@
 
 package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
-import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.FUNCTION;
-import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.NAMESPACE;
-
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.extensions.floedb.hints.FloeHintResolver;
 import ai.floedb.floecat.extensions.floedb.proto.FloeFunctionSpecific;
 import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
@@ -28,7 +26,6 @@ import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
 import java.util.List;
-import java.util.Optional;
 import java.util.stream.Stream;
 
 public final class PgProcScanner implements SystemObjectScanner {
@@ -63,35 +60,14 @@ public final class PgProcScanner implements SystemObjectScanner {
   private static SystemObjectRow row(
       SystemObjectScanContext ctx, ResourceId namespaceId, FunctionNode fn) {
 
-    Optional<FloeFunctionSpecific> spec = ScannerUtils.payload(ctx, fn.id(), FUNCTION);
-
-    int oid =
-        spec.map(FloeFunctionSpecific::getOid)
-            .orElse(ScannerUtils.oid(ctx, fn.id(), FUNCTION, s -> s.getOid()));
-
-    int namespaceOid = ScannerUtils.oid(ctx, namespaceId, NAMESPACE, spec1 -> spec1.getOid());
-
-    int returnTypeOid =
-        spec.map(FloeFunctionSpecific::getProrettype)
-            .orElse(ScannerUtils.oid(ctx, fn.id(), FUNCTION, s -> s.getProrettype()));
-
-    int[] argTypeOids =
-        spec.map(s -> s.getProargtypesList().stream().mapToInt(Integer::intValue).toArray())
-            .orElseGet(
-                () ->
-                    ScannerUtils.array(
-                        ctx,
-                        fn.id(),
-                        FUNCTION,
-                        s ->
-                            s.getProargtypesList().stream().mapToInt(Integer::intValue).toArray()));
-
+    FloeFunctionSpecific spec = FloeHintResolver.functionSpecific(ctx, namespaceId, fn);
+    int[] argTypeOids = spec.getProargtypesList().stream().mapToInt(Integer::intValue).toArray();
     return new SystemObjectRow(
         new Object[] {
-          oid,
+          spec.getOid(),
           fn.displayName(),
-          namespaceOid,
-          returnTypeOid,
+          spec.getPronamespace(),
+          spec.getProrettype(),
           argTypeOids,
           fn.aggregate(),
           fn.window()

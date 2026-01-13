@@ -17,9 +17,10 @@
 package ai.floedb.floecat.extensions.floedb.utils;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import java.util.Optional;
 
 public final class ScannerUtils {
@@ -32,20 +33,10 @@ public final class ScannerUtils {
    */
   public static <T> Optional<T> payload(
       SystemObjectScanContext ctx, ResourceId id, PayloadDescriptor<T> desc) {
-    return ctx.tryResolve(id)
-        .flatMap(
-            node -> {
-              for (EngineHint hint : node.engineHints().values()) {
-                if (desc.type().equals(hint.contentType())) {
-                  try {
-                    return Optional.ofNullable(desc.decoder().apply(hint.payload()));
-                  } catch (Exception ignored) {
-                    return Optional.empty();
-                  }
-                }
-              }
-              return Optional.empty();
-            });
+    if (ctx == null) {
+      return Optional.empty();
+    }
+    return payload(ctx.overlay(), id, desc, ctx.engineContext());
   }
 
   /** Resolve a PostgreSQL OID using a typed payload descriptor. */
@@ -54,10 +45,10 @@ public final class ScannerUtils {
       ResourceId id,
       PayloadDescriptor<T> desc,
       java.util.function.ToIntFunction<T> extractor) {
-    return payload(ctx, id, desc)
-        .map(extractor::applyAsInt)
-        .filter(v -> v > 0)
-        .orElseGet(() -> fallbackOid(id));
+    if (ctx == null) {
+      return fallbackOid(id);
+    }
+    return oid(ctx.overlay(), id, desc, extractor, ctx.engineContext());
   }
 
   /** Resolve an int[] field using a typed payload descriptor. */
@@ -66,61 +57,57 @@ public final class ScannerUtils {
       ResourceId id,
       PayloadDescriptor<T> desc,
       java.util.function.Function<T, int[]> extractor) {
-    return payload(ctx, id, desc)
-        .map(extractor)
-        .filter(arr -> arr != null && arr.length > 0)
-        .orElseGet(() -> new int[0]);
+    if (ctx == null) {
+      return new int[0];
+    }
+    return array(ctx.overlay(), id, desc, extractor, ctx.engineContext());
   }
 
-  // Legacy helpers – prefer PayloadDescriptor-based overloads
-
-  /**
-   * Decode an engine-specific payload once and return a typed value. Any exception or missing
-   * payload results in Optional.empty().
-   */
+  /** Decode an engine-specific payload using a typed PayloadDescriptor via overlay. */
   public static <T> Optional<T> payload(
-      SystemObjectScanContext ctx,
+      CatalogOverlay overlay,
       ResourceId id,
-      String payloadType,
-      ThrowingFunction<byte[], T> decoder) {
-    return ctx.tryResolve(id)
+      PayloadDescriptor<T> desc,
+      EngineContext engineContext) {
+    EngineContext ctx = engineContext == null ? EngineContext.empty() : engineContext;
+    return overlay
+        .resolve(id)
+        .flatMap(node -> node.engineHint(ctx.normalizedKind(), ctx.normalizedVersion()))
         .flatMap(
-            node -> {
-              for (EngineHint hint : node.engineHints().values()) {
-                if (payloadType.equals(hint.contentType())) {
-                  try {
-                    return Optional.ofNullable(decoder.apply(hint.payload()));
-                  } catch (Exception ignored) {
-                    return Optional.empty();
-                  }
-                }
+            hint -> {
+              if (!desc.type().equals(hint.contentType())) {
+                return Optional.empty();
               }
-              return Optional.empty();
+              try {
+                return Optional.ofNullable(desc.decoder().apply(hint.payload()));
+              } catch (Exception ignored) {
+                return Optional.empty();
+              }
             });
   }
 
-  /**
-   * Resolve a PostgreSQL OID for a graph node.
-   *
-   * <p>Resolution order: 1. Engine-specific payload (if present and decodable) 2. Deterministic
-   * fallback based on ResourceId
-   */
-  public static int oid(
-      SystemObjectScanContext ctx,
+  /** Resolve a PostgreSQL OID using a typed payload descriptor via overlay. */
+  public static <T> int oid(
+      CatalogOverlay overlay,
       ResourceId id,
-      String payloadType,
-      ThrowingFunction<byte[], Integer> extractor) {
-    return payload(ctx, id, payloadType, extractor)
+      PayloadDescriptor<T> desc,
+      java.util.function.ToIntFunction<T> extractor,
+      EngineContext engineContext) {
+    return payload(overlay, id, desc, engineContext)
+        .map(extractor::applyAsInt)
         .filter(v -> v > 0)
         .orElseGet(() -> fallbackOid(id));
   }
 
-  public static int[] array(
-      SystemObjectScanContext ctx,
+  /** Resolve an int[] field using a typed payload descriptor via overlay. */
+  public static <T> int[] array(
+      CatalogOverlay overlay,
       ResourceId id,
-      String payloadType,
-      ThrowingFunction<byte[], int[]> extractor) {
-    return payload(ctx, id, payloadType, extractor)
+      PayloadDescriptor<T> desc,
+      java.util.function.Function<T, int[]> extractor,
+      EngineContext engineContext) {
+    return payload(overlay, id, desc, engineContext)
+        .map(extractor)
         .filter(arr -> arr != null && arr.length > 0)
         .orElseGet(() -> new int[0]);
   }

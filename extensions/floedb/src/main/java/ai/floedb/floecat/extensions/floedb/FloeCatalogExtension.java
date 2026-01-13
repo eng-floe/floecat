@@ -20,12 +20,14 @@ import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.*;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.extensions.floedb.proto.*;
+import ai.floedb.floecat.extensions.floedb.sinks.FloeEngineSpecificDecorator;
 import ai.floedb.floecat.extensions.floedb.utils.PayloadDescriptor;
 import ai.floedb.floecat.query.rpc.*;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
+import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
@@ -244,6 +246,11 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
   public Optional<SystemObjectScanner> provide(
       String scannerId, String engineKind, String engineVersion) {
     return Optional.empty();
+  }
+
+  @Override
+  public Optional<EngineMetadataDecorator> decorator() {
+    return Optional.of(FloeEngineSpecificDecorator.INSTANCE);
   }
 
   /** Concrete implementation for the main FloeDB engine. */

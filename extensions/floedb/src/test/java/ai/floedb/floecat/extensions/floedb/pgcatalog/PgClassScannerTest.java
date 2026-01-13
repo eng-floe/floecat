@@ -32,6 +32,7 @@ import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import java.time.Instant;
 import java.util.List;
@@ -54,6 +55,7 @@ import org.junit.jupiter.api.Test;
 final class PgClassScannerTest {
 
   private final PgClassScanner scanner = new PgClassScanner();
+  private static final EngineContext ENGINE_CTX = EngineContext.of("floedb", "1.0");
 
   @Test
   void scan_usesEngineSpecificPayload_whenPresent() {
@@ -173,7 +175,7 @@ final class PgClassScannerTest {
       overlay.addRelation(ns.id(), n);
     }
 
-    return new SystemObjectScanContext(overlay, null, catalogId());
+    return new SystemObjectScanContext(overlay, null, catalogId(), ENGINE_CTX);
   }
 
   private static TableNode table(String name, Map<EngineKey, EngineHint> hints) {

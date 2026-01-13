@@ -40,11 +40,21 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.ViewDefinition;
+import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
+import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
+import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
+import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
+import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
+import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
+import ai.floedb.floecat.systemcatalog.spi.scanner.MetadataResolutionContext;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.types.LogicalType;
+import ai.floedb.floecat.types.LogicalTypeFormat;
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -57,23 +67,39 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.Optional;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class CatalogBundleService {
 
   private static final int MAX_RESOLUTIONS_PER_CHUNK = 25;
+  private static final Logger LOG = Logger.getLogger(CatalogBundleService.class);
 
   private final CatalogOverlay overlay;
   private final QueryInputResolver inputResolver;
   private final QueryContextStore queryStore;
+  private final EngineMetadataDecoratorProvider decoratorProvider;
+  private final EngineContextProvider engineContext;
+  private final boolean engineSpecificEnabled;
 
   @Inject
   public CatalogBundleService(
-      CatalogOverlay overlay, QueryInputResolver inputResolver, QueryContextStore queryStore) {
+      CatalogOverlay overlay,
+      QueryInputResolver inputResolver,
+      QueryContextStore queryStore,
+      EngineMetadataDecoratorProvider decoratorProvider,
+      EngineContextProvider engineContext,
+      @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "false")
+          boolean engineSpecificEnabled) {
     this.overlay = overlay;
     this.inputResolver = inputResolver;
     this.queryStore = queryStore;
+    this.decoratorProvider = decoratorProvider;
+    this.engineContext = engineContext;
+    this.engineSpecificEnabled = engineSpecificEnabled;
   }
 
   public Multi<CatalogBundleChunk> stream(
@@ -195,34 +221,165 @@ public class CatalogBundleService {
             .setResolutionCount(resolutionCount)
             .setFoundCount(foundCount)
             .setNotFoundCount(notFoundCount)
-            .setCustomObjectCount(0)
             .build();
     return CatalogBundleChunk.newBuilder().setQueryId(queryId).setSeq(seq).setEnd(end).build();
   }
 
-  private RelationInfo buildRelation(String correlationId, ResolvedRelation relation) {
+  private RelationInfo buildRelation(
+      String correlationId, ResolvedRelation relation, QueryContext queryContext) {
+
     RelationKind kind = mapKind(relation.node().kind(), relation.node().origin());
     Origin origin = mapOrigin(relation.node().origin());
     NameRef name = canonicalName(relation.relationId(), relation.node());
+
     List<SchemaColumn> schemaColumns =
         relation.node() instanceof ViewNode view
             ? view.outputColumns()
             : overlay.tableSchema(relation.node().id());
+
     List<SchemaColumn> pruned =
         CatalogBundleUtils.pruneSchema(schemaColumns, relation.candidate(), correlationId);
+
     List<ColumnInfo> columns =
         CatalogBundleUtils.columnsFor(schemaColumns, pruned, origin, correlationId);
+
     RelationInfo.Builder builder =
         RelationInfo.newBuilder()
             .setRelationId(relation.relationId())
             .setName(name)
             .setKind(kind)
-            .setOrigin(origin)
-            .addAllColumns(columns);
+            .setOrigin(origin);
+
+    // If this is a view, keep a mutable builder around for decoration.
+    ViewDefinition.Builder viewBuilder = null;
     if (relation.node() instanceof ViewNode view) {
-      builder.setViewDefinition(viewDefinition(view));
+      viewBuilder = viewDefinitionBuilder(view);
+      builder.setViewDefinition(viewBuilder);
     }
+
+    List<ColumnInfo> decoratedColumns = columns;
+
+    EngineContext ctx = engineContext.engineContext();
+    Optional<EngineMetadataDecorator> decorator = currentDecorator(ctx);
+
+    if (decorator.isPresent()) {
+      MetadataResolutionContext resolutionContext =
+          MetadataResolutionContext.of(
+              overlay,
+              Objects.requireNonNull(
+                  queryContext.getQueryDefaultCatalogId(), "query default catalog id"),
+              ctx);
+
+      RelationDecoration relationDecoration =
+          new RelationDecoration(
+              builder,
+              relation.relationId(),
+              relation.node(),
+              requireSchema(schemaColumns),
+              requireSchema(pruned),
+              resolutionContext);
+
+      try {
+        decorator.get().decorateRelation(ctx, relationDecoration);
+      } catch (RuntimeException e) {
+        LOG.debugf(
+            e,
+            "Decorator threw while decorating relation %s (engine=%s)",
+            relation.relationId(),
+            ctx.normalizedKind());
+      }
+
+      // Decorate columns
+      decoratedColumns = decorateColumns(columns, pruned, relationDecoration, decorator.get(), ctx);
+
+      // decorate view
+      if (viewBuilder != null) {
+        ViewDecoration viewDecoration =
+            new ViewDecoration(
+                builder, viewBuilder, relation.relationId(), relation.node(), resolutionContext);
+
+        try {
+          decorator.get().decorateView(ctx, viewDecoration);
+        } catch (RuntimeException e) {
+          LOG.debugf(
+              e,
+              "Decorator threw while decorating view %s (engine=%s)",
+              relation.relationId(),
+              ctx.normalizedKind());
+        }
+      }
+    }
+
+    builder.addAllColumns(decoratedColumns);
     return builder.build();
+  }
+
+  private List<ColumnInfo> decorateColumns(
+      List<ColumnInfo> columns,
+      List<SchemaColumn> pruned,
+      RelationDecoration relationDecoration,
+      EngineMetadataDecorator decorator,
+      EngineContext ctx) {
+
+    if (pruned == null || pruned.size() != columns.size()) {
+      LOG.debugf(
+          "Skip engine metadata: column count mismatch columns=%d pruned=%s",
+          columns.size(), pruned == null ? "null" : Integer.toString(pruned.size()));
+      return columns;
+    }
+
+    List<ColumnInfo> decorated = new ArrayList<>(columns.size());
+    for (int i = 0; i < columns.size(); i++) {
+      ColumnInfo column = columns.get(i);
+      SchemaColumn schema = pruned.get(i);
+      ColumnInfo.Builder builder = column.toBuilder();
+      LogicalType logicalType = parseLogicalType(schema);
+      ColumnDecoration columnDecoration =
+          new ColumnDecoration(
+              builder, schema, logicalType, column.getOrdinal(), relationDecoration);
+      try {
+        decorator.decorateColumn(ctx, columnDecoration);
+      } catch (RuntimeException e) {
+        LOG.debugf(
+            e,
+            "Decorator threw while decorating column %s.%s (engine=%s)",
+            relationDecoration.relationId(),
+            column.getName(),
+            ctx.normalizedKind());
+      }
+      decorated.add(columnDecoration.builder().build());
+    }
+    return decorated;
+  }
+
+  private LogicalType parseLogicalType(SchemaColumn column) {
+    if (column == null) {
+      return null;
+    }
+    String logical = column.getLogicalType();
+    if (logical == null || logical.isBlank()) {
+      return null;
+    }
+    try {
+      return LogicalTypeFormat.parse(logical);
+    } catch (IllegalArgumentException e) {
+      LOG.debugf(e, "Failed to parse logical type '%s'", logical);
+      return null;
+    }
+  }
+
+  private Optional<EngineMetadataDecorator> currentDecorator(EngineContext ctx) {
+    if (!engineSpecificEnabled || ctx == null || !ctx.enginePluginOverlaysEnabled()) {
+      return Optional.empty();
+    }
+    return decoratorProvider.decorator(ctx);
+  }
+
+  private static List<SchemaColumn> requireSchema(List<SchemaColumn> schema) {
+    if (schema == null) {
+      return List.of();
+    }
+    return List.copyOf(schema);
   }
 
   private QueryInput buildCanonicalQueryInput(ResolvedRelation relation) {
@@ -251,12 +408,12 @@ public class CatalogBundleService {
     };
   }
 
-  private ViewDefinition viewDefinition(ViewNode view) {
+  private ViewDefinition.Builder viewDefinitionBuilder(ViewNode view) {
     ViewDefinition.Builder builder =
         ViewDefinition.newBuilder().setCanonicalSql(view.sql()).setDialect(view.dialect());
     builder.addAllBaseRelations(view.baseRelations());
     builder.addAllCreationSearchPath(view.creationSearchPath());
-    return builder.build();
+    return builder;
   }
 
   private RelationKind mapKind(GraphNodeKind kind, GraphNodeOrigin origin) {
@@ -433,7 +590,7 @@ public class CatalogBundleService {
           ResolvedRelation relation = resolved.get();
           SnapshotSet pins = collectSnapshotPins(correlationId, ctx, relation);
           accumulateChunkPins(pins);
-          RelationInfo info = buildRelation(correlationId, relation);
+          RelationInfo info = buildRelation(correlationId, relation, ctx);
           foundCount++;
           return RelationResolution.newBuilder()
               .setInputIndex(inputIndex)

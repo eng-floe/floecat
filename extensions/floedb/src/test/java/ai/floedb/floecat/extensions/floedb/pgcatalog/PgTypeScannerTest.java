@@ -27,6 +27,7 @@ import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import java.time.Instant;
 import java.util.Map;
@@ -45,6 +46,8 @@ import org.junit.jupiter.api.Test;
  * </ul>
  */
 final class PgTypeScannerTest {
+
+  private static final EngineContext ENGINE_CTX = EngineContext.of("floedb", "1.0");
 
   private final PgTypeScanner scanner = new PgTypeScanner();
 
@@ -136,7 +139,7 @@ final class PgTypeScannerTest {
     for (TypeNode t : types) {
       overlay.addNode(t);
     }
-    return new SystemObjectScanContext(overlay, null, catalogId());
+    return new SystemObjectScanContext(overlay, null, catalogId(), ENGINE_CTX);
   }
 
   private static TypeNode type(String name, Map<EngineKey, EngineHint> engineHints) {

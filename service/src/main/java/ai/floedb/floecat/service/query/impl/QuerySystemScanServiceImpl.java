@@ -24,6 +24,7 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.GrpcContextUtil;
 import ai.floedb.floecat.service.common.LogHelper;
+import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.arrow.ArrowScanPlan;
@@ -46,6 +47,7 @@ import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.infrastructure.Infrastructure;
@@ -67,6 +69,7 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject CatalogOverlay graph;
+  @Inject EngineContextProvider engineContext;
   @Inject SystemScannerResolver scanners;
   @Inject QueryContextStore queryStore;
 
@@ -115,8 +118,9 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
 
       ResourceId tableId = request.getTableId();
       SystemObjectScanner scanner = scanners.resolve(correlationIdHolder.get(), tableId);
+      EngineContext engineCtx = engineContext.engineContext();
       SystemObjectScanContext ctx =
-          new SystemObjectScanContext(graph, null, queryCtx.getQueryDefaultCatalogId());
+          new SystemObjectScanContext(graph, null, queryCtx.getQueryDefaultCatalogId(), engineCtx);
       List<SchemaColumn> schema = scanner.schema();
       List<String> requiredColumns = request.getRequiredColumnsList();
       List<Predicate> predicates = request.getPredicatesList();

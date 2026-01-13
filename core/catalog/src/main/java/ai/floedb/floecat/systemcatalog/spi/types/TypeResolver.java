@@ -17,7 +17,7 @@
 package ai.floedb.floecat.systemcatalog.spi.types;
 
 import ai.floedb.floecat.metagraph.model.TypeNode;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
+import ai.floedb.floecat.systemcatalog.spi.scanner.MetadataResolutionContext;
 import ai.floedb.floecat.types.LogicalType;
 import java.util.HashMap;
 import java.util.Map;
@@ -31,10 +31,10 @@ public final class TypeResolver {
   private final TypeLookup lookup;
   private final Map<LogicalType, Optional<TypeNode>> cache = new HashMap<>();
 
-  public TypeResolver(SystemObjectScanContext ctx, EngineTypeMapper mapper) {
+  public TypeResolver(MetadataResolutionContext ctx, EngineTypeMapper mapper) {
     this.mapper = Objects.requireNonNull(mapper, "mapper");
     Objects.requireNonNull(ctx, "ctx");
-    this.lookup = new SystemTypeLookup(ctx.listTypes());
+    this.lookup = new SystemTypeLookup(ctx.overlay().listTypes(ctx.catalogId()));
   }
 
   /** Resolves a logical type to an existing TypeNode, if the mapper is aware of it. */

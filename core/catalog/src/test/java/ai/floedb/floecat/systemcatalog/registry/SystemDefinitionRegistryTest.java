@@ -35,9 +35,9 @@ final class SystemDefinitionRegistryTest {
     SystemCatalogProvider provider =
         new SystemCatalogProvider() {
           @Override
-          public SystemEngineCatalog load(String engineKind) {
+          public SystemEngineCatalog load(EngineContext ctx) {
             loadCount.incrementAndGet();
-            return SystemEngineCatalog.empty(engineKind);
+            return SystemEngineCatalog.empty(ctx.effectiveEngineKind());
           }
 
           @Override
@@ -67,9 +67,9 @@ final class SystemDefinitionRegistryTest {
     SystemCatalogProvider provider =
         new SystemCatalogProvider() {
           @Override
-          public SystemEngineCatalog load(String engineKind) {
+          public SystemEngineCatalog load(EngineContext ctx) {
             loadCount.incrementAndGet();
-            return SystemEngineCatalog.empty(engineKind);
+            return SystemEngineCatalog.empty(ctx.effectiveEngineKind());
           }
 
           @Override
@@ -101,12 +101,11 @@ final class SystemDefinitionRegistryTest {
     SystemCatalogProvider provider =
         new SystemCatalogProvider() {
           @Override
-          public SystemEngineCatalog load(String engineKind) {
+          public SystemEngineCatalog load(EngineContext ctx) {
+            String engineKind = ctx.effectiveEngineKind();
             lastKind.set(engineKind);
             loadCount.incrementAndGet();
-            return SystemEngineCatalog.from(
-                engineKind.isBlank() ? EngineCatalogNames.FLOECAT_DEFAULT_CATALOG : engineKind,
-                SystemCatalogData.empty());
+            return SystemEngineCatalog.from(engineKind, SystemCatalogData.empty());
           }
 
           @Override

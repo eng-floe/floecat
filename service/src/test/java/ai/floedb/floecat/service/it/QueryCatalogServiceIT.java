@@ -160,7 +160,6 @@ class QueryCatalogServiceIT {
     assertEquals(1, end.getEnd().getResolutionCount());
     assertEquals(1, end.getEnd().getFoundCount());
     assertEquals(0, end.getEnd().getNotFoundCount());
-    assertEquals(0, end.getEnd().getCustomObjectCount());
 
     var response =
         fetchScanBundle(

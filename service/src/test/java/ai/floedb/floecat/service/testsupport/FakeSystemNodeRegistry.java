@@ -17,11 +17,14 @@
 package ai.floedb.floecat.service.testsupport;
 
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
+import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
+import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import java.util.HashMap;
 import java.util.List;
@@ -37,11 +40,16 @@ public final class FakeSystemNodeRegistry extends SystemNodeRegistry {
   private final FakeSystemCatalogProvider provider;
 
   public FakeSystemNodeRegistry() {
-    this(new FakeSystemCatalogProvider());
+    this(new FakeSystemCatalogProvider(), List.of());
   }
 
-  private FakeSystemNodeRegistry(FakeSystemCatalogProvider provider) {
-    super(new SystemDefinitionRegistry(provider));
+  public FakeSystemNodeRegistry(SystemObjectScannerProvider... extraProviders) {
+    this(new FakeSystemCatalogProvider(), List.of(extraProviders));
+  }
+
+  private FakeSystemNodeRegistry(
+      FakeSystemCatalogProvider provider, List<SystemObjectScannerProvider> extraProviders) {
+    super(new SystemDefinitionRegistry(provider), new FloecatInternalProvider(), extraProviders);
     this.provider = provider;
   }
 
@@ -70,15 +78,15 @@ public final class FakeSystemNodeRegistry extends SystemNodeRegistry {
     }
 
     @Override
-    public SystemEngineCatalog load(String engineKind) {
-      String key = EngineContextNormalizer.normalizeEngineKind(engineKind);
+    public SystemEngineCatalog load(EngineContext ctx) {
+      String key = EngineContextNormalizer.normalizeEngineKind(ctx.normalizedKind());
       if (key.isBlank()) {
         key = EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
       }
       SystemEngineCatalog catalog = catalogs.get(key);
       if (catalog == null) {
         throw new IllegalStateException(
-            "No fake system catalog registered for engine: " + engineKind);
+            "No fake system catalog registered for engine: " + ctx.engineKind());
       }
       return catalog;
     }

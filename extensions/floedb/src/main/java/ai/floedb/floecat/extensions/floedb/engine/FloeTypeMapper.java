@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.extensions.floedb;
+package ai.floedb.floecat.extensions.floedb.engine;
 
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.systemcatalog.spi.types.EngineTypeMapper;

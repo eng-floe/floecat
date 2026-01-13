@@ -16,12 +16,12 @@
 
 package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
+import ai.floedb.floecat.extensions.floedb.hints.FloeHintResolver;
+import ai.floedb.floecat.extensions.floedb.proto.FloeColumnSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
-import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
 import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
 import ai.floedb.floecat.metagraph.model.TableNode;
-import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
@@ -29,7 +29,6 @@ import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.spi.types.EngineTypeMapper;
 import ai.floedb.floecat.systemcatalog.spi.types.TypeResolver;
 import ai.floedb.floecat.types.LogicalType;
-import ai.floedb.floecat.types.LogicalTypeFormat;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
@@ -117,44 +116,23 @@ public final class PgAttributeScanner implements SystemObjectScanner {
       int relOid,
       int attnum,
       SchemaColumn column) {
-
-    LogicalType logical = LogicalTypeFormat.parse(column.getLogicalType());
-
-    int atttypmod;
-    if (logical.isDecimal()) {
-      atttypmod = (logical.precision() << 16) | logical.scale();
-    } else {
-      atttypmod = -1;
-    }
-
-    TypeNode type = resolver.resolveOrThrow(logical);
-
-    int typeOid = ScannerUtils.oid(ctx, type.id(), FloePayloads.TYPE, FloeTypeSpecific::getOid);
-
-    var typeSpec = ScannerUtils.payload(ctx, type.id(), FloePayloads.TYPE);
-
-    int attlen = typeSpec.map(FloeTypeSpecific::getTyplen).orElse(-1);
-    String attalign =
-        typeSpec.map(FloeTypeSpecific::getTypalign).filter(s -> !s.isBlank()).orElse("i");
-    String attstorage =
-        typeSpec.map(FloeTypeSpecific::getTypstorage).filter(s -> !s.isBlank()).orElse("p");
-    int attndims = typeSpec.map(FloeTypeSpecific::getTypndims).orElse(0);
-    int attcollation = typeSpec.map(FloeTypeSpecific::getTypcollation).orElse(0);
-
+    LogicalType logicalType = FloeHintResolver.parseLogicalType(column);
+    FloeColumnSpecific attribute =
+        FloeHintResolver.columnSpecific(ctx, resolver, relOid, attnum, column, logicalType);
     return new SystemObjectRow(
         new Object[] {
-          relOid,
-          column.getName(),
-          typeOid,
-          atttypmod,
-          attnum,
-          attlen,
-          !column.getNullable(),
-          false,
-          attalign,
-          attstorage,
-          attndims,
-          attcollation
+          attribute.getAttrelid(),
+          attribute.getAttname(),
+          attribute.getAtttypid(),
+          attribute.getAtttypmod(),
+          attribute.getAttnum(),
+          attribute.getAttlen(),
+          attribute.getAttnotnull(),
+          attribute.getAttisdropped(),
+          attribute.getAttalign(),
+          attribute.getAttstorage(),
+          attribute.getAttndims(),
+          attribute.getAttcollation()
         });
   }
 }
