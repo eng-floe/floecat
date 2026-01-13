@@ -249,7 +249,18 @@ public class InboundContextInterceptor implements ServerInterceptor {
   }
 
   private void validateAccount(String accountId) {
-    try (var _ = new ThreadNamer("floecat.")) { // Avoid vert.x async/blocking guard
+
+    // NOTE: Account verification here performs synchronous I/O via the pointer store.
+    // This is not ideal for an interceptor, but is left as-is for now.
+    // Vert.x Mutiny disallows await().indefinitely() at this point of a request,
+    // which prevents using the async pointer store backend (even when wrapped
+    // synchronously) without triggering an exception. This code path avoids that
+    // internal check.
+    //
+    // TODO: Remove all I/O from this interceptor once trusted session headers are
+    // formally integrated with floecat. At that point, the trusted token and account
+    // claim in JWT will be sufficient for verification.
+    try (var _ = new ThreadNamer("floecat.")) {
       ResourceId accountRid =
           ResourceId.newBuilder().setId(accountId).setKind(ResourceKind.RK_ACCOUNT).build();
       if (accountId == null
