@@ -29,10 +29,6 @@
 
   <artifactId>floecat-kv</artifactId>
 
-  <properties>
-    <aws.sdk.version>2.39.5</aws.sdk.version>
-  </properties>
-
   <dependencyManagement>
     <dependencies>
       <dependency>
@@ -47,17 +43,16 @@
 
   <dependencies>
 
-    <!-- gRPC (server) -->
+    <!-- Protobuf -->
     <dependency>
-      <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-grpc</artifactId>
+      <groupId>com.google.protobuf</groupId>
+      <artifactId>protobuf-java</artifactId>
     </dependency>
 
-    <!-- FloeCat-->
+    <!-- Smallrye Mutiny -->
     <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-proto</artifactId>
-      <version>${project.version}</version>
+      <groupId>io.smallrye.reactive</groupId>
+      <artifactId>mutiny</artifactId>
     </dependency>
 
   </dependencies>
