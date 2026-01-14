@@ -20,7 +20,7 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.execution.rpc";
 option java_outer_classname = "ExecutionScanProto";
 
-import "catalog/stats.proto";
+import "floecat/catalog/stats.proto";
 
 /**
  * EXECUTION SCAN PROTOCOL

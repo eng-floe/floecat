@@ -17,7 +17,7 @@ package ai.floedb.floecat.connector;
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.connector.rpc";
 
-import "common/common.proto";
+import "floecat/common/common.proto";
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/duration.proto";

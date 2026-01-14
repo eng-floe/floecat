@@ -19,8 +19,8 @@ package ai.floedb.floecat.catalog;
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.catalog.rpc";
 
-import "common/common.proto";
-import "query/schema.proto";
+import "floecat/common/common.proto";
+import "floecat/query/schema.proto";
 
 service SchemaService {
   rpc GetSchema(GetSchemaRequest) returns (GetSchemaResponse);

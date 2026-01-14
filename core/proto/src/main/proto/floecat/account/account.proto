@@ -20,7 +20,7 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.account.rpc";
 option java_outer_classname = "AccountProto";
 
-import "common/common.proto";
+import "floecat/common/common.proto";
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/field_mask.proto";
