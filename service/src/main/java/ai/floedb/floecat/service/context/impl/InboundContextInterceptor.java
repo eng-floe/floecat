@@ -24,7 +24,6 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import ai.floedb.floecat.service.util.ThreadNamer;
 import io.grpc.Context;
 import io.grpc.Contexts;
 import io.grpc.ForwardingServerCall.SimpleForwardingServerCall;
@@ -41,6 +40,7 @@ import jakarta.inject.Inject;
 import java.time.Clock;
 import java.util.Optional;
 import java.util.UUID;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.MDC;
 
 @ApplicationScoped
@@ -68,6 +68,18 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
   @Inject QueryContextStore queryStore;
   @Inject AccountRepository accountRepository;
+
+  @ConfigProperty(name = "floecat.interceptor.validate.account", defaultValue = "true")
+  boolean validateAccount;
+
+  @ConfigProperty(name = "floecat.interceptor.session.header")
+  Optional<String> sessionHeader;
+
+  @ConfigProperty(name = "floecat.interceptor.oidc.issuer")
+  Optional<String> oidcIssuer;
+
+  @ConfigProperty(name = "floecat.interceptor.oidc.client-id")
+  Optional<String> oidcClientId;
 
   @Override
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
@@ -163,7 +175,11 @@ public class InboundContextInterceptor implements ServerInterceptor {
     if (pcBytes != null) {
       PrincipalContext pc = parsePrincipal(pcBytes);
 
-      validateAccount(pc.getAccountId());
+      if (this.validateAccount) {
+        validateAccount(pc.getAccountId());
+      } else if (this.sessionHeader.isPresent()) {
+        validateSessionHeader(headers);
+      }
 
       if (!isBlank(queryIdHeader)
           && !isBlank(pc.getQueryId())
@@ -211,6 +227,14 @@ public class InboundContextInterceptor implements ServerInterceptor {
     return new ResolvedContext(devContext(), "");
   }
 
+  private void validateSessionHeader(Metadata headers) {
+    var oidcIssuer = this.oidcIssuer.orElseThrow();
+    var oidcClientId = this.oidcClientId.orElseThrow();
+
+    // TODO: validate gRPC JWT session header using quarkus-oidc-client w/oidcIssuer+oidcClientID
+    throw new UnsupportedOperationException("Session header validation is not supported");
+  }
+
   private static PrincipalContext parsePrincipal(byte[] encoded) {
     try {
       return PrincipalContext.parseFrom(encoded);
@@ -249,27 +273,14 @@ public class InboundContextInterceptor implements ServerInterceptor {
   }
 
   private void validateAccount(String accountId) {
-
-    // NOTE: Account verification here performs synchronous I/O via the pointer store.
-    // This is not ideal for an interceptor, but is left as-is for now.
-    // Vert.x Mutiny disallows await().indefinitely() at this point of a request,
-    // which prevents using the async pointer store backend (even when wrapped
-    // synchronously) without triggering an exception. This code path avoids that
-    // internal check.
-    //
-    // TODO: Remove all I/O from this interceptor once trusted session headers are
-    // formally integrated with floecat. At that point, the trusted token and account
-    // claim in JWT will be sufficient for verification.
-    try (var _ = new ThreadNamer("floecat.")) {
-      ResourceId accountRid =
-          ResourceId.newBuilder().setId(accountId).setKind(ResourceKind.RK_ACCOUNT).build();
-      if (accountId == null
-          || isBlank(accountId)
-          || accountRepository.getById(accountRid).isEmpty()) {
-        throw Status.UNAUTHENTICATED
-            .withDescription("invalid or unknown account: " + accountId)
-            .asRuntimeException();
-      }
+    ResourceId accountRid =
+        ResourceId.newBuilder().setId(accountId).setKind(ResourceKind.RK_ACCOUNT).build();
+    if (accountId == null
+        || isBlank(accountId)
+        || accountRepository.getById(accountRid).isEmpty()) {
+      throw Status.UNAUTHENTICATED
+          .withDescription("invalid or unknown account: " + accountId)
+          .asRuntimeException();
     }
   }
 

@@ -159,7 +159,8 @@ CATALOG_LOCALSTACK_PROPS := \
 	-Dfloecat.fileio.override.aws.dynamodb.endpoint-override=$(LOCALSTACK_ENDPOINT) \
 	-Dfloecat.fixtures.use-aws-s3=true \
 	-Daws.requestChecksumCalculation=when_required \
-	-Daws.responseChecksumValidation=when_required
+	-Daws.responseChecksumValidation=when_required \
+	-Dfloecat.interceptor.validate.account=false
 
 UPSTREAM_LOCALSTACK_PROPS := $(LOCALSTACK_S3_OVERRIDES)
 
