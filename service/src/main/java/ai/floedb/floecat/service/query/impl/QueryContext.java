@@ -28,6 +28,7 @@ import java.time.Clock;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -94,6 +95,9 @@ public final class QueryContext {
 
   /** Planning completion state for external monitoring. */
   private final AtomicReference<QueryStatus> queryStatus;
+
+  /** Cached parsed SnapshotSet for this immutable context instance (lazy). */
+  private final transient AtomicReference<SnapshotSet> parsedSnapshotSet = new AtomicReference<>();
 
   // ----------------------------------------------------------------------
   //  Construction
@@ -288,9 +292,31 @@ public final class QueryContext {
                     Map.of("query_id", queryId, "table_id", tableId.getId())));
   }
 
+  public Optional<SnapshotPin> findSnapshotPin(ResourceId tableId, String correlationId) {
+    Objects.requireNonNull(tableId, "tableId");
+
+    if (snapshotSet == null) {
+      return Optional.empty();
+    }
+
+    SnapshotSet set = parseSnapshotSet(correlationId);
+
+    return set.getPinsList().stream()
+        .filter(pin -> pin.hasTableId() && tableIdMatches(pin.getTableId(), tableId))
+        .findFirst();
+  }
+
   private SnapshotSet parseSnapshotSet(String correlationId) {
+    // Memoize parsing: QueryContext is immutable, so caching is safe for the life of the instance.
+    SnapshotSet cached = parsedSnapshotSet.get();
+    if (cached != null) {
+      return cached;
+    }
     try {
-      return SnapshotSet.parseFrom(snapshotSet);
+      SnapshotSet parsed = SnapshotSet.parseFrom(snapshotSet);
+      // Benign race: multiple threads may parse; only one wins the cache.
+      parsedSnapshotSet.compareAndSet(null, parsed);
+      return parsed;
     } catch (InvalidProtocolBufferException e) {
       throw GrpcErrors.internal(
           correlationId, "query.snapshot.parse_failed", Map.of("query_id", queryId));

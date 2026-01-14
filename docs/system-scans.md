@@ -25,6 +25,12 @@ message ScanSystemTableChunk {
 
 When Arrow is requested, the stream always begins with `arrow_schema_ipc`, then the remaining batches appear as `arrow_batch_ipc`. When `output_format = ROWS`, the stream only emits row chunks, one per `SystemTableRow`.
 
+## Optional statistics
+
+Scanners now receive best-effort statistics through the `MetadataResolutionContext` that backs each scan. The context exposes a `StatsProvider` (defined in `core/catalog/src/main/java/ai/floedb/floecat/systemcatalog/spi/scanner/StatsProvider.java`) which returns `Optional<TableStatsView>` and `Optional<ColumnStatsView>`; the service wires an implementation via `StatsProviderFactory` so lookups are cached per `(tableId, snapshotId)` and never mutate the query context.
+
+Stats remain optional: the provider defaults to `StatsProvider.NONE`, statistics are only present when a pinned snapshot has cached metadata, and callers must treat the `Optional` results as best-effort decorations. System tables (and any unpinned relation) keep working when the stats provider yields `Optional.empty()`. The same best-effort numbers flow into `RelationInfo.stats` on catalog bundles, so bundle consumers should guard `relation.hasStats()` before reading the values (keep in mind that a `0` may simply mean “unknown” depending on the upstream source) and treat missing stats as expected.
+
 ## Execution paths
 
 ### Arrow-first path (default)

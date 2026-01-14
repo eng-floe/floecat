@@ -82,6 +82,10 @@ public class StatsRepository {
         new TableStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, ""));
   }
 
+  public Optional<TableStatsView> getTableStatsView(ResourceId tableId, long snapshotId) {
+    return getTableStats(tableId, snapshotId).map(StatsRepository::tableStatsView);
+  }
+
   public boolean deleteTableStats(ResourceId tableId, long snapshotId) {
     return tableStatsRepo.delete(
         new TableStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, ""));
@@ -266,5 +270,41 @@ public class StatsRepository {
       ResourceId tableId, long snapshotId, String filePath) {
     return fileStatsRepo.metaForSafe(
         new FileColumnStatsKey(tableId.getAccountId(), tableId.getId(), snapshotId, filePath, ""));
+  }
+
+  private static TableStatsView tableStatsView(TableStats stats) {
+    return new TableStatsView(
+        stats.getTableId(), stats.getSnapshotId(), stats.getRowCount(), stats.getTotalSizeBytes());
+  }
+
+  public static final class TableStatsView {
+    private final ResourceId tableId;
+    private final long snapshotId;
+    private final long rowCount;
+    private final long totalSizeBytes;
+
+    private TableStatsView(
+        ResourceId tableId, long snapshotId, long rowCount, long totalSizeBytes) {
+      this.tableId = tableId;
+      this.snapshotId = snapshotId;
+      this.rowCount = rowCount;
+      this.totalSizeBytes = totalSizeBytes;
+    }
+
+    public ResourceId tableId() {
+      return tableId;
+    }
+
+    public long snapshotId() {
+      return snapshotId;
+    }
+
+    public long rowCount() {
+      return rowCount;
+    }
+
+    public long totalSizeBytes() {
+      return totalSizeBytes;
+    }
   }
 }

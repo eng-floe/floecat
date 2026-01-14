@@ -52,6 +52,7 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import ai.floedb.floecat.systemcatalog.spi.scanner.MetadataResolutionContext;
+import ai.floedb.floecat.systemcatalog.spi.scanner.StatsProvider;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
@@ -84,12 +85,14 @@ public class CatalogBundleService {
   private final EngineMetadataDecoratorProvider decoratorProvider;
   private final EngineContextProvider engineContext;
   private final boolean engineSpecificEnabled;
+  private final StatsProviderFactory statsFactory;
 
   @Inject
   public CatalogBundleService(
       CatalogOverlay overlay,
       QueryInputResolver inputResolver,
       QueryContextStore queryStore,
+      StatsProviderFactory statsFactory,
       EngineMetadataDecoratorProvider decoratorProvider,
       EngineContextProvider engineContext,
       @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "false")
@@ -97,6 +100,7 @@ public class CatalogBundleService {
     this.overlay = overlay;
     this.inputResolver = inputResolver;
     this.queryStore = queryStore;
+    this.statsFactory = statsFactory;
     this.decoratorProvider = decoratorProvider;
     this.engineContext = engineContext;
     this.engineSpecificEnabled = engineSpecificEnabled;
@@ -226,7 +230,10 @@ public class CatalogBundleService {
   }
 
   private RelationInfo buildRelation(
-      String correlationId, ResolvedRelation relation, QueryContext queryContext) {
+      String correlationId,
+      ResolvedRelation relation,
+      QueryContext queryContext,
+      StatsProvider statsProvider) {
 
     RelationKind kind = mapKind(relation.node().kind(), relation.node().origin());
     Origin origin = mapOrigin(relation.node().origin());
@@ -250,6 +257,11 @@ public class CatalogBundleService {
             .setKind(kind)
             .setOrigin(origin);
 
+    statsProvider
+        .tableStats(relation.relationId())
+        .map(StatsProviderFactory::toRelationStats)
+        .ifPresent(builder::setStats);
+
     // If this is a view, keep a mutable builder around for decoration.
     ViewDefinition.Builder viewBuilder = null;
     if (relation.node() instanceof ViewNode view) {
@@ -268,7 +280,8 @@ public class CatalogBundleService {
               overlay,
               Objects.requireNonNull(
                   queryContext.getQueryDefaultCatalogId(), "query default catalog id"),
-              ctx);
+              ctx,
+              statsProvider);
 
       RelationDecoration relationDecoration =
           new RelationDecoration(
@@ -521,8 +534,10 @@ public class CatalogBundleService {
     private final List<TableReferenceCandidate> tables;
     private final int resolutionCount;
     private final String defaultCatalog;
+    private final StatsProvider statsProvider;
 
-    private final List<RelationResolution> pending = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
+    // Maintains the order inputs were resolved so the emitted chunk mirrors the request order.
+    private final List<PendingItem> pending = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
     private SnapshotSet pendingChunkPins = SnapshotSet.getDefaultInstance();
 
     private int seq = 1;
@@ -542,6 +557,7 @@ public class CatalogBundleService {
       this.tables = tables;
       this.resolutionCount = tables.size();
       this.defaultCatalog = defaultCatalog;
+      this.statsProvider = statsFactory.forQuery(ctx, correlationId);
     }
 
     @Override
@@ -578,7 +594,7 @@ public class CatalogBundleService {
       }
     }
 
-    private RelationResolution resolveNextResolution() {
+    private PendingItem resolveNextResolution() {
       TableReferenceCandidate candidate = tables.get(nextInputIndex);
       int inputIndex = nextInputIndex;
       nextInputIndex++;
@@ -590,13 +606,8 @@ public class CatalogBundleService {
           ResolvedRelation relation = resolved.get();
           SnapshotSet pins = collectSnapshotPins(correlationId, ctx, relation);
           accumulateChunkPins(pins);
-          RelationInfo info = buildRelation(correlationId, relation, ctx);
           foundCount++;
-          return RelationResolution.newBuilder()
-              .setInputIndex(inputIndex)
-              .setStatus(ResolutionStatus.RESOLUTION_STATUS_FOUND)
-              .setRelation(info)
-              .build();
+          return new PendingFound(inputIndex, relation);
         }
       } catch (GraphNodeMissingException e) {
         ResolutionFailure failure =
@@ -607,11 +618,12 @@ public class CatalogBundleService {
                 .putDetails("default_catalog", defaultCatalog)
                 .addAllAttempted(normalized)
                 .build();
-        return RelationResolution.newBuilder()
-            .setInputIndex(inputIndex)
-            .setStatus(ResolutionStatus.RESOLUTION_STATUS_ERROR)
-            .setFailure(failure)
-            .build();
+        return new PendingResolved(
+            RelationResolution.newBuilder()
+                .setInputIndex(inputIndex)
+                .setStatus(ResolutionStatus.RESOLUTION_STATUS_ERROR)
+                .setFailure(failure)
+                .build());
       }
       notFoundCount++;
       ResolutionFailure failure =
@@ -622,20 +634,84 @@ public class CatalogBundleService {
               .putDetails("default_catalog", defaultCatalog)
               .addAllAttempted(normalized)
               .build();
-      return RelationResolution.newBuilder()
-          .setInputIndex(inputIndex)
-          .setStatus(ResolutionStatus.RESOLUTION_STATUS_NOT_FOUND)
-          .setFailure(failure)
-          .build();
+      return new PendingResolved(
+          RelationResolution.newBuilder()
+              .setInputIndex(inputIndex)
+              .setStatus(ResolutionStatus.RESOLUTION_STATUS_NOT_FOUND)
+              .setFailure(failure)
+              .build());
     }
 
     private CatalogBundleChunk flushResolutionChunk() {
-      List<RelationResolution> chunkItems = new ArrayList<>(pending);
+      List<PendingItem> chunkItems = new ArrayList<>(pending);
       pending.clear();
+      // Ensure pins are durable before accessing stats (which expect the QueryContext to be
+      // pinned).
       commitChunkPins();
-      return resolutionsChunk(ctx.getQueryId(), seq++, chunkItems);
+      QueryContext liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
+      List<RelationResolution> resolutions = new ArrayList<>(chunkItems.size());
+      for (PendingItem item : chunkItems) {
+        if (item instanceof PendingResolved resolved) {
+          resolutions.add(resolved.resolution());
+          continue;
+        }
+        PendingFound found = (PendingFound) item;
+        RelationInfo info = buildRelation(correlationId, found.relation(), liveCtx, statsProvider);
+        resolutions.add(
+            RelationResolution.newBuilder()
+                .setInputIndex(found.inputIndex())
+                .setStatus(ResolutionStatus.RESOLUTION_STATUS_FOUND)
+                .setRelation(info)
+                .build());
+      }
+      return resolutionsChunk(ctx.getQueryId(), seq++, resolutions);
     }
 
+    /**
+     * Represents inputs that are ready to be emitted. Keeping items in insertion order ensures we
+     * re-emit resolutions in the same order the client requested them, even after buffering pins.
+     */
+    private interface PendingItem {
+      int inputIndex();
+    }
+
+    private static final class PendingResolved implements PendingItem {
+      private final RelationResolution resolution;
+
+      private PendingResolved(RelationResolution resolution) {
+        this.resolution = resolution;
+      }
+
+      @Override
+      public int inputIndex() {
+        return resolution.getInputIndex();
+      }
+
+      public RelationResolution resolution() {
+        return resolution;
+      }
+    }
+
+    private static final class PendingFound implements PendingItem {
+      private final int inputIndex;
+      private final ResolvedRelation relation;
+
+      private PendingFound(int inputIndex, ResolvedRelation relation) {
+        this.inputIndex = inputIndex;
+        this.relation = relation;
+      }
+
+      @Override
+      public int inputIndex() {
+        return inputIndex;
+      }
+
+      public ResolvedRelation relation() {
+        return relation;
+      }
+    }
+
+    // Track every pin that must be durable before the next chunk is emitted.
     private void accumulateChunkPins(SnapshotSet incomingPins) {
       if (incomingPins == null || incomingPins.getPinsCount() == 0) {
         return;

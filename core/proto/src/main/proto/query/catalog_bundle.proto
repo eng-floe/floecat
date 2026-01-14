@@ -161,8 +161,15 @@ message RelationInfo {
   repeated ColumnInfo columns = 4;
   // Optional view definition for relations of kind VIEW.
   ViewDefinition view_definition = 5;
+  // Optional table-level statistics from a cached catalog snapshot.
+  RelationStats stats = 6;
   // Optional engine-specific metadata.
   repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
+}
+
+message RelationStats {
+  int64 row_count = 1;
+  int64 total_size_bytes = 2;
 }
 
 message ColumnInfo {

@@ -60,6 +60,7 @@ When `CatalogBundleService` builds responses it:
 * collects cached relation/column metadata from `RelationDecoration` + `ColumnDecoration`.
 * asks `EngineMetadataDecorator` (e.g., `FloeEngineSpecificDecorator`) for Floe hints when overlays are enabled.
 * the decorator calls `FloeHintResolver`, wraps the resulting proto in `EngineSpecific` via `FloePayloads`, and attaches it to the bundle.
+* if snapshot-aware stats exist for the relation, the bundle includes them in `RelationInfo.stats` (a new `RelationStats` proto carrying best-effort `row_count` and `total_size_bytes`). This field is optional: resolvers may see `RelationInfo.stats` unset for views, system tables, or any unpinned relation, and should treat missing stats as a best-effort decoration rather than required data.
 
 The decorator is a pure sink: it never parses schemas nor recomputes defaults, so the bundle payloads match exactly what `pg_*` scanners would have emitted for the same column in the same engine context.
 
@@ -77,3 +78,31 @@ Both flows rely on:
 * A shared `FloePayloads` registry that knows how to wrap protos into `EngineSpecific`.
 
 Because the resolver caches parsed schema info and the decorator is lightweight, the entire workflow scales to large catalogs without redundant recomputation.
+
+## 6. Optional relation statistics
+
+Catalog bundles now attach optional relation statistics via `RelationInfo.stats`
+(`core/proto/src/main/proto/query/catalog_bundle.proto`). Each `RelationStats`
+message carries the best-effort `row_count` and `total_size_bytes` values that were recorded for
+the pinned snapshot. Because the `RelationStats` wrapper is optional, callers must guard
+`relation.hasStats()` before reading the values. When stats are present, both counters are
+populated (though `0` may represent “unknown” depending on the upstream source), so downstream
+code can safely rely on the reported `row_count`/`total_size_bytes` when non-zero.
+Planners should treat missing stats as a decorative hint and never rely on them for correctness.
+
+Scanners get the same best-effort information through `MetadataResolutionContext.statsProvider()`
+(`core/catalog/src/main/java/ai/floedb/floecat/systemcatalog/spi/scanner/MetadataResolutionContext.java:27`,
+which always returns a non-null provider). The provider itself is defined in
+`core/catalog/src/main/java/ai/floedb/floecat/systemcatalog/spi/scanner/StatsProvider.java:24`
+and returns `Optional<TableStatsView>`/`Optional<ColumnStatsView>` so that callers can gracefully
+handle the absence of data. The service layer wires `StatsProviderFactory`
+(`service/src/main/java/ai/floedb/floecat/service/query/catalog/StatsProviderFactory.java:33`)
+to cache results per `(tableId, snapshotId)` without mutating `QueryContext` or creating implicit
+snapshot pins. These caches only emit values for pinned tables, and the provider always returns
+`Optional.empty()` when the pin is missing, so system tables/views/unpinned relations continue to
+flow through the bundle/scan paths without failure. Callers that need the data can request it via the
+shared provider and add the resulting `RelationStats` to the bundle; everyone else is free to ignore
+the field.
+
+Because the stats plumbing is best-effort and stateless, it can be reused by scanners, decorators,
+and catalog bundles alike without introducing new failure modes.

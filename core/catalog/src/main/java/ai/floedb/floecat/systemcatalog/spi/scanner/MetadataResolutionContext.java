@@ -19,6 +19,7 @@ package ai.floedb.floecat.systemcatalog.spi.scanner;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import java.util.Objects;
+import java.util.Optional;
 
 /** Shared context holding the overlay + catalog identity for metadata resolution. */
 public interface MetadataResolutionContext {
@@ -29,9 +30,29 @@ public interface MetadataResolutionContext {
 
   EngineContext engineContext();
 
+  default StatsProvider statsProvider() {
+    return StatsProvider.NONE;
+  }
+
+  default Optional<StatsProvider.TableStatsView> tableStats(ResourceId tableId) {
+    return statsProvider().tableStats(tableId);
+  }
+
+  default Optional<StatsProvider.ColumnStatsView> columnStats(ResourceId tableId, int columnId) {
+    return statsProvider().columnStats(tableId, columnId);
+  }
+
   static MetadataResolutionContext of(
       CatalogOverlay overlay, ResourceId catalogId, EngineContext engineContext) {
-    return new DefaultMetadataResolutionContext(overlay, catalogId, engineContext);
+    return of(overlay, catalogId, engineContext, StatsProvider.NONE);
+  }
+
+  static MetadataResolutionContext of(
+      CatalogOverlay overlay,
+      ResourceId catalogId,
+      EngineContext engineContext,
+      StatsProvider statsProvider) {
+    return new DefaultMetadataResolutionContext(overlay, catalogId, engineContext, statsProvider);
   }
 
   final class DefaultMetadataResolutionContext implements MetadataResolutionContext {
@@ -39,12 +60,17 @@ public interface MetadataResolutionContext {
     private final CatalogOverlay overlay;
     private final ResourceId catalogId;
     private final EngineContext engineContext;
+    private final StatsProvider statsProvider;
 
     public DefaultMetadataResolutionContext(
-        CatalogOverlay overlay, ResourceId catalogId, EngineContext engineContext) {
+        CatalogOverlay overlay,
+        ResourceId catalogId,
+        EngineContext engineContext,
+        StatsProvider statsProvider) {
       this.overlay = Objects.requireNonNull(overlay, "overlay");
       this.catalogId = Objects.requireNonNull(catalogId, "catalogId");
       this.engineContext = engineContext == null ? EngineContext.empty() : engineContext;
+      this.statsProvider = statsProvider == null ? StatsProvider.NONE : statsProvider;
     }
 
     @Override
@@ -60,6 +86,11 @@ public interface MetadataResolutionContext {
     @Override
     public EngineContext engineContext() {
       return engineContext;
+    }
+
+    @Override
+    public StatsProvider statsProvider() {
+      return statsProvider;
     }
   }
 }

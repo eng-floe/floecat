@@ -27,6 +27,7 @@ import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.query.catalog.StatsProviderFactory;
 import ai.floedb.floecat.service.query.impl.arrow.ArrowScanPlan;
 import ai.floedb.floecat.service.query.impl.arrow.ArrowScanPlanner;
 import ai.floedb.floecat.service.query.impl.arrow.ArrowSink;
@@ -72,6 +73,7 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
   @Inject EngineContextProvider engineContext;
   @Inject SystemScannerResolver scanners;
   @Inject QueryContextStore queryStore;
+  @Inject StatsProviderFactory statsFactory;
 
   @ConfigProperty(name = "ai.floedb.floecat.arrow.max-bytes", defaultValue = "1073741824")
   long arrowMaxBytes;
@@ -119,8 +121,10 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
       ResourceId tableId = request.getTableId();
       SystemObjectScanner scanner = scanners.resolve(correlationIdHolder.get(), tableId);
       EngineContext engineCtx = engineContext.engineContext();
+      var statsProvider = statsFactory.forQuery(queryCtx, correlationIdHolder.get());
       SystemObjectScanContext ctx =
-          new SystemObjectScanContext(graph, null, queryCtx.getQueryDefaultCatalogId(), engineCtx);
+          new SystemObjectScanContext(
+              graph, null, queryCtx.getQueryDefaultCatalogId(), engineCtx, statsProvider);
       List<SchemaColumn> schema = scanner.schema();
       List<String> requiredColumns = request.getRequiredColumnsList();
       List<Predicate> predicates = request.getPredicatesList();
