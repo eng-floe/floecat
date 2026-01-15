@@ -18,8 +18,8 @@ package ai.floedb.floecat.catalog;
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.catalog.rpc";
 
-import "common/common.proto";
-import "catalog/table.proto";
+import "floecat/common/common.proto";
+import "floecat/catalog/table.proto";
 
 import "google/protobuf/timestamp.proto";
 

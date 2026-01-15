@@ -17,9 +17,9 @@ syntax = "proto3";
 // The protocol is header → zero-or-more RelationResolutions chunks → single end summary.
 package ai.floedb.floecat.query;
 
-import "common/common.proto";
-import "query/engine_specific.proto";
-import "query/sql_objects.proto";
+import "floecat/common/common.proto";
+import "floecat/query/engine_specific.proto";
+import "floecat/query/sql_objects.proto";
 
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.query.rpc";

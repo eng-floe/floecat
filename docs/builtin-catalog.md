@@ -95,7 +95,7 @@ Plugins inherit from the abstract `FloeCatalogExtension` base class and provide:
 
 ### EngineSpecific (Proto)
 
-The core envelope in `proto/src/main/proto/query/engine_specific.proto`:
+The core envelope in `proto/src/main/proto/floecat/query/engine_specific.proto`:
 
 ```proto
 message EngineSpecific {
@@ -366,7 +366,7 @@ Both Layer 1 and Layer 2 use `ConcurrentHashMap` with atomic `computeIfAbsent()`
 Plugins can define proto extensions on `EngineSpecific` to support rich PBtxt syntax. The Floe plugin defines:
 
 ```proto
-// In extensions/plugins/floedb/src/main/proto/engine_floe.proto
+// In extensions/plugins/floedb/src/main/proto/floecat/engine_floe.proto
 extend ai.floedb.floecat.query.EngineSpecific {
   FloeFunctionSpecific floe_function = 1001;
   FloeOperatorSpecific floe_operator = 1002;

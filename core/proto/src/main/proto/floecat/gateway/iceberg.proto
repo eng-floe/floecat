@@ -18,7 +18,7 @@ package ai.floedb.floecat.gateway.iceberg;
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.gateway.iceberg.rpc";
 
-import "catalog/partition.proto";
+import "floecat/catalog/partition.proto";
 
 message IcebergSchema {
   int32 schema_id = 1;
