@@ -38,7 +38,7 @@ public class AwsClientsTest {
   @Test
   void uses_DefaultCredentialsProvider_when_access_and_secret_not_set() throws Exception {
     AwsClients clients = baseClients();
-    AwsCredentialsProvider provider = resolveCredentials(clients);
+    AwsCredentialsProvider provider = clients.resolveCredentials();
     assertTrue(provider instanceof DefaultCredentialsProvider);
   }
 
@@ -48,7 +48,7 @@ public class AwsClientsTest {
     clients.accessKey = Optional.of("access");
     clients.secretKey = Optional.of("secret");
 
-    AwsCredentialsProvider provider = resolveCredentials(clients);
+    AwsCredentialsProvider provider = clients.resolveCredentials();
     assertTrue(provider instanceof StaticCredentialsProvider);
     AwsCredentials creds = provider.resolveCredentials();
     assertTrue(creds instanceof AwsBasicCredentials);
@@ -61,7 +61,7 @@ public class AwsClientsTest {
     clients.secretKey = Optional.of("secret");
     clients.sessionToken = Optional.of("token");
 
-    AwsCredentialsProvider provider = resolveCredentials(clients);
+    AwsCredentialsProvider provider = clients.resolveCredentials();
     assertTrue(provider instanceof StaticCredentialsProvider);
     AwsCredentials creds = provider.resolveCredentials();
     assertTrue(creds instanceof AwsSessionCredentials);
@@ -74,7 +74,7 @@ public class AwsClientsTest {
     clients.accessKey = Optional.of("  ");
     clients.secretKey = Optional.of(" ");
 
-    AwsCredentialsProvider provider = resolveCredentials(clients);
+    AwsCredentialsProvider provider = clients.resolveCredentials();
     assertTrue(provider instanceof DefaultCredentialsProvider);
   }
 
@@ -84,7 +84,7 @@ public class AwsClientsTest {
     clients.accessKey = Optional.of("access");
     clients.secretKey = Optional.empty();
 
-    AwsCredentialsProvider provider = resolveCredentials(clients);
+    AwsCredentialsProvider provider = clients.resolveCredentials();
     assertTrue(provider instanceof DefaultCredentialsProvider);
   }
 
@@ -95,7 +95,7 @@ public class AwsClientsTest {
     clients.secretKey = Optional.of("secret");
     clients.sessionToken = Optional.of(" ");
 
-    AwsCredentialsProvider provider = resolveCredentials(clients);
+    AwsCredentialsProvider provider = clients.resolveCredentials();
     assertTrue(provider instanceof StaticCredentialsProvider);
     AwsCredentials creds = provider.resolveCredentials();
     assertTrue(creds instanceof AwsBasicCredentials);
@@ -153,12 +153,6 @@ public class AwsClientsTest {
     clients.s3Endpoint = Optional.empty();
     clients.forcePathStyle = false;
     return clients;
-  }
-
-  private static AwsCredentialsProvider resolveCredentials(AwsClients clients) throws Exception {
-    Method method = AwsClients.class.getDeclaredMethod("resolveCredentials");
-    method.setAccessible(true);
-    return (AwsCredentialsProvider) method.invoke(clients);
   }
 
   private static S3Configuration s3ServiceConfiguration(S3Client client) throws Exception {

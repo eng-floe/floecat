@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.storage.BlobStore;
 import ai.floedb.floecat.storage.PointerStore;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -60,7 +59,7 @@ public class TestDataResetterTest {
     ptr.putPointer("accounts/by-id/456/catalog/b", 1L);
 
     TestDataResetter resetter = resetter(ptr, new FakeBlobStore());
-    List<String> ids = invokeList(resettersMethod("listAccountIds"), resetter);
+    List<String> ids = resetter.listAccountIds();
     assertEquals(Set.of("123", "456"), new TreeSet<>(ids));
   }
 
@@ -71,7 +70,7 @@ public class TestDataResetterTest {
     ptr.putPointer("accounts/by-name/omega/catalog/b", 1L);
 
     TestDataResetter resetter = resetter(ptr, new FakeBlobStore());
-    List<String> names = invokeList(resettersMethod("listAccountNames"), resetter);
+    List<String> names = resetter.listAccountNames();
     assertEquals(Set.of("acme", "omega"), new TreeSet<>(names));
   }
 
@@ -98,18 +97,6 @@ public class TestDataResetterTest {
     resetter.ptr = ptr;
     resetter.blobs = blobs;
     return resetter;
-  }
-
-  private static Method resettersMethod(String name) throws Exception {
-    Method method = TestDataResetter.class.getDeclaredMethod(name);
-    method.setAccessible(true);
-    return method;
-  }
-
-  @SuppressWarnings("unchecked")
-  private static List<String> invokeList(Method method, TestDataResetter resetter)
-      throws Exception {
-    return (List<String>) method.invoke(resetter);
   }
 
   private static final class FakePointerStore implements PointerStore {

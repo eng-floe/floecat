@@ -87,7 +87,7 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     return new KvStore.Key("accounts/" + accountId, remainder);
   }
 
-  private static KvStore.Key prefixKey(String prefix) {
+  static KvStore.Key prefixKey(String prefix) {
     String p = prefix.startsWith("/") ? prefix.substring(1) : prefix;
     if (!p.endsWith("/")) {
       p = p + "/";

@@ -18,7 +18,6 @@ package ai.floedb.floecat.storage.kv.dynamodb;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.storage.kv.KvStore;
-import java.lang.reflect.Field;
 import java.lang.reflect.Proxy;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
@@ -32,7 +31,7 @@ public class KvStoreProducerTest {
 
     KvStore kv = producer.coreKvStore(fakeDdb(), "tbl-one", true);
     assertTrue(kv instanceof DynamoDbKvStore);
-    assertEquals("tbl-one", tableName((DynamoDbKvStore) kv));
+    assertEquals("tbl-one", ((DynamoDbKvStore) kv).getTable());
   }
 
   @Test
@@ -68,12 +67,6 @@ public class KvStoreProducerTest {
             DynamoDbAsyncClient.class.getClassLoader(),
             new Class<?>[] {DynamoDbAsyncClient.class},
             (proxy, method, args) -> null);
-  }
-
-  private static String tableName(DynamoDbKvStore store) throws Exception {
-    Field field = DynamoDbKvStore.class.getDeclaredField("table");
-    field.setAccessible(true);
-    return (String) field.get(store);
   }
 
   private static final class FakeBootstrap extends DynamoDbTablesBootstrap {

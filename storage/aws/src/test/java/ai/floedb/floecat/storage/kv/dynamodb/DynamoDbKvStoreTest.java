@@ -168,13 +168,13 @@ public class DynamoDbKvStoreTest {
 
   @Test
   void encodeToken_empty_returns_empty_optional() throws Exception {
-    Optional<String> token = encodeToken(Map.of());
+    Optional<String> token = DynamoDbKvStore.encodeToken(Map.of());
     assertTrue(token.isEmpty());
   }
 
   @Test
   void encodeToken_null_returns_empty_optional() throws Exception {
-    Optional<String> token = encodeToken(null);
+    Optional<String> token = DynamoDbKvStore.encodeToken(null);
     assertTrue(token.isEmpty());
   }
 
@@ -185,8 +185,8 @@ public class DynamoDbKvStoreTest {
             KvAttributes.ATTR_PARTITION_KEY, AttributeValue.builder().s("pk").build(),
             KvAttributes.ATTR_SORT_KEY, AttributeValue.builder().s("sk").build());
 
-    Optional<String> token = encodeToken(lek);
-    Optional<Map<String, AttributeValue>> decoded = decodeToken(token);
+    Optional<String> token = DynamoDbKvStore.encodeToken(lek);
+    Optional<Map<String, AttributeValue>> decoded = DynamoDbKvStore.decodeToken(token);
     assertTrue(decoded.isPresent());
     assertEquals("pk", decoded.get().get(KvAttributes.ATTR_PARTITION_KEY).s());
     assertEquals("sk", decoded.get().get(KvAttributes.ATTR_SORT_KEY).s());
@@ -195,12 +195,15 @@ public class DynamoDbKvStoreTest {
   @Test
   void decodeToken_bad_format_throws() throws Exception {
     String raw = Base64.getUrlEncoder().withoutPadding().encodeToString("onlyone".getBytes());
-    assertThrows(IllegalArgumentException.class, () -> decodeToken(Optional.of(raw)));
+    assertThrows(
+        IllegalArgumentException.class, () -> DynamoDbKvStore.decodeToken(Optional.of(raw)));
   }
 
   @Test
   void decodeToken_non_base64_throws() throws Exception {
-    assertThrows(IllegalArgumentException.class, () -> decodeToken(Optional.of("not-base64")));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> DynamoDbKvStore.decodeToken(Optional.of("not-base64")));
   }
 
   @Test
@@ -318,7 +321,7 @@ public class DynamoDbKvStoreTest {
   void deleteByPrefix_multi_page_deletes_all_items() {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     DynamoDbKvStore store = newStore(handler);
-    int limit = deleteBatchLimit();
+    int limit = DynamoDbKvStore.DELETE_BATCH_LIMIT;
 
     for (int i = 0; i < limit + 5; i++) {
       put(store, "pk1", "p/" + i, 1L);
@@ -500,42 +503,6 @@ public class DynamoDbKvStoreTest {
       String pk, String sk, String kind, String value, long version, Map<String, String> attrs) {
     return new KvStore.Record(
         new KvStore.Key(pk, sk), kind, value.getBytes(StandardCharsets.UTF_8), attrs, version);
-  }
-
-  private static int deleteBatchLimit() {
-    try {
-      var f = DynamoDbKvStore.class.getDeclaredField("DELETE_BATCH_LIMIT");
-      f.setAccessible(true);
-      return (int) f.get(null);
-    } catch (ReflectiveOperationException e) {
-      return 25;
-    }
-  }
-
-  @SuppressWarnings("unchecked")
-  private static Optional<String> encodeToken(Map<String, AttributeValue> lek) throws Exception {
-    Method m = DynamoDbKvStore.class.getDeclaredMethod("encodeToken", Map.class);
-    m.setAccessible(true);
-    return (Optional<String>) m.invoke(null, lek);
-  }
-
-  @SuppressWarnings("unchecked")
-  private static Optional<Map<String, AttributeValue>> decodeToken(Optional<String> token)
-      throws Exception {
-    Method m = DynamoDbKvStore.class.getDeclaredMethod("decodeToken", Optional.class);
-    m.setAccessible(true);
-    try {
-      return (Optional<Map<String, AttributeValue>>) m.invoke(null, token);
-    } catch (java.lang.reflect.InvocationTargetException e) {
-      Throwable cause = e.getCause();
-      if (cause instanceof RuntimeException re) {
-        throw re;
-      }
-      if (cause instanceof Error err) {
-        throw err;
-      }
-      throw new RuntimeException(cause);
-    }
   }
 
   private static final class FakeDynamoDbHandler implements InvocationHandler {

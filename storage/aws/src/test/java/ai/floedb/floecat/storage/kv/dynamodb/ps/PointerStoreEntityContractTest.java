@@ -26,8 +26,6 @@ import com.google.protobuf.util.Timestamps;
 import io.quarkus.test.junit.QuarkusTest;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -42,8 +40,6 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 @QuarkusTest
 @EnabledIfSystemProperty(named = "floecat.kv", matches = "dynamodb")
 public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> {
-
-  private static final Method PREFIX_KEY_METHOD = prefixKeyMethod();
 
   @Inject PointerStoreEntity pointers;
 
@@ -96,40 +92,40 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
 
   @Test
   void prefixKey_adds_trailing_slash_when_missing() {
-    KvStore.Key key = prefixKey("accounts/by-id/5");
+    KvStore.Key key = PointerStoreEntity.prefixKey("accounts/by-id/5");
     assertEquals(PointerStoreEntity.GLOBAL_PK, key.partitionKey());
     assertEquals("accounts/by-id/5/", key.sortKey());
   }
 
   @Test
   void prefixKey_accounts_root_maps_to_pk_accounts_sk_slash() {
-    KvStore.Key key = prefixKey("accounts");
+    KvStore.Key key = PointerStoreEntity.prefixKey("accounts");
     assertEquals("accounts", key.partitionKey());
     assertEquals("/", key.sortKey());
   }
 
   @Test
   void prefixKey_global_prefixes_map_to_GLOBAL_PK() {
-    KvStore.Key key = prefixKey("accounts/by-name/");
+    KvStore.Key key = PointerStoreEntity.prefixKey("accounts/by-name/");
     assertEquals(PointerStoreEntity.GLOBAL_PK, key.partitionKey());
     assertEquals("accounts/by-name/", key.sortKey());
   }
 
   @Test
   void prefixKey_account_prefix_maps_to_partition_accounts_accountId() {
-    KvStore.Key key = prefixKey("accounts/123/catalog");
+    KvStore.Key key = PointerStoreEntity.prefixKey("accounts/123/catalog");
     assertEquals("accounts/123", key.partitionKey());
     assertEquals("catalog/", key.sortKey());
   }
 
   @Test
   void prefixKey_rejects_unexpected_prefix() {
-    assertThrows(IllegalArgumentException.class, () -> prefixKey("tenants/1/"));
+    assertThrows(IllegalArgumentException.class, () -> PointerStoreEntity.prefixKey("tenants/1/"));
   }
 
   @Test
   void prefixKey_rejects_bad_prefix() {
-    assertThrows(IllegalArgumentException.class, () -> prefixKey("accounts//"));
+    assertThrows(IllegalArgumentException.class, () -> PointerStoreEntity.prefixKey("accounts//"));
   }
 
   // ---- CRUD + CAS
@@ -336,32 +332,6 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
 
     assertEquals(1, pointers.deleteByPrefix("accounts/77/").await().indefinitely());
     assertTrue(pointers.get(accountKey).await().indefinitely().isEmpty());
-  }
-
-  private static KvStore.Key prefixKey(String prefix) {
-    try {
-      return (KvStore.Key) PREFIX_KEY_METHOD.invoke(null, prefix);
-    } catch (InvocationTargetException e) {
-      if (e.getCause() instanceof RuntimeException re) {
-        throw re;
-      }
-      if (e.getCause() instanceof Error err) {
-        throw err;
-      }
-      throw new RuntimeException(e.getCause());
-    } catch (ReflectiveOperationException e) {
-      throw new RuntimeException(e);
-    }
-  }
-
-  private static Method prefixKeyMethod() {
-    try {
-      Method method = PointerStoreEntity.class.getDeclaredMethod("prefixKey", String.class);
-      method.setAccessible(true);
-      return method;
-    } catch (ReflectiveOperationException e) {
-      throw new RuntimeException(e);
-    }
   }
 
   private static final class ConcurrentUpdateKvStore implements KvStore {

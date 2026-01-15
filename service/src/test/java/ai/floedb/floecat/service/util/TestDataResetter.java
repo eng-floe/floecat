@@ -56,7 +56,7 @@ public class TestDataResetter {
     }
   }
 
-  private List<String> listAccountIds() {
+  List<String> listAccountIds() {
     var ids = new ArrayList<String>();
     String token = "";
     do {
@@ -77,7 +77,7 @@ public class TestDataResetter {
     return ids;
   }
 
-  private List<String> listAccountNames() {
+  List<String> listAccountNames() {
     var names = new ArrayList<String>();
     String token = "";
     do {

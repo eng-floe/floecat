@@ -100,7 +100,7 @@ public class AwsClients {
     return builder.build();
   }
 
-  private AwsCredentialsProvider resolveCredentials() {
+  AwsCredentialsProvider resolveCredentials() {
     String trimmedAccess = trim(accessKey.orElse(null));
     String trimmedSecret = trim(secretKey.orElse(null));
     if (trimmedAccess != null && trimmedSecret != null) {

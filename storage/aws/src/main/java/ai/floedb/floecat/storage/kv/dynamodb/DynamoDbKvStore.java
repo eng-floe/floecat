@@ -32,14 +32,17 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
 public final class DynamoDbKvStore implements KvStore, KvAttributes {
-  private static final int DELETE_BATCH_LIMIT =
-      Integer.getInteger("floedb.floecat.delete.batch.size", 25);
+  static final int DELETE_BATCH_LIMIT = Integer.getInteger("floedb.floecat.delete.batch.size", 25);
   private final DynamoDbAsyncClient ddb;
   private final String table;
 
   public DynamoDbKvStore(DynamoDbAsyncClient ddb, String table) {
     this.ddb = ddb;
     this.table = table;
+  }
+
+  String getTable() {
+    return this.table;
   }
 
   // ---- Mapping helpers (private to Dynamo)
@@ -122,7 +125,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
   // ---- Paging token (pk+sk only)
 
-  private static Optional<String> encodeToken(Map<String, AttributeValue> lek) {
+  static Optional<String> encodeToken(Map<String, AttributeValue> lek) {
     if (lek == null || lek.isEmpty()) return Optional.empty();
     var raw = lek.get(ATTR_PARTITION_KEY).s() + "\n" + lek.get(ATTR_SORT_KEY).s();
     return Optional.of(
@@ -131,7 +134,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
             .encodeToString(raw.getBytes(StandardCharsets.UTF_8)));
   }
 
-  private static Optional<Map<String, AttributeValue>> decodeToken(Optional<String> token) {
+  static Optional<Map<String, AttributeValue>> decodeToken(Optional<String> token) {
     if (token.isEmpty()) return Optional.empty();
     var raw = new String(Base64.getUrlDecoder().decode(token.get()), StandardCharsets.UTF_8);
     var parts = raw.split("\n", 2);
