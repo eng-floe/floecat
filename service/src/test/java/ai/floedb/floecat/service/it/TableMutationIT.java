@@ -27,6 +27,7 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.BlobStore;
@@ -62,6 +63,9 @@ class TableMutationIT {
 
   @GrpcClient("floecat")
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
+
+  @GrpcClient("floecat")
+  TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats;
 
   @GrpcClient("floecat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
@@ -287,6 +291,56 @@ class TableMutationIT {
         () ->
             table.deleteTable(
                 DeleteTableRequest.newBuilder().setTableId(tbl.getResourceId()).build()));
+  }
+
+  @Test
+  void tableDeletePurgesSnapshotsAndStats() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, tablePrefix + "cat_purge", "tcat-purge");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_tbl"), "ns for purge");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "orders",
+            "s3://bucket/orders",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "none");
+    var tblId = tbl.getResourceId();
+
+    long snapshotId = 11L;
+    TestSupport.createSnapshot(snapshot, tblId, snapshotId, System.currentTimeMillis());
+
+    TableStats tStats =
+        TableStats.newBuilder()
+            .setTableId(tblId)
+            .setSnapshotId(snapshotId)
+            .setRowCount(10)
+            .setDataFileCount(1)
+            .setTotalSizeBytes(100)
+            .build();
+    stats.putTableStats(
+        PutTableStatsRequest.newBuilder()
+            .setTableId(tblId)
+            .setSnapshotId(snapshotId)
+            .setStats(tStats)
+            .build());
+
+    table.deleteTable(DeleteTableRequest.newBuilder().setTableId(tblId).build());
+
+    String accountId = tblId.getAccountId();
+    String tableId = tblId.getId();
+
+    assertEquals(
+        0,
+        ptr.countByPrefix(Keys.snapshotPointerByIdPrefix(accountId, tableId)),
+        "snapshot pointers should be removed");
+    assertEquals(
+        0,
+        ptr.countByPrefix(Keys.snapshotStatsPrefix(accountId, tableId, snapshotId)),
+        "stats pointers should be removed");
   }
 
   @Test

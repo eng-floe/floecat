@@ -103,7 +103,5 @@ class TableLifecycleServiceTest {
         ArgumentCaptor.forClass(DeleteTableRequest.class);
     verify(tableStub).deleteTable(deleteCaptor.capture());
     assertEquals(tableId, deleteCaptor.getValue().getTableId());
-    assertEquals(false, deleteCaptor.getValue().getPurgeStats());
-    assertEquals(false, deleteCaptor.getValue().getPurgeSnapshots());
   }
 }

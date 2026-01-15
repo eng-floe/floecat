@@ -31,6 +31,7 @@ import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -42,6 +43,8 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
+import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
@@ -63,6 +66,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject CatalogRepository catalogRepo;
   @Inject NamespaceRepository namespaceRepo;
   @Inject TableRepository tableRepo;
+  @Inject SnapshotRepository snapshotRepo;
+  @Inject StatsRepository statsRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
@@ -503,6 +508,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     if (existing != null) {
                       markerStore.bumpNamespaceMarker(existing.getNamespaceId());
                     }
+                    purgeSnapshotsAndStats(tableId);
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -520,6 +526,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   if (existing != null) {
                     markerStore.bumpNamespaceMarker(existing.getNamespaceId());
                   }
+                  purgeSnapshotsAndStats(tableId);
                   return DeleteTableResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())
@@ -819,5 +826,20 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   .map("field_id_by_path", up.getFieldIdByPathMap()));
     }
     return c.bytes();
+  }
+
+  private void purgeSnapshotsAndStats(ResourceId tableId) {
+    String token = "";
+    StringBuilder next = new StringBuilder();
+    do {
+      var batch = snapshotRepo.list(tableId, 200, token, next);
+      for (var snapshot : batch) {
+        long snapshotId = snapshot.getSnapshotId();
+        snapshotRepo.delete(tableId, snapshotId);
+        statsRepo.deleteAllStatsForSnapshot(tableId, snapshotId);
+      }
+      token = next.toString();
+      next.setLength(0);
+    } while (!token.isBlank());
   }
 }

@@ -73,9 +73,19 @@ public class CasBlobGc {
     int tablesScanned = 0;
     for (String tableId : tableIds) {
       tablesScanned++;
-      String prefix =
+      String snapshotsById =
           "/accounts/" + encode(accountId) + "/tables/" + encode(tableId) + "/snapshots/by-id/";
-      pointersScanned += collectPointers(prefix, referenced, null, pageSize);
+      pointersScanned += collectPointers(snapshotsById, referenced, null, pageSize);
+
+      String snapshotsRoot =
+          "/accounts/" + encode(accountId) + "/tables/" + encode(tableId) + "/snapshots/";
+      pointersScanned +=
+          collectPointers(
+              snapshotsRoot,
+              referenced,
+              null,
+              pageSize,
+              p -> p.getKey() != null && p.getKey().contains("/stats/"));
     }
 
     int blobsScanned = 0;
@@ -136,6 +146,39 @@ public class CasBlobGc {
     blobsScanned += snapshots.scanned();
     blobsDeleted += snapshots.deleted();
 
+    var tableStats =
+        deleteUnreferenced(
+            accountPrefix(accountId, "/tables/"),
+            referenced,
+            key -> key.contains("/table-stats/"),
+            pageSize,
+            nowMs,
+            minAgeMs);
+    blobsScanned += tableStats.scanned();
+    blobsDeleted += tableStats.deleted();
+
+    var columnStats =
+        deleteUnreferenced(
+            accountPrefix(accountId, "/tables/"),
+            referenced,
+            key -> key.contains("/column-stats/"),
+            pageSize,
+            nowMs,
+            minAgeMs);
+    blobsScanned += columnStats.scanned();
+    blobsDeleted += columnStats.deleted();
+
+    var fileStats =
+        deleteUnreferenced(
+            accountPrefix(accountId, "/tables/"),
+            referenced,
+            key -> key.contains("/file-stats/"),
+            pageSize,
+            nowMs,
+            minAgeMs);
+    blobsScanned += fileStats.scanned();
+    blobsDeleted += fileStats.deleted();
+
     var views =
         deleteUnreferenced(
             accountPrefix(accountId, "/views/"),
@@ -164,6 +207,15 @@ public class CasBlobGc {
 
   private int collectPointers(
       String prefix, Set<String> referenced, List<String> tableIds, int pageSize) {
+    return collectPointers(prefix, referenced, tableIds, pageSize, null);
+  }
+
+  private int collectPointers(
+      String prefix,
+      Set<String> referenced,
+      List<String> tableIds,
+      int pageSize,
+      Predicate<Pointer> filter) {
     String token = "";
     int scanned = 0;
 
@@ -171,6 +223,9 @@ public class CasBlobGc {
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
       for (Pointer p : pointers) {
+        if (filter != null && !filter.test(p)) {
+          continue;
+        }
         scanned++;
         if (p.getBlobUri() != null && !p.getBlobUri().isBlank()) {
           referenced.add(normalizeKey(p.getBlobUri()));

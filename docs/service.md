@@ -120,8 +120,9 @@ configured location, caches them by engine kind, and exposes them through
 
 ### GC and Bootstrap
 `IdempotencyGc` runs on a configurable cadence (see `floecat.gc.*` config) and sweeps expired
-idempotency records in slices to avoid starvation. `SeedRunner` populates demo data when
-`floecat.seed.enabled=true`.
+idempotency records in slices to avoid starvation. `CasBlobGc` reclaims unreferenced CAS blobs
+(including stats blobs), and `PointerGc` prunes dangling pointers and stale secondary indexes.
+`SeedRunner` populates demo data when `floecat.seed.enabled=true`.
 
 ### Statistics streaming semantics
 `TableStatisticsServiceImpl` enforces a single `table_id` + `snapshot_id` per streamed call to
@@ -151,7 +152,9 @@ Notable `application.properties` keys:
 | `floecat.seed.enabled` | Enable demo data seeding. |
 | `floecat.kv` / `floecat.blob` | Select pointer/blob store implementation (`memory`, `dynamodb`, `s3`). |
 | `floecat.query.*` | Default TTL, grace period, max cache size, safety expiry for query contexts. |
-| `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for GC. |
+| `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for idempotency GC. |
+| `floecat.gc.cas.*` | Cadence, page size, min-age, tick slice settings for CAS blob GC. |
+| `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |
 | `quarkus.log.*` | JSON logging, file rotation, audit handlers per RPC package. |
 | `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters. |
 
