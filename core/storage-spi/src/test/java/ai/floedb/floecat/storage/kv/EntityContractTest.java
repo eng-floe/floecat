@@ -30,36 +30,43 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-public class AbstractEntityContractTest {
+public class EntityContractTest extends AbstractEntityTest<Pointer> {
+  private final TestKvStore kv = new TestKvStore();
+  private final TestEntity entity = new TestEntity(kv);
+
+  @Override
+  protected AbstractEntity<Pointer> getEntity() {
+    return entity;
+  }
+
+  @BeforeEach
+  void resetCannedPages() {
+    kv.setCannedPages(null);
+  }
 
   @Test
   void listEntities_returns_all_items_across_multiple_pages() {
-    TestKvStore kv = new TestKvStore();
-    TestEntity entity = new TestEntity(kv);
-
     for (int i = 0; i < 120; i++) {
       kv.records.put(
           key("pk", "sk" + i),
           record("pk", "sk" + i, TestEntity.KIND, pointerBytes("k" + i), Map.of(), 1L));
     }
 
-    var all = entity.listEntities("pk", "sk").await().indefinitely();
+    var all = listEntities(entity, "pk", "sk").await().indefinitely();
     assertEquals(120, all.size());
   }
 
   @Test
   void listEntities_filters_by_kind_only() {
-    TestKvStore kv = new TestKvStore();
-    TestEntity entity = new TestEntity(kv);
-
     kv.records.put(
         key("pk", "sk1"), record("pk", "sk1", TestEntity.KIND, pointerBytes("k1"), Map.of(), 1L));
     kv.records.put(
         key("pk", "sk2"), record("pk", "sk2", "OtherKind", pointerBytes("k2"), Map.of(), 1L));
 
-    var all = entity.listEntities("pk", "sk").await().indefinitely();
+    var all = listEntities(entity, "pk", "sk").await().indefinitely();
     assertEquals(1, all.size());
     assertTrue(all.containsKey(key("pk", "sk1")));
     assertFalse(all.containsKey(key("pk", "sk2")));
@@ -67,19 +74,15 @@ public class AbstractEntityContractTest {
 
   @Test
   void listEntities_empty_when_no_matches() {
-    TestKvStore kv = new TestKvStore();
-    TestEntity entity = new TestEntity(kv);
-
     kv.records.put(
         key("pk", "sk1"), record("pk", "sk1", TestEntity.KIND, pointerBytes("k1"), Map.of(), 1L));
 
-    var all = entity.listEntities("pk", "missing").await().indefinitely();
+    var all = listEntities(entity, "pk", "missing").await().indefinitely();
     assertTrue(all.isEmpty());
   }
 
   @Test
   void listEntities_handles_empty_page_items_but_token_present() {
-    TestKvStore kv = new TestKvStore();
     kv.setCannedPages(
         List.of(
             new KvStore.Page(List.of(), Optional.of("next")),
@@ -87,17 +90,13 @@ public class AbstractEntityContractTest {
                 List.of(record("pk", "sk1", TestEntity.KIND, pointerBytes("k1"), Map.of(), 1L)),
                 Optional.empty())));
 
-    TestEntity entity = new TestEntity(kv);
-    var all = entity.listEntities("pk", "sk").await().indefinitely();
+    var all = listEntities(entity, "pk", "sk").await().indefinitely();
     assertEquals(1, all.size());
     assertTrue(all.containsKey(key("pk", "sk1")));
   }
 
   @Test
   void listRecords_returns_all_records_across_multiple_pages() {
-    TestKvStore kv = new TestKvStore();
-    TestEntity entity = new TestEntity(kv);
-
     for (int i = 0; i < 120; i++) {
       kv.records.put(
           key("pk", "sk" + i),
@@ -110,7 +109,7 @@ public class AbstractEntityContractTest {
               1L));
     }
 
-    var all = entity.listRecords("pk", "sk").await().indefinitely();
+    var all = listRecords(entity, "pk", "sk").await().indefinitely();
     assertEquals(120, all.size());
   }
 
@@ -126,9 +125,6 @@ public class AbstractEntityContractTest {
 
   @Test
   void putCanonicalCas_sets_record_version_and_message_version() throws Exception {
-    TestKvStore kv = new TestKvStore();
-    TestEntity entity = new TestEntity(kv);
-
     Pointer p = Pointer.newBuilder().setKey("k1").build();
     assertTrue(
         entity.putCanonicalCasForTest(key("pk", "sk1"), p, Map.of(), 0L).await().indefinitely());
@@ -143,9 +139,6 @@ public class AbstractEntityContractTest {
 
   @Test
   void putCanonicalCas_adds_expires_at_attribute_when_nonzero() {
-    TestKvStore kv = new TestKvStore();
-    TestEntity entity = new TestEntity(kv);
-
     Pointer p =
         Pointer.newBuilder().setKey("k1").setExpiresAt(Timestamps.fromMillis(2000L)).build();
 
@@ -171,17 +164,11 @@ public class AbstractEntityContractTest {
 
   @Test
   void getViaPointer_missing_pointer_returns_empty() {
-    TestKvStore kv = new TestKvStore();
-    TestEntity entity = new TestEntity(kv);
-
     assertTrue(entity.getViaPointerForTest(key("pk", "sk")).await().indefinitely().isEmpty());
   }
 
   @Test
   void getViaPointer_pointer_missing_target_attrs_returns_empty() {
-    TestKvStore kv = new TestKvStore();
-    TestEntity entity = new TestEntity(kv);
-
     KvStore.Key ptrKey = key("pk", "sk");
     kv.records.put(ptrKey, record("pk", "sk", "Pointer", new byte[0], Map.of(), 1L));
 
@@ -190,9 +177,6 @@ public class AbstractEntityContractTest {
 
   @Test
   void getViaPointer_reads_target_record() {
-    TestKvStore kv = new TestKvStore();
-    TestEntity entity = new TestEntity(kv);
-
     KvStore.Key ptrKey = key("p", "ptr");
     KvStore.Key targetKey = key("tp", "ts");
     kv.records.put(
@@ -213,9 +197,6 @@ public class AbstractEntityContractTest {
 
   @Test
   void getViaPointer_target_missing_returns_empty() {
-    TestKvStore kv = new TestKvStore();
-    TestEntity entity = new TestEntity(kv);
-
     KvStore.Key ptrKey = key("p", "ptr");
     kv.records.put(
         ptrKey,
@@ -233,9 +214,6 @@ public class AbstractEntityContractTest {
 
   @Test
   void listByPartitionKeyIndex_returns_entities_for_pointers() {
-    TestKvStore kv = new TestKvStore();
-    TestEntity entity = new TestEntity(kv);
-
     kv.records.put(
         key("ptr", "p1"),
         record(
@@ -273,9 +251,7 @@ public class AbstractEntityContractTest {
 
   @Test
   void listByPartitionKeyIndex_handles_empty_pointer_page() {
-    TestKvStore kv = new TestKvStore();
     kv.setCannedPages(List.of(new KvStore.Page(List.of(), Optional.of("next"))));
-    TestEntity entity = new TestEntity(kv);
 
     var page =
         entity
@@ -288,9 +264,6 @@ public class AbstractEntityContractTest {
 
   @Test
   void listByPartitionKeyIndex_skips_missing_targets() {
-    TestKvStore kv = new TestKvStore();
-    TestEntity entity = new TestEntity(kv);
-
     kv.records.put(
         key("ptr", "p1"),
         record(

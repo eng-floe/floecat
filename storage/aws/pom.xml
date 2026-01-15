@@ -65,7 +65,7 @@
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-storage-common</artifactId>
+      <artifactId>floecat-storage-spi</artifactId>
       <scope>test</scope>
       <type>test-jar</type>
       <version>${project.version}</version>

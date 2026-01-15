@@ -17,16 +17,12 @@ package ai.floedb.floecat.storage.kv;
 
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageLite;
-import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Base class for KV-backed entities.
@@ -216,72 +212,15 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
             });
   }
 
-  /**
-   * Retrieve all entities with the given partition key and sort key prefix. Since this can be
-   * expensive in memory usage, should be used for testing only.
-   *
-   * @param partitionKey
-   * @param sortKeyPrefix
-   * @return Map of Key to M for all items with the given partition key and sort key prefix
-   */
-  public Uni<Map<KvStore.Key, M>> listEntities(String partitionKey, String sortKeyPrefix) {
-    var out = new LinkedHashMap<KvStore.Key, M>();
-    var tokenRef = new AtomicReference<Optional<String>>(Optional.empty());
-
-    return Multi.createBy()
-        .repeating()
-        .uni(() -> kv.queryByPartitionKeyPrefix(partitionKey, sortKeyPrefix, 100, tokenRef.get()))
-        .whilst(page -> !page.nextToken().isEmpty())
-        .onItem()
-        .invoke(
-            page -> {
-              for (var r : page.items()) {
-                if (Objects.equals(r.kind(), kind)) {
-                  out.put(r.key(), decode(r));
-                }
-              }
-              tokenRef.set(page.nextToken());
-            })
-        .collect()
-        .asList()
-        .replaceWith(out);
-  }
-
-  /**
-   * Retrieve all records, including raw indices. Since this can be expensive in memory usage,
-   * should be used for testing only.
-   *
-   * @param partitionKey
-   * @param sortKeyPrefix
-   * @return Map of Key to Record for all items with the given partition key and sort key prefix
-   */
-  public Uni<Map<KvStore.Key, KvStore.Record>> listRecords(
-      String partitionKey, String sortKeyPrefix) {
-    var out = new LinkedHashMap<KvStore.Key, KvStore.Record>();
-    var tokenRef = new AtomicReference<Optional<String>>(Optional.empty());
-
-    return Multi.createBy()
-        .repeating()
-        .uni(() -> kv.queryByPartitionKeyPrefix(partitionKey, sortKeyPrefix, 100, tokenRef.get()))
-        .whilst(page -> !page.nextToken().isEmpty())
-        .onItem()
-        .invoke(
-            page -> {
-              for (var r : page.items()) {
-                out.put(r.key(), r);
-              }
-              tokenRef.set(page.nextToken());
-            })
-        .collect()
-        .asList()
-        .replaceWith(out);
-  }
-
   public boolean isEmpty() {
     return kv.isEmpty().await().indefinitely();
   }
 
   public KvStore getKvStore() {
     return this.kv;
+  }
+
+  public String getKind() {
+    return this.kind;
   }
 }

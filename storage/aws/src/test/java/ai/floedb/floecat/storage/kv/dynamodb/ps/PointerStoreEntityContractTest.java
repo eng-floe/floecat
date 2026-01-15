@@ -19,9 +19,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.storage.kv.AbstractEntity;
+import ai.floedb.floecat.storage.kv.AbstractEntityTest;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.kv.KvStore;
-import ai.floedb.floecat.storage.kv.test.AbstractEntityTest;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.test.junit.QuarkusTest;
 import io.smallrye.mutiny.Uni;

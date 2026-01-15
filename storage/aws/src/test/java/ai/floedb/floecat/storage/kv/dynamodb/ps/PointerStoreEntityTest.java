@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.storage.kv.AbstractEntity;
-import ai.floedb.floecat.storage.kv.test.AbstractEntityTest;
+import ai.floedb.floecat.storage.kv.AbstractEntityTest;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.util.Optional;

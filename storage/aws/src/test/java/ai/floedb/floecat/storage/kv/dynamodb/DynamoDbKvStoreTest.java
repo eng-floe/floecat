@@ -269,13 +269,24 @@ public class DynamoDbKvStoreTest {
   }
 
   @Test
-  void queryByPartitionKeyPrefix_blank_pk_causes_scan() {
+  void queryByPartitionKeyPrefix_blank_pk_throws() {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     DynamoDbKvStore store = newStore(handler);
 
-    put(store, "pk1", "sk1", 1L);
-    store.queryByPartitionKeyPrefix("", "sk", 10, Optional.empty()).await().indefinitely();
-    assertNotNull(handler.lastScanRequest);
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> store.queryByPartitionKeyPrefix("", "sk", 10, Optional.empty()));
+    assertNull(handler.lastQueryRequest);
+  }
+
+  @Test
+  void queryByPartitionKeyPrefix_null_pk_throws() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    DynamoDbKvStore store = newStore(handler);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> store.queryByPartitionKeyPrefix(null, "sk", 10, Optional.empty()));
     assertNull(handler.lastQueryRequest);
   }
 

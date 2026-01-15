@@ -211,56 +211,35 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
   @Override
   public Uni<Page> queryByPartitionKeyPrefix(
       String pk, String skPrefix, int limit, Optional<String> pageToken) {
-
-    // If we are needing to do a scan here?
-    // NB: a scan is not intended to be part of the api used by normal clients.
-    // Scans are currently used by integration tests to assert various conditions.
-    if (pk == null || pk.isEmpty()) {
-      var sb = ScanRequest.builder().tableName(table).limit(limit);
-
-      if (skPrefix != null && !skPrefix.isEmpty()) {
-        sb.expressionAttributeNames(Map.of("#sk", ATTR_SORT_KEY))
-            .filterExpression("begins_with(#sk, :skp)")
-            .expressionAttributeValues(Map.of(":skp", S(skPrefix)));
-      }
-
-      decodeToken(pageToken).ifPresent(sb::exclusiveStartKey);
-
-      return Uni.createFrom()
-          .completionStage(ddb.scan(sb.build()))
-          .map(
-              resp -> {
-                var items = new ArrayList<Record>(resp.items().size());
-                for (var it : resp.items()) items.add(avToRecord(it));
-                return new Page(items, encodeToken(resp.lastEvaluatedKey()));
-              });
-    } else {
-      var qb = QueryRequest.builder().tableName(table).limit(limit);
-
-      if (skPrefix == null || skPrefix.isEmpty()) {
-        qb.expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
-            .keyConditionExpression("#pk = :pk")
-            .expressionAttributeValues(Map.of(":pk", S(pk)));
-      } else {
-        qb.expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY, "#sk", ATTR_SORT_KEY))
-            .keyConditionExpression("#pk = :pk AND begins_with(#sk, :skp)")
-            .expressionAttributeValues(
-                Map.of(
-                    ":pk", S(pk),
-                    ":skp", S(skPrefix)));
-      }
-
-      decodeToken(pageToken).ifPresent(qb::exclusiveStartKey);
-
-      return Uni.createFrom()
-          .completionStage(ddb.query(qb.build()))
-          .map(
-              resp -> {
-                var items = new ArrayList<Record>(resp.items().size());
-                for (var it : resp.items()) items.add(avToRecord(it));
-                return new Page(items, encodeToken(resp.lastEvaluatedKey()));
-              });
+    if (pk == null || pk.isBlank()) {
+      throw new IllegalArgumentException("partition key must be provided for query");
     }
+
+    var qb = QueryRequest.builder().tableName(table).limit(limit);
+
+    if (skPrefix == null || skPrefix.isEmpty()) {
+      qb.expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
+          .keyConditionExpression("#pk = :pk")
+          .expressionAttributeValues(Map.of(":pk", S(pk)));
+    } else {
+      qb.expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY, "#sk", ATTR_SORT_KEY))
+          .keyConditionExpression("#pk = :pk AND begins_with(#sk, :skp)")
+          .expressionAttributeValues(
+              Map.of(
+                  ":pk", S(pk),
+                  ":skp", S(skPrefix)));
+    }
+
+    decodeToken(pageToken).ifPresent(qb::exclusiveStartKey);
+
+    return Uni.createFrom()
+        .completionStage(ddb.query(qb.build()))
+        .map(
+            resp -> {
+              var items = new ArrayList<Record>(resp.items().size());
+              for (var it : resp.items()) items.add(avToRecord(it));
+              return new Page(items, encodeToken(resp.lastEvaluatedKey()));
+            });
   }
 
   @Override
@@ -360,7 +339,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
               long baseMs = 25L;
               long maxMs = 1000L;
               long expMs = Math.min(maxMs, baseMs * (1L << Math.min(attempt, 6)));
-              long jitterMs = ThreadLocalRandom.current().nextLong(0, expMs + 1);
+              long jitterMs = ThreadLocalRandom.current().nextLong(baseMs, expMs + 1);
 
               return Uni.createFrom()
                   .voidItem()
