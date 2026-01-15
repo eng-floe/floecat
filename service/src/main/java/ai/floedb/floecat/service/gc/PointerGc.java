@@ -17,10 +17,12 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.BlobStore;
 import ai.floedb.floecat.storage.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -57,7 +59,14 @@ public class PointerGc {
     int staleSecondaries = 0;
 
     Result byId =
-        scanPrefix("/accounts/by-id/", pageSize, deadlineMs, blobCache, p -> true, nowMs, minAgeMs);
+        scanPrefix(
+            Keys.accountPointerByIdPrefix(),
+            pageSize,
+            deadlineMs,
+            blobCache,
+            p -> true,
+            nowMs,
+            minAgeMs);
     scanned += byId.scanned;
     deleted += byId.deleted;
     missingBlobs += byId.missingBlobs;
@@ -65,7 +74,13 @@ public class PointerGc {
 
     Result byName =
         scanPrefix(
-            "/accounts/by-name/", pageSize, deadlineMs, blobCache, p -> true, nowMs, minAgeMs);
+            Keys.accountPointerByNamePrefix(),
+            pageSize,
+            deadlineMs,
+            blobCache,
+            p -> true,
+            nowMs,
+            minAgeMs);
     scanned += byName.scanned;
     deleted += byName.deleted;
     missingBlobs += byName.missingBlobs;
@@ -97,7 +112,7 @@ public class PointerGc {
 
     Result tablesById =
         scanPrefix(
-            "/accounts/" + acct + "/tables/by-id/",
+            Keys.tablePointerByIdPrefix(accountId),
             pageSize,
             deadlineMs,
             blobCache,
@@ -109,11 +124,11 @@ public class PointerGc {
     missingBlobs += tablesById.missingBlobs;
     staleSecondaries += tablesById.staleSecondaries;
 
-    collectIds("/accounts/" + acct + "/tables/by-id/", pageSize, tableIds);
+    collectIds(Keys.tablePointerByIdPrefix(accountId), pageSize, tableIds);
 
     Result catalogsById =
         scanPrefix(
-            "/accounts/" + acct + "/catalogs/by-id/",
+            Keys.catalogPointerByIdPrefix(accountId),
             pageSize,
             deadlineMs,
             blobCache,
@@ -127,7 +142,7 @@ public class PointerGc {
 
     Result namespacesById =
         scanPrefix(
-            "/accounts/" + acct + "/namespaces/by-id/",
+            Keys.namespacePointerByIdPrefix(accountId),
             pageSize,
             deadlineMs,
             blobCache,
@@ -141,7 +156,7 @@ public class PointerGc {
 
     Result viewsById =
         scanPrefix(
-            "/accounts/" + acct + "/views/by-id/",
+            Keys.viewPointerByIdPrefix(accountId),
             pageSize,
             deadlineMs,
             blobCache,
@@ -155,7 +170,7 @@ public class PointerGc {
 
     Result connectorsById =
         scanPrefix(
-            "/accounts/" + acct + "/connectors/by-id/",
+            Keys.connectorPointerByIdPrefix(accountId),
             pageSize,
             deadlineMs,
             blobCache,
@@ -169,7 +184,7 @@ public class PointerGc {
 
     Result connectorsByName =
         scanPrefix(
-            "/accounts/" + acct + "/connectors/by-name/",
+            Keys.connectorPointerByNamePrefix(accountId),
             pageSize,
             deadlineMs,
             blobCache,
@@ -183,7 +198,7 @@ public class PointerGc {
 
     Result catalogsByName =
         scanPrefix(
-            "/accounts/" + acct + "/catalogs/by-name/",
+            Keys.catalogPointerByNamePrefix(accountId),
             pageSize,
             deadlineMs,
             blobCache,
@@ -197,16 +212,16 @@ public class PointerGc {
 
     Result catalogIndexPointers =
         scanPrefix(
-            "/accounts/" + acct + "/catalogs/",
+            Keys.catalogRootPrefix(accountId),
             pageSize,
             deadlineMs,
             blobCache,
             p -> {
               String key = p.getKey();
               return key != null
-                  && (key.contains("/namespaces/by-path/")
-                      || key.contains("/tables/by-name/")
-                      || key.contains("/views/by-name/"));
+                  && (key.contains(Keys.SEG_NAMESPACE_BY_PATH)
+                      || key.contains(Keys.SEG_TABLES_BY_NAME)
+                      || key.contains(Keys.SEG_VIEWS_BY_NAME));
             },
             nowMs,
             minAgeMs);
@@ -219,7 +234,7 @@ public class PointerGc {
       if (System.currentTimeMillis() >= deadlineMs) {
         break;
       }
-      String snapshotsById = "/accounts/" + acct + "/tables/" + tableId + "/snapshots/by-id/";
+      String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
       Result snapshotById =
           scanPrefix(snapshotsById, pageSize, deadlineMs, blobCache, p -> true, nowMs, minAgeMs);
       scanned += snapshotById.scanned;
@@ -227,7 +242,7 @@ public class PointerGc {
       missingBlobs += snapshotById.missingBlobs;
       staleSecondaries += snapshotById.staleSecondaries;
 
-      String snapshotsByTime = "/accounts/" + acct + "/tables/" + tableId + "/snapshots/by-time/";
+      String snapshotsByTime = Keys.snapshotPointerByTimePrefix(accountId, tableId);
       Result snapshotByTime =
           scanPrefix(snapshotsByTime, pageSize, deadlineMs, blobCache, p -> true, nowMs, minAgeMs);
       scanned += snapshotByTime.scanned;
@@ -235,14 +250,14 @@ public class PointerGc {
       missingBlobs += snapshotByTime.missingBlobs;
       staleSecondaries += snapshotByTime.staleSecondaries;
 
-      String snapshotsRoot = "/accounts/" + acct + "/tables/" + tableId + "/snapshots/";
+      String snapshotsRoot = Keys.snapshotRootPrefix(accountId, tableId);
       Result statsPointers =
           scanPrefix(
               snapshotsRoot,
               pageSize,
               deadlineMs,
               blobCache,
-              p -> p.getKey() != null && p.getKey().contains("/stats/"),
+              p -> p.getKey() != null && p.getKey().contains(Keys.SEG_STATS),
               nowMs,
               minAgeMs);
       scanned += statsPointers.scanned;
@@ -369,7 +384,7 @@ public class PointerGc {
     if (key == null || key.isBlank()) {
       return true;
     }
-    return key.contains("/idempotency/") || key.contains("/markers/");
+    return key.contains(Keys.SEG_IDEMPOTENCY) || key.contains(Keys.SEG_MARKERS);
   }
 
   private static String canonicalPointerForBlobUri(String blobUri) {
@@ -385,30 +400,30 @@ public class PointerGc {
       return null;
     }
 
-    String accountId = parts[1];
+    String accountId = decode(parts[1]);
     String scope = parts[2];
 
     if ("account".equals(scope)) {
-      return "/accounts/by-id/" + accountId;
+      return Keys.accountPointerById(accountId);
     }
 
     if ("catalogs".equals(scope) && parts.length >= 5 && "catalog".equals(parts[4])) {
-      return "/accounts/" + accountId + "/catalogs/by-id/" + parts[3];
+      return Keys.catalogPointerById(accountId, decode(parts[3]));
     }
 
     if ("namespaces".equals(scope) && parts.length >= 5 && "namespace".equals(parts[4])) {
-      return "/accounts/" + accountId + "/namespaces/by-id/" + parts[3];
+      return Keys.namespacePointerById(accountId, decode(parts[3]));
     }
 
     if ("tables".equals(scope) && parts.length >= 5) {
-      String tableId = parts[3];
+      String tableId = decode(parts[3]);
       String sub = parts[4];
       if ("table".equals(sub)) {
-        return "/accounts/" + accountId + "/tables/by-id/" + tableId;
+        return Keys.tablePointerById(accountId, tableId);
       }
       if ("snapshots".equals(sub) && parts.length >= 7 && "snapshot".equals(parts[6])) {
-        String snapshotId = parts[5];
-        return "/accounts/" + accountId + "/tables/" + tableId + "/snapshots/by-id/" + snapshotId;
+        long snapshotId = parseLong(decode(parts[5]));
+        return Keys.snapshotPointerById(accountId, tableId, snapshotId);
       }
       if ("table-stats".equals(sub) || "column-stats".equals(sub) || "file-stats".equals(sub)) {
         return null;
@@ -416,11 +431,11 @@ public class PointerGc {
     }
 
     if ("views".equals(scope) && parts.length >= 5 && "view".equals(parts[4])) {
-      return "/accounts/" + accountId + "/views/by-id/" + parts[3];
+      return Keys.viewPointerById(accountId, decode(parts[3]));
     }
 
     if ("connectors".equals(scope) && parts.length >= 5 && "connector".equals(parts[4])) {
-      return "/accounts/" + accountId + "/connectors/by-id/" + parts[3];
+      return Keys.connectorPointerById(accountId, decode(parts[3]));
     }
 
     return null;
@@ -434,7 +449,19 @@ public class PointerGc {
     if (suffix.isBlank()) {
       return null;
     }
-    return suffix;
+    return decode(suffix);
+  }
+
+  private static String decode(String value) {
+    return URLDecoder.decode(value, StandardCharsets.UTF_8);
+  }
+
+  private static long parseLong(String value) {
+    try {
+      return Long.parseLong(value);
+    } catch (NumberFormatException e) {
+      return 0L;
+    }
   }
 
   private static String encode(String value) {
