@@ -112,6 +112,9 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     }
 
     String accountId = p.substring(firstSlash + 1, secondSlash);
+    if (accountId.isEmpty()) {
+      throw new IllegalArgumentException("bad prefix: " + prefix);
+    }
     String remainderPrefix = p.substring(secondSlash + 1);
     return new KvStore.Key("accounts/" + accountId, remainderPrefix);
   }
