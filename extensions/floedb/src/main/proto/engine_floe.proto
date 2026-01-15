@@ -18,7 +18,7 @@ package ai.floedb.floecat.extensions.floedb.proto;
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.extensions.floedb.proto";
 
-import "query/engine_specific.proto";
+import "floecat/query/engine_specific.proto";
 
 message FloeNamespaceSpecific {
   optional int32 oid = 100;

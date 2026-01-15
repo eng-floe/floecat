@@ -62,7 +62,7 @@
   <build>
     <resources>
       <resource>
-        <directory>src/main/proto</directory>
+        <directory>src/main/proto/floecat</directory>
         <includes>
           <include>**/*.proto</include>
         </includes>
@@ -137,7 +137,7 @@
             <configuration>
               <resources>
                 <resource>
-                  <directory>${project.basedir}/src/main/proto</directory>
+                  <directory>${project.basedir}/src/main/proto/floecat</directory>
                   <includes>
                     <include>**/*.proto</include>
                   </includes>

@@ -18,9 +18,9 @@ package ai.floedb.floecat.catalog;
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.catalog.rpc";
 
-import "common/common.proto";
+import "floecat/common/common.proto";
 import "google/protobuf/timestamp.proto";
-import "catalog/partition.proto";
+import "floecat/catalog/partition.proto";
 import "google/protobuf/field_mask.proto";
 
 // ----- Snapshot -----

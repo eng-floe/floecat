@@ -20,7 +20,7 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.query.rpc";
 option java_outer_classname = "QueryLifecycleProto";
 
-import "common/common.proto";
+import "floecat/common/common.proto";
 import "google/protobuf/timestamp.proto";
 
 /**
