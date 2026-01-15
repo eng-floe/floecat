@@ -40,6 +40,7 @@ Repository write → DynamoPointerStore.compareAndSet (PutItem with conditions)
   → S3BlobStore.put (PutObject) + head verification
   → Metadata reads (GetItem/HeadObject)
 GC → DynamoPointerStore.listPointersByPrefix (Query) → deleteByPrefix (BatchWrite)
+CAS blob GC → S3BlobStore.list (ListObjectsV2) → deletePrefix
 ```
 
 ## Configuration & Extensibility

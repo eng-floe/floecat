@@ -10,7 +10,7 @@ Two interfaces power the system:
 - `BlobStore` – Byte-addressable storage for protobuf payloads.
 - `PointerStore` – Versioned key/value metadata for name and hierarchy indexes.
 
-Both live under `core/storage/spi/src/main/java/ai/floedb/floecat/storage`.
+Both live under `core/storage-spi/src/main/java/ai/floedb/floecat/storage`.
 
 ## Architecture & Responsibilities
 - **BlobStore** responsibilities:
@@ -55,6 +55,7 @@ Repository write → pointerStore.compareAndSet(key, expected, pointer)
   → blobStore.head(uri) for verification
   → pointerStore.get(key) for `MutationMeta`
 GC → pointerStore.listPointersByPrefix + pointerStore.deleteByPrefix
+CAS blob GC → blobStore.list + blobStore.deletePrefix
 ```
 
 ## Configuration & Extensibility
@@ -70,7 +71,8 @@ GC → pointerStore.listPointersByPrefix + pointerStore.deleteByPrefix
   versions. If another client created the catalog concurrently, `compareAndSet` fails and the service
   translates it to `MC_CONFLICT`.
 - **GC** – `IdempotencyGc` iterates pointer prefixes representing idempotency records, deletes stale
-  entries, and relies on `deleteByPrefix` to remove entire account subtrees efficiently.
+  entries, and relies on `deleteByPrefix` to remove entire account subtrees efficiently. `CasBlobGc`
+  lists blob prefixes to clean up unreferenced CAS blobs.
 
 ## Cross-References
 - In-memory implementation: [`docs/storage-memory.md`](storage-memory.md)
