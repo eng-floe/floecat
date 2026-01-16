@@ -22,7 +22,6 @@ option java_outer_classname = "SystemScanProto";
 
 import "floecat/common/common.proto";       
 import "floecat/common/predicate.proto";    
-import "floecat/query/schema.proto";       
 
 /**
  * SYSTEM TABLE SCAN SERVICE
