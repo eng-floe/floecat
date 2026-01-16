@@ -4,7 +4,7 @@
 The `service/` module is the authoritative runtime for Floecat. It hosts the Quarkus gRPC server,
 implements every public API from [`proto/`](proto.md), manages multi-account security contexts,
 translates requests into pointer/blob mutations, assembles execution scan bundles, and operates background
-tasks such as idempotency GC and repository seeding.
+tasks such as idempotency + CAS blob GC and repository seeding.
 
 It is structured for testability: each gRPC service delegates to repository abstractions, which in
 turn encapsulate storage backends. Tests such as
@@ -25,7 +25,7 @@ query lifecycle / scan bundle logic.
 │  │                ViewRepository, SnapshotRepository, StatsRepository,     │
 │  │                ConnectorRepository, AccountRepository,                   │
 │  │                IdempotencyRepositoryImpl)                               │
-│  └─ GC & Bootstrap (IdempotencyGc, SeedRunner)                             │
+│  └─ GC & Bootstrap (IdempotencyGc, CasBlobGc, SeedRunner)                  │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -120,8 +120,9 @@ configured location, caches them by engine kind, and exposes them through
 
 ### GC and Bootstrap
 `IdempotencyGc` runs on a configurable cadence (see `floecat.gc.*` config) and sweeps expired
-idempotency records in slices to avoid starvation. `SeedRunner` populates demo data when
-`floecat.seed.enabled=true`.
+idempotency records in slices to avoid starvation. `CasBlobGc` enumerates blob prefixes and removes
+CAS blobs with no remaining pointers once they exceed the configured min-age. `SeedRunner`
+populates demo data when `floecat.seed.enabled=true`.
 
 ### Statistics streaming semantics
 `TableStatisticsServiceImpl` enforces a single `table_id` + `snapshot_id` per streamed call to
@@ -152,6 +153,7 @@ Notable `application.properties` keys:
 | `floecat.kv` / `floecat.blob` | Select pointer/blob store implementation (`memory`, `dynamodb`, `s3`). |
 | `floecat.query.*` | Default TTL, grace period, max cache size, safety expiry for query contexts. |
 | `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for GC. |
+| `floecat.gc.cas.*` | Cadence, page size, min-age, and slice duration for CAS blob GC. |
 | `quarkus.log.*` | JSON logging, file rotation, audit handlers per RPC package. |
 | `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters. |
 
