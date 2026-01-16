@@ -247,7 +247,9 @@ public class Shell implements Runnable {
       var parser = new DefaultParser();
       parser.setEofOnUnclosedBracket(
           DefaultParser.Bracket.CURLY, DefaultParser.Bracket.ROUND, DefaultParser.Bracket.SQUARE);
-      parser.setEscapeChars(null);
+      parser.setEofOnEscapedNewLine(true);
+      parser.setEofOnUnclosedQuote(true);
+      parser.setEscapeChars(new char[] {'\\'});
       Completer completer =
           new StringsCompleter(
               "catalogs",
@@ -1449,6 +1451,11 @@ public class Shell implements Runnable {
             csvList(Quotes.unquote(parseStringFlag(args, "--source-cols", "")));
         String destNamespace = Quotes.unquote(parseStringFlag(args, "--dest-ns", ""));
         String destTable = Quotes.unquote(parseStringFlag(args, "--dest-table", ""));
+        if (sourceTable.isBlank() && !destTable.isBlank()) {
+          sourceTable = destTable;
+        } else if (!sourceTable.isBlank() && destTable.isBlank()) {
+          destTable = sourceTable;
+        }
 
         String description = Quotes.unquote(parseStringFlag(args, "--desc", ""));
         String authScheme = Quotes.unquote(parseStringFlag(args, "--auth-scheme", ""));
@@ -1520,6 +1527,11 @@ public class Shell implements Runnable {
         String destCatalog = Quotes.unquote(parseStringFlag(args, "--dest-catalog", ""));
         String destNs = Quotes.unquote(parseStringFlag(args, "--dest-ns", ""));
         String destTable = Quotes.unquote(parseStringFlag(args, "--dest-table", ""));
+        if (sourceTable.isBlank() && !destTable.isBlank()) {
+          sourceTable = destTable;
+        } else if (!sourceTable.isBlank() && destTable.isBlank()) {
+          destTable = sourceTable;
+        }
 
         String authScheme = Quotes.unquote(parseStringFlag(args, "--auth-scheme", ""));
         Map<String, String> authProps = parseKeyValueList(args, "--auth");
@@ -3034,7 +3046,15 @@ public class Shell implements Runnable {
           destTableDisplay = tblResp.getName().getName();
         }
 
-        if (!destCatDisplay.isBlank()) {
+        if (destCatDisplay.isBlank() && c.getDestination().hasCatalogId()) {
+          destCatDisplay = c.getDestination().getCatalogId().getId();
+        }
+
+        boolean anyDest =
+            !destCatDisplay.isBlank()
+                || !destNsParts.isEmpty()
+                || (destTableDisplay != null && !destTableDisplay.isBlank());
+        if (anyDest) {
           String fq = joinFqQuoted(destCatDisplay, destNsParts, destTableDisplay);
           out.println("  destination: " + fq);
         }

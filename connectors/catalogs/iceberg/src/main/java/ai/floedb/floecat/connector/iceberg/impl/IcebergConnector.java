@@ -47,14 +47,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -76,23 +74,16 @@ import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadata.MetadataLogEntry;
 import org.apache.iceberg.TableScan;
-import org.apache.iceberg.catalog.Namespace;
-import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
-import org.apache.iceberg.rest.RESTCatalog;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 import org.jboss.logging.Logger;
-import software.amazon.awssdk.regions.Region;
-import software.amazon.awssdk.services.glue.GlueClient;
 
-public final class IcebergConnector implements FloecatConnector {
+public abstract class IcebergConnector implements FloecatConnector {
   private static final Logger LOG = Logger.getLogger(IcebergConnector.class);
   private final String connectorId;
-  private final RESTCatalog catalog;
-  private final GlueIcebergFilter glueFilter;
-  private final Table singleTable;
+  protected final Table singleTable;
   private final String singleNamespaceFq;
   private final String singleTableName;
   private final boolean ndvEnabled;
@@ -100,10 +91,8 @@ public final class IcebergConnector implements FloecatConnector {
   private final long ndvMaxFiles;
   private final FileIO externalFileIO;
 
-  private IcebergConnector(
+  protected IcebergConnector(
       String connectorId,
-      RESTCatalog catalog,
-      GlueIcebergFilter filter,
       Table singleTable,
       String singleNamespaceFq,
       String singleTableName,
@@ -112,8 +101,6 @@ public final class IcebergConnector implements FloecatConnector {
       long ndvMaxFiles,
       FileIO externalFileIO) {
     this.connectorId = connectorId;
-    this.catalog = catalog;
-    this.glueFilter = filter;
     this.singleTable = singleTable;
     this.singleNamespaceFq = singleNamespaceFq;
     this.singleTableName = singleTableName;
@@ -121,121 +108,6 @@ public final class IcebergConnector implements FloecatConnector {
     this.ndvSampleFraction = ndvSampleFraction;
     this.ndvMaxFiles = ndvMaxFiles;
     this.externalFileIO = externalFileIO;
-  }
-
-  public static FloecatConnector create(
-      String uri,
-      Map<String, String> options,
-      String authScheme,
-      Map<String, String> authProps,
-      Map<String, String> headerHints) {
-
-    Objects.requireNonNull(uri, "uri");
-
-    Map<String, String> opts = (options == null) ? Collections.emptyMap() : options;
-    boolean ndvEnabled = parseNdvEnabled(options);
-    double ndvSampleFraction = parseNdvSampleFraction(options);
-
-    long ndvMaxFiles = 0L;
-    if (options != null) {
-      try {
-        ndvMaxFiles = Long.parseLong(options.getOrDefault("stats.ndv.max_files", "0"));
-        if (ndvMaxFiles < 0) {
-          ndvMaxFiles = 0;
-        }
-      } catch (NumberFormatException ignore) {
-      }
-    }
-
-    String externalMetadata = opts.get("external.metadata-location");
-    if (externalMetadata != null && !externalMetadata.isBlank()) {
-      LoadedExternalTable loaded = loadExternalTable(externalMetadata, opts);
-      Table table = loaded.table();
-      FileIO fileIO = loaded.fileIO();
-      String namespaceFq = opts.getOrDefault("external.namespace", "");
-      String detectedName =
-          (table.name() == null || table.name().isBlank())
-              ? deriveTableName(externalMetadata)
-              : table.name();
-      String tableName = opts.getOrDefault("external.table-name", detectedName);
-      return new IcebergConnector(
-          "iceberg-filesystem",
-          null,
-          null,
-          table,
-          namespaceFq,
-          tableName,
-          ndvEnabled,
-          ndvSampleFraction,
-          ndvMaxFiles,
-          fileIO);
-    }
-
-    Map<String, String> props = new HashMap<>();
-    props.put("type", "rest");
-    props.put("uri", uri);
-    if (!opts.isEmpty()) {
-      for (var e : opts.entrySet()) {
-        String k = e.getKey();
-        if (k.startsWith("rest.") || k.startsWith("s3.") || k.equals("io-impl")) {
-          props.put(k, e.getValue());
-        }
-      }
-    }
-
-    String scheme = (authScheme == null ? "none" : authScheme.trim().toLowerCase(Locale.ROOT));
-    switch (scheme) {
-      case "aws-sigv4" -> {
-        String signingName = authProps.getOrDefault("signing-name", "glue");
-        String signingRegion =
-            authProps.getOrDefault(
-                "signing-region",
-                props.getOrDefault(
-                    "rest.signing-region", props.getOrDefault("s3.region", "us-east-1")));
-        props.put("rest.auth.type", "sigv4");
-        props.put("rest.signing-name", signingName);
-        props.put("rest.signing-region", signingRegion);
-
-        props.putIfAbsent("io-impl", "org.apache.iceberg.aws.s3.S3FileIO");
-        props.putIfAbsent("s3.region", signingRegion);
-      }
-
-      case "oauth2" -> {
-        String token =
-            Objects.requireNonNull(authProps.get("token"), "authProps.token required for oauth2");
-        props.put("token", token);
-      }
-
-      case "none" -> {}
-
-      default -> throw new IllegalArgumentException("Unsupported auth scheme: " + authScheme);
-    }
-
-    if (headerHints != null) {
-      headerHints.forEach((k, v) -> props.put("header." + k, v));
-    }
-
-    props.putIfAbsent("rest.client.user-agent", "floecat-connector-iceberg");
-
-    var glue =
-        GlueClient.builder()
-            .region(Region.of(props.getOrDefault("s3.region", "us-east-1")))
-            .build();
-
-    RESTCatalog cat = new RESTCatalog();
-    cat.initialize("floecat-iceberg", Collections.unmodifiableMap(props));
-
-    return new IcebergConnector(
-        "iceberg-rest",
-        cat,
-        new GlueIcebergFilter(glue),
-        null,
-        null,
-        null,
-        ndvEnabled,
-        ndvSampleFraction,
-        ndvMaxFiles,
-        null);
   }
 
   @Override
@@ -249,29 +121,10 @@ public final class IcebergConnector implements FloecatConnector {
   }
 
   @Override
-  public List<String> listNamespaces() {
-    if (isSingleTableMode()) {
-      return (singleNamespaceFq == null || singleNamespaceFq.isBlank())
-          ? List.of()
-          : List.of(singleNamespaceFq);
-    }
-    return catalog.listNamespaces().stream()
-        .map(Namespace::toString)
-        .filter(glueFilter::databaseHasIceberg)
-        .sorted()
-        .toList();
-  }
+  public abstract List<String> listNamespaces();
 
   @Override
-  public List<String> listTables(String namespaceFq) {
-    if (isSingleTableMode()) {
-      if (namespaceMatches(namespaceFq)) {
-        return List.of(singleTableName);
-      }
-      return List.of();
-    }
-    return glueFilter.icebergTables(namespaceFq);
-  }
+  public abstract List<String> listTables(String namespaceFq);
 
   @Override
   public TableDescriptor describe(String namespaceFq, String tableName) {
@@ -466,32 +319,34 @@ public final class IcebergConnector implements FloecatConnector {
     return out;
   }
 
-  private boolean isSingleTableMode() {
+  protected boolean isSingleTableMode() {
     return singleTable != null;
   }
 
-  private boolean namespaceMatches(String namespaceFq) {
+  protected boolean namespaceMatches(String namespaceFq) {
     String stored = singleNamespaceFq == null ? "" : singleNamespaceFq;
     String incoming = namespaceFq == null ? "" : namespaceFq;
     return stored.equals(incoming);
   }
 
-  private Table loadTable(String namespaceFq, String tableName) {
-    if (isSingleTableMode()) {
-      return singleTable;
-    }
-    Namespace namespace =
-        (namespaceFq == null || namespaceFq.isBlank())
-            ? Namespace.empty()
-            : Namespace.of(namespaceFq.split("\\."));
-    TableIdentifier tableId =
-        namespace.isEmpty()
-            ? TableIdentifier.of(tableName)
-            : TableIdentifier.of(namespace, tableName);
-    return catalog.loadTable(tableId);
+  protected List<String> listNamespacesSingle() {
+    return (singleNamespaceFq == null || singleNamespaceFq.isBlank())
+        ? List.of()
+        : List.of(singleNamespaceFq);
   }
 
-  private static LoadedExternalTable loadExternalTable(
+  protected List<String> listTablesSingle(String namespaceFq) {
+    if (namespaceMatches(namespaceFq)) {
+      return List.of(singleTableName);
+    }
+    return List.of();
+  }
+
+  private Table loadTable(String namespaceFq, String tableName) {
+    return loadTableFromSource(namespaceFq, tableName);
+  }
+
+  static LoadedExternalTable loadExternalTable(
       String metadataLocation, Map<String, String> options) {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       throw new IllegalArgumentException("metadataLocation is required");
@@ -540,9 +395,9 @@ public final class IcebergConnector implements FloecatConnector {
     return new LoadedExternalTable(new BaseTable(ops, deriveTableName(metadataLocation)), fileIO);
   }
 
-  private static record LoadedExternalTable(Table table, FileIO fileIO) {}
+  static record LoadedExternalTable(Table table, FileIO fileIO) {}
 
-  private static String deriveTableName(String metadataLocation) {
+  static String deriveTableName(String metadataLocation) {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return "table";
     }
@@ -802,8 +657,8 @@ public final class IcebergConnector implements FloecatConnector {
 
   @Override
   public void close() {
+    closeCatalog();
     try {
-      catalog.close();
     } catch (Exception ignore) {
     }
     if (externalFileIO instanceof AutoCloseable closeable) {
@@ -812,6 +667,14 @@ public final class IcebergConnector implements FloecatConnector {
       } catch (Exception ignoreClose) {
       }
     }
+  }
+
+  protected abstract Table loadTableFromSource(String namespaceFq, String tableName);
+
+  protected void closeCatalog() {}
+
+  protected Table getSingleTable() {
+    return singleTable;
   }
 
   private record EngineOut(
@@ -929,7 +792,7 @@ public final class IcebergConnector implements FloecatConnector {
     }
   }
 
-  private static boolean parseNdvEnabled(Map<String, String> options) {
+  static boolean parseNdvEnabled(Map<String, String> options) {
     if (options != null) {
       String v = options.getOrDefault("stats.ndv.enabled", "true");
       return !v.equalsIgnoreCase("false");
@@ -937,7 +800,7 @@ public final class IcebergConnector implements FloecatConnector {
     return false;
   }
 
-  private static double parseNdvSampleFraction(Map<String, String> options) {
+  static double parseNdvSampleFraction(Map<String, String> options) {
     if (options == null) {
       return 0.0d;
     }

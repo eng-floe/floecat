@@ -203,6 +203,7 @@ public class TableGatewaySupport {
       Connector existing = response.getConnector();
       Map<String, String> props = new LinkedHashMap<>(existing.getPropertiesMap());
       props.put("external.metadata-location", metadataLocation);
+      props.put("iceberg.source", "filesystem");
       ConnectorSpec spec = ConnectorSpec.newBuilder().putAllProperties(props).build();
       connectorClient.updateConnector(
           UpdateConnectorRequest.newBuilder()
@@ -445,6 +446,7 @@ public class TableGatewaySupport {
         (tableLocation != null && !tableLocation.isBlank()) ? tableLocation : metadataLocation;
     Map<String, String> props = new LinkedHashMap<>();
     props.put("external.metadata-location", metadataLocation);
+    props.put("iceberg.source", "filesystem");
     props.put("external.table-name", tableName);
     props.put("external.namespace", namespaceFq);
     props.put(CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(true));

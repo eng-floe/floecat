@@ -5,12 +5,16 @@
 AWS Glue. It enables Floecat to ingest schema metadata, partition specs, snapshots, statistics, and
 file manifests from Iceberg tables stored in S3.
 
-The implementation centres on `IcebergConnector`, which instantiates an Iceberg `RESTCatalog`, wraps
-AWS Glue lookups, and optionally captures NDV sketches from Parquet files.
+The implementation centres on `IcebergConnector` (abstract base) with catalog-specific subclasses
+for REST, Glue, and filesystem-backed tables. Subclasses share NDV and stats collection while
+specializing discovery and catalog wiring.
 
 ## Architecture & Responsibilities
-- **`IcebergConnector`** – Concrete `FloecatConnector` implementation. Creates a RESTCatalog client,
-  an optional `GlueIcebergFilter` for filtering non-Iceberg Glue entries, and NDV providers.
+- **`IcebergConnector`** – Abstract `FloecatConnector` implementation. Defines shared snapshot,
+  stats, and NDV logic.
+- **`IcebergRestConnector`** – REST catalog discovery via Iceberg `RESTCatalog`.
+- **`IcebergGlueConnector`** – REST catalog + Glue discovery via `GlueIcebergFilter`.
+- **`IcebergFilesystemConnector`** – Single-table connector for `external.metadata-location`.
 - **`IcebergConnectorProvider`** – Exposes the connector via CDI so the service can instantiate it
   using URIs from `ConnectorSpec`.
 - **`IcebergPlanner`** – Implements `connector/common/Planner`, translating Iceberg `TableScan`
@@ -22,11 +26,9 @@ AWS Glue lookups, and optionally captures NDV sketches from Parquet files.
 - **`PuffinNdvProvider`** – Leverages Puffin NDV files when available.
 
 ## Public API / Surface Area
-`IcebergConnector` satisfies the SPI:
-- `listNamespaces()` – Delegates to Iceberg `RESTCatalog.listNamespaces()`, filters results to those
-  flagged as Iceberg in Glue.
-- `listTables(namespace)` – Uses `GlueIcebergFilter` to enumerate tables under a namespace using Glue
-  database/table metadata.
+`IcebergConnector` and subclasses satisfy the SPI:
+- `listNamespaces()` – Uses REST or Glue discovery depending on the selected source.
+- `listTables(namespace)` – Uses REST or Glue discovery depending on the selected source.
 - `describe(namespace, table)` – Loads the table, serialises the Iceberg schema to JSON via
   `SchemaParser.toJson`, captures partition keys, and returns table properties.
 - `enumerateSnapshotsWithStats(...)` – Iterates Iceberg snapshots, loads table/column stats using
@@ -50,10 +52,10 @@ AWS Glue lookups, and optionally captures NDV sketches from Parquet files.
 ## Data Flow & Lifecycle
 ```
 ConnectorFactory.create(cfg)
-  → IcebergConnector.create(uri, options, authScheme, authProps, headerHints)
+  → IcebergConnectorFactory.create(uri, options, authScheme, authProps, headerHints)
       → Build REST properties, configure SigV4 or token auth
-      → Instantiate AWS Glue client (region from options)
-      → Initialize RESTCatalog and Glue filter
+      → Choose REST/Glue/filesystem connector based on options
+      → Initialize RESTCatalog (and Glue filter when needed)
   → listNamespaces/listTables/describe
   → enumerateSnapshotsWithStats
       → For each snapshot load Table, StatsEngine pulls Parquet stats (table/column + per-file),
@@ -65,12 +67,17 @@ Resources (RESTCatalog, GlueClient) are closed when the connector is closed.
 
 ## Configuration & Extensibility
 Connector options (part of `ConnectorSpec.properties`):
+- `iceberg.source` – Selects discovery backend (`glue`, `rest`, `filesystem`). Defaults to `glue`
+  for backward compatibility.
 - `rest.signing-region`, `s3.region`, `rest.auth.type`, `rest.signing-name` – control SigV4.
 - `io-impl` – override Iceberg IO implementation.
 - `stats.ndv.*` – enable NDV estimation (boolean), sample fraction (0−1], max Parquet files to scan.
 - `header.<name>` – send custom headers to the REST endpoint.
+- `external.metadata-location` – required for `iceberg.source=filesystem`, pointing at a single
+  Iceberg metadata JSON file. `external.namespace` and `external.table-name` override the logical
+  name when needed.
 
-To extend behaviour:
+To extend behavior:
 - Provide a custom NDV provider by plugging into `GenericStatsEngine`.
 - Wrap alternative auth schemes by implementing `AuthProvider` and mapping new `auth.scheme` values.
 - Add new planner logic by extending `IcebergPlanner` (for example to emit positional deletes).
@@ -87,6 +94,37 @@ To extend behaviour:
   }
   ```
   `ConnectorsImpl` validates it by creating an `IcebergConnector` and calling `listNamespaces()`.
+- **Glue (AWS SigV4)** – CLI example using Glue discovery:
+  ```bash
+  connector create "Glue Iceberg" ICEBERG \
+    "https://glue.us-east-1.amazonaws.com/iceberg/" \
+    tpcds_iceberg demo \
+    --auth-scheme aws-sigv4 \
+    --dest-ns tpcds_iceberg \
+    --props iceberg.source=glue
+  ```
+- **Nessie (REST catalog)** – CLI example using a Nessie REST endpoint:
+  ```bash
+  connector create "Nessie Iceberg" ICEBERG \
+    "http://localhost:19120/iceberg" \
+    tpch demo \
+    --auth-scheme none \
+    --dest-ns tpch \
+    --props iceberg.source=rest \
+    --props warehouse=s3://warehouse
+  ```
+- **Filesystem (single table)** – CLI example using external metadata:
+  ```bash
+  connector create "Filesystem Iceberg" ICEBERG \
+    "s3://warehouse" \
+    fixtures demo \
+    --auth-scheme none \
+    --dest-ns fixtures \
+    --props iceberg.source=filesystem \
+    --props external.metadata-location=s3://warehouse/metadata/00001.metadata.json \
+    --props external.namespace=fixtures.simple \
+    --props external.table-name=trino_test
+  ```
 - **Reconciliation** – `ReconcilerService` iterates Iceberg tables, uses `describe` to create or
   update Floecat Table records (storing schema JSON + upstream ref), then calls
   `enumerateSnapshotsWithStats` to ingest snapshots and `plan` when acquiring scan bundles.

@@ -287,6 +287,7 @@ public class ConnectorIT {
     props.put("external.namespace", "fixtures.simple");
     props.put("external.table-name", "trino_test");
     props.put("stats.ndv.enabled", "false");
+    props.put("iceberg.source", "filesystem");
 
     var conn =
         TestSupport.createConnector(

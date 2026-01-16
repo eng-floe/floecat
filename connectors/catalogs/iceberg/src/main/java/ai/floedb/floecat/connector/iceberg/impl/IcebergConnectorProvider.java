@@ -33,7 +33,7 @@ public final class IcebergConnectorProvider implements ConnectorProvider {
     Map<String, String> options = new HashMap<>(cfg.options());
     var auth = cfg.auth();
 
-    return IcebergConnector.create(
+    return IcebergConnectorFactory.create(
         cfg.uri(),
         options,
         auth.scheme(),
