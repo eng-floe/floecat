@@ -99,6 +99,7 @@ reconciliation) show job IDs that can be polled via `connector job <id>`.
     tpcds_iceberg demo --auth-scheme aws-sigv4
     --source-table call_center
     --dest-ns sales --dest-table my_call_center
+    --props iceberg.source=glue
   ```
 
 - **Triggering a connector to read an upstream table**
