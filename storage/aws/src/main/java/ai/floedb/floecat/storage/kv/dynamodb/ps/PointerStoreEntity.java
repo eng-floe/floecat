@@ -174,11 +174,12 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
    */
   public Uni<Boolean> compareAndSet(String key, long expectedVersion, Pointer pointer) {
     return putCanonicalCas(
-        pointerKey(key),
-        KIND_POINTER,
-        pointer,
-        Map.of(ATTR_BLOB_URI, pointer.getBlobUri()),
-        expectedVersion);
+            pointerKey(key),
+            KIND_POINTER,
+            pointer,
+            Map.of(ATTR_BLOB_URI, pointer.getBlobUri()),
+            expectedVersion)
+        .map(Optional::isPresent);
   }
 
   /**

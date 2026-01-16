@@ -127,7 +127,11 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
   void putCanonicalCas_sets_record_version_and_message_version() throws Exception {
     Pointer p = Pointer.newBuilder().setKey("k1").build();
     assertTrue(
-        entity.putCanonicalCasForTest(key("pk", "sk1"), p, Map.of(), 0L).await().indefinitely());
+        entity
+            .putCanonicalCasForTest(key("pk", "sk1"), p, Map.of(), 0L)
+            .await()
+            .indefinitely()
+            .isPresent());
 
     KvStore.Record rec = kv.records.get(key("pk", "sk1"));
     assertNotNull(rec);
@@ -143,7 +147,11 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
         Pointer.newBuilder().setKey("k1").setExpiresAt(Timestamps.fromMillis(2000L)).build();
 
     assertTrue(
-        entity.putCanonicalCasForTest(key("pk", "sk1"), p, Map.of(), 0L).await().indefinitely());
+        entity
+            .putCanonicalCasForTest(key("pk", "sk1"), p, Map.of(), 0L)
+            .await()
+            .indefinitely()
+            .isPresent());
 
     KvStore.Record rec = kv.records.get(key("pk", "sk1"));
     assertEquals("2", rec.attrs().get(KvAttributes.ATTR_EXPIRES_AT));
@@ -315,7 +323,7 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
       super(kv, KIND, Pointer.getDefaultInstance(), (p, v) -> p.toBuilder().setVersion(v).build());
     }
 
-    private Uni<Boolean> putCanonicalCasForTest(
+    private Uni<Optional<Pointer>> putCanonicalCasForTest(
         KvStore.Key key, Pointer pointer, Map<String, String> attrs, long expectedVersion) {
       return putCanonicalCas(key, KIND, pointer, attrs, expectedVersion);
     }

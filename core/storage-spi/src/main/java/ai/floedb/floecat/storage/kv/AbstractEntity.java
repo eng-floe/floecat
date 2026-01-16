@@ -116,7 +116,7 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
    *
    * <p>The written record.version and protobuf message version are both set to nextVersion.
    */
-  protected Uni<Boolean> putCanonicalCas(
+  protected Uni<Optional<M>> putCanonicalCas(
       KvStore.Key key, String kind, M message, Map<String, String> attrs, long expectedVersion) {
 
     long nv = nextVersion(expectedVersion);
@@ -127,7 +127,7 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
       attrs.put(ATTR_EXPIRES_AT, Long.toString(ts));
     }
     var rec = new KvStore.Record(key, kind, encode(withVer), attrs, nv);
-    return kv.putCas(rec, expectedVersion);
+    return kv.putCas(rec, expectedVersion).map(ok -> ok ? Optional.of(withVer) : Optional.empty());
   }
 
   /** CAS delete for any item (canonical or pointer/index). */
