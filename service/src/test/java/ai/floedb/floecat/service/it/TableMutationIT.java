@@ -23,10 +23,13 @@ import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.gc.PointerGc;
+import ai.floedb.floecat.service.it.profiles.PointerGcMinAgeProfile;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
@@ -38,6 +41,7 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
@@ -48,9 +52,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
+@TestProfile(PointerGcMinAgeProfile.class)
 class TableMutationIT {
   @Inject PointerStore ptr;
   @Inject BlobStore blob;
+  @Inject PointerGc pointerGc;
 
   @GrpcClient("floecat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
@@ -341,6 +347,60 @@ class TableMutationIT {
         0,
         ptr.countByPrefix(Keys.snapshotStatsPrefix(accountId, tableId, snapshotId)),
         "stats pointers should be removed");
+  }
+
+  @Test
+  void pointerGcKeepsYoungBlobPointers() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, tablePrefix + "cat_gc_age", "tcat-gc-age");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_tbl"), "ns for gc");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "orders",
+            "s3://bucket/orders",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "none");
+    var tblId = tbl.getResourceId();
+
+    var before = TestSupport.metaForTable(ptr, blob, tblId);
+    FieldMask mask = FieldMask.newBuilder().addPaths("schema_json").build();
+    TableSpec spec =
+        TableSpec.newBuilder()
+            .setSchemaJson(
+                "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"},{\"name\":\"qty\",\"type\":\"int\"}]}")
+            .build();
+    table.updateTable(
+        UpdateTableRequest.newBuilder()
+            .setTableId(tblId)
+            .setSpec(spec)
+            .setUpdateMask(mask)
+            .setPrecondition(
+                Precondition.newBuilder()
+                    .setExpectedVersion(before.getPointerVersion())
+                    .setExpectedEtag(before.getEtag())
+                    .build())
+            .build());
+
+    String staleKey =
+        Keys.tablePointerByName(
+            tblId.getAccountId(), cat.getResourceId().getId(), ns.getResourceId().getId(), "stale");
+    Pointer stalePointer =
+        Pointer.newBuilder()
+            .setKey(staleKey)
+            .setBlobUri(before.getBlobUri())
+            .setVersion(1L)
+            .build();
+    assertTrue(ptr.compareAndSet(staleKey, 0L, stalePointer), "stale pointer should be created");
+
+    pointerGc.runForAccount(tblId.getAccountId(), System.currentTimeMillis() + 5000L);
+
+    assertTrue(
+        ptr.get(staleKey).isPresent(),
+        "pointer GC should not delete pointers to blobs younger than min-age");
   }
 
   @Test
