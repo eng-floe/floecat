@@ -173,13 +173,15 @@ message RelationStats {
 }
 
 message ColumnInfo {
+  // Unique column ID within the relation used in Floecat.
+  int64 id = 13;
   // Column name.
   string name = 1;
   // Logical type identifier for the column.
   ai.floedb.floecat.common.NameRef type = 2;
   // Whether NULL is allowed.
   bool nullable = 3;
-  // Ordinal position within the table schema.
+  // Ordinal position within the table schema : 1-based within the parent struct.
   int32 ordinal = 10;
   // Unique field identifier if present.
   int32 field_id = 11;

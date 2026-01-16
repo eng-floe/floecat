@@ -94,5 +94,17 @@ public interface StatsEngine<K> {
     default boolean isEqualityDelete() {
       return false;
     }
+
+    /**
+     * Equality field IDs for equality delete files.
+     *
+     * <p>Only applicable when isDelete() && isEqualityDelete() is true.
+     *
+     * @return list of field IDs used for equality comparisons in equality delete files, or empty
+     *     list for other file types
+     */
+    default List<Integer> equalityFieldIds() {
+      return List.of();
+    }
   }
 }

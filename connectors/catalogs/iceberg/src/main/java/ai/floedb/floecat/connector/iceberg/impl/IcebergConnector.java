@@ -16,15 +16,14 @@
 
 package ai.floedb.floecat.connector.iceberg.impl;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.connector.common.ConnectorStatsViewBuilder;
 import ai.floedb.floecat.connector.common.GenericStatsEngine;
-import ai.floedb.floecat.connector.common.ProtoStatsBuilder;
 import ai.floedb.floecat.connector.common.StatsEngine;
 import ai.floedb.floecat.connector.common.ndv.ColumnNdv;
 import ai.floedb.floecat.connector.common.ndv.FilteringNdvProvider;
@@ -134,7 +133,13 @@ public abstract class IcebergConnector implements FloecatConnector {
     List<String> partitionKeys = table.spec().fields().stream().map(f -> f.name()).toList();
 
     return new TableDescriptor(
-        namespaceFq, tableName, table.location(), schemaJson, partitionKeys, table.properties());
+        namespaceFq,
+        tableName,
+        table.location(),
+        schemaJson,
+        partitionKeys,
+        ColumnIdAlgorithm.CID_FIELD_ID,
+        table.properties());
   }
 
   @Override
@@ -184,8 +189,8 @@ public abstract class IcebergConnector implements FloecatConnector {
       String schemaJson = SchemaParser.toJson(schema);
 
       TableStats tStats = null;
-      List<ColumnStats> cStats = List.of();
-      List<FileColumnStats> fileStats = List.of();
+      List<ColumnStatsView> cStats = List.of();
+      List<FileColumnStatsView> fileStats = List.of();
       if (includeStatistics) {
         EngineOut engineOutput = runEngine(table, snapshotId, includeIds);
 
@@ -193,17 +198,37 @@ public abstract class IcebergConnector implements FloecatConnector {
         var logicalTypes = engineOutput.logicalTypes();
 
         tStats =
-            ProtoStatsBuilder.toTableStats(
+            ConnectorStatsViewBuilder.toTableStats(
                 destinationTableId,
                 snapshotId,
                 createdMs,
                 TableFormat.TF_ICEBERG,
                 engineOutput.result());
+        // Build per-field metadata so ColumnRef can carry field_id + physical_path (+ optional
+        // ordinal); single traversal for efficiency
+        var fieldMaps = fieldIdMaps(schema);
+        Map<Integer, String> idToPath = fieldMaps.getKey();
+        Map<Integer, Integer> idToOrdinal = fieldMaps.getValue();
+
+        // Extract snapshot's total-records as primary source for NDV rowsTotal
+        long snapshotRowCount = 0;
+        Map<String, String> summary = snapshot.summary() == null ? Map.of() : snapshot.summary();
+        String totalRecordsStr = summary.get("total-records");
+        if (totalRecordsStr != null && !totalRecordsStr.isBlank()) {
+          try {
+            snapshotRowCount = Long.parseLong(totalRecordsStr);
+          } catch (NumberFormatException ignore) {
+            // keep snapshotRowCount as 0
+          }
+        }
+
+        // Fallback to engineOutput.result().totalRowCount() if snapshot summary doesn't have it
+        if (snapshotRowCount <= 0) {
+          snapshotRowCount = engineOutput.result().totalRowCount();
+        }
+
         cStats =
-            ProtoStatsBuilder.toColumnStats(
-                destinationTableId,
-                snapshotId,
-                TableFormat.TF_ICEBERG,
+            ConnectorStatsViewBuilder.toColumnStatsView(
                 engineOutput.result().columns(),
                 id -> {
                   String name = columnNames.get(id);
@@ -213,6 +238,8 @@ public abstract class IcebergConnector implements FloecatConnector {
                   var f = schema.findField(id);
                   return f == null ? "" : f.name();
                 },
+                id -> idToPath.getOrDefault(id, ""),
+                id -> idToOrdinal.getOrDefault(id, 0),
                 id -> id,
                 id -> {
                   LogicalType lt = logicalTypes.get(id);
@@ -222,13 +249,11 @@ public abstract class IcebergConnector implements FloecatConnector {
                   var f = schema.findField(id);
                   return f == null ? null : IcebergTypeMapper.toLogical(f.type());
                 },
-                createdMs,
-                engineOutput.result().totalRowCount());
+                snapshotRowCount);
+
+        // Consolidate file stats conversion using ProtoStatsBuilder for format-agnostic handling
         var baseFiles =
-            ProtoStatsBuilder.toFileColumnStats(
-                destinationTableId,
-                snapshotId,
-                TableFormat.TF_ICEBERG,
+            ConnectorStatsViewBuilder.toFileColumnStatsView(
                 engineOutput.result().files(),
                 id -> {
                   String name = columnNames.get(id);
@@ -238,6 +263,8 @@ public abstract class IcebergConnector implements FloecatConnector {
                   var f = schema.findField(id);
                   return f == null ? "" : f.name();
                 },
+                id -> idToPath.getOrDefault(id, ""),
+                id -> idToOrdinal.getOrDefault(id, 0),
                 id -> id,
                 id -> {
                   LogicalType lt = logicalTypes.get(id);
@@ -246,10 +273,9 @@ public abstract class IcebergConnector implements FloecatConnector {
                   }
                   var f = schema.findField(id);
                   return f == null ? null : IcebergTypeMapper.toLogical(f.type());
-                },
-                createdMs);
+                });
 
-        List<FileColumnStats> deleteStats = new ArrayList<>();
+        List<FloecatConnector.FileColumnStatsView> deleteStats = new ArrayList<>();
         TableScan scan = table.newScan().useSnapshot(snapshotId);
         try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
           for (FileScanTask task : tasks) {
@@ -258,23 +284,25 @@ public abstract class IcebergConnector implements FloecatConnector {
                   df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
                       ? df.equalityFieldIds()
                       : List.of();
-              var builder =
-                  FileColumnStats.newBuilder()
-                      .setTableId(destinationTableId)
-                      .setSnapshotId(snapshotId)
-                      .setFilePath(df.location())
-                      .setRowCount(df.recordCount())
-                      .setSizeBytes(df.fileSizeInBytes())
-                      .addAllEqualityFieldIds(eqIds)
-                      .setFileContent(
-                          df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
-                              ? FileContent.FC_EQUALITY_DELETES
-                              : FileContent.FC_POSITION_DELETES);
-              Long sequenceNumber = df.fileSequenceNumber();
-              if (sequenceNumber != null && sequenceNumber > 0) {
-                builder.setSequenceNumber(sequenceNumber);
-              }
-              deleteStats.add(builder.build());
+
+              FileContent fc =
+                  df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
+                      ? FileContent.FC_EQUALITY_DELETES
+                      : FileContent.FC_POSITION_DELETES;
+
+              deleteStats.add(
+                  new FloecatConnector.FileColumnStatsView(
+                      df.location(),
+                      "", // format often unknown for deletes; leave blank
+                      df.recordCount(),
+                      df.fileSizeInBytes(),
+                      fc,
+                      "", // partition json not needed for deletes
+                      0,
+                      eqIds,
+                      df.fileSequenceNumber(),
+                      List.of() // no per-column stats for deletes
+                      ));
             }
           }
         } catch (Exception e) {
@@ -282,7 +310,7 @@ public abstract class IcebergConnector implements FloecatConnector {
               "Failed to enumerate delete files for snapshot " + snapshotId, e);
         }
 
-        List<FileColumnStats> allFiles = new ArrayList<>(baseFiles);
+        List<FileColumnStatsView> allFiles = new ArrayList<>(baseFiles);
         allFiles.addAll(deleteStats);
         fileStats = allFiles;
       }
@@ -893,6 +921,79 @@ public abstract class IcebergConnector implements FloecatConnector {
           return null;
         }
       };
+    }
+  }
+
+  /**
+   * Build both fieldId→path and fieldId→ordinal maps in a single traversal.
+   *
+   * @return AbstractMap.SimpleImmutableEntry with (pathMap, ordinalMap)
+   */
+  private static java.util.AbstractMap.SimpleImmutableEntry<
+          Map<Integer, String>, Map<Integer, Integer>>
+      fieldIdMaps(Schema schema) {
+    Map<Integer, String> pathMap = new LinkedHashMap<>();
+    Map<Integer, Integer> ordinalMap = new LinkedHashMap<>();
+
+    if (schema != null) {
+      int i = 0;
+      for (Types.NestedField top : schema.columns()) {
+        i++;
+        collectNestedWithOrdinal(top, "", i, pathMap, ordinalMap);
+      }
+    }
+
+    return new java.util.AbstractMap.SimpleImmutableEntry<>(pathMap, ordinalMap);
+  }
+
+  /**
+   * Traverses the Iceberg schema and records (fieldId -> physical path) and/or (fieldId ->
+   * ordinal).
+   *
+   * <p>Paths follow Iceberg's nested naming (including "element"/"key"/"value" nodes). This is
+   * intentionally compatible with ColumnIdComputer.canonicalizePath(), which normalizes ".element."
+   * patterns to "[].".
+   */
+  private static void collectNestedWithOrdinal(
+      Types.NestedField f,
+      String prefix,
+      int ordinal,
+      Map<Integer, String> idToPath,
+      Map<Integer, Integer> idToOrdinal) {
+
+    if (f == null) {
+      return;
+    }
+
+    final String name = prefix.isEmpty() ? f.name() : prefix + "." + f.name();
+    final Type t = f.type();
+
+    if (idToPath != null) {
+      idToPath.put(f.fieldId(), name);
+    }
+    if (idToOrdinal != null) {
+      idToOrdinal.put(f.fieldId(), ordinal);
+    }
+
+    if (t.isStructType()) {
+      int i = 0;
+      for (Types.NestedField child : t.asStructType().fields()) {
+        i++;
+        collectNestedWithOrdinal(child, name, i, idToPath, idToOrdinal);
+      }
+    } else if (t.isListType()) {
+      Types.ListType lt = t.asListType();
+      Types.NestedField elem = lt.fields().get(0);
+      // Use canonical [] notation for list elements (matching IcebergSchemaMapper output)
+      // e.g., "addresses[]" instead of "addresses.element"
+      collectNestedWithOrdinal(elem, name + "[]", 1, idToPath, idToOrdinal);
+    } else if (t.isMapType()) {
+      Types.MapType mt = t.asMapType();
+      Types.NestedField key = mt.fields().get(0);
+      Types.NestedField val = mt.fields().get(1);
+      // Use canonical {} notation for map values (matching IcebergSchemaMapper output)
+      collectNestedWithOrdinal(key, name + ".key", 1, idToPath, idToOrdinal);
+      collectNestedWithOrdinal(val, name + ".value", 2, idToPath, idToOrdinal);
     }
   }
 }

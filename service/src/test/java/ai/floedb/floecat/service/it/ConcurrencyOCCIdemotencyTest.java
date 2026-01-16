@@ -157,6 +157,7 @@ class ConcurrencyOCCIdempotencyIT {
                     var upstream =
                         UpstreamRef.newBuilder()
                             .setFormat(TableFormat.TF_DELTA)
+                            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_PATH_ORDINAL)
                             .setUri("s3://b/p")
                             .build();
 

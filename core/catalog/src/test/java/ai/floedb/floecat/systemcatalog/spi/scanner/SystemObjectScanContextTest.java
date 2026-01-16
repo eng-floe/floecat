@@ -71,10 +71,10 @@ class SystemObjectScanContextTest {
             ResourceId.getDefaultInstance(),
             "t",
             null, // format (not relevant for this test)
+            null, // columnIdAlgorithm (not relevant for this test)
             "{}", // schemaJson
             Map.of(), // properties
             List.of(), // partitionKeys
-            Map.of(), // fieldIdByPath
             Optional.empty(), // currentSnapshot
             Optional.empty(), // previousSnapshot
             Optional.empty(), // resolvedSnapshots
@@ -106,10 +106,10 @@ class SystemObjectScanContextTest {
             ResourceId.getDefaultInstance(),
             "t",
             null, // format (not relevant for this test)
+            null, // columnIdAlgorithm (not relevant for this test)
             "{}", // schemaJson
             Map.of(), // properties
             List.of(), // partitionKeys
-            Map.of(), // fieldIdByPath
             Optional.empty(), // currentSnapshot
             Optional.empty(), // previousSnapshot
             Optional.empty(), // resolvedSnapshots
@@ -165,10 +165,10 @@ class SystemObjectScanContextTest {
             ResourceId.getDefaultInstance(),
             "t",
             null,
+            null,
             "{}",
             Map.of(),
             List.of(),
-            Map.of(),
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),

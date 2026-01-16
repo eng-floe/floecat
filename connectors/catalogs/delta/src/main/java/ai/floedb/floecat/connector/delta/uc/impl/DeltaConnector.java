@@ -16,17 +16,19 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.connector.common.ConnectorStatsViewBuilder;
 import ai.floedb.floecat.connector.common.GenericStatsEngine;
-import ai.floedb.floecat.connector.common.ProtoStatsBuilder;
 import ai.floedb.floecat.connector.common.StatsEngine;
 import ai.floedb.floecat.connector.common.ndv.NdvProvider;
 import ai.floedb.floecat.connector.common.ndv.ParquetNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.SamplingNdvProvider;
+import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.types.LogicalType;
@@ -36,6 +38,7 @@ import io.delta.kernel.Table;
 import io.delta.kernel.engine.Engine;
 import io.delta.kernel.internal.actions.DeletionVectorDescriptor;
 import io.delta.kernel.types.StructType;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -110,6 +113,12 @@ abstract class DeltaConnector implements FloecatConnector {
                 .filter(s -> !s.isEmpty())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
+    // Always return at least the snapshot + schema; stats may be omitted.
+    TableStats tStats = null;
+
+    List<FloecatConnector.ColumnStatsView> cStats = List.of();
+    List<FloecatConnector.FileColumnStatsView> fileStats = List.of();
+
     EngineOut engineOut = runEngine(tableRoot, version, includeNames, nameToType);
     if (engineOut.hasInlineDeletionVectors()) {
       throw new UnsupportedOperationException(
@@ -118,60 +127,78 @@ abstract class DeltaConnector implements FloecatConnector {
     var result = engineOut.result();
     var logicalTypes = engineOut.logicalTypes();
 
-    var tStats =
-        ProtoStatsBuilder.toTableStats(
+    // TableStats (needs engine result)
+    tStats =
+        ConnectorStatsViewBuilder.toTableStats(
             destinationTableId, version, createdMs, TableFormat.TF_DELTA, result);
 
-    var positions = new LinkedHashMap<String, Integer>();
-    var fields = kernelSchema.fields();
-    for (int i = 0; i < fields.size(); i++) {
-      positions.put(fields.get(i).getName(), i + 1);
-    }
+    // Pre-compute ordinals for ALL columns (top-level + nested).
+    //
+    // TODAY: Delta/Parquet stats only expose top-level columns (e.g., "id", "user").
+    // Nested columns like "user.name" are not in result.columns() due to Parquet footer
+    // limitation.
+    //
+    // FUTURE: When Delta adds nested column stats support, result.columns() will include
+    // paths like "user.name". The generic lookup positions.getOrDefault(name, 0) will
+    // automatically resolve them with zero code changes needed here.
+    var positions =
+        LogicalSchemaMapper.buildColumnOrdinals(
+            ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, schemaJson);
 
-    var cStats =
-        ProtoStatsBuilder.toColumnStats(
-            destinationTableId,
-            version,
-            TableFormat.TF_DELTA,
-            result.columns(),
+    // ColumnStatsView: Populate ColumnRef(name, physicalPath, ordinal, fieldId) for reconciler.
+    // Reconciler uses these to deterministically compute column_id via CID_PATH_ORDINAL.
+    // Generic lookup: name -> positions.getOrDefault(name, 0) works for TODAY's top-level columns
+    // and will automatically support FUTURE nested columns when Delta adds stats for them.
+    cStats =
+        ConnectorStatsViewBuilder.toColumnStatsView(
+            result.columns(), // TODAY: top-level only. FUTURE: will include nested paths.
             name -> name,
-            positions::get,
+            name -> name, // Delta: physical path == name (both top and nested, if added)
+            name ->
+                positions.getOrDefault(
+                    name, 0), // Pre-computed for all paths; handles both today and future
+            name -> 0, // Delta has no stable format field-id
             name -> {
               var lt = logicalTypes.get(name);
               return (lt != null) ? lt : nameToType.get(name);
             },
-            createdMs,
             result.totalRowCount());
 
-    var fileStats =
-        ProtoStatsBuilder.toFileColumnStats(
-            destinationTableId,
-            version,
-            TableFormat.TF_DELTA,
-            result.files(),
-            name -> name,
-            positions::get,
-            name -> {
-              var lt = logicalTypes.get(name);
-              return (lt != null) ? lt : nameToType.get(name);
-            },
-            createdMs);
+    // File column stats: Same future-ready pattern as table stats.
+    var mutableFiles =
+        new ArrayList<FloecatConnector.FileColumnStatsView>(
+            ConnectorStatsViewBuilder.toFileColumnStatsView(
+                result.files(),
+                name -> name,
+                name -> name, // Delta: physical path == name (top-level today, nested in future)
+                name -> positions.getOrDefault(name, 0), // Generic lookup handles evolution
+                name -> 0, // Delta has no stable format field-id
+                name -> {
+                  var lt = logicalTypes.get(name);
+                  return (lt != null) ? lt : nameToType.get(name);
+                }));
 
+    // Add deletion vectors as file entries with no per-column stats.
     for (DeletionVectorDescriptor dv : engineOut.deletionVectors()) {
       String dvPath =
           (dv.isOnDisk() && dv.getPathOrInlineDv() != null) ? dv.getPathOrInlineDv() : "";
       long rowCount = dv.getCardinality();
       long sizeBytes = dv.getSizeInBytes();
-      fileStats.add(
-          FileColumnStats.newBuilder()
-              .setTableId(destinationTableId)
-              .setSnapshotId(version)
-              .setFilePath(dvPath)
-              .setRowCount(rowCount)
-              .setSizeBytes(sizeBytes)
-              .setFileContent(FileContent.FC_POSITION_DELETES)
-              .build());
+      mutableFiles.add(
+          new FloecatConnector.FileColumnStatsView(
+              dvPath,
+              "",
+              rowCount,
+              sizeBytes,
+              FileContent.FC_POSITION_DELETES,
+              "",
+              0,
+              List.of(),
+              null,
+              List.of()));
     }
+
+    fileStats = List.copyOf(mutableFiles);
 
     return List.of(
         new SnapshotBundle(
@@ -222,7 +249,13 @@ abstract class DeltaConnector implements FloecatConnector {
       props.put("storage_location", tableRoot);
 
       return new TableDescriptor(
-          namespaceFq, tableName, tableRoot, schemaNode.toString(), List.of(), props);
+          namespaceFq,
+          tableName,
+          tableRoot,
+          schemaNode.toString(),
+          List.of(),
+          ColumnIdAlgorithm.CID_PATH_ORDINAL,
+          props);
     } catch (Exception e) {
       throw new RuntimeException("describe failed", e);
     }

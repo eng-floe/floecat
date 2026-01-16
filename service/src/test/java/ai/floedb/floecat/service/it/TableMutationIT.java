@@ -411,7 +411,11 @@ class TableMutationIT {
             namespace, cat.getResourceId(), "ns", List.of("db_tbl"), "ns for idem");
 
     var upstream =
-        UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).setUri("s3://b/p").build();
+        UpstreamRef.newBuilder()
+            .setFormat(TableFormat.TF_ICEBERG)
+            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+            .setUri("s3://b/p")
+            .build();
 
     var key = IdempotencyKey.newBuilder().setKey(tablePrefix + "k-table-1").build();
 

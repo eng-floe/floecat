@@ -31,6 +31,13 @@ enum TableFormat {
   TF_UNKNOWN = 10;
 }
 
+enum ColumnIdAlgorithm {
+  CID_UNSPECIFIED = 0;
+  CID_FIELD_ID = 1;
+  CID_PATH_ORDINAL = 2;
+  CID_UNKNOWN = 50;
+}
+
 message UpstreamRef {
   optional ai.floedb.floecat.common.ResourceId connector_id = 1;
   string uri = 2;
@@ -38,7 +45,7 @@ message UpstreamRef {
   string table_display_name = 4;
   TableFormat format = 5;
   repeated string partition_keys = 6;
-  map<string,int32> field_id_by_path = 10;
+  ColumnIdAlgorithm column_id_algorithm = 7;
 }
 
 message Table {

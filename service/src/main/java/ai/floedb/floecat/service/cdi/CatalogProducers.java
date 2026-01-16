@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.cdi;
 
+import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.hint.EngineHintProvider;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.hint.SystemCatalogHintProvider;
@@ -31,6 +32,12 @@ import java.util.stream.Stream;
 /* CDI producers for catalog-related components */
 @ApplicationScoped
 public class CatalogProducers {
+
+  @Produces
+  @ApplicationScoped
+  public LogicalSchemaMapper produceLogicalSchemaMapper() {
+    return new LogicalSchemaMapper();
+  }
 
   @Produces
   @ApplicationScoped

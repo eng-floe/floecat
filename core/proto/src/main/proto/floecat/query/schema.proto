@@ -38,12 +38,15 @@ import "floecat/common/common.proto";
  * It intentionally omits storage-level layout or engine-specific details.
  */
 message SchemaColumn {
-  string name = 1;              // Logical column name.
-  string logical_type = 2;      // e.g. BIGINT, STRING, DECIMAL, TIMESTAMP.
-  int32 field_id = 3;           // Stable format-level field ID.
-  bool nullable = 4;            // True if column may contain NULLs.
-  string physical_path = 5;     // Optional nested path in the physical layout.
-  bool partition_key = 6;       // True if this is a partition column.
+  string name = 1; // Logical column name.
+  string logical_type = 2; // e.g. BIGINT, STRING, DECIMAL, TIMESTAMP.
+  int32 field_id = 3; // Stable format-level field ID.
+  bool nullable = 4; // True if column may contain NULLs.
+  string physical_path = 5; // Optional nested path in the physical layout.
+  bool partition_key = 6; // True if this is a partition column.
+  int64 id = 7; // Internal unique column ID.
+  int32 ordinal = 8; // Ordinal position in the schema (1-based within the parent struct).
+  bool leaf = 9; // True if this is a leaf (stats-capable); false for containers.
 }
 
 /**
@@ -67,8 +70,8 @@ message SchemaDescriptor {
  * No lifecycle state is modified.
  */
 message DescribeInputsRequest {
-  string query_id = 1;                 // Must reference an active query.
-  repeated ai.floedb.floecat.common.QueryInput inputs = 2;      // Inputs to resolve (tables or views).
+  string query_id = 1; // Must reference an active query.
+  repeated ai.floedb.floecat.common.QueryInput inputs = 2; // Inputs to resolve (tables or views).
 }
 
 message DescribeInputsResponse {

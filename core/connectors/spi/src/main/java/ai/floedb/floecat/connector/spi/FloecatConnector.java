@@ -16,8 +16,9 @@
 
 package ai.floedb.floecat.connector.spi;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.FileContent;
+import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -57,21 +58,60 @@ public interface FloecatConnector extends Closeable {
   @Override
   void close();
 
+  /**
+   * columnIdAlgorithm is the *persisted* policy for how column_id must be computed for this table.
+   * Reconciler copies it into TableSpec.upstream (so service layer can run without connectors).
+   */
   record TableDescriptor(
       String namespaceFq,
       String tableName,
       String location,
       String schemaJson,
       List<String> partitionKeys,
+      ColumnIdAlgorithm columnIdAlgorithm,
       Map<String, String> properties) {}
+
+  /**
+   * Column identity inputs. Fields may be unknown: - physicalPath may be blank if unknown - ordinal
+   * may be 0 if unknown - fieldId may be 0 if unknown
+   */
+  record ColumnRef(
+      String name, // leaf name (required for many engines)
+      String physicalPath, // canonical leaf path (recommended; may be blank)
+      int ordinal, // 1-based within parent struct, or 0 if unknown
+      int fieldId // 0 if unknown
+      ) {}
+
+  record ColumnStatsView(
+      ColumnRef ref,
+      String logicalType,
+      Long valueCount,
+      Long nullCount,
+      Long nanCount,
+      String min,
+      String max,
+      Ndv ndv,
+      Map<String, String> properties) {}
+
+  record FileColumnStatsView(
+      String filePath,
+      String fileFormat,
+      long rowCount,
+      long sizeBytes,
+      FileContent fileContent,
+      String partitionDataJson,
+      int partitionSpecId,
+      List<Integer> equalityFieldIds,
+      Long sequenceNumber,
+      List<ColumnStatsView> columns) {}
 
   record SnapshotBundle(
       long snapshotId,
       long parentId,
       long upstreamCreatedAtMs,
       TableStats tableStats,
-      List<ColumnStats> columnStats,
-      List<FileColumnStats> fileStats,
+      List<ColumnStatsView> columnStats,
+      List<FileColumnStatsView> fileStats,
       String schemaJson,
       PartitionSpecInfo partitionSpec,
       long sequenceNumber,

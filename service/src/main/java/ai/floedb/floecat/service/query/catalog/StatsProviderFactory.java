@@ -90,7 +90,7 @@ public final class StatsProviderFactory {
     }
 
     @Override
-    public Optional<StatsProvider.ColumnStatsView> columnStats(ResourceId tableId, int columnId) {
+    public Optional<StatsProvider.ColumnStatsView> columnStats(ResourceId tableId, long columnId) {
       return liveContext()
           .findSnapshotPin(tableId, correlationId)
           .flatMap(pin -> safeColumnStats(tableId, pin.getSnapshotId(), columnId));
@@ -113,7 +113,7 @@ public final class StatsProviderFactory {
     }
 
     private Optional<StatsProvider.ColumnStatsView> safeColumnStats(
-        ResourceId tableId, long snapshotId, int columnId) {
+        ResourceId tableId, long snapshotId, long columnId) {
       try {
         return repository
             .getColumnStats(tableId, snapshotId, columnId)
@@ -182,13 +182,13 @@ public final class StatsProviderFactory {
 
   private static final class ColumnStatsViewImpl implements StatsProvider.ColumnStatsView {
     private final ResourceId tableId;
-    private final int columnId;
+    private final long columnId;
     private final String columnName;
     private final long valueCount;
     private final long nullCount;
 
     private ColumnStatsViewImpl(
-        ResourceId tableId, int columnId, String columnName, long valueCount, long nullCount) {
+        ResourceId tableId, long columnId, String columnName, long valueCount, long nullCount) {
       this.tableId = tableId;
       this.columnId = columnId;
       this.columnName = columnName;
@@ -202,7 +202,7 @@ public final class StatsProviderFactory {
     }
 
     @Override
-    public int columnId() {
+    public long columnId() {
       return columnId;
     }
 

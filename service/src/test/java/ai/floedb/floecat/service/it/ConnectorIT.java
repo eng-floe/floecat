@@ -31,6 +31,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
+import ai.floedb.floecat.connector.common.resolver.ColumnIdComputer;
 import ai.floedb.floecat.connector.rpc.*;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
@@ -607,11 +608,29 @@ public class ConnectorIT {
 
       var cs1 = onlyIds.get(0).columnStats();
       var ids1 =
-          cs1.stream().map(ColumnStats::getColumnId).collect(java.util.stream.Collectors.toSet());
+          cs1.stream()
+              .map(
+                  v ->
+                      ColumnIdComputer.compute(
+                          td.columnIdAlgorithm(),
+                          ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder()
+                              .setName(v.ref().name() == null ? "" : v.ref().name())
+                              .setPhysicalPath(
+                                  v.ref().physicalPath() == null ? "" : v.ref().physicalPath())
+                              .setOrdinal(v.ref().ordinal())
+                              .setFieldId(v.ref().fieldId())
+                              .build()))
+              .collect(java.util.stream.Collectors.toSet());
       var names1 =
-          cs1.stream().map(ColumnStats::getColumnName).collect(java.util.stream.Collectors.toSet());
+          cs1.stream()
+              .map(
+                  v ->
+                      (v.ref().physicalPath() == null || v.ref().physicalPath().isBlank())
+                          ? v.ref().name()
+                          : v.ref().physicalPath())
+              .collect(java.util.stream.Collectors.toSet());
 
-      assertEquals(Set.of(1, 4, 9), ids1);
+      assertEquals(Set.of(1L, 4L, 9L), ids1);
       assertEquals(Set.of("id", "user.id", "items.element.qty"), names1);
 
       var onlyNames =
@@ -627,11 +646,29 @@ public class ConnectorIT {
 
       var cs2 = onlyNames.get(0).columnStats();
       var ids2 =
-          cs2.stream().map(ColumnStats::getColumnId).collect(java.util.stream.Collectors.toSet());
+          cs2.stream()
+              .map(
+                  v ->
+                      ColumnIdComputer.compute(
+                          td.columnIdAlgorithm(),
+                          ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder()
+                              .setName(v.ref().name() == null ? "" : v.ref().name())
+                              .setPhysicalPath(
+                                  v.ref().physicalPath() == null ? "" : v.ref().physicalPath())
+                              .setOrdinal(v.ref().ordinal())
+                              .setFieldId(v.ref().fieldId())
+                              .build()))
+              .collect(java.util.stream.Collectors.toSet());
       var names2 =
-          cs2.stream().map(ColumnStats::getColumnName).collect(java.util.stream.Collectors.toSet());
+          cs2.stream()
+              .map(
+                  v ->
+                      (v.ref().physicalPath() == null || v.ref().physicalPath().isBlank())
+                          ? v.ref().name()
+                          : v.ref().physicalPath())
+              .collect(java.util.stream.Collectors.toSet());
 
-      assertEquals(Set.of(5, 12), ids2);
+      assertEquals(Set.of(5L, 12L), ids2);
       assertEquals(Set.of("user.name", "attrs.value"), names2);
 
       var mixed =
@@ -647,11 +684,29 @@ public class ConnectorIT {
 
       var cs3 = mixed.get(0).columnStats();
       var ids3 =
-          cs3.stream().map(ColumnStats::getColumnId).collect(java.util.stream.Collectors.toSet());
+          cs3.stream()
+              .map(
+                  v ->
+                      ColumnIdComputer.compute(
+                          td.columnIdAlgorithm(),
+                          ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder()
+                              .setName(v.ref().name() == null ? "" : v.ref().name())
+                              .setPhysicalPath(
+                                  v.ref().physicalPath() == null ? "" : v.ref().physicalPath())
+                              .setOrdinal(v.ref().ordinal())
+                              .setFieldId(v.ref().fieldId())
+                              .build()))
+              .collect(java.util.stream.Collectors.toSet());
       var names3 =
-          cs3.stream().map(ColumnStats::getColumnName).collect(java.util.stream.Collectors.toSet());
+          cs3.stream()
+              .map(
+                  v ->
+                      (v.ref().physicalPath() == null || v.ref().physicalPath().isBlank())
+                          ? v.ref().name()
+                          : v.ref().physicalPath())
+              .collect(java.util.stream.Collectors.toSet());
 
-      assertEquals(Set.of(2, 8), ids3);
+      assertEquals(Set.of(2L, 8L), ids3);
       assertEquals(Set.of("ts", "items.element.sku"), names3);
 
       var allCols =

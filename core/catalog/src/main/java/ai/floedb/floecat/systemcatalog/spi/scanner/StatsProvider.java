@@ -26,7 +26,7 @@ public interface StatsProvider {
     return Optional.empty();
   }
 
-  default Optional<ColumnStatsView> columnStats(ResourceId tableId, int columnId) {
+  default Optional<ColumnStatsView> columnStats(ResourceId tableId, long columnId) {
     return Optional.empty();
   }
 
@@ -45,7 +45,7 @@ public interface StatsProvider {
   interface ColumnStatsView {
     ResourceId tableId();
 
-    int columnId();
+    long columnId();
 
     String columnName();
 

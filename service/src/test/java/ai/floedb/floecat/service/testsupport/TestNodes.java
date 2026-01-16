@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.testsupport;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -39,10 +40,10 @@ public final class TestNodes {
         rid(tableId.getAccountId(), "ns-" + tableId.getId()),
         tableId.getId(),
         TableFormat.TF_ICEBERG,
+        ColumnIdAlgorithm.CID_FIELD_ID,
         schemaJson,
         Map.of(),
         List.of(),
-        Map.of(),
         Optional.empty(),
         Optional.empty(),
         Optional.empty(),

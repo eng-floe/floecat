@@ -17,10 +17,12 @@
 package ai.floedb.floecat.client.trino;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
@@ -74,6 +76,7 @@ import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeOperators;
 import io.trino.spi.type.TypeSignature;
 import java.time.Instant;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -309,8 +312,7 @@ class FloecatMetadataTest {
             null,
             null);
 
-    Constraint constraint =
-        new Constraint((TupleDomain<ColumnHandle>) (TupleDomain<?>) domain);
+    Constraint constraint = new Constraint((TupleDomain<ColumnHandle>) (TupleDomain<?>) domain);
     var result =
         metadata.applyFilter(
             new TestingSession(
@@ -382,6 +384,53 @@ class FloecatMetadataTest {
     assertNull(
         metadata.getTableHandle(
             session, new SchemaTableName("demo", "tbl"), Optional.empty(), Optional.empty()));
+  }
+
+  @Test
+  void buildPartitionSpec_emptyPartitionKeys_buildsEmptySpec() throws Exception {
+    String schemaJson =
+        """
+        {
+          "type": "struct",
+          "fields": [
+            {"id": 1, "name": "id", "required": true, "type": "int"}
+          ]
+        }
+        """;
+
+    List<String> partitionKeys = List.of();
+
+    var partitionSpec = metadata.buildPartitionSpec(schemaJson, partitionKeys);
+
+    assertNotNull(partitionSpec);
+    assertEquals(0, partitionSpec.fields().size());
+  }
+
+  @Test
+  void buildPartitionSpec_worksCorrectly() throws Exception {
+    String schemaJson =
+        """
+        {
+          "type": "struct",
+          "fields": [
+            {"id": 1, "name": "date", "required": true, "type": "date"},
+            {"id": 2, "name": "country", "required": false, "type": "string"},
+            {"id": 3, "name": "id", "required": true, "type": "int"}
+          ]
+        }
+        """;
+
+    List<String> partitionKeys = List.of("date", "country");
+
+    var partitionSpec = metadata.buildPartitionSpec(schemaJson, partitionKeys);
+
+    // Verify partition spec was built with correct fields
+    assertNotNull(partitionSpec);
+    assertEquals(2, partitionSpec.fields().size());
+
+    // Verify partition fields reference the correct schema columns
+    assertEquals(1, partitionSpec.fields().get(0).sourceId());
+    assertEquals(2, partitionSpec.fields().get(1).sourceId());
   }
 
   private static class TestingSession implements ConnectorSession {
@@ -499,10 +548,7 @@ class FloecatMetadataTest {
           Namespace.newBuilder()
               .setDisplayName("default")
               .setResourceId(
-                  ResourceId.newBuilder()
-                      .setId("ns")
-                      .setKind(ResourceKind.RK_NAMESPACE)
-                      .build())
+                  ResourceId.newBuilder().setId("ns").setKind(ResourceKind.RK_NAMESPACE).build())
               .build();
       responseObserver.onNext(ListNamespacesResponse.newBuilder().addNamespaces(ns).build());
       responseObserver.onCompleted();
@@ -520,7 +566,11 @@ class FloecatMetadataTest {
               .setSchemaJson(tableSchemaJson);
       if (includeUpstream) {
         var upstream =
-            UpstreamRef.newBuilder().setUri(upstreamUri).setFormat(TableFormat.TF_ICEBERG).build();
+            UpstreamRef.newBuilder()
+                .setUri(upstreamUri)
+                .setFormat(TableFormat.TF_ICEBERG)
+                .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+                .build();
         tableBuilder.setUpstream(upstream);
       }
       responseObserver.onNext(GetTableResponse.newBuilder().setTable(tableBuilder.build()).build());

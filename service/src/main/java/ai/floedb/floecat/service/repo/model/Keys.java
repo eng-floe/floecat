@@ -87,7 +87,7 @@ public final class Keys {
     return String.join("/", enc);
   }
 
-  private static String normalizeColumnId(int columnId) {
+  private static String normalizeColumnId(long columnId) {
     return String.format("%019d", columnId);
   }
 
@@ -352,7 +352,7 @@ public final class Keys {
   }
 
   public static String snapshotColumnStatsPointer(
-      String accountId, String tableId, long snapshotId, int columnId) {
+      String accountId, String tableId, long snapshotId, long columnId) {
     String cid = normalizeColumnId(columnId);
     return snapshotColumnStatsDirectoryPointer(accountId, tableId, snapshotId) + encode(cid);
   }
@@ -371,7 +371,7 @@ public final class Keys {
   }
 
   public static String snapshotColumnStatsBlobUri(
-      String accountId, String tableId, int columnId, String sha256) {
+      String accountId, String tableId, long columnId, String sha256) {
     String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     String cid = normalizeColumnId(columnId);

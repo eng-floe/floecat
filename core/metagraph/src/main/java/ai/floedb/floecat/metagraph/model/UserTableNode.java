@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.metagraph.model;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
@@ -38,10 +39,10 @@ public record UserTableNode(
     ResourceId namespaceId,
     String displayName,
     TableFormat format,
+    ColumnIdAlgorithm columnIdAlgorithm,
     String schemaJson,
     Map<String, String> properties,
     List<String> partitionKeys,
-    Map<String, Integer> fieldIdByPath,
     Optional<SnapshotRef> currentSnapshot,
     Optional<SnapshotRef> previousSnapshot,
     Optional<ResolvedSnapshotInfo> resolvedSnapshots,
@@ -53,7 +54,6 @@ public record UserTableNode(
   public UserTableNode {
     properties = Map.copyOf(properties);
     partitionKeys = List.copyOf(partitionKeys);
-    fieldIdByPath = Map.copyOf(fieldIdByPath);
     currentSnapshot = currentSnapshot == null ? Optional.empty() : currentSnapshot;
     previousSnapshot = previousSnapshot == null ? Optional.empty() : previousSnapshot;
     resolvedSnapshots = resolvedSnapshots == null ? Optional.empty() : resolvedSnapshots;

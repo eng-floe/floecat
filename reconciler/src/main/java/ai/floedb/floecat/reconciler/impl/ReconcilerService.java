@@ -43,6 +43,8 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
+import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
@@ -54,6 +56,7 @@ import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
@@ -79,6 +82,7 @@ public class ReconcilerService {
   }
 
   @Inject GrpcClients clients;
+  @Inject LogicalSchemaMapper schemaMapper;
 
   public Result reconcile(ResourceId connectorId, boolean fullRescan, ReconcileScope scopeIn) {
     return reconcile(connectorId, fullRescan, scopeIn, CaptureMode.METADATA_AND_STATS);
@@ -229,7 +233,7 @@ public class ReconcilerService {
                   sourceNsFq, srcTable, destTableId, includeSelectors, includeStats);
 
           ingestAllSnapshotsAndStatsFiltered(
-              destTableId, connector, bundles, includeSelectors, includeStats);
+              destTableId, connector, effective, bundles, includeSelectors, includeStats);
           changed++;
         } catch (Exception e) {
           errors++;
@@ -361,6 +365,7 @@ public class ReconcilerService {
             .setTableDisplayName(sourceTable)
             .setFormat(toTableFormat(format))
             .addAllPartitionKeys(landingView.partitionKeys())
+            .setColumnIdAlgorithm(landingView.columnIdAlgorithm())
             .build();
 
     var spec =
@@ -396,6 +401,7 @@ public class ReconcilerService {
             .setTableDisplayName(sourceTable)
             .setFormat(toTableFormat(format))
             .addAllPartitionKeys(landingView.partitionKeys())
+            .setColumnIdAlgorithm(landingView.columnIdAlgorithm())
             .build();
 
     var updated =
@@ -541,11 +547,15 @@ public class ReconcilerService {
   private void ingestAllSnapshotsAndStatsFiltered(
       ResourceId tableId,
       FloecatConnector connector,
+      FloecatConnector.TableDescriptor tableDesc,
       List<FloecatConnector.SnapshotBundle> bundles,
       Set<String> includeSelectors,
       boolean includeStats) {
 
     var seen = new HashSet<Long>();
+    // Cache schema mapping to avoid re-parsing for each snapshot with identical schema
+    var schemaCache = new LinkedHashMap<String, SchemaDescriptor>();
+
     for (var snapshotBundle : bundles) {
       if (snapshotBundle == null) {
         continue;
@@ -576,15 +586,49 @@ public class ReconcilerService {
                       .build());
         }
 
-        var cols = snapshotBundle.columnStats();
-        if (cols != null && !cols.isEmpty()) {
+        var colsIn = snapshotBundle.columnStats();
+        var fileStatsIn = snapshotBundle.fileStats();
+
+        // Compute schema once per snapshot if we might ingest stats (cached by schemaJson)
+        SchemaDescriptor schema = null;
+        if ((colsIn != null && !colsIn.isEmpty())
+            || (fileStatsIn != null && !fileStatsIn.isEmpty())) {
+          String schemaJson =
+              (snapshotBundle.schemaJson() != null && !snapshotBundle.schemaJson().isBlank())
+                  ? snapshotBundle.schemaJson()
+                  : tableDesc.schemaJson();
+
+          schema =
+              schemaCache.computeIfAbsent(
+                  schemaJson,
+                  key ->
+                      schemaMapper.mapRaw(
+                          tableDesc.columnIdAlgorithm(),
+                          toTableFormat(connector.format()),
+                          key,
+                          new HashSet<>(tableDesc.partitionKeys())));
+        }
+
+        // Column stats
+        if (colsIn != null && !colsIn.isEmpty()) {
+          List<ColumnStats> colsOut =
+              StatsProtoEmitter.toColumnStats(
+                  tableId,
+                  snapshotId,
+                  snapshotBundle.upstreamCreatedAtMs(),
+                  connector.format(),
+                  tableDesc.columnIdAlgorithm(),
+                  (schema == null ? SchemaDescriptor.getDefaultInstance() : schema),
+                  colsIn);
+
+          // Now filter by selector (supports both name and #id)
           List<ColumnStats> filtered =
               (includeSelectors == null || includeSelectors.isEmpty())
-                  ? cols
-                  : cols.stream().filter(c -> matchesSelector(c, includeSelectors)).toList();
+                  ? colsOut
+                  : colsOut.stream().filter(c -> matchesSelector(c, includeSelectors)).toList();
 
           if (!filtered.isEmpty()) {
-            List<PutColumnStatsRequest> columnRequests = new ArrayList<>();
+            List<PutColumnStatsRequest> columnRequests = new ArrayList<>(filtered.size());
             for (var c : filtered) {
               columnRequests.add(
                   PutColumnStatsRequest.newBuilder()
@@ -602,10 +646,20 @@ public class ReconcilerService {
           }
         }
 
-        var fileCols = snapshotBundle.fileStats();
-        if (fileCols != null && !fileCols.isEmpty()) {
-          List<PutFileColumnStatsRequest> fileRequests = new ArrayList<>();
-          for (var f : fileCols) {
+        // File stats
+        if (fileStatsIn != null && !fileStatsIn.isEmpty()) {
+          var fileStatsOut =
+              StatsProtoEmitter.toFileColumnStats(
+                  tableId,
+                  snapshotId,
+                  snapshotBundle.upstreamCreatedAtMs(),
+                  connector.format(),
+                  tableDesc.columnIdAlgorithm(),
+                  (schema == null ? SchemaDescriptor.getDefaultInstance() : schema),
+                  fileStatsIn);
+
+          List<PutFileColumnStatsRequest> fileRequests = new ArrayList<>(fileStatsOut.size());
+          for (var f : fileStatsOut) {
             fileRequests.add(
                 PutFileColumnStatsRequest.newBuilder()
                     .setTableId(tableId)
@@ -707,6 +761,7 @@ public class ReconcilerService {
         upstream.location(),
         upstream.schemaJson(),
         upstream.partitionKeys(),
+        upstream.columnIdAlgorithm(),
         upstream.properties());
   }
 

@@ -156,7 +156,10 @@ public final class TestSupport {
                         .setDisplayName(displayName)
                         .setDescription(desc)
                         .setUpstream(
-                            UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).build())
+                            UpstreamRef.newBuilder()
+                                .setFormat(TableFormat.TF_ICEBERG)
+                                .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+                                .build())
                         .setSchemaJson(schemaJson))
                 .build());
     return resp.getTable();

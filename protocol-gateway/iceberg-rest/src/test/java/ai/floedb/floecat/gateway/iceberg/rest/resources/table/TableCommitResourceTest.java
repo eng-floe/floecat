@@ -27,6 +27,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
@@ -89,6 +90,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     UpstreamRef upstream =
         UpstreamRef.newBuilder()
             .setFormat(TableFormat.TF_ICEBERG)
+            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
             .setUri("s3://bucket/path/")
             .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
             .build();
@@ -128,6 +130,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     UpstreamRef upstream =
         UpstreamRef.newBuilder()
             .setFormat(TableFormat.TF_ICEBERG)
+            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
             .setUri(FIXTURE_LOCATION)
             .setConnectorId(ResourceId.newBuilder().setId("conn").build())
             .build();
@@ -223,6 +226,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     UpstreamRef upstream =
         UpstreamRef.newBuilder()
             .setFormat(TableFormat.TF_ICEBERG)
+            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
             .setUri(FIXTURE_LOCATION)
             .setConnectorId(ResourceId.newBuilder().setId("conn").build())
             .build();
