@@ -46,10 +46,12 @@ import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.storage.PointerStore;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
@@ -73,6 +75,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
   @Inject MarkerStore markerStore;
+  @Inject PointerStore pointerStore;
 
   private static final Set<String> TABLE_MUTABLE_PATHS =
       Set.of(
@@ -829,17 +832,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   }
 
   private void purgeSnapshotsAndStats(ResourceId tableId) {
-    String token = "";
-    StringBuilder next = new StringBuilder();
-    do {
-      var batch = snapshotRepo.list(tableId, 200, token, next);
-      for (var snapshot : batch) {
-        long snapshotId = snapshot.getSnapshotId();
-        snapshotRepo.delete(tableId, snapshotId);
-        statsRepo.deleteAllStatsForSnapshot(tableId, snapshotId);
-      }
-      token = next.toString();
-      next.setLength(0);
-    } while (!token.isBlank());
+    String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
+    pointerStore.deleteByPrefix(prefix);
   }
 }
