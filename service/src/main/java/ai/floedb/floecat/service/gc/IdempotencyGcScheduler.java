@@ -20,6 +20,7 @@ import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.scheduler.Scheduled;
 import io.quarkus.scheduler.ScheduledExecution;
@@ -46,6 +47,12 @@ public class IdempotencyGcScheduler {
 
   private Counter tickCounter;
   private Counter sliceCounter;
+  private Counter scannedCounter;
+  private Counter expiredCounter;
+  private Counter ptrDeletedCounter;
+  private Counter blobDeletedCounter;
+  private Timer tickTimer;
+  private Timer sliceTimer;
   private final AtomicInteger running = new AtomicInteger(0);
   private final AtomicInteger enabledGauge = new AtomicInteger(0);
   private final AtomicLong lastTickStartMs = new AtomicLong(0);
@@ -60,6 +67,30 @@ public class IdempotencyGcScheduler {
     sliceCounter =
         Counter.builder("floecat_gc_idempotency_slices")
             .description("Per-account slices")
+            .register(registry);
+    scannedCounter =
+        Counter.builder("floecat_gc_idempotency_scanned")
+            .description("Idempotency pointers scanned")
+            .register(registry);
+    expiredCounter =
+        Counter.builder("floecat_gc_idempotency_expired")
+            .description("Expired idempotency records found")
+            .register(registry);
+    ptrDeletedCounter =
+        Counter.builder("floecat_gc_idempotency_ptr_deleted")
+            .description("Idempotency pointers deleted")
+            .register(registry);
+    blobDeletedCounter =
+        Counter.builder("floecat_gc_idempotency_blob_deleted")
+            .description("Idempotency blobs deleted")
+            .register(registry);
+    tickTimer =
+        Timer.builder("floecat_gc_idempotency_tick_duration")
+            .description("Duration of idempotency GC ticks")
+            .register(registry);
+    sliceTimer =
+        Timer.builder("floecat_gc_idempotency_slice_duration")
+            .description("Duration of idempotency GC per account slice")
             .register(registry);
     registry.gauge("floecat_gc_idempotency_running", running);
     registry.gauge("floecat_gc_idempotency_enabled", enabledGauge);
@@ -113,6 +144,7 @@ public class IdempotencyGcScheduler {
             .orElse(200);
     final long deadline = now + maxTickMillis;
 
+    Timer.Sample tickSample = Timer.start(registry);
     try {
       List<Account> allAccounts = fetchAllAccounts(accountRepo, accountsPageSize);
       Collections.shuffle(allAccounts);
@@ -125,8 +157,14 @@ public class IdempotencyGcScheduler {
         String accountId = account.getResourceId().getId();
         String token = tokenByAccount.getOrDefault(accountId, "");
 
+        Timer.Sample sliceSample = Timer.start(registry);
         var result = gc.runSliceForAccount(accountId, token);
+        sliceSample.stop(sliceTimer);
         sliceCounter.increment();
+        scannedCounter.increment(result.scanned());
+        expiredCounter.increment(result.expired());
+        ptrDeletedCounter.increment(result.ptrDeleted());
+        blobDeletedCounter.increment(result.blobDeleted());
 
         if (result.nextToken() == null || result.nextToken().isBlank()) {
           tokenByAccount.remove(accountId);
@@ -135,6 +173,7 @@ public class IdempotencyGcScheduler {
         }
       }
     } finally {
+      tickSample.stop(tickTimer);
       lastTickEndMs.set(System.currentTimeMillis());
       running.set(0);
     }

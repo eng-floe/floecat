@@ -23,6 +23,24 @@ import java.util.Objects;
 
 public final class Keys {
 
+  public static final String SEG_ACCOUNT = "/account/";
+  public static final String SEG_CATALOG = "/catalog/";
+  public static final String SEG_NAMESPACE = "/namespace/";
+  public static final String SEG_TABLE = "/table/";
+  public static final String SEG_SNAPSHOTS = "/snapshots/";
+  public static final String SEG_SNAPSHOT = "/snapshot/";
+  public static final String SEG_VIEW = "/view/";
+  public static final String SEG_CONNECTOR = "/connector/";
+  public static final String SEG_TABLE_STATS = "/table-stats/";
+  public static final String SEG_COLUMN_STATS = "/column-stats/";
+  public static final String SEG_FILE_STATS = "/file-stats/";
+  public static final String SEG_NAMESPACE_BY_PATH = "/namespaces/by-path/";
+  public static final String SEG_TABLES_BY_NAME = "/tables/by-name/";
+  public static final String SEG_VIEWS_BY_NAME = "/views/by-name/";
+  public static final String SEG_STATS = "/stats/";
+  public static final String SEG_IDEMPOTENCY = "/idempotency/";
+  public static final String SEG_MARKERS = "/markers/";
+
   private static String req(String name, String v) {
     if (v == null || v.isBlank()) {
       throw new IllegalArgumentException("key arg '" + name + "' is null/blank");
@@ -85,6 +103,19 @@ public final class Keys {
     return "/accounts/by-id/" + encode(tid);
   }
 
+  public static String accountPointerByIdPrefix() {
+    return "/accounts/by-id/";
+  }
+
+  public static String accountRootPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/";
+  }
+
+  public static String accountBlobPrefix(String accountId) {
+    return accountRootPrefix(accountId) + "account/";
+  }
+
   public static String accountPointerByName(String displayName) {
     String name = req("display_name", displayName);
     return "/accounts/by-name/" + encode(name);
@@ -106,6 +137,16 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String cid = req("catalog_id", catalogId);
     return "/accounts/" + encode(tid) + "/catalogs/by-id/" + encode(cid);
+  }
+
+  public static String catalogPointerByIdPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/catalogs/by-id/";
+  }
+
+  public static String catalogRootPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/catalogs/";
   }
 
   public static String catalogPointerByName(String accountId, String displayName) {
@@ -133,6 +174,16 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String nid = req("namespace_id", namespaceId);
     return "/accounts/" + encode(tid) + "/namespaces/by-id/" + encode(nid);
+  }
+
+  public static String namespacePointerByIdPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/namespaces/by-id/";
+  }
+
+  public static String namespaceRootPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/namespaces/";
   }
 
   public static String namespacePointerByPath(
@@ -178,6 +229,16 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     return "/accounts/" + encode(tid) + "/tables/by-id/" + encode(tbid);
+  }
+
+  public static String tablePointerByIdPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/tables/by-id/";
+  }
+
+  public static String tableRootPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/tables/";
   }
 
   public static String tablePointerByName(
@@ -232,6 +293,12 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     return String.format("/accounts/%s/tables/%s/snapshots/by-id/", encode(tid), encode(tbid));
+  }
+
+  public static String snapshotRootPrefix(String accountId, String tableId) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    return String.format("/accounts/%s/tables/%s/snapshots/", encode(tid), encode(tbid));
   }
 
   public static String snapshotPointerByTime(
@@ -297,6 +364,12 @@ public final class Keys {
         "/accounts/%s/tables/%s/table-stats/%s.pb", encode(tid), encode(tbid), encode(sha256));
   }
 
+  public static String snapshotTableStatsBlobPrefix(String accountId, String tableId) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    return String.format("/accounts/%s/tables/%s/table-stats/", encode(tid), encode(tbid));
+  }
+
   public static String snapshotColumnStatsBlobUri(
       String accountId, String tableId, int columnId, String sha256) {
     String tid = req("account_id", accountId);
@@ -305,6 +378,12 @@ public final class Keys {
     return String.format(
         "/accounts/%s/tables/%s/column-stats/%s/%s.pb",
         encode(tid), encode(tbid), encode(cid), encode(sha256));
+  }
+
+  public static String snapshotColumnStatsBlobPrefix(String accountId, String tableId) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    return String.format("/accounts/%s/tables/%s/column-stats/", encode(tid), encode(tbid));
   }
 
   public static String snapshotStatsPrefix(String accountId, String tableId, long snapshotId) {
@@ -341,6 +420,12 @@ public final class Keys {
         encode(tid), encode(tbid), encode(fp), encode(sha));
   }
 
+  public static String snapshotFileStatsBlobPrefix(String accountId, String tableId) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    return String.format("/accounts/%s/tables/%s/file-stats/", encode(tid), encode(tbid));
+  }
+
   public static String snapshotFileStatsPrefix(String accountId, String tableId, long snapshotId) {
     return snapshotFileStatsDirectoryPointer(accountId, tableId, snapshotId);
   }
@@ -351,6 +436,16 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String vid = req("view_id", viewId);
     return "/accounts/" + encode(tid) + "/views/by-id/" + encode(vid);
+  }
+
+  public static String viewPointerByIdPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/views/by-id/";
+  }
+
+  public static String viewRootPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/views/";
   }
 
   public static String viewPointerByName(
@@ -396,6 +491,16 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String cid = req("connector_id", connectorId);
     return "/accounts/" + encode(tid) + "/connectors/by-id/" + encode(cid);
+  }
+
+  public static String connectorPointerByIdPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/connectors/by-id/";
+  }
+
+  public static String connectorRootPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/connectors/";
   }
 
   public static String connectorPointerByName(String accountId, String displayName) {

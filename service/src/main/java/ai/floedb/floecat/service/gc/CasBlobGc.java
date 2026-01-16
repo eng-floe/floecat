@@ -23,7 +23,6 @@ import ai.floedb.floecat.storage.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URLDecoder;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -60,22 +59,30 @@ public class CasBlobGc {
     }
 
     pointersScanned +=
-        collectPointers(accountPrefix(accountId, "/catalogs/by-id/"), referenced, null, pageSize);
+        collectPointers(Keys.catalogPointerByIdPrefix(accountId), referenced, null, pageSize);
     pointersScanned +=
-        collectPointers(accountPrefix(accountId, "/namespaces/by-id/"), referenced, null, pageSize);
+        collectPointers(Keys.namespacePointerByIdPrefix(accountId), referenced, null, pageSize);
     pointersScanned +=
-        collectPointers(accountPrefix(accountId, "/tables/by-id/"), referenced, tableIds, pageSize);
+        collectPointers(Keys.tablePointerByIdPrefix(accountId), referenced, tableIds, pageSize);
     pointersScanned +=
-        collectPointers(accountPrefix(accountId, "/views/by-id/"), referenced, null, pageSize);
+        collectPointers(Keys.viewPointerByIdPrefix(accountId), referenced, null, pageSize);
     pointersScanned +=
-        collectPointers(accountPrefix(accountId, "/connectors/by-id/"), referenced, null, pageSize);
+        collectPointers(Keys.connectorPointerByIdPrefix(accountId), referenced, null, pageSize);
 
     int tablesScanned = 0;
     for (String tableId : tableIds) {
       tablesScanned++;
-      String prefix =
-          "/accounts/" + encode(accountId) + "/tables/" + encode(tableId) + "/snapshots/by-id/";
-      pointersScanned += collectPointers(prefix, referenced, null, pageSize);
+      String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
+      pointersScanned += collectPointers(snapshotsById, referenced, null, pageSize);
+
+      String snapshotsRoot = Keys.snapshotRootPrefix(accountId, tableId);
+      pointersScanned +=
+          collectPointers(
+              snapshotsRoot,
+              referenced,
+              null,
+              pageSize,
+              p -> p.getKey() != null && p.getKey().contains(Keys.SEG_STATS));
     }
 
     int blobsScanned = 0;
@@ -83,9 +90,9 @@ public class CasBlobGc {
 
     var account =
         deleteUnreferenced(
-            accountPrefix(accountId, "/account/"),
+            Keys.accountBlobPrefix(accountId),
             referenced,
-            key -> key.contains("/account/"),
+            key -> key.contains(Keys.SEG_ACCOUNT),
             pageSize,
             nowMs,
             minAgeMs);
@@ -94,9 +101,9 @@ public class CasBlobGc {
 
     var catalogs =
         deleteUnreferenced(
-            accountPrefix(accountId, "/catalogs/"),
+            Keys.catalogRootPrefix(accountId),
             referenced,
-            key -> key.contains("/catalog/"),
+            key -> key.contains(Keys.SEG_CATALOG),
             pageSize,
             nowMs,
             minAgeMs);
@@ -105,9 +112,9 @@ public class CasBlobGc {
 
     var namespaces =
         deleteUnreferenced(
-            accountPrefix(accountId, "/namespaces/"),
+            Keys.namespaceRootPrefix(accountId),
             referenced,
-            key -> key.contains("/namespace/"),
+            key -> key.contains(Keys.SEG_NAMESPACE),
             pageSize,
             nowMs,
             minAgeMs);
@@ -116,9 +123,9 @@ public class CasBlobGc {
 
     var tables =
         deleteUnreferenced(
-            accountPrefix(accountId, "/tables/"),
+            Keys.tableRootPrefix(accountId),
             referenced,
-            key -> key.contains("/table/"),
+            key -> key.contains(Keys.SEG_TABLE),
             pageSize,
             nowMs,
             minAgeMs);
@@ -127,20 +134,53 @@ public class CasBlobGc {
 
     var snapshots =
         deleteUnreferenced(
-            accountPrefix(accountId, "/tables/"),
+            Keys.tableRootPrefix(accountId),
             referenced,
-            key -> key.contains("/snapshots/") && key.contains("/snapshot/"),
+            key -> key.contains(Keys.SEG_SNAPSHOTS) && key.contains(Keys.SEG_SNAPSHOT),
             pageSize,
             nowMs,
             minAgeMs);
     blobsScanned += snapshots.scanned();
     blobsDeleted += snapshots.deleted();
 
+    var tableStats =
+        deleteUnreferenced(
+            Keys.tableRootPrefix(accountId),
+            referenced,
+            key -> key.contains(Keys.SEG_TABLE_STATS),
+            pageSize,
+            nowMs,
+            minAgeMs);
+    blobsScanned += tableStats.scanned();
+    blobsDeleted += tableStats.deleted();
+
+    var columnStats =
+        deleteUnreferenced(
+            Keys.tableRootPrefix(accountId),
+            referenced,
+            key -> key.contains(Keys.SEG_COLUMN_STATS),
+            pageSize,
+            nowMs,
+            minAgeMs);
+    blobsScanned += columnStats.scanned();
+    blobsDeleted += columnStats.deleted();
+
+    var fileStats =
+        deleteUnreferenced(
+            Keys.tableRootPrefix(accountId),
+            referenced,
+            key -> key.contains(Keys.SEG_FILE_STATS),
+            pageSize,
+            nowMs,
+            minAgeMs);
+    blobsScanned += fileStats.scanned();
+    blobsDeleted += fileStats.deleted();
+
     var views =
         deleteUnreferenced(
-            accountPrefix(accountId, "/views/"),
+            Keys.viewRootPrefix(accountId),
             referenced,
-            key -> key.contains("/view/"),
+            key -> key.contains(Keys.SEG_VIEW),
             pageSize,
             nowMs,
             minAgeMs);
@@ -149,9 +189,9 @@ public class CasBlobGc {
 
     var connectors =
         deleteUnreferenced(
-            accountPrefix(accountId, "/connectors/"),
+            Keys.connectorRootPrefix(accountId),
             referenced,
-            key -> key.contains("/connector/"),
+            key -> key.contains(Keys.SEG_CONNECTOR),
             pageSize,
             nowMs,
             minAgeMs);
@@ -164,6 +204,15 @@ public class CasBlobGc {
 
   private int collectPointers(
       String prefix, Set<String> referenced, List<String> tableIds, int pageSize) {
+    return collectPointers(prefix, referenced, tableIds, pageSize, null);
+  }
+
+  private int collectPointers(
+      String prefix,
+      Set<String> referenced,
+      List<String> tableIds,
+      int pageSize,
+      Predicate<Pointer> filter) {
     String token = "";
     int scanned = 0;
 
@@ -171,6 +220,9 @@ public class CasBlobGc {
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
       for (Pointer p : pointers) {
+        if (filter != null && !filter.test(p)) {
+          continue;
+        }
         scanned++;
         if (p.getBlobUri() != null && !p.getBlobUri().isBlank()) {
           referenced.add(normalizeKey(p.getBlobUri()));
@@ -236,10 +288,6 @@ public class CasBlobGc {
     return new DeleteResult(scanned, deleted);
   }
 
-  private static String accountPrefix(String accountId, String suffix) {
-    return "/accounts/" + encode(accountId) + suffix;
-  }
-
   private static String decodeSuffix(String prefix, String fullKey) {
     if (fullKey == null || !fullKey.startsWith(prefix)) {
       return null;
@@ -249,10 +297,6 @@ public class CasBlobGc {
       return null;
     }
     return URLDecoder.decode(suffix, StandardCharsets.UTF_8);
-  }
-
-  private static String encode(String value) {
-    return URLEncoder.encode(value, StandardCharsets.UTF_8);
   }
 
   private static String normalizeKey(String key) {

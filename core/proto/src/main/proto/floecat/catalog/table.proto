@@ -102,9 +102,7 @@ message UpdateTableResponse {
 
 message DeleteTableRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
-  bool purge_stats = 2;
-  bool purge_snapshots = 3;
-  ai.floedb.floecat.common.Precondition precondition = 4;
+  ai.floedb.floecat.common.Precondition precondition = 2;
 }
 message DeleteTableResponse {
   ai.floedb.floecat.common.MutationMeta meta = 1;

@@ -476,7 +476,7 @@ public class Shell implements Runnable {
          table get <id|catalog.ns[.ns...].table>
          table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...] [--etag <etag>]
              [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
-         table delete <id|fq> [--purge-stats] [--purge-snaps] [--etag <etag>]
+         table delete <id|fq> [--etag <etag>]
          views <catalog.ns[.ns...]>
          view create <catalog.ns[.ns...].name> [--sql <text>] [--desc <text>] [--props k=v ...]
          view get <id|catalog.ns[.ns...].name>
@@ -1228,17 +1228,11 @@ public class Shell implements Runnable {
       }
       case "delete" -> {
         if (args.size() < 2) {
-          out.println(
-              "usage: table delete <id|catalog.ns[.ns...].table> [--purge-stats] [--purge-snaps]"
-                  + " [--etag <etag>]");
+          out.println("usage: table delete <id|catalog.ns[.ns...].table> [--etag <etag>]");
           return;
         }
         ResourceId tableId = resolveTableIdFlexible(args.get(1));
-        var deleteTableBuilder =
-            DeleteTableRequest.newBuilder()
-                .setTableId(tableId)
-                .setPurgeStats(args.contains("--purge-stats"))
-                .setPurgeSnapshots(args.contains("--purge-snaps"));
+        var deleteTableBuilder = DeleteTableRequest.newBuilder().setTableId(tableId);
         var deleteTablePrecondition = preconditionFromEtag(args);
         if (deleteTablePrecondition != null) {
           deleteTableBuilder.setPrecondition(deleteTablePrecondition);

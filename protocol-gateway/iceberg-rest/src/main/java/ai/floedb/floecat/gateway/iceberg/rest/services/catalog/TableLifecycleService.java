@@ -132,11 +132,7 @@ public class TableLifecycleService {
     if (tableId == null) {
       return;
     }
-    DeleteTableRequest.Builder request =
-        DeleteTableRequest.newBuilder()
-            .setTableId(tableId)
-            .setPurgeStats(purgeRequested)
-            .setPurgeSnapshots(purgeRequested);
+    DeleteTableRequest.Builder request = DeleteTableRequest.newBuilder().setTableId(tableId);
     tableClient.deleteTable(request.build());
   }
 

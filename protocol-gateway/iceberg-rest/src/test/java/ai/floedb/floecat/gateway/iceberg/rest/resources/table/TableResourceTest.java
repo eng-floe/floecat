@@ -605,7 +605,7 @@ class TableResourceTest extends AbstractRestResourceTest {
   }
 
   @Test
-  void deleteTableHonorsPurgeRequestedFlag() {
+  void deleteTablePassesThroughRequest() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
@@ -629,8 +629,6 @@ class TableResourceTest extends AbstractRestResourceTest {
         ArgumentCaptor.forClass(DeleteTableRequest.class);
     verify(tableStub).deleteTable(deleteCaptor.capture());
     DeleteTableRequest sent = deleteCaptor.getValue();
-    assertTrue(sent.getPurgeStats());
-    assertTrue(sent.getPurgeSnapshots());
     verify(tableDropCleanupService).purgeTableData(eq("foo"), eq("db"), eq("orders"), eq(table));
   }
 

@@ -37,20 +37,20 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.eclipse.microprofile.config.ConfigProvider;
 
 @ApplicationScoped
-public class CasBlobGcScheduler {
+public class PointerGcScheduler {
 
   @Inject Provider<AccountRepository> accounts;
-  @Inject Provider<CasBlobGc> casBlobGc;
+  @Inject Provider<PointerGc> pointerGc;
   @Inject MeterRegistry registry;
 
   private Counter tickCounter;
   private Counter accountCounter;
   private Counter pointersScannedCounter;
-  private Counter blobsScannedCounter;
-  private Counter blobsDeletedCounter;
-  private Counter referencedCounter;
-  private Counter tablesScannedCounter;
+  private Counter pointersDeletedCounter;
+  private Counter missingBlobsCounter;
+  private Counter staleSecondariesCounter;
   private Timer tickTimer;
+  private Timer globalTimer;
   private Timer accountTimer;
   private final AtomicInteger running = new AtomicInteger(0);
   private final AtomicInteger enabledGauge = new AtomicInteger(0);
@@ -62,43 +62,45 @@ public class CasBlobGcScheduler {
   @PostConstruct
   void initMeters() {
     tickCounter =
-        Counter.builder("floecat_gc_cas_ticks").description("Scheduler ticks").register(registry);
+        Counter.builder("floecat_gc_pointer_ticks")
+            .description("Scheduler ticks")
+            .register(registry);
     accountCounter =
-        Counter.builder("floecat_gc_cas_accounts")
+        Counter.builder("floecat_gc_pointer_accounts")
             .description("Accounts processed per tick")
             .register(registry);
     pointersScannedCounter =
-        Counter.builder("floecat_gc_cas_pointers_scanned")
-            .description("Pointers scanned by CAS GC")
+        Counter.builder("floecat_gc_pointer_pointers_scanned")
+            .description("Pointers scanned by pointer GC")
             .register(registry);
-    blobsScannedCounter =
-        Counter.builder("floecat_gc_cas_blobs_scanned")
-            .description("Blobs scanned by CAS GC")
+    pointersDeletedCounter =
+        Counter.builder("floecat_gc_pointer_pointers_deleted")
+            .description("Pointers deleted by pointer GC")
             .register(registry);
-    blobsDeletedCounter =
-        Counter.builder("floecat_gc_cas_blobs_deleted")
-            .description("Blobs deleted by CAS GC")
+    missingBlobsCounter =
+        Counter.builder("floecat_gc_pointer_missing_blobs")
+            .description("Pointers referencing missing blobs during pointer GC")
             .register(registry);
-    referencedCounter =
-        Counter.builder("floecat_gc_cas_referenced")
-            .description("Referenced blobs discovered by CAS GC")
-            .register(registry);
-    tablesScannedCounter =
-        Counter.builder("floecat_gc_cas_tables_scanned")
-            .description("Tables scanned by CAS GC")
+    staleSecondariesCounter =
+        Counter.builder("floecat_gc_pointer_stale_secondaries")
+            .description("Stale secondary pointers detected by pointer GC")
             .register(registry);
     tickTimer =
-        Timer.builder("floecat_gc_cas_tick_duration")
-            .description("Duration of CAS GC ticks")
+        Timer.builder("floecat_gc_pointer_tick_duration")
+            .description("Duration of pointer GC ticks")
+            .register(registry);
+    globalTimer =
+        Timer.builder("floecat_gc_pointer_global_duration")
+            .description("Duration of pointer GC global account pass")
             .register(registry);
     accountTimer =
-        Timer.builder("floecat_gc_cas_account_duration")
-            .description("Duration of CAS GC per account")
+        Timer.builder("floecat_gc_pointer_account_duration")
+            .description("Duration of pointer GC per account")
             .register(registry);
-    registry.gauge("floecat_gc_cas_running", running);
-    registry.gauge("floecat_gc_cas_enabled", enabledGauge);
-    registry.gauge("floecat_gc_cas_last_tick_start_ms", lastTickStartMs);
-    registry.gauge("floecat_gc_cas_last_tick_end_ms", lastTickEndMs);
+    registry.gauge("floecat_gc_pointer_running", running);
+    registry.gauge("floecat_gc_pointer_enabled", enabledGauge);
+    registry.gauge("floecat_gc_pointer_last_tick_start_ms", lastTickStartMs);
+    registry.gauge("floecat_gc_pointer_last_tick_end_ms", lastTickEndMs);
   }
 
   void onStop(@Observes ShutdownEvent ev) {
@@ -107,7 +109,7 @@ public class CasBlobGcScheduler {
   }
 
   @Scheduled(
-      every = "{floecat.gc.cas.tick-every}",
+      every = "{floecat.gc.pointer.tick-every}",
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
       skipExecutionIf = DisabledOrStopping.class)
   void tick() {
@@ -116,17 +118,18 @@ public class CasBlobGcScheduler {
     }
 
     var cfg = ConfigProvider.getConfig();
-    boolean enabled = cfg.getOptionalValue("floecat.gc.cas.enabled", Boolean.class).orElse(true);
+    boolean enabled =
+        cfg.getOptionalValue("floecat.gc.pointer.enabled", Boolean.class).orElse(true);
     enabledGauge.set(enabled ? 1 : 0);
     if (!enabled) {
       return;
     }
 
     final AccountRepository accountRepo;
-    final CasBlobGc gc;
+    final PointerGc gc;
     try {
       accountRepo = accounts.get();
-      gc = casBlobGc.get();
+      gc = pointerGc.get();
     } catch (Throwable ignored) {
       return;
     }
@@ -137,13 +140,21 @@ public class CasBlobGcScheduler {
     tickCounter.increment();
 
     final long maxTickMillis =
-        cfg.getOptionalValue("floecat.gc.cas.max-tick-millis", Long.class).orElse(4000L);
+        cfg.getOptionalValue("floecat.gc.pointer.max-tick-millis", Long.class).orElse(4000L);
     final int accountsPageSize =
-        cfg.getOptionalValue("floecat.gc.cas.accounts-page-size", Integer.class).orElse(200);
+        cfg.getOptionalValue("floecat.gc.pointer.accounts-page-size", Integer.class).orElse(200);
     final long deadline = now + maxTickMillis;
 
     Timer.Sample tickSample = Timer.start(registry);
     try {
+      Timer.Sample globalSample = Timer.start(registry);
+      var globalResult = gc.runGlobalAccountPointers(deadline);
+      globalSample.stop(globalTimer);
+      pointersScannedCounter.increment(globalResult.scanned());
+      pointersDeletedCounter.increment(globalResult.deleted());
+      missingBlobsCounter.increment(globalResult.missingBlobs());
+      staleSecondariesCounter.increment(globalResult.staleSecondaries());
+
       List<Account> allAccounts = fetchAllAccounts(accountRepo, accountsPageSize);
       Collections.shuffle(allAccounts);
 
@@ -152,14 +163,13 @@ public class CasBlobGcScheduler {
           break;
         }
         Timer.Sample accountSample = Timer.start(registry);
-        var result = gc.runForAccount(account.getResourceId().getId());
+        var result = gc.runForAccount(account.getResourceId().getId(), deadline);
         accountSample.stop(accountTimer);
         accountCounter.increment();
-        pointersScannedCounter.increment(result.pointersScanned());
-        blobsScannedCounter.increment(result.blobsScanned());
-        blobsDeletedCounter.increment(result.blobsDeleted());
-        referencedCounter.increment(result.referenced());
-        tablesScannedCounter.increment(result.tablesScanned());
+        pointersScannedCounter.increment(result.scanned());
+        pointersDeletedCounter.increment(result.deleted());
+        missingBlobsCounter.increment(result.missingBlobs());
+        staleSecondariesCounter.increment(result.staleSecondaries());
       }
     } finally {
       tickSample.stop(tickTimer);
@@ -192,7 +202,7 @@ public class CasBlobGcScheduler {
     public boolean test(ScheduledExecution execution) {
       boolean enabled =
           ConfigProvider.getConfig()
-              .getOptionalValue("floecat.gc.cas.enabled", Boolean.class)
+              .getOptionalValue("floecat.gc.pointer.enabled", Boolean.class)
               .orElse(true);
       return !enabled || stopping;
     }
