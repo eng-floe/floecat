@@ -152,16 +152,11 @@ Notable `application.properties` keys:
 | `floecat.seed.enabled` | Enable demo data seeding. |
 | `floecat.kv` / `floecat.blob` | Select pointer/blob store implementation (`memory`, `dynamodb`, `s3`). |
 | `floecat.query.*` | Default TTL, grace period, max cache size, safety expiry for query contexts. |
-<<<<<<< HEAD
 | `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for idempotency GC. |
 | `floecat.gc.cas.*` | Cadence, page size, min-age, tick slice settings for CAS blob GC. |
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |
-=======
-| `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for GC. |
-| `floecat.gc.cas.*` | Cadence, page size, min-age, and slice duration for CAS blob GC. |
->>>>>>> main
 | `quarkus.log.*` | JSON logging, file rotation, audit handlers per RPC package. |
-| `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters. |
+| `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters (see [`docs/operations.md`](operations.md)). |
 
 Extension points:
 - **Storage** – Provide custom `PointerStore`/`BlobStore` (see [`docs/storage-spi.md`](storage-spi.md)).
