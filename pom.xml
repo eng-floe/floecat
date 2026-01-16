@@ -52,6 +52,7 @@
       <module>connectors/catalogs/delta</module>
 
       <!-- Storage -->
+      <module>storage/common</module>
       <module>storage/memory</module>
       <module>storage/aws</module>
 
@@ -66,7 +67,7 @@
 
       <!-- CLI -->
       <module>client-cli</module>
-      
+
       <!-- Other -->
       <module>reconciler</module>
       <module>protocol-gateway</module>

@@ -35,4 +35,8 @@ public interface PointerStore {
   int deleteByPrefix(String prefix);
 
   int countByPrefix(String prefix);
+
+  boolean isEmpty();
+
+  default void dump(String header) {}
 }

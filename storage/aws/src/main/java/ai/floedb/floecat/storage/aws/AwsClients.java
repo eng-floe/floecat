@@ -31,6 +31,7 @@ import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3Configuration;
@@ -41,11 +42,11 @@ public class AwsClients {
   @ConfigProperty(name = "floecat.fileio.override.s3.region", defaultValue = "us-east-1")
   Region region;
 
-  @ConfigProperty(name = "floecat.fileio.override.s3.access-key-id", defaultValue = "test")
-  String accessKey;
+  @ConfigProperty(name = "floecat.fileio.override.s3.access-key-id")
+  Optional<String> accessKey;
 
-  @ConfigProperty(name = "floecat.fileio.override.s3.secret-access-key", defaultValue = "test")
-  String secretKey;
+  @ConfigProperty(name = "floecat.fileio.override.s3.secret-access-key")
+  Optional<String> secretKey;
 
   @ConfigProperty(name = "floecat.fileio.override.s3.session-token")
   Optional<String> sessionToken;
@@ -74,6 +75,18 @@ public class AwsClients {
 
   @Produces
   @Singleton
+  public DynamoDbAsyncClient dynamoDbAsyncClient() {
+    var builder =
+        DynamoDbAsyncClient.builder()
+            .region(region)
+            .credentialsProvider(resolveCredentials())
+            .overrideConfiguration(ClientOverrideConfiguration.builder().build());
+    dynamoEndpoint.ifPresent(builder::endpointOverride);
+    return builder.build();
+  }
+
+  @Produces
+  @Singleton
   S3Client s3Client() {
     var s3Cfg = S3Configuration.builder().pathStyleAccessEnabled(forcePathStyle).build();
     var builder =
@@ -87,9 +100,9 @@ public class AwsClients {
     return builder.build();
   }
 
-  private AwsCredentialsProvider resolveCredentials() {
-    String trimmedAccess = trim(accessKey);
-    String trimmedSecret = trim(secretKey);
+  AwsCredentialsProvider resolveCredentials() {
+    String trimmedAccess = trim(accessKey.orElse(null));
+    String trimmedSecret = trim(secretKey.orElse(null));
     if (trimmedAccess != null && trimmedSecret != null) {
       AwsCredentials creds =
           sessionToken
@@ -99,7 +112,7 @@ public class AwsClients {
               .orElseGet(() -> AwsBasicCredentials.create(trimmedAccess, trimmedSecret));
       return StaticCredentialsProvider.create(creds);
     }
-    return DefaultCredentialsProvider.create();
+    return DefaultCredentialsProvider.builder().build();
   }
 
   private static String trim(String value) {

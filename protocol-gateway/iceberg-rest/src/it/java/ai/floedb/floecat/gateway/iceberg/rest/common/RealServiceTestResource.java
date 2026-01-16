@@ -56,7 +56,8 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
     "floecat.kv.ttl-enabled",
     "floecat.blob",
     "floecat.blob.s3.bucket",
-    "floecat.fixtures.use-aws-s3"
+    "floecat.fixtures.use-aws-s3",
+    "floecat.interceptor.validate.account"
   };
   private static final String[] FORWARDED_ENVS = {
     "AWS_REQUEST_CHECKSUM_CALCULATION",

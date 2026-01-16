@@ -126,6 +126,8 @@ endif
 PARENT_STAMP := $(M2_CLI_DIR)/.parent-$(VERSION).stamp
 PROTO_STAMP  := $(M2_CLI_DIR)/.proto-$(VERSION).stamp
 
+APP_NAME     := floedb-floecat
+
 # ---------- CLI outputs & inputs ----------
 CLI_JAR := client-cli/target/quarkus-app/quarkus-run.jar
 CLI_SRC := $(shell find client-cli/src -type f \( -name '*.java' -o -name '*.xml' -o -name '*.properties' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) ) client-cli/pom.xml
@@ -235,6 +237,9 @@ test-localstack: $(PROTO_JAR) localstack-down localstack-up
 	$(MVN) $(MVN_TESTALL) $(CATALOG_LOCALSTACK_PROPS) $(UPSTREAM_LOCALSTACK_PROPS) \
 	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	  verify
+
+.PHONY: localstack-restart
+localstack-restart: localstack-down localstack-up
 
 unit-test:
 	@echo "==> [TEST] unit tests (service, REST gateway, client-cli)"
@@ -362,6 +367,20 @@ run-localstack-localstack: localstack-up $(PROTO_JAR)
 .PHONY: run-all
 run-all: start-rest run-service
 
+.PHONY: dev-start dev-stop stop-service
+dev-start: localstack-up
+	$(LOCALSTACK_ENV) \
+	$(MVN) -f ./pom.xml \
+	  -Dapplication.name=$(APP_NAME) \
+	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+	  -Dfloecat.seed.enabled=true \
+	  -Dfloecat.seed.mode=iceberg \
+	  $(CATALOG_LOCALSTACK_PROPS) $(UPSTREAM_LOCALSTACK_PROPS) \
+	  $(QUARKUS_DEV_ARGS) \
+	  --projects service \
+	  $(QUARKUS_DEV_GOAL) &
+dev-stop: stop-service localstack-down
+
 # ===================================================
 # Dev (background)
 # ===================================================
@@ -451,7 +470,7 @@ stop-service:
 	  fi; \
 	  rm -f "$(SERVICE_PID)"; \
 	else \
-	  echo "==> [DEV] service not running"; \
+	  pkill -f "application.name=$(APP_NAME)" || echo "==> [DEV] service not running"; \
 	fi
 
 .PHONY: stop-rest

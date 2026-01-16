@@ -34,18 +34,15 @@ import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.Status;
 import io.opentelemetry.api.trace.Span;
-import io.quarkus.grpc.GlobalInterceptor;
-import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Clock;
 import java.util.Optional;
 import java.util.UUID;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.MDC;
 
 @ApplicationScoped
-@GlobalInterceptor
-@Priority(1)
 public class InboundContextInterceptor implements ServerInterceptor {
   private static final Metadata.Key<byte[]> PRINC_BIN =
       Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
@@ -69,6 +66,18 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
   @Inject QueryContextStore queryStore;
   @Inject AccountRepository accountRepository;
+
+  @ConfigProperty(name = "floecat.interceptor.validate.account", defaultValue = "true")
+  boolean validateAccount;
+
+  @ConfigProperty(name = "floecat.interceptor.session.header")
+  Optional<String> sessionHeader;
+
+  @ConfigProperty(name = "floecat.interceptor.oidc.issuer")
+  Optional<String> oidcIssuer;
+
+  @ConfigProperty(name = "floecat.interceptor.oidc.client-id")
+  Optional<String> oidcClientId;
 
   @Override
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
@@ -164,7 +173,11 @@ public class InboundContextInterceptor implements ServerInterceptor {
     if (pcBytes != null) {
       PrincipalContext pc = parsePrincipal(pcBytes);
 
-      validateAccount(pc.getAccountId());
+      if (this.validateAccount) {
+        validateAccount(pc.getAccountId());
+      } else if (this.sessionHeader.isPresent()) {
+        validateSessionHeader(headers);
+      }
 
       if (!isBlank(queryIdHeader)
           && !isBlank(pc.getQueryId())
@@ -210,6 +223,14 @@ public class InboundContextInterceptor implements ServerInterceptor {
     }
 
     return new ResolvedContext(devContext(), "");
+  }
+
+  private void validateSessionHeader(Metadata headers) {
+    var oidcIssuer = this.oidcIssuer.orElseThrow();
+    var oidcClientId = this.oidcClientId.orElseThrow();
+
+    // TODO: validate gRPC JWT session header using quarkus-oidc-client w/oidcIssuer+oidcClientID
+    throw new UnsupportedOperationException("Session header validation is not supported");
   }
 
   private static PrincipalContext parsePrincipal(byte[] encoded) {
