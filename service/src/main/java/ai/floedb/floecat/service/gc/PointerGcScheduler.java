@@ -20,6 +20,7 @@ import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.scheduler.Scheduled;
 import io.quarkus.scheduler.ScheduledExecution;
@@ -44,6 +45,13 @@ public class PointerGcScheduler {
 
   private Counter tickCounter;
   private Counter accountCounter;
+  private Counter pointersScannedCounter;
+  private Counter pointersDeletedCounter;
+  private Counter missingBlobsCounter;
+  private Counter staleSecondariesCounter;
+  private Timer tickTimer;
+  private Timer globalTimer;
+  private Timer accountTimer;
   private final AtomicInteger running = new AtomicInteger(0);
   private final AtomicInteger enabledGauge = new AtomicInteger(0);
   private final AtomicLong lastTickStartMs = new AtomicLong(0);
@@ -60,6 +68,34 @@ public class PointerGcScheduler {
     accountCounter =
         Counter.builder("floecat_gc_pointer_accounts")
             .description("Accounts processed per tick")
+            .register(registry);
+    pointersScannedCounter =
+        Counter.builder("floecat_gc_pointer_pointers_scanned")
+            .description("Pointers scanned by pointer GC")
+            .register(registry);
+    pointersDeletedCounter =
+        Counter.builder("floecat_gc_pointer_pointers_deleted")
+            .description("Pointers deleted by pointer GC")
+            .register(registry);
+    missingBlobsCounter =
+        Counter.builder("floecat_gc_pointer_missing_blobs")
+            .description("Pointers referencing missing blobs during pointer GC")
+            .register(registry);
+    staleSecondariesCounter =
+        Counter.builder("floecat_gc_pointer_stale_secondaries")
+            .description("Stale secondary pointers detected by pointer GC")
+            .register(registry);
+    tickTimer =
+        Timer.builder("floecat_gc_pointer_tick_duration")
+            .description("Duration of pointer GC ticks")
+            .register(registry);
+    globalTimer =
+        Timer.builder("floecat_gc_pointer_global_duration")
+            .description("Duration of pointer GC global account pass")
+            .register(registry);
+    accountTimer =
+        Timer.builder("floecat_gc_pointer_account_duration")
+            .description("Duration of pointer GC per account")
             .register(registry);
     registry.gauge("floecat_gc_pointer_running", running);
     registry.gauge("floecat_gc_pointer_enabled", enabledGauge);
@@ -109,8 +145,15 @@ public class PointerGcScheduler {
         cfg.getOptionalValue("floecat.gc.pointer.accounts-page-size", Integer.class).orElse(200);
     final long deadline = now + maxTickMillis;
 
+    Timer.Sample tickSample = Timer.start(registry);
     try {
-      gc.runGlobalAccountPointers(deadline);
+      Timer.Sample globalSample = Timer.start(registry);
+      var globalResult = gc.runGlobalAccountPointers(deadline);
+      globalSample.stop(globalTimer);
+      pointersScannedCounter.increment(globalResult.scanned());
+      pointersDeletedCounter.increment(globalResult.deleted());
+      missingBlobsCounter.increment(globalResult.missingBlobs());
+      staleSecondariesCounter.increment(globalResult.staleSecondaries());
 
       List<Account> allAccounts = fetchAllAccounts(accountRepo, accountsPageSize);
       Collections.shuffle(allAccounts);
@@ -119,10 +162,17 @@ public class PointerGcScheduler {
         if (System.currentTimeMillis() >= deadline || stopping) {
           break;
         }
-        gc.runForAccount(account.getResourceId().getId(), deadline);
+        Timer.Sample accountSample = Timer.start(registry);
+        var result = gc.runForAccount(account.getResourceId().getId(), deadline);
+        accountSample.stop(accountTimer);
         accountCounter.increment();
+        pointersScannedCounter.increment(result.scanned());
+        pointersDeletedCounter.increment(result.deleted());
+        missingBlobsCounter.increment(result.missingBlobs());
+        staleSecondariesCounter.increment(result.staleSecondaries());
       }
     } finally {
+      tickSample.stop(tickTimer);
       lastTickEndMs.set(System.currentTimeMillis());
       running.set(0);
     }

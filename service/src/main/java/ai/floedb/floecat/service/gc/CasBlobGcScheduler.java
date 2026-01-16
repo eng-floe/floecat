@@ -20,6 +20,7 @@ import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.scheduler.Scheduled;
 import io.quarkus.scheduler.ScheduledExecution;
@@ -44,6 +45,13 @@ public class CasBlobGcScheduler {
 
   private Counter tickCounter;
   private Counter accountCounter;
+  private Counter pointersScannedCounter;
+  private Counter blobsScannedCounter;
+  private Counter blobsDeletedCounter;
+  private Counter referencedCounter;
+  private Counter tablesScannedCounter;
+  private Timer tickTimer;
+  private Timer accountTimer;
   private final AtomicInteger running = new AtomicInteger(0);
   private final AtomicInteger enabledGauge = new AtomicInteger(0);
   private final AtomicLong lastTickStartMs = new AtomicLong(0);
@@ -58,6 +66,34 @@ public class CasBlobGcScheduler {
     accountCounter =
         Counter.builder("floecat_gc_cas_accounts")
             .description("Accounts processed per tick")
+            .register(registry);
+    pointersScannedCounter =
+        Counter.builder("floecat_gc_cas_pointers_scanned")
+            .description("Pointers scanned by CAS GC")
+            .register(registry);
+    blobsScannedCounter =
+        Counter.builder("floecat_gc_cas_blobs_scanned")
+            .description("Blobs scanned by CAS GC")
+            .register(registry);
+    blobsDeletedCounter =
+        Counter.builder("floecat_gc_cas_blobs_deleted")
+            .description("Blobs deleted by CAS GC")
+            .register(registry);
+    referencedCounter =
+        Counter.builder("floecat_gc_cas_referenced")
+            .description("Referenced blobs discovered by CAS GC")
+            .register(registry);
+    tablesScannedCounter =
+        Counter.builder("floecat_gc_cas_tables_scanned")
+            .description("Tables scanned by CAS GC")
+            .register(registry);
+    tickTimer =
+        Timer.builder("floecat_gc_cas_tick_duration")
+            .description("Duration of CAS GC ticks")
+            .register(registry);
+    accountTimer =
+        Timer.builder("floecat_gc_cas_account_duration")
+            .description("Duration of CAS GC per account")
             .register(registry);
     registry.gauge("floecat_gc_cas_running", running);
     registry.gauge("floecat_gc_cas_enabled", enabledGauge);
@@ -106,6 +142,7 @@ public class CasBlobGcScheduler {
         cfg.getOptionalValue("floecat.gc.cas.accounts-page-size", Integer.class).orElse(200);
     final long deadline = now + maxTickMillis;
 
+    Timer.Sample tickSample = Timer.start(registry);
     try {
       List<Account> allAccounts = fetchAllAccounts(accountRepo, accountsPageSize);
       Collections.shuffle(allAccounts);
@@ -114,10 +151,18 @@ public class CasBlobGcScheduler {
         if (System.currentTimeMillis() >= deadline || stopping) {
           break;
         }
-        gc.runForAccount(account.getResourceId().getId());
+        Timer.Sample accountSample = Timer.start(registry);
+        var result = gc.runForAccount(account.getResourceId().getId());
+        accountSample.stop(accountTimer);
         accountCounter.increment();
+        pointersScannedCounter.increment(result.pointersScanned());
+        blobsScannedCounter.increment(result.blobsScanned());
+        blobsDeletedCounter.increment(result.blobsDeleted());
+        referencedCounter.increment(result.referenced());
+        tablesScannedCounter.increment(result.tablesScanned());
       }
     } finally {
+      tickSample.stop(tickTimer);
       lastTickEndMs.set(System.currentTimeMillis());
       running.set(0);
     }
