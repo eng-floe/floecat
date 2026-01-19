@@ -33,6 +33,6 @@ public final class DeltaConnectorProvider implements ConnectorProvider {
   public FloecatConnector create(ConnectorConfig cfg) {
     Map<String, String> options = new HashMap<>(cfg.options());
     AuthProvider authProvider = DatabricksAuthFactory.from(cfg.auth());
-    return UnityDeltaConnector.create(cfg.uri(), options, authProvider);
+    return DeltaConnectorFactory.create(cfg.uri(), options, authProvider);
   }
 }

@@ -554,7 +554,10 @@ public class SeedRunner {
 
   private Map<String, String> deltaConnectorProperties(DeltaFixtureConfig fixture) {
     Map<String, String> props = new LinkedHashMap<>();
+    props.put("delta.source", "filesystem");
     props.put("delta.table-root", fixture.tableRoot());
+    props.put("external.namespace", fixture.sourceNamespace());
+    props.put("external.table-name", fixture.tableName());
     props.put("stats.ndv.enabled", "false");
     props.putAll(TestDeltaFixtures.s3Options());
     return props;
