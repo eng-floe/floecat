@@ -226,7 +226,7 @@ $(PROTO_JAR): core/proto/pom.xml $(shell find core/proto -type f -name '*.proto'
 	$(MVN) -q -f core/proto/pom.xml -DskipTests install
 	@test -f "$@" || { echo "ERROR: expected $@ not found"; exit 1; }
 
- $(TEST_SUPPORT_JAR):
+$(TEST_SUPPORT_JAR):
 	@echo "==> [BUILD] storage-spi test-jar (for test scope deps)"
 	$(MVN) -q -f ./pom.xml -DskipTests -DskipUTs=true -DskipITs=true -pl core/storage-spi -am install
 
