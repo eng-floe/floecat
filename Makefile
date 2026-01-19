@@ -113,6 +113,7 @@ ifeq ($(strip $(VERSION)),)
   VERSION := 0.1.0-SNAPSHOT
 endif
 PROTO_JAR := core/proto/target/floecat-proto-$(VERSION).jar
+TEST_SUPPORT_JAR := core/storage-spi/target/floecat-storage-spi-$(VERSION)-tests.jar
 
 # ---------- CLI isolation toggle ----------
 CLI_ISOLATED ?= 1
@@ -208,10 +209,26 @@ build-all:
 .PHONY: proto
 proto: $(PROTO_JAR)
 
+# ===================================================
+# Test Support
+# ===================================================
+.PHONY: test-support
+test-support: $(TEST_SUPPORT_JAR)
+
+# ===================================================
+# JAR Dependencies
+# ===================================================
+.PHONY: jar-dependencies
+jar-dependencies: proto test-support
+
 $(PROTO_JAR): core/proto/pom.xml $(shell find core/proto -type f -name '*.proto' -o -name 'pom.xml')
 	@echo "==> [PROTO] package generated stubs ($(VERSION))"
 	$(MVN) -q -f core/proto/pom.xml -DskipTests install
 	@test -f "$@" || { echo "ERROR: expected $@ not found"; exit 1; }
+
+ $(TEST_SUPPORT_JAR):
+	@echo "==> [BUILD] storage-spi test-jar (for test scope deps)"
+	$(MVN) -q -f ./pom.xml -DskipTests -DskipUTs=true -DskipITs=true -pl core/storage-spi -am install
 
 # ===================================================
 # Tests
@@ -295,7 +312,7 @@ clean-dev:
 .PHONY: run run-service run-all
 run: run-service
 
-run-service: $(PROTO_JAR)
+run-service: jar-dependencies
 	@echo "==> [DEV] quarkus:dev (profile=$(QUARKUS_PROFILE))"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
@@ -306,7 +323,7 @@ run-service: $(PROTO_JAR)
 	  $(QUARKUS_DEV_GOAL)
 
 .PHONY: run-aws-aws
-run-aws-aws: $(PROTO_JAR)
+run-aws-aws: jar-dependencies
 	@if [ -z "$(REAL_AWS_BUCKET)" ] || [ -z "$(REAL_AWS_TABLE)" ]; then \
 	  echo "ERROR: REAL_AWS_BUCKET and REAL_AWS_TABLE must be set"; \
 	  exit 1; \
@@ -322,7 +339,7 @@ run-aws-aws: $(PROTO_JAR)
 	  $(QUARKUS_DEV_GOAL)
 
 .PHONY: run-localstack-aws
-run-localstack-aws: localstack-up $(PROTO_JAR)
+run-localstack-aws: localstack-up jar-dependencies
 	@if [ -z "$(REAL_AWS_BUCKET)" ] || [ -z "$(REAL_AWS_TABLE)" ]; then \
 	  echo "ERROR: REAL_AWS_BUCKET and REAL_AWS_TABLE must be set"; \
 	  exit 1; \
@@ -339,7 +356,7 @@ run-localstack-aws: localstack-up $(PROTO_JAR)
 	  $(QUARKUS_DEV_GOAL)
 
 .PHONY: run-aws-localstack
-run-aws-localstack: localstack-up $(PROTO_JAR)
+run-aws-localstack: localstack-up jar-dependencies
 	@echo "==> [DEV] quarkus:dev upstream real AWS -> catalog LocalStack"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
@@ -352,7 +369,7 @@ run-aws-localstack: localstack-up $(PROTO_JAR)
 	  $(QUARKUS_DEV_GOAL)
 
 .PHONY: run-localstack-localstack
-run-localstack-localstack: localstack-up $(PROTO_JAR)
+run-localstack-localstack: localstack-up jar-dependencies
 	@echo "==> [DEV] quarkus:dev upstream LocalStack -> catalog LocalStack"
 	$(LOCALSTACK_ENV) \
 	$(MVN) -f ./pom.xml \
@@ -368,7 +385,7 @@ run-localstack-localstack: localstack-up $(PROTO_JAR)
 run-all: start-rest run-service
 
 .PHONY: dev-start dev-stop stop-service
-dev-start: localstack-up
+dev-start: localstack-up jar-dependencies
 	$(LOCALSTACK_ENV) \
 	$(MVN) -f ./pom.xml \
 	  -Dapplication.name=$(APP_NAME) \
