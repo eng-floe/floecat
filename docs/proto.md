@@ -23,7 +23,7 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
   snapshot pin metadata sent down to the SQL planner.
 - **`query/system_objects_registry.proto`** – `GetSystemObjects` plus message definitions for builtin functions,
   operators, casts, collations, aggregates, and types loaded from static files.
-- **`query/user_objects_bundle.proto`** – `GetUserObjects` 
+- **`query/user_objects_bundle.proto`** – `GetUserObjects` streams resolved relation metadata for planner binding. 
 - **`execution/scan.proto`** – Scan metadata (data/delete files + per-file stats) produced by
   connectors and consumed at execution time.
 - **`types/types.proto`** – Logical type registry (Boolean/Decimal/etc.) and scalar encodings used by

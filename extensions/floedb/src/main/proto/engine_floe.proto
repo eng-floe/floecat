@@ -18,214 +18,512 @@ package ai.floedb.floecat.extensions.floedb.proto;
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.extensions.floedb.proto";
 
+/**
+ * FloeDB engine-specific metadata.
+ *
+ * This proto captures FloeDB/PG-catalog-derived attributes that are not portable
+ * across engines.
+ *
+ * These messages are attached through the generic `EngineSpecific` extension
+ * mechanism to enrich the unified SQL object model.
+ */
+
 import "floecat/query/engine_specific.proto";
 
+/**
+ * Engine-specific namespace attributes (pg_namespace).
+ */
 message FloeNamespaceSpecific {
+  /** Namespace OID (primary identity). */
   optional int32 oid = 100;
+
+  /** Namespace name (nspname). */
   optional string nspname = 101;
-  
+
+  /** Namespace owner role OID. */
   optional int32 nspowner = 1;
+
+  /** Namespace ACL entries (nspacl). */
   repeated string nspacl = 2;
 }
 
+/**
+ * Engine-specific relation attributes (pg_class).
+ */
 message FloeRelationSpecific {
-  // pg_class identity
+  /** Relation OID (pg_class.oid). */
   optional int32 oid = 100;
+
+  /** Relation name (relname). */
   optional string relname = 101;
 
-  // namespace
+  /** Namespace OID (relnamespace). */
   optional int32 relnamespace = 1;
+
+  /** Owner role OID (relowner). */
   optional int32 relowner = 2;
 
-  // relation kind: r, v, m, i, S, c, f, p
+  /** Relation kind (relkind: r, v, m, i, S, c, f, p). */
   optional string relkind = 3;
 
-  // storage / stats
+  /** Estimated storage pages (relpages). */
   optional int32 relpages = 4;
+
+  /** Estimated number of tuples (reltuples). */
   optional int32 reltuples = 5;
+
+  /** Toast relation OID (reltoastrelid). */
   optional int32 reltoastrelid = 6;
+
+  /** Toast index OID (reltoastidxid). */
   optional int32 reltoastidxid = 7;
 
-  // flags
+  /** Whether the relation has indexes (relhasindex). */
   optional bool relhasindex = 8;
+
+  /** Whether the relation is shared across databases (relisshared). */
   optional bool relisshared = 9;
+
+  /** Persistence flag (relpersistence). */
   optional bool relpersistence = 10;
+
+  /** Whether the relation is a partition (relispartition). */
   optional bool relispartition = 11;
 
-  // ACL
+  /** Relation ACL entries (relacl). */
   repeated string relacl = 12;
 }
 
+/**
+ * Engine-specific column attributes (pg_attribute).
+ */
 message FloeColumnSpecific {
+  /** Relation OID that owns the attribute (attrelid). */
   optional int32 attrelid = 1;
+
+  /** Column name (attname). */
   optional string attname = 2;
+
+  /** Column type OID (atttypid). */
   optional int32 atttypid = 3;
+
+  /** Type modifier (atttypmod). */
   optional int32 atttypmod = 4;
+
+  /** Attribute number (attnum). */
   optional int32 attnum = 5;
+
+  /** Fixed-length storage size (attlen). */
   optional int32 attlen = 6;
+
+  /** True if column is NOT NULL (attnotnull). */
   optional bool attnotnull = 7;
+
+  /** True if column has been dropped (attisdropped). */
   optional bool attisdropped = 8;
+
+  /** True if passed by value (attbyval). */
   optional bool attbyval = 9;
+
+  /** Alignment requirement (attalign). */
   optional string attalign = 10;
+
+  /** Storage strategy (attstorage). */
   optional string attstorage = 11;
+
+  /** Number of array dimensions (attndims). */
   optional int32 attndims = 12;
+
+  /** Collation OID (attcollation). */
   optional int32 attcollation = 13;
 }
 
+/**
+ * Engine-specific function attributes (pg_proc).
+ */
 message FloeFunctionSpecific {
-  optional int32  oid = 100;
+  /** Function OID (pg_proc.oid). */
+  optional int32 oid = 100;
+
+  /** Function name (proname). */
   optional string proname = 101;
 
-  optional int32  pronamespace = 1;
-  optional int32  proowner = 2;
-  optional int32  prolang = 3;
-  optional float  procost = 4;
-  optional float  prorows = 5;
-  optional int32  provariadic = 6;
-  optional string protransform = 7;
-  optional bool   proisagg = 8;
-  optional bool   proiswindow = 9;
-  optional bool   prosecdef = 10;
-  optional bool   proleakproof = 11;
-  optional bool   proisstrict = 12;
-  optional bool   proretset = 13;
-  optional string provolatile = 14;
-  optional int32  pronargs = 15;
-  optional int32  pronargdefaults = 16;
+  /** Function namespace OID (pronamespace). */
+  optional int32 pronamespace = 1;
 
-  optional int32  prorettype = 17;
-  repeated int32  proargtypes = 18;
-  repeated int32  proallargtypes = 19;
+  /** Owner role OID (proowner). */
+  optional int32 proowner = 2;
+
+  /** Language OID (prolang). */
+  optional int32 prolang = 3;
+
+  /** Planner cost estimate (procost). */
+  optional float procost = 4;
+
+  /** Estimated rows returned (prorows). */
+  optional float prorows = 5;
+
+  /** Variadic element type OID, if variadic (provariadic). */
+  optional int32 provariadic = 6;
+
+  /** Transform type name (protransform). */
+  optional string protransform = 7;
+
+  /** True if this function is an aggregate (proisagg). */
+  optional bool proisagg = 8;
+
+  /** True if this function is a window function (proiswindow). */
+  optional bool proiswindow = 9;
+
+  /** True if this function is SECURITY DEFINER (prosecdef). */
+  optional bool prosecdef = 10;
+
+  /** True if function is leakproof (proleakproof). */
+  optional bool proleakproof = 11;
+
+  /** True if NULL inputs imply NULL result (proisstrict). */
+  optional bool proisstrict = 12;
+
+  /** True if function returns a set (proretset). */
+  optional bool proretset = 13;
+
+  /** Volatility category (provolatile). */
+  optional string provolatile = 14;
+
+  /** Number of input arguments (pronargs). */
+  optional int32 pronargs = 15;
+
+  /** Number of default arguments (pronargdefaults). */
+  optional int32 pronargdefaults = 16;
+
+  /** Return type OID (prorettype). */
+  optional int32 prorettype = 17;
+
+  /** Input argument type OIDs (proargtypes). */
+  repeated int32 proargtypes = 18;
+
+  /** All argument type OIDs including OUT params (proallargtypes). */
+  repeated int32 proallargtypes = 19;
+
+  /** Argument modes (proargmodes). */
   repeated string proargmodes = 20;
+
+  /** Argument names (proargnames). */
   repeated string proargnames = 21;
+
+  /** Default argument expressions (proargdefaults). */
   optional string proargdefaults = 22;
 
+  /** Transform types (protrftypes). */
   repeated int32 protrftypes = 23;
 
+  /** Function source text (prosrc). */
   optional string prosrc = 24;
+
+  /** Binary/compiled function definition, if applicable (probin). */
   optional string probin = 25;
+
+  /** Per-function configuration settings (proconfig). */
   repeated string proconfig = 26;
+
+  /** Function ACL entries (proacl). */
   repeated string proacl = 27;
-  optional bool   prosp = 28;
-  optional bool   proybudf = 29;
-  optional int32  prorettypmod = 30;
+
+  /** Internal/proprietary SP flag (prosp). */
+  optional bool prosp = 28;
+
+  /** True if function is a Yellowbrick UDF (proybudf). */
+  optional bool proybudf = 29;
+
+  /** Return type modifier (prorettypmod). */
+  optional int32 prorettypmod = 30;
+
+  /** Creation time string, if present (procreated). */
   optional string procreated = 31;
-  optional bool   proisbatch = 32;
-  optional int32  proybcost = 33;
+
+  /** True if function is batch-enabled (proisbatch). */
+  optional bool proisbatch = 32;
+
+  /** Yellowbrick-specific cost estimate (proybcost). */
+  optional int32 proybcost = 33;
 }
 
+/**
+ * Engine-specific cast attributes (pg_cast).
+ */
 message FloeCastSpecific {
+  /** Source type OID (castsource). */
   optional int32 castsource = 1;
+
+  /** Target type OID (casttarget). */
   optional int32 casttarget = 2;
+
+  /** Function OID implementing the cast (castfunc). */
   optional int32 castfunc = 3;
+
+  /** Cast context (castcontext). */
   optional string castcontext = 4;
+
+  /** Cast method (castmethod). */
   optional string castmethod = 5;
 }
 
+/**
+ * Engine-specific type attributes (pg_type).
+ */
 message FloeTypeSpecific {
+  /** Type OID (pg_type.oid). */
   optional int32 oid = 100;
+
+  /** Type name (typname). */
   optional string typname = 101;
 
+  /** Type namespace OID (typnamespace). */
   optional int32 typnamespace = 1;
+
+  /** Owner role OID (typowner). */
   optional int32 typowner = 2;
+
+  /** Type length (typlen). */
   optional int32 typlen = 3;
-  optional bool  typbyval = 4;
+
+  /** True if passed by value (typbyval). */
+  optional bool typbyval = 4;
+
+  /** Type kind (typtype). */
   optional string typtype = 5;
+
+  /** Type category (typcategory). */
   optional string typcategory = 6;
-  optional bool  typispreferred = 7;
-  optional bool  typisdefined = 8;
+
+  /** True if type is preferred in its category (typispreferred). */
+  optional bool typispreferred = 7;
+
+  /** True if type is defined (typisdefined). */
+  optional bool typisdefined = 8;
+
+  /** Type delimiter for array formatting (typdelim). */
   optional string typdelim = 9;
 
+  /** Relation OID for composite types (typrelid). */
   optional int32 typrelid = 10;
+
+  /** Element type OID if this is an array type (typelem). */
   optional int32 typelem = 11;
+
+  /** Array type OID for this element type (typarray). */
   optional int32 typarray = 12;
 
+  /** Input function name (typinput). */
   optional string typinput = 13;
+
+  /** Output function name (typoutput). */
   optional string typoutput = 14;
+
+  /** Receive function name (typreceive). */
   optional string typreceive = 15;
+
+  /** Send function name (typsend). */
   optional string typsend = 16;
+
+  /** Type modifier input function name (typmodin). */
   optional string typmodin = 17;
+
+  /** Type modifier output function name (typmodout). */
   optional string typmodout = 18;
+
+  /** Statistics/analyze function name (typanalyze). */
   optional string typanalyze = 19;
 
+  /** Alignment requirement (typalign). */
   optional string typalign = 20;
+
+  /** Storage strategy (typstorage). */
   optional string typstorage = 21;
-  optional bool   typnotnull = 22;
 
-  optional int32  typbasetype = 23;
-  optional int32  typtypmod = 24;
-  optional int32  typndims = 25;
-  optional int32  typcollation = 26;
+  /** True if type is declared NOT NULL (typnotnull). */
+  optional bool typnotnull = 22;
 
+  /** Base type OID for domains (typbasetype). */
+  optional int32 typbasetype = 23;
+
+  /** Type modifier (typtypmod). */
+  optional int32 typtypmod = 24;
+
+  /** Number of dimensions for array types (typndims). */
+  optional int32 typndims = 25;
+
+  /** Collation OID (typcollation). */
+  optional int32 typcollation = 26;
+
+  /** Default expression in binary form (typdefaultbin). */
   optional string typdefaultbin = 27;
+
+  /** Default expression as text (typdefault). */
   optional string typdefault = 28;
 
+  /** Type ACL entries (typacl). */
   repeated string typacl = 29;
 }
 
+/**
+ * Engine-specific operator attributes (pg_operator).
+ */
 message FloeOperatorSpecific {
+  /** Operator OID (pg_operator.oid). */
   optional int32 oid = 100;
+
+  /** Operator name (oprname). */
   optional string oprname = 101;
 
+  /** Operator namespace OID (oprnamespace). */
   optional int32 oprnamespace = 1;
+
+  /** Owner role OID (oprowner). */
   optional int32 oprowner = 2;
 
+  /** Operator kind (oprkind). */
   optional string oprkind = 3;
-  optional bool   oprcanmerge = 4;
-  optional bool   oprcanhash = 5;
 
-  optional int32  oprleft = 6;
-  optional int32  oprright = 7;
-  optional int32  oprresult = 8;
-  optional int32  oprcom = 9;
-  optional int32  oprnegate = 10;
-  optional int32  oprcode = 11;
-  optional int32  oprrest = 12;
-  optional int32  oprjoin = 13;
+  /** True if operator can support merge joins (oprcanmerge). */
+  optional bool oprcanmerge = 4;
+
+  /** True if operator can support hash joins (oprcanhash). */
+  optional bool oprcanhash = 5;
+
+  /** Left operand type OID (oprleft). */
+  optional int32 oprleft = 6;
+
+  /** Right operand type OID (oprright). */
+  optional int32 oprright = 7;
+
+  /** Result type OID (oprresult). */
+  optional int32 oprresult = 8;
+
+  /** Commutator operator OID (oprcom). */
+  optional int32 oprcom = 9;
+
+  /** Negator operator OID (oprnegate). */
+  optional int32 oprnegate = 10;
+
+  /** Operator implementation function OID (oprcode). */
+  optional int32 oprcode = 11;
+
+  /** Selectivity estimation function OID (oprrest). */
+  optional int32 oprrest = 12;
+
+  /** Join selectivity estimation function OID (oprjoin). */
+  optional int32 oprjoin = 13;
 }
 
+/**
+ * Engine-specific aggregate attributes (pg_aggregate).
+ */
 message FloeAggregateSpecific {
+  /** Aggregate function OID (aggfnoid). */
   optional int32 aggfnoid = 1;
+
+  /** Aggregate kind (aggkind). */
   optional string aggkind = 2;
+
+  /** Number of direct arguments (aggnumdirectargs). */
   optional int32 aggnumdirectargs = 3;
 
+  /** Transition function OID (aggtransfn). */
   optional int32 aggtransfn = 4;
+
+  /** Final function OID (aggfinalfn). */
   optional int32 aggfinalfn = 5;
+
+  /** Moving-aggregate transition function OID (aggmtransfn). */
   optional int32 aggmtransfn = 6;
+
+  /** Inverse transition function OID (aggminvtransfn). */
   optional int32 aggminvtransfn = 7;
+
+  /** Moving-aggregate final function OID (aggmfinalfn). */
   optional int32 aggmfinalfn = 8;
 
-  optional bool  aggfinalextra = 9;
-  optional bool  aggmfinalextra = 10;
+  /** True if final function receives extra args (aggfinalextra). */
+  optional bool aggfinalextra = 9;
 
+  /** True if moving-aggregate final function receives extra args (aggmfinalextra). */
+  optional bool aggmfinalextra = 10;
+
+  /** Sort operator OID (aggsortop). */
   optional int32 aggsortop = 11;
 
+  /** Transition state type OID (aggtranstype). */
   optional int32 aggtranstype = 12;
+
+  /** Transition state space estimate (aggtransspace). */
   optional int32 aggtransspace = 13;
 
+  /** Moving transition state type OID (aggmtranstype). */
   optional int32 aggmtranstype = 14;
+
+  /** Moving transition state space estimate (aggmtransspace). */
   optional int32 aggmtransspace = 15;
 
+  /** Initial transition value (agginitval). */
   optional string agginitval = 16;
+
+  /** Initial moving transition value (aggminitval). */
   optional string aggminitval = 17;
 }
 
+/**
+ * Engine-specific collation attributes (pg_collation).
+ */
 message FloeCollationSpecific {
+  /** Collation OID (pg_collation.oid). */
   optional int32 oid = 1;
+
+  /** Collation name (collname). */
   optional string collname = 2;
+
+  /** Namespace OID (collnamespace). */
   optional int32 collnamespace = 3;
+
+  /** Encoding identifier (collencoding). */
   optional int32 collencoding = 4;
+
+  /** LC_COLLATE setting (collcollate). */
   optional string collcollate = 5;
+
+  /** LC_CTYPE setting (collctype). */
   optional string collctype = 6;
 }
 
+/**
+ * EngineSpecific extensions for FloeDB.
+ *
+ * These fields are attached to the unified SQL object model (`EngineSpecific`)
+ * so that FloeDB-specific identity and catalog attributes can be carried
+ * alongside engine-neutral definitions.
+ */
 extend ai.floedb.floecat.query.EngineSpecific {
+  /** FloeDB-specific function attributes (pg_proc). */
   optional FloeFunctionSpecific floe_function = 1;
+
+  /** FloeDB-specific operator attributes (pg_operator). */
   optional FloeOperatorSpecific floe_operator = 2;
+
+  /** FloeDB-specific cast attributes (pg_cast). */
   optional FloeCastSpecific floe_cast = 3;
+
+  /** FloeDB-specific type attributes (pg_type). */
   optional FloeTypeSpecific floe_type = 4;
+
+  /** FloeDB-specific aggregate attributes (pg_aggregate). */
   optional FloeAggregateSpecific floe_aggregate = 5;
+
+  /** FloeDB-specific collation attributes (pg_collation). */
   optional FloeCollationSpecific floe_collation = 6;
+
+  /** FloeDB-specific namespace attributes (pg_namespace). */
   optional FloeNamespaceSpecific floe_namespace = 7;
+
+  /** FloeDB-specific relation attributes (pg_class). */
   optional FloeRelationSpecific floe_relation = 8;
 }

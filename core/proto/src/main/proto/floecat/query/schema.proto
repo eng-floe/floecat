@@ -74,6 +74,11 @@ message DescribeInputsRequest {
   repeated ai.floedb.floecat.common.QueryInput inputs = 2; // Inputs to resolve (tables or views).
 }
 
+/**
+ * Response for DescribeInputs.
+ *
+ * The `schemas` list is positional: it matches the `inputs` order from the request.
+ */
 message DescribeInputsResponse {
   repeated SchemaDescriptor schemas = 1; // One schema per input, preserving order.
 }
@@ -82,6 +87,9 @@ message DescribeInputsResponse {
  * Schema resolution service used by query planning components.
  */
 service QuerySchemaService {
+  /**
+   * DescribeInputs resolves logical schemas for each requested query input.
+   */
   rpc DescribeInputs(DescribeInputsRequest)
       returns (DescribeInputsResponse);
 }

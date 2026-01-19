@@ -22,102 +22,168 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.query.rpc";
 
 /**
- * UNIFIED ENGINE-NEUTRAL SQL OBJECT MODEL
+ * Unified engine-neutral SQL object model.
+ *
+ * These messages represent the minimal semantic shape of common SQL objects
+ * (functions, operators, types, casts, collations, aggregates) in a way that can
+ * be exchanged across engines, planners, and catalogs.
  */
 
+/**
+ * Describes where a SQL object definition came from.
+ */
 enum Origin {
+  /** Origin is unknown or not provided. */
   ORIGIN_UNSPECIFIED = 0;
-  ORIGIN_BUILTIN = 1;  // shipped by engine
-  ORIGIN_USER = 2;     // created via DDL
+
+  /** Object is built-in and shipped by the engine. */
+  ORIGIN_BUILTIN = 1;
+
+  /** Object was defined by the user (for example via DDL). */
+  ORIGIN_USER = 2;
 }
 
-/** 
- * FUNCTION  (scalar, aggregate, window)
- */ 
+/**
+ * Function definition (scalar, aggregate, or window).
+ */
 message SqlFunction {
+  /** Canonical function name. */
   ai.floedb.floecat.common.NameRef name = 1;
-  repeated ai.floedb.floecat.common.NameRef argument_types = 2;  // fully resolved type names
+
+  /** Fully resolved argument type names, in call order. */
+  repeated ai.floedb.floecat.common.NameRef argument_types = 2;
+
+  /** Fully resolved return type name. */
   ai.floedb.floecat.common.NameRef return_type = 3;
 
-  bool is_aggregate = 4;   // functional category
+  /** True if the function is an aggregate function. */
+  bool is_aggregate = 4;
+
+  /** True if the function is a window function. */
   bool is_window = 5;
 
+  /** Object origin (built-in vs user-defined). */
   Origin origin = 10;
 
+  /** Engine-specific metadata extensions (optional). */
   repeated EngineSpecific engine_specific = 99;
 }
 
-/** 
- * OPERATOR
- */ 
+/**
+ * Operator definition (binary operators such as '+', '=', '||').
+ */
 message SqlOperator {
-  ai.floedb.floecat.common.NameRef name = 1;       // e.g. "+", "=", "||"
+  /** Operator symbol or canonical operator name. */
+  ai.floedb.floecat.common.NameRef name = 1;
+
+  /** Fully resolved type of the left operand. */
   ai.floedb.floecat.common.NameRef left_type = 2;
+
+  /** Fully resolved type of the right operand. */
   ai.floedb.floecat.common.NameRef right_type = 3;
+
+  /** Fully resolved return type of the operator. */
   ai.floedb.floecat.common.NameRef return_type = 4;
 
-  bool is_commutative = 5;  // optional, universal property
-  bool is_associative = 6;  // optional, universal property
+  /** True if the operator is commutative (a ⊙ b == b ⊙ a). */
+  bool is_commutative = 5;
 
+  /** True if the operator is associative ((a ⊙ b) ⊙ c == a ⊙ (b ⊙ c)). */
+  bool is_associative = 6;
+
+  /** Object origin (built-in vs user-defined). */
   Origin origin = 10;
 
+  /** Engine-specific metadata extensions (optional). */
   repeated EngineSpecific engine_specific = 99;
 }
 
-/** 
- * TYPE
+/**
+ * Type definition.
  */
 message SqlType {
+  /** Canonical type name. */
   ai.floedb.floecat.common.NameRef name = 1;
-  string category = 2;      // numeric, string, bool, date, etc.
-  bool is_array = 3;
-  ai.floedb.floecat.common.NameRef element_type = 4;  // if array
 
+  /** Logical category for grouping/types (numeric, string, bool, date, ...). */
+  string category = 2;
+
+  /** True if this type is an array/container type. */
+  bool is_array = 3;
+
+  /** Element type if `is_array` is true. */
+  ai.floedb.floecat.common.NameRef element_type = 4;
+
+  /** Object origin (built-in vs user-defined). */
   Origin origin = 10;
 
+  /** Engine-specific metadata extensions (optional). */
   repeated EngineSpecific engine_specific = 99;
 }
 
 /**
- * CAST
+ * Cast definition between two types.
  */
 message SqlCast {
+  /** Canonical cast name (engine-neutral identifier). */
   ai.floedb.floecat.common.NameRef name = 1;
+
+  /** Source type for the cast. */
   ai.floedb.floecat.common.NameRef source_type = 2;
+
+  /** Target type for the cast. */
   ai.floedb.floecat.common.NameRef target_type = 3;
 
-  // implicit, assignment, explicit
+  /** Cast method: implicit, assignment, or explicit. */
   string method = 4;
 
+  /** Object origin (built-in vs user-defined). */
   Origin origin = 10;
 
+  /** Engine-specific metadata extensions (optional). */
   repeated EngineSpecific engine_specific = 99;
 }
 
 /**
- * COLLATION
+ * Collation definition.
  */
 message SqlCollation {
+  /** Canonical collation name. */
   ai.floedb.floecat.common.NameRef name = 1;
+
+  /** Locale or collation identifier (engine-dependent). */
   string locale = 2;
 
+  /** Object origin (built-in vs user-defined). */
   Origin origin = 10;
 
+  /** Engine-specific metadata extensions (optional). */
   repeated EngineSpecific engine_specific = 99;
 }
 
 /**
- * AGGREGATE
+ * Aggregate function definition.
  */
 message SqlAggregate {
+  /** Canonical aggregate name. */
   ai.floedb.floecat.common.NameRef name = 1;
+
+  /** Fully resolved argument type names, in call order. */
   repeated ai.floedb.floecat.common.NameRef argument_types = 2;
+
+  /** Fully resolved return type name. */
   ai.floedb.floecat.common.NameRef return_type = 3;
 
-  // minimal engine-neutral requirement
-  ai.floedb.floecat.common.NameRef state_type = 4;  // needed for type-checking only
+  /**
+   * Aggregate state type (engine-neutral minimum requirement).
+   *
+   * This is only needed for type-checking and planning.
+   */
+  ai.floedb.floecat.common.NameRef state_type = 4;
 
+  /** Object origin (built-in vs user-defined). */
   Origin origin = 10;
 
+  /** Engine-specific metadata extensions (optional). */
   repeated EngineSpecific engine_specific = 99;
 }

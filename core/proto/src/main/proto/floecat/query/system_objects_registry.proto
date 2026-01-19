@@ -20,24 +20,61 @@ import "floecat/query/sql_objects.proto";
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.query.rpc";
 
+/**
+ * System objects registry API.
+ *
+ * This proto exposes engine-provided (built-in) SQL objects in an engine-neutral
+ * shape so planners can perform name/type resolution consistently.
+ *
+ * The registry is intended to be stable for a given `(engine_kind, engine_version)`.
+ */
+
+/**
+ * Collection of built-in SQL objects shipped by an engine.
+ */
 message SystemObjectsRegistry {
-  repeated SqlFunction  functions   = 1;
-  repeated SqlOperator  operators   = 2;
-  repeated SqlType      types       = 3;
-  repeated SqlCast      casts       = 4;
-  repeated SqlCollation collations  = 5;
-  repeated SqlAggregate aggregates  = 6;
+  /** Built-in scalar/aggregate/window functions. */
+  repeated SqlFunction functions = 1;
+
+  /** Built-in operators (binary operators such as +, =, ||). */
+  repeated SqlOperator operators = 2;
+
+  /** Built-in types (including primitive and engine-specific types). */
+  repeated SqlType types = 3;
+
+  /** Built-in casts available between types. */
+  repeated SqlCast casts = 4;
+
+  /** Built-in collations supported by the engine. */
+  repeated SqlCollation collations = 5;
+
+  /** Built-in aggregate definitions (may overlap with functions depending on engine). */
+  repeated SqlAggregate aggregates = 6;
 }
 
+/**
+ * Request to fetch the built-in SQL objects for a specific engine/version.
+ */
 message GetSystemObjectsRequest {
+  /** Engine kind identifier (for example: "floedb", "spark", "trino"). */
   string engine_kind = 1;
+
+  /** Engine version string used to select the appropriate registry. */
   string engine_version = 2;
 }
 
+/**
+ * Response containing the built-in SQL objects registry.
+ */
 message GetSystemObjectsResponse {
+  /** Resolved registry for the requested engine/version. */
   SystemObjectsRegistry registry = 1;
 }
 
+/**
+ * Service that exposes the engine's built-in SQL objects.
+ */
 service SystemObjectsService {
+  /** Returns the built-in registry for the requested engine/version. */
   rpc GetSystemObjects(GetSystemObjectsRequest) returns (GetSystemObjectsResponse);
 }
