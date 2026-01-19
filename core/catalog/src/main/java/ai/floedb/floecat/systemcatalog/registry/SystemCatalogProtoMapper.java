@@ -36,9 +36,9 @@ public final class SystemCatalogProtoMapper {
   //  Top-level Registry
   // =========================================================================
 
-  public static BuiltinRegistry toProto(SystemCatalogData catalog) {
+  public static SystemObjectsRegistry toProto(SystemCatalogData catalog) {
     Objects.requireNonNull(catalog, "catalog");
-    var builder = BuiltinRegistry.newBuilder();
+    var builder = SystemObjectsRegistry.newBuilder();
 
     catalog.functions().forEach(f -> builder.addFunctions(toProtoFunction(f)));
     catalog.operators().forEach(o -> builder.addOperators(toProtoOperator(o)));
@@ -50,11 +50,11 @@ public final class SystemCatalogProtoMapper {
     return builder.build();
   }
 
-  public static SystemCatalogData fromProto(BuiltinRegistry proto) {
+  public static SystemCatalogData fromProto(SystemObjectsRegistry proto) {
     return fromProto(proto, "");
   }
 
-  public static SystemCatalogData fromProto(BuiltinRegistry proto, String defaultEngine) {
+  public static SystemCatalogData fromProto(SystemObjectsRegistry proto, String defaultEngine) {
     Objects.requireNonNull(proto, "proto");
 
     return new SystemCatalogData(

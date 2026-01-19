@@ -17,12 +17,13 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 - **`catalog/*.proto`** – CRUD APIs for catalogs, namespaces, tables, views, snapshots, directory
   lookups, and table statistics. Each service exposes the same Create/List/Get/Update/Delete (CLGUD)
   lifecycle with `PageRequest`/`PageResponse` support; stats schemas also cover per-file statistics.
-- **`catalog/builtin.proto`** – `GetBuiltinCatalog` plus message definitions for builtin functions,
-  operators, casts, collations, aggregates, and types loaded from static files.
 - **`connector/connector.proto`** – Connector management RPCs plus reconciliation job tracking and
   validation routines.
 - **`query/lifecycle.proto`** – Query lifecycle (`BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`) and the
   snapshot pin metadata sent down to the SQL planner.
+- **`query/system_objects_registry.proto`** – `GetSystemObjects` plus message definitions for builtin functions,
+  operators, casts, collations, aggregates, and types loaded from static files.
+- **`query/user_objects_bundle.proto`** – `GetUserObjects` 
 - **`execution/scan.proto`** – Scan metadata (data/delete files + per-file stats) produced by
   connectors and consumed at execution time.
 - **`types/types.proto`** – Logical type registry (Boolean/Decimal/etc.) and scalar encodings used by
@@ -45,9 +46,9 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 | `AccountService` | Account CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `TriggerReconcile`, `GetReconcileJob`. |
 | `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`, `FetchScanBundle`. |
-| `QueryCatalogService` | `GetCatalogBundle` | Streams catalog metadata chunks (header → relations → end) as the service resolves each relation so planners can start binding earlier. |
-| &nbsp;&nbsp;&nbsp;— Consumption pattern | | Clients read `CatalogBundleChunk` in three phases: 1) header chunk (cheap metadata), 2) zero or more `resolutions` chunk batches where each `RelationResolution` carries `input_index` + FOUND/NOT_FOUND/ERROR, and 3) a single end chunk with summary counts. Use `input_index` to map back to planner `TableReferenceCandidate`s and bind as soon as a `FOUND` arrives. |
-| `BuiltinCatalogService` | `GetBuiltinCatalog` | Returns the builtin catalog filtered by the `x-engine-kind` / `x-engine-version` headers supplied with the request. |
+| `UserObjectsService` | `GetUserObjects` | Streams catalog metadata chunks (header → relations → end) as the service resolves each relation so planners can start binding earlier. |
+| &nbsp;&nbsp;&nbsp;— Consumption pattern | | Clients read `UserObjectsBundleChunk` in three phases: 1) header chunk (cheap metadata), 2) zero or more `resolutions` chunk batches where each `RelationResolution` carries `input_index` + FOUND/NOT_FOUND/ERROR, and 3) a single end chunk with summary counts. Use `input_index` to map back to planner `TableReferenceCandidate`s and bind as soon as a `FOUND` arrives. |
+| `SystemObjectsService` | `GetSystemObjects` | Returns the builtin catalog filtered by the `x-engine-kind` / `x-engine-version` headers supplied with the request. |
 
 Each RPC requires a populated `account_id` within the `ResourceId`s; the Quarkus service checks this
 before hitting repository storage.
@@ -64,7 +65,7 @@ before hitting repository storage.
   the file is data vs equality/position deletes.
 - `ScanFileContent` enumerates the delete/data categories.
 
-`catalog/builtin.proto` exposes immutable builtin metadata via `BuiltinCatalogService.GetBuiltinCatalog`
+`query/system_objects_registry.proto` exposes immutable builtin metadata via `SystemObjectsService.GetSystemObjects`
 so planners can hydrate functions/operators/types once per engine version. Clients send the
 `x-engine-kind` and `x-engine-version` headers and always receive the filtered catalog for that
 engine release.

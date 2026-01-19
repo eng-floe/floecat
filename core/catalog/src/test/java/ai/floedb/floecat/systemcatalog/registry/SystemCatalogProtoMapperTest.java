@@ -19,7 +19,7 @@ package ai.floedb.floecat.systemcatalog.registry;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.query.rpc.BuiltinRegistry;
+import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.systemcatalog.def.*;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import java.util.Arrays;
@@ -75,7 +75,7 @@ final class SystemCatalogProtoMapperTest {
             List.of(),
             List.of());
 
-    BuiltinRegistry proto = SystemCatalogProtoMapper.toProto(input);
+    SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
     SystemCatalogData output = SystemCatalogProtoMapper.fromProto(proto, "spark");
 
     // Assert sizes and names for top-level lists
@@ -124,7 +124,7 @@ final class SystemCatalogProtoMapperTest {
             List.of(),
             List.of());
 
-    BuiltinRegistry proto = SystemCatalogProtoMapper.toProto(input);
+    SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
     SystemCatalogData output = SystemCatalogProtoMapper.fromProto(proto, "postgres");
 
     EngineSpecificRule restored = output.functions().get(0).engineSpecific().get(0);
@@ -152,7 +152,7 @@ final class SystemCatalogProtoMapperTest {
             List.of(),
             List.of());
 
-    BuiltinRegistry proto = SystemCatalogProtoMapper.toProto(input);
+    SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
     SystemCatalogData output = SystemCatalogProtoMapper.fromProto(proto);
 
     SystemTypeDef arrayType =
@@ -180,7 +180,7 @@ final class SystemCatalogProtoMapperTest {
             List.of(),
             List.of());
 
-    BuiltinRegistry proto = SystemCatalogProtoMapper.toProto(input);
+    SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
     SystemCatalogData output = SystemCatalogProtoMapper.fromProto(proto);
 
     assertThat(output.functions().get(0).engineSpecific()).isEmpty();

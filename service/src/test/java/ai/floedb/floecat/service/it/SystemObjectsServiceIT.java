@@ -20,8 +20,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.query.rpc.BuiltinCatalogServiceGrpc;
-import ai.floedb.floecat.query.rpc.GetBuiltinCatalogRequest;
+import ai.floedb.floecat.query.rpc.GetSystemObjectsRequest;
+import ai.floedb.floecat.query.rpc.SystemObjectsServiceGrpc;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -31,7 +31,7 @@ import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
-class BuiltinCatalogServiceIT {
+class SystemObjectsServiceIT {
 
   private static final Metadata.Key<String> ENGINE_VERSION_HEADER =
       Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
@@ -40,13 +40,13 @@ class BuiltinCatalogServiceIT {
       Metadata.Key.of("x-engine-kind", Metadata.ASCII_STRING_MARSHALLER);
 
   @GrpcClient("floecat")
-  BuiltinCatalogServiceGrpc.BuiltinCatalogServiceBlockingStub builtins;
+  SystemObjectsServiceGrpc.SystemObjectsServiceBlockingStub builtins;
 
   @Test
   void returnsCatalogWhenVersionProvided() {
     var stub = withEngineHeaders("floe-demo", "16.0");
 
-    var resp = stub.getBuiltinCatalog(GetBuiltinCatalogRequest.getDefaultInstance());
+    var resp = stub.getSystemObjects(GetSystemObjectsRequest.getDefaultInstance());
 
     assertThat(resp.hasRegistry()).isTrue();
 
@@ -85,7 +85,7 @@ class BuiltinCatalogServiceIT {
   @Test
   void missingHeaderFails() {
     assertThatThrownBy(
-            () -> builtins.getBuiltinCatalog(GetBuiltinCatalogRequest.newBuilder().build()))
+            () -> builtins.getSystemObjects(GetSystemObjectsRequest.newBuilder().build()))
         .isInstanceOfSatisfying(
             StatusRuntimeException.class,
             e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT));
@@ -95,7 +95,7 @@ class BuiltinCatalogServiceIT {
   void unknownEngineVersionReturnsOnlyRuleFreeObjects() {
     var stub = withEngineHeaders("floe-demo", "does-not-exist");
 
-    var resp = stub.getBuiltinCatalog(GetBuiltinCatalogRequest.getDefaultInstance());
+    var resp = stub.getSystemObjects(GetSystemObjectsRequest.getDefaultInstance());
     assertThat(resp.hasRegistry()).isTrue();
 
     var names =
@@ -117,13 +117,13 @@ class BuiltinCatalogServiceIT {
 
     var stub = builtins.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
 
-    assertThatThrownBy(() -> stub.getBuiltinCatalog(GetBuiltinCatalogRequest.getDefaultInstance()))
+    assertThatThrownBy(() -> stub.getSystemObjects(GetSystemObjectsRequest.getDefaultInstance()))
         .isInstanceOfSatisfying(
             StatusRuntimeException.class,
             e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT));
   }
 
-  private BuiltinCatalogServiceGrpc.BuiltinCatalogServiceBlockingStub withEngineHeaders(
+  private SystemObjectsServiceGrpc.SystemObjectsServiceBlockingStub withEngineHeaders(
       String engineKind, String engineVersion) {
 
     var metadata = new Metadata();

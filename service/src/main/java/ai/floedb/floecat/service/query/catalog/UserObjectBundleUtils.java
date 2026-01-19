@@ -29,9 +29,9 @@ import java.util.List;
 import java.util.Map;
 
 /** Shared helpers used by catalog bundle builders. */
-public final class CatalogBundleUtils {
+public final class UserObjectBundleUtils {
 
-  private CatalogBundleUtils() {}
+  private UserObjectBundleUtils() {}
 
   public static NameRef applyDefaultCatalog(NameRef ref, String defaultCatalog) {
     NameRef.Builder builder = ref.toBuilder();

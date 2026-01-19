@@ -24,9 +24,6 @@ import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.ViewNode;
-import ai.floedb.floecat.query.rpc.CatalogBundleChunk;
-import ai.floedb.floecat.query.rpc.CatalogBundleEnd;
-import ai.floedb.floecat.query.rpc.CatalogBundleHeader;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.RelationInfo;
@@ -39,6 +36,9 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
+import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
+import ai.floedb.floecat.query.rpc.UserObjectsBundleEnd;
+import ai.floedb.floecat.query.rpc.UserObjectsBundleHeader;
 import ai.floedb.floecat.query.rpc.ViewDefinition;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -74,10 +74,10 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
-public class CatalogBundleService {
+public class UserObjectBundleService {
 
   private static final int MAX_RESOLUTIONS_PER_CHUNK = 25;
-  private static final Logger LOG = Logger.getLogger(CatalogBundleService.class);
+  private static final Logger LOG = Logger.getLogger(UserObjectBundleService.class);
 
   private final CatalogOverlay overlay;
   private final QueryInputResolver inputResolver;
@@ -88,7 +88,7 @@ public class CatalogBundleService {
   private final StatsProviderFactory statsFactory;
 
   @Inject
-  public CatalogBundleService(
+  public UserObjectBundleService(
       CatalogOverlay overlay,
       QueryInputResolver inputResolver,
       QueryContextStore queryStore,
@@ -106,18 +106,18 @@ public class CatalogBundleService {
     this.engineSpecificEnabled = engineSpecificEnabled;
   }
 
-  public Multi<CatalogBundleChunk> stream(
+  public Multi<UserObjectsBundleChunk> stream(
       String correlationId, QueryContext ctx, List<TableReferenceCandidate> tables) {
     String defaultCatalog =
         overlay.catalog(ctx.getQueryDefaultCatalogId()).map(CatalogNode::displayName).orElse("");
     List<TableReferenceCandidate> candidates = List.copyOf(tables);
     return Multi.createFrom()
-        .<CatalogBundleChunk>deferred(
+        .<UserObjectsBundleChunk>deferred(
             () ->
                 Multi.createFrom()
                     .iterable(
                         () ->
-                            new CatalogBundleIterator(
+                            new UserObjectBundleIterator(
                                 correlationId, ctx, candidates, defaultCatalog)));
   }
 
@@ -137,7 +137,7 @@ public class CatalogBundleService {
       // fully-qualified.
       NameRef name = input.getName();
       if (name.getCatalog().isEmpty() || name.getCatalog().isBlank()) {
-        NameRef adjusted = CatalogBundleUtils.applyDefaultCatalog(name, defaultCatalog);
+        NameRef adjusted = UserObjectBundleUtils.applyDefaultCatalog(name, defaultCatalog);
         normalized.add(input.toBuilder().setName(adjusted).build());
       } else {
         normalized.add(input);
@@ -199,34 +199,34 @@ public class CatalogBundleService {
     return incoming == null ? SnapshotSet.getDefaultInstance() : incoming;
   }
 
-  private CatalogBundleChunk headerChunk(String queryId, int seq) {
-    CatalogBundleHeader header = CatalogBundleHeader.newBuilder().build();
-    return CatalogBundleChunk.newBuilder()
+  private UserObjectsBundleChunk headerChunk(String queryId, int seq) {
+    UserObjectsBundleHeader header = UserObjectsBundleHeader.newBuilder().build();
+    return UserObjectsBundleChunk.newBuilder()
         .setQueryId(queryId)
         .setSeq(seq)
         .setHeader(header)
         .build();
   }
 
-  private CatalogBundleChunk resolutionsChunk(
+  private UserObjectsBundleChunk resolutionsChunk(
       String queryId, int seq, List<RelationResolution> resolutions) {
     RelationResolutions chunk = RelationResolutions.newBuilder().addAllItems(resolutions).build();
-    return CatalogBundleChunk.newBuilder()
+    return UserObjectsBundleChunk.newBuilder()
         .setQueryId(queryId)
         .setSeq(seq)
         .setResolutions(chunk)
         .build();
   }
 
-  private CatalogBundleChunk endChunk(
+  private UserObjectsBundleChunk endChunk(
       String queryId, int seq, int resolutionCount, int foundCount, int notFoundCount) {
-    CatalogBundleEnd end =
-        CatalogBundleEnd.newBuilder()
+    UserObjectsBundleEnd end =
+        UserObjectsBundleEnd.newBuilder()
             .setResolutionCount(resolutionCount)
             .setFoundCount(foundCount)
             .setNotFoundCount(notFoundCount)
             .build();
-    return CatalogBundleChunk.newBuilder().setQueryId(queryId).setSeq(seq).setEnd(end).build();
+    return UserObjectsBundleChunk.newBuilder().setQueryId(queryId).setSeq(seq).setEnd(end).build();
   }
 
   private RelationInfo buildRelation(
@@ -245,10 +245,10 @@ public class CatalogBundleService {
             : overlay.tableSchema(relation.node().id());
 
     List<SchemaColumn> pruned =
-        CatalogBundleUtils.pruneSchema(schemaColumns, relation.candidate(), correlationId);
+        UserObjectBundleUtils.pruneSchema(schemaColumns, relation.candidate(), correlationId);
 
     List<ColumnInfo> columns =
-        CatalogBundleUtils.columnsFor(schemaColumns, pruned, origin, correlationId);
+        UserObjectBundleUtils.columnsFor(schemaColumns, pruned, origin, correlationId);
 
     RelationInfo.Builder builder =
         RelationInfo.newBuilder()
@@ -481,7 +481,7 @@ public class CatalogBundleService {
       merged.put(pinKey(pin.getTableId()), pin);
     }
     for (SnapshotPin pin : incoming.getPinsList()) {
-      merged.merge(pinKey(pin.getTableId()), pin, CatalogBundleService::mergePin);
+      merged.merge(pinKey(pin.getTableId()), pin, UserObjectBundleService::mergePin);
     }
     return SnapshotSet.newBuilder().addAllPins(merged.values()).build();
   }
@@ -527,7 +527,7 @@ public class CatalogBundleService {
     }
   }
 
-  private final class CatalogBundleIterator implements Iterator<CatalogBundleChunk> {
+  private final class UserObjectBundleIterator implements Iterator<UserObjectsBundleChunk> {
 
     private final String correlationId;
     private final QueryContext ctx;
@@ -547,7 +547,7 @@ public class CatalogBundleService {
     private boolean headerEmitted = false;
     private boolean endEmitted = false;
 
-    CatalogBundleIterator(
+    UserObjectBundleIterator(
         String correlationId,
         QueryContext ctx,
         List<TableReferenceCandidate> tables,
@@ -566,7 +566,7 @@ public class CatalogBundleService {
     }
 
     @Override
-    public CatalogBundleChunk next() {
+    public UserObjectsBundleChunk next() {
       if (!headerEmitted) {
         headerEmitted = true;
         return headerChunk(ctx.getQueryId(), seq++);
@@ -642,7 +642,7 @@ public class CatalogBundleService {
               .build());
     }
 
-    private CatalogBundleChunk flushResolutionChunk() {
+    private UserObjectsBundleChunk flushResolutionChunk() {
       List<PendingItem> chunkItems = new ArrayList<>(pending);
       pending.clear();
       // Ensure pins are durable before accessing stats (which expect the QueryContext to be

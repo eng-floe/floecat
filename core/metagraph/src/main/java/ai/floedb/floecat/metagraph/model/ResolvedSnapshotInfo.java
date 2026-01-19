@@ -22,7 +22,7 @@ import java.util.List;
 /**
  * Optional snapshot metadata cached alongside a {@link UserTableNode}.
  *
- * <p>The info mirrors the structures returned by GetCatalogBundle: the currently effective snapshot
+ * <p>The info mirrors the structures returned by GetUserObjects: the currently effective snapshot
  * plus the resolved pins already stored in the {@code QueryContext}. Keeping it as a dedicated
  * record avoids bloating {@link UserTableNode} with repeated repository calls.
  */

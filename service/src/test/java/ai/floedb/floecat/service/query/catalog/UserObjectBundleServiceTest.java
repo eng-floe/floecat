@@ -25,7 +25,6 @@ import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
-import ai.floedb.floecat.query.rpc.CatalogBundleChunk;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationResolution;
@@ -33,13 +32,14 @@ import ai.floedb.floecat.query.rpc.ResolutionStatus;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
+import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
-import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport;
-import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport.CancellingSubscriber;
-import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport.FakeCatalogOverlay;
-import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport.TestQueryContextStore;
-import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport.TestQueryInputResolver;
+import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
+import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.CancellingSubscriber;
+import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogOverlay;
+import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.TestQueryContextStore;
+import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.TestQueryInputResolver;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver.ResolutionResult;
@@ -59,7 +59,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-class CatalogBundleServiceTest {
+class UserObjectBundleServiceTest {
 
   private static final ResourceId DEFAULT_CATALOG =
       ResourceId.newBuilder()
@@ -102,7 +102,7 @@ class CatalogBundleServiceTest {
   private StatsProviderFactory statsFactory;
   private TestQueryInputResolver resolver;
   private TestQueryContextStore queryStore;
-  private CatalogBundleService service;
+  private UserObjectBundleService service;
 
   private final QueryContext ctx =
       QueryContext.builder()
@@ -128,18 +128,18 @@ class CatalogBundleServiceTest {
     overlay.clear();
     overlay.registerTable(
         TABLE_A,
-        CatalogBundleTestSupport.schemaFor("id_a"),
+        UserObjectBundleTestSupport.schemaFor("id_a"),
         NameRef.newBuilder().setCatalog("cat").setName("a").build());
     overlay.registerTable(
         TABLE_B,
-        CatalogBundleTestSupport.schemaFor("id_b"),
+        UserObjectBundleTestSupport.schemaFor("id_b"),
         NameRef.newBuilder().setCatalog("cat").setName("b").build());
     overlay.registerCatalog(DEFAULT_CATALOG, "cat");
     queryStore.seed(ctx);
     statsRepository = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     statsFactory = new StatsProviderFactory(statsRepository, queryStore);
     service =
-        new CatalogBundleService(
+        new UserObjectBundleService(
             overlay,
             resolver,
             queryStore,
@@ -160,12 +160,12 @@ class CatalogBundleServiceTest {
             .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
             .build();
 
-    List<CatalogBundleChunk> chunks =
+    List<UserObjectsBundleChunk> chunks =
         service.stream("cid", ctx, List.of(a, b)).collect().asList().await().indefinitely();
 
     assertThat(chunks).hasSize(3);
     assertThat(chunks.get(0).hasHeader()).isTrue();
-    CatalogBundleChunk resolutions = chunks.get(1);
+    UserObjectsBundleChunk resolutions = chunks.get(1);
     assertThat(resolutions.hasResolutions()).isTrue();
     assertThat(resolutions.getResolutions().getItemsCount()).isEqualTo(2);
     RelationResolution first = resolutions.getResolutions().getItems(0);
@@ -177,7 +177,7 @@ class CatalogBundleServiceTest {
     assertThat(first.getRelation().getRelationId()).isEqualTo(TABLE_A);
     assertThat(second.getRelation().getRelationId()).isEqualTo(TABLE_B);
 
-    CatalogBundleChunk end = chunks.get(2);
+    UserObjectsBundleChunk end = chunks.get(2);
     assertThat(end.getEnd().getResolutionCount()).isEqualTo(2);
     assertThat(end.getEnd().getFoundCount()).isEqualTo(2);
     assertThat(end.getEnd().getNotFoundCount()).isZero();
@@ -204,7 +204,7 @@ class CatalogBundleServiceTest {
             .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
             .build();
 
-    List<CatalogBundleChunk> chunks =
+    List<UserObjectsBundleChunk> chunks =
         service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
 
     RelationResolution resolution = chunks.get(1).getResolutions().getItems(0);
@@ -235,8 +235,8 @@ class CatalogBundleServiceTest {
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     StatsProviderFactory localStatsFactory =
         new StatsProviderFactory(localStatsRepository, localStore);
-    CatalogBundleService localService =
-        new CatalogBundleService(
+    UserObjectBundleService localService =
+        new UserObjectBundleService(
             overlay,
             deterministicResolver,
             localStore,
@@ -260,7 +260,7 @@ class CatalogBundleServiceTest {
             .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
             .build();
 
-    List<CatalogBundleChunk> chunks =
+    List<UserObjectsBundleChunk> chunks =
         localService.stream("cid", noPinCtx, List.of(candidate))
             .collect()
             .asList()
@@ -298,12 +298,12 @@ class CatalogBundleServiceTest {
             .queryDefaultCatalogId(DEFAULT_CATALOG)
             .build();
     queryStore.seed(chunkCtx);
-    List<CatalogBundleChunk> chunks =
+    List<UserObjectsBundleChunk> chunks =
         service.stream("cid", chunkCtx, candidates).collect().asList().await().indefinitely();
 
     assertThat(
             chunks.stream()
-                .filter(CatalogBundleChunk::hasResolutions)
+                .filter(UserObjectsBundleChunk::hasResolutions)
                 .mapToInt(chunk -> chunk.getResolutions().getItemsCount())
                 .sum())
         .isEqualTo(totalCandidates);
@@ -323,7 +323,7 @@ class CatalogBundleServiceTest {
           }
         };
     service =
-        new CatalogBundleService(
+        new UserObjectBundleService(
             overlay,
             emptyResolver,
             queryStore,
@@ -337,7 +337,7 @@ class CatalogBundleServiceTest {
             .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
             .build();
 
-    List<CatalogBundleChunk> chunks =
+    List<UserObjectsBundleChunk> chunks =
         service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
 
     RelationResolution resolution = chunks.get(1).getResolutions().getItems(0);
@@ -363,7 +363,7 @@ class CatalogBundleServiceTest {
             .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
             .build();
 
-    List<CatalogBundleChunk> chunks =
+    List<UserObjectsBundleChunk> chunks =
         service.stream("cid", ctx, List.of(missing, found))
             .collect()
             .asList()
@@ -384,7 +384,7 @@ class CatalogBundleServiceTest {
             .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
             .build();
 
-    List<CatalogBundleChunk> chunks =
+    List<UserObjectsBundleChunk> chunks =
         service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
 
     RelationResolution resolution = chunks.get(1).getResolutions().getItems(0);
@@ -412,7 +412,7 @@ class CatalogBundleServiceTest {
             .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
             .build();
 
-    List<CatalogBundleChunk> chunks =
+    List<UserObjectsBundleChunk> chunks =
         service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
 
     RelationResolution resolution = chunks.get(1).getResolutions().getItems(0);
@@ -426,7 +426,7 @@ class CatalogBundleServiceTest {
   void systemTableStatsAreSkippedWhenUnpinned() {
     overlay.registerTable(
         SYSTEM_TABLE,
-        CatalogBundleTestSupport.schemaFor("sys_id"),
+        UserObjectBundleTestSupport.schemaFor("sys_id"),
         NameRef.newBuilder().setCatalog("sys").setName("system_table").build(),
         GraphNodeOrigin.SYSTEM);
 
@@ -439,7 +439,7 @@ class CatalogBundleServiceTest {
             .addCandidates(QueryInput.newBuilder().setTableId(SYSTEM_TABLE))
             .build();
 
-    List<CatalogBundleChunk> chunks =
+    List<UserObjectsBundleChunk> chunks =
         service.stream("cid", ctx, List.of(systemCandidate))
             .collect()
             .asList()
@@ -472,8 +472,8 @@ class CatalogBundleServiceTest {
     assertThat(subscriber.items()).hasSize(2);
     assertThat(subscriber.items().get(0).hasHeader()).isTrue();
     assertThat(subscriber.items().get(1).hasResolutions()).isTrue();
-    assertThat(subscriber.items().stream().noneMatch(CatalogBundleChunk::hasEnd)).isTrue();
-    CatalogBundleChunk resolutionChunk = subscriber.items().get(1);
+    assertThat(subscriber.items().stream().noneMatch(UserObjectsBundleChunk::hasEnd)).isTrue();
+    UserObjectsBundleChunk resolutionChunk = subscriber.items().get(1);
     assertThat(resolutionChunk.hasResolutions()).isTrue();
     assertThat(queryStore.updateCount()).isEqualTo(1);
   }
@@ -507,7 +507,7 @@ class CatalogBundleServiceTest {
             .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
             .build();
 
-    List<CatalogBundleChunk> chunks =
+    List<UserObjectsBundleChunk> chunks =
         service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
 
     RelationResolution resolution = chunks.get(1).getResolutions().getItems(0);
@@ -524,7 +524,7 @@ class CatalogBundleServiceTest {
                 QueryInput.newBuilder().setName(NameRef.newBuilder().setName("a").build()))
             .build();
 
-    List<CatalogBundleChunk> chunks =
+    List<UserObjectsBundleChunk> chunks =
         service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
 
     RelationResolution resolution = chunks.get(1).getResolutions().getItems(0);
@@ -543,7 +543,7 @@ class CatalogBundleServiceTest {
                     .setName(NameRef.newBuilder().setCatalog("cat").setName("a").build()))
             .build();
 
-    List<CatalogBundleChunk> chunks =
+    List<UserObjectsBundleChunk> chunks =
         service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
 
     RelationResolution resolution = chunks.get(1).getResolutions().getItems(0);
@@ -558,8 +558,8 @@ class CatalogBundleServiceTest {
     AtomicInteger columnDecorations = new AtomicInteger();
     EngineMetadataDecoratorProvider provider =
         ctx -> Optional.of(new CountingDecorator(columnDecorations));
-    CatalogBundleService decoratedService =
-        new CatalogBundleService(
+    UserObjectBundleService decoratedService =
+        new UserObjectBundleService(
             overlay, resolver, queryStore, statsFactory, provider, engineContextProvider, true);
 
     TableReferenceCandidate candidate =
@@ -581,8 +581,8 @@ class CatalogBundleServiceTest {
     AtomicInteger columnDecorations = new AtomicInteger();
     EngineMetadataDecoratorProvider provider =
         ctx -> Optional.of(new CountingDecorator(columnDecorations));
-    CatalogBundleService decoratedService =
-        new CatalogBundleService(
+    UserObjectBundleService decoratedService =
+        new UserObjectBundleService(
             overlay, resolver, queryStore, statsFactory, provider, engineContextProvider, true);
 
     TableReferenceCandidate candidate =

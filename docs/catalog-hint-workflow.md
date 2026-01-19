@@ -55,7 +55,7 @@ The scanner never invents OIDs/typmods itself; it relies entirely on the shared 
 
 ## 4. Catalog bundle decoration
 
-When `CatalogBundleService` builds responses it:
+When `UserObjectBundleService` builds responses it:
 
 * collects cached relation/column metadata from `RelationDecoration` + `ColumnDecoration`.
 * asks `EngineMetadataDecorator` (e.g., `FloeEngineSpecificDecorator`) for Floe hints when overlays are enabled.

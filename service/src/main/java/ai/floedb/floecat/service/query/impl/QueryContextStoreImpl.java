@@ -144,8 +144,8 @@ public class QueryContextStoreImpl implements QueryContextStore {
   /**
    * Overwrite an existing QueryContext with a new version.
    *
-   * <p>This is used by DescribeInputs(), GetCatalogBundle(), etc., to store metadata filled later
-   * in the query lifecycle.
+   * <p>This is used by DescribeInputs(), GetUserObjects(), etc., to store metadata filled later in
+   * the query lifecycle.
    */
   @Override
   public void replace(QueryContext ctx) {

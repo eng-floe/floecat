@@ -20,7 +20,7 @@ import "floecat/query/sql_objects.proto";
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.query.rpc";
 
-message BuiltinRegistry {
+message SystemObjectsRegistry {
   repeated SqlFunction  functions   = 1;
   repeated SqlOperator  operators   = 2;
   repeated SqlType      types       = 3;
@@ -29,15 +29,15 @@ message BuiltinRegistry {
   repeated SqlAggregate aggregates  = 6;
 }
 
-message GetBuiltinCatalogRequest {
+message GetSystemObjectsRequest {
   string engine_kind = 1;
   string engine_version = 2;
 }
 
-message GetBuiltinCatalogResponse {
-  BuiltinRegistry registry = 1;
+message GetSystemObjectsResponse {
+  SystemObjectsRegistry registry = 1;
 }
 
-service BuiltinCatalogService {
-  rpc GetBuiltinCatalog(GetBuiltinCatalogRequest) returns (GetBuiltinCatalogResponse);
+service SystemObjectsService {
+  rpc GetSystemObjects(GetSystemObjectsRequest) returns (GetSystemObjectsResponse);
 }

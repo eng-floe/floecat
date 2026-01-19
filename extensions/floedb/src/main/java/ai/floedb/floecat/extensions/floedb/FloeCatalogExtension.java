@@ -51,8 +51,8 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
 
   @Override
   public final SystemCatalogData loadSystemCatalog() {
-    BuiltinRegistry registry = loadFromResource(getResourcePath());
-    BuiltinRegistry rewritten = rewriteFloeExtensions(registry);
+    SystemObjectsRegistry registry = loadFromResource(getResourcePath());
+    SystemObjectsRegistry rewritten = rewriteFloeExtensions(registry);
     return SystemCatalogProtoMapper.fromProto(rewritten, engineKind());
   }
 
@@ -68,7 +68,7 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
   // PBtxt loader
   // ---------------------------------------------------------------------
 
-  protected BuiltinRegistry loadFromResource(String resourcePath) {
+  protected SystemObjectsRegistry loadFromResource(String resourcePath) {
     InputStream in = getClass().getResourceAsStream(resourcePath);
     if (in == null) {
       throw new IllegalStateException("Builtin file not found: " + resourcePath);
@@ -78,7 +78,7 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
       ExtensionRegistry extensionRegistry = ExtensionRegistry.newInstance();
       EngineFloe.registerAllExtensions(extensionRegistry);
 
-      BuiltinRegistry.Builder builder = BuiltinRegistry.newBuilder();
+      SystemObjectsRegistry.Builder builder = SystemObjectsRegistry.newBuilder();
       var parser = TextFormat.Parser.newBuilder().setAllowUnknownFields(true).build();
       parser.merge(new InputStreamReader(in, StandardCharsets.UTF_8), extensionRegistry, builder);
       return builder.build();
@@ -91,8 +91,8 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
   // Rewrite PBtxt engine_specific blocks → payload bytes
   // ---------------------------------------------------------------------
 
-  protected BuiltinRegistry rewriteFloeExtensions(BuiltinRegistry in) {
-    BuiltinRegistry.Builder out = in.toBuilder();
+  protected SystemObjectsRegistry rewriteFloeExtensions(SystemObjectsRegistry in) {
+    SystemObjectsRegistry.Builder out = in.toBuilder();
 
     // Functions
     out.clearFunctions();

@@ -93,11 +93,11 @@ per engine kind, materialises immutable relation nodes, and caches the result pe
 definitions using those rules so a planner that sets `x-engine-kind=postgres` and
 `x-engine-version=16.0` only sees builtin nodes that actually exist in that release. Callers that omit
 either header simply receive an empty builtin bundle (the catalog files stay untouched), and
-`GetBuiltinCatalog` rejects the request until both headers are provided.
+`GetSystemObjects` rejects the request until both headers are provided.
 
 Each `engine_specific` block may also attach arbitrary key/value `properties`. When the registry
 materialises a `(engine_kind, engine_version)` bundle it keeps only the rules that match the requested
-engine/version, so the filtered catalog (and `GetBuiltinCatalog` response) contains exactly the
+engine/version, so the filtered catalog (and `GetSystemObjects` response) contains exactly the
 entries that apply to the caller. Pbtxt authors rarely need to repeat the engine kind in every rule;
 entries that omit it inherit the file’s engine kind. Builtin nodes intentionally stay rule-free; the
 `SystemCatalogHintProvider` studies the cached definitions and `EngineSpecificMatcher` to expose the
@@ -108,8 +108,8 @@ given `(engine_kind, engine_version)` pair, only the rules that match the natura
 boundaries are retained. The `BuiltinNodes` returned by `SystemNodeRegistry.nodesFor` therefore already
 represent the exact set applicable for that engine release. `SystemGraph` consumes those nodes to build
 a `_system` `GraphSnapshot` that `MetaGraph` exposes via `CatalogOverlay`, so pg_catalog-style system
-objects live alongside the user metadata when scanners run. `BuiltinCatalogServiceImpl` reuses the same
-`SystemNodeRegistry`/`SystemCatalogProtoMapper` pipeline to answer `GetBuiltinCatalog()` calls without
+objects live alongside the user metadata when scanners run. `SystemObjectsServiceImpl` reuses the same
+`SystemNodeRegistry`/`SystemCatalogProtoMapper` pipeline to answer `GetSystemObjects()` calls without
 recomputing the catalog data, and because builtin catalogs are immutable per engine version the registry
 keeps them entirely in memory until FloeCAT restarts.
 
@@ -182,15 +182,15 @@ the graph defines the single source of truth for list/prefix resolution.
   and versioned so planners/executors can safely down-level or up-level between releases.
 
 ## Query Catalog Service
-`QueryCatalogService.GetCatalogBundle` now streams `CatalogBundleChunk`s directly from the metadata
-graph. Each chunk carries a header, batched relation resolutions (`RelationResolutions`), optional
-custom objects (`SqlType`, `SqlFunction`, etc.), and a final summary, so planners can start binding as soon as the
-service resolves each relation. The service shares the same `QueryContext` as the other query RPCs
-and relies on `CatalogOverlay.resolve`, `snapshotPinFor`, and view metadata stored in `ViewNode` to
-produce canonical names, pruned schemas, and view definitions without issuing a second RPC batch.
+`UserObjectsService.GetUserObjects` now streams `UserObjectsBundleChunk`s directly from the metadata
+graph. Each chunk carries a header, batched relation resolutions (`RelationResolutions`) and a final 
+summary, so planners can start binding as soon as the service resolves each relation. The service 
+shares the same `QueryContext` as the other query RPCs and relies on `CatalogOverlay.resolve`, 
+`snapshotPinFor`, and view metadata stored in `ViewNode` to produce canonical names, pruned schemas,
+and view definitions without issuing a second RPC batch.
 Resolved tables/views also go through `QueryInputResolver` so their snapshot pins are merged into
 `QueryContext` before the response hits the planner—`FetchScanBundle` can therefore find the same
-pins later in the lifecycle. Builtins remain behind `GetBuiltinCatalog`.
+pins later in the lifecycle. Builtins remain behind `GetSystemObjects`.
 
 ## Metrics
 The graph surfaces a couple of Micrometer gauges so operators can verify cache state at runtime:

@@ -23,10 +23,16 @@ import "floecat/query/sql_objects.proto";
 
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.query.rpc";
-option java_outer_classname = "QueryCatalogProto";
+option java_outer_classname = "UserObjectsProto";
 
-service QueryCatalogService {
-  rpc GetCatalogBundle(GetCatalogBundleRequest) returns (stream CatalogBundleChunk);
+/**
+ * Service that resolves planner inputs and streams user object metadata.
+ */
+service UserObjectsService {
+  /**
+   * GetUserObjects resolves each requested logical reference and streams results.
+   */
+  rpc GetUserObjects(GetUserObjectsRequest) returns (stream UserObjectsBundleChunk);
 }
 
 /**
@@ -45,7 +51,7 @@ message TableReferenceCandidate {
   bool wants_all_columns = 3;
 }
 
-message GetCatalogBundleRequest {
+message GetUserObjectsRequest {
   // Query ID obtained from BeginQuery.
   string query_id = 1;
 
@@ -53,27 +59,39 @@ message GetCatalogBundleRequest {
   repeated TableReferenceCandidate tables = 2;
 }
 
-message CatalogBundleChunk {
+/**
+ * One streamed chunk of the user objects bundle.
+ */
+message UserObjectsBundleChunk {
+  /** Query context identifier for correlation. */
   string query_id = 1;
   uint64 seq = 2;
 
   oneof payload {
-    CatalogBundleHeader header = 10;
+    /** Stream header (sent once at the start). */
+    UserObjectsBundleHeader header = 10;
 
     // One chunk can carry multiple input resolution results for efficiency.
     RelationResolutions resolutions = 20;
 
-    CatalogBundleEnd end = 90;
+    /** End-of-stream summary (sent once at the end). */
+    UserObjectsBundleEnd end = 90;
   }
 }
 
-message CatalogBundleHeader {
-  // Optional warnings computed before streaming begins.
+/**
+ * Stream header for a user objects bundle.
+ */
+message UserObjectsBundleHeader {
+  /** Optional warnings computed before streaming begins. */
   repeated ResolutionWarning warnings = 1;
 }
 
-message CatalogBundleEnd {
-  // Number of input references the server attempted to resolve (typically request.tables count).
+/**
+ * End-of-stream summary for a user objects bundle.
+ */
+message UserObjectsBundleEnd {
+  /** Number of input references the server attempted to resolve (typically request.tables count). */
   uint32 resolution_count = 1;
 
   // Number of inputs that resolved to an actual relation.

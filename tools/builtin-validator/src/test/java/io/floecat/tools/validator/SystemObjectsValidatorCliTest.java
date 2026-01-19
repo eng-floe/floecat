@@ -20,13 +20,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.query.rpc.BuiltinRegistry;
 import ai.floedb.floecat.query.rpc.SqlAggregate;
 import ai.floedb.floecat.query.rpc.SqlCast;
 import ai.floedb.floecat.query.rpc.SqlCollation;
 import ai.floedb.floecat.query.rpc.SqlFunction;
 import ai.floedb.floecat.query.rpc.SqlOperator;
 import ai.floedb.floecat.query.rpc.SqlType;
+import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
@@ -36,7 +36,7 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 
 /** Unit tests for the standalone builtin catalog validator CLI. */
-class BuiltinCatalogValidatorCliTest {
+class SystemObjectsValidatorCliTest {
 
   /** Happy path coverage ensuring a valid catalog reports success and prints the summary. */
   @Test
@@ -46,7 +46,7 @@ class BuiltinCatalogValidatorCliTest {
     var stderr = new ByteArrayOutputStream();
 
     int exit =
-        new BuiltinCatalogValidatorCli()
+        new SystemObjectsValidatorCli()
             .run(
                 new String[] {catalogPath.toString()},
                 new PrintStream(stdout),
@@ -66,7 +66,7 @@ class BuiltinCatalogValidatorCliTest {
     var stdout = new ByteArrayOutputStream();
 
     int exit =
-        new BuiltinCatalogValidatorCli()
+        new SystemObjectsValidatorCli()
             .run(
                 new String[] {catalogPath.toString(), "--json"},
                 new PrintStream(stdout),
@@ -84,15 +84,17 @@ class BuiltinCatalogValidatorCliTest {
    */
   @Test
   void invalidCatalogReportsErrors() throws Exception {
-    BuiltinRegistry broken =
-        BuiltinRegistry.newBuilder().addFunctions(simpleFunction("pg_catalog.missing")).build();
+    SystemObjectsRegistry broken =
+        SystemObjectsRegistry.newBuilder()
+            .addFunctions(simpleFunction("pg_catalog.missing"))
+            .build();
 
     Path catalogPath = writeBinaryCatalog(broken);
     var stdout = new ByteArrayOutputStream();
     var stderr = new ByteArrayOutputStream();
 
     int exit =
-        new BuiltinCatalogValidatorCli()
+        new SystemObjectsValidatorCli()
             .run(
                 new String[] {catalogPath.toString()},
                 new PrintStream(stdout),
@@ -103,15 +105,15 @@ class BuiltinCatalogValidatorCliTest {
     assertTrue(out.contains("ERROR"));
   }
 
-  private static Path writeBinaryCatalog(BuiltinRegistry catalog) throws IOException {
+  private static Path writeBinaryCatalog(SystemObjectsRegistry catalog) throws IOException {
     Path tempFile = Files.createTempFile("builtin_catalog", ".pb");
     Files.write(tempFile, catalog.toByteArray());
     tempFile.toFile().deleteOnExit();
     return tempFile;
   }
 
-  /** Produces a small valid BuiltinRegistry using the SQL-neutral protobuf model. */
-  private static BuiltinRegistry sampleCatalog() {
+  /** Produces a small valid SystemObjectsRegistry using the SQL-neutral protobuf model. */
+  private static SystemObjectsRegistry sampleCatalog() {
 
     SqlFunction identity =
         SqlFunction.newBuilder()
@@ -143,7 +145,7 @@ class BuiltinCatalogValidatorCliTest {
             .setReturnType(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
             .build();
 
-    return BuiltinRegistry.newBuilder()
+    return SystemObjectsRegistry.newBuilder()
         .addTypes(
             SqlType.newBuilder()
                 .setName(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))

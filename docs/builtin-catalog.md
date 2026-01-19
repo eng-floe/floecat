@@ -21,13 +21,13 @@ The architecture is **plugin-based**: each engine implements a builtin catalog p
 │ (engine_kind,│
 │  engine_ver) │
 └──────┬───────┘
-       │ gRPC GetBuiltinCatalog
+       │ gRPC GetSystemObjects
        ▼
 ┌────────────────────────────────────────────────────────────┐
-│ BuiltinCatalogServiceImpl (service)                        │
+│ SystemObjectsServiceImpl (service)                        │
 │ - validates headers + correlation id                        │
 │ - calls SystemNodeRegistry.nodesFor(kind, version)          │
-│ - maps SystemCatalogData → BuiltinRegistry via              │
+│ - maps SystemCatalogData → SystemObjectsRegistry via              │
 │   SystemCatalogProtoMapper                                    │
 └──────┬──────────────────────────────────────────────────────┘
        │
@@ -166,7 +166,7 @@ Builtins are cached at every stage of the pipeline:
 
 3. **SystemGraph snapshot cache** – `SystemGraph` consumes `BuiltinNodes` to build a `GraphSnapshot` that buckets namespace→relations, indexes every `GraphNode` by `ResourceId`, and keeps `_system` catalog metadata ready for `CatalogOverlay`. Snapshots are stored in a synchronized `LinkedHashMap` configured by `floecat.system.graph.snapshot-cache-size` (defaults to 16) and evict the oldest entry when the cache is full.
 
-`BuiltinCatalogServiceImpl` itself stays cache-less: it simply fetches the prebuilt `BuiltinNodes`, hands the embedded `SystemCatalogData` to `SystemCatalogProtoMapper.toProto()`, and responds. Because all heavy work (parsing, filtering, node construction, snapshotting) happens before the gRPC layer, repeated requests hit the cache in <1ms.
+`SystemObjectsServiceImpl` itself stays cache-less: it simply fetches the prebuilt `BuiltinNodes`, hands the embedded `SystemCatalogData` to `SystemCatalogProtoMapper.toProto()`, and responds. Because all heavy work (parsing, filtering, node construction, snapshotting) happens before the gRPC layer, repeated requests hit the cache in <1ms.
 
 ## Plugin Architecture
 
@@ -243,15 +243,15 @@ ai.floedb.floecat.extensions.floedb.FloeCatalogExtension$FloeDemo
 
 ### Request Flow (Planner → Floecat)
 
-1. **Planner** sends `GetBuiltinCatalogRequest` with headers:
+1. **Planner** sends `GetSystemObjectsRequest` with headers:
    - `x-engine-kind: "floe-demo"`
    - `x-engine-version: "16.0"`
-2. **BuiltinCatalogServiceImpl** validates the headers and calls `SystemNodeRegistry.nodesFor("floe-demo", "16.0")`.
+2. **SystemObjectsServiceImpl** validates the headers and calls `SystemNodeRegistry.nodesFor("floe-demo", "16.0")`.
 3. **SystemNodeRegistry** normalizes the kind, looks up `(engineKind, engineVersion)` in its cache, and, on a miss, asks `SystemDefinitionRegistry` for the raw `SystemEngineCatalog`.
 4. **SystemDefinitionRegistry** delegates to `ServiceLoaderSystemCatalogProvider` when it needs to load a raw catalog snapshot for the normalized engine kind.
 5. **SystemNodeRegistry** takes that snapshot, seeds it with `floecat_internal` + `InformationSchema` definitions, overlays the plugin catalog and any `SystemObjectScannerProvider.definitions(engineKind, engineVersion)` entries, re-fingerprints the merged catalog, and caches the result per `(engineKind, engineVersion)`. Plugin/provider overlays only occur when engine headers are present (engine-plugin overlays).
 6. **SystemNodeRegistry** filters the catalog by version (`EngineSpecificMatcher`), applies engine-specific rules, and materialises `BuiltinNodes` (graph nodes + filtered `SystemCatalogData`). The `BuiltinNodes` instance is cached for future requests for the same version.
-7. **BuiltinCatalogServiceImpl** receives the cached `BuiltinNodes`, hands its embedded `SystemCatalogData` to `SystemCatalogProtoMapper.toProto()`, and streams the `GetBuiltinCatalogResponse` back to the planner.
+7. **SystemObjectsServiceImpl** receives the cached `BuiltinNodes`, hands its embedded `SystemCatalogData` to `SystemCatalogProtoMapper.toProto()`, and streams the `GetSystemObjectsResponse` back to the planner.
 8. **SystemGraph** reuses the same `BuiltinNodes` to build `_system` catalog snapshots (namespace buckets, relation map, `SystemTableNode`s) that `MetaGraph` exposes as `CatalogOverlay`/`SystemObjectGraphView` for system object scanning.
 
 ### SystemNodeRegistry Caching
@@ -508,7 +508,7 @@ class FloeBuiltinExtensionTest {
 
 ### Core Engine Tests
 
-**BuiltinCatalogServiceIT** – Full gRPC flow:
+**SystemObjectsServiceIT** – Full gRPC flow:
 - Valid engine headers return full catalog
 - Version filtering returns only version-matched objects
 - Missing headers trigger INVALID_ARGUMENT errors
@@ -530,7 +530,7 @@ class FloeBuiltinExtensionTest {
 mvn -pl extensions/plugins/floedb test
 
 # Run core engine tests
-mvn -pl service test -Dtest=BuiltinCatalogServiceIT
+mvn -pl service test -Dtest=SystemObjectsServiceIT
 mvn -pl core/catalog test -Dtest=SystemNodeRegistryTest
 mvn -pl core/catalog test -Dtest=SystemCatalogValidator*
 
@@ -550,7 +550,7 @@ When adding a new plugin or modifying .pbtxt files:
 | Operators have valid types | Type resolution | SystemCatalogValidatorTest |
 | Casts reference valid types | Type resolution | SystemCatalogValidatorTest |
 | Engine-specific fields rewritten | Payload bytes present | FloeBuiltinExtensionTest.preservesRules |
-| ServiceLoader discovers plugin | BuiltinCatalogServiceIT | Dynamic runtime discovery |
+| ServiceLoader discovers plugin | SystemObjectsServiceIT | Dynamic runtime discovery |
 | Version filtering works | Version matching logic | SystemNodeRegistryTest |
 
 ## Future Enhancements
