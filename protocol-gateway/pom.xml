@@ -21,13 +21,13 @@
   <parent>
     <groupId>ai.floedb.floecat</groupId>
     <artifactId>floecat</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>${revision}</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
   <groupId>ai.floedb.floecat</groupId>
   <artifactId>protocol-gateway</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>${revision}</version>
   <packaging>pom</packaging>
 
   <properties>

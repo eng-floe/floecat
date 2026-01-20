@@ -21,12 +21,13 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>ai.floedb.floecat</groupId>
   <artifactId>floecat</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>${revision}</version>
   <packaging>pom</packaging>
   <name>floecat-root</name>
   <description>Floecat, Root</description>
 
   <properties>
+    <revision>0.1.0-SNAPSHOT</revision>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <quarkus.platform.version>3.29.4</quarkus.platform.version>
     <maven.compiler.source>25</maven.compiler.source>

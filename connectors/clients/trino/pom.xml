@@ -20,14 +20,14 @@
   <parent>
     <groupId>ai.floedb.floecat</groupId>
     <artifactId>floecat</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>${revision}</version>
     <relativePath>../../..</relativePath>
   </parent>
 
   <modelVersion>4.0.0</modelVersion>
   <groupId>ai.floedb.floecat</groupId>
   <artifactId>trino-floecat-connector</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>${revision}</version>
   <packaging>jar</packaging>
   <name>trino-floecat-connector</name>
 

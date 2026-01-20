@@ -108,7 +108,10 @@ REACTOR_SERVICE := -pl service -am
 REACTOR_REST := -pl protocol-gateway/iceberg-rest -am
 
 # ---------- Version / Artifacts ----------
-VERSION := $(shell sed -n 's:.*<version>\(.*\)</version>.*:\1:p' pom.xml | head -n1)
+VERSION := $(shell sed -n 's:.*<revision>\(.*\)</revision>.*:\1:p' pom.xml | head -n1)
+ifeq ($(strip $(VERSION)),)
+  VERSION := $(shell sed -n 's:.*<version>\(.*\)</version>.*:\1:p' pom.xml | head -n1)
+endif
 ifeq ($(strip $(VERSION)),)
   VERSION := 0.1.0-SNAPSHOT
 endif
