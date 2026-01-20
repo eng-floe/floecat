@@ -44,7 +44,14 @@
       <artifactId>floecat-types</artifactId>
       <version>${project.version}</version>
     </dependency>
-
+    
+    <!-- MetaGraph definition -->
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-metagraph</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    
     <!-- Proto (stats, NDV, value encoders, etc) -->
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
@@ -120,6 +127,28 @@
           <artifactId>stax-api</artifactId>
         </exclusion>
       </exclusions>
+    </dependency>
+
+    <!-- Test deps (connectors-common has plain JUnit5 tests) -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <version>5.10.2</version>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+      <version>5.10.2</version>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-params</artifactId>
+      <version>5.10.2</version>
+      <scope>test</scope>
     </dependency>
   </dependencies>
 

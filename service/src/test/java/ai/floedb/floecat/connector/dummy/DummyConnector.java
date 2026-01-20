@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.connector.dummy;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
@@ -36,27 +36,29 @@ public final class DummyConnector implements FloecatConnector {
     final int colId;
     final String name;
     final String logical;
+    final int ordinal;
 
-    Col(int colId, String name, String logical) {
+    Col(int colId, String name, String logical, int ordinal) {
       this.colId = colId;
       this.name = name;
       this.logical = logical;
+      this.ordinal = ordinal;
     }
   }
 
   private static final List<Col> LEAF_COLS =
       List.of(
-          new Col(1, "id", "INT64"),
-          new Col(2, "ts", "TIMESTAMP"),
+          new Col(1, "id", "INT64", 1),
+          new Col(2, "ts", "TIMESTAMP", 2),
           // struct user (3) -> id(4), name(5)
-          new Col(4, "user.id", "INT64"),
-          new Col(5, "user.name", "STRING"),
+          new Col(4, "user.id", "INT64", 3),
+          new Col(5, "user.name", "STRING", 4),
           // list items (6) -> element(7 struct) -> sku(8), qty(9)
-          new Col(8, "items.element.sku", "STRING"),
-          new Col(9, "items.element.qty", "INT32"),
+          new Col(8, "items.element.sku", "STRING", 5),
+          new Col(9, "items.element.qty", "INT32", 6),
           // map attrs (10) -> key(11), value(12)
-          new Col(11, "attrs.key", "STRING"),
-          new Col(12, "attrs.value", "STRING"));
+          new Col(11, "attrs.key", "STRING", 7),
+          new Col(12, "attrs.value", "STRING", 8));
 
   private DummyConnector(String id) {
     this.id = id;
@@ -124,7 +126,8 @@ public final class DummyConnector implements FloecatConnector {
     Map<String, String> props = Map.of("upstream", "dummy", "owner", "tests");
     List<String> pks = List.of("ts");
 
-    return new TableDescriptor(namespaceFq, tableName, location, schemaJson, pks, props);
+    return new TableDescriptor(
+        namespaceFq, tableName, location, schemaJson, pks, ColumnIdAlgorithm.CID_FIELD_ID, props);
   }
 
   @Override
@@ -156,24 +159,25 @@ public final class DummyConnector implements FloecatConnector {
                 .filter(c -> normalized.contains("#" + c.colId) || normalized.contains(c.name))
                 .collect(Collectors.toList());
 
-    List<ColumnStats> cstats = new ArrayList<>();
+    List<ColumnStatsView> cstats = new ArrayList<>();
     for (Col c : selected) {
-      cstats.add(
-          ColumnStats.newBuilder()
-              .setSnapshotId(snapshotId)
-              .setColumnId(c.colId)
-              .setColumnName(c.name)
-              .setLogicalType(c.logical)
-              .setNullCount(0)
-              .build());
+      var ref =
+          new ColumnRef(
+              c.name,
+              c.name, // physical path for nested refs in tests (dot-separated)
+              c.ordinal, // stable 1-based ordinal for PATH_ORDINAL algorithms
+              c.colId // fieldId for Iceberg-style schemas
+              );
+
+      cstats.add(new ColumnStatsView(ref, c.logical, null, 0L, null, null, null, null, Map.of()));
     }
 
     String basePath =
         "s3://dummy/" + namespace.replace('.', '/') + "/" + table + "/snapshot-" + snapshotId;
 
-    Function<Integer, List<ColumnStats>> perFileCols =
+    Function<Integer, List<ColumnStatsView>> perFileCols =
         fileIndex -> {
-          List<ColumnStats> cols = new ArrayList<>();
+          List<ColumnStatsView> cols = new ArrayList<>();
           for (Col c : selected) {
             long valueCount =
                 switch (fileIndex) {
@@ -181,53 +185,72 @@ public final class DummyConnector implements FloecatConnector {
                   case 1 -> 20L;
                   default -> 30L;
                 };
+
+            var ref =
+                new ColumnRef(
+                    c.name,
+                    c.name, // physical path for nested refs in tests (dot-separated)
+                    c.ordinal, // stable 1-based ordinal for PATH_ORDINAL algorithms
+                    c.colId // fieldId for Iceberg-style schemas
+                    );
+
             cols.add(
-                ColumnStats.newBuilder()
-                    .setTableId(destinationTableId)
-                    .setSnapshotId(snapshotId)
-                    .setColumnId(c.colId)
-                    .setColumnName(c.name)
-                    .setLogicalType(c.logical)
-                    .setValueCount(valueCount)
-                    .setNullCount(0L)
-                    .setMin("f" + fileIndex + "_min_" + c.colId)
-                    .setMax("f" + fileIndex + "_max_" + c.colId)
-                    .build());
+                new ColumnStatsView(
+                    ref,
+                    c.logical,
+                    valueCount,
+                    0L,
+                    null,
+                    "f" + fileIndex + "_min_" + c.colId,
+                    "f" + fileIndex + "_max_" + c.colId,
+                    null,
+                    Map.of()));
           }
           return cols;
         };
 
     var f1 =
-        FileColumnStats.newBuilder()
-            .setTableId(destinationTableId)
-            .setSnapshotId(snapshotId)
-            .setFilePath(basePath + "/part-00000.parquet")
-            .setRowCount(30)
-            .setSizeBytes(512)
-            .addAllColumns(perFileCols.apply(0))
-            .build();
+        new FileColumnStatsView(
+            basePath + "/part-00000.parquet",
+            "PARQUET",
+            30,
+            512,
+            FileContent.FC_DATA,
+            "",
+            0,
+            List.of(),
+            null,
+            perFileCols.apply(0));
 
     var f2 =
-        FileColumnStats.newBuilder()
-            .setTableId(destinationTableId)
-            .setSnapshotId(snapshotId)
-            .setFilePath(basePath + "/part-00001.parquet")
-            .setRowCount(30)
-            .setSizeBytes(512)
-            .addAllColumns(perFileCols.apply(1))
-            .build();
+        new FileColumnStatsView(
+            basePath + "/part-00001.parquet",
+            "PARQUET",
+            30,
+            512,
+            FileContent.FC_DATA,
+            "",
+            0,
+            List.of(),
+            null,
+            perFileCols.apply(1));
 
     var f3 =
-        FileColumnStats.newBuilder()
-            .setTableId(destinationTableId)
-            .setSnapshotId(snapshotId)
-            .setFilePath(basePath + "/part-00002.parquet")
-            .setRowCount(40)
-            .setSizeBytes(1024)
-            .addAllColumns(perFileCols.apply(2))
-            .build();
+        new FileColumnStatsView(
+            basePath + "/part-00002.parquet",
+            "PARQUET",
+            40,
+            1024,
+            FileContent.FC_DATA,
+            "",
+            0,
+            List.of(),
+            null,
+            perFileCols.apply(2));
 
-    List<FileColumnStats> fileStats = List.of(f1, f2, f3);
+    List<FileColumnStatsView> fileStats = List.of(f1, f2, f3);
+
+    String schemaJson = describe(namespace, table).schemaJson();
 
     return List.of(
         new SnapshotBundle(
@@ -237,7 +260,7 @@ public final class DummyConnector implements FloecatConnector {
             tStats,
             cstats,
             fileStats,
-            "{}",
+            schemaJson,
             null,
             0L,
             null,

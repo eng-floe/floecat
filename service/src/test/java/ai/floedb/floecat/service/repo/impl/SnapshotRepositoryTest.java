@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.impl;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -90,6 +91,7 @@ class SnapshotRepositoryTest {
     var upstream =
         UpstreamRef.newBuilder()
             .setFormat(TableFormat.TF_DELTA)
+            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_PATH_ORDINAL)
             .setUri("s3://upstream/tables/orders/")
             .build();
     var td =

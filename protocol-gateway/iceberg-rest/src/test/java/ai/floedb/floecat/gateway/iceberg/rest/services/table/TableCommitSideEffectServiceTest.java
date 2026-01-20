@@ -26,6 +26,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
@@ -84,6 +85,7 @@ class TableCommitSideEffectServiceTest {
             .setUpstream(
                 UpstreamRef.newBuilder()
                     .setFormat(TableFormat.TF_ICEBERG)
+                    .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
                     .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
                     .build())
             .build();
@@ -229,6 +231,7 @@ class TableCommitSideEffectServiceTest {
             .setUpstream(
                 UpstreamRef.newBuilder()
                     .setFormat(TableFormat.TF_ICEBERG)
+                    .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
                     .setConnectorId(ResourceId.newBuilder().setId("connector-1").build())
                     .build())
             .build();
@@ -256,6 +259,7 @@ class TableCommitSideEffectServiceTest {
             .setUpstream(
                 UpstreamRef.newBuilder()
                     .setFormat(TableFormat.TF_ICEBERG)
+                    .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
                     .setUri("s3://existing/location")
                     .build())
             .build();

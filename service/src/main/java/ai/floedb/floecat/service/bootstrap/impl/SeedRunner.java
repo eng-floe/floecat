@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.bootstrap.impl;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -358,6 +359,7 @@ public class SeedRunner {
             .addAllNamespacePath(List.of(("a.b.c").split("\\.")))
             .setTableDisplayName("upstream_table")
             .setFormat(TableFormat.TF_ICEBERG)
+            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
             .build();
 
     var table =

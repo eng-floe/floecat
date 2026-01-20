@@ -537,7 +537,11 @@ class BackendStorageIT {
             namespace, cat.getResourceId(), "ns", List.of("db", "sch"), "idem");
 
     var upstream =
-        UpstreamRef.newBuilder().setFormat(TableFormat.TF_DELTA).setUri("s3://b/p").build();
+        UpstreamRef.newBuilder()
+            .setFormat(TableFormat.TF_DELTA)
+            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_PATH_ORDINAL)
+            .setUri("s3://b/p")
+            .build();
 
     var spec =
         TableSpec.newBuilder()
@@ -592,7 +596,11 @@ class BackendStorageIT {
     var idem = IdempotencyKey.newBuilder().setKey("k-XYZ").build();
 
     var upstream =
-        UpstreamRef.newBuilder().setFormat(TableFormat.TF_DELTA).setUri("s3://b/p").build();
+        UpstreamRef.newBuilder()
+            .setFormat(TableFormat.TF_DELTA)
+            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_PATH_ORDINAL)
+            .setUri("s3://b/p")
+            .build();
 
     var specA =
         TableSpec.newBuilder()
@@ -631,7 +639,11 @@ class BackendStorageIT {
             namespace, cat.getResourceId(), "ns", List.of("db", "sch"), "idem");
 
     var upstream =
-        UpstreamRef.newBuilder().setFormat(TableFormat.TF_DELTA).setUri("s3://b/p").build();
+        UpstreamRef.newBuilder()
+            .setFormat(TableFormat.TF_DELTA)
+            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_PATH_ORDINAL)
+            .setUri("s3://b/p")
+            .build();
 
     var spec =
         TableSpec.newBuilder()

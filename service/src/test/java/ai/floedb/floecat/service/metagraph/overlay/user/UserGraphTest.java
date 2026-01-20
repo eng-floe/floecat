@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -176,6 +177,7 @@ class UserGraphTest {
             .setUpstream(
                 UpstreamRef.newBuilder()
                     .setFormat(TableFormat.TF_ICEBERG)
+                    .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
                     .setUri("s3://bucket/sales")
                     .build())
             .build();
@@ -524,7 +526,11 @@ class UserGraphTest {
             .setNamespaceId(namespace.getResourceId())
             .setDisplayName("tbl")
             .setSchemaJson("{}")
-            .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).build())
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .setFormat(TableFormat.TF_ICEBERG)
+                    .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+                    .build())
             .build();
     tableRepository.put(table, mutationMeta(1L, Instant.now()));
 
@@ -589,7 +595,11 @@ class UserGraphTest {
             .setNamespaceId(namespace.getResourceId())
             .setDisplayName("obj")
             .setSchemaJson("{}")
-            .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).build())
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .setFormat(TableFormat.TF_ICEBERG)
+                    .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+                    .build())
             .build();
     tableRepository.put(table, mutationMeta(1L, Instant.now()));
     View view =
@@ -791,7 +801,11 @@ class UserGraphTest {
             .setNamespaceId(namespace.getResourceId())
             .setDisplayName("orders_nested")
             .setSchemaJson("{}")
-            .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).build())
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .setFormat(TableFormat.TF_ICEBERG)
+                    .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+                    .build())
             .build(),
         mutationMeta(1L, Instant.now()));
 
@@ -940,7 +954,11 @@ class UserGraphTest {
             .setDisplayName(tableName)
             .setSchemaJson(schemaJson)
             .setUpstream(
-                UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).setUri("s3://x").build())
+                UpstreamRef.newBuilder()
+                    .setFormat(TableFormat.TF_ICEBERG)
+                    .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+                    .setUri("s3://x")
+                    .build())
             .build(),
         mutationMeta(1L, Instant.now()));
     return new TableIds(catalogId, namespaceId, tableId);

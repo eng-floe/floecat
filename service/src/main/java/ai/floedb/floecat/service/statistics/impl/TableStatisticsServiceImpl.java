@@ -659,7 +659,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
 
     var cols = new ArrayList<>(stats.getColumnsList());
     cols.sort(
-        Comparator.comparingInt(ColumnStats::getColumnId)
+        Comparator.comparingLong(ColumnStats::getColumnId)
             .thenComparing(ColumnStats::getColumnName));
     for (var col : cols) {
       c.group(

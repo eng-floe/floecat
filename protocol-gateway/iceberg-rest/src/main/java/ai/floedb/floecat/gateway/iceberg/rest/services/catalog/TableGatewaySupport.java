@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -117,7 +118,10 @@ public class TableGatewaySupport {
     if (req.location() != null && !req.location().isBlank()) {
       spec.putProperties("location", req.location());
       UpstreamRef.Builder upstream =
-          spec.getUpstream().toBuilder().setFormat(TableFormat.TF_ICEBERG).setUri(req.location());
+          spec.getUpstream().toBuilder()
+              .setFormat(TableFormat.TF_ICEBERG)
+              .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+              .setUri(req.location());
       spec.setUpstream(upstream.build());
     }
     if (req.properties() != null && !req.properties().isEmpty()) {
@@ -134,7 +138,11 @@ public class TableGatewaySupport {
         .setCatalogId(catalogId)
         .setNamespaceId(namespaceId)
         .setDisplayName(tableName)
-        .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).build());
+        .setUpstream(
+            UpstreamRef.newBuilder()
+                .setFormat(TableFormat.TF_ICEBERG)
+                .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+                .build());
   }
 
   public void addMetadataLocationProperties(TableSpec.Builder spec, String metadataLocation) {
@@ -488,6 +496,7 @@ public class TableGatewaySupport {
     UpstreamRef.Builder upstream =
         UpstreamRef.newBuilder()
             .setFormat(TableFormat.TF_ICEBERG)
+            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
             .setConnectorId(connectorId)
             .addAllNamespacePath(namespacePath)
             .setTableDisplayName(tableName);

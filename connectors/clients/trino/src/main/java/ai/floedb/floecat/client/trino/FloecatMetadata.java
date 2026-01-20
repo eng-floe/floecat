@@ -183,7 +183,6 @@ public class FloecatMetadata implements ConnectorMetadata {
     }
 
     List<String> partitionKeys = response.getTable().getUpstream().getPartitionKeysList();
-    Map<String, Integer> fieldIds = response.getTable().getUpstream().getFieldIdByPathMap();
 
     Optional<Long> snapshotId = FloecatSessionProperties.getSnapshotId(session);
     Optional<Long> asOfMillis = FloecatSessionProperties.getAsOfEpochMillis(session);
@@ -223,7 +222,7 @@ public class FloecatMetadata implements ConnectorMetadata {
       }
     }
 
-    PartitionSpec partitionSpec = buildPartitionSpec(schemaJson, partitionKeys, fieldIds);
+    PartitionSpec partitionSpec = buildPartitionSpec(schemaJson, partitionKeys);
 
     return new FloecatTableHandle(
         tableName,
@@ -365,8 +364,7 @@ public class FloecatMetadata implements ConnectorMetadata {
     return columns;
   }
 
-  private PartitionSpec buildPartitionSpec(
-      String schemaJson, List<String> partitionKeys, Map<String, Integer> fieldIds) {
+  PartitionSpec buildPartitionSpec(String schemaJson, List<String> partitionKeys) {
     Schema schema = SchemaParser.fromJson(schemaJson);
     Builder builder = PartitionSpec.builderFor(schema);
     for (String key : partitionKeys) {

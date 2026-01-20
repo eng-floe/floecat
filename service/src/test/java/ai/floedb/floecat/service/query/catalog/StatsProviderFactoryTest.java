@@ -145,7 +145,7 @@ class StatsProviderFactoryTest {
         new CatalogBundleTestSupport.TestQueryContextStore();
     StatsProviderFactory factory = new StatsProviderFactory(repository, store);
     long snapshotId = 22L;
-    int columnId = 1;
+    long columnId = 1L;
     ColumnStats stats =
         ColumnStats.newBuilder()
             .setTableId(TABLE)
@@ -262,7 +262,8 @@ class StatsProviderFactoryTest {
     }
 
     @Override
-    public Optional<ColumnStats> getColumnStats(ResourceId tableId, long snapshotId, int columnId) {
+    public Optional<ColumnStats> getColumnStats(
+        ResourceId tableId, long snapshotId, long columnId) {
       columnStatsCalls++;
       return super.getColumnStats(tableId, snapshotId, columnId);
     }

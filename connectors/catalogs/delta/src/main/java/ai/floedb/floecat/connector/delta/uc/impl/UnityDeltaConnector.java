@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.delta.kernel.engine.Engine;
 import java.util.ArrayList;
@@ -140,7 +141,13 @@ public final class UnityDeltaConnector extends DeltaConnector {
 
       String location = meta.path("storage_location").asText(null);
       return new TableDescriptor(
-          namespaceFq, tableName, location, schemaNode.toString(), List.of(), props);
+          namespaceFq,
+          tableName,
+          location,
+          schemaNode.toString(),
+          List.of(),
+          ColumnIdAlgorithm.CID_PATH_ORDINAL,
+          props);
     } catch (Exception e) {
       throw new RuntimeException("describe failed", e);
     }

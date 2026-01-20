@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.systemcatalog.utilities;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -100,11 +101,11 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
             catalogId,
             ns.id(),
             name,
-            TableFormat.TF_DELTA,
+            TableFormat.TF_ICEBERG,
+            ColumnIdAlgorithm.CID_FIELD_ID,
             "",
             Map.of(),
             List.of(),
-            fieldIds,
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),

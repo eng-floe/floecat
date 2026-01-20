@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.catalog.impl;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
@@ -92,7 +93,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
           "upstream.table_display_name",
           "upstream.format",
           "upstream.partition_keys",
-          "upstream.field_id_by_path");
+          "upstream.column_id_algorithm");
 
   private static final Logger LOG = Logger.getLogger(TableService.class);
 
@@ -708,8 +709,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         ub.clearPartitionKeys().addAllPartitionKeys(inUp.getPartitionKeysList());
       }
 
-      if (maskTargets(mask, "upstream.field_id_by_path")) {
-        ub.clearFieldIdByPath().putAllFieldIdByPath(inUp.getFieldIdByPathMap());
+      if (maskTargets(mask, "upstream.column_id_algorithm")) {
+        ub.setColumnIdAlgorithm(inUp.getColumnIdAlgorithm());
       }
 
       mergedUp = ub.build();
@@ -777,17 +778,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
       }
     }
 
-    for (var e : up.getFieldIdByPathMap().entrySet()) {
-      var path = e.getKey();
-      var id = e.getValue();
-      if (path == null || path.isBlank()) {
-        throw GrpcErrors.invalidArgument(corr, "upstream.field_id_by_path.key.blank", Map.of());
-      }
-
-      if (id < 0) {
-        throw GrpcErrors.invalidArgument(
-            corr, "upstream.field_id_by_path.id.negative", Map.of("path", path));
-      }
+    if (up.getColumnIdAlgorithm() == ColumnIdAlgorithm.CID_UNKNOWN) {
+      throw GrpcErrors.invalidArgument(
+          corr,
+          "upstream.column_id_algorithm.invalid",
+          Map.of("upstream.column_id_algorithm", up.getColumnIdAlgorithm().name()));
     }
   }
 
@@ -826,7 +821,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   .scalar("table_display_name", up.getTableDisplayName())
                   .scalar("format", up.getFormat())
                   .list("partition_keys", up.getPartitionKeysList())
-                  .map("field_id_by_path", up.getFieldIdByPathMap()));
+                  .scalar("column_id_algorithm", up.getColumnIdAlgorithm()));
     }
     return c.bytes();
   }

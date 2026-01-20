@@ -67,12 +67,13 @@ public final class CatalogBundleUtils {
     return columns;
   }
 
-  public static ColumnInfo columnInfo(SchemaColumn column, int ordinal, Origin origin) {
+  public static ColumnInfo columnInfo(SchemaColumn column, Origin origin) {
     return ColumnInfo.newBuilder()
+        .setId(column.getId())
         .setName(column.getName())
         .setType(NameRefUtil.name(column.getLogicalType()))
         .setNullable(column.getNullable())
-        .setOrdinal(ordinal)
+        .setOrdinal(column.getOrdinal())
         .setOrigin(origin)
         .setFieldId(column.getFieldId())
         .setPhysicalPath(column.getPhysicalPath())
@@ -83,23 +84,8 @@ public final class CatalogBundleUtils {
       List<SchemaColumn> schema, List<SchemaColumn> pruned, Origin origin, String correlationId) {
     List<ColumnInfo> columns = new ArrayList<>(Math.max(0, pruned.size()));
 
-    // Ordinals must reflect the physical/stable schema layout (not the pruned list order).
-    var ordinalMap = new HashMap<String, Integer>(Math.max(16, schema.size() * 2));
-    for (int i = 0; i < schema.size(); i++) {
-      ordinalMap.put(schema.get(i).getName(), i + 1);
-    }
-
     for (SchemaColumn column : pruned) {
-      Integer ordinal = ordinalMap.get(column.getName());
-      if (ordinal == null) {
-        // This should never happen unless the caller passes a pruned list that is not derived
-        // from the provided schema. Fail fast rather than emitting incorrect ordinals.
-        throw GrpcErrors.internal(
-            correlationId,
-            "catalog_bundle.schema.ordinal_missing",
-            Map.of("column", column.getName()));
-      }
-      columns.add(columnInfo(column, ordinal, origin));
+      columns.add(columnInfo(column, origin));
     }
 
     return columns;
