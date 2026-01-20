@@ -75,8 +75,6 @@ public final class UserObjectBundleUtils {
         .setNullable(column.getNullable())
         .setOrdinal(column.getOrdinal())
         .setOrigin(origin)
-        .setFieldId(column.getFieldId())
-        .setPhysicalPath(column.getPhysicalPath())
         .build();
   }
 

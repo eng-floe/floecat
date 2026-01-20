@@ -227,19 +227,19 @@ message RelationInfo {
 
   /** Relation kind (table, view, etc.) to help the planner decide how to bind. */
   RelationKind kind = 3;
-
-  /** Origin indicates whether the relation is user-defined or builtin. */
-  ai.floedb.floecat.query.Origin origin = 10;
-
+  
   /** Columns describing the resolved projection metadata. */
   repeated ColumnInfo columns = 4;
-
+  
   /** Optional view definition for relations of kind VIEW. */
   ViewDefinition view_definition = 5;
-
+  
   /** Optional table-level statistics from a cached catalog snapshot. */
   RelationStats stats = 6;
-
+  
+  /** Origin indicates whether the relation is user-defined or builtin. */
+  ai.floedb.floecat.query.Origin origin = 7;
+  
   /** Optional engine-specific metadata extensions. */
   repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
 }
@@ -260,28 +260,22 @@ message RelationStats {
  */
 message ColumnInfo {
   // Unique column ID within the relation used in Floecat.
-  int64 id = 13;
+  int64 id = 1;
   
   // Column name.
-  string name = 1;
+  string name = 2;
 
   /** Logical type identifier for the column. */
-  ai.floedb.floecat.common.NameRef type = 2;
+  ai.floedb.floecat.common.NameRef type = 3;
 
   /** Whether NULL is allowed. */
-  bool nullable = 3;
-
-  /** Ordinal position within the relation schema (1-based within parent) */
-  int32 ordinal = 10;
-
-  /** Unique field identifier if present (for example Iceberg field id). */
-  int32 field_id = 11;
-
-  /** Physical path pointing inside the storage format (engine-specific). */
-  string physical_path = 12;
+  bool nullable = 4;
+  
+  // Ordinal position within the table schema : 1-based within the parent struct.
+  int32 ordinal = 5;
 
   /** Origin marks builtin vs user columns (propagated from relation origin). */
-  ai.floedb.floecat.query.Origin origin = 20;
+  ai.floedb.floecat.query.Origin origin = 6;
 
   /** Engine-specific metadata extensions (optional). */
   repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
