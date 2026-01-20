@@ -38,11 +38,7 @@ public final class PgClassScanner implements SystemObjectScanner {
           col("relname", "VARCHAR"),
           col("relnamespace", "INT"),
           col("relkind", "CHAR"),
-          col("relowner", "INT"),
-          col("relhasindex", "BOOLEAN"),
-          col("relisshared", "BOOLEAN"),
-          col("reltuples", "FLOAT"),
-          col("relpages", "INT"));
+          col("reltuples", "FLOAT"));
 
   @Override
   public List<SchemaColumn> schema() {
@@ -69,11 +65,7 @@ public final class PgClassScanner implements SystemObjectScanner {
           spec.getRelname(),
           spec.getRelnamespace(),
           spec.getRelkind(),
-          spec.getRelowner(),
-          spec.getRelhasindex(),
-          spec.getRelisshared(),
-          (float) spec.getReltuples(),
-          spec.getRelpages()
+          (float) spec.getReltuples()
         });
   }
 }

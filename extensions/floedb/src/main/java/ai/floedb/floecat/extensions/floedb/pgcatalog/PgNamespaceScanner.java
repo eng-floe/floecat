@@ -31,11 +31,7 @@ import java.util.stream.Stream;
 public final class PgNamespaceScanner implements SystemObjectScanner {
 
   public static final List<SchemaColumn> SCHEMA =
-      List.of(
-          ScannerUtils.col("oid", "INT"),
-          ScannerUtils.col("nspname", "VARCHAR"),
-          ScannerUtils.col("nspowner", "INT"),
-          ScannerUtils.col("nspacl", "VARCHAR[]"));
+      List.of(ScannerUtils.col("oid", "INT"), ScannerUtils.col("nspname", "VARCHAR"));
 
   @Override
   public List<SchemaColumn> schema() {
@@ -49,9 +45,6 @@ public final class PgNamespaceScanner implements SystemObjectScanner {
 
   private SystemObjectRow toRow(SystemObjectScanContext ctx, NamespaceNode ns) {
     FloeNamespaceSpecific spec = FloeHintResolver.namespaceSpecific(ctx, ns);
-    String[] acl =
-        spec.getNspaclCount() > 0 ? spec.getNspaclList().toArray(String[]::new) : new String[0];
-    return new SystemObjectRow(
-        new Object[] {spec.getOid(), spec.getNspname(), spec.getNspowner(), acl});
+    return new SystemObjectRow(new Object[] {spec.getOid(), spec.getNspname()});
   }
 }

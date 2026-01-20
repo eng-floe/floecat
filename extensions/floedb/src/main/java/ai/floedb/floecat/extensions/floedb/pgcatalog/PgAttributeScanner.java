@@ -58,6 +58,7 @@ public final class PgAttributeScanner implements SystemObjectScanner {
           ScannerUtils.col("atttypmod", "INT"),
           ScannerUtils.col("attnum", "INT"),
           ScannerUtils.col("attlen", "INT"),
+          ScannerUtils.col("attbyval", "BOOLEAN"),
           ScannerUtils.col("attnotnull", "BOOLEAN"),
           ScannerUtils.col("attisdropped", "BOOLEAN"),
           ScannerUtils.col("attalign", "CHAR"),
@@ -117,22 +118,24 @@ public final class PgAttributeScanner implements SystemObjectScanner {
       int attnum,
       SchemaColumn column) {
     LogicalType logicalType = FloeHintResolver.parseLogicalType(column);
-    FloeColumnSpecific attribute =
-        FloeHintResolver.columnSpecific(ctx, resolver, relOid, attnum, column, logicalType);
+    FloeHintResolver.ColumnMetadata metadata =
+        FloeHintResolver.columnMetadata(ctx, resolver, column, logicalType);
+    FloeColumnSpecific attribute = FloeHintResolver.buildColumnSpecific(column, attnum, metadata);
     return new SystemObjectRow(
         new Object[] {
-          attribute.getAttrelid(),
+          relOid,
           attribute.getAttname(),
-          attribute.getAtttypid(),
+          (int) attribute.getAtttypid(),
           attribute.getAtttypmod(),
           attribute.getAttnum(),
-          attribute.getAttlen(),
+          metadata.attlen(),
+          metadata.attbyval(),
           attribute.getAttnotnull(),
           attribute.getAttisdropped(),
-          attribute.getAttalign(),
-          attribute.getAttstorage(),
-          attribute.getAttndims(),
-          attribute.getAttcollation()
+          metadata.attalign(),
+          metadata.attstorage(),
+          metadata.attndims(),
+          (int) attribute.getAttcollation()
         });
   }
 }

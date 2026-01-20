@@ -66,9 +66,10 @@ final class PgTypeScannerTest {
                         .setTypnamespace(11)
                         .setTyplen(4)
                         .setTypbyval(true)
-                        .setTyptype("b")
-                        .setTypcategory("N")
-                        .setTypowner(10)
+                        .setTypdelim(",")
+                        .setTypelem(0)
+                        .setTyparray(0)
+                        .setTypalign("i")
                         .build()
                         .toByteArray())));
 
@@ -82,9 +83,10 @@ final class PgTypeScannerTest {
     assertThat(v[2]).isEqualTo(11); // typnamespace
     assertThat(v[3]).isEqualTo(4); // typlen
     assertThat(v[4]).isEqualTo(true); // typbyval
-    assertThat(v[5]).isEqualTo("b"); // typtype
-    assertThat(v[6]).isEqualTo("N"); // typcategory
-    assertThat(v[7]).isEqualTo(10); // typowner
+    assertThat(v[5]).isEqualTo(","); // typdelim
+    assertThat(v[6]).isEqualTo(0); // typelem
+    assertThat(v[7]).isEqualTo(0); // typarray
+    assertThat(v[8]).isEqualTo("i"); // typalign
   }
 
   @Test
@@ -101,9 +103,10 @@ final class PgTypeScannerTest {
     assertThat(v[2]).isEqualTo(11); // default pg_catalog namespace
     assertThat(v[3]).isEqualTo(-1); // typlen fallback
     assertThat(v[4]).isEqualTo(false); // typbyval fallback
-    assertThat(v[5]).isEqualTo("b"); // typtype fallback
-    assertThat(v[6]).isEqualTo("U"); // typcategory fallback
-    assertThat(v[7]).isEqualTo(10); // default owner
+    assertThat(v[5]).isEqualTo(","); // typdelim fallback
+    assertThat(v[6]).isEqualTo(0); // typelem fallback
+    assertThat(v[7]).isEqualTo(0); // typarray fallback
+    assertThat(v[8]).isEqualTo("i"); // typalign default
   }
 
   @Test

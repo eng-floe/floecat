@@ -24,6 +24,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
 import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
+import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
@@ -77,9 +78,7 @@ final class PgAttributeScannerTest {
                         .setOid(23)
                         .setTyplen(4)
                         .setTypalign("i")
-                        .setTypstorage("p")
-                        .setTypndims(0)
-                        .setTypcollation(0)
+                        .setTypbyval(true)
                         .build()
                         .toByteArray())));
     TypeNode numeric =
@@ -93,9 +92,7 @@ final class PgAttributeScannerTest {
                         .setOid(1700)
                         .setTyplen(-1)
                         .setTypalign("d")
-                        .setTypstorage("m")
-                        .setTypndims(0)
-                        .setTypcollation(0)
+                        .setTypbyval(false)
                         .build()
                         .toByteArray())));
 
@@ -135,12 +132,13 @@ final class PgAttributeScannerTest {
     assertThat(v0[3]).isEqualTo(-1); // atttypmod
     assertThat(v0[4]).isEqualTo(1); // attnum
     assertThat(v0[5]).isEqualTo(4); // attlen
-    assertThat(v0[6]).isEqualTo(true); // attnotnull
-    assertThat(v0[7]).isEqualTo(false); // attisdropped
-    assertThat(v0[8]).isEqualTo("i"); // attalign
-    assertThat(v0[9]).isEqualTo("p"); // attstorage
-    assertThat(v0[10]).isEqualTo(0); // attndims
-    assertThat(v0[11]).isEqualTo(0); // attcollation
+    assertThat(v0[6]).isEqualTo(true); // attbyval
+    assertThat(v0[7]).isEqualTo(true); // attnotnull
+    assertThat(v0[8]).isEqualTo(false); // attisdropped
+    assertThat(v0[9]).isEqualTo("i"); // attalign
+    assertThat(v0[10]).isEqualTo("p"); // attstorage
+    assertThat(v0[11]).isEqualTo(0); // attndims
+    assertThat(v0[12]).isEqualTo(0); // attcollation
 
     Object[] v1 = rows.get(1).values();
 
@@ -149,7 +147,14 @@ final class PgAttributeScannerTest {
     assertThat(v1[2]).isEqualTo(1700); // atttypid (pg_catalog.numeric oid)
     assertThat(v1[3]).isEqualTo((10 << 16) | 2); // atttypmod (precision and scale)
     assertThat(v1[4]).isEqualTo(2); // attnum
-    assertThat(v1[6]).isEqualTo(false); // attnotnull
+    assertThat(v1[5]).isEqualTo(-1); // attlen (varlena)
+    assertThat(v1[6]).isEqualTo(false); // attbyval
+    assertThat(v1[7]).isEqualTo(false); // attnotnull
+    assertThat(v1[8]).isEqualTo(false); // attisdropped
+    assertThat(v1[9]).isEqualTo("d"); // attalign
+    assertThat(v1[10]).isEqualTo("p"); // attstorage
+    assertThat(v1[11]).isEqualTo(0); // attndims
+    assertThat(v1[12]).isEqualTo(0); // attcollation
   }
 
   @Test
@@ -170,11 +175,22 @@ final class PgAttributeScannerTest {
     SystemObjectScanContext ctx = contextWith(List.of(int4), List.of(table), schema);
 
     Object[] v = scanner.scan(ctx).findFirst().orElseThrow().values();
+    int expectedRelOid =
+        ScannerUtils.oid(ctx, table.id(), FloePayloads.RELATION, FloeRelationSpecific::getOid);
 
-    assertThat(v[2]).isInstanceOf(Integer.class); // deterministic fallback OID
+    assertThat(v[0]).isEqualTo(expectedRelOid); // attrelid falls back deterministically
+    assertThat(v[1]).isEqualTo("x"); // attname
+    assertThat(v[2]).isInstanceOf(Integer.class); // atttypid fallback
     assertThat(v[3]).isEqualTo(-1); // atttypmod fallback
+    assertThat(v[4]).isEqualTo(1); // attnum (position 1)
     assertThat(v[5]).isEqualTo(-1); // attlen fallback
-    assertThat(v[6]).isEqualTo(false); // nullable → not not-null
+    assertThat(v[6]).isEqualTo(true); // attbyval default
+    assertThat(v[7]).isEqualTo(false); // nullable → not not-null
+    assertThat(v[8]).isEqualTo(false); // attisdropped default
+    assertThat(v[9]).isEqualTo("i"); // attalign default
+    assertThat(v[10]).isEqualTo("p"); // attstorage default
+    assertThat(v[11]).isEqualTo(0); // attndims default
+    assertThat(v[12]).isEqualTo(0); // attcollation default
   }
 
   // ----------------------------------------------------------------------

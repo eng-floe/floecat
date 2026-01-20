@@ -72,11 +72,7 @@ final class PgClassScannerTest {
                         .setRelname("my_table")
                         .setRelnamespace(11)
                         .setRelkind("r")
-                        .setRelowner(10)
-                        .setRelhasindex(true)
-                        .setRelisshared(false)
                         .setReltuples(42)
-                        .setRelpages(3)
                         .build()
                         .toByteArray())));
 
@@ -89,11 +85,7 @@ final class PgClassScannerTest {
     assertThat(v[1]).isEqualTo("my_table"); // relname
     assertThat(v[2]).isEqualTo(11); // relnamespace
     assertThat(v[3]).isEqualTo("r"); // relkind
-    assertThat(v[4]).isEqualTo(10); // relowner
-    assertThat(v[5]).isEqualTo(true); // relhasindex
-    assertThat(v[6]).isEqualTo(false); // relisshared
-    assertThat(v[7]).isEqualTo(42.0f); // reltuples
-    assertThat(v[8]).isEqualTo(3); // relpages
+    assertThat(v[4]).isEqualTo(42.0f); // reltuples
   }
 
   @Test
@@ -110,11 +102,7 @@ final class PgClassScannerTest {
     assertThat(v[1]).isEqualTo("no_payload"); // displayName
     assertThat(v[2]).isEqualTo(11); // default pg_catalog namespace
     assertThat(v[3]).isEqualTo("r"); // default table relkind
-    assertThat(v[4]).isEqualTo(10); // default owner
-    assertThat(v[5]).isEqualTo(false); // relhasindex fallback
-    assertThat(v[6]).isEqualTo(false); // relisshared fallback
-    assertThat(v[7]).isEqualTo(0.0f); // reltuples fallback
-    assertThat(v[8]).isEqualTo(0); // relpages fallback
+    assertThat(v[4]).isEqualTo(0.0f); // reltuples fallback
   }
 
   @Test

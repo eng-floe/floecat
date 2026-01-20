@@ -151,7 +151,6 @@ public final class PgCatalogProvider implements SystemObjectScannerProvider {
         FloeNamespaceSpecific.newBuilder()
             .setOid(PG_CATALOG_OID)
             .setNspname("pg_catalog")
-            .setNspowner(10)
             .build()
             .toByteArray(),
         Map.of());
