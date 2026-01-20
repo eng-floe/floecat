@@ -1,0 +1,12 @@
+name: Dummy Actions Test
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print hello
+        run: echo "GitHub Actions billing test"
