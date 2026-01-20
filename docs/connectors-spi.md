@@ -32,6 +32,37 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Floec
   `StaticOnceNdvProvider`, `NdvApprox`, `NdvSketch`). These components interpret Parquet footers,
   combine NDV approximations, and emit `TableStats`/`ColumnStats` protobufs.
 
+### Column bounds encoding
+
+When connectors emit `ColumnStats.min`/`max`, they must use the canonical string format documented in
+`floecat/catalog/stats.proto`. Each of these bounds is optional—`hasMin()`/`hasMax()` indicate the
+field was populated (even when the string itself is empty). In brief:
+
+  * Bounds are UTF-8 strings reflecting the logical ordering (not engine collation) and should be
+    left unset when unknown.
+  * Encodings follow the logical_type:
+    * Boolean → `"true"`/`"false"` (lowercase).
+    * Integer → base-10 digits with optional `-`, no leading `+` or zero padding.
+    * Float → Java `Float.toString`/`Double.toString` output, plus `NaN`, `Infinity`, `-Infinity`.
+      Normalizing `-0` → `0` improves stability.
+    * Decimal → plain base-10 string with optional `-`, no exponent, normalized by trimming leading
+      zeros in the integer part and trailing zeros in the fractional part; `ValueEncoders.encodeToString(lt, value)`
+      already follows this normalization routine and collapses `-0` → `0`.
+    * Date/Time/Timestamp → ISO-8601 (`YYYY-MM-DD`, `HH:MM:SS[.fffffffff]`, `YYYY-MM-DDTHH:MM:SS[.fffffffff]Z`).
+    * UUID → lowercase 8-4-4-4-12 hex.
+    * String → literal UTF-8 content.
+    * Binary → base64 (RFC 4648) without line breaks (padding `=` is OK).
+  * Null/NAN counts are optional (`null_count`, `nan_count`); set them only when the connector can
+    report a value so downstream planners can distinguish “unknown” from zero.
+
+Helpers such as `ValueEncoders.encodeToString` already follow these rules; reuse them when converting
+native column values to strings so stats stay portable across languages.
+
+### Timestamp numeric heuristics
+
+When you emit timestamps from numeric values, `ValueEncoders.encodeToString` infers the unit from the magnitude:
+values less than `10^12` are treated as seconds, values in `[10^12, 10^15)` as milliseconds, values in `[10^15, 10^18)` as microseconds, and larger magnitudes as nanoseconds; the encoder always emits an ISO-8601 `Instant` string with the `Z` suffix. Documenting which units your connector uses makes debugging easier when clients compare generated stats across systems.
+
 ## Public API / Surface Area
 The SPI is intentionally small:
 ```java

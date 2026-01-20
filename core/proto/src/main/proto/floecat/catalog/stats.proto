@@ -84,11 +84,30 @@ message ColumnStats {
   string logical_type = 5;
   UpstreamStamp upstream = 6;
   int64 value_count = 9;
-  int64 null_count = 10;
-  int64 nan_count = 11;
+  optional int64 null_count = 10;
+  optional int64 nan_count = 11;
+  
+  /**
+   * NDV summary; callers MUST check {@code hasNdv()} before using this field.
+   * When the field is absent, NDV is unknown and should not be inferred.
+   * When present, {@code mode} controls interpretation:
+   *   - mode unset → NDV unknown (avoid inferring from other data).
+   *   - approx → honor {@code NdvApprox.estimate} and ignore sketches unless you understand them.
+   *   - exact → use {@code Ndv.exact}.
+   * Sketches can be left unset unless the connector knows how to decode them.
+   */
   Ndv ndv = 12;
-  string min = 20;
-  string max = 21;
+  
+  /**
+   * Optional, canonical UTF-8 bound; presence indicates it was computed even if empty.
+   * See docs/connectors-spi.md#column-bounds-encoding for the per-type encoding rules.
+   */
+  optional string min = 20;
+  
+  /**
+   * Max follows the same canonical encoding rules as {@code min}.
+   */
+  optional string max = 21;
   bytes histogram = 30;
   bytes tdigest = 31;
   map<string, string> properties = 99;

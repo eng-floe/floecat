@@ -16,9 +16,9 @@
 
 package ai.floedb.floecat.service.query.catalog;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.RelationStats;
+import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
@@ -26,6 +26,7 @@ import ai.floedb.floecat.systemcatalog.spi.scanner.StatsProvider;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.jboss.logging.Logger;
@@ -96,6 +97,12 @@ public final class StatsProviderFactory {
           .flatMap(pin -> safeColumnStats(tableId, pin.getSnapshotId(), columnId));
     }
 
+    @Override
+    public OptionalLong pinnedSnapshotId(ResourceId tableId) {
+      Optional<SnapshotPin> pin = liveContext().findSnapshotPin(tableId, correlationId);
+      return pin.isPresent() ? OptionalLong.of(pin.get().getSnapshotId()) : OptionalLong.empty();
+    }
+
     private QueryContext liveContext() {
       return queryStore.get(queryId).orElse(initialCtx);
     }
@@ -105,7 +112,7 @@ public final class StatsProviderFactory {
       try {
         return repository
             .getTableStatsView(tableId, snapshotId)
-            .map(StatsProviderFactory::toTableStatsView);
+            .map(StatsProviderViews::tableStatsView);
       } catch (RuntimeException e) {
         LOG.debugf(e, "table stats lookup failed for %s snapshot %s", tableId, snapshotId);
         return Optional.empty();
@@ -117,7 +124,7 @@ public final class StatsProviderFactory {
       try {
         return repository
             .getColumnStats(tableId, snapshotId, columnId)
-            .map(StatsProviderFactory::toColumnStatsView);
+            .map(StatsProviderViews::columnStatsView);
       } catch (RuntimeException e) {
         LOG.debugf(
             e,
@@ -130,102 +137,12 @@ public final class StatsProviderFactory {
     }
   }
 
-  private static StatsProvider.TableStatsView toTableStatsView(
-      StatsRepository.TableStatsView stats) {
-    return new TableStatsViewImpl(
-        stats.tableId(), stats.snapshotId(), stats.rowCount(), stats.totalSizeBytes());
-  }
-
-  private static StatsProvider.ColumnStatsView toColumnStatsView(ColumnStats stats) {
-    return new ColumnStatsViewImpl(
-        stats.getTableId(),
-        stats.getColumnId(),
-        stats.getColumnName(),
-        stats.getValueCount(),
-        stats.getNullCount());
-  }
-
-  private static final class TableStatsViewImpl implements StatsProvider.TableStatsView {
-    private final ResourceId tableId;
-    private final long snapshotId;
-    private final long rowCount;
-    private final long totalSizeBytes;
-
-    private TableStatsViewImpl(
-        ResourceId tableId, long snapshotId, long rowCount, long totalSizeBytes) {
-      this.tableId = tableId;
-      this.snapshotId = snapshotId;
-      this.rowCount = rowCount;
-      this.totalSizeBytes = totalSizeBytes;
-    }
-
-    @Override
-    public ResourceId tableId() {
-      return tableId;
-    }
-
-    @Override
-    public long snapshotId() {
-      return snapshotId;
-    }
-
-    @Override
-    public long rowCount() {
-      return rowCount;
-    }
-
-    @Override
-    public long totalSizeBytes() {
-      return totalSizeBytes;
-    }
-  }
-
-  private static final class ColumnStatsViewImpl implements StatsProvider.ColumnStatsView {
-    private final ResourceId tableId;
-    private final long columnId;
-    private final String columnName;
-    private final long valueCount;
-    private final long nullCount;
-
-    private ColumnStatsViewImpl(
-        ResourceId tableId, long columnId, String columnName, long valueCount, long nullCount) {
-      this.tableId = tableId;
-      this.columnId = columnId;
-      this.columnName = columnName;
-      this.valueCount = valueCount;
-      this.nullCount = nullCount;
-    }
-
-    @Override
-    public ResourceId tableId() {
-      return tableId;
-    }
-
-    @Override
-    public long columnId() {
-      return columnId;
-    }
-
-    @Override
-    public String columnName() {
-      return columnName;
-    }
-
-    @Override
-    public long valueCount() {
-      return valueCount;
-    }
-
-    @Override
-    public long nullCount() {
-      return nullCount;
-    }
-  }
+  // Implementation provided by StatsProviderViews.
 
   static RelationStats toRelationStats(StatsProvider.TableStatsView stats) {
-    return RelationStats.newBuilder()
-        .setRowCount(stats.rowCount())
-        .setTotalSizeBytes(stats.totalSizeBytes())
-        .build();
+    RelationStats.Builder builder = RelationStats.newBuilder();
+    stats.rowCountValue().ifPresent(builder::setRowCount);
+    stats.totalSizeBytesValue().ifPresent(builder::setTotalSizeBytes);
+    return builder.build();
   }
 }
