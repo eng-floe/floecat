@@ -112,8 +112,9 @@ VERSION := $(shell sed -n 's:.*<version>\(.*\)</version>.*:\1:p' pom.xml | head 
 ifeq ($(strip $(VERSION)),)
   VERSION := 0.1.0-SNAPSHOT
 endif
-PROTO_JAR := core/proto/target/floecat-proto-$(VERSION).jar
-TEST_SUPPORT_JAR := core/storage-spi/target/floecat-storage-spi-$(VERSION)-tests.jar
+REPO_DIR := ~/.m2/repository/ai/floedb/floecat
+PROTO_JAR := $(REPO_DIR)/floecat-proto/$(VERSION)/floecat-proto-$(VERSION).jar
+TEST_SUPPORT_JAR := $(REPO_DIR)/floecat-storage-spi/$(VERSION)/floecat-storage-spi-$(VERSION)-tests.jar
 
 # ---------- CLI isolation toggle ----------
 CLI_ISOLATED ?= 1
@@ -226,7 +227,7 @@ $(PROTO_JAR): core/proto/pom.xml $(shell find core/proto -type f -name '*.proto'
 	$(MVN) -q -f core/proto/pom.xml -DskipTests install
 	@test -f "$@" || { echo "ERROR: expected $@ not found"; exit 1; }
 
-$(TEST_SUPPORT_JAR):
+$(TEST_SUPPORT_JAR): $(shell find core/storage-spi/src/test -type f -name '*.java' -o -name '*.properties')
 	@echo "==> [BUILD] storage-spi test-jar (for test scope deps)"
 	$(MVN) -q -f ./pom.xml -DskipTests -DskipUTs=true -DskipITs=true -pl core/storage-spi -am install
 
