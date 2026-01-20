@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.extensions.floedb;
 
-import ai.floedb.floecat.query.rpc.BuiltinRegistry;
 import ai.floedb.floecat.query.rpc.EngineSpecific;
+import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogValidator;
 import org.junit.jupiter.api.Test;
@@ -136,7 +136,7 @@ class FloeCatalogExtensionTest {
     var extension = new FloeCatalogExtension.FloeDb();
 
     // Load raw .pbtxt file
-    BuiltinRegistry registry = extension.loadFromResource("/builtins/floedb.pbtxt");
+    SystemObjectsRegistry registry = extension.loadFromResource("/builtins/floedb.pbtxt");
 
     // Should parse without errors and contain objects
     assert registry != null;
@@ -149,10 +149,10 @@ class FloeCatalogExtensionTest {
     var extension = new FloeCatalogExtension.FloeDb();
 
     // Load raw registry
-    BuiltinRegistry raw = extension.loadFromResource("/builtins/floedb.pbtxt");
+    SystemObjectsRegistry raw = extension.loadFromResource("/builtins/floedb.pbtxt");
 
     // Rewrite Floe fields to payloads
-    BuiltinRegistry rewritten = extension.rewriteFloeExtensions(raw);
+    SystemObjectsRegistry rewritten = extension.rewriteFloeExtensions(raw);
 
     // Verify all object types were processed
     assert rewritten.getFunctionsCount() == raw.getFunctionsCount();
@@ -183,7 +183,7 @@ class FloeCatalogExtensionTest {
   }
 
   @Test
-  void loadBuiltinCatalogRoundtrips() {
+  void loadSystemObjectsRoundtrips() {
     var extension = new FloeCatalogExtension.FloeDb();
 
     // Load twice - should get same result (caching semantic)

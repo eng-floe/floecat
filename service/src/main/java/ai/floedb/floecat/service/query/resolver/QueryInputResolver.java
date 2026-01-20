@@ -50,7 +50,7 @@ import java.util.Set;
  *       </ul>
  * </ul>
  *
- * <p>This is invoked by DescribeInputs() and GetCatalogBundle(), before any QueryContext exists.
+ * <p>This is invoked by DescribeInputs() and GetUserObjects(), before any QueryContext exists.
  *
  * <p>Behavior:
  *

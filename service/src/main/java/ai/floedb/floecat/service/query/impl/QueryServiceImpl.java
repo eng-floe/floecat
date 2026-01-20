@@ -66,7 +66,7 @@ import org.jboss.logging.Logger;
  * <p>Scan bundle retrieval is implemented separately in {@code QueryScanServiceImpl}.
  *
  * <p><b>Important:</b> BeginQuery DOES NOT accept inputs. All input resolution happens in
- * DescribeInputs() and GetCatalogBundle().
+ * DescribeInputs() and GetUserObjects().
  */
 @Singleton
 @GrpcService
@@ -103,7 +103,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
    * <p>NO INPUTS ARE ACCEPTED HERE.
    *
    * <p>All resolution (tables, views, snapshot pins, schemas, obligations, expansions) happens
-   * later in DescribeInputs(), GetCatalogBundle(), and FetchScanBundle().
+   * later in DescribeInputs(), GetUserObjects(), and FetchScanBundle().
    */
   @Override
   public Uni<BeginQueryResponse> beginQuery(BeginQueryRequest request) {

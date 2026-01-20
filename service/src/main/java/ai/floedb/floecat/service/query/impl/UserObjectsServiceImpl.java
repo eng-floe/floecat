@@ -16,16 +16,15 @@
 
 package ai.floedb.floecat.service.query.impl;
 
-import ai.floedb.floecat.query.rpc.CatalogBundleChunk;
-import ai.floedb.floecat.query.rpc.GetCatalogBundleRequest;
-import ai.floedb.floecat.query.rpc.QueryCatalogService;
-import ai.floedb.floecat.query.rpc.QueryCatalogServiceGrpc;
+import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
+import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
+import ai.floedb.floecat.query.rpc.UserObjectsService;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.GrpcContextUtil;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.query.catalog.CatalogBundleService;
+import ai.floedb.floecat.service.query.catalog.UserObjectBundleService;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcService;
@@ -37,7 +36,7 @@ import java.util.Map;
 import org.jboss.logging.Logger;
 
 @GrpcService
-public class QueryCatalogServiceImpl extends BaseServiceImpl implements QueryCatalogService {
+public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjectsService {
 
   @Inject PrincipalProvider principal;
 
@@ -45,20 +44,20 @@ public class QueryCatalogServiceImpl extends BaseServiceImpl implements QueryCat
 
   @Inject QueryContextStore queryStore;
 
-  @Inject CatalogBundleService bundles;
+  @Inject UserObjectBundleService bundles;
 
-  private static final Logger LOG = Logger.getLogger(QueryCatalogServiceGrpc.class);
+  private static final Logger LOG = Logger.getLogger(UserObjectsServiceImpl.class);
 
   @ActivateRequestContext
   @Override
-  public Multi<CatalogBundleChunk> getCatalogBundle(GetCatalogBundleRequest request) {
-    var L = LogHelper.start(LOG, "GetCatalogBundle");
+  public Multi<UserObjectsBundleChunk> getUserObjects(GetUserObjectsRequest request) {
+    var L = LogHelper.start(LOG, "GetUserObjects");
     // Capture the incoming gRPC context so the principal/correlation-id stays available
     // while authz/QueryContext lookup happen; the bundle builder itself is context-free.
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
 
     return Multi.createFrom()
-        .<CatalogBundleChunk>deferred(
+        .<UserObjectsBundleChunk>deferred(
             () ->
                 grpcCtx.call(
                     () -> {

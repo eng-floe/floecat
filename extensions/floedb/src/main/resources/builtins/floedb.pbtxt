@@ -138,10 +138,11 @@ types {
       oid: 23
       typname: "int4"
       typnamespace: 11
-      typcategory: "N"
       typlen: 4
       typbyval: true
-      typtype: "b"
+      typdelim: ","
+      typalign: "i"
+      typarray: 1007
     }
   }
 }
@@ -154,10 +155,10 @@ types {
       oid: 20
       typname: "int8"
       typnamespace: 11
-      typcategory: "N"
       typlen: 8
       typbyval: true
-      typtype: "b"
+      typdelim: ","
+      typalign: "i"
     }
   }
 }
@@ -170,10 +171,10 @@ types {
       oid: 25
       typname: "text"
       typnamespace: 11
-      typcategory: "S"
       typlen: -1
       typbyval: false
-      typtype: "b"
+      typdelim: ","
+      typalign: "i"
     }
   }
 }
@@ -188,11 +189,12 @@ types {
       oid: 1007
       typname: "_int4"
       typnamespace: 11
-      typcategory: "A"
       typlen: -1
       typbyval: false
-      typtype: "b"
+      typdelim: ","
+      typalign: "i"
       typelem: 23
+      typarray: 0
     }
   }
 }

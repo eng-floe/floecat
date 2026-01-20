@@ -2,8 +2,6 @@
  * Copyright 2026 Yellowbrick Data, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -97,35 +95,47 @@ public final class FloeHintResolver {
       int attnum,
       SchemaColumn column,
       LogicalType logicalType) {
+    ColumnMetadata metadata = columnMetadata(ctx, resolver, column, logicalType);
+    return buildColumnSpecific(column, attnum, metadata);
+  }
+
+  public static ColumnMetadata columnMetadata(
+      MetadataResolutionContext ctx,
+      TypeResolver resolver,
+      SchemaColumn column,
+      LogicalType logicalType) {
+    LogicalType resolved = logicalType == null ? parseLogicalType(column) : logicalType;
+
+    // If we cannot parse/resolve a logical type, still return a stable, safe metadata bundle.
+    // This keeps pg_attribute rows well-formed even when upstream logical types are
+    // missing/invalid.
+    if (resolved == null) {
+      int typeOid = ScannerUtils.fallbackOid(fallbackTypeId(column));
+      return new ColumnMetadata(typeOid, -1, -1, "i", false, "p", 0, 0);
+    }
+
+    ColumnMetadata metadata = resolveColumnMetadata(ctx, resolver, column, resolved);
+    if (metadata != null) {
+      return metadata;
+    }
+
+    int typeOid = fallbackTypeOid(ctx, resolver, column, resolved);
+    int typmod = deriveTypmod(resolved);
+    return new ColumnMetadata(typeOid, typmod, -1, "i", passByValue(resolved), "p", 0, 0);
+  }
+
+  public static FloeColumnSpecific buildColumnSpecific(
+      SchemaColumn column, int attnum, ColumnMetadata metadata) {
     FloeColumnSpecific.Builder builder = FloeColumnSpecific.newBuilder();
     builder
-        .setAttrelid(relationOid)
-        .setAttnum(attnum)
         .setAttname(column == null ? "" : column.getName())
+        .setAttnum(attnum)
         .setAttnotnull(column != null && !column.getNullable())
-        .setAttisdropped(false);
-
-    ColumnMetadata metadata = resolveColumnMetadata(ctx, resolver, column, logicalType);
-    int typeOid =
-        metadata == null ? fallbackTypeOid(ctx, resolver, column, logicalType) : metadata.typeOid;
-    int typmod = metadata == null ? -1 : metadata.typmod;
-    int attlen = metadata == null ? -1 : metadata.attlen;
-    String attalign = metadata == null ? "i" : metadata.attalign;
-    String attstorage = metadata == null ? "p" : metadata.attstorage;
-    int attndims = metadata == null ? 0 : metadata.attndims;
-    int attcollation = metadata == null ? 0 : metadata.attcollation;
-    boolean attbyval = metadata == null ? false : metadata.typeSpecific.getTypbyval();
-
-    builder
-        .setAtttypid(typeOid)
-        .setAtttypmod(typmod)
-        .setAttlen(attlen)
-        .setAttalign(attalign)
-        .setAttstorage(attstorage)
-        .setAttndims(attndims)
-        .setAttcollation(attcollation)
-        .setAttbyval(attbyval);
-
+        .setAttisdropped(false)
+        .setAtttypid(metadata.typeOid())
+        .setAtttypmod(metadata.typmod())
+        .setAttcollation(metadata.attcollation())
+        .setAtthasdef(false);
     return builder.build();
   }
 
@@ -136,9 +146,6 @@ public final class FloeHintResolver {
     }
     if (!builder.hasNspname()) {
       builder.setNspname(namespace.displayName());
-    }
-    if (!builder.hasNspowner()) {
-      builder.setNspowner(ScannerUtils.defaultOwnerOid());
     }
   }
 
@@ -154,9 +161,6 @@ public final class FloeHintResolver {
     }
     if (!builder.hasRelkind()) {
       builder.setRelkind(node instanceof ViewNode ? "v" : "r");
-    }
-    if (!builder.hasRelowner()) {
-      builder.setRelowner(ScannerUtils.defaultOwnerOid());
     }
   }
 
@@ -204,20 +208,16 @@ public final class FloeHintResolver {
       builder.setTypname(type.displayName());
     }
     if (!builder.hasTypnamespace()) {
-      builder.setTypnamespace(
-          ai.floedb.floecat.extensions.floedb.pgcatalog.PgCatalogProvider.PG_CATALOG_OID);
-    }
-    if (!builder.hasTypowner()) {
-      builder.setTypowner(ScannerUtils.defaultOwnerOid());
+      builder.setTypnamespace(PgCatalogProvider.PG_CATALOG_OID);
     }
     if (!builder.hasTyplen()) {
       builder.setTyplen(-1);
     }
-    if (!builder.hasTyptype()) {
-      builder.setTyptype("b");
+    if (!builder.hasTypalign()) {
+      builder.setTypalign("i");
     }
-    if (!builder.hasTypcategory()) {
-      builder.setTypcategory("U");
+    if (!builder.hasTypdelim()) {
+      builder.setTypdelim(",");
     }
   }
 
@@ -236,8 +236,8 @@ public final class FloeHintResolver {
     CatalogOverlay overlay = ctx.overlay();
     EngineContext engineContext = ctx.engineContext();
     try {
-      int typmod = deriveTypmod(logical);
-      TypeNode type = resolver.resolveOrThrow(logical);
+      int typmod = deriveTypmod(logicalType);
+      TypeNode type = resolver.resolveOrThrow(logicalType);
       int typeOid =
           ScannerUtils.oid(overlay, type.id(), TYPE, FloeTypeSpecific::getOid, engineContext);
       Optional<FloeTypeSpecific> typeSpec =
@@ -248,20 +248,13 @@ public final class FloeHintResolver {
               : FloeTypeSpecific.newBuilder().setOid(typeOid).build();
       int attlen = typeSpec.map(FloeTypeSpecific::getTyplen).orElse(-1);
       String attalign = specific.getTypalign().isBlank() ? "i" : specific.getTypalign();
-      String attstorage = specific.getTypstorage().isBlank() ? "p" : specific.getTypstorage();
-      int attndims = typeSpec.map(FloeTypeSpecific::getTypndims).orElse(0);
+      boolean attbyval =
+          typeSpec
+              .filter(FloeTypeSpecific::hasTypbyval)
+              .map(FloeTypeSpecific::getTypbyval)
+              .orElse(passByValue(logicalType));
       int attcollation = typeSpec.map(FloeTypeSpecific::getTypcollation).orElse(0);
-      return new ColumnMetadata(
-          logical,
-          type,
-          typeOid,
-          specific,
-          typmod,
-          attlen,
-          attalign,
-          attstorage,
-          attndims,
-          attcollation);
+      return new ColumnMetadata(typeOid, typmod, attlen, attalign, attbyval, "p", 0, attcollation);
     } catch (RuntimeException e) {
       return null;
     }
@@ -279,7 +272,7 @@ public final class FloeHintResolver {
     if (logicalType == null) {
       return ScannerUtils.fallbackOid(fallbackTypeId(column));
     }
-    Optional<TypeNode> resolved = resolver.resolve(logical);
+    Optional<TypeNode> resolved = resolver.resolve(logicalType);
     return resolved
         .map(
             type ->
@@ -333,14 +326,24 @@ public final class FloeHintResolver {
     return ScannerUtils.payload(ctx.overlay(), id, descriptor, ctx.engineContext());
   }
 
-  private record ColumnMetadata(
-      LogicalType logicalType,
-      TypeNode typeNode,
+  private static boolean passByValue(LogicalType logical) {
+    if (logical == null) {
+      return false;
+    }
+    switch (logical.kind()) {
+      case BOOLEAN, INT16, INT32, INT64, FLOAT32, FLOAT64, DATE, TIME, TIMESTAMP, UUID:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  public static record ColumnMetadata(
       int typeOid,
-      FloeTypeSpecific typeSpecific,
       int typmod,
       int attlen,
       String attalign,
+      boolean attbyval,
       String attstorage,
       int attndims,
       int attcollation) {}

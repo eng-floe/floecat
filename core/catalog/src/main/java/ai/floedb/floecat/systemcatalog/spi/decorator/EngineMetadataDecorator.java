@@ -20,7 +20,7 @@ import ai.floedb.floecat.systemcatalog.util.EngineContext;
 
 /**
  * Engine metadata decoration hook exposed by {@link
- * ai.floedb.floecat.service.query.catalog.CatalogBundleService}.
+ * ai.floedb.floecat.service.query.catalog.UserObjectBundleService}.
  *
  * <p>Implementations are invoked during bundle construction and receive normalized engine kind +
  * version. Decoration remains optional and is not part of scanner implementations.

@@ -1,0 +1,302 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+syntax = "proto3";
+
+/**
+ * User objects bundle API.
+ *
+ * Streams catalog metadata for user objects so planners can see each resolved input
+ * as soon as it exists.
+ *
+ * The protocol is:
+ *   - a single header chunk
+ *   - zero-or-more RelationResolutions chunks
+ *   - a single end summary chunk
+ */
+package ai.floedb.floecat.query;
+
+import "floecat/common/common.proto";
+import "floecat/query/engine_specific.proto";
+import "floecat/query/sql_objects.proto";
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.query.rpc";
+option java_outer_classname = "UserObjectsProto";
+
+/**
+ * Service that resolves planner inputs and streams user object metadata.
+ */
+service UserObjectsService {
+  /**
+   * GetUserObjects resolves each requested logical reference and streams results.
+   */
+  rpc GetUserObjects(GetUserObjectsRequest) returns (stream UserObjectsBundleChunk);
+}
+
+/**
+ * One logical reference from the planner (for example "a" in `SELECT ... FROM a`).
+ *
+ * The planner expands the search_path and sends ordered candidates to try.
+ *
+ * Example: candidates=[public1.a, pg.a]
+ */
+message TableReferenceCandidate {
+  /** Ordered candidate inputs the planner is willing to accept for this logical reference. */
+  repeated ai.floedb.floecat.common.QueryInput candidates = 1;
+
+  /** Optional projected column list used to avoid re-requesting already-present columns. */
+  repeated string initial_columns = 2;
+
+  /** When true, the planner wants all columns regardless of `initial_columns`. */
+  bool wants_all_columns = 3;
+}
+
+/**
+ * Request to resolve user objects referenced by a planner.
+ */
+message GetUserObjectsRequest {
+  /** Query ID obtained from BeginQuery. */
+  string query_id = 1;
+
+  /** Planner references expressed as ordered candidates; responses include `input_index`. */
+  repeated TableReferenceCandidate tables = 2;
+}
+
+/**
+ * One streamed chunk of the user objects bundle.
+ */
+message UserObjectsBundleChunk {
+  /** Query context identifier for correlation. */
+  string query_id = 1;
+
+  /** Monotonic sequence number within the stream. */
+  uint64 seq = 2;
+
+  /**
+   * Chunk payload.
+   *
+   * The stream starts with a `header`, continues with zero-or-more `resolutions`,
+   * and ends with an `end` summary.
+   */
+  oneof payload {
+    /** Stream header (sent once at the start). */
+    UserObjectsBundleHeader header = 10;
+
+    /** Resolution results (may contain multiple items for efficiency). */
+    RelationResolutions resolutions = 20;
+
+    /** End-of-stream summary (sent once at the end). */
+    UserObjectsBundleEnd end = 90;
+  }
+}
+
+/**
+ * Stream header for a user objects bundle.
+ */
+message UserObjectsBundleHeader {
+  /** Optional warnings computed before streaming begins. */
+  repeated ResolutionWarning warnings = 1;
+}
+
+/**
+ * End-of-stream summary for a user objects bundle.
+ */
+message UserObjectsBundleEnd {
+  /** Number of input references the server attempted to resolve (typically request.tables count). */
+  uint32 resolution_count = 1;
+
+  /** Number of inputs that resolved to an actual relation. */
+  uint32 found_count = 2;
+
+  /** Number of inputs that could not be resolved. */
+  uint32 not_found_count = 3;
+}
+
+/**
+ * Non-fatal warning emitted during resolution.
+ */
+message ResolutionWarning {
+  /** Machine-readable warning identifier. */
+  string code = 1;
+
+  /** Human-friendly warning message. */
+  string message = 2;
+}
+
+/**
+ * Resolution outcome for a single planner input.
+ */
+enum ResolutionStatus {
+  /** Resolution status is not specified. */
+  RESOLUTION_STATUS_UNSPECIFIED = 0;
+
+  /** The input resolved successfully to a relation. */
+  RESOLUTION_STATUS_FOUND = 1;
+
+  /** The input did not resolve to any relation. */
+  RESOLUTION_STATUS_NOT_FOUND = 2;
+
+  /** Resolution failed with an error but the stream continues. */
+  RESOLUTION_STATUS_ERROR = 3;
+}
+
+/**
+ * Result for one input entry from `request.tables[]`.
+ *
+ * `input_index` ties the response back to the planner’s reference list.
+ */
+message RelationResolution {
+  /** Index into `request.tables[]` so the planner can correlate responses. */
+  uint32 input_index = 1;
+
+  /** Resolution outcome for this input. */
+  ResolutionStatus status = 2;
+
+  /** Populated when `status` is FOUND. */
+  RelationInfo relation = 10;
+
+  /** Populated for NOT_FOUND/ERROR outcomes with diagnostics. */
+  ResolutionFailure failure = 11;
+}
+
+/**
+ * Batch of resolution results carried by a single streamed chunk.
+ */
+message RelationResolutions {
+  /** Resolution results contained in a single chunk. */
+  repeated RelationResolution items = 1;
+}
+
+/**
+ * Resolution failure diagnostic.
+ */
+message ResolutionFailure {
+  /** Machine-readable failure code (for example: "catalog_bundle.relation_not_found"). */
+  string code = 1;
+
+  /** Human-readable summary of the failure. */
+  string message = 2;
+
+  /** Attempted inputs that the server tried for this logical reference. */
+  repeated ai.floedb.floecat.common.QueryInput attempted = 3;
+
+  /** Optional structured metadata to help debugging. */
+  map<string, string> details = 10;
+}
+
+/**
+ * Kind of relation resolved by the catalog.
+ */
+enum RelationKind {
+  /** Relation kind is not specified. */
+  RELATION_KIND_UNSPECIFIED = 0;
+
+  /** Regular table. */
+  RELATION_KIND_TABLE = 1;
+
+  /** View defined by SQL. */
+  RELATION_KIND_VIEW = 2;
+
+  /** System view (for example in information_schema). */
+  RELATION_KIND_SYSTEM_VIEW = 3;
+
+  /** Temporary relation scoped to the current session/query. */
+  RELATION_KIND_TEMP = 4;
+}
+
+/**
+ * Resolved relation metadata returned to the planner.
+ */
+message RelationInfo {
+  /** Unique resource identity of the relation (table/view). */
+  ai.floedb.floecat.common.ResourceId relation_id = 1;
+
+  /** Canonical name of the relation for humans. */
+  ai.floedb.floecat.common.NameRef name = 2;
+
+  /** Relation kind (table, view, etc.) to help the planner decide how to bind. */
+  RelationKind kind = 3;
+  
+  /** Columns describing the resolved projection metadata. */
+  repeated ColumnInfo columns = 4;
+  
+  /** Optional view definition for relations of kind VIEW. */
+  ViewDefinition view_definition = 5;
+  
+  /** Optional table-level statistics from a cached catalog snapshot. */
+  RelationStats stats = 6;
+  
+  /** Origin indicates whether the relation is user-defined or builtin. */
+  ai.floedb.floecat.query.Origin origin = 7;
+  
+  /** Optional engine-specific metadata extensions. */
+  repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
+}
+
+/**
+ * Optional relation statistics returned from a cached snapshot.
+ */
+message RelationStats {
+  /** Estimated row count for the relation. */
+  int64 row_count = 1;
+
+  /** Estimated total size in bytes for the relation. */
+  int64 total_size_bytes = 2;
+}
+
+/**
+ * Column metadata for a resolved relation.
+ */
+message ColumnInfo {
+  // Unique column ID within the relation used in Floecat.
+  int64 id = 1;
+  
+  // Column name.
+  string name = 2;
+
+  /** Logical type identifier for the column. */
+  ai.floedb.floecat.common.NameRef type = 3;
+
+  /** Whether NULL is allowed. */
+  bool nullable = 4;
+  
+  // Ordinal position within the table schema : 1-based within the parent struct.
+  int32 ordinal = 5;
+
+  /** Origin marks builtin vs user columns (propagated from relation origin). */
+  ai.floedb.floecat.query.Origin origin = 6;
+
+  /** Engine-specific metadata extensions (optional). */
+  repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
+}
+
+/**
+ * Optional view definition for resolved relations of kind VIEW.
+ */
+message ViewDefinition {
+  /** Canonical SQL definition of the view. */
+  string canonical_sql = 1;
+
+  /** Dialect used to produce the canonical SQL. */
+  string dialect = 2;
+
+  /** Base relations that the view depends on. */
+  repeated ai.floedb.floecat.common.ResourceId base_relations = 3;
+
+  /** Search path as captured when the view was created. */
+  repeated string creation_search_path = 4;
+
+  /** Engine-specific metadata extensions (collations, hints, etc.). */
+  repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
+}

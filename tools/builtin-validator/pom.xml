@@ -79,7 +79,7 @@
               <finalName>floecat-builtin-validator</finalName>
               <transformers>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                  <mainClass>io.floecat.tools.validator.BuiltinCatalogValidatorCli</mainClass>
+                  <mainClass>io.floecat.tools.validator.SystemObjectsValidatorCli</mainClass>
                 </transformer>
               </transformers>
             </configuration>

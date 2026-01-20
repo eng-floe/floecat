@@ -16,10 +16,10 @@
 
 package ai.floedb.floecat.service.catalog.impl;
 
-import ai.floedb.floecat.query.rpc.BuiltinCatalogService;
-import ai.floedb.floecat.query.rpc.BuiltinRegistry;
-import ai.floedb.floecat.query.rpc.GetBuiltinCatalogRequest;
-import ai.floedb.floecat.query.rpc.GetBuiltinCatalogResponse;
+import ai.floedb.floecat.query.rpc.GetSystemObjectsRequest;
+import ai.floedb.floecat.query.rpc.GetSystemObjectsResponse;
+import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
+import ai.floedb.floecat.query.rpc.SystemObjectsService;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -37,13 +37,13 @@ import java.util.Map;
  * fallback)
  */
 @GrpcService
-public class BuiltinCatalogServiceImpl extends BaseServiceImpl implements BuiltinCatalogService {
+public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemObjectsService {
 
   @Inject SystemNodeRegistry nodeRegistry;
   @Inject EngineContextProvider engineContextProvider;
 
   @Override
-  public Uni<GetBuiltinCatalogResponse> getBuiltinCatalog(GetBuiltinCatalogRequest request) {
+  public Uni<GetSystemObjectsResponse> getSystemObjects(GetSystemObjectsRequest request) {
     return mapFailures(
         run(
             () -> {
@@ -64,13 +64,13 @@ public class BuiltinCatalogServiceImpl extends BaseServiceImpl implements Builti
                     Map.of("header", "x-engine-kind"));
               }
 
-              BuiltinRegistry registry = fetchBuiltinCatalog(ctx);
-              return GetBuiltinCatalogResponse.newBuilder().setRegistry(registry).build();
+              SystemObjectsRegistry registry = fetchSystemObjects(ctx);
+              return GetSystemObjectsResponse.newBuilder().setRegistry(registry).build();
             }),
         correlationId());
   }
 
-  private BuiltinRegistry fetchBuiltinCatalog(EngineContext ctx) {
+  private SystemObjectsRegistry fetchSystemObjects(EngineContext ctx) {
     var nodes = nodeRegistry.nodesFor(ctx);
     return SystemCatalogProtoMapper.toProto(nodes.toCatalogData());
   }

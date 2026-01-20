@@ -25,11 +25,9 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.*;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
-import ai.floedb.floecat.query.rpc.CatalogBundleChunk;
 import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
-import ai.floedb.floecat.query.rpc.GetCatalogBundleRequest;
-import ai.floedb.floecat.query.rpc.QueryCatalogServiceGrpc;
+import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.RelationInfo;
@@ -37,6 +35,8 @@ import ai.floedb.floecat.query.rpc.RelationKind;
 import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
+import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
+import ai.floedb.floecat.query.rpc.UserObjectsServiceGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
@@ -58,7 +58,7 @@ import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
-class QueryCatalogServiceIT {
+class UserObjectsServiceIT {
 
   @GrpcClient("floecat")
   QueryServiceGrpc.QueryServiceBlockingStub lifecycle;
@@ -96,7 +96,7 @@ class QueryCatalogServiceIT {
   }
 
   @Test
-  void getCatalogBundlePinsTable() {
+  void GetUserObjectsPinsTable() {
     var catName = catalogPrefix + "table_cat";
     var cat = TestSupport.createCatalog(catalogService, catName, "");
     var ns =
@@ -131,20 +131,17 @@ class QueryCatalogServiceIT {
                     .build())
             .build();
 
-    List<CatalogBundleChunk> chunks =
-        collectCatalogBundle(
-                GetCatalogBundleRequest.newBuilder()
-                    .setQueryId(queryId)
-                    .addTables(candidate)
-                    .build())
+    List<UserObjectsBundleChunk> chunks =
+        collectUserObjectBundle(
+                GetUserObjectsRequest.newBuilder().setQueryId(queryId).addTables(candidate).build())
             .toCompletableFuture()
             .join();
 
     assertEquals(3, chunks.size());
-    CatalogBundleChunk header = chunks.get(0);
+    UserObjectsBundleChunk header = chunks.get(0);
     assertTrue(header.hasHeader());
 
-    CatalogBundleChunk resolutions = chunks.get(1);
+    UserObjectsBundleChunk resolutions = chunks.get(1);
     assertTrue(resolutions.hasResolutions());
     assertEquals(1, resolutions.getResolutions().getItemsCount());
     RelationResolution resolution = resolutions.getResolutions().getItems(0);
@@ -155,7 +152,7 @@ class QueryCatalogServiceIT {
     assertEquals(1, relation.getColumnsCount());
     assertEquals("id", relation.getColumns(0).getName());
 
-    CatalogBundleChunk end = chunks.get(2);
+    UserObjectsBundleChunk end = chunks.get(2);
     assertTrue(end.hasEnd());
     assertEquals(1, end.getEnd().getResolutionCount());
     assertEquals(1, end.getEnd().getFoundCount());
@@ -174,7 +171,7 @@ class QueryCatalogServiceIT {
   }
 
   @Test
-  void getCatalogBundleRelationNotFound() {
+  void GetUserObjectsRelationNotFound() {
     var catName = catalogPrefix + "missing_cat";
     var cat = TestSupport.createCatalog(catalogService, catName, "");
     var ns =
@@ -198,17 +195,14 @@ class QueryCatalogServiceIT {
             .addCandidates(QueryInput.newBuilder().setTableId(missingTableId).build())
             .build();
 
-    List<CatalogBundleChunk> chunks =
-        collectCatalogBundle(
-                GetCatalogBundleRequest.newBuilder()
-                    .setQueryId(queryId)
-                    .addTables(candidate)
-                    .build())
+    List<UserObjectsBundleChunk> chunks =
+        collectUserObjectBundle(
+                GetUserObjectsRequest.newBuilder().setQueryId(queryId).addTables(candidate).build())
             .toCompletableFuture()
             .join();
 
     assertEquals(3, chunks.size());
-    CatalogBundleChunk resolutions = chunks.get(1);
+    UserObjectsBundleChunk resolutions = chunks.get(1);
     assertTrue(resolutions.hasResolutions());
     assertEquals(1, resolutions.getResolutions().getItemsCount());
     RelationResolution resolution = resolutions.getResolutions().getItems(0);
@@ -219,7 +213,7 @@ class QueryCatalogServiceIT {
     assertEquals(
         missingTableId.getId(), resolution.getFailure().getAttempted(0).getTableId().getId());
 
-    CatalogBundleChunk end = chunks.get(2);
+    UserObjectsBundleChunk end = chunks.get(2);
     assertTrue(end.hasEnd());
     assertEquals(1, end.getEnd().getResolutionCount());
     assertEquals(0, end.getEnd().getFoundCount());
@@ -227,7 +221,7 @@ class QueryCatalogServiceIT {
   }
 
   @Test
-  void getCatalogBundleRelationNotFoundByName() {
+  void GetUserObjectsRelationNotFoundByName() {
     var catName = catalogPrefix + "missing_name_cat";
     var cat = TestSupport.createCatalog(catalogService, catName, "");
     var ns =
@@ -245,17 +239,14 @@ class QueryCatalogServiceIT {
             .addCandidates(QueryInput.newBuilder().setName(missingName).build())
             .build();
 
-    List<CatalogBundleChunk> chunks =
-        collectCatalogBundle(
-                GetCatalogBundleRequest.newBuilder()
-                    .setQueryId(queryId)
-                    .addTables(candidate)
-                    .build())
+    List<UserObjectsBundleChunk> chunks =
+        collectUserObjectBundle(
+                GetUserObjectsRequest.newBuilder().setQueryId(queryId).addTables(candidate).build())
             .toCompletableFuture()
             .join();
 
     assertEquals(3, chunks.size());
-    CatalogBundleChunk resolutions = chunks.get(1);
+    UserObjectsBundleChunk resolutions = chunks.get(1);
     assertTrue(resolutions.hasResolutions());
     assertEquals(1, resolutions.getResolutions().getItemsCount());
     RelationResolution resolution = resolutions.getResolutions().getItems(0);
@@ -265,7 +256,7 @@ class QueryCatalogServiceIT {
     assertEquals(1, resolution.getFailure().getAttemptedList().size());
     assertEquals(missingName, resolution.getFailure().getAttempted(0).getName());
 
-    CatalogBundleChunk end = chunks.get(2);
+    UserObjectsBundleChunk end = chunks.get(2);
     assertTrue(end.hasEnd());
     assertEquals(1, end.getEnd().getResolutionCount());
     assertEquals(0, end.getEnd().getFoundCount());
@@ -277,7 +268,7 @@ class QueryCatalogServiceIT {
   // TODO: re-enable when view support is ready
   @Disabled
   @Test
-  void getCatalogBundleStreamsViewDefinition() {
+  void GetUserObjectsStreamsViewDefinition() {
     var catName = catalogPrefix + "view_cat";
     var cat = TestSupport.createCatalog(catalogService, catName, "");
     var ns =
@@ -321,17 +312,14 @@ class QueryCatalogServiceIT {
                 QueryInput.newBuilder().setName(TestSupport.fq(catName, ns, viewName)).build())
             .build();
 
-    List<CatalogBundleChunk> chunks =
-        collectCatalogBundle(
-                GetCatalogBundleRequest.newBuilder()
-                    .setQueryId(queryId)
-                    .addTables(candidate)
-                    .build())
+    List<UserObjectsBundleChunk> chunks =
+        collectUserObjectBundle(
+                GetUserObjectsRequest.newBuilder().setQueryId(queryId).addTables(candidate).build())
             .toCompletableFuture()
             .join();
 
     assertEquals(3, chunks.size());
-    CatalogBundleChunk resolutions = chunks.get(1);
+    UserObjectsBundleChunk resolutions = chunks.get(1);
     RelationResolution resolution = resolutions.getResolutions().getItems(0);
     assertEquals(ResolutionStatus.RESOLUTION_STATUS_FOUND, resolution.getStatus());
     RelationInfo relation = resolution.getRelation();
@@ -340,23 +328,23 @@ class QueryCatalogServiceIT {
     assertTrue(relation.hasViewDefinition());
     assertEquals(sql, relation.getViewDefinition().getCanonicalSql());
 
-    CatalogBundleChunk end = chunks.get(2);
+    UserObjectsBundleChunk end = chunks.get(2);
     assertEquals(1, end.getEnd().getResolutionCount());
     assertEquals(1, end.getEnd().getFoundCount());
   }
 
-  private CompletionStage<List<CatalogBundleChunk>> collectCatalogBundle(
-      GetCatalogBundleRequest request) {
-    QueryCatalogServiceGrpc.QueryCatalogServiceStub async =
-        QueryCatalogServiceGrpc.newStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
-    CompletableFuture<List<CatalogBundleChunk>> future = new CompletableFuture<>();
-    List<CatalogBundleChunk> chunks = Collections.synchronizedList(new ArrayList<>());
+  private CompletionStage<List<UserObjectsBundleChunk>> collectUserObjectBundle(
+      GetUserObjectsRequest request) {
+    UserObjectsServiceGrpc.UserObjectsServiceStub async =
+        UserObjectsServiceGrpc.newStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
+    CompletableFuture<List<UserObjectsBundleChunk>> future = new CompletableFuture<>();
+    List<UserObjectsBundleChunk> chunks = Collections.synchronizedList(new ArrayList<>());
 
-    async.getCatalogBundle(
+    async.getUserObjects(
         request,
-        new StreamObserver<>() {
+        new StreamObserver<UserObjectsBundleChunk>() {
           @Override
-          public void onNext(CatalogBundleChunk chunk) {
+          public void onNext(UserObjectsBundleChunk chunk) {
             chunks.add(chunk);
           }
 

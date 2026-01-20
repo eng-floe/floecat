@@ -59,8 +59,6 @@ final class PgNamespaceScannerTest {
                     FloeNamespaceSpecific.newBuilder()
                         .setOid(11)
                         .setNspname("pg_catalog")
-                        .setNspowner(10)
-                        .addNspacl("=UC/postgres")
                         .build()
                         .toByteArray())));
 
@@ -71,8 +69,6 @@ final class PgNamespaceScannerTest {
 
     assertThat(v[0]).isEqualTo(11); // oid
     assertThat(v[1]).isEqualTo("pg_catalog"); // nspname
-    assertThat(v[2]).isEqualTo(10); // nspowner
-    assertThat((String[]) v[3]).containsExactly("=UC/postgres"); // nspacl
   }
 
   @Test
@@ -86,8 +82,6 @@ final class PgNamespaceScannerTest {
 
     assertThat(v[0]).isInstanceOf(Integer.class); // oid fallback
     assertThat(v[1]).isEqualTo("public"); // displayName
-    assertThat(v[2]).isEqualTo(10); // default owner
-    assertThat((String[]) v[3]).isEmpty(); // empty ACL
   }
 
   @Test

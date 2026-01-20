@@ -27,7 +27,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
-import ai.floedb.floecat.service.query.catalog.testsupport.CatalogBundleTestSupport;
+import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.storage.InMemoryBlobStore;
@@ -55,8 +55,8 @@ class StatsProviderFactoryTest {
   @Test
   void tableStatsAreOptionalWhenMissing() {
     CountingStatsRepository repository = new CountingStatsRepository();
-    CatalogBundleTestSupport.TestQueryContextStore store =
-        new CatalogBundleTestSupport.TestQueryContextStore();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
     StatsProviderFactory factory = new StatsProviderFactory(repository, store);
     QueryContext ctx = queryContextWithoutPin();
     store.seed(ctx);
@@ -69,8 +69,8 @@ class StatsProviderFactoryTest {
   @Test
   void cachesTableStatsPerSnapshot() {
     CountingStatsRepository repository = new CountingStatsRepository();
-    CatalogBundleTestSupport.TestQueryContextStore store =
-        new CatalogBundleTestSupport.TestQueryContextStore();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
     StatsProviderFactory factory = new StatsProviderFactory(repository, store);
     long snapshotId = 10L;
     long fetchedAtMs = 10_123L;
@@ -122,8 +122,8 @@ class StatsProviderFactoryTest {
   @Test
   void totalSizeBytesIsOptionalWhenUnset() {
     CountingStatsRepository repository = new CountingStatsRepository();
-    CatalogBundleTestSupport.TestQueryContextStore store =
-        new CatalogBundleTestSupport.TestQueryContextStore();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
     StatsProviderFactory factory = new StatsProviderFactory(repository, store);
     long snapshotId = 33L;
     TableStats stats =
@@ -141,8 +141,8 @@ class StatsProviderFactoryTest {
   @Test
   void columnStatsBestEffortWithoutPin() {
     CountingStatsRepository repository = new CountingStatsRepository();
-    CatalogBundleTestSupport.TestQueryContextStore store =
-        new CatalogBundleTestSupport.TestQueryContextStore();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
     StatsProviderFactory factory = new StatsProviderFactory(repository, store);
     long snapshotId = 22L;
     long columnId = 1L;
@@ -180,8 +180,8 @@ class StatsProviderFactoryTest {
   @Test
   void statsAppearWhenPinAddedDuringBundle() {
     CountingStatsRepository repository = new CountingStatsRepository();
-    CatalogBundleTestSupport.TestQueryContextStore store =
-        new CatalogBundleTestSupport.TestQueryContextStore();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
     StatsProviderFactory factory = new StatsProviderFactory(repository, store);
     long snapshotId = 66L;
     TableStats stats =

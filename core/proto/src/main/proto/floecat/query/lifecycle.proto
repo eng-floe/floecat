@@ -46,9 +46,17 @@ import "google/protobuf/timestamp.proto";
  *   - QueryScanService
  */
 
+/**
+ * High-level lifecycle state for a query context.
+ */
 enum QueryStatus {
+  /** Query context exists and is still active (not yet ended). */
   SUBMITTED = 0;
+
+  /** Query context has been ended successfully (commit=true). */
   COMPLETED = 1;
+
+  /** Query context has been ended unsuccessfully (commit=false) or errored. */
   FAILED = 2;
 }
 
@@ -94,8 +102,8 @@ message TableObligations {
   ai.floedb.floecat.common.ResourceId table_id = 1;
 
   message ColumnMask {
-    string column = 1;          // logical column name
-    string expression = 2;      // SQL replacement
+    string column = 1; // logical column name
+    string expression = 2; // SQL replacement
   }
 
   repeated ColumnMask masks = 2;
@@ -171,9 +179,23 @@ message GetQueryResponse {
   QueryDescriptor query = 1;
 }
 
+/**
+ * Query lifecycle API.
+ *
+ * This service creates and manages a short-lived query context used by downstream
+ * planning/execution services. It is intentionally scoped to lifecycle + pinned
+ * metadata (snapshots, view expansion, and governance obligations).
+ */
 service QueryService {
+  /** BeginQuery: creates a new query context with a TTL and default catalog/as-of. */
   rpc BeginQuery(BeginQueryRequest) returns (BeginQueryResponse);
+
+  /** RenewQuery: extends the TTL for an existing query context. */
   rpc RenewQuery(RenewQueryRequest) returns (RenewQueryResponse);
+
+  /** EndQuery: marks the query context as completed (commit=true) or failed (commit=false) and releases resources. */
   rpc EndQuery(EndQueryRequest) returns (EndQueryResponse);
+
+  /** GetQuery: fetches the current descriptor/state for a query context. */
   rpc GetQuery(GetQueryRequest) returns (GetQueryResponse);
 }

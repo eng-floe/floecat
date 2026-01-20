@@ -29,9 +29,9 @@ import java.util.List;
 import java.util.Map;
 
 /** Shared helpers used by catalog bundle builders. */
-public final class CatalogBundleUtils {
+public final class UserObjectBundleUtils {
 
-  private CatalogBundleUtils() {}
+  private UserObjectBundleUtils() {}
 
   public static NameRef applyDefaultCatalog(NameRef ref, String defaultCatalog) {
     NameRef.Builder builder = ref.toBuilder();
@@ -75,8 +75,6 @@ public final class CatalogBundleUtils {
         .setNullable(column.getNullable())
         .setOrdinal(column.getOrdinal())
         .setOrigin(origin)
-        .setFieldId(column.getFieldId())
-        .setPhysicalPath(column.getPhysicalPath())
         .build();
   }
 

@@ -49,7 +49,7 @@ public interface QueryContextStore extends AutoCloseable {
   /**
    * Replace an existing QueryContext with an updated version.
    *
-   * <p>This is required for DescribeInputs(), GetCatalogBundle(), and other RPCs to populate: -
+   * <p>This is required for DescribeInputs(), GetUserObjects(), and other RPCs to populate: -
    * expansionMap - obligations - additional metadata
    *
    * <p>Unlike put(), this MUST overwrite the existing context.

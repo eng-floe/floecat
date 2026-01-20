@@ -16,7 +16,7 @@
 
 package io.floecat.tools.validator;
 
-import ai.floedb.floecat.query.rpc.BuiltinRegistry;
+import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogValidator;
@@ -37,7 +37,7 @@ import java.util.Objects;
  * depends only on the shared builtin catalog module so it can run without the rest of the Floecat
  * runtime.
  */
-public final class BuiltinCatalogValidatorCli {
+public final class SystemObjectsValidatorCli {
 
   private static final String CHECK = "\u2714";
   private static final Map<String, String> CONTEXT_LABELS =
@@ -66,7 +66,7 @@ public final class BuiltinCatalogValidatorCli {
   private final String errorPrefix = colored("✖ ERROR:", AnsiColor.RED_BOLD) + " ";
 
   public static void main(String[] args) {
-    int exit = new BuiltinCatalogValidatorCli().run(args, System.out, System.err);
+    int exit = new SystemObjectsValidatorCli().run(args, System.out, System.err);
     System.exit(exit);
   }
 
@@ -85,7 +85,7 @@ public final class BuiltinCatalogValidatorCli {
 
   private static boolean isClassPresent(String name) {
     try {
-      Class.forName(name, false, BuiltinCatalogValidatorCli.class.getClassLoader());
+      Class.forName(name, false, SystemObjectsValidatorCli.class.getClassLoader());
       return true;
     } catch (ClassNotFoundException ignored) {
       return false;
@@ -154,10 +154,10 @@ public final class BuiltinCatalogValidatorCli {
     }
 
     errors.stream()
-        .map(BuiltinCatalogValidatorCli::describeError)
+        .map(SystemObjectsValidatorCli::describeError)
         .forEach(err -> out.println(errorPrefix + colored(err, AnsiColor.RED_BOLD)));
     warnings.stream()
-        .map(BuiltinCatalogValidatorCli::describeWarning)
+        .map(SystemObjectsValidatorCli::describeWarning)
         .forEach(warning -> out.println(colored("WARN: " + warning, AnsiColor.YELLOW)));
     out.println();
     out.printf(
@@ -185,11 +185,11 @@ public final class BuiltinCatalogValidatorCli {
     builder.append("  \"valid\": ").append(valid).append(",\n");
     builder
         .append("  \"errors\": ")
-        .append(asJsonArray(errors, BuiltinCatalogValidatorCli::describeError))
+        .append(asJsonArray(errors, SystemObjectsValidatorCli::describeError))
         .append(",\n");
     builder
         .append("  \"warnings\": ")
-        .append(asJsonArray(warnings, BuiltinCatalogValidatorCli::describeWarning))
+        .append(asJsonArray(warnings, SystemObjectsValidatorCli::describeWarning))
         .append(",\n");
     builder.append("  \"stats\": {\n");
     builder.append("    \"types\": ").append(stats.types()).append(",\n");
@@ -308,9 +308,9 @@ public final class BuiltinCatalogValidatorCli {
 
     try {
       byte[] bytes = Files.readAllBytes(path);
-      return SystemCatalogProtoMapper.fromProto(BuiltinRegistry.parseFrom(bytes), engineKind);
+      return SystemCatalogProtoMapper.fromProto(SystemObjectsRegistry.parseFrom(bytes), engineKind);
     } catch (InvalidProtocolBufferException binaryParseFailure) {
-      var builder = BuiltinRegistry.newBuilder();
+      var builder = SystemObjectsRegistry.newBuilder();
       try (var reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
         TextFormat.getParser().merge(reader, builder);
         return SystemCatalogProtoMapper.fromProto(builder.build(), engineKind);

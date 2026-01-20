@@ -41,9 +41,10 @@ public final class PgTypeScanner implements SystemObjectScanner {
           ScannerUtils.col("typnamespace", "INT"),
           ScannerUtils.col("typlen", "INT"),
           ScannerUtils.col("typbyval", "BOOLEAN"),
-          ScannerUtils.col("typtype", "CHAR"),
-          ScannerUtils.col("typcategory", "CHAR"),
-          ScannerUtils.col("typowner", "INT"));
+          ScannerUtils.col("typdelim", "CHAR"),
+          ScannerUtils.col("typelem", "INT"),
+          ScannerUtils.col("typarray", "INT"),
+          ScannerUtils.col("typalign", "CHAR"));
 
   @Override
   public List<SchemaColumn> schema() {
@@ -68,9 +69,10 @@ public final class PgTypeScanner implements SystemObjectScanner {
           spec.getTypnamespace(),
           spec.getTyplen(),
           spec.getTypbyval(),
-          spec.getTyptype(),
-          spec.getTypcategory(),
-          spec.getTypowner()
+          spec.getTypdelim(),
+          spec.getTypelem(),
+          spec.getTyparray(),
+          spec.getTypalign()
         });
   }
 }

@@ -49,13 +49,13 @@ Each `pg_*` scanner:
 
 * extracts the current `MetadataResolutionContext` (and thus the normalized `EngineContext`) and parses the logical type once, reusing a cached `TypeResolver` (these resolvers are request-scoped and typically stored per relation/decoration, not globally).
 * calls `FloeHintResolver` (e.g., `columnSpecific`) with the context + resolver + parsed type.
-* projects the returned fields into the row (attrelid/attnum/attlen/attalign/attstorage/attcollation/attbyval/type OID/typmod/ndims/etc.).
+* projects the returned FloeColumnSpecific fields into the row (attname, atttypid, atttypmod, attnum, attnotnull, attisdropped, attcollation, atthasdef) and synthesizes safe defaults for the remaining PG-only columns (attlen, attalign, attstorage, attndims).
 
 The scanner never invents OIDs/typmods itself; it relies entirely on the shared resolver. When overlays are missing, the resolver still returns safe defaults (typmod = -1, attlen = -1, attalign = 'i', attstorage = 'p', attndims = 0, attcollation = 0).
 
 ## 4. Catalog bundle decoration
 
-When `CatalogBundleService` builds responses it:
+When `UserObjectBundleService` builds responses it:
 
 * collects cached relation/column metadata from `RelationDecoration` + `ColumnDecoration`.
 * asks `EngineMetadataDecorator` (e.g., `FloeEngineSpecificDecorator`) for Floe hints when overlays are enabled.

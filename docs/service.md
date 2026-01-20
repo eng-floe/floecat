@@ -73,8 +73,8 @@ helpers like `randomResourceId` (UUIDv7). Highlights:
 - **QueryServiceImpl** – Administers query leases (`BeginQuery`, `RenewQuery`, `EndQuery`,
   `GetQuery`) and exposes `FetchScanBundle` so planners can request connector scan metadata on
   demand.
-- **BuiltinCatalogServiceImpl** – Loads immutable builtin catalogs from disk/classpath, caches them
-  per engine version, and serves them via `GetBuiltinCatalog`.
+- **SystemObjectsServiceImpl** – Loads immutable builtin catalogs from disk/classpath, caches them
+  per engine version, and serves them via `GetSystemObjects`.
 
 ## Important Internal Details
 ### BaseServiceImpl & Idempotency
@@ -113,9 +113,9 @@ pins snapshots, and stores the lease. Planners request connector `ScanBundle`s l
 expansion map, obligations) is returned to the caller inside the `QueryDescriptor`.
 
 ### Builtin Catalog Service
-`BuiltinCatalogLoader` reads immutable builtin catalogs (`<engine_kind>.pb[pbtxt]`) from the
+`SystemObjectsLoader` reads immutable builtin catalogs (`<engine_kind>.pb[pbtxt]`) from the
 configured location, caches them by engine kind, and exposes them through
-`BuiltinCatalogService.GetBuiltinCatalog`. Clients must send both `x-engine-kind` and
+`SystemObjectsService.GetSystemObjects`. Clients must send both `x-engine-kind` and
 `x-engine-version`; the RPC always returns the filtered builtin bundle for the requested engine.
 
 ### GC and Bootstrap

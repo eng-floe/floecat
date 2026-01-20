@@ -28,9 +28,9 @@ import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
-import ai.floedb.floecat.query.rpc.CatalogBundleChunk;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
+import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -50,9 +50,9 @@ import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
 import java.util.function.UnaryOperator;
 
-public final class CatalogBundleTestSupport {
+public final class UserObjectBundleTestSupport {
 
-  private CatalogBundleTestSupport() {}
+  private UserObjectBundleTestSupport() {}
 
   public static List<ai.floedb.floecat.query.rpc.SchemaColumn> schemaFor(String name) {
     return List.of(
@@ -385,8 +385,8 @@ public final class CatalogBundleTestSupport {
     public void close() {}
   }
 
-  public static class CollectingSubscriber implements Subscriber<CatalogBundleChunk> {
-    private final List<CatalogBundleChunk> events = new ArrayList<>();
+  public static class CollectingSubscriber implements Subscriber<UserObjectsBundleChunk> {
+    private final List<UserObjectsBundleChunk> events = new ArrayList<>();
     protected Subscription subscription;
     private final CompletableFuture<Void> completion = new CompletableFuture<>();
 
@@ -397,7 +397,7 @@ public final class CatalogBundleTestSupport {
     }
 
     @Override
-    public void onNext(CatalogBundleChunk chunk) {
+    public void onNext(UserObjectsBundleChunk chunk) {
       events.add(chunk);
     }
 
@@ -411,7 +411,7 @@ public final class CatalogBundleTestSupport {
       completion.complete(null);
     }
 
-    public List<CatalogBundleChunk> items() {
+    public List<UserObjectsBundleChunk> items() {
       return events;
     }
 
@@ -428,7 +428,7 @@ public final class CatalogBundleTestSupport {
     private boolean cancelled;
 
     @Override
-    public void onNext(CatalogBundleChunk chunk) {
+    public void onNext(UserObjectsBundleChunk chunk) {
       super.onNext(chunk);
       if (!cancelled && chunk.hasResolutions()) {
         cancelled = true;

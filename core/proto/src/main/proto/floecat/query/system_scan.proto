@@ -24,55 +24,89 @@ import "floecat/common/common.proto";
 import "floecat/common/predicate.proto";    
 
 /**
- * SYSTEM TABLE SCAN SERVICE
- * -------------------------
- * Produces row-level results for system-backed tables
- * (pg_catalog, information_schema, engine catalogs).
+ * System table scan service.
+ *
+ * Produces row-level results for system-backed tables (pg_catalog,
+ * information_schema, engine catalogs).
  *
  * Guarantees:
- *   - Predicate evaluation is exact
- *   - All returned rows satisfy predicates
+ *   - predicate evaluation is exact
+ *   - all returned rows satisfy predicates
+ */
+/**
+ * Request to scan a system-backed table.
  */
 message ScanSystemTableRequest {
+  /** Query context identifier used for pinned metadata and auditing. */
   string query_id = 1;
 
-  // The system table being scanned (e.g. pg_catalog.pg_attribute)
+  /** System table identifier being scanned (for example: pg_catalog.pg_attribute). */
   ai.floedb.floecat.common.ResourceId table_id = 2;
 
-  // Optional column projection.
+  /** Optional list of column names to project (empty means all columns). */
   repeated string required_columns = 3;
 
-  // Logical predicates applied at row level.
+  /** Logical predicates applied at row level. */
   repeated ai.floedb.floecat.common.Predicate predicates = 4;
 
-  // Preferred output format for system table scans.
+  /** Preferred output format for scan results. */
   OutputFormat output_format = 5;
 }
 
+/**
+ * Output encoding for system table scan results.
+ */
 enum OutputFormat {
+  /** Output format is not specified (implementation may choose a default). */
   OUTPUT_FORMAT_UNSPECIFIED = 0;
+
+  /** Emit results as row-wise values (`SystemTableRow`). */
   ROWS = 1;
+
+  /** Emit results as Arrow IPC schema + record batches. */
   ARROW_IPC = 2;
 }
 
 /**
- * One row of a system table.
+ * One row of a system-backed table.
  *
  * Values are positional and match the declared schema.
  */
 message SystemTableRow {
+  /** Row values in schema order (string-encoded for engine-neutral transport). */
   repeated string values = 1;
 }
 
+/**
+ * Streamed scan result chunk.
+ */
 message ScanSystemTableChunk {
+  /**
+   * Payload for the stream.
+   *
+   * Depending on `output_format`, this will be either:
+   *   - Arrow IPC schema + record batches, or
+   *   - row-wise values.
+   */
   oneof payload {
+    /** Arrow IPC schema message (sent once at the start of an Arrow stream). */
     bytes arrow_schema_ipc = 1;
+
+    /** Arrow IPC record batch message. */
     bytes arrow_batch_ipc = 2;
+
+    /** Single row payload for ROWS output. */
     SystemTableRow row = 3;
   }
 }
 
+/**
+ * Service that scans system-backed tables.
+ */
 service QuerySystemScanService {
+  /**
+   * ScanSystemTable returns a stream of scan results for a system table.
+   */
   rpc ScanSystemTable(ScanSystemTableRequest)
       returns (stream ScanSystemTableChunk);
 }
