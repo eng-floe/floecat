@@ -23,7 +23,7 @@
   <parent>
     <groupId>ai.floedb.floecat</groupId>
     <artifactId>floecat</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>${revision}</version>
     <relativePath>../..</relativePath>
   </parent>
   
