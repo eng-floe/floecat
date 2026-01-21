@@ -24,9 +24,9 @@ import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.*;
+import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
@@ -158,7 +158,7 @@ class UserObjectsServiceIT {
     assertEquals(1, end.getEnd().getFoundCount());
     assertEquals(0, end.getEnd().getNotFoundCount());
 
-    var response =
+    var files =
         fetchScanBundle(
                 FetchScanBundleRequest.newBuilder()
                     .setQueryId(queryId)
@@ -166,8 +166,7 @@ class UserObjectsServiceIT {
                     .build())
             .toCompletableFuture()
             .join();
-    assertTrue(response.hasBundle());
-    assertEquals(0, response.getBundle().getDataFilesCount());
+    assertTrue(files.isEmpty());
   }
 
   @Test
@@ -362,16 +361,17 @@ class UserObjectsServiceIT {
     return future.orTimeout(5, TimeUnit.SECONDS);
   }
 
-  private CompletionStage<FetchScanBundleResponse> fetchScanBundle(FetchScanBundleRequest request) {
-    CompletableFuture<FetchScanBundleResponse> future = new CompletableFuture<>();
+  private CompletionStage<List<ScanFile>> fetchScanBundle(FetchScanBundleRequest request) {
+    CompletableFuture<List<ScanFile>> future = new CompletableFuture<>();
+    List<ScanFile> files = Collections.synchronizedList(new ArrayList<>());
     QueryScanServiceGrpc.QueryScanServiceStub async =
         QueryScanServiceGrpc.newStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
     async.fetchScanBundle(
         request,
         new StreamObserver<>() {
           @Override
-          public void onNext(FetchScanBundleResponse response) {
-            future.complete(response);
+          public void onNext(ScanFile response) {
+            files.add(response);
           }
 
           @Override
@@ -381,10 +381,7 @@ class UserObjectsServiceIT {
 
           @Override
           public void onCompleted() {
-            if (!future.isDone()) {
-              future.completeExceptionally(
-                  new IllegalStateException("fetchScanBundle completed without response"));
-            }
+            future.complete(new ArrayList<>(files));
           }
         });
     return future.orTimeout(5, TimeUnit.SECONDS);

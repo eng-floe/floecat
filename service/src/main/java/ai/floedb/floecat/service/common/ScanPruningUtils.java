@@ -77,6 +77,23 @@ public final class ScanPruningUtils {
     return prunePredicates(afterProjection, predicates);
   }
 
+  /**
+   * Applies projection/predicate pruning to a single file.
+   *
+   * @return pruned file, or {@code null} if the file should be skipped.
+   */
+  public static ScanFile pruneFile(
+      ScanFile file, Set<String> requiredColumns, List<Predicate> predicates) {
+    ScanFile pruned = file;
+    if (requiredColumns != null && !requiredColumns.isEmpty()) {
+      pruned = filterColumns(pruned, requiredColumns);
+    }
+    if (predicates != null && !predicates.isEmpty() && !matches(pruned, predicates)) {
+      return null;
+    }
+    return pruned;
+  }
+
   // ----------------------------------------------------------------------
   //  Column pruning
   // ----------------------------------------------------------------------

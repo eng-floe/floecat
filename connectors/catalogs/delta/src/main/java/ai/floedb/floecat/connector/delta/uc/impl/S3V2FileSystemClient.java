@@ -46,7 +46,11 @@ final class S3V2FileSystemClient implements FileIO {
 
   @Override
   public InputFile newInputFile(String path, long fileSize) {
-    return new S3InputFile(s3, resolvePath(path));
+    String resolved = resolvePath(path);
+    if (isMissingCheckpoint(resolved)) {
+      return new MissingInputFile(resolved);
+    }
+    return new S3InputFile(s3, resolved);
   }
 
   @Override
@@ -83,6 +87,24 @@ final class S3V2FileSystemClient implements FileIO {
     } catch (S3Exception e) {
       if (e.statusCode() == 404) throw new IOException("File not found: " + path, e);
       throw new IOException("Failed to get file status for: " + path, e);
+    }
+  }
+
+  private boolean isMissingCheckpoint(String resolvedPath) {
+    if (!resolvedPath.endsWith("/_last_checkpoint")) {
+      return false;
+    }
+    URI u = URI.create(resolvedPath);
+    String bucket = u.getHost();
+    String key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
+    try {
+      s3.headObject(b -> b.bucket(bucket).key(key));
+      return false;
+    } catch (S3Exception e) {
+      if (e.statusCode() == 404) {
+        return true;
+      }
+      throw e;
     }
   }
 
@@ -273,6 +295,65 @@ final class S3V2FileSystemClient implements FileIO {
     public String path() {
       return resolvedPath;
     }
+  }
+
+  static final class MissingInputFile implements InputFile {
+    private final String resolvedPath;
+
+    MissingInputFile(String resolvedPath) {
+      this.resolvedPath = resolvedPath;
+    }
+
+    @Override
+    public SeekableInputStream newStream() {
+      return new MissingSeekableInputStream(resolvedPath);
+    }
+
+    @Override
+    public long length() {
+      return 0L;
+    }
+
+    @Override
+    public String path() {
+      return resolvedPath;
+    }
+  }
+
+  static final class MissingSeekableInputStream extends SeekableInputStream {
+    private final String path;
+
+    MissingSeekableInputStream(String path) {
+      this.path = path;
+    }
+
+    @Override
+    public int read() throws IOException {
+      throw new java.io.FileNotFoundException("File not found: " + path);
+    }
+
+    @Override
+    public int read(byte[] b, int off, int len) throws IOException {
+      throw new java.io.FileNotFoundException("File not found: " + path);
+    }
+
+    @Override
+    public void readFully(byte[] b, int off, int len) throws IOException {
+      throw new java.io.FileNotFoundException("File not found: " + path);
+    }
+
+    @Override
+    public long getPos() throws IOException {
+      return 0L;
+    }
+
+    @Override
+    public void seek(long newPos) throws IOException {
+      throw new java.io.FileNotFoundException("File not found: " + path);
+    }
+
+    @Override
+    public void close() {}
   }
 
   static final class S3SeekableInputStream extends SeekableInputStream {

@@ -16,12 +16,12 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.client;
 
+import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
 import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.floecat.query.rpc.GetQueryRequest;
 import ai.floedb.floecat.query.rpc.GetQueryResponse;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
@@ -50,7 +50,7 @@ public class QueryClient {
     queryStub().endQuery(request);
   }
 
-  public FetchScanBundleResponse fetchScanBundle(FetchScanBundleRequest request) {
+  public java.util.Iterator<ScanFile> fetchScanBundle(FetchScanBundleRequest request) {
     return queryScanStub().fetchScanBundle(request);
   }
 

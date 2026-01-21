@@ -145,7 +145,20 @@ public class TablePlanService {
     if (ctx.predicates() != null && !ctx.predicates().isEmpty()) {
       builder.addAllPredicates(ctx.predicates());
     }
-    return queryClient.fetchScanBundle(builder.build()).getBundle();
+    return collectScanBundle(queryClient.fetchScanBundle(builder.build()));
+  }
+
+  private ScanBundle collectScanBundle(java.util.Iterator<ScanFile> files) {
+    ScanBundle.Builder bundle = ScanBundle.newBuilder();
+    while (files.hasNext()) {
+      ScanFile file = files.next();
+      if (file.getFileContent() == ScanFileContent.SCAN_FILE_CONTENT_DATA) {
+        bundle.addDataFiles(file);
+      } else {
+        bundle.addDeleteFiles(file);
+      }
+    }
+    return bundle.build();
   }
 
   private TablePlanTasksResponseDto toScanTasksDto(ScanBundle bundle) {

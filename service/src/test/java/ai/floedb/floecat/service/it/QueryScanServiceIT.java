@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.rpc.*;
+import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.query.rpc.*;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.TestDataResetter;
@@ -134,16 +135,15 @@ class QueryScanServiceIT {
                     .build())
             .build());
 
-    var resp =
+    var stream =
         scan.fetchScanBundle(
             FetchScanBundleRequest.newBuilder()
                 .setQueryId(queryId)
                 .setTableId(tbl.getResourceId())
                 .build());
-
-    assertTrue(resp.hasBundle());
-    assertEquals(0, resp.getBundle().getDataFilesCount());
-    assertEquals(0, resp.getBundle().getDeleteFilesCount());
+    List<ScanFile> files = new java.util.ArrayList<>();
+    stream.forEachRemaining(files::add);
+    assertTrue(files.isEmpty());
   }
 
   /** Ensures FetchScanBundle rejects unpinned tables. */
@@ -207,10 +207,11 @@ class QueryScanServiceIT {
             StatusRuntimeException.class,
             () ->
                 scan.fetchScanBundle(
-                    FetchScanBundleRequest.newBuilder()
-                        .setQueryId(queryId)
-                        .setTableId(tblB.getResourceId())
-                        .build()));
+                        FetchScanBundleRequest.newBuilder()
+                            .setQueryId(queryId)
+                            .setTableId(tblB.getResourceId())
+                            .build())
+                    .hasNext());
 
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not pinned for query");

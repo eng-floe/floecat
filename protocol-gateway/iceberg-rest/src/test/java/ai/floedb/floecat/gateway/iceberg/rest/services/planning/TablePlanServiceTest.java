@@ -29,8 +29,8 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
+import ai.floedb.floecat.execution.rpc.ScanFileContent;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
@@ -42,7 +42,6 @@ import ai.floedb.floecat.query.rpc.BeginQueryResponse;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
 import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.floecat.query.rpc.GetQueryResponse;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
@@ -160,11 +159,9 @@ class TablePlanServiceTest {
         ScanFile.newBuilder()
             .setFilePath("s3://bucket/delete.parquet")
             .setFileFormat("PARQUET")
+            .setFileContent(ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES)
             .build();
-    ScanBundle bundle =
-        ScanBundle.newBuilder().addDataFiles(data).addDeleteFiles(deleteFile).build();
-    when(scanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+    when(scanStub.fetchScanBundle(any())).thenReturn(List.of(data, deleteFile).iterator());
 
     List<StorageCredentialDto> credentials =
         List.of(new StorageCredentialDto("s3", Map.of("role", "arn:aws:iam::123:role/Test")));
@@ -209,9 +206,7 @@ class TablePlanServiceTest {
         false,
         null);
 
-    ScanBundle bundle = ScanBundle.newBuilder().build();
-    when(scanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+    when(scanStub.fetchScanBundle(any())).thenReturn(List.<ScanFile>of().iterator());
 
     TablePlanTasksResponseDto tasks = service.fetchTasks("plan-3");
     assertTrue(tasks.fileScanTasks().isEmpty());

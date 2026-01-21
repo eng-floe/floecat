@@ -104,6 +104,7 @@ import ai.floedb.floecat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorRequest;
 import ai.floedb.floecat.execution.rpc.ScanFile;
+import ai.floedb.floecat.execution.rpc.ScanFileContent;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
@@ -2332,19 +2333,23 @@ public class Shell implements Runnable {
       return;
     }
 
-    var resp =
-        queryScan.fetchScanBundle(
-            FetchScanBundleRequest.newBuilder().setQueryId(queryId).setTableId(tableId).build());
-
-    if (!resp.hasBundle()) {
-      out.println("query fetch-scan: no bundle returned");
-      return;
+    var req = FetchScanBundleRequest.newBuilder().setQueryId(queryId).setTableId(tableId).build();
+    var stream = queryScan.fetchScanBundle(req);
+    List<ScanFile> dataFiles = new ArrayList<>();
+    List<ScanFile> deleteFiles = new ArrayList<>();
+    while (stream.hasNext()) {
+      ScanFile file = stream.next();
+      if (isDeleteFile(file)) {
+        deleteFiles.add(file);
+      } else {
+        dataFiles.add(file);
+      }
     }
 
     out.println("query id: " + queryId);
     out.println("table id: " + rid(tableId));
-    printQueryFiles("data_files", resp.getBundle().getDataFilesList());
-    printQueryFiles("delete_files", resp.getBundle().getDeleteFilesList());
+    printQueryFiles("data_files", dataFiles);
+    printQueryFiles("delete_files", deleteFiles);
   }
 
   private int parseQueryInputOptions(
@@ -2565,6 +2570,12 @@ public class Shell implements Runnable {
                 });
       }
     }
+  }
+
+  private boolean isDeleteFile(ScanFile file) {
+    ScanFileContent content = file.getFileContent();
+    return content == ScanFileContent.SCAN_FILE_CONTENT_EQUALITY_DELETES
+        || content == ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES;
   }
 
   private boolean looksLikeUuid(String s) {

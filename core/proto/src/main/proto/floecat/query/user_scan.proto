@@ -22,7 +22,7 @@ option java_outer_classname = "QueryScanProto";
 
 import "floecat/common/common.proto";       // ResourceId
 import "floecat/common/predicate.proto";    // Predicate
-import "floecat/execution/scan.proto";      // ScanBundle
+import "floecat/execution/scan.proto";      // ScanFile
 
 /**
  * QUERY FILE SCAN SERVICE
@@ -51,11 +51,7 @@ message FetchScanBundleRequest {
   repeated ai.floedb.floecat.common.Predicate predicates = 4;
 }
 
-message FetchScanBundleResponse {
-  ai.floedb.floecat.execution.ScanBundle bundle = 1;
-}
-
 service QueryScanService {
   rpc FetchScanBundle(FetchScanBundleRequest)
-      returns (FetchScanBundleResponse);
+      returns (stream ai.floedb.floecat.execution.ScanFile);
 }

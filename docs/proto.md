@@ -45,7 +45,7 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
 | `AccountService` | Account CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `TriggerReconcile`, `GetReconcileJob`. |
-| `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`, `FetchScanBundle`. |
+| `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`, `FetchScanBundle` (server-streaming `ScanFile`). |
 | `UserObjectsService` | `GetUserObjects` | Streams catalog metadata chunks (header → relations → end) as the service resolves each relation so planners can start binding earlier. |
 | &nbsp;&nbsp;&nbsp;— Consumption pattern | | Clients read `UserObjectsBundleChunk` in three phases: 1) header chunk (cheap metadata), 2) zero or more `resolutions` chunk batches where each `RelationResolution` carries `input_index` + FOUND/NOT_FOUND/ERROR, and 3) a single end chunk with summary counts. Use `input_index` to map back to planner `TableReferenceCandidate`s and bind as soon as a `FOUND` arrives. |
 | `SystemObjectsService` | `GetSystemObjects` | Returns the builtin catalog filtered by the `x-engine-kind` / `x-engine-version` headers supplied with the request. |
@@ -57,8 +57,8 @@ before hitting repository storage.
 `query/lifecycle.proto` captures everything the planner needs to hold a lease:
 - `QueryDescriptor` mirrors the live query context (IDs, expiry timestamps, snapshot pins, expansion
   maps, and table obligations). Per-table scan manifests are retrieved lazily via
-  `QueryService.FetchScanBundle`, which returns the `execution/scan.proto` records for a specific
-  table.
+  `QueryService.FetchScanBundle`, which streams `execution/scan.proto` `ScanFile` records for a
+  specific table.
 
 `execution/scan.proto` describes the scan inputs that executors consume:
 - `ScanFile` entries include the file path, size, record count, format, per-column stats, and whether
@@ -95,8 +95,8 @@ engine release.
 3. Connectors written against the SPI return `ScanFile` and stats payloads that exactly match the
   protos defined here; the reconciler pipes them back via the catalog/statistics services.
 4. Planners call `QueryService.BeginQuery` to create query leases, optionally extend them via
-  `RenewQuery`, call `FetchScanBundle` per table when they need manifests, and close leases out via
-  `EndQuery` once execution is complete.
+  `RenewQuery`, call `FetchScanBundle` per table when they need manifests (streaming `ScanFile`
+  records), and close leases out via `EndQuery` once execution is complete.
 
 _State diagram for the query lease protocol:_
 
