@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.resources.table;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -470,7 +471,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(200)
         .body("'metadata-location'", equalTo(FIXTURE.metadataLocation()))
-        .body("metadata.properties.'metadata-location'", equalTo(FIXTURE.metadataLocation()));
+        .body("metadata.properties.'metadata-location'", nullValue());
 
     Table existing =
         created.toBuilder()

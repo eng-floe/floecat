@@ -770,7 +770,8 @@ class IcebergRestFixtureIT {
               .extract()
               .asString();
 
-      JsonNode commitNode = MAPPER.readTree(commitBody).path("metadata");
+      JsonNode responseNode = MAPPER.readTree(commitBody);
+      JsonNode commitNode = responseNode.path("metadata");
       Assertions.assertEquals(snapshotId, commitNode.path("current-snapshot-id").asLong());
       Assertions.assertTrue(
           commitNode.path("last-sequence-number").asLong() >= 1L,
@@ -779,7 +780,7 @@ class IcebergRestFixtureIT {
           snapshotId,
           commitNode.path("refs").path("main").path("snapshot-id").asLong());
       Assertions.assertTrue(
-          commitNode.path("properties").path("metadata-location").asText("").contains("/metadata/"),
+          responseNode.path("metadata-location").asText("").contains("/metadata/"),
           "metadata-location should be populated");
     } finally {
       deleteTableResource(namespace, table);
@@ -896,9 +897,10 @@ class IcebergRestFixtureIT {
                   + " body="
                   + commitBody);
 
-      JsonNode commitNode = MAPPER.readTree(commitBody).path("metadata");
+      JsonNode responseNode = MAPPER.readTree(commitBody);
+      JsonNode commitNode = responseNode.path("metadata");
       Assertions.assertTrue(
-          commitNode.path("properties").path("metadata-location").asText("").contains("/metadata/"),
+          responseNode.path("metadata-location").asText("").contains("/metadata/"),
           "metadata-location should be populated");
       Assertions.assertEquals(1, commitNode.path("format-version").asInt());
       Assertions.assertTrue(
@@ -1322,6 +1324,8 @@ class IcebergRestFixtureIT {
       JsonNode propsNode = objectNode.get("properties");
       if (propsNode instanceof ObjectNode props) {
         props.remove("format-version");
+        props.remove("metadata-location");
+        props.remove("metadata_location");
         String propLocation = props.path("location").asText(null);
         if (propLocation != null && propLocation.endsWith("/")) {
           props.put("location", propLocation.substring(0, propLocation.length() - 1));

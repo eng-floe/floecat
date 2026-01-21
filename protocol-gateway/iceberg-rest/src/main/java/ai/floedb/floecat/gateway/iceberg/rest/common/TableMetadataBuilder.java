@@ -226,7 +226,6 @@ public final class TableMetadataBuilder {
     Map<String, Object> refs = refs(metadata);
     refs = mergePropertyRefs(props, refs);
     syncProperty(props, "table-uuid", tableUuid);
-    MetadataLocationUtil.setMetadataLocation(props, metadataLocation);
     syncProperty(props, "current-snapshot-id", currentSnapshotId);
     syncProperty(props, "last-sequence-number", lastSequenceNumber);
     syncProperty(props, "current-schema-id", currentSchemaId);
@@ -234,6 +233,7 @@ public final class TableMetadataBuilder {
     syncProperty(props, "default-spec-id", defaultSpecId);
     syncProperty(props, "last-partition-id", lastPartitionId);
     syncProperty(props, "default-sort-order-id", defaultSortOrderId);
+    removeMetadataLocation(props);
     return new TableMetadataView(
         formatVersion,
         tableUuid,
@@ -278,7 +278,6 @@ public final class TableMetadataBuilder {
     String metadataLoc = metadataLocationFromRequest(request);
     String metadataLocation = null;
     if (metadataLoc != null && !metadataLoc.isBlank()) {
-      MetadataLocationUtil.setMetadataLocation(props, metadataLoc);
       syncWriteMetadataPath(props, metadataLoc);
       metadataLocation = metadataLoc;
     }
@@ -332,6 +331,7 @@ public final class TableMetadataBuilder {
     props.putIfAbsent("default-sort-order-id", defaultSortOrderId.toString());
     long lastSequenceNumber = 0L;
     props.putIfAbsent("last-sequence-number", Long.toString(lastSequenceNumber));
+    removeMetadataLocation(props);
     return new TableMetadataView(
         formatVersion,
         table.hasResourceId() ? table.getResourceId().getId() : tableName,
@@ -431,6 +431,13 @@ public final class TableMetadataBuilder {
       return;
     }
     props.put("write.metadata.path", directory);
+  }
+
+  private static void removeMetadataLocation(Map<String, String> props) {
+    if (props == null || props.isEmpty()) {
+      return;
+    }
+    props.remove(MetadataLocationUtil.PRIMARY_KEY);
   }
 
   private static Long maxSnapshotSequence(List<Snapshot> snapshots) {
