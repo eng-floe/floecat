@@ -26,8 +26,7 @@ namespace/catalog resolution, table schemas, and scan planning; Trino only scans
    ```
    PLUGIN_DIR=/opt/trino/plugin/floecat
    mkdir -p "$PLUGIN_DIR"
-   VERSION=$(sed -n 's:.*<revision>\(.*\)</revision>.*:\1:p' pom.xml | head -n1)
-   cp connectors/clients/trino/target/trino-floecat-connector-${VERSION}.jar "$PLUGIN_DIR"/
+   cp connectors/clients/trino/target/trino-floecat-connector-0.1.0-SNAPSHOT.jar "$PLUGIN_DIR"/
    cp connectors/clients/trino/target/plugin-deps/*.jar "$PLUGIN_DIR"/
    ```
 

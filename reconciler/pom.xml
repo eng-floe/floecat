@@ -20,7 +20,7 @@
   <parent>
     <groupId>ai.floedb.floecat</groupId>
     <artifactId>floecat</artifactId>
-    <version>${revision}</version>
+    <version>0.1.0-SNAPSHOT</version>
   </parent>
 
   <artifactId>floecat-reconciler</artifactId>
