@@ -108,10 +108,7 @@ REACTOR_SERVICE := -pl service -am
 REACTOR_REST := -pl protocol-gateway/iceberg-rest -am
 
 # ---------- Version / Artifacts ----------
-VERSION := $(shell sed -n 's:.*<revision>\(.*\)</revision>.*:\1:p' pom.xml | head -n1)
-ifeq ($(strip $(VERSION)),)
-  VERSION := $(shell sed -n 's:.*<version>\(.*\)</version>.*:\1:p' pom.xml | head -n1)
-endif
+VERSION := $(shell sed -n 's:.*<version>\(.*\)</version>.*:\1:p' pom.xml | head -n1)
 ifeq ($(strip $(VERSION)),)
   VERSION := 0.1.0-SNAPSHOT
 endif
@@ -132,6 +129,12 @@ PARENT_STAMP := $(M2_CLI_DIR)/.parent-$(VERSION).stamp
 PROTO_STAMP  := $(M2_CLI_DIR)/.proto-$(VERSION).stamp
 
 APP_NAME     := floedb-floecat
+
+# ---------- Version bump ----------
+.PHONY: bump-version
+bump-version:
+	@test -n "$(VERSION)" || (echo "VERSION is required, e.g. make bump-version VERSION=0.1.1-SNAPSHOT" && exit 1)
+	mvn -q versions:set -DnewVersion=$(VERSION) -DgenerateBackupPoms=false
 
 # ---------- CLI outputs & inputs ----------
 CLI_JAR := client-cli/target/quarkus-app/quarkus-run.jar
