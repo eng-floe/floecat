@@ -242,10 +242,22 @@ public final class SystemCatalogValidator {
         errors.add("registry.engineSpecific[" + i + "].payloadType.required");
         continue;
       }
-      if (!seen.add(rule.payloadType())) {
-        errors.add("registry.engineSpecific.duplicate:" + rule.payloadType());
+      String key = registryRuleKey(rule);
+      if (!seen.add(key)) {
+        errors.add("registry.engineSpecific.duplicate:" + key);
       }
     }
+  }
+
+  private static String registryRuleKey(EngineSpecificRule rule) {
+    String payloadType = rule.payloadType();
+    if (payloadType == null) {
+      payloadType = "";
+    }
+    String kind = rule.engineKind() == null ? "" : rule.engineKind();
+    String min = rule.minVersion() == null ? "" : rule.minVersion();
+    String max = rule.maxVersion() == null ? "" : rule.maxVersion();
+    return String.join("|", payloadType, kind, min, max);
   }
 
   // ------------------------------------------------------------

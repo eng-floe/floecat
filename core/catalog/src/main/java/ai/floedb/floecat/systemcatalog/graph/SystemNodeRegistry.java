@@ -260,11 +260,11 @@ public class SystemNodeRegistry {
 
     if (includeProviders) {
       for (SystemObjectScannerProvider provider : extensionProviders) {
-        if (!provider.supportsEngine(engineKind)) {
+        if (!provider.supportsEngine(normalizedKind)) {
           continue;
         }
-        for (SystemObjectDef def : provider.definitions(engineKind, normalizedVersion)) {
-          if (!provider.supports(def.name(), engineKind, normalizedVersion)) {
+        for (SystemObjectDef def : provider.definitions(normalizedKind, normalizedVersion)) {
+          if (!provider.supports(def.name(), normalizedKind, normalizedVersion)) {
             continue;
           }
           mergeDefinition(def, namespaceByName, tableByName, viewByName);
@@ -278,10 +278,11 @@ public class SystemNodeRegistry {
     registryCandidates.addAll(baseCatalog.registryEngineSpecific());
     if (includeProviders) {
       for (SystemObjectScannerProvider provider : extensionProviders) {
-        if (!provider.supportsEngine(engineKind)) {
+        if (!provider.supportsEngine(normalizedKind)) {
           continue;
         }
-        registryCandidates.addAll(provider.registryEngineSpecific(engineKind, normalizedVersion));
+        registryCandidates.addAll(
+            provider.registryEngineSpecific(normalizedKind, normalizedVersion));
       }
     }
     List<EngineSpecificRule> registryRules =
@@ -603,7 +604,7 @@ public class SystemNodeRegistry {
     if (candidateScore != existingScore) {
       return candidateScore > existingScore;
     }
-    return true;
+    return true; // tie goes to later candidate so overlays override earlier hints
   }
 
   private static int versionSpecificity(EngineSpecificRule rule) {

@@ -21,9 +21,15 @@ import ai.floedb.floecat.extensions.floedb.proto.FloeCastSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeCollationSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeColumnSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeFunctionSpecific;
+import ai.floedb.floecat.extensions.floedb.proto.FloeIndexAccessMethods;
+import ai.floedb.floecat.extensions.floedb.proto.FloeIndexOperatorClasses;
+import ai.floedb.floecat.extensions.floedb.proto.FloeIndexOperatorFamilies;
+import ai.floedb.floecat.extensions.floedb.proto.FloeIndexOperatorStrategies;
+import ai.floedb.floecat.extensions.floedb.proto.FloeIndexSupportProcedures;
 import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
+import ai.floedb.floecat.extensions.floedb.proto.FloeTypePlanningSemantics;
 import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
 
 /**
@@ -56,6 +62,11 @@ public final class FloePayloads {
   public static final PayloadDescriptor<FloeTypeSpecific> TYPE =
       PayloadDescriptor.of("floe.type+proto", FloeTypeSpecific::parseFrom);
 
+  /** Floe type planning semantics to seed typcache. */
+  public static final PayloadDescriptor<FloeTypePlanningSemantics> TYPE_PLANNING_SEMANTICS =
+      PayloadDescriptor.of(
+          "floe.type.planning_semantics+proto", FloeTypePlanningSemantics::parseFrom);
+
   /** pg_operator */
   public static final PayloadDescriptor<FloeOperatorSpecific> OPERATOR =
       PayloadDescriptor.of("floe.operator+proto", FloeOperatorSpecific::parseFrom);
@@ -79,4 +90,28 @@ public final class FloePayloads {
   /** pg_attribute / columns */
   public static final PayloadDescriptor<FloeColumnSpecific> COLUMN =
       PayloadDescriptor.of("floe.column+proto", FloeColumnSpecific::parseFrom);
+
+  /** pg_am / access method dictionary. */
+  public static final PayloadDescriptor<FloeIndexAccessMethods> INDEX_ACCESS_METHODS =
+      PayloadDescriptor.of("floe.index.access_methods+proto", FloeIndexAccessMethods::parseFrom);
+
+  /** pg_opfamily / operator family dictionary. */
+  public static final PayloadDescriptor<FloeIndexOperatorFamilies> INDEX_OPERATOR_FAMILIES =
+      PayloadDescriptor.of(
+          "floe.index.operator_families+proto", FloeIndexOperatorFamilies::parseFrom);
+
+  /** pg_opclass / operator class dictionary. */
+  public static final PayloadDescriptor<FloeIndexOperatorClasses> INDEX_OPERATOR_CLASSES =
+      PayloadDescriptor.of(
+          "floe.index.operator_classes+proto", FloeIndexOperatorClasses::parseFrom);
+
+  /** pg_amop / operator strategy dictionary. */
+  public static final PayloadDescriptor<FloeIndexOperatorStrategies> INDEX_OPERATOR_STRATEGIES =
+      PayloadDescriptor.of(
+          "floe.index.operator_strategies+proto", FloeIndexOperatorStrategies::parseFrom);
+
+  /** pg_amproc / support procedure dictionary. */
+  public static final PayloadDescriptor<FloeIndexSupportProcedures> INDEX_SUPPORT_PROCEDURES =
+      PayloadDescriptor.of(
+          "floe.index.support_procedures+proto", FloeIndexSupportProcedures::parseFrom);
 }

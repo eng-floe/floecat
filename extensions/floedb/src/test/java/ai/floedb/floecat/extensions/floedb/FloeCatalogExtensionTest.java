@@ -18,8 +18,12 @@ package ai.floedb.floecat.extensions.floedb;
 
 import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
+import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogValidator;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
 /** Tests for Floe builtin extension plugins: loading, parsing, and validation of .pbtxt files. */
@@ -133,11 +137,13 @@ class FloeCatalogExtensionTest {
   }
 
   @Test
-  void loadFromResourceParsesTextFormat() throws Exception {
+  void loadResourceTextParsesTextFormat() throws Exception {
     var extension = new FloeCatalogExtension.FloeDb();
 
     // Load raw .pbtxt file
-    SystemObjectsRegistry registry = extension.loadFromResource("/builtins/floedb.pbtxt");
+    String rawText = extension.loadResourceText("/builtins/floedb.pbtxt");
+    SystemObjectsRegistry registry =
+        extension.parseSystemObjectsRegistry(rawText, "/builtins/floedb.pbtxt");
 
     // Should parse without errors and contain objects
     assert registry != null;
@@ -150,18 +156,20 @@ class FloeCatalogExtensionTest {
     var extension = new FloeCatalogExtension.FloeDb();
 
     // Load raw registry
-    SystemObjectsRegistry raw = extension.loadFromResource("/builtins/floedb.pbtxt");
+    String raw = extension.loadResourceText("/builtins/floedb.pbtxt");
+    SystemObjectsRegistry rawRegistry =
+        extension.parseSystemObjectsRegistry(raw, "/builtins/floedb.pbtxt");
 
     // Rewrite Floe fields to payloads
-    SystemObjectsRegistry rewritten = extension.rewriteFloeExtensions(raw);
+    SystemObjectsRegistry rewritten = extension.rewriteFloeExtensions(rawRegistry);
 
     // Verify all object types were processed
-    assert rewritten.getFunctionsCount() == raw.getFunctionsCount();
-    assert rewritten.getOperatorsCount() == raw.getOperatorsCount();
-    assert rewritten.getTypesCount() == raw.getTypesCount();
-    assert rewritten.getCastsCount() == raw.getCastsCount();
-    assert rewritten.getCollationsCount() == raw.getCollationsCount();
-    assert rewritten.getAggregatesCount() == raw.getAggregatesCount();
+    assert rewritten.getFunctionsCount() == rawRegistry.getFunctionsCount();
+    assert rewritten.getOperatorsCount() == rawRegistry.getOperatorsCount();
+    assert rewritten.getTypesCount() == rawRegistry.getTypesCount();
+    assert rewritten.getCastsCount() == rawRegistry.getCastsCount();
+    assert rewritten.getCollationsCount() == rawRegistry.getCollationsCount();
+    assert rewritten.getAggregatesCount() == rawRegistry.getAggregatesCount();
   }
 
   @Test
@@ -194,6 +202,36 @@ class FloeCatalogExtensionTest {
     // Should be independent objects but same content
     assert catalog1.functions().size() == catalog2.functions().size();
     assert catalog1.types().size() == catalog2.types().size();
+  }
+
+  @Test
+  void floeDemoRegistryPayloadsRoundtrip() {
+    var extension = new FloeCatalogExtension.FloeDemo();
+
+    SystemCatalogData catalog = extension.loadSystemCatalog();
+    List<EngineSpecificRule> hints = catalog.registryEngineSpecific();
+
+    assert !hints.isEmpty() : "Registry hints should be present for floe-demo";
+
+    Set<String> payloadTypes =
+        hints.stream().map(EngineSpecificRule::payloadType).collect(Collectors.toSet());
+
+    Set<String> expected =
+        Set.of(
+            "floe.index.access_methods+proto",
+            "floe.index.operator_families+proto",
+            "floe.index.operator_classes+proto",
+            "floe.index.operator_strategies+proto",
+            "floe.index.support_procedures+proto");
+
+    assert payloadTypes.containsAll(expected) : "Missing Floe registry payloads " + expected;
+
+    for (EngineSpecificRule hint : hints) {
+      if (!hint.payloadType().isBlank()) {
+        assert hint.hasExtensionPayload() : "Payload " + hint.payloadType() + " must carry bytes";
+        assert hint.extensionPayload().length > 0 : "Payload bytes must be non-empty";
+      }
+    }
   }
 
   @Test
