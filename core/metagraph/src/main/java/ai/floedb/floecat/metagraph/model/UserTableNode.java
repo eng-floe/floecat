@@ -48,7 +48,7 @@ public record UserTableNode(
     Optional<ResolvedSnapshotInfo> resolvedSnapshots,
     Optional<TableStatsSummary> statsSummary,
     List<ResourceId> dependentViews,
-    Map<EngineKey, EngineHint> engineHints)
+    Map<EngineHintKey, EngineHint> engineHints)
     implements TableNode {
 
   public UserTableNode {
@@ -59,7 +59,7 @@ public record UserTableNode(
     resolvedSnapshots = resolvedSnapshots == null ? Optional.empty() : resolvedSnapshots;
     statsSummary = statsSummary == null ? Optional.empty() : statsSummary;
     dependentViews = List.copyOf(dependentViews);
-    engineHints = Map.copyOf(engineHints);
+    engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
   }
 
   @Override

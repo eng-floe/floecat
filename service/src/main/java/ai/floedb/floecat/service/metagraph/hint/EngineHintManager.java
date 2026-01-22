@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.metagraph.hint;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.hint.EngineHintProvider;
 import ai.floedb.floecat.metagraph.model.EngineHint;
+import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import com.github.benmanes.caffeine.cache.Cache;
@@ -116,19 +117,38 @@ public class EngineHintManager {
 
   /** Retrieves (or computes) the hint for the request, returning empty when no provider applies. */
   public Optional<EngineHint> get(
-      GraphNode node, EngineKey engineKey, String hintType, String correlationId) {
-    Objects.requireNonNull(node, "node");
+      GraphNode node, EngineKey engineKey, String payloadType, String correlationId) {
     Objects.requireNonNull(engineKey, "engineKey");
-    Objects.requireNonNull(hintType, "hintType");
+    Objects.requireNonNull(payloadType, "payloadType");
+    EngineHintKey engineHintKey =
+        new EngineHintKey(engineKey.engineKind(), engineKey.engineVersion(), payloadType);
+    return get(node, engineHintKey, correlationId);
+  }
 
-    Optional<EngineHintProvider> provider = selectProvider(node, hintType, engineKey);
+  /** Retrieves (or computes) the hint for the request, returning empty when no provider applies. */
+  public Optional<EngineHint> get(
+      GraphNode node, EngineHintKey engineHintKey, String correlationId) {
+    Objects.requireNonNull(node, "node");
+    Objects.requireNonNull(engineHintKey, "engineHintKey");
+    Objects.requireNonNull(engineHintKey.payloadType(), "payloadType");
+
+    EngineKey engineKey = new EngineKey(engineHintKey.engineKind(), engineHintKey.engineVersion());
+    return getInternal(node, engineKey, engineHintKey.payloadType(), correlationId, engineHintKey);
+  }
+
+  private Optional<EngineHint> getInternal(
+      GraphNode node,
+      EngineKey engineKey,
+      String payloadType,
+      String correlationId,
+      EngineHintKey engineHintKey) {
+    Optional<EngineHintProvider> provider = selectProvider(node, payloadType, engineKey);
     if (provider.isEmpty()) {
       return Optional.empty();
     }
 
-    String fingerprint = provider.get().fingerprint(node, engineKey, hintType);
-    HintCacheKey key =
-        new HintCacheKey(node.id(), node.version(), engineKey, hintType, fingerprint);
+    String fingerprint = provider.get().fingerprint(node, engineKey, payloadType);
+    HintCacheKey key = new HintCacheKey(node.id(), node.version(), engineHintKey, fingerprint);
     EngineHint cached = cache.getIfPresent(key);
     if (cached != null) {
       if (hitCounter != null) {
@@ -139,18 +159,18 @@ public class EngineHintManager {
     if (missCounter != null) {
       missCounter.increment();
     }
-    EngineHint computed;
+    Optional<EngineHint> computed;
     try {
-      computed = provider.get().compute(node, engineKey, hintType, correlationId);
+      computed = provider.get().compute(node, engineKey, payloadType, correlationId);
     } catch (RuntimeException e) {
-      LOG.warnf(e, "Engine hint provider failed (hint=%s, engine=%s)", hintType, engineKey);
+      LOG.warnf(e, "Engine hint provider failed (payload=%s, engine=%s)", payloadType, engineKey);
       throw e;
     }
-    if (computed == null) {
+    if (computed.isEmpty()) {
       return Optional.empty();
     }
-    cache.put(key, computed);
-    return Optional.of(computed);
+    cache.put(key, computed.get());
+    return computed;
   }
 
   /** Evicts every cached hint related to the provided resource. */
@@ -162,9 +182,9 @@ public class EngineHintManager {
   }
 
   private Optional<EngineHintProvider> selectProvider(
-      GraphNode node, String hintType, EngineKey engineKey) {
+      GraphNode node, String payloadType, EngineKey engineKey) {
     return providers.stream()
-        .filter(p -> p.supports(node.kind(), hintType) && p.isAvailable(engineKey))
+        .filter(p -> p.supports(node.kind(), payloadType) && p.isAvailable(engineKey))
         .findFirst();
   }
 
@@ -174,16 +194,11 @@ public class EngineHintManager {
   }
 
   static final record HintCacheKey(
-      ResourceId resourceId,
-      long pointerVersion,
-      EngineKey engineKey,
-      String hintType,
-      String fingerprint) {
+      ResourceId resourceId, long pointerVersion, EngineHintKey engineHintKey, String fingerprint) {
 
     HintCacheKey {
       Objects.requireNonNull(resourceId, "resourceId");
-      Objects.requireNonNull(engineKey, "engineKey");
-      Objects.requireNonNull(hintType, "hintType");
+      Objects.requireNonNull(engineHintKey, "engineHintKey");
       Objects.requireNonNull(fingerprint, "fingerprint");
     }
   }

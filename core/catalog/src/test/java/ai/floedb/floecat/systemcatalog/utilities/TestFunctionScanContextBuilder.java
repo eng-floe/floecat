@@ -19,7 +19,7 @@ package ai.floedb.floecat.systemcatalog.utilities;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.EngineHint;
-import ai.floedb.floecat.metagraph.model.EngineKey;
+import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
@@ -77,7 +77,7 @@ public final class TestFunctionScanContextBuilder extends AbstractTestScanContex
       String name,
       boolean aggregate,
       boolean window,
-      Map<EngineKey, EngineHint> hints) {
+      Map<EngineHintKey, EngineHint> hints) {
 
     FunctionNode fn =
         new FunctionNode(

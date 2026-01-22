@@ -21,8 +21,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
+import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.metagraph.model.EngineHint;
-import ai.floedb.floecat.metagraph.model.EngineKey;
+import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
@@ -57,7 +58,7 @@ final class PgTypeScannerTest {
         type(
             "int4",
             Map.of(
-                new EngineKey("floedb", "1.0"),
+                new EngineHintKey("floedb", "1.0", FloePayloads.TYPE.type()),
                 new EngineHint(
                     "floe.type+proto",
                     FloeTypeSpecific.newBuilder()
@@ -145,7 +146,7 @@ final class PgTypeScannerTest {
     return new SystemObjectScanContext(overlay, null, catalogId(), ENGINE_CTX);
   }
 
-  private static TypeNode type(String name, Map<EngineKey, EngineHint> engineHints) {
+  private static TypeNode type(String name, Map<EngineHintKey, EngineHint> engineHints) {
 
     ResourceId typeId =
         ResourceId.newBuilder()

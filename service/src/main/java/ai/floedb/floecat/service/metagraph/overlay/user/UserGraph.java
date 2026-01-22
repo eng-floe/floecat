@@ -612,7 +612,11 @@ public final class UserGraph {
 
   public Optional<EngineHint> engineHint(GraphNode node, EngineKey key, String type, String cid) {
 
-    return hints == null ? Optional.empty() : hints.get(node, key, type, cid);
+    if (hints == null) {
+      return Optional.empty();
+    }
+    EngineHintKey hintKey = new EngineHintKey(key.engineKind(), key.engineVersion(), type);
+    return hints.get(node, hintKey, cid);
   }
 
   // ----------------------------------------------------------------------

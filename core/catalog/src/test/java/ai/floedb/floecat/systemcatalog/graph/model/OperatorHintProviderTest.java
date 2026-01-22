@@ -21,7 +21,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.systemcatalog.def.SystemOperatorDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
-import ai.floedb.floecat.systemcatalog.hint.SystemCatalogHintProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.utils.BuiltinTestSupport;
 import java.util.List;
@@ -31,11 +30,14 @@ import org.junit.jupiter.api.Test;
 class OperatorHintProviderTest {
 
   private static final String ENGINE = "floe-demo";
+  private static final String OPERATOR_PAYLOAD_TYPE = "builtin.systemcatalog.operator.properties";
 
   @Test
   void matchesOperatorSignature() {
 
-    var ruleLt = new EngineSpecificRule(ENGINE, "16.0", "", "", null, Map.of("oid", "9001"));
+    var ruleLt =
+        new EngineSpecificRule(
+            ENGINE, "16.0", "", OPERATOR_PAYLOAD_TYPE, null, Map.of("oid", "9001"));
 
     var catalog =
         new SystemCatalogData(
@@ -62,8 +64,8 @@ class OperatorHintProviderTest {
 
     var node = BuiltinTestSupport.operatorNode(ENGINE, "pg.<", "pg.int4", "pg.int4", "pg.bool");
 
-    var result = provider.compute(node, key, SystemCatalogHintProvider.HINT_TYPE, "cid");
-    assertThat(result.contentType()).contains("");
+    var result = provider.compute(node, key, OPERATOR_PAYLOAD_TYPE, "cid").orElseThrow();
+    assertThat(result.payloadType()).isEqualTo(OPERATOR_PAYLOAD_TYPE);
     assertThat(result.payload()).isEmpty();
     assertThat(result.metadata()).containsEntry("oid", "9001");
   }

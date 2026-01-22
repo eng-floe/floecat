@@ -56,6 +56,11 @@ public final class EngineSpecificMatcher {
         .toList();
   }
 
+  public static boolean matchesRule(
+      EngineSpecificRule rule, String engineKind, String engineVersion) {
+    return rule != null && ruleMatches(rule, engineKind, engineVersion);
+  }
+
   private static boolean ruleMatches(
       EngineSpecificRule rule, String engineKind, String engineVersion) {
     if (rule.hasEngineKind()

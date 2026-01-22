@@ -56,8 +56,9 @@ public class CatalogProducers {
 
   @Produces
   @ApplicationScoped
-  public EngineHintProvider produceSystemCatalogHintProvider(SystemNodeRegistry registry) {
-    return new SystemCatalogHintProvider(registry);
+  public EngineHintProvider produceSystemCatalogHintProvider(
+      SystemNodeRegistry registry, SystemDefinitionRegistry definitionRegistry) {
+    return new SystemCatalogHintProvider(registry, definitionRegistry);
   }
 
   @Produces

@@ -71,7 +71,8 @@ final class PgAttributeScannerTest {
         typeNode(
             NameRef.newBuilder().addPath("pg_catalog").setName("int4").build(),
             Map.of(
-                ENGINE,
+                new EngineHintKey(
+                    ENGINE.engineKind(), ENGINE.engineVersion(), FloePayloads.TYPE.type()),
                 new EngineHint(
                     FloePayloads.TYPE.type(),
                     FloeTypeSpecific.newBuilder()
@@ -85,7 +86,8 @@ final class PgAttributeScannerTest {
         typeNode(
             NameRef.newBuilder().addPath("pg_catalog").setName("numeric").build(),
             Map.of(
-                ENGINE,
+                new EngineHintKey(
+                    ENGINE.engineKind(), ENGINE.engineVersion(), FloePayloads.TYPE.type()),
                 new EngineHint(
                     FloePayloads.TYPE.type(),
                     FloeTypeSpecific.newBuilder()
@@ -101,7 +103,8 @@ final class PgAttributeScannerTest {
         table(
             "t",
             Map.of(
-                ENGINE,
+                new EngineHintKey(
+                    ENGINE.engineKind(), ENGINE.engineVersion(), FloePayloads.RELATION.type()),
                 new EngineHint(
                     FloePayloads.RELATION.type(),
                     FloeRelationSpecific.newBuilder().setOid(100).build().toByteArray())));
@@ -245,7 +248,7 @@ final class PgAttributeScannerTest {
     return new SystemObjectScanContext(overlay, null, catalogId(), ENGINE_CTX);
   }
 
-  private static TypeNode typeNode(NameRef name, Map<EngineKey, EngineHint> hints) {
+  private static TypeNode typeNode(NameRef name, Map<EngineHintKey, EngineHint> hints) {
     return new TypeNode(
         ResourceId.newBuilder()
             .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
@@ -262,7 +265,7 @@ final class PgAttributeScannerTest {
         hints);
   }
 
-  private static TableNode table(String name, Map<EngineKey, EngineHint> hints) {
+  private static TableNode table(String name, Map<EngineHintKey, EngineHint> hints) {
     return new SystemTableNode(
         ResourceId.newBuilder()
             .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)

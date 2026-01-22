@@ -21,8 +21,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
+import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.metagraph.model.EngineHint;
-import ai.floedb.floecat.metagraph.model.EngineKey;
+import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
@@ -64,7 +65,7 @@ final class PgClassScannerTest {
         table(
             "my_table",
             Map.of(
-                new EngineKey("floedb", "1.0"),
+                new EngineHintKey("floedb", "1.0", FloePayloads.RELATION.type()),
                 new EngineHint(
                     "floe.relation+proto",
                     FloeRelationSpecific.newBuilder()
@@ -166,7 +167,7 @@ final class PgClassScannerTest {
     return new SystemObjectScanContext(overlay, null, catalogId(), ENGINE_CTX);
   }
 
-  private static TableNode table(String name, Map<EngineKey, EngineHint> hints) {
+  private static TableNode table(String name, Map<EngineHintKey, EngineHint> hints) {
 
     ResourceId id =
         ResourceId.newBuilder()
@@ -187,7 +188,7 @@ final class PgClassScannerTest {
         hints);
   }
 
-  private static ViewNode view(String name, Map<EngineKey, EngineHint> hints) {
+  private static ViewNode view(String name, Map<EngineHintKey, EngineHint> hints) {
 
     ResourceId id =
         ResourceId.newBuilder()

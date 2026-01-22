@@ -21,6 +21,7 @@ functions {
   argument_types { name: "int4" path: "pg_catalog" }
   return_type { name: "int4" path: "pg_catalog" }
   engine_specific {
+    payload_type: "floe.function+proto"
     min_version: "9.5"
     floe_function {
       oid: 1250
@@ -47,6 +48,7 @@ functions {
   argument_types { name: "text" path: "pg_catalog" }
   return_type { name: "text" path: "pg_catalog" }
   engine_specific {
+    payload_type: "floe.function+proto"
     min_version: "9.5"
     floe_function {
       oid: 1251
@@ -82,6 +84,7 @@ functions {
   return_type { name: "int8" path: "pg_catalog" }
   is_aggregate: true
   engine_specific {
+    payload_type: "floe.function+proto"
     min_version: "9.5"
     floe_function {
       proname: "sum_int4_state"
@@ -100,6 +103,7 @@ functions {
   return_type { name: "int8" path: "pg_catalog" }
   is_aggregate: true
   engine_specific {
+    payload_type: "floe.function+proto"
     min_version: "9.5"
     floe_function {
       proname: "sum_int4_final"
@@ -134,6 +138,7 @@ types {
   name { name: "int4" path: "pg_catalog" }
   category: "N"
   engine_specific {
+    payload_type: "floe.type+proto"
     floe_type {
       oid: 23
       typname: "int4"
@@ -151,6 +156,7 @@ types {
   name { name: "int8" path: "pg_catalog" }
   category: "N"
   engine_specific {
+    payload_type: "floe.type+proto"
     floe_type {
       oid: 20
       typname: "int8"
@@ -167,6 +173,7 @@ types {
   name { name: "text" path: "pg_catalog" }
   category: "S"
   engine_specific {
+    payload_type: "floe.type+proto"
     floe_type {
       oid: 25
       typname: "text"
@@ -185,6 +192,7 @@ types {
   is_array: true
   element_type { name: "int4" path: "pg_catalog" }
   engine_specific {
+    payload_type: "floe.type+proto"
     floe_type {
       oid: 1007
       typname: "_int4"
@@ -231,6 +239,7 @@ aggregates {
   state_type { name: "int8" path: "pg_catalog" }
   return_type { name: "int8" path: "pg_catalog" }
   engine_specific {
+    payload_type: "floe.aggregate+proto"
     floe_aggregate {
       aggfnoid: 0
       aggtransfn: 0

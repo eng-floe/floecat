@@ -40,17 +40,15 @@ class HintCacheTest {
     var mgr = new EngineHintManager(java.util.List.of(provider), new SimpleMeterRegistry(), 1024);
 
     var table = tableNode(1L);
-    var key = new EngineKey("demo", "1");
-
-    var h1 = mgr.get(table, key, "test", "cid").orElseThrow();
-    var h2 = mgr.get(table, key, "test", "cid").orElseThrow();
+    var h1 = mgr.get(table, new EngineKey("demo", "1"), "test", "cid").orElseThrow();
+    var h2 = mgr.get(table, new EngineKey("demo", "1"), "test", "cid").orElseThrow();
 
     assertThat(provider.calls.get()).isEqualTo(1);
     assertThat(h1.payload()).isEqualTo(h2.payload());
 
     mgr.invalidate(table.id());
 
-    mgr.get(tableNode(2L), key, "test", "cid").orElseThrow();
+    mgr.get(tableNode(2L), new EngineKey("demo", "1"), "test", "cid").orElseThrow();
     assertThat(provider.calls.get()).isEqualTo(2);
   }
 
@@ -101,9 +99,9 @@ class HintCacheTest {
     }
 
     @Override
-    public EngineHint compute(GraphNode n, EngineKey k, String h, String c) {
+    public Optional<EngineHint> compute(GraphNode n, EngineKey k, String h, String c) {
       calls.incrementAndGet();
-      return new EngineHint("application/test", new byte[] {1, 2, 3});
+      return Optional.of(new EngineHint("test.payload+bytes", new byte[] {1, 2, 3}));
     }
   }
 }

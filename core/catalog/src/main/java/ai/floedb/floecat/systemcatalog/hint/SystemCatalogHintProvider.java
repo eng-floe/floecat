@@ -20,15 +20,17 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.hint.EngineHintProvider;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.systemcatalog.def.*;
+import ai.floedb.floecat.systemcatalog.engine.EngineSpecificMatcher;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
+import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
+import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import java.util.*;
+import org.jboss.logging.Logger;
 
 /* Publishes per-object builtin metadata as engine hints. */
 public class SystemCatalogHintProvider implements EngineHintProvider {
-
-  public static final String HINT_TYPE = "builtin.systemcatalog.properties";
 
   private static final Set<GraphNodeKind> SUPPORTED_KINDS =
       EnumSet.of(
@@ -39,15 +41,34 @@ public class SystemCatalogHintProvider implements EngineHintProvider {
           GraphNodeKind.COLLATION,
           GraphNodeKind.AGGREGATE);
 
-  private final SystemNodeRegistry nodeRegistry;
+  private static final Logger LOG = Logger.getLogger(SystemCatalogHintProvider.class);
 
-  public SystemCatalogHintProvider(SystemNodeRegistry nodeRegistry) {
+  private final SystemNodeRegistry nodeRegistry;
+  private final Map<GraphNodeKind, Set<String>> supportedHintTypes;
+
+  /**
+   * We precompute every payload type mentioned in the loaded catalogs so {@code supports()} can
+   * screen out typos instead of silently returning empty hints. The extra strictness is safe
+   * because any valid payload type must already be present in the catalog registry; unsupported
+   * types will be rejected before compute().
+   */
+  public SystemCatalogHintProvider(
+      SystemNodeRegistry nodeRegistry, SystemDefinitionRegistry definitionRegistry) {
     this.nodeRegistry = nodeRegistry;
+    this.supportedHintTypes = buildSupportedHintTypes(definitionRegistry);
   }
 
+  /**
+   * Only accept hint types that match configured payloads. This lets us fail fast on typos instead
+   * of returning empty hints later.
+   */
   @Override
-  public boolean supports(GraphNodeKind kind, String hintType) {
-    return HINT_TYPE.equals(hintType) && SUPPORTED_KINDS.contains(kind);
+  public boolean supports(GraphNodeKind kind, String payloadType) {
+    if (!SUPPORTED_KINDS.contains(kind) || payloadType == null || payloadType.isBlank()) {
+      return false;
+    }
+    Set<String> allowed = supportedHintTypes.get(kind);
+    return allowed != null && allowed.contains(payloadType);
   }
 
   @Override
@@ -58,8 +79,8 @@ public class SystemCatalogHintProvider implements EngineHintProvider {
   }
 
   @Override
-  public String fingerprint(GraphNode node, EngineKey engineKey, String hintType) {
-    EngineSpecificRule r = matchedRule(node, engineKey);
+  public String fingerprint(GraphNode node, EngineKey engineKey, String payloadType) {
+    EngineSpecificRule r = matchedRule(node, engineKey, payloadType);
 
     String base =
         node.id().getId()
@@ -68,38 +89,61 @@ public class SystemCatalogHintProvider implements EngineHintProvider {
             + ":"
             + engineKey.engineKind()
             + ":"
-            + engineKey.engineVersion();
+            + engineKey.engineVersion()
+            + ":"
+            + payloadType;
 
     return (r == null) ? base : base + ":" + r.hashCode();
   }
 
   @Override
-  public EngineHint compute(
-      GraphNode node, EngineKey engineKey, String hintType, String correlationId) {
-    EngineSpecificRule rule = matchedRule(node, engineKey);
+  public Optional<EngineHint> compute(
+      GraphNode node, EngineKey engineKey, String payloadType, String correlationId) {
+    EngineSpecificRule rule = matchedRule(node, engineKey, payloadType);
 
     if (rule == null) {
-      return new EngineHint(
-          "", // empty content-type
-          new byte[0], // empty payload
-          0,
-          Map.of() // empty metadata
-          );
+      // Log at debug to help track legitimate request/payloadType combinations that simply have no
+      // matching rule without leaking data via a default payload.
+      if (LOG.isDebugEnabled()) {
+        String engineKind = engineKey == null ? "" : engineKey.engineKind();
+        String engineVersion = engineKey == null ? "" : engineKey.engineVersion();
+        LOG.debugf(
+            "No engine hint for node %s kind=%s v=%s hint=%s",
+            node.id().getId(), engineKind, engineVersion, payloadType);
+      }
+      return Optional.empty();
     }
 
-    String contentType = rule.payloadType();
+    String rulePayloadType = rule.payloadType();
+    if (rulePayloadType == null || rulePayloadType.isBlank()) {
+      throw new IllegalStateException(
+          "EngineSpecificRule missing payloadType for payloadType="
+              + payloadType
+              + " def="
+              + node.id());
+    }
+    if (!rulePayloadType.equals(payloadType)) {
+      throw new IllegalStateException(
+          "Payload mismatch: request="
+              + payloadType
+              + " rule="
+              + rulePayloadType
+              + " def="
+              + node.id());
+    }
     byte[] payload = rule.extensionPayload();
     Map<String, String> meta = rule.properties();
 
-    return new EngineHint(
-        (contentType == null) ? "" : contentType,
-        payload == null ? new byte[0] : payload,
-        payload == null ? 0 : payload.length,
-        meta == null ? Map.of() : meta);
+    return Optional.of(
+        new EngineHint(
+            payloadType,
+            payload == null ? new byte[0] : payload,
+            payload == null ? 0 : payload.length,
+            meta == null ? Map.of() : meta));
   }
 
   /** Determines the matching rule for the provided node. */
-  private EngineSpecificRule matchedRule(GraphNode node, EngineKey engineKey) {
+  private EngineSpecificRule matchedRule(GraphNode node, EngineKey engineKey, String payloadType) {
     if (!SUPPORTED_KINDS.contains(node.kind())) {
       return null;
     }
@@ -122,6 +166,7 @@ public class SystemCatalogHintProvider implements EngineHintProvider {
         };
 
     String engineKind = ctx.normalizedKind();
+    String engineVersion = ctx.normalizedVersion();
 
     @SuppressWarnings("unchecked")
     List<SystemObjectDef> candidates =
@@ -144,17 +189,35 @@ public class SystemCatalogHintProvider implements EngineHintProvider {
       EngineSpecificRule r =
           switch (def.kind()) {
             case RK_FUNCTION ->
-                matchFunction((SystemFunctionDef) def, (FunctionNode) node, engineKind);
+                matchFunction(
+                    (SystemFunctionDef) def,
+                    (FunctionNode) node,
+                    engineKind,
+                    engineVersion,
+                    payloadType);
 
             case RK_AGGREGATE ->
-                matchAggregate((SystemAggregateDef) def, (AggregateNode) node, engineKind);
+                matchAggregate(
+                    (SystemAggregateDef) def,
+                    (AggregateNode) node,
+                    engineKind,
+                    engineVersion,
+                    payloadType);
 
             case RK_OPERATOR ->
-                matchOperator((SystemOperatorDef) def, (OperatorNode) node, engineKind);
+                matchOperator(
+                    (SystemOperatorDef) def,
+                    (OperatorNode) node,
+                    engineKind,
+                    engineVersion,
+                    payloadType);
 
-            case RK_CAST -> matchCast((SystemCastDef) def, (CastNode) node, engineKind);
+            case RK_CAST ->
+                matchCast(
+                    (SystemCastDef) def, (CastNode) node, engineKind, engineVersion, payloadType);
 
-            case RK_TYPE, RK_COLLATION -> def.engineSpecific().stream().findFirst().orElse(null);
+            case RK_TYPE, RK_COLLATION ->
+                selectRule(def.engineSpecific(), engineKind, engineVersion, payloadType);
 
             default -> null;
           };
@@ -166,7 +229,11 @@ public class SystemCatalogHintProvider implements EngineHintProvider {
   }
 
   private EngineSpecificRule matchFunction(
-      SystemFunctionDef def, FunctionNode fn, String engineKind) {
+      SystemFunctionDef def,
+      FunctionNode fn,
+      String engineKind,
+      String engineVersion,
+      String payloadType) {
     boolean argsMatch =
         def.argumentTypes().stream()
             .map(a -> SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, a))
@@ -177,11 +244,17 @@ public class SystemCatalogHintProvider implements EngineHintProvider {
         SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.returnType())
             .equals(fn.returnType());
 
-    return (argsMatch && retMatch) ? def.engineSpecific().stream().findFirst().orElse(null) : null;
+    return (argsMatch && retMatch)
+        ? selectRule(def.engineSpecific(), engineKind, engineVersion, payloadType)
+        : null;
   }
 
   private EngineSpecificRule matchAggregate(
-      SystemAggregateDef def, AggregateNode an, String engineKind) {
+      SystemAggregateDef def,
+      AggregateNode an,
+      String engineKind,
+      String engineVersion,
+      String payloadType) {
     boolean argsMatch =
         def.argumentTypes().stream()
             .map(a -> SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, a))
@@ -192,11 +265,17 @@ public class SystemCatalogHintProvider implements EngineHintProvider {
         SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.returnType())
             .equals(an.returnType());
 
-    return (argsMatch && retMatch) ? def.engineSpecific().stream().findFirst().orElse(null) : null;
+    return (argsMatch && retMatch)
+        ? selectRule(def.engineSpecific(), engineKind, engineVersion, payloadType)
+        : null;
   }
 
   private EngineSpecificRule matchOperator(
-      SystemOperatorDef def, OperatorNode on, String engineKind) {
+      SystemOperatorDef def,
+      OperatorNode on,
+      String engineKind,
+      String engineVersion,
+      String payloadType) {
     boolean leftMatch =
         SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.leftType())
             .equals(on.leftType());
@@ -210,11 +289,12 @@ public class SystemCatalogHintProvider implements EngineHintProvider {
             .equals(on.returnType());
 
     return (leftMatch && rightMatch && retMatch)
-        ? def.engineSpecific().stream().findFirst().orElse(null)
+        ? selectRule(def.engineSpecific(), engineKind, engineVersion, payloadType)
         : null;
   }
 
-  private EngineSpecificRule matchCast(SystemCastDef def, CastNode cn, String engineKind) {
+  private EngineSpecificRule matchCast(
+      SystemCastDef def, CastNode cn, String engineKind, String engineVersion, String payloadType) {
     boolean srcMatch =
         SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.sourceType())
             .equals(cn.sourceType());
@@ -226,7 +306,97 @@ public class SystemCatalogHintProvider implements EngineHintProvider {
     boolean methodMatch = def.method().wireValue().equalsIgnoreCase(cn.method());
 
     return (srcMatch && dstMatch && methodMatch)
-        ? def.engineSpecific().stream().findFirst().orElse(null)
+        ? selectRule(def.engineSpecific(), engineKind, engineVersion, payloadType)
         : null;
+  }
+
+  /**
+   * Returns the last rule whose payloadType equals the requested payloadType.
+   *
+   * <p>Engine-specific catalogs preserve the definition order (pbtxt/overlay append order), so we
+   * iterate the original list backwards, skip non-matching engines, and treat later entries as
+   * overrides.
+   */
+  private EngineSpecificRule selectRule(
+      List<EngineSpecificRule> rules, String engineKind, String engineVersion, String payloadType) {
+    if (rules == null || rules.isEmpty()) {
+      return null;
+    }
+    for (int i = rules.size() - 1; i >= 0; i--) {
+      EngineSpecificRule rule = rules.get(i);
+      if (!EngineSpecificMatcher.matchesRule(rule, engineKind, engineVersion)) {
+        continue;
+      }
+      String rulePayloadType = rule.payloadType();
+      if (rulePayloadType != null
+          && !rulePayloadType.isBlank()
+          && rulePayloadType.equals(payloadType)) {
+        return rule;
+      }
+    }
+    return null;
+  }
+
+  private static Map<GraphNodeKind, Set<String>> buildSupportedHintTypes(
+      SystemDefinitionRegistry definitionRegistry) {
+    Objects.requireNonNull(definitionRegistry, "definitionRegistry");
+    EnumMap<GraphNodeKind, Set<String>> builder = new EnumMap<>(GraphNodeKind.class);
+    for (GraphNodeKind kind : SUPPORTED_KINDS) {
+      builder.put(kind, new LinkedHashSet<>());
+    }
+
+    for (String rawKind : definitionRegistry.engineKinds()) {
+      if (rawKind == null || rawKind.isBlank()) {
+        continue;
+      }
+      EngineContext ctx = EngineContext.of(rawKind, "");
+      SystemEngineCatalog catalog = definitionRegistry.catalog(ctx);
+      if (catalog == null) {
+        continue;
+      }
+      collectHintTypes(builder, GraphNodeKind.FUNCTION, catalog.functions());
+      collectHintTypes(builder, GraphNodeKind.OPERATOR, catalog.operators());
+      collectHintTypes(builder, GraphNodeKind.TYPE, catalog.types());
+      collectHintTypes(builder, GraphNodeKind.CAST, catalog.casts());
+      collectHintTypes(builder, GraphNodeKind.COLLATION, catalog.collations());
+      collectHintTypes(builder, GraphNodeKind.AGGREGATE, catalog.aggregates());
+    }
+
+    EnumMap<GraphNodeKind, Set<String>> result = new EnumMap<>(GraphNodeKind.class);
+    for (GraphNodeKind kind : SUPPORTED_KINDS) {
+      result.put(kind, Set.copyOf(builder.getOrDefault(kind, Set.of())));
+    }
+    return Collections.unmodifiableMap(result);
+  }
+
+  private static void collectHintTypes(
+      Map<GraphNodeKind, Set<String>> builder,
+      GraphNodeKind kind,
+      List<? extends SystemObjectDef> defs) {
+    if (defs == null || defs.isEmpty()) {
+      return;
+    }
+    Set<String> targets = builder.get(kind);
+    if (targets == null) {
+      return;
+    }
+    for (SystemObjectDef def : defs) {
+      if (def == null) {
+        continue;
+      }
+      List<EngineSpecificRule> rules = def.engineSpecific();
+      if (rules == null || rules.isEmpty()) {
+        continue;
+      }
+      for (EngineSpecificRule rule : rules) {
+        if (rule == null) {
+          continue;
+        }
+        String rulePayloadType = rule.payloadType();
+        if (rulePayloadType != null && !rulePayloadType.isBlank()) {
+          targets.add(rulePayloadType);
+        }
+      }
+    }
   }
 }

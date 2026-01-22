@@ -31,7 +31,7 @@ public record AggregateNode(
     List<ResourceId> argumentTypes,
     ResourceId stateType,
     ResourceId returnType,
-    Map<EngineKey, EngineHint> engineHints)
+    Map<EngineHintKey, EngineHint> engineHints)
     implements GraphNode {
 
   public AggregateNode {

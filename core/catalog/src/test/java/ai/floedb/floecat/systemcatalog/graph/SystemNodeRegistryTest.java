@@ -44,6 +44,7 @@ class SystemNodeRegistryTest {
 
   private static final String FLOE_KIND = "floe-demo"; // main engine under test
   private static final String PG_KIND = "pg"; // alternate engine
+  private static final String TEST_PAYLOAD_TYPE = "test.payload";
 
   // helper to build NameRef the same way pbtxt does
   private static NameRef nr(String full) {
@@ -182,7 +183,8 @@ class SystemNodeRegistryTest {
 
   @Test
   void buildsFunctionNodeWithCorrectResourceIds() {
-    var rule = new EngineSpecificRule(FLOE_KIND, "1.0", "", "", new byte[0], Map.of());
+    var rule =
+        new EngineSpecificRule(FLOE_KIND, "1.0", "", TEST_PAYLOAD_TYPE, new byte[0], Map.of());
     var fn =
         new SystemFunctionDef(
             nr("pg.abs"), List.of(nr("pg.int4")), nr("pg.int4"), false, false, List.of(rule));
@@ -251,13 +253,15 @@ class SystemNodeRegistryTest {
   // -----------------------------------------------------
   private static SystemDefinitionRegistry registryWithCatalogs() {
 
-    var sharedRule = new EngineSpecificRule("", "", "", "", new byte[0], Map.of());
+    var sharedRule = new EngineSpecificRule("", "", "", TEST_PAYLOAD_TYPE, new byte[0], Map.of());
 
-    var floeRule = new EngineSpecificRule(FLOE_KIND, "16.0", "", "", new byte[0], Map.of());
+    var floeRule =
+        new EngineSpecificRule(FLOE_KIND, "16.0", "", TEST_PAYLOAD_TYPE, new byte[0], Map.of());
 
-    var floeLegacyRule = new EngineSpecificRule(FLOE_KIND, "", "15.0", "", new byte[0], Map.of());
+    var floeLegacyRule =
+        new EngineSpecificRule(FLOE_KIND, "", "15.0", TEST_PAYLOAD_TYPE, new byte[0], Map.of());
 
-    var pgRule = new EngineSpecificRule(PG_KIND, "", "", "", new byte[0], Map.of());
+    var pgRule = new EngineSpecificRule(PG_KIND, "", "", TEST_PAYLOAD_TYPE, new byte[0], Map.of());
 
     // TYPE
     var int4Name = nr("pg_catalog.int4");

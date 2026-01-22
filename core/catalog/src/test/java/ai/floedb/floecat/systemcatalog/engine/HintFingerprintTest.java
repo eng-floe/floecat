@@ -20,7 +20,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
-import ai.floedb.floecat.systemcatalog.hint.SystemCatalogHintProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.utils.BuiltinTestSupport;
 import java.util.List;
@@ -36,11 +35,21 @@ class HintFingerprintTest {
 
     var ruleA =
         new EngineSpecificRule(
-            ENGINE, "16.0", "", "json", null, Map.of("oid", "1000", "pronamespace", "1"));
+            ENGINE,
+            "16.0",
+            "",
+            "builtin.systemcatalog.function.payload+json",
+            null,
+            Map.of("oid", "1000", "pronamespace", "1"));
 
     var ruleB =
         new EngineSpecificRule(
-            ENGINE, "16.0", "", "json", null, Map.of("oid", "2000", "pronamespace", "2"));
+            ENGINE,
+            "16.0",
+            "",
+            "builtin.systemcatalog.function.payload+json",
+            null,
+            Map.of("oid", "2000", "pronamespace", "2"));
 
     var catalogA =
         new SystemCatalogData(
@@ -86,9 +95,11 @@ class HintFingerprintTest {
     var node = BuiltinTestSupport.functionNode(ENGINE, List.of("pg.int4"), "pg.int4", "pg.test");
 
     var fpA =
-        pA.fingerprint(node, new EngineKey(ENGINE, "16.0"), SystemCatalogHintProvider.HINT_TYPE);
+        pA.fingerprint(
+            node, new EngineKey(ENGINE, "16.0"), "builtin.systemcatalog.function.payload+json");
     var fpB =
-        pB.fingerprint(node, new EngineKey(ENGINE, "16.0"), SystemCatalogHintProvider.HINT_TYPE);
+        pB.fingerprint(
+            node, new EngineKey(ENGINE, "16.0"), "builtin.systemcatalog.function.payload+json");
 
     assertThat(fpA).isNotEqualTo(fpB);
   }

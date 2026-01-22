@@ -20,7 +20,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
-import ai.floedb.floecat.systemcatalog.hint.SystemCatalogHintProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.utils.BuiltinTestSupport;
 import java.util.List;
@@ -29,12 +28,17 @@ import org.junit.jupiter.api.Test;
 
 class MultiEngineIsolationTest {
 
+  private static final String FUNCTION_PAYLOAD_TYPE = "builtin.systemcatalog.function.properties";
+
   @Test
   void builtinIdsDoNotCollideAcrossEngines() {
 
-    var pgRule = new EngineSpecificRule("pg", "16.0", "", "", null, Map.of("oid", "111"));
+    var pgRule =
+        new EngineSpecificRule("pg", "16.0", "", FUNCTION_PAYLOAD_TYPE, null, Map.of("oid", "111"));
 
-    var floeRule = new EngineSpecificRule("floe", "1.0", "", "", null, Map.of("oid", "222"));
+    var floeRule =
+        new EngineSpecificRule(
+            "floe", "1.0", "", FUNCTION_PAYLOAD_TYPE, null, Map.of("oid", "222"));
     var catalogPG =
         new SystemCatalogData(
             List.of(
@@ -80,13 +84,14 @@ class MultiEngineIsolationTest {
     var nFloe = BuiltinTestSupport.functionNode("floe", List.of("pg.int4"), "pg.int4", "pg.id");
 
     assertThat(
-            p1.compute(nPG, new EngineKey("pg", "16.0"), SystemCatalogHintProvider.HINT_TYPE, "cid")
+            p1.compute(nPG, new EngineKey("pg", "16.0"), FUNCTION_PAYLOAD_TYPE, "cid")
+                .orElseThrow()
                 .metadata()
                 .get("oid"))
         .isEqualTo("111");
     assertThat(
-            p2.compute(
-                    nFloe, new EngineKey("floe", "1.0"), SystemCatalogHintProvider.HINT_TYPE, "cid")
+            p2.compute(nFloe, new EngineKey("floe", "1.0"), FUNCTION_PAYLOAD_TYPE, "cid")
+                .orElseThrow()
                 .metadata()
                 .get("oid"))
         .isEqualTo("222");

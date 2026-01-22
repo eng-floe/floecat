@@ -22,20 +22,25 @@ import java.util.Objects;
 /**
  * Engine-specific payload attached to a {@link GraphNode}.
  *
- * <p>Hints carry opaque binary blobs plus optional metadata describing the payload. Engine kind /
- * version scoping is handled outside the hint object (via {@link EngineKey}).
+ * <p>Hints carry opaque binary blobs plus optional metadata describing the payload. The {@code
+ * payloadType} string indicates which typed descriptor or decoder can decode the payload; it
+ * typically mirrors the payloadType/payload_type that was used when the hint was written. Engine
+ * kind/ version scoping is handled by {@link EngineHintKey} outside the hint object.
  */
 public record EngineHint(
-    String contentType, byte[] payload, long sizeBytes, Map<String, String> metadata) {
+    String payloadType, byte[] payload, long sizeBytes, Map<String, String> metadata) {
 
-  public EngineHint(String contentType, byte[] payload) {
-    this(contentType, payload, payload == null ? 0 : payload.length, Map.of());
+  /** Shortcut when hint payloadType matches descriptor + we don't track size/metadata. */
+  public EngineHint(String payloadType, byte[] payload) {
+    this(payloadType, payload, payload == null ? 0 : payload.length, Map.of());
   }
 
   public EngineHint {
+    Objects.requireNonNull(payloadType, "payloadType");
+    if (payloadType.isBlank()) {
+      throw new IllegalArgumentException("payloadType cannot be blank");
+    }
     Objects.requireNonNull(payload, "payload");
-    contentType =
-        contentType == null || contentType.isBlank() ? "application/octet-stream" : contentType;
     sizeBytes = sizeBytes <= 0 ? payload.length : sizeBytes;
     metadata = metadata == null ? Map.of() : Map.copyOf(metadata);
   }

@@ -104,12 +104,13 @@ class FloeCatalogExtensionTest {
         byte[] payload = rule.extensionPayload();
 
         if (!payloadType.isEmpty()) {
-          // If there's a payload type, there must be payload data
-          assert payload.length > 0
-              : "Rule with payloadType '" + payloadType + "' should have payload bytes";
           // Verify payload type indicates it's a Floe extension
           assert payloadType.startsWith("floe.")
               : "Expected Floe payload type, got: " + payloadType;
+          if (rule.hasExtensionPayload()) {
+            assert payload.length > 0
+                : "Rule with payloadType '" + payloadType + "' should have payload bytes";
+          }
         }
       }
     }

@@ -29,7 +29,7 @@ public record CastNode(
     ResourceId sourceType,
     ResourceId targetType,
     String method,
-    Map<EngineKey, EngineHint> engineHints)
+    Map<EngineHintKey, EngineHint> engineHints)
     implements GraphNode {
 
   public CastNode {

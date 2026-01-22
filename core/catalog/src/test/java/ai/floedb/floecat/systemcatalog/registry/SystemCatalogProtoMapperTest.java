@@ -108,7 +108,7 @@ final class SystemCatalogProtoMapperTest {
   @Test
   void fromProto_appliesDefaultEngineWhenMissing() {
     EngineSpecificRule ruleWithoutEngine =
-        new EngineSpecificRule("", "1.0", "2.0", "", new byte[0], Map.of());
+        new EngineSpecificRule("", "1.0", "2.0", "payload/type", new byte[0], Map.of());
 
     SystemCatalogData input =
         new SystemCatalogData(

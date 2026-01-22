@@ -20,7 +20,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.systemcatalog.def.*;
+import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 final class SystemCatalogValidatorTest {
@@ -248,6 +250,28 @@ final class SystemCatalogValidatorTest {
 
     List<String> errors = SystemCatalogValidator.validate(catalog);
     assertThat(errors).contains("agg.arg:sum.type.unknown:missing");
+  }
+
+  @Test
+  void validate_engineSpecificRulesRequirePayloadType() {
+    EngineSpecificRule rule = new EngineSpecificRule("pg", "", "", "", new byte[0], Map.of());
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(
+                new SystemFunctionDef(
+                    name("f"), List.of(), name("int"), false, false, List.of(rule))),
+            List.of(),
+            List.of(type("int")),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+
+    List<String> errors = SystemCatalogValidator.validate(catalog);
+    assertThat(errors).contains("function.f.engineSpecific[0].payloadType.required");
   }
 
   // ---------------------------------------------------------------------------

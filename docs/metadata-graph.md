@@ -65,10 +65,11 @@ Common fields:
 | `id()`                 | Stable `ResourceId` carrying account/kind/UUID.                              |
 | `version()`            | Pointer version used to compose cache keys.                                 |
 | `metadataUpdatedAt()`  | Repository mutation timestamp; informative only (not tied to snapshots).    |
-| `engineHints()`        | Map keyed by `EngineKey(engineKind, engineVersion)` → opaque `EngineHint`.  |
+| `engineHints()`        | Map keyed by `EngineHintKey(engineKind, engineVersion, payloadType)` → opaque `EngineHint`.  |
 
 ### Engine Hints
-`EngineHint` is a small struct with `contentType`, `payload`, and `source`. Planners can register
+`EngineHint` is a small struct with `payloadType`, `payload`, and optional metadata; the `payloadType` string
+matches the hint provider’s advertised `payloadType`/`payload_type` so callers can fetch the right payload. Planners can register
 adapters that compute hints on demand and stash them inside the node map. Consumers should treat the
 payload as immutable and versioned.
 
@@ -100,8 +101,14 @@ materialises a `(engine_kind, engine_version)` bundle it keeps only the rules th
 engine/version, so the filtered catalog (and `GetSystemObjects` response) contains exactly the
 entries that apply to the caller. Pbtxt authors rarely need to repeat the engine kind in every rule;
 entries that omit it inherit the file’s engine kind. Builtin nodes intentionally stay rule-free; the
-`SystemCatalogHintProvider` studies the cached definitions and `EngineSpecificMatcher` to expose the
-matching rules’ properties through the `builtin.systemcatalog.properties` engine hint (JSON payload).
+`SystemCatalogHintProvider` exposes the matching rules’ properties through publisher-defined payload
+types (the `payload_type` field in the catalog rule), so planners request the hint whose `payloadType`
+matches the catalog payload. Documented payload types live alongside the catalog definitions. Catalog
+authors should prefer stable, namespaced strings (e.g., `builtin.systemcatalog.function.semantic+json`
+or `floe.type+proto`) so that consumers can register decoders per payload family and avoid accidental
+collisions. Catalog authors control override behavior by ordering `engine_specific` rules intentionally:
+entries stay in pbtxt order (including overlay merges), and the provider treats the *last* matching
+rule as the one to publish.
 
 The matcher applies all engine-specific constraints eagerly when materialising builtin bundles. For a
 given `(engine_kind, engine_version)` pair, only the rules that match the naturally-ordered version
@@ -114,8 +121,8 @@ recomputing the catalog data, and because builtin catalogs are immutable per eng
 keeps them entirely in memory until FloeCAT restarts.
 
 ### Deterministic Hint Caching
-The hint system used by builtin catalog providers and other planners is backed by a weight‑bounded
-Caffeine cache keyed on `(resourceId, pointerVersion, engineKey, hintType, fingerprint)`. The
+The hint system used by builtin catalog providers and other planners is backed by a weight-bounded
+Caffeine cache keyed on `(resourceId, pointerVersion, engineKey, payloadType, fingerprint)`. The
 fingerprint is provider‑defined and ensures that changes in provider logic (e.g., version of a
 builtin definition, rule filtering logic, or planner‑specific metadata) produce new cached entries.
 Cache eviction is weight‑aware: inserts that exceed the configured maximum immediately trigger

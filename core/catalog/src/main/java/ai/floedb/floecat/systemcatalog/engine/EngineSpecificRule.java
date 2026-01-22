@@ -23,7 +23,7 @@ public record EngineSpecificRule(
     String engineKind,
     String minVersion,
     String maxVersion,
-    // Opaque, engine-specific payload (optional; interpreted by plugins only)
+    // Engine hint name that describes this payload.
     String payloadType,
     byte[] extensionPayload,
     // Generic key/value metadata (Spark, Trino, etc.)
@@ -44,8 +44,8 @@ public record EngineSpecificRule(
     properties = Map.copyOf(properties == null ? Map.of() : properties);
   }
 
-  public static EngineSpecificRule exact(String engine, String version) {
-    return new EngineSpecificRule(engine, version, version, "", null, Map.of());
+  public static EngineSpecificRule exact(String engine, String version, String payloadType) {
+    return new EngineSpecificRule(engine, version, version, payloadType, null, Map.of());
   }
 
   public boolean hasEngineKind() {

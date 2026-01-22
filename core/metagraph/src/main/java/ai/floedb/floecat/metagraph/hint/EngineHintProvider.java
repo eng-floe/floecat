@@ -17,12 +17,13 @@
 package ai.floedb.floecat.metagraph.hint;
 
 import ai.floedb.floecat.metagraph.model.*;
+import java.util.Optional;
 
 /** Provider of engine-specific hint payloads for relation nodes. */
 public interface EngineHintProvider {
 
   /** Returns true when this provider can compute the requested hint type for the node kind. */
-  boolean supports(GraphNodeKind kind, String hintType);
+  boolean supports(GraphNodeKind kind, String payloadType);
 
   /** Returns true when the provider can serve the engine/version represented by the key. */
   boolean isAvailable(EngineKey engineKey);
@@ -33,8 +34,9 @@ public interface EngineHintProvider {
    * <p>Implementations may combine pointer versions, schema hashes, provider versions, etc. to
    * ensure recomputation occurs only when relevant inputs change.
    */
-  String fingerprint(GraphNode node, EngineKey engineKey, String hintType);
+  String fingerprint(GraphNode node, EngineKey engineKey, String payloadType);
 
-  /** Computes the actual hint payload. */
-  EngineHint compute(GraphNode node, EngineKey engineKey, String hintType, String correlationId);
+  /** Computes the actual hint payload; empty when no hint applies. */
+  Optional<EngineHint> compute(
+      GraphNode node, EngineKey engineKey, String payloadType, String correlationId);
 }

@@ -22,7 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
 import ai.floedb.floecat.metagraph.model.EngineHint;
-import ai.floedb.floecat.metagraph.model.EngineKey;
+import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
@@ -53,7 +53,7 @@ final class PgNamespaceScannerTest {
         namespace(
             "pg_catalog",
             Map.of(
-                new EngineKey("floedb", "1.0"),
+                new EngineHintKey("floedb", "1.0", "floe.namespace+proto"),
                 new EngineHint(
                     "floe.namespace+proto",
                     FloeNamespaceSpecific.newBuilder()
@@ -109,7 +109,7 @@ final class PgNamespaceScannerTest {
     return new SystemObjectScanContext(overlay, null, catalogId(), ENGINE_CTX);
   }
 
-  private static NamespaceNode namespace(String name, Map<EngineKey, EngineHint> engineHints) {
+  private static NamespaceNode namespace(String name, Map<EngineHintKey, EngineHint> engineHints) {
 
     ResourceId nsId =
         ResourceId.newBuilder()
