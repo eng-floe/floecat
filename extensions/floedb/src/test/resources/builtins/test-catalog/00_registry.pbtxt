@@ -1,0 +1,6 @@
+engine_specific {
+  payload_type: "test.catalog.hints+proto"
+  [floe.ext.floe_index_access_methods] {
+    methods { oid: 100 name: "custom_am" }
+  }
+}

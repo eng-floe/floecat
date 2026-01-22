@@ -116,136 +116,21 @@ functions {
   }
 }
 
-operators {
-  name { name: "+" }
-  left_type { name: "int4" path: "pg_catalog" }
-  right_type { name: "int4" path: "pg_catalog" }
-  return_type { name: "int4" path: "pg_catalog" }
-  is_commutative: true
-  is_associative: true
-}
-
-operators {
-  name { name: "||" }
-  left_type { name: "text" path: "pg_catalog" }
-  right_type { name: "text" path: "pg_catalog" }
-  return_type { name: "text" path: "pg_catalog" }
-  is_commutative: false
-  is_associative: false
-}
-
-types {
-  name { name: "int4" path: "pg_catalog" }
-  category: "N"
-  engine_specific {
-    payload_type: "floe.type+proto"
-    [floe.ext.floe_type] {
-      oid: 23
-      typname: "int4"
-      typnamespace: 11
-      typlen: 4
-      typbyval: true
-      typdelim: ","
-      typalign: "i"
-      typarray: 1007
-    }
-  }
-}
-
-types {
-  name { name: "int8" path: "pg_catalog" }
-  category: "N"
-  engine_specific {
-    payload_type: "floe.type+proto"
-    [floe.ext.floe_type] {
-      oid: 20
-      typname: "int8"
-      typnamespace: 11
-      typlen: 8
-      typbyval: true
-      typdelim: ","
-      typalign: "i"
-    }
-  }
-}
-
-types {
-  name { name: "text" path: "pg_catalog" }
-  category: "S"
-  engine_specific {
-    payload_type: "floe.type+proto"
-    [floe.ext.floe_type] {
-      oid: 25
-      typname: "text"
-      typnamespace: 11
-      typlen: -1
-      typbyval: false
-      typdelim: ","
-      typalign: "i"
-    }
-  }
-}
-
-types {
-  name { name: "_int4" path: "pg_catalog" }
-  category: "A"
-  is_array: true
-  element_type { name: "int4" path: "pg_catalog" }
-  engine_specific {
-    payload_type: "floe.type+proto"
-    [floe.ext.floe_type] {
-      oid: 1007
-      typname: "_int4"
-      typnamespace: 11
-      typlen: -1
-      typbyval: false
-      typdelim: ","
-      typalign: "i"
-      typelem: 23
-      typarray: 0
-    }
-  }
-}
-
-casts {
-  name { name: "text2int4" path: "pg_catalog" }
-  source_type { name: "text" path: "pg_catalog" }
-  target_type { name: "int4" path: "pg_catalog" }
-  method: "explicit"
-}
-
-casts {
-  name { name: "int42text" path: "pg_catalog" }
-  source_type { name: "int4" path: "pg_catalog" }
-  target_type { name: "text" path: "pg_catalog" }
-  method: "assignment"
-}
-
-casts {
-  name { name: "int42_int4" path: "pg_catalog" }
-  source_type { name: "int4" path: "pg_catalog" }
-  target_type { name: "_int4" path: "pg_catalog" }
-  method: "implicit"
-}
-
-collations {
-  name { name: "default" path: "pg_catalog" }
-  locale: "en_US"
-}
-
-aggregates {
-  name { name: "sum" path: "pg_catalog" }
+functions {
+  name { name: "engine_specific_test" path: "pg_catalog" }
   argument_types { name: "int4" path: "pg_catalog" }
-  state_type { name: "int8" path: "pg_catalog" }
-  return_type { name: "int8" path: "pg_catalog" }
+  return_type { name: "int4" path: "pg_catalog" }
   engine_specific {
-    payload_type: "floe.aggregate+proto"
-    [floe.ext.floe_aggregate] {
-      aggfnoid: 0
-      aggtransfn: 0
-      aggfinalfn: 0
-      aggmtransfn: 0
-      aggmfinalfn: 0
+    payload_type: "floe.function+proto"
+    min_version: "1.0"
+    max_version: "2.0"
+    [floe.ext.floe_function] {
+      proname: "engine_specific_test"
+      prolang: 12
+      proisstrict: false
+      proisagg: false
+      provolatile: "i"
+      prosrc: "engine_specific_test"
     }
   }
 }

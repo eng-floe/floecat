@@ -1,0 +1,4 @@
+collations {
+  name { name: "test_collation" path: "pg_catalog" }
+  locale: "en_US"
+}

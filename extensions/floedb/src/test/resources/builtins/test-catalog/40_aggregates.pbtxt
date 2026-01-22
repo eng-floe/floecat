@@ -1,0 +1,6 @@
+aggregates {
+  name { name: "test_agg" path: "pg_catalog" }
+  argument_types { name: "test_type" path: "pg_catalog" }
+  state_type { name: "test_type" path: "pg_catalog" }
+  return_type { name: "test_type" path: "pg_catalog" }
+}

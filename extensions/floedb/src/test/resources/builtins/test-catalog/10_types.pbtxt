@@ -1,0 +1,4 @@
+types {
+  name { name: "test_type" path: "pg_catalog" }
+  category: "N"
+}

@@ -1,0 +1,23 @@
+functions {
+  name { name: "test_func" path: "pg_catalog" }
+  argument_types { name: "test_type" path: "pg_catalog" }
+  return_type { name: "test_type" path: "pg_catalog" }
+}
+
+functions {
+  name { name: "test_func_engine_specific" path: "pg_catalog" }
+  argument_types { name: "test_type" path: "pg_catalog" }
+  return_type { name: "test_type" path: "pg_catalog" }
+  engine_specific {
+    payload_type: "floe.function+proto"
+    min_version: "1.0"
+    max_version: "2.0"
+    [floe.ext.floe_function] {
+      proname: "test_func_engine_specific"
+      prolang: 12
+      proisstrict: true
+      provolatile: "i"
+      prosrc: "test_func_engine_specific"
+    }
+  }
+}

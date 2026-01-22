@@ -1,0 +1,86 @@
+# Copyright 2026 Yellowbrick Data, Inc
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+types {
+  name { name: "int4" path: "pg_catalog" }
+  category: "N"
+  engine_specific {
+    payload_type: "floe.type+proto"
+    [floe.ext.floe_type] {
+      oid: 23
+      typname: "int4"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typalign: "i"
+      typarray: 1007
+    }
+  }
+}
+
+types {
+  name { name: "int8" path: "pg_catalog" }
+  category: "N"
+  engine_specific {
+    payload_type: "floe.type+proto"
+    [floe.ext.floe_type] {
+      oid: 20
+      typname: "int8"
+      typnamespace: 11
+      typlen: 8
+      typbyval: true
+      typdelim: ","
+      typalign: "i"
+    }
+  }
+}
+
+types {
+  name { name: "text" path: "pg_catalog" }
+  category: "S"
+  engine_specific {
+    payload_type: "floe.type+proto"
+    [floe.ext.floe_type] {
+      oid: 25
+      typname: "text"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "i"
+    }
+  }
+}
+
+types {
+  name { name: "_int4" path: "pg_catalog" }
+  category: "A"
+  is_array: true
+  element_type { name: "int4" path: "pg_catalog" }
+  engine_specific {
+    payload_type: "floe.type+proto"
+    [floe.ext.floe_type] {
+      oid: 1007
+      typname: "_int4"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "i"
+      typelem: 23
+      typarray: 0
+    }
+  }
+}

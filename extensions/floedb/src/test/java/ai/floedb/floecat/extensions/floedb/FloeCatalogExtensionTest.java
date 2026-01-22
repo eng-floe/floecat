@@ -21,6 +21,7 @@ import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogValidator;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -30,10 +31,10 @@ import org.junit.jupiter.api.Test;
 class FloeCatalogExtensionTest {
 
   @Test
-  void floeDbLoadsAndValidates() {
-    var extension = new FloeCatalogExtension.FloeDb();
+  void testCatalogLoadsAndValidates() {
+    var extension = new TestCatalogExtension();
 
-    assert "floedb".equals(extension.engineKind());
+    assert "test-catalog".equals(extension.engineKind());
 
     SystemCatalogData catalog = extension.loadSystemCatalog();
 
@@ -43,7 +44,7 @@ class FloeCatalogExtensionTest {
 
     // Validate against builtin catalog rules
     var errors = SystemCatalogValidator.validate(catalog);
-    assert errors.isEmpty() : "floedb.pbtxt must pass validation, got: " + errors;
+    assert errors.isEmpty() : "test catalog must pass validation, got: " + errors;
   }
 
   @Test
@@ -60,18 +61,18 @@ class FloeCatalogExtensionTest {
 
     // Validate against builtin catalog rules
     var errors = SystemCatalogValidator.validate(catalog);
-    assert errors.isEmpty() : "floe-demo.pbtxt must pass validation, got: " + errors;
+    assert errors.isEmpty() : "floe-demo catalog must pass validation, got: " + errors;
   }
 
   @Test
-  void floeDbContainsExpectedFunctions() {
-    var extension = new FloeCatalogExtension.FloeDb();
+  void testCatalogContainsExpectedFunctions() {
+    var extension = new TestCatalogExtension();
     SystemCatalogData catalog = extension.loadSystemCatalog();
 
     var functionNames = catalog.functions().stream().map(f -> f.name().getName()).toList();
 
     // FloeDB should have common PG functions
-    assert !functionNames.isEmpty() : "floedb should contain common builtin functions";
+    assert !functionNames.isEmpty() : "test catalog should contain common builtin functions";
   }
 
   @Test
@@ -84,12 +85,14 @@ class FloeCatalogExtensionTest {
     } catch (IllegalStateException e) {
       assert e.getMessage().contains("Builtin file not found");
       assert e.getMessage().contains("missing.pbtxt");
+      assert e.getMessage().contains("engine=test-missing");
+      assert e.getMessage().contains("/builtins/test-missing/_index.txt");
     }
   }
 
   @Test
   void catalogDataPreservesEngineSpecificRules() {
-    var extension = new FloeCatalogExtension.FloeDb();
+    var extension = new TestCatalogExtension();
     SystemCatalogData catalog = extension.loadSystemCatalog();
 
     // Ensure engine_specific rules are loaded from the pbtxt file
@@ -121,29 +124,42 @@ class FloeCatalogExtensionTest {
   }
 
   @Test
-  void floeDbAndFloedemHaveSameStructure() {
-    var floedb = new FloeCatalogExtension.FloeDb();
+  void testCatalogFragmentsMergeSequentially() {
+    var extension = new TestCatalogExtension();
+
+    SystemCatalogData catalog = extension.loadSystemCatalog();
+
+    var functionNames = catalog.functions().stream().map(f -> f.name().getName()).toList();
+    assert functionNames.containsAll(List.of("test_func", "test_func_engine_specific"))
+        : "Both function fragments should be merged";
+
+    assert catalog.types().stream().anyMatch(t -> t.name().getName().equals("test_type"))
+        : "Type fragment should be merged";
+  }
+
+  @Test
+  void testCatalogAndFloedemHaveSameStructure() {
+    var testCatalog = new TestCatalogExtension();
     var floeDemo = new FloeCatalogExtension.FloeDemo();
 
-    SystemCatalogData floedbCatalog = floedb.loadSystemCatalog();
+    SystemCatalogData testCatalogData = testCatalog.loadSystemCatalog();
     SystemCatalogData flaoDemoCatalog = floeDemo.loadSystemCatalog();
 
     // Both should have types, functions, etc (may have different counts)
-    assert !floedbCatalog.types().isEmpty();
+    assert !testCatalogData.types().isEmpty();
     assert !flaoDemoCatalog.types().isEmpty();
 
-    assert !floedbCatalog.functions().isEmpty();
+    assert !testCatalogData.functions().isEmpty();
     assert !flaoDemoCatalog.functions().isEmpty();
   }
 
   @Test
   void loadResourceTextParsesTextFormat() throws Exception {
-    var extension = new FloeCatalogExtension.FloeDb();
+    var extension = new TestCatalogExtension();
 
-    // Load raw .pbtxt file
-    String rawText = extension.loadResourceText("/builtins/floedb.pbtxt");
+    String combinedText = combinedRegistryText(extension);
     SystemObjectsRegistry registry =
-        extension.parseSystemObjectsRegistry(rawText, "/builtins/floedb.pbtxt");
+        extension.parseSystemObjectsRegistry(combinedText, "builtins/test-catalog");
 
     // Should parse without errors and contain objects
     assert registry != null;
@@ -153,12 +169,12 @@ class FloeCatalogExtensionTest {
 
   @Test
   void rewriteFloeExtensionsConvertsAllObjectTypes() {
-    var extension = new FloeCatalogExtension.FloeDb();
+    var extension = new TestCatalogExtension();
 
     // Load raw registry
-    String raw = extension.loadResourceText("/builtins/floedb.pbtxt");
+    String raw = combinedRegistryText(extension);
     SystemObjectsRegistry rawRegistry =
-        extension.parseSystemObjectsRegistry(raw, "/builtins/floedb.pbtxt");
+        extension.parseSystemObjectsRegistry(raw, "builtins/test-catalog");
 
     // Rewrite Floe fields to payloads
     SystemObjectsRegistry rewritten = extension.rewriteFloeExtensions(rawRegistry);
@@ -174,12 +190,12 @@ class FloeCatalogExtensionTest {
 
   @Test
   void convertRuleSkipsAlreadyRewrittenPayloads() {
-    var extension = new FloeCatalogExtension.FloeDb();
+    var extension = new TestCatalogExtension();
 
     // Create a rule that's already been rewritten (has payload)
     EngineSpecific es =
         EngineSpecific.newBuilder()
-            .setEngineKind("floedb")
+            .setEngineKind("test-catalog")
             .setPayloadType("floe.function+proto")
             .setPayload(com.google.protobuf.ByteString.copyFromUtf8("test"))
             .build();
@@ -193,7 +209,7 @@ class FloeCatalogExtensionTest {
 
   @Test
   void loadSystemObjectsRoundtrips() {
-    var extension = new FloeCatalogExtension.FloeDb();
+    var extension = new TestCatalogExtension();
 
     // Load twice - should get same result (caching semantic)
     SystemCatalogData catalog1 = extension.loadSystemCatalog();
@@ -202,6 +218,52 @@ class FloeCatalogExtensionTest {
     // Should be independent objects but same content
     assert catalog1.functions().size() == catalog2.functions().size();
     assert catalog1.types().size() == catalog2.types().size();
+  }
+
+  private static String combinedRegistryText(FloeCatalogExtension extension) {
+    List<String> fragments = readCatalogFragments(extension);
+    String dir = extension.getResourceDir();
+    StringBuilder builder = new StringBuilder();
+    for (String file : fragments) {
+      if (file.startsWith("/")) {
+        throw new IllegalStateException(
+            "Index entries must be relative paths (got "
+                + file
+                + ") in "
+                + extension.getIndexPath());
+      }
+      String resourcePath = dir + "/" + file;
+      builder.append(extension.loadResourceText(resourcePath)).append("\n");
+    }
+    return builder.toString();
+  }
+
+  private static List<String> readCatalogFragments(FloeCatalogExtension extension) {
+    String indexText = extension.loadResourceText(extension.getIndexPath());
+    List<String> fragments = new ArrayList<>();
+    indexText
+        .lines()
+        .map(String::trim)
+        .filter(line -> !line.isEmpty())
+        .filter(line -> !line.startsWith("#"))
+        .forEach(
+            file -> {
+              if (file.startsWith("/")) {
+                throw new IllegalArgumentException(
+                    "Index entries must be relative paths (got "
+                        + file
+                        + ") in "
+                        + extension.getIndexPath());
+              }
+              fragments.add(file);
+            });
+    if (fragments.isEmpty()) {
+      throw new IllegalStateException(
+          "Catalog index "
+              + extension.getIndexPath()
+              + " contains no entries (only comments/blank lines)");
+    }
+    return fragments;
   }
 
   @Test
@@ -235,30 +297,29 @@ class FloeCatalogExtensionTest {
   }
 
   @Test
-  void floeDbResourcePathFollowsConvention() {
-    var extension = new FloeCatalogExtension.FloeDb();
+  void testCatalogResourceDirFollowsConvention() {
+    var extension = new TestCatalogExtension();
 
-    String path = extension.getResourcePath();
-
-    // Path should follow convention: /builtins/{engineKind}.pbtxt
-    assert path.equals("/builtins/floedb.pbtxt")
-        : "Path should follow /builtins/{engineKind}.pbtxt convention";
+    String dir = extension.getResourceDir();
+    assert dir.equals("/builtins/test-catalog")
+        : "Resource dir should follow /builtins/{engineKind}";
+    assert extension.getIndexPath().equals("/builtins/test-catalog/_index.txt")
+        : "Index path must live under the resource dir";
   }
 
   @Test
-  void flaoDemoResourcePathFollowsConvention() {
+  void flaoDemoResourceDirFollowsConvention() {
     var extension = new FloeCatalogExtension.FloeDemo();
 
-    String path = extension.getResourcePath();
-
-    // Path should follow convention: /builtins/{engineKind}.pbtxt
-    assert path.equals("/builtins/floe-demo.pbtxt")
-        : "Path should follow /builtins/{engineKind}.pbtxt convention";
+    String dir = extension.getResourceDir();
+    assert dir.equals("/builtins/floe-demo") : "Resource dir should follow /builtins/{engineKind}";
+    assert extension.getIndexPath().equals("/builtins/floe-demo/_index.txt")
+        : "Index path must live under the resource dir";
   }
 
   @Test
   void engineSpecificRulesPreserveMinMaxVersions() {
-    var extension = new FloeCatalogExtension.FloeDb();
+    var extension = new TestCatalogExtension();
     SystemCatalogData catalog = extension.loadSystemCatalog();
 
     // Find functions with version constraints
@@ -285,24 +346,24 @@ class FloeCatalogExtensionTest {
 
   @Test
   void multipleEngineKindsCanBeLoaded() {
-    var floedb = new FloeCatalogExtension.FloeDb();
+    var catalog = new TestCatalogExtension();
     var floeDemo = new FloeCatalogExtension.FloeDemo();
 
     // Both should be loadable and distinct
-    SystemCatalogData floedbCatalog = floedb.loadSystemCatalog();
+    SystemCatalogData catalogData = catalog.loadSystemCatalog();
     SystemCatalogData flaoDemoCatalog = floeDemo.loadSystemCatalog();
 
     // Verify they're different engines
-    assert floedb.engineKind().equals("floedb");
+    assert catalog.engineKind().equals("test-catalog");
     assert floeDemo.engineKind().equals("floe-demo");
 
     // May have different object counts (demo might be subset)
-    assert floedbCatalog != null && flaoDemoCatalog != null;
+    assert catalogData != null && flaoDemoCatalog != null;
   }
 
   @Test
   void operatorsParsedCorrectly() {
-    var extension = new FloeCatalogExtension.FloeDb();
+    var extension = new TestCatalogExtension();
     SystemCatalogData catalog = extension.loadSystemCatalog();
 
     var operators = catalog.operators();
@@ -319,7 +380,7 @@ class FloeCatalogExtensionTest {
 
   @Test
   void castsParsedCorrectly() {
-    var extension = new FloeCatalogExtension.FloeDb();
+    var extension = new TestCatalogExtension();
     SystemCatalogData catalog = extension.loadSystemCatalog();
 
     var casts = catalog.casts();
@@ -336,7 +397,7 @@ class FloeCatalogExtensionTest {
 
   @Test
   void aggregatesParsedCorrectly() {
-    var extension = new FloeCatalogExtension.FloeDb();
+    var extension = new TestCatalogExtension();
     SystemCatalogData catalog = extension.loadSystemCatalog();
 
     var aggregates = catalog.aggregates();
@@ -353,7 +414,7 @@ class FloeCatalogExtensionTest {
 
   @Test
   void collationsParsedCorrectly() {
-    var extension = new FloeCatalogExtension.FloeDb();
+    var extension = new TestCatalogExtension();
     SystemCatalogData catalog = extension.loadSystemCatalog();
 
     var collations = catalog.collations();
@@ -374,8 +435,20 @@ class FloeCatalogExtensionTest {
     }
 
     @Override
-    protected String getResourcePath() {
-      return "/builtins/missing.pbtxt";
+    protected String getResourceDir() {
+      return "/builtins/test-missing";
+    }
+  }
+
+  private static final class TestCatalogExtension extends FloeCatalogExtension {
+    @Override
+    public String engineKind() {
+      return "test-catalog";
+    }
+
+    @Override
+    protected String getResourceDir() {
+      return "/builtins/test-catalog";
     }
   }
 }

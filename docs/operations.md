@@ -20,12 +20,20 @@ make integration-test
 
 ## Builtin Catalog Validator
 
-Validate bundled or bespoke builtin catalog protobufs without running the service:
+Validate bundled or bespoke builtin catalog protobufs without running the service (merge the
+fragments listed in `_index.txt` before you run the validator; e.g., use the index as the source of truth:
+
+```
+dir=service/src/main/resources/builtins/floe-demo
+awk '!/^\s*($|#)/{print}' "$dir/_index.txt" | sed "s|^|$dir/|" | xargs cat > /tmp/floe-demo.pbtxt
+```
+
+Then point the validator at the merged file:
 
 ```bash
 mvn -pl tools/builtin-validator package
 java -jar tools/builtin-validator/target/builtin-validator.jar \
-  service/src/main/resources/builtins/floe-demo.pbtxt
+  /tmp/floe-demo.pbtxt
 ```
 
 Flags:
