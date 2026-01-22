@@ -196,6 +196,7 @@ public final class SystemCatalogValidator {
     validateEngineSpecificPayloadTypes("namespace", catalog.namespaces(), errors);
     validateEngineSpecificPayloadTypes("table", catalog.tables(), errors);
     validateEngineSpecificPayloadTypes("view", catalog.views(), errors);
+    validateRegistryEngineSpecificPayloads(catalog, errors);
   }
 
   private static void validateEngineSpecificPayloadTypes(
@@ -221,6 +222,28 @@ public final class SystemCatalogValidator {
       }
       if (rule.payloadType() == null || rule.payloadType().isBlank()) {
         errors.add(ctx + ".engineSpecific[" + i + "].payloadType.required");
+      }
+    }
+  }
+
+  private static void validateRegistryEngineSpecificPayloads(
+      SystemCatalogData catalog, List<String> errors) {
+    List<EngineSpecificRule> rules = catalog.registryEngineSpecific();
+    if (rules == null || rules.isEmpty()) {
+      return;
+    }
+    Set<String> seen = new HashSet<>();
+    for (int i = 0; i < rules.size(); i++) {
+      EngineSpecificRule rule = rules.get(i);
+      if (rule == null) {
+        continue;
+      }
+      if (rule.payloadType() == null || rule.payloadType().isBlank()) {
+        errors.add("registry.engineSpecific[" + i + "].payloadType.required");
+        continue;
+      }
+      if (!seen.add(rule.payloadType())) {
+        errors.add("registry.engineSpecific.duplicate:" + rule.payloadType());
       }
     }
   }

@@ -60,6 +60,7 @@ final class SystemCatalogHintProviderTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     var provider = BuiltinTestSupport.providerFrom(ENGINE, catalog);
@@ -101,6 +102,7 @@ final class SystemCatalogHintProviderTest {
             List.of(),
             List.of(
                 new SystemTypeDef(BuiltinTestSupport.nr("pg.int4"), "N", false, null, List.of())),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),

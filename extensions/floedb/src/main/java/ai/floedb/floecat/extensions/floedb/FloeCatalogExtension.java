@@ -154,6 +154,12 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
       out.addAggregates(ab);
     }
 
+    // Registry-level engine-specific hints
+    List<EngineSpecific> convertedRegistryHints =
+        in.getEngineSpecificList().stream().map(this::convertRule).toList();
+    out.clearEngineSpecific();
+    out.addAllEngineSpecific(convertedRegistryHints);
+
     return out.build();
   }
 

@@ -56,6 +56,7 @@ class MultiEngineIsolationTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     var catalogFloe =
@@ -68,6 +69,7 @@ class MultiEngineIsolationTest {
                     false,
                     false,
                     List.of(floeRule))),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),

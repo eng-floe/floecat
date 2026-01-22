@@ -73,6 +73,7 @@ final class SystemCatalogProtoMapperTest {
                     name("sum"), List.of(name("int")), name("int"), name("int"), List.of())),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
@@ -122,6 +123,7 @@ final class SystemCatalogProtoMapperTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
@@ -145,6 +147,7 @@ final class SystemCatalogProtoMapperTest {
             List.of(
                 new SystemTypeDef(name("int"), "scalar", false, null, List.of()),
                 new SystemTypeDef(name("int_array"), "array", true, name("int"), List.of())),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
@@ -178,11 +181,43 @@ final class SystemCatalogProtoMapperTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
     SystemCatalogData output = SystemCatalogProtoMapper.fromProto(proto);
 
     assertThat(output.functions().get(0).engineSpecific()).isEmpty();
+  }
+
+  @Test
+  void roundTrip_preservesRegistryEngineSpecific() {
+    EngineSpecificRule registryRule = rule("spark");
+
+    SystemCatalogData input =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(registryRule));
+
+    SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
+    SystemCatalogData output = SystemCatalogProtoMapper.fromProto(proto, "spark");
+
+    assertThat(output.registryEngineSpecific()).hasSize(1);
+    EngineSpecificRule restored = output.registryEngineSpecific().get(0);
+    assertThat(restored.engineKind()).isEqualTo(registryRule.engineKind());
+    assertThat(restored.payloadType()).isEqualTo(registryRule.payloadType());
+    assertThat(restored.minVersion()).isEqualTo(registryRule.minVersion());
+    assertThat(restored.maxVersion()).isEqualTo(registryRule.maxVersion());
+    assertThat(restored.properties()).isEqualTo(registryRule.properties());
+    assertThat(Arrays.equals(restored.extensionPayload(), registryRule.extensionPayload()))
+        .isTrue();
   }
 }

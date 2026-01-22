@@ -51,6 +51,7 @@ class TypeHintProviderTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     var provider = BuiltinTestSupport.providerFrom(ENGINE, catalog);

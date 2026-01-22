@@ -199,6 +199,7 @@ class SystemNodeRegistryTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
     var registry =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
@@ -248,6 +249,66 @@ class SystemNodeRegistryTest {
     assertThat(provider.invocationCount()).isEqualTo(1);
   }
 
+  @Test
+  void registryEngineSpecific_hintsLayeredAndOverridden() {
+    var internalRule =
+        new EngineSpecificRule(
+            "", "", "", "dict.shared", new byte[] {1}, Map.of("dict_name", "shared"));
+    var pluginRule =
+        new EngineSpecificRule(
+            FLOE_KIND, "", "", "dict.shared", new byte[] {2}, Map.of("dict_name", "shared"));
+    var overlayRule =
+        new EngineSpecificRule(
+            FLOE_KIND, "", "", "dict.shared", new byte[] {3}, Map.of("dict_name", "shared"));
+
+    var catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(pluginRule));
+
+    var registry =
+        new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
+    var overlayProvider = new RegistryHintProvider(FLOE_KIND, List.of(overlayRule));
+    var nodeRegistry =
+        new SystemNodeRegistry(
+            registry, new TestInternalProvider(List.of(internalRule)), List.of(overlayProvider));
+
+    var merged = nodeRegistry.nodesFor(FLOE_KIND, "16.0").catalogData().registryEngineSpecific();
+
+    assertThat(merged).hasSize(1);
+    assertThat(merged.get(0)).isEqualTo(overlayRule);
+  }
+
+  @Test
+  void registryEngineSpecific_versionWindowsCoexist() {
+    var baseRule =
+        new EngineSpecificRule(
+            FLOE_KIND, "", "15.999", "dict.shared", new byte[] {1}, Map.of("dict_name", "shared"));
+    var nextRule =
+        new EngineSpecificRule(
+            FLOE_KIND, "16.0", "", "dict.shared", new byte[] {2}, Map.of("dict_name", "shared"));
+
+    var registry = registryWithCatalogs();
+    var provider = new RegistryHintProvider(FLOE_KIND, List.of(baseRule, nextRule));
+    var nodeRegistry = registryWith(registry, provider);
+
+    var merged15 = nodeRegistry.nodesFor(FLOE_KIND, "15.0").catalogData().registryEngineSpecific();
+    assertThat(merged15).hasSize(1);
+    assertThat(merged15.get(0)).isEqualTo(baseRule);
+
+    var merged16 = nodeRegistry.nodesFor(FLOE_KIND, "16.0").catalogData().registryEngineSpecific();
+    assertThat(merged16).hasSize(1);
+    assertThat(merged16.get(0)).isEqualTo(nextRule);
+  }
+
   // -----------------------------------------------------
   // Test Catalog Setup
   // -----------------------------------------------------
@@ -289,6 +350,7 @@ class SystemNodeRegistryTest {
             functions,
             List.of(),
             List.of(int4),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
@@ -376,5 +438,85 @@ class SystemNodeRegistryTest {
   private static SystemNodeRegistry registryWith(
       SystemDefinitionRegistry defs, SystemObjectScannerProvider... extras) {
     return new SystemNodeRegistry(defs, internalProvider(), extensionProviders(extras));
+  }
+
+  private static final class TestInternalProvider implements SystemObjectScannerProvider {
+
+    private final FloecatInternalProvider delegate = new FloecatInternalProvider();
+    private final List<EngineSpecificRule> hints;
+
+    private TestInternalProvider(List<EngineSpecificRule> hints) {
+      this.hints = List.copyOf(hints);
+    }
+
+    @Override
+    public List<SystemObjectDef> definitions() {
+      return delegate.definitions();
+    }
+
+    @Override
+    public boolean supportsEngine(String engineKind) {
+      return delegate.supportsEngine(engineKind);
+    }
+
+    @Override
+    public boolean supports(NameRef name, String engineKind) {
+      return delegate.supports(name, engineKind);
+    }
+
+    @Override
+    public boolean supports(NameRef name, String engineKind, String engineVersion) {
+      return supports(name, engineKind);
+    }
+
+    @Override
+    public Optional<SystemObjectScanner> provide(
+        String scannerId, String engineKind, String engineVersion) {
+      return delegate.provide(scannerId, engineKind, engineVersion);
+    }
+
+    @Override
+    public List<EngineSpecificRule> registryEngineSpecific(
+        String engineKind, String engineVersion) {
+      return hints;
+    }
+  }
+
+  private static final class RegistryHintProvider implements SystemObjectScannerProvider {
+
+    private final String engineKind;
+    private final List<EngineSpecificRule> hints;
+
+    private RegistryHintProvider(String engineKind, List<EngineSpecificRule> hints) {
+      this.engineKind = engineKind;
+      this.hints = List.copyOf(hints);
+    }
+
+    @Override
+    public List<SystemObjectDef> definitions() {
+      return List.of();
+    }
+
+    @Override
+    public boolean supportsEngine(String engineKind) {
+      return this.engineKind.equals(engineKind);
+    }
+
+    @Override
+    public boolean supports(NameRef name, String engineKind) {
+      return supportsEngine(engineKind);
+    }
+
+    @Override
+    public Optional<SystemObjectScanner> provide(
+        String scannerId, String engineKind, String engineVersion) {
+      return Optional.empty();
+    }
+
+    @Override
+    public List<EngineSpecificRule> registryEngineSpecific(
+        String engineKind, String engineVersion) {
+      return hints;
+    }
   }
 }

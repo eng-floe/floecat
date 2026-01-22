@@ -15,6 +15,7 @@
 syntax = "proto3";
 package ai.floedb.floecat.query;
 
+import "floecat/query/engine_specific.proto";
 import "floecat/query/sql_objects.proto";
 
 option java_multiple_files = true;
@@ -50,6 +51,9 @@ message SystemObjectsRegistry {
 
   /** Built-in aggregate definitions (may overlap with functions depending on engine). */
   repeated SqlAggregate aggregates = 6;
+
+  /** Engine-specific payloads attached to the registry as a whole. */
+  repeated EngineSpecific engine_specific = 99;
 }
 
 /**

@@ -57,6 +57,7 @@ final class SystemEngineCatalogTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     SystemEngineCatalog catalog = SystemEngineCatalog.from("spark", data);
@@ -79,6 +80,7 @@ final class SystemEngineCatalogTest {
             List.of(),
             List.of(),
             List.of(t1, t2), // duplicate canonical name
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
@@ -111,6 +113,7 @@ final class SystemEngineCatalogTest {
             List.of(),
             List.of(),
             List.of(table),
+            List.of(),
             List.of());
 
     SystemEngineCatalog catalog = SystemEngineCatalog.from("spark", data);
@@ -129,6 +132,7 @@ final class SystemEngineCatalogTest {
             List.of(),
             List.of(),
             List.of(new SystemTypeDef(name("int"), "scalar", false, null, List.of())),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
@@ -154,6 +158,7 @@ final class SystemEngineCatalogTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     SystemCatalogData data2 =
@@ -163,6 +168,7 @@ final class SystemEngineCatalogTest {
             List.of(
                 new SystemTypeDef(name("int"), "scalar", false, null, List.of()),
                 new SystemTypeDef(name("double"), "scalar", false, null, List.of())),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
@@ -187,6 +193,7 @@ final class SystemEngineCatalogTest {
             List.of(),
             List.of(),
             List.of(new SystemTypeDef(name("int"), "scalar", false, null, List.of())),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),

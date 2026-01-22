@@ -68,6 +68,7 @@ class HintFingerprintTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     var catalogB =
@@ -80,6 +81,7 @@ class HintFingerprintTest {
                     false,
                     false,
                     List.of(ruleB))),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
