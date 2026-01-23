@@ -19,6 +19,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.view;
 import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.ViewMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.ViewResponseMapper;
@@ -43,6 +44,7 @@ public class ViewRegisterService {
   @Inject ViewClient viewClient;
   @Inject ViewMetadataService viewMetadataService;
   @Inject ObjectMapper mapper;
+  @Inject IcebergGatewayConfig config;
 
   public Response register(
       NamespaceRequestContext namespaceContext, String idempotencyKey, ViewRequests.Register req) {
@@ -113,7 +115,7 @@ public class ViewRegisterService {
   private ViewMetadataView loadMetadata(String metadataLocation) {
     FileIO fileIO = null;
     try {
-      fileIO = FileIoFactory.createFileIo(Map.of(), null, false);
+      fileIO = FileIoFactory.createFileIo(Map.of(), config, true);
       InputFile input = fileIO.newInputFile(metadataLocation);
       try (InputStream stream = input.newStream()) {
         String payload = new String(stream.readAllBytes(), StandardCharsets.UTF_8);

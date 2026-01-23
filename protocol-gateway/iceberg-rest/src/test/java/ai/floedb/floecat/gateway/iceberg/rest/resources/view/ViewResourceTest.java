@@ -41,6 +41,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService.MetadataContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -249,101 +250,94 @@ class ViewResourceTest extends AbstractRestResourceTest {
 
   @Test
   void registerViewLoadsMetadataFromLocation() throws Exception {
-    String previousIoImpl = System.getProperty("io-impl");
-    String previousRoot = System.getProperty("fs.floecat.test-root");
-    Path tempRoot = Files.createTempDirectory("floecat-view-register");
-    System.setProperty("io-impl", InMemoryS3FileIO.class.getName());
-    System.setProperty("fs.floecat.test-root", tempRoot.toString());
-    try {
-      ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
-      when(directoryStub.resolveNamespace(any()))
-          .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    Path root = Path.of("target/test-fake-s3");
+    Files.createDirectories(root);
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
 
-      String metadataLocation = "s3://bucket/views/db/registered/metadata.json";
-      ViewMetadataView metadata =
-          new ViewMetadataView(
-              "uuid-1",
-              1,
-              "s3://bucket/views/db/registered",
-              0,
-              List.of(
-                  new ViewMetadataView.ViewVersion(
-                      0,
-                      1700000000L,
-                      0,
-                      Map.of("operation", "create"),
-                      List.of(new ViewMetadataView.ViewRepresentation("sql", "select 1", "ansi")),
-                      List.of("db"),
-                      null)),
-              List.of(new ViewMetadataView.ViewHistoryEntry(0, 1700000000L)),
-              List.of(new ViewMetadataView.SchemaSummary(0, "struct", List.of(), List.of())),
-              Map.of("comment", "registered"));
-      writeMetadataFile(metadataLocation, metadata);
+    String metadataLocation = "s3://bucket/views/db/registered/metadata.json";
+    ViewMetadataView metadata =
+        new ViewMetadataView(
+            "uuid-1",
+            1,
+            "s3://bucket/views/db/registered",
+            0,
+            List.of(
+                new ViewMetadataView.ViewVersion(
+                    0,
+                    1700000000L,
+                    0,
+                    Map.of("operation", "create"),
+                    List.of(new ViewMetadataView.ViewRepresentation("sql", "select 1", "ansi")),
+                    List.of("db"),
+                    null)),
+            List.of(new ViewMetadataView.ViewHistoryEntry(0, 1700000000L)),
+            List.of(new ViewMetadataView.SchemaSummary(0, "struct", List.of(), List.of())),
+            Map.of("comment", "registered"));
+    writeMetadataFile(root, metadataLocation, metadata);
 
-      when(viewStub.createView(any()))
-          .thenAnswer(
-              inv -> {
-                CreateViewRequest request = inv.getArgument(0);
-                ViewSpec spec = request.getSpec();
-                View created =
-                    View.newBuilder()
-                        .setResourceId(ResourceId.newBuilder().setId("cat:db:registered"))
-                        .setDisplayName(spec.getDisplayName())
-                        .setSql(spec.getSql())
-                        .putAllProperties(spec.getPropertiesMap())
-                        .build();
-                return CreateViewResponse.newBuilder().setView(created).build();
-              });
+    when(viewStub.createView(any()))
+        .thenAnswer(
+            inv -> {
+              CreateViewRequest request = inv.getArgument(0);
+              ViewSpec spec = request.getSpec();
+              View created =
+                  View.newBuilder()
+                      .setResourceId(ResourceId.newBuilder().setId("cat:db:registered"))
+                      .setDisplayName(spec.getDisplayName())
+                      .setSql(spec.getSql())
+                      .putAllProperties(spec.getPropertiesMap())
+                      .build();
+              return CreateViewResponse.newBuilder().setView(created).build();
+            });
 
-      given()
-          .body(
-              """
-              {
-                "name":"registered",
-                "metadata-location":"s3://bucket/views/db/registered/metadata.json"
-              }
-              """)
-          .header("Content-Type", "application/json")
-          .when()
-          .post("/v1/foo/namespaces/db/register-view")
-          .then()
-          .statusCode(200)
-          .body("metadata-location", equalTo(metadataLocation))
-          .body("metadata.properties.comment", equalTo("registered"));
+    given()
+        .body(
+            """
+            {
+              "name":"registered",
+              "metadata-location":"s3://bucket/views/db/registered/metadata.json"
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/register-view")
+        .then()
+        .statusCode(200)
+        .body("metadata-location", equalTo(metadataLocation))
+        .body("metadata.properties.comment", equalTo("registered"));
 
-      ArgumentCaptor<CreateViewRequest> createCaptor =
-          ArgumentCaptor.forClass(CreateViewRequest.class);
-      verify(viewStub).createView(createCaptor.capture());
-      ViewSpec createdSpec = createCaptor.getValue().getSpec();
-      assertTrue(
-          createdSpec.getPropertiesMap().containsKey(ViewMetadataService.METADATA_PROPERTY_KEY));
-      assertTrue(
-          metadataLocation.equals(
-              createdSpec
-                  .getPropertiesMap()
-                  .get(ViewMetadataService.METADATA_LOCATION_PROPERTY_KEY)));
-    } finally {
-      if (previousIoImpl == null) {
-        System.clearProperty("io-impl");
-      } else {
-        System.setProperty("io-impl", previousIoImpl);
-      }
-      if (previousRoot == null) {
-        System.clearProperty("fs.floecat.test-root");
-      } else {
-        System.setProperty("fs.floecat.test-root", previousRoot);
-      }
-    }
+    ArgumentCaptor<CreateViewRequest> createCaptor =
+        ArgumentCaptor.forClass(CreateViewRequest.class);
+    verify(viewStub).createView(createCaptor.capture());
+    ViewSpec createdSpec = createCaptor.getValue().getSpec();
+    assertTrue(
+        createdSpec.getPropertiesMap().containsKey(ViewMetadataService.METADATA_PROPERTY_KEY));
+    assertTrue(
+        metadataLocation.equals(
+            createdSpec
+                .getPropertiesMap()
+                .get(ViewMetadataService.METADATA_LOCATION_PROPERTY_KEY)));
   }
 
-  private void writeMetadataFile(String location, ViewMetadataView metadata) throws Exception {
-    FileIO fileIo = new InMemoryS3FileIO();
-    fileIo.initialize(Map.of("fs.floecat.test-root", System.getProperty("fs.floecat.test-root")));
+  private void writeMetadataFile(Path root, String location, ViewMetadataView metadata)
+      throws Exception {
+    FileIO fileIo = createTestFileIo(root);
     OutputFile output = fileIo.newOutputFile(location);
     byte[] payload = new ObjectMapper().writeValueAsBytes(metadata);
-    try (OutputStream stream = output.create()) {
+    try (OutputStream stream = output.createOrOverwrite()) {
       stream.write(payload);
     }
     fileIo.close();
+  }
+
+  private FileIO createTestFileIo(Path root) {
+    if (Boolean.parseBoolean(System.getProperty("floecat.fixtures.use-aws-s3", "false"))) {
+      return FileIoFactory.createFileIo(Map.of(), null, false);
+    }
+    FileIO fileIo = new InMemoryS3FileIO();
+    fileIo.initialize(Map.of("fs.floecat.test-root", root.toString()));
+    return fileIo;
   }
 }
