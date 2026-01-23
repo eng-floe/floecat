@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
+import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -95,8 +96,8 @@ class StatsProviderFactoryTest {
     store.seed(ctx);
     var provider = factory.forQuery(ctx, "corr");
     var view = provider.tableStats(TABLE).orElseThrow();
-    assertEquals(stats.getRowCount(), view.rowCount());
-    assertEquals(stats.getTotalSizeBytes(), view.totalSizeBytes());
+    assertEquals(stats.getRowCount(), view.rowCountValue().orElseThrow());
+    assertEquals(stats.getTotalSizeBytes(), view.totalSizeBytesValue().orElseThrow());
     assertEquals(stats.getSnapshotId(), view.snapshotId());
     assertEquals(1, repository.tableStatsCalls());
 
@@ -114,13 +115,13 @@ class StatsProviderFactoryTest {
     store.seed(otherCtx);
     var freshProvider = factory.forQuery(otherCtx, "corr");
     var freshView = freshProvider.tableStats(TABLE).orElseThrow();
-    assertEquals(otherStats.getRowCount(), freshView.rowCount());
-    assertEquals(otherStats.getTotalSizeBytes(), freshView.totalSizeBytes());
+    assertEquals(otherStats.getRowCount(), freshView.rowCountValue().orElseThrow());
+    assertEquals(otherStats.getTotalSizeBytes(), freshView.totalSizeBytesValue().orElseThrow());
     assertEquals(2, repository.tableStatsCalls());
   }
 
   @Test
-  void totalSizeBytesIsOptionalWhenUnset() {
+  void totalSizeBytesIsReportedEvenWhenZero() {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
@@ -134,8 +135,8 @@ class StatsProviderFactoryTest {
     store.seed(ctx);
     var provider = factory.forQuery(ctx, "corr");
     var view = provider.tableStats(TABLE).orElseThrow();
-    assertEquals(stats.getRowCount(), view.rowCount());
-    assertEquals(0, view.totalSizeBytes());
+    assertEquals(stats.getRowCount(), view.rowCountValue().orElseThrow());
+    assertEquals(stats.getTotalSizeBytes(), view.totalSizeBytesValue().orElseThrow());
   }
 
   @Test
@@ -146,6 +147,7 @@ class StatsProviderFactoryTest {
     StatsProviderFactory factory = new StatsProviderFactory(repository, store);
     long snapshotId = 22L;
     long columnId = 1L;
+    Ndv ndv = Ndv.newBuilder().setExact(5L).build();
     ColumnStats stats =
         ColumnStats.newBuilder()
             .setTableId(TABLE)
@@ -154,6 +156,11 @@ class StatsProviderFactoryTest {
             .setColumnName("col")
             .setValueCount(77)
             .setNullCount(2)
+            .setNanCount(3)
+            .setLogicalType("int64")
+            .setMin("1")
+            .setMax("5")
+            .setNdv(ndv)
             .setUpstream(
                 UpstreamStamp.newBuilder()
                     .setFetchedAt(Timestamp.newBuilder().setSeconds(1).build())
@@ -169,12 +176,36 @@ class StatsProviderFactoryTest {
     assertEquals(columnId, view.columnId());
     assertEquals("col", view.columnName());
     assertEquals(77, view.valueCount());
-    assertEquals(2, view.nullCount());
+    assertEquals(2, view.nullCountValue().orElseThrow());
+    assertEquals(3, view.nanCountValue().orElseThrow());
+    assertEquals("int64", view.logicalType());
+    assertEquals("1", view.minValue().orElseThrow());
+    assertEquals("5", view.maxValue().orElseThrow());
+    assertEquals(ndv, view.ndv().get());
     provider.columnStats(TABLE, columnId);
     assertEquals(2, repository.columnStatsCalls());
 
     var missingProvider = factory.forQuery(queryContextWithoutPin(), "corr");
     assertTrue(missingProvider.columnStats(TABLE, columnId).isEmpty());
+  }
+
+  @Test
+  void pinnedSnapshotIdReflectsStoredPin() {
+    CountingStatsRepository repository = new CountingStatsRepository();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsProviderFactory factory = new StatsProviderFactory(repository, store);
+
+    long snapshotId = 99L;
+    QueryContext pinned = queryContextWithPin("query-pin", snapshotId);
+    store.seed(pinned);
+    var provider = factory.forQuery(pinned, "corr");
+    assertEquals(snapshotId, provider.pinnedSnapshotId(TABLE).orElseThrow());
+
+    QueryContext noPin = queryContextWithoutPin();
+    store.seed(noPin);
+    var noPinProvider = factory.forQuery(noPin, "corr");
+    assertTrue(noPinProvider.pinnedSnapshotId(TABLE).isEmpty());
   }
 
   @Test
@@ -203,8 +234,8 @@ class StatsProviderFactoryTest {
     QueryContext pinned = queryContextWithPin(ctx.getQueryId(), snapshotId);
     store.replace(pinned);
     var view = provider.tableStats(TABLE).orElseThrow();
-    assertEquals(stats.getRowCount(), view.rowCount());
-    assertEquals(stats.getTotalSizeBytes(), view.totalSizeBytes());
+    assertEquals(stats.getRowCount(), view.rowCountValue().orElseThrow());
+    assertEquals(stats.getTotalSizeBytes(), view.totalSizeBytesValue().orElseThrow());
     assertEquals(snapshotId, view.snapshotId());
     assertEquals(1, repository.tableStatsCalls());
   }

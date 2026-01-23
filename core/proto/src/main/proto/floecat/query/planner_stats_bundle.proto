@@ -1,0 +1,178 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package ai.floedb.floecat.query;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.query.rpc";
+option java_outer_classname = "PlannerStatsProto";
+
+import "floecat/catalog/stats.proto";
+import "floecat/common/common.proto";
+import "floecat/query/engine_specific.proto";
+
+// ---------- Planner stats API (column stats fetch) ----------
+service PlannerStatsService {
+  /**
+   * GetColumnStats returns stats for specific columns the planner decided it needs.
+   *
+   * The server resolves snapshot semantics using query_id pins when available.
+   * Strict semantics are enforced: each table_id must have an active pin in the QueryContext,
+   * and stats are read only at that pinned snapshot for the (table_id, column_id) pairs that
+   * were surfaced (typically via GetUserObjects). Duplicate column_ids are deduped and the
+   * request is bounded by server-side table/column limits.
+   *
+   * Failure codes reported inside ColumnStatsResult.failure.code:
+   *   planner_stats.pin.missing – the QueryContext lacks a pin for the requested table.
+   *   planner_stats.column_stats.missing – the column stats were not found for the pinned snapshot.
+   *   planner_stats.column_stats.error – an unexpected repository failure occurred while reading stats.
+   */
+  rpc GetColumnStats(FetchColumnStatsRequest) returns (stream ColumnStatsBundleChunk);
+}
+
+/** Request stats for a set of columns across one or more relations. */
+message FetchColumnStatsRequest {
+  /** Query ID obtained from BeginQuery (and used for snapshot pins). */
+  string query_id = 1;
+
+  /** Which columns the planner needs stats for. */
+  repeated TableColumnStatsRequest tables = 2;
+}
+
+/** Columns requested for one table. */
+message TableColumnStatsRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+
+  /**
+   * Column IDs as returned by UserObjectsService ColumnInfo.id (stable column_id).
+   * Duplicates are deduped server-side and column_ids must be positive.
+   */
+  repeated int64 column_ids = 2;
+}
+
+/** Streamed chunk for column stats bundles. */
+message ColumnStatsBundleChunk {
+  string query_id = 1;
+  uint64 seq = 2;
+
+  oneof payload {
+    ColumnStatsBundleHeader header = 10;
+    ColumnStatsBatch batch = 20;
+    ColumnStatsBundleEnd end = 90;
+  }
+}
+
+message ColumnStatsBundleHeader {}
+
+message ColumnStatsBundleEnd {
+  uint64 requested_tables = 1;
+  uint64 requested_columns = 2;
+  uint64 returned_columns = 3;
+  uint64 not_found_columns = 4;
+  uint64 error_columns = 5;
+}
+
+message StatsWarning {
+  string code = 1;
+  string message = 2;
+  map<string,string> details = 10;
+}
+
+/** Batch of column stats results. */
+message ColumnStatsBatch {
+  repeated ColumnStatsResult columns = 1;
+  repeated StatsWarning warnings = 2;
+}
+
+enum StatsStatus {
+  STATS_STATUS_UNSPECIFIED = 0;
+  STATS_STATUS_FOUND = 1;
+  STATS_STATUS_NOT_FOUND = 2;
+  STATS_STATUS_ERROR = 3;
+}
+
+message ColumnStatsResult {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  int64 column_id = 2;
+  string column_name = 3;
+
+  StatsStatus status = 4;
+
+  /** Present when status == FOUND. */
+  ColumnStatsInfo stats = 10;
+
+  /** Present when status != FOUND. */
+  StatsFailure failure = 11;
+}
+
+/**
+ * Planner-specific failure metadata. The server typically sets one of:
+ *   planner_stats.pin.missing – reported with `status = STATS_STATUS_ERROR`
+ *   planner_stats.column_stats.missing – reported with `status = STATS_STATUS_NOT_FOUND`
+ *   planner_stats.column_stats.error – reported with `status = STATS_STATUS_ERROR`
+ */
+message StatsFailure {
+  string code = 1;
+  string message = 2;
+  map<string,string> details = 10;
+}
+
+/**
+ * Column stats the planner can consume.
+ *
+ * Today the planner fills logical_type, value_count, null_count, nan_count, ndv (when
+ * available), and the canonical min/max strings whenever the upstream stats provide them.
+ * All string bounds follow the encoding documented in ColumnStats (floecat/catalog/stats.proto),
+ * so planner/engine code can decode by looking at logical_type or by plugging in a decorator.
+ */
+message ColumnStatsInfo {
+  /** Logical type string (same encoding as SchemaColumn.logical_type). */
+  string logical_type = 1;
+
+  /**
+   * Number of rows scanned / total rows considered for this column stats (includes nulls).
+   * Null fraction is computed as {@code null_count / value_count}.
+   */
+  int64 value_count = 2;
+
+  /** Number of nulls observed (subset of {@code value_count}). */
+  optional int64 null_count = 3;
+
+  /** Number of NaNs observed. */
+  optional int64 nan_count = 4;
+
+  /** NDV, exact or approximate. */
+  ai.floedb.floecat.catalog.Ndv ndv = 5;
+
+  /**
+   * Canonical min bound; follows the same UTF-8 encoding rules as {@code ColumnStats.min}
+   * (boolean = {@code "true"/"false"}, ints = base-10, floats = {@code Float/Double.toString},
+   * decimal = normalized plain string, date/time/timestamp ISO-8601, uuid lowercase display,
+   * string literal, binary base64). Presence indicates the bound was observed even if it is empty.
+   */
+  optional string min = 10;
+  /**
+   * Canonical max bound with the same encoding rules as {@code min}.
+   */
+  optional string max = 11;
+
+  /** Optional binary payloads for richer estimators. */
+  bytes histogram = 20;
+  bytes tdigest = 21;
+
+  /** Optional engine-specific metadata extensions. */
+  repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
+}
