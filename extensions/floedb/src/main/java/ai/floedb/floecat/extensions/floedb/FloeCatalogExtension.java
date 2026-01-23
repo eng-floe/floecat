@@ -32,9 +32,10 @@ import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import com.google.protobuf.ExtensionRegistry;
+import com.google.protobuf.Message;
 import com.google.protobuf.TextFormat;
 import java.io.InputStream;
-import java.io.InputStreamReader;
+import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
@@ -51,7 +52,9 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
 
   @Override
   public final SystemCatalogData loadSystemCatalog() {
-    SystemObjectsRegistry registry = loadFromResource(getResourcePath());
+    String resourcePath = getResourcePath();
+    String rawText = loadResourceText(resourcePath);
+    SystemObjectsRegistry registry = parseSystemObjectsRegistry(rawText, resourcePath);
     SystemObjectsRegistry rewritten = rewriteFloeExtensions(registry);
     return SystemCatalogProtoMapper.fromProto(rewritten, engineKind());
   }
@@ -64,30 +67,33 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
     return "/builtins/" + engineKind() + ".pbtxt";
   }
 
-  // ---------------------------------------------------------------------
-  // PBtxt loader
-  // ---------------------------------------------------------------------
-
-  protected SystemObjectsRegistry loadFromResource(String resourcePath) {
+  protected String loadResourceText(String resourcePath) {
     InputStream in = getClass().getResourceAsStream(resourcePath);
     if (in == null) {
       throw new IllegalStateException("Builtin file not found: " + resourcePath);
     }
     try (in) {
-      // Register all Floe proto extensions so TextFormat parser can deserialize them
-      ExtensionRegistry extensionRegistry = ExtensionRegistry.newInstance();
-      EngineFloe.registerAllExtensions(extensionRegistry);
-
-      SystemObjectsRegistry.Builder builder = SystemObjectsRegistry.newBuilder();
-      var parser = TextFormat.Parser.newBuilder().setAllowUnknownFields(true).build();
-      parser.merge(new InputStreamReader(in, StandardCharsets.UTF_8), extensionRegistry, builder);
-      return builder.build();
+      return new String(in.readAllBytes(), StandardCharsets.UTF_8);
     } catch (Exception e) {
       throw new IllegalStateException("Failed to load builtin file: " + resourcePath, e);
     }
   }
 
-  // ---------------------------------------------------------------------
+  protected SystemObjectsRegistry parseSystemObjectsRegistry(String rawText, String resourcePath) {
+    ExtensionRegistry extensionRegistry = ExtensionRegistry.newInstance();
+    EngineFloeExtensions.registerAllExtensions(extensionRegistry);
+
+    SystemObjectsRegistry.Builder builder = SystemObjectsRegistry.newBuilder();
+    var parser = TextFormat.Parser.newBuilder().setAllowUnknownFields(true).build();
+    try {
+      parser.merge(new StringReader(rawText), extensionRegistry, builder);
+      return builder.build();
+    } catch (Exception e) {
+      throw new IllegalStateException("Failed to parse builtin file: " + resourcePath, e);
+    }
+  }
+
+  // Rewrite PBtxt engine_specific blocks → payload bytes--------------
   // Rewrite PBtxt engine_specific blocks → payload bytes
   // ---------------------------------------------------------------------
 
@@ -154,8 +160,42 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
       out.addAggregates(ab);
     }
 
+    // Registry-level engine-specific hints
+    out.clearEngineSpecific();
+    for (EngineSpecific es : in.getEngineSpecificList()) {
+      out.addEngineSpecific(convertRule(es));
+    }
+
     return out.build();
   }
+
+  // Unified registry for all Floe extensions
+  private static final List<ExtensionInfo<?>> ALL_EXTENSIONS = createExtensionRegistry();
+
+  private static List<ExtensionInfo<?>> createExtensionRegistry() {
+    return List.of(
+        new ExtensionInfo<>(EngineFloeExtensions.floeFunction, FUNCTION),
+        new ExtensionInfo<>(EngineFloeExtensions.floeOperator, OPERATOR),
+        new ExtensionInfo<>(EngineFloeExtensions.floeType, TYPE),
+        new ExtensionInfo<>(EngineFloeExtensions.floeAggregate, AGGREGATE),
+        new ExtensionInfo<>(EngineFloeExtensions.floeCollation, COLLATION),
+        new ExtensionInfo<>(EngineFloeExtensions.floeCast, CAST),
+        new ExtensionInfo<>(
+            EngineFloeExtensions.floeTypePlanningSemantics, TYPE_PLANNING_SEMANTICS),
+        new ExtensionInfo<>(EngineFloeExtensions.floeIndexAccessMethods, INDEX_ACCESS_METHODS),
+        new ExtensionInfo<>(
+            EngineFloeExtensions.floeIndexOperatorFamilies, INDEX_OPERATOR_FAMILIES),
+        new ExtensionInfo<>(EngineFloeExtensions.floeIndexOperatorClasses, INDEX_OPERATOR_CLASSES),
+        new ExtensionInfo<>(
+            EngineFloeExtensions.floeIndexOperatorStrategies, INDEX_OPERATOR_STRATEGIES),
+        new ExtensionInfo<>(
+            EngineFloeExtensions.floeIndexSupportProcedures, INDEX_SUPPORT_PROCEDURES));
+  }
+
+  /** Extension registry entry with proto extension and payload descriptor */
+  private record ExtensionInfo<T extends com.google.protobuf.Message>(
+      com.google.protobuf.GeneratedMessage.GeneratedExtension<EngineSpecific, T> extension,
+      PayloadDescriptor<T> descriptor) {}
 
   // ---------------------------------------------------------------------
   // Convert readable PBtxt → opaque payload bytes
@@ -168,38 +208,26 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
       return es;
     }
 
-    // Extract Floe extensions (proto2 extensions registered in ExtensionRegistry)
-    // These are the proper way to handle structured Floe-specific data
-    if (es.hasExtension(EngineFloe.floeFunction)) {
-      return rewriteExtension(es, es.getExtension(EngineFloe.floeFunction), FUNCTION);
-    }
-
-    if (es.hasExtension(EngineFloe.floeOperator)) {
-      return rewriteExtension(es, es.getExtension(EngineFloe.floeOperator), OPERATOR);
-    }
-
-    if (es.hasExtension(EngineFloe.floeType)) {
-      return rewriteExtension(es, es.getExtension(EngineFloe.floeType), TYPE);
-    }
-
-    if (es.hasExtension(EngineFloe.floeAggregate)) {
-      return rewriteExtension(es, es.getExtension(EngineFloe.floeAggregate), AGGREGATE);
-    }
-
-    if (es.hasExtension(EngineFloe.floeCollation)) {
-      return rewriteExtension(es, es.getExtension(EngineFloe.floeCollation), COLLATION);
-    }
-
-    if (es.hasExtension(EngineFloe.floeCast)) {
-      return rewriteExtension(es, es.getExtension(EngineFloe.floeCast), CAST);
+    // Try each registered Floe extension in order
+    for (ExtensionInfo<?> info : ALL_EXTENSIONS) {
+      if (es.hasExtension(info.extension())) {
+        return convertExtension(es, info);
+      }
     }
 
     // No Floe extensions found - return unmodified
     return es;
   }
 
+  /** Convert a single extension entry to binary payload */
+  private <T extends Message> EngineSpecific convertExtension(
+      EngineSpecific es, ExtensionInfo<T> info) {
+    T extension = (T) es.getExtension(info.extension());
+    return rewriteExtension(es, extension, info.descriptor());
+  }
+
   /** Rewrite a proto2 extension into opaque payload bytes. */
-  protected <T extends com.google.protobuf.Message> EngineSpecific rewriteExtension(
+  protected <T extends Message> EngineSpecific rewriteExtension(
       EngineSpecific es, T extension, PayloadDescriptor<T> descriptor) {
 
     try {

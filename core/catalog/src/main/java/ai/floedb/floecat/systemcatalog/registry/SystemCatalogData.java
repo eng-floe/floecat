@@ -17,6 +17,7 @@
 package ai.floedb.floecat.systemcatalog.registry;
 
 import ai.floedb.floecat.systemcatalog.def.*;
+import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import java.util.List;
 
 /** Immutable representation of a builtin catalog after parsing from protobuf. */
@@ -29,7 +30,8 @@ public record SystemCatalogData(
     List<SystemAggregateDef> aggregates,
     List<SystemNamespaceDef> namespaces,
     List<SystemTableDef> tables,
-    List<SystemViewDef> views) {
+    List<SystemViewDef> views,
+    List<EngineSpecificRule> registryEngineSpecific) {
 
   public SystemCatalogData {
     functions = copy(functions);
@@ -41,6 +43,7 @@ public record SystemCatalogData(
     namespaces = copy(namespaces);
     tables = copy(tables);
     views = copy(views);
+    registryEngineSpecific = copy(registryEngineSpecific);
   }
 
   private static <T> List<T> copy(List<T> values) {
@@ -50,6 +53,6 @@ public record SystemCatalogData(
   public static SystemCatalogData empty() {
     return new SystemCatalogData(
         List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
-        List.of());
+        List.of(), List.of());
   }
 }

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.systemcatalog.registry;
 
 import ai.floedb.floecat.systemcatalog.def.*;
+import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -59,6 +60,7 @@ public final class SystemEngineCatalog {
 
   private final List<SystemViewDef> views;
   private final Map<String, SystemViewDef> viewsByName;
+  private final List<EngineSpecificRule> registryEngineSpecific;
 
   private SystemEngineCatalog(
       String engineKind,
@@ -80,7 +82,8 @@ public final class SystemEngineCatalog {
       List<SystemTableDef> tables,
       Map<String, SystemTableDef> tablesByName,
       List<SystemViewDef> views,
-      Map<String, SystemViewDef> viewsByName) {
+      Map<String, SystemViewDef> viewsByName,
+      List<EngineSpecificRule> registryEngineSpecific) {
 
     this.engineKind = engineKind;
     this.fingerprint = fingerprint;
@@ -102,6 +105,7 @@ public final class SystemEngineCatalog {
     this.tablesByName = tablesByName;
     this.views = views;
     this.viewsByName = viewsByName;
+    this.registryEngineSpecific = registryEngineSpecific;
   }
 
   /** Builds a materialised catalog snapshot from parsed builtin data. */
@@ -117,6 +121,7 @@ public final class SystemEngineCatalog {
     List<SystemNamespaceDef> namespaces = copy(data.namespaces());
     List<SystemTableDef> tables = copy(data.tables());
     List<SystemViewDef> views = copy(data.views());
+    List<EngineSpecificRule> registryEngineSpecific = copy(data.registryEngineSpecific());
     String fingerprint = computeFingerprint(engineKind, data);
 
     return new SystemEngineCatalog(
@@ -139,7 +144,8 @@ public final class SystemEngineCatalog {
         tables,
         indexUnique(tables, t -> NameRefUtil.canonical(t.name())),
         views,
-        indexUnique(views, v -> NameRefUtil.canonical(v.name())));
+        indexUnique(views, v -> NameRefUtil.canonical(v.name())),
+        registryEngineSpecific);
   }
 
   public String engineKind() {
@@ -220,6 +226,10 @@ public final class SystemEngineCatalog {
 
   public Optional<SystemViewDef> view(String name) {
     return Optional.ofNullable(viewsByName.get(name));
+  }
+
+  public List<EngineSpecificRule> registryEngineSpecific() {
+    return registryEngineSpecific;
   }
 
   private static <T> List<T> copy(List<T> values) {

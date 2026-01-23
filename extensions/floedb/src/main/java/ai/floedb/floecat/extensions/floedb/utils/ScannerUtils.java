@@ -72,10 +72,11 @@ public final class ScannerUtils {
     EngineContext ctx = engineContext == null ? EngineContext.empty() : engineContext;
     return overlay
         .resolve(id)
-        .flatMap(node -> node.engineHint(ctx.normalizedKind(), ctx.normalizedVersion()))
+        .flatMap(
+            node -> node.engineHint(ctx.normalizedKind(), ctx.normalizedVersion(), desc.type()))
         .flatMap(
             hint -> {
-              if (!desc.type().equals(hint.contentType())) {
+              if (!desc.type().equals(hint.payloadType())) {
                 return Optional.empty();
               }
               try {

@@ -19,7 +19,9 @@ package ai.floedb.floecat.metagraph.model;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * Base type for every immutable metadata node tracked by the query graph.
@@ -55,21 +57,50 @@ public interface GraphNode {
   GraphNodeOrigin origin();
 
   /**
-   * Engine-specific hint map keyed by kind/version.
+   * Engine-specific hint map keyed by kind/version/payloadType.
    *
-   * <p>Implementations should return immutable maps. Use {@link #engineHint(String, String)} for
-   * convenience lookups.
+   * <p>Implementations should return immutable maps. Use {@link #engineHint(String, String,
+   * String)} for convenience lookups or {@link #engineHintsFor(String, String)} to retrieve all
+   * hints for a specific engine pair.
    */
-  Map<EngineKey, EngineHint> engineHints();
+  Map<EngineHintKey, EngineHint> engineHints();
 
   /**
-   * Lookup helper for an engine/version pair.
+   * Lookup helper for an engine/version/payloadType triple.
    *
    * @param engineKind planner/executor kind (e.g. TRINO)
    * @param engineVersion semantic version string
+   * @param payloadType hint category requested by the caller
    * @return the hint payload if present
    */
-  default Optional<EngineHint> engineHint(String engineKind, String engineVersion) {
-    return Optional.ofNullable(engineHints().get(new EngineKey(engineKind, engineVersion)));
+  default Optional<EngineHint> engineHint(
+      String engineKind, String engineVersion, String payloadType) {
+    return Optional.ofNullable(
+        engineHints().get(new EngineHintKey(engineKind, engineVersion, payloadType)));
+  }
+
+  /**
+   * Returns every hint for the given engine key, keyed by payloadType.
+   *
+   * @param engineKind planner/executor kind (e.g. TRINO)
+   * @param engineVersion semantic version string
+   * @return map from payloadType → hint payload
+   *     <p>Note: This method rebuilds a map every call and iterates all stored hints, so keep it
+   *     limited to tests or rare diagnostics; hot execution paths should be satisfied with the
+   *     constant-time engineHint(engineKind, engineVersion, payloadType) overload instead.
+   */
+  default Map<String, EngineHint> engineHintsFor(String engineKind, String engineVersion) {
+    Objects.requireNonNull(engineKind, "engineKind");
+    Objects.requireNonNull(engineVersion, "engineVersion");
+    return engineHints().entrySet().stream()
+        .filter(
+            entry ->
+                engineKind.equals(entry.getKey().engineKind())
+                    && engineVersion.equals(entry.getKey().engineVersion()))
+        .collect(
+            Collectors.toMap(
+                entry -> entry.getKey().payloadType(),
+                Map.Entry::getValue,
+                (first, second) -> second));
   }
 }

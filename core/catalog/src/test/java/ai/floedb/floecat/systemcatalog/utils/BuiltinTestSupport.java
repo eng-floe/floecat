@@ -44,7 +44,7 @@ public final class BuiltinTestSupport {
     var registry =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(engine, data)));
     var nodeRegistry = new SystemNodeRegistry(registry, new FloecatInternalProvider(), providers());
-    return new SystemCatalogHintProvider(nodeRegistry);
+    return new SystemCatalogHintProvider(nodeRegistry, registry);
   }
 
   public static String json(EngineHint h) {

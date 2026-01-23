@@ -22,7 +22,6 @@ import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastMethod;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
-import ai.floedb.floecat.systemcatalog.hint.SystemCatalogHintProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.utils.BuiltinTestSupport;
 import java.util.List;
@@ -32,11 +31,13 @@ import org.junit.jupiter.api.Test;
 class CastHintProviderTest {
 
   private static final String ENGINE = "floe-demo";
+  private static final String CAST_PAYLOAD_TYPE = "builtin.systemcatalog.cast.properties";
 
   @Test
   void matchesCastSignatureAndMethod() {
 
-    var rule = new EngineSpecificRule(ENGINE, "16.0", "", "", null, Map.of("oid", "7712"));
+    var rule =
+        new EngineSpecificRule(ENGINE, "16.0", "", CAST_PAYLOAD_TYPE, null, Map.of("oid", "7712"));
 
     var catalog =
         new SystemCatalogData(
@@ -54,6 +55,7 @@ class CastHintProviderTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     var provider = BuiltinTestSupport.providerFrom(ENGINE, catalog);
@@ -61,8 +63,8 @@ class CastHintProviderTest {
 
     var node = BuiltinTestSupport.castNode(ENGINE, "pg.cast", "pg.int4", "pg.text", "explicit");
 
-    var result = provider.compute(node, key, SystemCatalogHintProvider.HINT_TYPE, "cid");
-    assertThat(result.contentType()).contains("");
+    var result = provider.compute(node, key, CAST_PAYLOAD_TYPE, "cid").orElseThrow();
+    assertThat(result.payloadType()).isEqualTo(CAST_PAYLOAD_TYPE);
     assertThat(result.payload()).isEmpty();
     assertThat(result.metadata()).containsEntry("oid", "7712");
   }

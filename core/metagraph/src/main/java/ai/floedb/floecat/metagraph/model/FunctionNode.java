@@ -32,7 +32,7 @@ public record FunctionNode(
     ResourceId returnType,
     boolean aggregate,
     boolean window,
-    Map<EngineKey, EngineHint> engineHints)
+    Map<EngineHintKey, EngineHint> engineHints)
     implements GraphNode {
 
   public FunctionNode {

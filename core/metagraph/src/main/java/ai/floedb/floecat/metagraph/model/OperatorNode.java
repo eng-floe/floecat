@@ -32,7 +32,7 @@ public record OperatorNode(
     ResourceId returnType,
     boolean commutative,
     boolean associative,
-    Map<EngineKey, EngineHint> engineHints)
+    Map<EngineHintKey, EngineHint> engineHints)
     implements GraphNode {
 
   public OperatorNode {

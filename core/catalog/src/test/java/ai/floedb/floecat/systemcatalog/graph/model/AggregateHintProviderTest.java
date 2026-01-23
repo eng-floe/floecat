@@ -21,7 +21,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
-import ai.floedb.floecat.systemcatalog.hint.SystemCatalogHintProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.utils.BuiltinTestSupport;
 import java.util.List;
@@ -31,6 +30,7 @@ import org.junit.jupiter.api.Test;
 class AggregateHintProviderTest {
 
   private static final String ENGINE = "floe-demo";
+  private static final String AGG_PAYLOAD_TYPE = "builtin.systemcatalog.aggregate.properties";
 
   @Test
   void matchesAggregateSignature() {
@@ -40,7 +40,7 @@ class AggregateHintProviderTest {
             ENGINE,
             "16.0",
             "",
-            "json",
+            AGG_PAYLOAD_TYPE,
             "{\"aggfinalextra\":true}".getBytes(),
             Map.of("oid", "6006"));
 
@@ -60,6 +60,7 @@ class AggregateHintProviderTest {
                     List.of(rule))),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     var provider = BuiltinTestSupport.providerFrom(ENGINE, catalog);
@@ -67,9 +68,9 @@ class AggregateHintProviderTest {
 
     var node = BuiltinTestSupport.aggregateNode(ENGINE, "pg.sum", List.of("pg.int4"), "pg.int4");
 
-    var result = provider.compute(node, key, SystemCatalogHintProvider.HINT_TYPE, "cid");
+    var result = provider.compute(node, key, AGG_PAYLOAD_TYPE, "cid").orElseThrow();
     var payload = result.payload();
-    assertThat(result.contentType()).contains("json");
+    assertThat(result.payloadType()).isEqualTo(AGG_PAYLOAD_TYPE);
     assertThat(new String(payload)).contains("aggfinalextra");
     assertThat(result.metadata()).containsEntry("oid", "6006");
   }

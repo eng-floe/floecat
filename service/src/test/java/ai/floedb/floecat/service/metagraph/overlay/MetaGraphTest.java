@@ -25,7 +25,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.model.EngineHint;
-import ai.floedb.floecat.metagraph.model.EngineKey;
+import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
@@ -158,7 +158,7 @@ class MetaGraphTest {
           }
 
           @Override
-          public Map<EngineKey, EngineHint> engineHints() {
+          public Map<EngineHintKey, EngineHint> engineHints() {
             return Map.of();
           }
         };
@@ -195,7 +195,7 @@ class MetaGraphTest {
           }
 
           @Override
-          public Map<EngineKey, EngineHint> engineHints() {
+          public Map<EngineHintKey, EngineHint> engineHints() {
             return Map.of();
           }
         };

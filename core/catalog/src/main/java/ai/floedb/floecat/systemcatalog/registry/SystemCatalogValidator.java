@@ -18,6 +18,7 @@ package ai.floedb.floecat.systemcatalog.registry;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.systemcatalog.def.*;
+import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import java.util.*;
 
 /**
@@ -42,6 +43,8 @@ public final class SystemCatalogValidator {
     validateCasts(catalog.casts(), typeNames, errors);
     validateCollations(catalog.collations(), errors);
     validateAggregates(catalog.aggregates(), typeNames, errors);
+
+    validateEngineSpecificPayloadTypes(catalog, errors);
 
     return errors;
   }
@@ -180,6 +183,81 @@ public final class SystemCatalogValidator {
         requireTypeExists(arg, typeNames, errors, "agg.arg:" + formatName(name));
       }
     }
+  }
+
+  private static void validateEngineSpecificPayloadTypes(
+      SystemCatalogData catalog, List<String> errors) {
+    validateEngineSpecificPayloadTypes("function", catalog.functions(), errors);
+    validateEngineSpecificPayloadTypes("operator", catalog.operators(), errors);
+    validateEngineSpecificPayloadTypes("type", catalog.types(), errors);
+    validateEngineSpecificPayloadTypes("cast", catalog.casts(), errors);
+    validateEngineSpecificPayloadTypes("collation", catalog.collations(), errors);
+    validateEngineSpecificPayloadTypes("aggregate", catalog.aggregates(), errors);
+    validateEngineSpecificPayloadTypes("namespace", catalog.namespaces(), errors);
+    validateEngineSpecificPayloadTypes("table", catalog.tables(), errors);
+    validateEngineSpecificPayloadTypes("view", catalog.views(), errors);
+    validateRegistryEngineSpecificPayloads(catalog, errors);
+  }
+
+  private static void validateEngineSpecificPayloadTypes(
+      String prefix, List<? extends SystemObjectDef> defs, List<String> errors) {
+    for (SystemObjectDef def : defs) {
+      NameRef name = def.name();
+      if (name == null) {
+        continue;
+      }
+      validateEngineSpecificRules(prefix + "." + formatName(name), def.engineSpecific(), errors);
+    }
+  }
+
+  private static void validateEngineSpecificRules(
+      String ctx, List<EngineSpecificRule> rules, List<String> errors) {
+    if (rules == null || rules.isEmpty()) {
+      return;
+    }
+    for (int i = 0; i < rules.size(); i++) {
+      EngineSpecificRule rule = rules.get(i);
+      if (rule == null) {
+        continue;
+      }
+      if (rule.payloadType() == null || rule.payloadType().isBlank()) {
+        errors.add(ctx + ".engineSpecific[" + i + "].payloadType.required");
+      }
+    }
+  }
+
+  private static void validateRegistryEngineSpecificPayloads(
+      SystemCatalogData catalog, List<String> errors) {
+    List<EngineSpecificRule> rules = catalog.registryEngineSpecific();
+    if (rules == null || rules.isEmpty()) {
+      return;
+    }
+    Set<String> seen = new HashSet<>();
+    for (int i = 0; i < rules.size(); i++) {
+      EngineSpecificRule rule = rules.get(i);
+      if (rule == null) {
+        continue;
+      }
+      if (rule.payloadType() == null || rule.payloadType().isBlank()) {
+        errors.add("registry.engineSpecific[" + i + "].payloadType.required");
+        continue;
+      }
+      String key = registryRuleKey(rule);
+      if (!seen.add(key)) {
+        errors.add("registry.engineSpecific.duplicate:" + key);
+      }
+    }
+  }
+
+  private static String registryRuleKey(EngineSpecificRule rule) {
+    String payloadType = rule.payloadType();
+    if (payloadType == null) {
+      payloadType = "";
+    }
+    String kind = rule.engineKind() == null ? "" : rule.engineKind();
+    String min = rule.minVersion() == null ? "" : rule.minVersion();
+    String max = rule.maxVersion() == null ? "" : rule.maxVersion();
+    return String.join("|", payloadType, kind, min, max);
   }
 
   // ------------------------------------------------------------

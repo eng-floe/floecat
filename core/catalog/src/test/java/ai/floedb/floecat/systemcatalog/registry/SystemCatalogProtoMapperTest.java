@@ -73,6 +73,7 @@ final class SystemCatalogProtoMapperTest {
                     name("sum"), List.of(name("int")), name("int"), name("int"), List.of())),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
@@ -108,7 +109,7 @@ final class SystemCatalogProtoMapperTest {
   @Test
   void fromProto_appliesDefaultEngineWhenMissing() {
     EngineSpecificRule ruleWithoutEngine =
-        new EngineSpecificRule("", "1.0", "2.0", "", new byte[0], Map.of());
+        new EngineSpecificRule("", "1.0", "2.0", "payload/type", new byte[0], Map.of());
 
     SystemCatalogData input =
         new SystemCatalogData(
@@ -117,6 +118,7 @@ final class SystemCatalogProtoMapperTest {
                     name("f"), List.of(), name("int"), false, false, List.of(ruleWithoutEngine))),
             List.of(),
             List.of(new SystemTypeDef(name("int"), "scalar", false, null, List.of())),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
@@ -150,6 +152,7 @@ final class SystemCatalogProtoMapperTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
@@ -178,11 +181,43 @@ final class SystemCatalogProtoMapperTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
     SystemCatalogData output = SystemCatalogProtoMapper.fromProto(proto);
 
     assertThat(output.functions().get(0).engineSpecific()).isEmpty();
+  }
+
+  @Test
+  void roundTrip_preservesRegistryEngineSpecific() {
+    EngineSpecificRule registryRule = rule("spark");
+
+    SystemCatalogData input =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(registryRule));
+
+    SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
+    SystemCatalogData output = SystemCatalogProtoMapper.fromProto(proto, "spark");
+
+    assertThat(output.registryEngineSpecific()).hasSize(1);
+    EngineSpecificRule restored = output.registryEngineSpecific().get(0);
+    assertThat(restored.engineKind()).isEqualTo(registryRule.engineKind());
+    assertThat(restored.payloadType()).isEqualTo(registryRule.payloadType());
+    assertThat(restored.minVersion()).isEqualTo(registryRule.minVersion());
+    assertThat(restored.maxVersion()).isEqualTo(registryRule.maxVersion());
+    assertThat(restored.properties()).isEqualTo(registryRule.properties());
+    assertThat(Arrays.equals(restored.extensionPayload(), registryRule.extensionPayload()))
+        .isTrue();
   }
 }

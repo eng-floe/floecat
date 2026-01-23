@@ -1,0 +1,94 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto2";
+
+// Short proto package used for PBtxt bracket notation.
+package floe.ext;
+
+// Keep Java code generation in the existing Java package.
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.extensions.floedb.proto";
+option java_outer_classname = "EngineFloeExtensions";
+/**
+ * NOTE: This file exists solely to provide a *short* proto package for
+ * EngineSpecific extension names so that PBtxt can use concise bracket notation:
+ *   [floe.ext.floe_function] { ... }
+ *   [floe.ext.floe_index_access_methods] { ... }
+ *
+ * Protobuf TextFormat requires bracket notation for proto2 extensions and the
+ * identifier inside the brackets must be the fully-qualified *proto* name.
+ * By putting the extensions in package `floe.ext`, we keep PBtxt readable
+ * without changing the Java package of the generated code.
+ */
+
+import "floecat/query/engine_specific.proto";
+import "engine_floe.proto";
+
+// -----------------------------------------------------------------------------
+// EngineSpecific extensions for FloeDB.
+// -----------------------------------------------------------------------------
+extend ai.floedb.floecat.query.EngineSpecific {
+  // Object-level payloads
+
+  // FloeDB-specific function attributes (pg_proc).
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeFunctionSpecific floe_function = 1;
+
+  // FloeDB-specific operator attributes (pg_operator).
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeOperatorSpecific floe_operator = 2;
+
+  // FloeDB-specific cast attributes (pg_cast).
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeCastSpecific floe_cast = 3;
+
+  // FloeDB-specific type attributes (pg_type).
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific floe_type = 4;
+
+  // FloeDB-specific aggregate attributes (pg_aggregate).
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeAggregateSpecific floe_aggregate = 5;
+
+  // FloeDB-specific collation attributes (pg_collation).
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeCollationSpecific floe_collation = 6;
+
+  // FloeDB-specific namespace attributes (pg_namespace).
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific floe_namespace = 7;
+
+  // FloeDB-specific relation attributes (pg_class).
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific floe_relation = 8;
+
+  // Registry-level payloads (SystemObjectsRegistry.engine_specific)
+
+  // Registry-level index access method dictionary (pg_am).
+  // payload_type: "floe.index.access_methods+proto"
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeIndexAccessMethods floe_index_access_methods = 20;
+
+  // Registry-level index operator family dictionary (pg_opfamily).
+  // payload_type: "floe.index.operator_families+proto"
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeIndexOperatorFamilies floe_index_operator_families = 21;
+
+  // Registry-level index operator class dictionary (pg_opclass).
+  // payload_type: "floe.index.operator_classes+proto"
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeIndexOperatorClasses floe_index_operator_classes = 22;
+
+  // Registry-level index operator strategy dictionary (pg_amop).
+  // payload_type: "floe.index.operator_strategies+proto"
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeIndexOperatorStrategies floe_index_operator_strategies = 23;
+
+  // Registry-level index support procedure dictionary (pg_amproc).
+  // payload_type: "floe.index.support_procedures+proto"
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeIndexSupportProcedures floe_index_support_procedures = 24;
+
+  // Type planning semantics (typcache accelerant).
+  // payload_type: "floe.type.planning_semantics+proto"
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeTypePlanningSemantics floe_type_planning_semantics = 30;
+}

@@ -21,8 +21,9 @@ functions {
   argument_types { name: "int4" path: "pg_catalog" }
   return_type { name: "int4" path: "pg_catalog" }
   engine_specific {
+    payload_type: "floe.function+proto"
     min_version: "9.5"
-    floe_function {
+    [floe.ext.floe_function] {
       oid: 1250
       proname: "int4_abs"
       prolang: 12
@@ -47,8 +48,9 @@ functions {
   argument_types { name: "text" path: "pg_catalog" }
   return_type { name: "text" path: "pg_catalog" }
   engine_specific {
+    payload_type: "floe.function+proto"
     min_version: "9.5"
-    floe_function {
+    [floe.ext.floe_function] {
       oid: 1251
       proname: "text_upper"
       prolang: 12
@@ -82,8 +84,9 @@ functions {
   return_type { name: "int8" path: "pg_catalog" }
   is_aggregate: true
   engine_specific {
+    payload_type: "floe.function+proto"
     min_version: "9.5"
-    floe_function {
+    [floe.ext.floe_function] {
       proname: "sum_int4_state"
       prolang: 12
       proisstrict: true
@@ -100,8 +103,9 @@ functions {
   return_type { name: "int8" path: "pg_catalog" }
   is_aggregate: true
   engine_specific {
+    payload_type: "floe.function+proto"
     min_version: "9.5"
-    floe_function {
+    [floe.ext.floe_function] {
       proname: "sum_int4_final"
       prolang: 12
       proisstrict: true
@@ -134,7 +138,8 @@ types {
   name { name: "int4" path: "pg_catalog" }
   category: "N"
   engine_specific {
-    floe_type {
+    payload_type: "floe.type+proto"
+    [floe.ext.floe_type] {
       oid: 23
       typname: "int4"
       typnamespace: 11
@@ -151,7 +156,8 @@ types {
   name { name: "int8" path: "pg_catalog" }
   category: "N"
   engine_specific {
-    floe_type {
+    payload_type: "floe.type+proto"
+    [floe.ext.floe_type] {
       oid: 20
       typname: "int8"
       typnamespace: 11
@@ -167,7 +173,8 @@ types {
   name { name: "text" path: "pg_catalog" }
   category: "S"
   engine_specific {
-    floe_type {
+    payload_type: "floe.type+proto"
+    [floe.ext.floe_type] {
       oid: 25
       typname: "text"
       typnamespace: 11
@@ -185,7 +192,8 @@ types {
   is_array: true
   element_type { name: "int4" path: "pg_catalog" }
   engine_specific {
-    floe_type {
+    payload_type: "floe.type+proto"
+    [floe.ext.floe_type] {
       oid: 1007
       typname: "_int4"
       typnamespace: 11
@@ -231,7 +239,8 @@ aggregates {
   state_type { name: "int8" path: "pg_catalog" }
   return_type { name: "int8" path: "pg_catalog" }
   engine_specific {
-    floe_aggregate {
+    payload_type: "floe.aggregate+proto"
+    [floe.ext.floe_aggregate] {
       aggfnoid: 0
       aggtransfn: 0
       aggfinalfn: 0

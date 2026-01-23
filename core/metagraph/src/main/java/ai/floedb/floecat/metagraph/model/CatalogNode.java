@@ -37,7 +37,7 @@ public record CatalogNode(
     Optional<String> connectorId,
     Optional<String> policyRef,
     Optional<List<ResourceId>> namespaceIds,
-    Map<EngineKey, EngineHint> engineHints)
+    Map<EngineHintKey, EngineHint> engineHints)
     implements GraphNode {
 
   public CatalogNode {
@@ -46,7 +46,7 @@ public record CatalogNode(
     policyRef = policyRef == null ? Optional.empty() : policyRef;
     namespaceIds =
         namespaceIds == null ? Optional.empty() : namespaceIds.map(list -> List.copyOf(list));
-    engineHints = Map.copyOf(engineHints);
+    engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
   }
 
   @Override

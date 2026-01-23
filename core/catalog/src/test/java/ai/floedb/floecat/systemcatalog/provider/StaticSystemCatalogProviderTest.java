@@ -54,6 +54,7 @@ class StaticSystemCatalogProviderTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     StaticSystemCatalogProvider provider = new StaticSystemCatalogProvider(Map.of("SpArK", data));
@@ -84,6 +85,7 @@ class StaticSystemCatalogProviderTest {
             List.of(fn("f")),
             List.of(),
             List.of(type("int")),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),

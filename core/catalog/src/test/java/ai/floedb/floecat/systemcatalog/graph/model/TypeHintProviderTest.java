@@ -21,7 +21,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
-import ai.floedb.floecat.systemcatalog.hint.SystemCatalogHintProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.utils.BuiltinTestSupport;
 import java.util.List;
@@ -31,13 +30,14 @@ import org.junit.jupiter.api.Test;
 class TypeHintProviderTest {
 
   private static final String ENGINE = "floe-demo";
+  private static final String TYPE_PAYLOAD_TYPE = "builtin.systemcatalog.type.properties";
 
   @Test
   void emitsTypeProperties() {
 
     var rule =
         new EngineSpecificRule(
-            ENGINE, "16.0", "", "", null, Map.of("oid", "1616", "typmodin", "12"));
+            ENGINE, "16.0", "", TYPE_PAYLOAD_TYPE, null, Map.of("oid", "1616", "typmodin", "12"));
 
     var catalog =
         new SystemCatalogData(
@@ -51,6 +51,7 @@ class TypeHintProviderTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     var provider = BuiltinTestSupport.providerFrom(ENGINE, catalog);
@@ -58,8 +59,8 @@ class TypeHintProviderTest {
 
     var node = BuiltinTestSupport.typeNode(ENGINE, "pg.int4");
 
-    var result = provider.compute(node, key, SystemCatalogHintProvider.HINT_TYPE, "cid");
-    assertThat(result.contentType()).contains("");
+    var result = provider.compute(node, key, TYPE_PAYLOAD_TYPE, "cid").orElseThrow();
+    assertThat(result.payloadType()).isEqualTo(TYPE_PAYLOAD_TYPE);
     assertThat(result.payload()).isEmpty();
     assertThat(result.metadata()).containsEntry("oid", "1616");
   }

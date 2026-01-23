@@ -77,7 +77,8 @@ class SystemGraphTest {
                     "scanner",
                     List.of())),
             List.of() // views
-            );
+            ,
+            List.of());
 
     registry.register(ENGINE, catalogData);
     registry.register(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, catalogData);
@@ -161,7 +162,7 @@ class SystemGraphTest {
     SystemCatalogData overrideCatalog =
         new SystemCatalogData(
             List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
-            List.of());
+            List.of(), List.of());
 
     registry.register(ENGINE, overrideCatalog);
 

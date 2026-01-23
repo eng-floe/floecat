@@ -30,7 +30,7 @@ public record TypeNode(
     String category,
     boolean array,
     ResourceId elementType,
-    Map<EngineKey, EngineHint> engineHints)
+    Map<EngineHintKey, EngineHint> engineHints)
     implements GraphNode {
 
   public TypeNode {

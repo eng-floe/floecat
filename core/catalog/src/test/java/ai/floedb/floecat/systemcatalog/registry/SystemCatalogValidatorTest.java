@@ -20,7 +20,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.systemcatalog.def.*;
+import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 final class SystemCatalogValidatorTest {
@@ -60,7 +62,8 @@ final class SystemCatalogValidatorTest {
             List.of(), // namespaces
             List.of(), // tables
             List.of() // views
-            );
+            ,
+            List.of());
 
     List<String> errors = SystemCatalogValidator.validate(catalog);
     assertThat(errors).contains("types.empty");
@@ -77,6 +80,7 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of(),
             List.of(type("int"), type("int")),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
@@ -106,6 +110,7 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     List<String> errors = SystemCatalogValidator.validate(catalog);
@@ -121,6 +126,7 @@ final class SystemCatalogValidatorTest {
                     name("f"), List.of(name("missing")), name("int"), false, false, List.of())),
             List.of(),
             List.of(type("int")),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
@@ -145,6 +151,7 @@ final class SystemCatalogValidatorTest {
                 new SystemOperatorDef(
                     name("+"), name("int"), name("missing"), name("int"), true, true, List.of())),
             List.of(type("int")),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
@@ -176,6 +183,7 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     List<String> errors = SystemCatalogValidator.validate(catalog);
@@ -192,6 +200,7 @@ final class SystemCatalogValidatorTest {
             List.of(
                 new SystemCastDef(
                     name("c"), name("missing"), name("int"), SystemCastMethod.EXPLICIT, List.of())),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
@@ -220,6 +229,7 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     List<String> errors = SystemCatalogValidator.validate(catalog);
@@ -244,10 +254,34 @@ final class SystemCatalogValidatorTest {
                     name("sum"), List.of(name("missing")), name("int"), name("int"), List.of())),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     List<String> errors = SystemCatalogValidator.validate(catalog);
     assertThat(errors).contains("agg.arg:sum.type.unknown:missing");
+  }
+
+  @Test
+  void validate_engineSpecificRulesRequirePayloadType() {
+    EngineSpecificRule rule = new EngineSpecificRule("pg", "", "", "", new byte[0], Map.of());
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(
+                new SystemFunctionDef(
+                    name("f"), List.of(), name("int"), false, false, List.of(rule))),
+            List.of(),
+            List.of(type("int")),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+
+    List<String> errors = SystemCatalogValidator.validate(catalog);
+    assertThat(errors).contains("function.f.engineSpecific[0].payloadType.required");
   }
 
   // ---------------------------------------------------------------------------
@@ -263,6 +297,7 @@ final class SystemCatalogValidatorTest {
                     name("f"), List.of(name("int")), name("int"), false, false, List.of())),
             List.of(),
             List.of(type("int")),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),

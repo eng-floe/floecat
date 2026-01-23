@@ -46,6 +46,7 @@ public final class SystemCatalogProtoMapper {
     catalog.casts().forEach(c -> builder.addCasts(toProtoCast(c)));
     catalog.collations().forEach(c -> builder.addCollations(toProtoCollation(c)));
     catalog.aggregates().forEach(a -> builder.addAggregates(toProtoAggregate(a)));
+    catalog.registryEngineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
 
     return builder.build();
   }
@@ -66,7 +67,10 @@ public final class SystemCatalogProtoMapper {
         proto.getAggregatesList().stream().map(a -> fromProtoAggregate(a, defaultEngine)).toList(),
         List.of(),
         List.of(),
-        List.of());
+        List.of(),
+        proto.getEngineSpecificList().stream()
+            .map(es -> fromProtoRule(es, defaultEngine))
+            .toList());
   }
 
   // =========================================================================

@@ -235,6 +235,48 @@ message FloeTypeSpecific {
 }
 
 /**
+ * Type planning semantics (typcache accelerant).
+ *
+ * This is attached per type on SqlType.engine_specific.
+ *
+ * payload_type: "floe.type.planning_semantics+proto"
+ */
+message FloeTypePlanningSemantics {
+  /** Type OID (pg_type.oid). */
+  optional uint32 type_oid = 1;
+
+  /** Equality operator OID (pg_operator.oid). */
+  optional uint32 eq_op_oid = 2;
+
+  /** B-tree comparison procedure OID (pg_proc.oid). Recommended. */
+  optional uint32 btree_cmp_proc_oid = 3;
+
+  /** B-tree less-than operator OID (pg_operator.oid). Optional. */
+  optional uint32 btree_lt_op_oid = 4;
+
+  /** B-tree greater-than operator OID (pg_operator.oid). Optional. */
+  optional uint32 btree_gt_op_oid = 5;
+
+  /** Hash support function OID (pg_proc.oid). */
+  optional uint32 hash_proc_oid = 6;
+
+  /** Default collation OID (pg_collation.oid). */
+  optional uint32 default_collation_oid = 7;
+
+  /** Preferred btree operator family OID (pg_opfamily.oid). */
+  optional uint32 btree_opfamily_oid = 8;
+
+  /** Preferred btree operator class OID (pg_opclass.oid). */
+  optional uint32 btree_opclass_oid = 9;
+
+  /** Preferred hash operator family OID (pg_opfamily.oid). */
+  optional uint32 hash_opfamily_oid = 10;
+
+  /** Preferred hash operator class OID (pg_opclass.oid). */
+  optional uint32 hash_opclass_oid = 11;
+}
+
+/**
  * Engine-specific operator attributes (pg_operator).
  */
 message FloeOperatorSpecific {
@@ -361,34 +403,163 @@ message FloeCollationSpecific {
 }
 
 /**
- * EngineSpecific extensions for FloeDB.
+ * Registry-level index access method dictionary (pg_am).
  *
- * These fields are attached to the unified SQL object model (`EngineSpecific`)
- * so that FloeDB-specific identity and catalog attributes can be carried
- * alongside engine-neutral definitions.
+ * This is emitted once per (engine_kind, engine_version) and attached to
+ * SystemObjectsRegistry.engine_specific.
+ *
+ * payload_type: "floe.index.access_methods+proto"
  */
-extend ai.floedb.floecat.query.EngineSpecific {
-  /** FloeDB-specific function attributes (pg_proc). */
-  optional FloeFunctionSpecific floe_function = 1;
+message FloeIndexAccessMethods {
+  /** Access methods known to the engine. */
+  repeated AccessMethod methods = 1;
 
-  /** FloeDB-specific operator attributes (pg_operator). */
-  optional FloeOperatorSpecific floe_operator = 2;
+  message AccessMethod {
+    /** Access method OID (pg_am.oid). */
+    optional uint32 oid = 1;
 
-  /** FloeDB-specific cast attributes (pg_cast). */
-  optional FloeCastSpecific floe_cast = 3;
-
-  /** FloeDB-specific type attributes (pg_type). */
-  optional FloeTypeSpecific floe_type = 4;
-
-  /** FloeDB-specific aggregate attributes (pg_aggregate). */
-  optional FloeAggregateSpecific floe_aggregate = 5;
-
-  /** FloeDB-specific collation attributes (pg_collation). */
-  optional FloeCollationSpecific floe_collation = 6;
-
-  /** FloeDB-specific namespace attributes (pg_namespace). */
-  optional FloeNamespaceSpecific floe_namespace = 7;
-
-  /** FloeDB-specific relation attributes (pg_class). */
-  optional FloeRelationSpecific floe_relation = 8;
+    /** Access method name (amname). Example: "btree", "hash". */
+    optional string name = 2;
+  }
 }
+
+/**
+ * Registry-level index operator family dictionary (pg_opfamily).
+ *
+ * This is emitted once per (engine_kind, engine_version) and attached to
+ * SystemObjectsRegistry.engine_specific.
+ *
+ * payload_type: "floe.index.operator_families+proto"
+ */
+message FloeIndexOperatorFamilies {
+  /** Operator families known to the engine. */
+  repeated OperatorFamily families = 1;
+
+  message OperatorFamily {
+    /** Operator family OID (pg_opfamily.oid). */
+    optional uint32 oid = 1;
+
+    /** Access method OID (opfmethod -> pg_am.oid). */
+    optional uint32 access_method_oid = 2;
+
+    /** Family name (opfname). Optional/debug. */
+    optional string name = 3;
+
+    /** Namespace OID (opfnamespace). Optional/debug. */
+    optional uint32 namespace_oid = 4;
+  }
+}
+
+/**
+ * Registry-level index operator class dictionary (pg_opclass).
+ *
+ * This is emitted once per (engine_kind, engine_version) and attached to
+ * SystemObjectsRegistry.engine_specific.
+ *
+ * payload_type: "floe.index.operator_classes+proto"
+ */
+message FloeIndexOperatorClasses {
+  /** Operator classes known to the engine. */
+  repeated OperatorClass classes = 1;
+
+  message OperatorClass {
+    /** Operator class OID (pg_opclass.oid). */
+    optional uint32 oid = 1;
+
+    /** Operator family OID (opcfamily -> pg_opfamily.oid). */
+    optional uint32 family_oid = 2;
+
+    /** Input type OID (opcintype -> pg_type.oid). */
+    optional uint32 input_type_oid = 3;
+
+    /** Access method OID (opcmethod -> pg_am.oid). */
+    optional uint32 access_method_oid = 4;
+
+    /** True if default opclass for (input_type_oid, access_method_oid). */
+    optional bool is_default = 5;
+
+    /** Operator class name (opcname). Optional/debug. */
+    optional string name = 6;
+
+    /** Namespace OID (opcnamespace). Optional/debug. */
+    optional uint32 namespace_oid = 7;
+  }
+}
+
+/**
+ * Registry-level index operator strategy dictionary (pg_amop).
+ *
+ * This is emitted once per (engine_kind, engine_version) and attached to
+ * SystemObjectsRegistry.engine_specific.
+ *
+ * payload_type: "floe.index.operator_strategies+proto"
+ */
+message FloeIndexOperatorStrategies {
+  /** Strategy entries mapping index semantics to operators. */
+  repeated OperatorStrategy entries = 1;
+
+  message OperatorStrategy {
+    /** Operator family OID (amopfamily -> pg_opfamily.oid). */
+    optional uint32 family_oid = 1;
+
+    /** Strategy number (amopstrategy). */
+    optional uint32 strategy = 2;
+
+    /** Left type OID (amoplefttype -> pg_type.oid). */
+    optional uint32 left_type_oid = 3;
+
+    /** Right type OID (amoprighttype -> pg_type.oid). */
+    optional uint32 right_type_oid = 4;
+
+    /** Operator OID (amopopr -> pg_operator.oid). */
+    optional uint32 operator_oid = 5;
+
+    /**
+     * Purpose flag (amoppurpose). Optional.
+     *
+     * Typically:
+     *  - "s" for search semantics
+     *  - "o" for ordering semantics
+     */
+    optional string purpose = 6;
+
+    /** Sort family OID (amopsortfamily -> pg_opfamily.oid). Optional. */
+    optional uint32 sort_family_oid = 7;
+  }
+}
+
+/**
+ * Registry-level index support procedure dictionary (pg_amproc).
+ *
+ * This is emitted once per (engine_kind, engine_version) and attached to
+ * SystemObjectsRegistry.engine_specific.
+ *
+ * payload_type: "floe.index.support_procedures+proto"
+ */
+message FloeIndexSupportProcedures {
+  /** Support procedure entries mapping AM procedures to functions. */
+  repeated SupportProcedure entries = 1;
+
+  message SupportProcedure {
+    /** Operator family OID (amprocfamily -> pg_opfamily.oid). */
+    optional uint32 family_oid = 1;
+
+    /** Support procedure number (amprocnum). */
+    optional uint32 proc_number = 2;
+
+    /** Left type OID (amproclefttype -> pg_type.oid). */
+    optional uint32 left_type_oid = 3;
+
+    /** Right type OID (amprocrighttype -> pg_type.oid). */
+    optional uint32 right_type_oid = 4;
+
+    /** Function OID (amproc -> pg_proc.oid). */
+    optional uint32 function_oid = 5;
+  }
+}
+
+/**
+ * NOTE: EngineSpecific extension field names were moved to engine_floe_extensions.proto.
+ * That file uses a short proto package (`floe.ext`) to keep PBtxt bracket notation concise.
+ * The message types remain defined in this file.
+ */

@@ -28,7 +28,7 @@ public record CollationNode(
     String engineVersion,
     String displayName,
     String locale,
-    Map<EngineKey, EngineHint> engineHints)
+    Map<EngineHintKey, EngineHint> engineHints)
     implements GraphNode {
 
   public CollationNode {

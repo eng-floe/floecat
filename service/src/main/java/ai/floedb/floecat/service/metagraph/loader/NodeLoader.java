@@ -28,7 +28,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.EngineHint;
-import ai.floedb.floecat.metagraph.model.EngineKey;
+import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
@@ -57,7 +57,7 @@ import java.util.Optional;
 @ApplicationScoped
 public class NodeLoader {
 
-  private static final Map<EngineKey, EngineHint> NO_ENGINE_HINTS = Map.of();
+  private static final Map<EngineHintKey, EngineHint> NO_ENGINE_HINTS = Map.of();
 
   private final CatalogRepository catalogRepository;
   private final NamespaceRepository namespaceRepository;

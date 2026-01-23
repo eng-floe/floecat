@@ -38,7 +38,7 @@ public record NamespaceNode(
     GraphNodeOrigin origin,
     Map<String, String> properties,
     Optional<List<ResourceId>> relationIds,
-    Map<EngineKey, EngineHint> engineHints)
+    Map<EngineHintKey, EngineHint> engineHints)
     implements GraphNode {
 
   public NamespaceNode {
@@ -46,7 +46,7 @@ public record NamespaceNode(
     properties = Map.copyOf(properties);
     relationIds =
         relationIds == null ? Optional.empty() : relationIds.map(list -> List.copyOf(list));
-    engineHints = Map.copyOf(engineHints);
+    engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
   }
 
   @Override

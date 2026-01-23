@@ -18,7 +18,7 @@ package ai.floedb.floecat.systemcatalog.graph.model;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.EngineHint;
-import ai.floedb.floecat.metagraph.model.EngineKey;
+import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
@@ -48,7 +48,7 @@ public record SystemTableNode(
     ResourceId namespaceId,
     List<SchemaColumn> columns,
     String scannerId,
-    Map<EngineKey, EngineHint> engineHints)
+    Map<EngineHintKey, EngineHint> engineHints)
     implements TableNode {
 
   public SystemTableNode {

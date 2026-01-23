@@ -43,7 +43,7 @@ public record ViewNode(
     List<String> creationSearchPath,
     Map<String, String> properties,
     Optional<String> owner,
-    Map<EngineKey, EngineHint> engineHints)
+    Map<EngineHintKey, EngineHint> engineHints)
     implements GraphNode {
 
   public ViewNode {
@@ -52,7 +52,7 @@ public record ViewNode(
     creationSearchPath = List.copyOf(creationSearchPath);
     properties = Map.copyOf(properties);
     owner = owner == null ? Optional.empty() : owner;
-    engineHints = Map.copyOf(engineHints);
+    engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
   }
 
   @Override

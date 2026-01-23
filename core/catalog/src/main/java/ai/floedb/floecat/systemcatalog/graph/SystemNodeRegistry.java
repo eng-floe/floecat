@@ -46,6 +46,7 @@ import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -224,12 +225,14 @@ public class SystemNodeRegistry {
             aggregateDefs,
             namespaceDefs,
             tableDefs,
-            viewDefs));
+            viewDefs,
+            catalog.registryEngineSpecific()));
   }
 
   private SystemCatalogData mergeCatalogData(
       EngineContext canonical, SystemEngineCatalog baseCatalog) {
     String engineKind = baseCatalog.engineKind();
+    String normalizedKind = canonical.normalizedKind();
     String normalizedVersion = canonical.normalizedVersion();
     boolean includeProviders =
         canonical.enginePluginOverlaysEnabled()
@@ -257,17 +260,36 @@ public class SystemNodeRegistry {
 
     if (includeProviders) {
       for (SystemObjectScannerProvider provider : extensionProviders) {
-        if (!provider.supportsEngine(engineKind)) {
+        if (!provider.supportsEngine(normalizedKind)) {
           continue;
         }
-        for (SystemObjectDef def : provider.definitions(engineKind, normalizedVersion)) {
-          if (!provider.supports(def.name(), engineKind, normalizedVersion)) {
+        for (SystemObjectDef def : provider.definitions(normalizedKind, normalizedVersion)) {
+          if (!provider.supports(def.name(), normalizedKind, normalizedVersion)) {
             continue;
           }
           mergeDefinition(def, namespaceByName, tableByName, viewByName);
         }
       }
     }
+
+    List<EngineSpecificRule> registryCandidates = new ArrayList<>();
+    registryCandidates.addAll(
+        internalProvider.registryEngineSpecific(normalizedKind, normalizedVersion));
+    registryCandidates.addAll(baseCatalog.registryEngineSpecific());
+    if (includeProviders) {
+      for (SystemObjectScannerProvider provider : extensionProviders) {
+        if (!provider.supportsEngine(normalizedKind)) {
+          continue;
+        }
+        registryCandidates.addAll(
+            provider.registryEngineSpecific(normalizedKind, normalizedVersion));
+      }
+    }
+    List<EngineSpecificRule> registryRules =
+        dedupeMatchingRules(
+            matchingRules(
+                dedupeRegistryRules(registryCandidates), normalizedKind, normalizedVersion),
+            normalizedKind);
 
     return new SystemCatalogData(
         baseCatalog.functions(),
@@ -278,7 +300,8 @@ public class SystemNodeRegistry {
         baseCatalog.aggregates(),
         List.copyOf(namespaceByName.values()),
         List.copyOf(tableByName.values()),
-        List.copyOf(viewByName.values()));
+        List.copyOf(viewByName.values()),
+        registryRules);
   }
 
   private static void mergeDefinition(
@@ -528,6 +551,98 @@ public class SystemNodeRegistry {
       List<EngineSpecificRule> rules, String engineKind, String engineVersion) {
     if (rules == null || rules.isEmpty()) return List.of();
     return EngineSpecificMatcher.matchedRules(rules, engineKind, engineVersion);
+  }
+
+  private static List<EngineSpecificRule> dedupeMatchingRules(
+      List<EngineSpecificRule> matched, String targetKind) {
+    if (matched == null || matched.isEmpty()) return List.of();
+    LinkedHashMap<String, EngineSpecificRule> dedup = new LinkedHashMap<>();
+    for (EngineSpecificRule rule : matched) {
+      if (rule == null) {
+        continue;
+      }
+      String key = registryMatchKey(rule);
+      EngineSpecificRule existing = dedup.get(key);
+      if (shouldReplaceBySpecificity(existing, rule, targetKind)) {
+        dedup.put(key, rule);
+      }
+    }
+    return List.copyOf(dedup.values());
+  }
+
+  private static String registryMatchKey(EngineSpecificRule rule) {
+    String payloadType = rule.payloadType();
+    if (payloadType == null) {
+      payloadType = "";
+    }
+    return payloadType;
+  }
+
+  private static boolean shouldReplaceBySpecificity(
+      EngineSpecificRule existing, EngineSpecificRule candidate, String targetKind) {
+    if (existing == null) {
+      return true;
+    }
+    String existingKind = existing.engineKind();
+    String candidateKind = candidate.engineKind();
+    if (candidateKind != null
+        && !candidateKind.isBlank()
+        && !candidateKind.equals(existingKind)
+        && candidateKind.equals(targetKind)) {
+      return true;
+    }
+    boolean existingWild = existingKind == null || existingKind.isBlank();
+    boolean candidateWild = candidateKind == null || candidateKind.isBlank();
+    if (existingWild && !candidateWild) {
+      return true;
+    }
+    if (!existingWild && candidateWild) {
+      return false;
+    }
+    int existingScore = versionSpecificity(existing);
+    int candidateScore = versionSpecificity(candidate);
+    if (candidateScore != existingScore) {
+      return candidateScore > existingScore;
+    }
+    return true; // tie goes to later candidate so overlays override earlier hints
+  }
+
+  private static int versionSpecificity(EngineSpecificRule rule) {
+    int score = 0;
+    if (rule.hasMinVersion()) {
+      score++;
+    }
+    if (rule.hasMaxVersion()) {
+      score++;
+    }
+    return score;
+  }
+
+  private static List<EngineSpecificRule> dedupeRegistryRules(List<EngineSpecificRule> candidates) {
+    if (candidates == null || candidates.isEmpty()) {
+      return List.of();
+    }
+    LinkedHashMap<String, EngineSpecificRule> dedup = new LinkedHashMap<>();
+    for (EngineSpecificRule rule : candidates) {
+      if (rule == null) {
+        continue;
+      }
+      String key = registryRuleKey(rule);
+      dedup.remove(key);
+      dedup.put(key, rule);
+    }
+    return List.copyOf(dedup.values());
+  }
+
+  private static String registryRuleKey(EngineSpecificRule rule) {
+    String payloadType = rule.payloadType();
+    if (payloadType == null) {
+      payloadType = "";
+    }
+    String kind = rule.engineKind() == null ? "" : rule.engineKind();
+    String min = rule.minVersion() == null ? "" : rule.minVersion();
+    String max = rule.maxVersion() == null ? "" : rule.maxVersion();
+    return String.join("|", payloadType, kind, min, max);
   }
 
   private static boolean matches(

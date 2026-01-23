@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.hint.EngineHintProvider;
 import ai.floedb.floecat.metagraph.model.EngineHint;
+import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
@@ -46,16 +47,16 @@ class EngineHintManagerTest {
         new EngineHintManager(List.of(provider), new SimpleMeterRegistry(), 1024);
 
     UserTableNode node = tableNode(1L);
-    EngineKey key = new EngineKey("floedb", "1.0.0");
-
-    EngineHint hint1 = manager.get(node, key, "test", "cid").orElseThrow();
-    EngineHint hint2 = manager.get(node, key, "test", "cid").orElseThrow();
+    var engineKey = new EngineKey("floedb", "1.0.0");
+    var hintKey = new EngineHintKey(engineKey.engineKind(), engineKey.engineVersion(), "test");
+    EngineHint hint1 = manager.get(node, engineKey, "test", "cid").orElseThrow();
+    EngineHint hint2 = manager.get(node, hintKey, "cid").orElseThrow();
     assertThat(provider.computeCount.get()).isEqualTo(1);
     assertThat(hint2.payload()).isEqualTo(hint1.payload());
 
     manager.invalidate(node.id());
     UserTableNode nodeUpdated = tableNode(2L);
-    manager.get(nodeUpdated, key, "test", "cid").orElseThrow();
+    manager.get(nodeUpdated, new EngineKey("floedb", "1.0.0"), "test", "cid").orElseThrow();
     assertThat(provider.computeCount.get()).isEqualTo(2);
   }
 
@@ -110,14 +111,13 @@ class EngineHintManagerTest {
     var provider =
         new TestProvider() {
           @Override
-          public String fingerprint(GraphNode node, EngineKey key, String hintType) {
+          public String fingerprint(GraphNode node, EngineKey key, String payloadType) {
             return computeCount.get() == 0 ? "fp1" : "fp2";
           }
         };
 
     var manager = new EngineHintManager(List.of(provider), new SimpleMeterRegistry(), 1024);
     var key = new EngineKey("floedb", "1");
-
     // same node id and version
     var n = tableNode(1);
 
@@ -139,9 +139,9 @@ class EngineHintManagerTest {
         new EngineHintManager(List.of(p1, p2), new SimpleMeterRegistry(), 1024);
 
     var node = tableNode(1);
-    var key = new EngineKey("floedb", "1");
+    var key = new EngineHintKey("floedb", "1", "test");
 
-    manager.get(node, key, "test", "cid");
+    manager.get(node, key, "cid");
 
     assertThat(p1.computeCount.get()).isEqualTo(1);
     assertThat(p2.computeCount.get()).isEqualTo(0);
@@ -152,9 +152,10 @@ class EngineHintManagerTest {
     var provider =
         new TestProvider() {
           @Override
-          public EngineHint compute(GraphNode node, EngineKey k, String h, String c) {
+          public Optional<EngineHint> compute(
+              GraphNode node, EngineKey k, String payloadType, String c) {
             computeCount.incrementAndGet();
-            return new EngineHint("t", new byte[512]); // heavy
+            return Optional.of(new EngineHint("t", new byte[512])); // heavy
           }
         };
 
@@ -211,7 +212,7 @@ class EngineHintManagerTest {
           }
 
           @Override
-          public EngineHint compute(GraphNode n, EngineKey k, String h, String c) {
+          public Optional<EngineHint> compute(GraphNode n, EngineKey k, String h, String c) {
             throw new RuntimeException("boom");
           }
         };
@@ -224,13 +225,42 @@ class EngineHintManagerTest {
         .hasMessageContaining("boom");
   }
 
+  @Test
+  void cacheIsolatedByPayloadType() {
+    TestProvider.GLOBAL_CALLS.set(0);
+    var manager =
+        new EngineHintManager(List.of(new TestProvider()), new SimpleMeterRegistry(), 1024);
+    var node = tableNode(1);
+    var key = new EngineKey("floedb", "1");
+    manager.get(node, key, "test", "cid").orElseThrow();
+    manager.get(node, key, "other", "cid").orElseThrow();
+
+    assertThat(TestProvider.GLOBAL_CALLS.get()).isEqualTo(2);
+    manager.get(node, key, "test", "cid");
+    manager.get(node, key, "other", "cid");
+    assertThat(TestProvider.GLOBAL_CALLS.get()).isEqualTo(2);
+  }
+
+  @Test
+  void unsupportedPayloadTypeNeverComputes() {
+    var provider = new TestProvider();
+    var manager = new EngineHintManager(List.of(provider), new SimpleMeterRegistry(), 1024);
+    var node = tableNode(1);
+
+    assertThat(manager.get(node, new EngineKey("floedb", "1"), "missing", "cid")).isEmpty();
+    assertThat(provider.computeCount.get()).isEqualTo(0);
+  }
+
   private static class TestProvider implements EngineHintProvider {
 
     protected final AtomicInteger computeCount = new AtomicInteger();
+    static final AtomicInteger GLOBAL_CALLS = new AtomicInteger();
+    static final AtomicInteger callsStatic = new AtomicInteger();
 
     @Override
-    public boolean supports(GraphNodeKind kind, String hintType) {
-      return kind == GraphNodeKind.TABLE && hintType.equals("test");
+    public boolean supports(GraphNodeKind kind, String payloadType) {
+      return kind == GraphNodeKind.TABLE
+          && (payloadType.equals("test") || payloadType.equals("other"));
     }
 
     @Override
@@ -239,15 +269,17 @@ class EngineHintManagerTest {
     }
 
     @Override
-    public String fingerprint(GraphNode node, EngineKey engineKey, String hintType) {
+    public String fingerprint(GraphNode node, EngineKey engineKey, String payloadType) {
       return node.version() + "-fp";
     }
 
     @Override
-    public EngineHint compute(
-        GraphNode node, EngineKey engineKey, String hintType, String correlationId) {
+    public Optional<EngineHint> compute(
+        GraphNode node, EngineKey engineKey, String payloadType, String correlationId) {
       computeCount.incrementAndGet();
-      return new EngineHint("application/test", new byte[] {1, 2, 3});
+      GLOBAL_CALLS.incrementAndGet();
+      callsStatic.incrementAndGet();
+      return Optional.of(new EngineHint("test.payload+bytes", new byte[] {1, 2, 3}));
     }
   }
 }

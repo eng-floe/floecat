@@ -21,7 +21,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.systemcatalog.def.SystemCollationDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
-import ai.floedb.floecat.systemcatalog.hint.SystemCatalogHintProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.utils.BuiltinTestSupport;
 import java.util.List;
@@ -31,13 +30,19 @@ import org.junit.jupiter.api.Test;
 class CollationHintProviderTest {
 
   private static final String ENGINE = "floe-demo";
+  private static final String COLLATION_PAYLOAD_TYPE = "builtin.systemcatalog.collation.properties";
 
   @Test
   void emitsCollationProperties() {
 
     var rule =
         new EngineSpecificRule(
-            ENGINE, "16.0", "", "", null, Map.of("collcollate", "blah", "oid", "4141"));
+            ENGINE,
+            "16.0",
+            "",
+            COLLATION_PAYLOAD_TYPE,
+            null,
+            Map.of("collcollate", "blah", "oid", "4141"));
 
     var catalog =
         new SystemCatalogData(
@@ -50,6 +55,7 @@ class CollationHintProviderTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of());
 
     var provider = BuiltinTestSupport.providerFrom(ENGINE, catalog);
@@ -57,8 +63,8 @@ class CollationHintProviderTest {
 
     var node = BuiltinTestSupport.collationNode(ENGINE, "pg.en_US");
 
-    var result = provider.compute(node, key, SystemCatalogHintProvider.HINT_TYPE, "cid");
-    assertThat(result.contentType()).contains("");
+    var result = provider.compute(node, key, COLLATION_PAYLOAD_TYPE, "cid").orElseThrow();
+    assertThat(result.payloadType()).isEqualTo(COLLATION_PAYLOAD_TYPE);
     assertThat(result.payload()).isEmpty();
     assertThat(result.metadata()).containsEntry("oid", "4141");
   }
