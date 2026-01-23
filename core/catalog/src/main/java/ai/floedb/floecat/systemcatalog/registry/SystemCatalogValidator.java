@@ -38,6 +38,7 @@ public final class SystemCatalogValidator {
     }
 
     Set<NameRef> typeNames = validateTypes(catalog.types(), errors);
+    verifyTypeDetails(catalog.types(), typeNames, errors);
     validateFunctions(catalog.functions(), typeNames, errors);
     validateOperators(catalog.operators(), typeNames, errors);
     validateCasts(catalog.casts(), typeNames, errors);
@@ -72,6 +73,34 @@ public final class SystemCatalogValidator {
     return typeNames;
   }
 
+  private static void verifyTypeDetails(
+      List<SystemTypeDef> types, Set<NameRef> typeNames, List<String> errors) {
+    for (SystemTypeDef type : types) {
+      NameRef name = type.name();
+      String category = type.category();
+
+      if (category == null || category.isBlank()) {
+        errors.add("type.category.required:" + formatName(name));
+      } else if (category.length() != 1 || !Character.isUpperCase(category.charAt(0))) {
+        errors.add("type.category.invalid:" + formatName(name));
+      }
+
+      NameRef element = type.elementType();
+      if (type.array()) {
+        if (element == null || element.getName().isBlank()) {
+          errors.add("type.element.required:" + formatName(name));
+        } else {
+          requireTypeExists(element, typeNames, errors, "type.element:" + formatName(name));
+          if (element.equals(name)) {
+            errors.add("type.element.self:" + formatName(name));
+          }
+        }
+      } else if (element != null && !element.getName().isBlank()) {
+        requireTypeExists(element, typeNames, errors, "type.element:" + formatName(name));
+      }
+    }
+  }
+
   // ------------------------------------------------------------
   // Functions
   // ------------------------------------------------------------
@@ -84,11 +113,16 @@ public final class SystemCatalogValidator {
     }
 
     Set<NameRef> names = new HashSet<>();
+    Set<String> signatures = new HashSet<>();
     for (SystemFunctionDef fn : functions) {
       NameRef name = fn.name();
       if (name == null || name.getName().isBlank()) {
         errors.add("function.name.required");
         continue;
+      }
+      String signature = functionSignature(fn);
+      if (!signatures.add(signature)) {
+        errors.add("function.duplicate:" + signature);
       }
       names.add(name);
 
@@ -110,8 +144,18 @@ public final class SystemCatalogValidator {
   private static void validateOperators(
       List<SystemOperatorDef> operators, Set<NameRef> typeNames, List<String> errors) {
 
+    Set<String> signatures = new HashSet<>();
+
     for (SystemOperatorDef op : operators) {
       NameRef name = op.name();
+      if (name == null || name.getName().isBlank()) {
+        errors.add("operator.name.required");
+        continue;
+      }
+      String signature = operatorSignature(op);
+      if (!signatures.add(signature)) {
+        errors.add("operator.duplicate:" + signature);
+      }
 
       requireTypeExists(op.leftType(), typeNames, errors, "operator.left:" + formatName(name));
       requireTypeExists(op.rightType(), typeNames, errors, "operator.right:" + formatName(name));
@@ -127,6 +171,7 @@ public final class SystemCatalogValidator {
       List<SystemCastDef> casts, Set<NameRef> typeNames, List<String> errors) {
 
     Set<NameRef> names = new HashSet<>();
+    Set<String> mappings = new HashSet<>();
 
     for (SystemCastDef cast : casts) {
       NameRef name = cast.name();
@@ -135,7 +180,7 @@ public final class SystemCatalogValidator {
         continue;
       }
       if (!names.add(name)) {
-        errors.add("cast.duplicate:" + formatName(name));
+        errors.add("cast.name.duplicate:" + formatName(name));
       }
 
       NameRef src = cast.sourceType();
@@ -143,6 +188,13 @@ public final class SystemCatalogValidator {
 
       requireTypeExists(src, typeNames, errors, "cast.source");
       requireTypeExists(tgt, typeNames, errors, "cast.target");
+
+      if (src != null && !src.getName().isBlank() && tgt != null && !tgt.getName().isBlank()) {
+        String mapping = castSignature(src, tgt);
+        if (!mappings.add(mapping)) {
+          errors.add("cast.duplicate:" + mapping);
+        }
+      }
     }
   }
 
@@ -173,8 +225,18 @@ public final class SystemCatalogValidator {
   private static void validateAggregates(
       List<SystemAggregateDef> aggregates, Set<NameRef> typeNames, List<String> errors) {
 
+    Set<String> signatures = new HashSet<>();
+
     for (SystemAggregateDef agg : aggregates) {
       NameRef name = agg.name();
+      if (name == null || name.getName().isBlank()) {
+        errors.add("agg.name.required");
+        continue;
+      }
+      String signature = aggregateSignature(agg);
+      if (!signatures.add(signature)) {
+        errors.add("agg.duplicate:" + signature);
+      }
 
       requireTypeExists(agg.stateType(), typeNames, errors, "agg.state:" + formatName(name));
       requireTypeExists(agg.returnType(), typeNames, errors, "agg.return:" + formatName(name));
@@ -278,5 +340,46 @@ public final class SystemCatalogValidator {
     if (ref == null) return "<null>";
     if (ref.getPathList().isEmpty()) return ref.getName();
     return String.join(".", ref.getPathList()) + "." + ref.getName();
+  }
+
+  private static String operatorSignature(SystemOperatorDef op) {
+    return formatName(op.name())
+        + "("
+        + formatName(op.leftType())
+        + ","
+        + formatName(op.rightType())
+        + ")";
+  }
+
+  private static String castSignature(NameRef src, NameRef tgt) {
+    return formatName(src) + "->" + formatName(tgt);
+  }
+
+  private static String aggregateSignature(SystemAggregateDef agg) {
+    var builder = new StringBuilder();
+    builder.append(formatName(agg.name())).append("(");
+    List<NameRef> args = agg.argumentTypes();
+    for (int i = 0; i < args.size(); i++) {
+      builder.append(formatName(args.get(i)));
+      if (i + 1 < args.size()) {
+        builder.append(",");
+      }
+    }
+    builder.append(")");
+    return builder.toString();
+  }
+
+  private static String functionSignature(SystemFunctionDef fn) {
+    var builder = new StringBuilder();
+    builder.append(formatName(fn.name())).append("(");
+    List<NameRef> args = fn.argumentTypes();
+    for (int i = 0; i < args.size(); i++) {
+      builder.append(formatName(args.get(i)));
+      if (i + 1 < args.size()) {
+        builder.append(",");
+      }
+    }
+    builder.append(")->").append(formatName(fn.returnType()));
+    return builder.toString();
   }
 }

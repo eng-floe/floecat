@@ -23,6 +23,9 @@ java -jar tools/builtin-validator/target/builtin-validator.jar \
     [--json] [--strict]
 ```
 
+The CLI also accepts catalog directories that expose `_index.txt` under
+`service/src/main/resources/builtins/<engine_kind>/_index.txt`.
+
 - `--json` emits machine-readable results (`valid`, `stats`, `errors`,
   `warnings`).
 - `--strict` makes warnings fail the run (currently reserved for future checks).

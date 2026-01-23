@@ -19,7 +19,9 @@ package io.floecat.tools.validator;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
+import ai.floedb.floecat.systemcatalog.registry.SystemCatalogValidationFormatter;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogValidator;
+import ai.floedb.floecat.systemcatalog.registry.SystemObjectsRegistryMerger;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.TextFormat;
 import java.io.IOException;
@@ -29,8 +31,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.Objects;
 
 /**
  * Standalone command line validator for builtin catalog protobuf files. The CLI intentionally
@@ -40,19 +40,6 @@ import java.util.Objects;
 public final class SystemObjectsValidatorCli {
 
   private static final String CHECK = "\u2714";
-  private static final Map<String, String> CONTEXT_LABELS =
-      Map.ofEntries(
-          Map.entry("function.return", "Function return type"),
-          Map.entry("function.arg", "Function argument"),
-          Map.entry("operator.left", "Operator left operand"),
-          Map.entry("operator.right", "Operator right operand"),
-          Map.entry("cast.source", "Cast source type"),
-          Map.entry("cast.target", "Cast target type"),
-          Map.entry("agg.state", "Aggregate state type"),
-          Map.entry("agg.return", "Aggregate return type"),
-          Map.entry("agg.arg", "Aggregate argument"),
-          Map.entry("agg.stateFn", "Aggregate state function"),
-          Map.entry("agg.finalFn", "Aggregate final function"));
 
   static {
     ensureSystemProperty("com.google.protobuf.useUnsafe", "false");
@@ -154,7 +141,7 @@ public final class SystemObjectsValidatorCli {
     }
 
     errors.stream()
-        .map(SystemObjectsValidatorCli::describeError)
+        .map(SystemCatalogValidationFormatter::describeError)
         .forEach(err -> out.println(errorPrefix + colored(err, AnsiColor.RED_BOLD)));
     warnings.stream()
         .map(SystemObjectsValidatorCli::describeWarning)
@@ -185,7 +172,7 @@ public final class SystemObjectsValidatorCli {
     builder.append("  \"valid\": ").append(valid).append(",\n");
     builder
         .append("  \"errors\": ")
-        .append(asJsonArray(errors, SystemObjectsValidatorCli::describeError))
+        .append(asJsonArray(errors, SystemCatalogValidationFormatter::describeError))
         .append(",\n");
     builder
         .append("  \"warnings\": ")
@@ -230,95 +217,103 @@ public final class SystemObjectsValidatorCli {
     return builder.toString();
   }
 
-  /** Converts validator error codes into human friendly sentences. */
   private static String describeError(String code) {
-    Objects.requireNonNull(code, "code");
-    if (code.equals("catalog.null")) {
-      return "Catalog payload is null";
-    }
-    if (code.equals("types.empty")) {
-      return "Catalog defines no types";
-    }
-    if (code.equals("functions.empty")) {
-      return "Catalog defines no functions";
-    }
-    if (code.equals("type.name.required")) {
-      return "Type name is required";
-    }
-    if (code.startsWith("type.duplicate:")) {
-      return "Duplicate type '" + code.substring(code.indexOf(':') + 1) + "'";
-    }
-    if (code.equals("function.name.required")) {
-      return "Function name is required";
-    }
-    if (code.startsWith("function.duplicate:")) {
-      return "Duplicate function '" + code.substring(code.indexOf(':') + 1) + "'";
-    }
-    if (code.startsWith("operator.function.missing:")) {
-      return "Operator references unknown function '" + code.substring(code.indexOf(':') + 1) + "'";
-    }
-    if (code.startsWith("collation.duplicate:")) {
-      return "Duplicate collation '" + code.substring(code.indexOf(':') + 1) + "'";
-    }
-    if (code.equals("collation.name.required")) {
-      return "Collation name is required";
-    }
-    if (code.startsWith("cast.duplicate:")) {
-      return "Duplicate cast mapping '" + code.substring(code.indexOf(':') + 1) + "'";
-    }
-    if (code.contains(".type.required")) {
-      return contextLabel(code) + " must reference a type";
-    }
-    if (code.contains(".type.unknown:")) {
-      int idx = code.lastIndexOf(':');
-      return contextLabel(code) + " references unknown type '" + code.substring(idx + 1) + "'";
-    }
-    if (code.contains(".function.required")) {
-      return contextLabel(code) + " must reference a function";
-    }
-    if (code.contains(".function.unknown:")) {
-      int idx = code.lastIndexOf(':');
-      return contextLabel(code) + " references unknown function '" + code.substring(idx + 1) + "'";
-    }
-    return code;
+    return SystemCatalogValidationFormatter.describeError(code);
   }
 
-  /** Maps the validator namespaces to readable labels. */
-  private static String contextLabel(String code) {
-    String prefix = code;
-    int idx = code.indexOf(':');
-    if (idx > 0) {
-      prefix = code.substring(0, idx);
-    }
-    return CONTEXT_LABELS.getOrDefault(prefix, prefix);
-  }
-
-  /** Placeholder for when warnings are added to the validator. */
   private static String describeWarning(String code) {
-    return code;
+    return SystemCatalogValidationFormatter.describeWarning(code);
   }
 
-  /** Loads either a binary or text protobuf from disk and maps it to our data record. */
+  /** Loads either a catalog directory or a single protobuf file. */
   private SystemCatalogData loadCatalog(Path path) throws IOException {
-    if (!Files.exists(path)) {
-      throw new IOException("Catalog file does not exist: " + path);
+    Path normalized = path.toAbsolutePath().normalize();
+    if (Files.isDirectory(normalized)) {
+      return loadCatalogFromIndex(normalized.resolve("_index.txt"));
+    }
+    if ("_index.txt".equals(normalized.getFileName().toString())) {
+      return loadCatalogFromIndex(normalized);
     }
 
-    String engineKind = inferEngineKind(path);
+    if (!Files.exists(normalized)) {
+      throw new IOException("Catalog file does not exist: " + normalized);
+    }
+
+    String engineKind = inferEngineKind(normalized);
 
     try {
-      byte[] bytes = Files.readAllBytes(path);
+      byte[] bytes = Files.readAllBytes(normalized);
       return SystemCatalogProtoMapper.fromProto(SystemObjectsRegistry.parseFrom(bytes), engineKind);
     } catch (InvalidProtocolBufferException binaryParseFailure) {
       var builder = SystemObjectsRegistry.newBuilder();
-      try (var reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+      try (var reader = Files.newBufferedReader(normalized, StandardCharsets.UTF_8)) {
         TextFormat.getParser().merge(reader, builder);
         return SystemCatalogProtoMapper.fromProto(builder.build(), engineKind);
       } catch (TextFormat.ParseException textFailure) {
         throw new IOException(
-            "Catalog file is not valid protobuf (binary or text): " + path, textFailure);
+            "Catalog file is not valid protobuf (binary or text): " + normalized, textFailure);
       }
     }
+  }
+
+  private SystemCatalogData loadCatalogFromIndex(Path indexPath) throws IOException {
+    Path dir = indexPath.getParent();
+    if (dir == null) {
+      throw new IOException("Catalog index must live inside a directory: " + indexPath);
+    }
+    if (!Files.exists(indexPath)) {
+      throw new IOException("Catalog index does not exist: " + indexPath);
+    }
+
+    List<String> entries = readIndexEntries(indexPath);
+    if (entries.isEmpty()) {
+      throw new IOException("Catalog index contains no fragments: " + indexPath);
+    }
+
+    SystemObjectsRegistry.Builder builder = SystemObjectsRegistry.newBuilder();
+    TextFormat.Parser parser = TextFormat.Parser.newBuilder().setAllowUnknownFields(true).build();
+
+    for (String entry : entries) {
+      if (entry.startsWith("/") || entry.startsWith("\\") || entry.contains("..")) {
+        throw new IOException("Invalid catalog fragment '" + entry + "' in index " + indexPath);
+      }
+
+      Path fragmentPath = dir.resolve(entry).normalize();
+      if (!fragmentPath.startsWith(dir)) {
+        throw new IOException("Catalog fragment escapes directory: " + fragmentPath);
+      }
+      if (!Files.exists(fragmentPath)) {
+        throw new IOException("Catalog fragment does not exist: " + fragmentPath);
+      }
+
+      SystemObjectsRegistry.Builder fragmentBuilder = SystemObjectsRegistry.newBuilder();
+      try (var reader = Files.newBufferedReader(fragmentPath, StandardCharsets.UTF_8)) {
+        parser.merge(reader, fragmentBuilder);
+      } catch (TextFormat.ParseException parseFailure) {
+        throw new IOException("Failed to parse catalog fragment: " + fragmentPath, parseFailure);
+      }
+
+      SystemObjectsRegistryMerger.append(builder, fragmentBuilder.build());
+    }
+
+    return SystemCatalogProtoMapper.fromProto(builder.build(), inferEngineKindFromDirectory(dir));
+  }
+
+  private static List<String> readIndexEntries(Path indexPath) throws IOException {
+    List<String> entries = new ArrayList<>();
+    for (String line : Files.readAllLines(indexPath, StandardCharsets.UTF_8)) {
+      String trimmed = line.trim();
+      if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+        continue;
+      }
+      entries.add(trimmed);
+    }
+    return entries;
+  }
+
+  private static String inferEngineKindFromDirectory(Path directory) {
+    Path name = directory.getFileName();
+    return name != null ? name.toString() : directory.toString();
   }
 
   private static String inferEngineKind(Path path) {

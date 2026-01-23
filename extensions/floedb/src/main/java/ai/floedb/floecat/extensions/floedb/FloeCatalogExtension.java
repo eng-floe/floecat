@@ -26,6 +26,7 @@ import ai.floedb.floecat.query.rpc.*;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
+import ai.floedb.floecat.systemcatalog.registry.SystemObjectsRegistryMerger;
 import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
@@ -117,7 +118,7 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
       String rawText = loadResourceText(resourcePath);
       SystemObjectsRegistry.Builder tmp = SystemObjectsRegistry.newBuilder();
       mergeTextIntoBuilder(rawText, resourcePath, parser, extensionRegistry, tmp);
-      appendRegistry(accumulator, tmp.build());
+      SystemObjectsRegistryMerger.append(accumulator, tmp.build());
     }
 
     return accumulator.build();
@@ -177,17 +178,6 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
     } catch (Exception e) {
       throw new IllegalStateException("Failed to parse builtin file: " + resourcePath, e);
     }
-  }
-
-  private void appendRegistry(
-      SystemObjectsRegistry.Builder accumulator, SystemObjectsRegistry parsed) {
-    accumulator.addAllFunctions(parsed.getFunctionsList());
-    accumulator.addAllOperators(parsed.getOperatorsList());
-    accumulator.addAllTypes(parsed.getTypesList());
-    accumulator.addAllCasts(parsed.getCastsList());
-    accumulator.addAllCollations(parsed.getCollationsList());
-    accumulator.addAllAggregates(parsed.getAggregatesList());
-    accumulator.addAllEngineSpecific(parsed.getEngineSpecificList());
   }
 
   // Rewrite PBtxt engine_specific blocks → payload bytes--------------

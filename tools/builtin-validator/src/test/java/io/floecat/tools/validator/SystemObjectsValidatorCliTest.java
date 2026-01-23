@@ -27,12 +27,14 @@ import ai.floedb.floecat.query.rpc.SqlFunction;
 import ai.floedb.floecat.query.rpc.SqlOperator;
 import ai.floedb.floecat.query.rpc.SqlType;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
+import com.google.protobuf.TextFormat;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /** Unit tests for the standalone builtin catalog validator CLI. */
@@ -202,5 +204,134 @@ class SystemObjectsValidatorCliTest {
         .setName(nameRefBuilder)
         .setReturnType(NameRef.newBuilder().addPath("pg_catalog").setName("missing"))
         .build();
+  }
+
+  @Test
+  void engineModeLoadsExtension() throws Exception {
+    var stdout = new ByteArrayOutputStream();
+    var stderr = new ByteArrayOutputStream();
+    int exit =
+        new SystemObjectsValidatorCli()
+            .run(
+                new String[] {"--engine", "floe-demo"},
+                new PrintStream(stdout),
+                new PrintStream(stderr));
+    System.out.println(stdout.toString(StandardCharsets.UTF_8));
+    System.out.println(stderr.toString(StandardCharsets.UTF_8));
+    assertEquals(0, exit);
+    String out = stdout.toString(StandardCharsets.UTF_8);
+    assertTrue(out.contains("ALL CHECKS PASSED."));
+    assertEquals("", stderr.toString(StandardCharsets.UTF_8));
+  }
+
+  @Test
+  void indexDirectoryMergesFragments() throws Exception {
+    Path dir = Files.createTempDirectory("catalog-index");
+    dir.toFile().deleteOnExit();
+    Path fragmentA = dir.resolve("types.pbtxt");
+    Path fragmentB = dir.resolve("functions.pbtxt");
+    writeTextCatalog(typesFragment(), fragmentA);
+    writeTextCatalog(functionFragment(), fragmentB);
+    writeIndex(dir, List.of("types.pbtxt", "functions.pbtxt"));
+
+    var stdout = new ByteArrayOutputStream();
+    var stderr = new ByteArrayOutputStream();
+    int exit =
+        new SystemObjectsValidatorCli()
+            .run(new String[] {dir.toString()}, new PrintStream(stdout), new PrintStream(stderr));
+
+    assertEquals(0, exit);
+    String out = stdout.toString(StandardCharsets.UTF_8);
+    assertTrue(out.contains("ALL CHECKS PASSED."));
+    assertEquals("", stderr.toString(StandardCharsets.UTF_8));
+  }
+
+  @Test
+  void indexWithParentPathsFails() throws Exception {
+    Path dir = Files.createTempDirectory("catalog-index-parent");
+    dir.toFile().deleteOnExit();
+    writeIndex(dir, List.of("../escape.pbtxt"));
+    Path index = dir.resolve("_index.txt");
+
+    var stdout = new ByteArrayOutputStream();
+    var stderr = new ByteArrayOutputStream();
+    int exit =
+        new SystemObjectsValidatorCli()
+            .run(new String[] {index.toString()}, new PrintStream(stdout), new PrintStream(stderr));
+
+    assertEquals(1, exit);
+    String err = stderr.toString(StandardCharsets.UTF_8);
+    assertTrue(err.contains("Invalid catalog fragment"));
+  }
+
+  @Test
+  void missingFragmentOnIndexFails() throws Exception {
+    Path dir = Files.createTempDirectory("catalog-index-missing");
+    dir.toFile().deleteOnExit();
+    writeIndex(dir, List.of("missing.pbtxt"));
+    Path index = dir.resolve("_index.txt");
+
+    var stdout = new ByteArrayOutputStream();
+    var stderr = new ByteArrayOutputStream();
+    int exit =
+        new SystemObjectsValidatorCli()
+            .run(new String[] {index.toString()}, new PrintStream(stdout), new PrintStream(stderr));
+
+    assertEquals(1, exit);
+    String err = stderr.toString(StandardCharsets.UTF_8);
+    assertTrue(err.contains("Catalog fragment does not exist"));
+  }
+
+  @Test
+  void blankIndexFails() throws Exception {
+    Path dir = Files.createTempDirectory("catalog-index-blank");
+    dir.toFile().deleteOnExit();
+    writeIndex(dir, List.of("", " # comment "));
+    Path index = dir.resolve("_index.txt");
+
+    var stdout = new ByteArrayOutputStream();
+    var stderr = new ByteArrayOutputStream();
+    int exit =
+        new SystemObjectsValidatorCli()
+            .run(new String[] {index.toString()}, new PrintStream(stdout), new PrintStream(stderr));
+
+    assertEquals(1, exit);
+    String err = stderr.toString(StandardCharsets.UTF_8);
+    assertTrue(err.contains("Catalog index contains no fragments"));
+  }
+
+  private static SystemObjectsRegistry typesFragment() {
+    return SystemObjectsRegistry.newBuilder()
+        .addTypes(
+            SqlType.newBuilder()
+                .setName(NameRef.newBuilder().setName("int4"))
+                .setCategory("N")
+                .setIsArray(false)
+                .build())
+        .build();
+  }
+
+  private static SystemObjectsRegistry functionFragment() {
+    return SystemObjectsRegistry.newBuilder()
+        .addFunctions(
+            SqlFunction.newBuilder()
+                .setName(NameRef.newBuilder().addPath("pg_catalog").setName("fragment_func"))
+                .addArgumentTypes(NameRef.newBuilder().setName("int4"))
+                .setReturnType(NameRef.newBuilder().setName("int4"))
+                .build())
+        .build();
+  }
+
+  private static void writeTextCatalog(SystemObjectsRegistry catalog, Path path)
+      throws IOException {
+    Files.createDirectories(path.getParent());
+    try (var writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
+      TextFormat.printer().print(catalog, writer);
+    }
+  }
+
+  private static void writeIndex(Path directory, List<String> entries) throws IOException {
+    Path index = directory.resolve("_index.txt");
+    Files.write(index, entries, StandardCharsets.UTF_8);
   }
 }
