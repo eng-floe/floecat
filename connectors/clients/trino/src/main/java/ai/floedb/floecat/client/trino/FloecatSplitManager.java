@@ -176,6 +176,7 @@ public class FloecatSplitManager implements ConnectorSplitManager {
 
     List<IcebergSplit> splits = new ArrayList<>();
     for (var file : dataFiles) {
+      List<DeleteFile> fileDeletes = selectDeleteFiles(deleteFiles, file.getDeleteFileIndicesList());
       IcebergFileFormat fileFormat = toIcebergFormat(file.getFileFormat());
       String dataJson = file.getPartitionDataJson();
       if (dataJson == null || dataJson.isBlank()) {
@@ -192,7 +193,7 @@ public class FloecatSplitManager implements ConnectorSplitManager {
               java.util.Optional.of(java.util.List.of()),
               partitionSpecJson,
               dataJson,
-              deleteFiles,
+              fileDeletes,
               SplitWeight.standard(),
               TupleDomain.all(),
               storageProps,
@@ -364,6 +365,25 @@ public class FloecatSplitManager implements ConnectorSplitManager {
               Optional.empty(),
               Optional.empty(),
               0));
+    }
+    return out;
+  }
+
+  private static List<DeleteFile> selectDeleteFiles(
+      List<DeleteFile> deleteFiles, List<Integer> deleteIndices) {
+    if (deleteFiles == null || deleteFiles.isEmpty() || deleteIndices == null || deleteIndices.isEmpty()) {
+      return List.of();
+    }
+    List<DeleteFile> out = new ArrayList<>(deleteIndices.size());
+    for (Integer idx : deleteIndices) {
+      if (idx == null) {
+        continue;
+      }
+      int i = idx;
+      if (i < 0 || i >= deleteFiles.size()) {
+        continue;
+      }
+      out.add(deleteFiles.get(i));
     }
     return out;
   }

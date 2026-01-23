@@ -36,6 +36,26 @@ public final class IcebergErrorResponses {
     return error(message, "NotFoundException", Response.Status.NOT_FOUND.getStatusCode());
   }
 
+  public static Response noSuchNamespace(String message) {
+    return error(message, "NoSuchNamespaceException", Response.Status.NOT_FOUND.getStatusCode());
+  }
+
+  public static Response noSuchTable(String message) {
+    return error(message, "NoSuchTableException", Response.Status.NOT_FOUND.getStatusCode());
+  }
+
+  public static Response noSuchView(String message) {
+    return error(message, "NoSuchViewException", Response.Status.NOT_FOUND.getStatusCode());
+  }
+
+  public static Response noSuchPlanId(String message) {
+    return error(message, "NoSuchPlanIdException", Response.Status.NOT_FOUND.getStatusCode());
+  }
+
+  public static Response noSuchPlanTask(String message) {
+    return error(message, "NoSuchPlanTaskException", Response.Status.NOT_FOUND.getStatusCode());
+  }
+
   public static Response unprocessable(String message) {
     return error(message, "ValidationException", 422);
   }

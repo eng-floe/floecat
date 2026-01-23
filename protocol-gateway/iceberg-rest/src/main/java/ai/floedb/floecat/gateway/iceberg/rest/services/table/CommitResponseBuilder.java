@@ -25,7 +25,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
@@ -54,12 +53,7 @@ public class CommitResponseBuilder {
   }
 
   public String resolveRequestedMetadataLocation(TableRequests.Commit req) {
-    if (req == null) {
-      return null;
-    }
-    String location = MetadataLocationUtil.metadataLocation(req.properties());
-    String updateLocation = metadataLocationFromUpdates(req.updates());
-    return nonBlank(updateLocation, location);
+    return null;
   }
 
   public Set<Long> removedSnapshotIds(TableRequests.Commit req) {
@@ -435,11 +429,6 @@ public class CommitResponseBuilder {
       return null;
     }
     Long max = null;
-    Long direct =
-        parseLong(req.properties() == null ? null : req.properties().get("last-sequence-number"));
-    if (direct != null && direct > 0) {
-      max = direct;
-    }
     if (req.updates() == null) {
       return max;
     }
@@ -532,31 +521,6 @@ public class CommitResponseBuilder {
     }
   }
 
-  private String metadataLocationFromUpdates(List<Map<String, Object>> updates) {
-    if (updates == null || updates.isEmpty()) {
-      return null;
-    }
-    String location = null;
-    for (Map<String, Object> update : updates) {
-      if (update == null) {
-        continue;
-      }
-      String action = asString(update.get("action"));
-      if (!"set-properties".equals(action)) {
-        continue;
-      }
-      Map<String, String> toSet = asStringMap(update.get("updates"));
-      if (toSet.isEmpty()) {
-        continue;
-      }
-      String candidate = MetadataLocationUtil.metadataLocation(toSet);
-      if (candidate != null && !candidate.isBlank()) {
-        location = candidate;
-      }
-    }
-    return location;
-  }
-
   @SuppressWarnings("unchecked")
   private Map<String, String> asStringMap(Object value) {
     if (!(value instanceof Map<?, ?> map) || map.isEmpty()) {
@@ -572,9 +536,5 @@ public class CommitResponseBuilder {
           }
         });
     return converted;
-  }
-
-  private static String nonBlank(String primary, String fallback) {
-    return primary != null && !primary.isBlank() ? primary : fallback;
   }
 }

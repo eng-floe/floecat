@@ -22,8 +22,12 @@ import io.delta.kernel.defaults.engine.fileio.OutputFile;
 import io.delta.kernel.defaults.engine.fileio.SeekableInputStream;
 import io.delta.kernel.utils.CloseableIterator;
 import io.delta.kernel.utils.FileStatus;
+import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -43,7 +47,12 @@ final class LocalFileSystemClient implements FileIO {
 
   @Override
   public InputFile newInputFile(String path, long fileSize) {
-    return new LocalInputFile(resolvePath(path), toLocalPath(path));
+    String resolved = resolvePath(path);
+    Path local = toLocalPath(path);
+    if (isMissingCheckpoint(local, resolved)) {
+      return new MissingInputFile(resolved);
+    }
+    return new LocalInputFile(resolved, local);
   }
 
   @Override
@@ -155,7 +164,7 @@ final class LocalFileSystemClient implements FileIO {
   }
 
   private FileStatus toStatus(Path bucketRoot, String bucket, Path local) throws IOException {
-    String key = bucketRoot.relativize(local).toString().replace(java.io.File.separatorChar, '/');
+    String key = bucketRoot.relativize(local).toString().replace(File.separatorChar, '/');
     String s3Path = "s3://" + bucket + "/" + key;
     long size = Files.size(local);
     long mod = Files.getLastModifiedTime(local).toInstant().toEpochMilli();
@@ -186,6 +195,10 @@ final class LocalFileSystemClient implements FileIO {
     }
     String key = u.getPath() == null ? "" : u.getPath().replaceFirst("^/", "");
     return new S3Location(bucket, key);
+  }
+
+  private static boolean isMissingCheckpoint(Path local, String resolvedPath) {
+    return resolvedPath.endsWith("/_last_checkpoint") && !Files.exists(local);
   }
 
   private record S3Location(String bucket, String key) {}
@@ -224,10 +237,69 @@ final class LocalFileSystemClient implements FileIO {
     }
   }
 
-  private static final class LocalSeekableInputStream extends SeekableInputStream {
-    private final java.nio.channels.SeekableByteChannel channel;
+  private static final class MissingInputFile implements InputFile {
+    private final String path;
 
-    private LocalSeekableInputStream(java.nio.channels.SeekableByteChannel channel) {
+    private MissingInputFile(String path) {
+      this.path = path;
+    }
+
+    @Override
+    public SeekableInputStream newStream() {
+      return new MissingSeekableInputStream(path);
+    }
+
+    @Override
+    public long length() {
+      return 0L;
+    }
+
+    @Override
+    public String path() {
+      return path;
+    }
+  }
+
+  private static final class MissingSeekableInputStream extends SeekableInputStream {
+    private final String path;
+
+    private MissingSeekableInputStream(String path) {
+      this.path = path;
+    }
+
+    @Override
+    public int read() throws IOException {
+      throw new FileNotFoundException("File not found: " + path);
+    }
+
+    @Override
+    public int read(byte[] b, int off, int len) throws IOException {
+      throw new FileNotFoundException("File not found: " + path);
+    }
+
+    @Override
+    public void readFully(byte[] b, int off, int len) throws IOException {
+      throw new FileNotFoundException("File not found: " + path);
+    }
+
+    @Override
+    public void seek(long newPos) throws IOException {
+      throw new FileNotFoundException("File not found: " + path);
+    }
+
+    @Override
+    public long getPos() throws IOException {
+      return 0L;
+    }
+
+    @Override
+    public void close() {}
+  }
+
+  private static final class LocalSeekableInputStream extends SeekableInputStream {
+    private final SeekableByteChannel channel;
+
+    private LocalSeekableInputStream(SeekableByteChannel channel) {
       this.channel = channel;
     }
 
@@ -243,7 +315,7 @@ final class LocalFileSystemClient implements FileIO {
 
     @Override
     public int read(byte[] b, int off, int len) throws IOException {
-      var buffer = java.nio.ByteBuffer.wrap(b, off, len);
+      var buffer = ByteBuffer.wrap(b, off, len);
       int read = channel.read(buffer);
       return read < 0 ? -1 : read;
     }

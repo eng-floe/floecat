@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.resolution;
 
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -51,9 +53,11 @@ public final class NamespacePaths {
 
   private static String normalizeDelimiter(String value) {
     if (value.indexOf('%') >= 0) {
-      return value
-          .replace("%1F", String.valueOf(DELIMITER))
-          .replace("%1f", String.valueOf(DELIMITER));
+      try {
+        return URLDecoder.decode(value, StandardCharsets.UTF_8);
+      } catch (IllegalArgumentException e) {
+        return value;
+      }
     }
     return value;
   }

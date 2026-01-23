@@ -155,6 +155,7 @@ class TablePlanServiceTest {
             .setFileSizeInBytes(10)
             .setRecordCount(5)
             .setPartitionDataJson("{\"partitionValues\":[1,\"A\"]}")
+            .addDeleteFileIndices(0)
             .build();
     ScanFile deleteFile =
         ScanFile.newBuilder()
@@ -176,6 +177,7 @@ class TablePlanServiceTest {
     assertEquals(credentials, response.storageCredentials());
     assertEquals(1, response.fileScanTasks().size());
     assertEquals(List.of(1, "A"), response.fileScanTasks().get(0).dataFile().partition());
+    assertEquals(List.of(0), response.fileScanTasks().get(0).deleteFileReferences());
     assertEquals("s3://bucket/delete.parquet", response.deleteFiles().get(0).filePath());
 
     ArgumentCaptor<FetchScanBundleRequest> fetch =
@@ -188,6 +190,91 @@ class TablePlanServiceTest {
     assertEquals(2, sent.getPredicatesCount());
     assertEquals("customerid", sent.getPredicates(0).getColumn());
     assertEquals("DeletedFlag".toLowerCase(), sent.getPredicates(1).getColumn());
+  }
+
+  @Test
+  void fetchPlanSkipsUnsupportedLogicalFilters() {
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-4").build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    when(queryStub.getQuery(any()))
+        .thenReturn(GetQueryResponse.newBuilder().setQuery(descriptor).build());
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    Map<String, Object> filter =
+        Map.of(
+            "type",
+            "or",
+            "left",
+            Map.of("type", "eq", "term", "id", "value", 7),
+            "right",
+            Map.of("type", "not", "child", Map.of("type", "eq", "term", "id", "value", 9)));
+
+    service.startPlan(
+        ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
+        tableId,
+        null,
+        null,
+        null,
+        3L,
+        null,
+        filter,
+        true,
+        false,
+        null);
+
+    ScanBundle bundle = ScanBundle.newBuilder().build();
+    when(scanStub.fetchScanBundle(any()))
+        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+
+    service.fetchPlan("plan-4", List.of());
+
+    ArgumentCaptor<FetchScanBundleRequest> fetch =
+        ArgumentCaptor.forClass(FetchScanBundleRequest.class);
+    verify(scanStub).fetchScanBundle(fetch.capture());
+    assertEquals(0, fetch.getValue().getPredicatesCount());
+  }
+
+  @Test
+  void fetchPlanAcceptsTransformTerms() {
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-5").build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    when(queryStub.getQuery(any()))
+        .thenReturn(GetQueryResponse.newBuilder().setQuery(descriptor).build());
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    Map<String, Object> filter =
+        Map.of(
+            "type",
+            "eq",
+            "term",
+            Map.of("type", "transform", "transform", "bucket[16]", "term", "OrderId"),
+            "value",
+            11);
+
+    service.startPlan(
+        ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
+        tableId,
+        null,
+        null,
+        null,
+        3L,
+        null,
+        filter,
+        true,
+        false,
+        null);
+
+    ScanBundle bundle = ScanBundle.newBuilder().build();
+    when(scanStub.fetchScanBundle(any()))
+        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+
+    service.fetchPlan("plan-5", List.of());
+
+    ArgumentCaptor<FetchScanBundleRequest> fetch =
+        ArgumentCaptor.forClass(FetchScanBundleRequest.class);
+    verify(scanStub).fetchScanBundle(fetch.capture());
+    assertEquals(1, fetch.getValue().getPredicatesCount());
+    assertEquals("OrderId", fetch.getValue().getPredicates(0).getColumn());
   }
 
   @Test
@@ -250,7 +337,7 @@ class TablePlanServiceTest {
   }
 
   @Test
-  void invalidFilterExpressionThrows() {
+  void unsupportedLogicalFilterDoesNotFailPlanning() {
     QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-5").build();
     when(queryStub.beginQuery(any()))
         .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
@@ -258,21 +345,18 @@ class TablePlanServiceTest {
 
     Map<String, Object> filter = Map.of("type", "or");
 
-    assertThrows(
-        IllegalArgumentException.class,
-        () ->
-            service.startPlan(
-                ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
-                tableId,
-                null,
-                null,
-                null,
-                null,
-                null,
-                filter,
-                false,
-                false,
-                null));
-    verify(queryStub, times(0)).beginQuery(any());
+    service.startPlan(
+        ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
+        tableId,
+        null,
+        null,
+        null,
+        null,
+        null,
+        filter,
+        false,
+        false,
+        null);
+    verify(queryStub, times(1)).beginQuery(any());
   }
 }

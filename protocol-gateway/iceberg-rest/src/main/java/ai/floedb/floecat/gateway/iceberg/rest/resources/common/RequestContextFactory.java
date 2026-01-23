@@ -22,8 +22,11 @@ import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NamespacePaths;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.WebApplicationException;
 import java.util.List;
 
 @ApplicationScoped
@@ -41,8 +44,17 @@ public class RequestContextFactory {
   public NamespaceRequestContext namespace(String prefix, String namespace) {
     CatalogRequestContext catalogContext = catalog(prefix);
     List<String> namespacePath = List.copyOf(NamespacePaths.split(namespace));
-    ResourceId namespaceId =
-        tableLifecycleService.resolveNamespaceId(catalogContext.catalogName(), namespacePath);
+    ResourceId namespaceId;
+    try {
+      namespaceId =
+          tableLifecycleService.resolveNamespaceId(catalogContext.catalogName(), namespacePath);
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        throw new WebApplicationException(
+            IcebergErrorResponses.noSuchNamespace("Namespace " + namespace + " not found"));
+      }
+      throw e;
+    }
     return new NamespaceRequestContext(catalogContext, namespace, namespacePath, namespaceId);
   }
 
@@ -52,9 +64,19 @@ public class RequestContextFactory {
   }
 
   public TableRequestContext table(NamespaceRequestContext namespaceContext, String table) {
-    ResourceId tableId =
-        tableLifecycleService.resolveTableId(
-            namespaceContext.catalogName(), namespaceContext.namespacePath(), table);
+    ResourceId tableId;
+    try {
+      tableId =
+          tableLifecycleService.resolveTableId(
+              namespaceContext.catalogName(), namespaceContext.namespacePath(), table);
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        String namespace = String.join(".", namespaceContext.namespacePath());
+        throw new WebApplicationException(
+            IcebergErrorResponses.noSuchTable("Table " + namespace + "." + table + " not found"));
+      }
+      throw e;
+    }
     return new TableRequestContext(namespaceContext, table, tableId);
   }
 
@@ -64,9 +86,19 @@ public class RequestContextFactory {
   }
 
   public ViewRequestContext view(NamespaceRequestContext namespaceContext, String view) {
-    ResourceId viewId =
-        NameResolution.resolveView(
-            grpc, namespaceContext.catalogName(), namespaceContext.namespacePath(), view);
+    ResourceId viewId;
+    try {
+      viewId =
+          NameResolution.resolveView(
+              grpc, namespaceContext.catalogName(), namespaceContext.namespacePath(), view);
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        String namespace = String.join(".", namespaceContext.namespacePath());
+        throw new WebApplicationException(
+            IcebergErrorResponses.noSuchView("View " + namespace + "." + view + " not found"));
+      }
+      throw e;
+    }
     return new ViewRequestContext(namespaceContext, view, viewId);
   }
 }

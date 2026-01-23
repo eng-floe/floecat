@@ -38,12 +38,21 @@ class ConfigResourceTest {
     resource.config = config;
     resource.mapper = new ObjectMapper();
     when(config.idempotencyKeyLifetime()).thenReturn(Duration.ofMinutes(30));
+    when(config.defaultPrefix()).thenReturn(java.util.Optional.of("floecat"));
   }
 
   @Test
   void configResponseIncludesIdempotencyLifetime() {
-    Response response = resource.getConfig(null);
+    Response response = resource.getConfig("warehouse-1");
     CatalogConfigDto dto = (CatalogConfigDto) response.getEntity();
     assertEquals("PT30M", dto.idempotencyKeyLifetime());
+  }
+
+  @Test
+  void missingWarehouseUsesDefaultPrefix() {
+    Response response = resource.getConfig(null);
+    assertEquals(200, response.getStatus());
+    CatalogConfigDto dto = (CatalogConfigDto) response.getEntity();
+    assertEquals("floecat", dto.overrides().get("prefix"));
   }
 }

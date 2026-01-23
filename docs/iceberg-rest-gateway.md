@@ -23,16 +23,17 @@ Non-goals for the current release:
 
 | Iceberg REST surface | Floecat service(s) | Notes |
 | --- | --- | --- |
-| `/v1/config` | Gateway config only | Synthesizes prefixes, warehouses, default properties, supported endpoints. |
-| Namespace CRUD | `NamespaceService` | Includes property mutation and existence checks (HEAD). |
+| `/v1/config` | Gateway config only | Synthesizes prefixes, default properties, supported endpoints; `warehouse` is optional and defaults to the configured prefix. |
+| Namespace CRUD | `NamespaceService` | Includes property mutation and existence checks (HEAD); create returns 200 with `CreateNamespaceResponse`. |
 | Table CRUD, commit, register | `TableService`, `SnapshotService`, connector services | Stage-create/commit leverage staged metadata plus `TableService`. Register imports Iceberg metadata via `TableMetadataImportService`. |
 | Table rename/move | `TableService.UpdateTable` | Uses field masks for namespace + display name changes. |
-| `/tables/{table}/plan`, `/tasks` | `QueryService`, `PlanTaskManager` | Runs synchronous planning, persists result, and exposes per-task payloads. |
-| `/tables/{table}/credentials` | `ConnectorClient` + gateway defaults | Returns storage credentials from connector templates or static config. |
+| `/tables/{table}/plan`, `/tasks` | `QueryService`, `PlanTaskManager` | Runs synchronous planning, persists result, and exposes per-task payloads; failures return error responses (not 200). |
+| `/tables/{table}/credentials` | `ConnectorClient` + gateway defaults | Returns vended credentials based on access delegation mode (defaults to gateway config). |
 | `/tables/{table}/metrics` | Logging only | Validates payloads; wiring to `TableStatisticsService` is future work (spec has no stats surface). |
 | `/tables/rename`, `/transactions/commit` | Table services + staging store | Replays staged payloads per Iceberg semantics; no cross-table ACID. |
 | View CRUD/commit/rename | `ViewService` + `ViewMetadataService` | Maintains Iceberg view schemas, versions, and summaries. |
-| `/oauth/tokens` | Disabled | Floecat uses existing auth headers; REST OAuth endpoints are stubbed out. |
+| `/oauth/tokens` | Disabled | Floecat uses existing auth headers; endpoint returns OAuth error `unsupported_grant_type` (400). |
+| `/register-view` | `ViewService` + `ViewMetadataService` | Registers an Iceberg view from a metadata location. |
 | Snapshots/history endpoints | Not in OpenAPI | Snapshot metadata is surfaced via table load/commit responses; gRPC snapshot APIs are used internally for writes. |
 | Schema fetch endpoints | Not in OpenAPI | Schema gRPC stubs exist but no REST endpoint calls them today. |
 
@@ -71,7 +72,7 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 4. **gRPC translation:** Typed clients (`TableClient`, `SnapshotClient`, `ViewClient`, etc.) wrap `GrpcWithHeaders` so every call inherits Floecat’s auth context and telemetry.
 5. **Response mapping:** `TableResponseMapper`, `ViewResponseMapper`, `NamespaceResponseMapper`, and metadata builders synthesize the Iceberg contract (schemas, specs, refs, history) from Floecat responses. They also inject config overrides (e.g., `write.metadata.path`, storage credentials).
 6. **Connectors & credentials:** `TableCommitSideEffectService` updates connector records, triggers reconcile for async stats, and resolves storage credentials returned to clients. Snapshot format metadata is backfilled directly from the committed `metadata.json`.
-7. **Plan/task caching:** `PlanTaskManager` persists planning results with TTL and chunk size limits, exposing read-once task IDs for `/tasks`.
+7. **Plan/task caching:** `PlanTaskManager` persists planning results with TTL (default 10 minutes) and chunk size limits, exposing read-once task IDs for `/tasks`.
 
 ---
 
@@ -80,11 +81,11 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 ### Stage-create (`POST /v1/{prefix}/namespaces/{namespace}/tables` with `stage-create=true`)
 1. Validate schema, spec, write order, and properties. Normalize namespace/table identifiers.
 2. Compute metadata location, connector configuration, and default storage credentials.
-3. Persist a `StagedTableEntry` keyed by account + catalog + namespace + table + stage-id (client-provided or generated). `StagedTableService` enforces TTL and idempotency.
+3. Persist a `StagedTableEntry` keyed by account + catalog + namespace + table + stage-id (provided via `Iceberg-Transaction-Id`/`Idempotency-Key` or generated). `StagedTableService` enforces TTL and idempotency.
 4. Return `StageCreateResponse` (stage-id, requirements, config overrides, storage credentials). No catalog mutation occurs yet.
 
 ### Commit (`POST /tables/{table}`)
-1. Resolve catalog/table IDs. If table is missing but exactly one staged entry exists, implicitly use that stage-id; otherwise require the client to provide `stage-id` or `Iceberg-Transaction-Id`.
+1. Resolve catalog/table IDs. If table is missing but exactly one staged entry exists, implicitly use that stage-id; otherwise require the client to provide `stage-id`.
 2. `CommitStageResolver` fetches/validates the staged payload (assert-create, assert-current-schema, etc.) and either returns a resolved table ID or synthesizes a new table via `StageCommitProcessor`.
 3. `TableUpdatePlanner` diff’s the incoming requirements/updates against the current table metadata, building a `TableSpec` + `FieldMask` for catalog updates. Snapshot changes fan out through `SnapshotMetadataService`.
 4. `TableCommitService` sends the update, materializes metadata files via `MaterializeMetadataService`, tags the commit with the final metadata location, and logs stage outcomes.
@@ -106,8 +107,8 @@ Receives Iceberg’s transaction payload (list of table changes referencing stag
 5. `/tables/{table}/plan/{planId}` GET/DELETE expose cached descriptors and allow clients to cancel a plan (which also cancels the underlying query if still open).
 
 Limits/Follow-ups:
-- Plans are always returned as `"completed"`; async planner status codes (`submitted`, `failed`, `cancelled`) are placeholders.
-- TTL (default 5 minutes) and chunk size (default 128 files per task) are configurable via `application.properties`.
+- Plans are returned as `"completed"` today; failures return Iceberg error responses instead of `status=failed`.
+- TTL (default 10 minutes) and chunk size (default 128 files per task) are configurable via `application.properties`.
 
 ---
 
@@ -121,7 +122,7 @@ Limits/Follow-ups:
 
 ## Testing
 
-- **REST contract tests:** `RestResourceTest` (RestAssured) validates namespace/table/view endpoints against mocked services.
+- **REST contract tests:** `*ResourceTest` (RestAssured) validates namespace/table/view endpoints against mocked services.
 - **Integration tests:** `IcebergRestFixtureIT` boots real services (via `RealServiceTestResource`) and exercises stage-create, commit, plan, and view flows end-to-end.
 - **Unit tests:** live under `src/test/java/.../services/*` mirroring the main packages so service collaborators (planners, staged repositories, metadata builders) can be verified with Mockito.
 
@@ -129,7 +130,7 @@ Limits/Follow-ups:
 
 ## Operational Notes & Current Limitations
 
-- **Credentials:** `/tables/{table}/credentials` returns static connector credentials; per-request storage signing is not yet implemented.
+- **Credentials:** `/tables/{table}/credentials` returns vended credentials based on access delegation; per-request signing is not yet implemented.
 - **Metrics persistence:** `/tables/{table}/metrics` validates and logs payloads but does not persist them to `TableStatisticsService`.
 - **Async planning:** plans are synchronous/completed only; streaming manifests and async planning (`/plans/{id}`) are future work.
 - **Multi-table ACID:** `/transactions/commit` replays staged changes sequentially without cross-table rollback.

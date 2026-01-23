@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.resources.table;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -59,11 +60,12 @@ import ai.floedb.floecat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
+import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
-import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
+import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
@@ -212,11 +214,14 @@ class TableResourceTest extends AbstractRestResourceTest {
         .get("/v1/foo/namespaces/db/tables/orders")
         .then()
         .statusCode(200)
-        .header("ETag", equalTo("\"" + FIXTURE.metadataLocation() + "\""))
-        .body("metadata.snapshots.size()", equalTo(2));
+        .header(
+            "ETag", equalTo(IcebergHttpUtil.etagForMetadataLocation(FIXTURE.metadataLocation())))
+        .body("metadata.snapshots.size()", equalTo(2))
+        .body("'storage-credentials'", nullValue());
 
     given()
-        .header("If-None-Match", "\"" + FIXTURE.metadataLocation() + "\"")
+        .header(
+            "If-None-Match", IcebergHttpUtil.etagForMetadataLocation(FIXTURE.metadataLocation()))
         .when()
         .get("/v1/foo/namespaces/db/tables/orders")
         .then()
@@ -230,6 +235,47 @@ class TableResourceTest extends AbstractRestResourceTest {
         .statusCode(200)
         .body("metadata.snapshots.size()", equalTo(1))
         .body("metadata.snapshots[0].'snapshot-id'", equalTo(currentSnapshot.getSnapshotId()));
+  }
+
+  @Test
+  void loadTableWithAccessDelegationReturnsCredentials() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(ResourceId.newBuilder().setId("cat"))
+            .setNamespaceId(nsId)
+            .setDisplayName("orders")
+            .build();
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
+
+    IcebergMetadata metadata =
+        FIXTURE.metadata().toBuilder().setMetadataLocation("s3://bucket/metadata.json").build();
+    Snapshot metaSnapshot =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(metadata.getCurrentSnapshotId())
+            .putFormatMetadata("iceberg", metadata.toByteString())
+            .build();
+    when(snapshotStub.getSnapshot(any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(metaSnapshot).build());
+    when(snapshotStub.listSnapshots(any()))
+        .thenReturn(
+            ListSnapshotsResponse.newBuilder().addAllSnapshots(FIXTURE.snapshots()).build());
+
+    given()
+        .header("X-Iceberg-Access-Delegation", "vended-credentials")
+        .when()
+        .get("/v1/foo/namespaces/db/tables/orders")
+        .then()
+        .statusCode(200)
+        .body("'storage-credentials'.size()", equalTo(1));
   }
 
   @Test
@@ -641,18 +687,19 @@ class TableResourceTest extends AbstractRestResourceTest {
 
     given()
         .body(stageCreateRequest("orders"))
-        .header("Iceberg-Transaction-Id", "stage-1")
         .contentType(MediaType.APPLICATION_JSON)
         .when()
         .post("/v1/foo/namespaces/db/tables")
         .then()
         .statusCode(200)
-        .body("stage-id", equalTo("stage-1"))
-        .body("requirements[0].type", equalTo("assert-create"));
+        .body("metadata", notNullValue());
 
     verify(tableStub, never()).createTable(any());
-    StagedTableKey key = new StagedTableKey("account1", "foo", List.of("db"), "orders", "stage-1");
-    assertTrue(stageRepository.get(key).isPresent());
+    java.util.Optional<StagedTableEntry> entry =
+        stageRepository.findSingle("account1", "foo", List.of("db"), "orders");
+    assertTrue(entry.isPresent());
+    StagedTableEntry stored = entry.get();
+    assertTrue(stored.key().stageId() != null && !stored.key().stageId().isBlank());
   }
 
   @Test
@@ -922,6 +969,25 @@ class TableResourceTest extends AbstractRestResourceTest {
     assertEquals(7L, describe.getValue().getInputs(0).getSnapshot().getSnapshotId());
 
     verify(queryScanStub, times(1)).fetchScanBundle(any());
+  }
+
+  @Test
+  void planTableScanFailureReturnsError() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    when(queryStub.beginQuery(any())).thenThrow(new RuntimeException("boom"));
+
+    given()
+        .body("{\"snapshot-id\":7}")
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/tables/orders/plan")
+        .then()
+        .statusCode(500)
+        .body("error.type", equalTo("InternalServerError"))
+        .body("error.message", equalTo("boom"))
+        .body("error.code", equalTo(500));
   }
 
   @Test

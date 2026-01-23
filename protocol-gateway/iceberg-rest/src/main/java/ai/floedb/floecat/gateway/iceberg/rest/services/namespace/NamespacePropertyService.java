@@ -22,6 +22,7 @@ import ai.floedb.floecat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.NamespacePropertiesResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.NamespacePropertiesRequest;
+import ai.floedb.floecat.gateway.iceberg.rest.common.ReservedPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.NamespaceClient;
@@ -44,6 +45,16 @@ public class NamespacePropertyService {
     ResourceId namespaceId = namespaceContext.namespaceId();
     List<String> removals = req == null || req.removals() == null ? List.of() : req.removals();
     Map<String, String> updates = req == null || req.updates() == null ? Map.of() : req.updates();
+    try {
+      ReservedPropertyUtil.validateAndFilter(updates);
+      Map<String, String> removalKeys = new LinkedHashMap<>();
+      for (String key : removals) {
+        removalKeys.put(key, "");
+      }
+      ReservedPropertyUtil.validateAndFilter(removalKeys);
+    } catch (IllegalArgumentException e) {
+      return IcebergErrorResponses.validation(e.getMessage());
+    }
     Set<String> conflict = new HashSet<>(removals);
     conflict.retainAll(updates.keySet());
     if (!conflict.isEmpty()) {

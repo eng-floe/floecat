@@ -25,6 +25,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
@@ -66,6 +67,7 @@ public class TableCommitService {
     ResourceId catalogId = command.catalogId();
     ResourceId namespaceId = command.namespaceId();
     String idempotencyKey = command.idempotencyKey();
+    String stageId = command.stageId();
     String transactionId = command.transactionId();
     TableRequests.Commit req = command.request();
     TableGatewaySupport tableSupport = command.tableSupport();
@@ -153,6 +155,15 @@ public class TableCommitService {
       finalResponse =
           responseBuilder.preferRequestedMetadata(finalResponse, responseDto.metadataLocation());
     }
+    if (finalResponse == null
+        || finalResponse.metadata() == null
+        || finalResponse.metadataLocation() == null
+        || finalResponse.metadataLocation().isBlank()) {
+      return IcebergErrorResponses.failure(
+          "Commit response missing metadata",
+          "InternalServerError",
+          Response.Status.INTERNAL_SERVER_ERROR);
+    }
 
     Response.ResponseBuilder builder = Response.ok(finalResponse);
     TableMetadataView finalMetadata = finalResponse == null ? null : finalResponse.metadata();
@@ -168,14 +179,11 @@ public class TableCommitService {
         committedTable.hasResourceId() ? committedTable.getResourceId().getId() : "<missing>",
         finalSnapshotId == null ? "<null>" : finalSnapshotId,
         finalSnapshotCount);
-    if (finalResponse != null && finalResponse.metadataLocation() != null) {
-      builder.tag(finalResponse.metadataLocation());
-    }
     logStageCommit(
         stageMaterialization,
         nonBlank(
             stageResolution.materializedStageId(),
-            stageMaterializationService.resolveStageId(req, transactionId)),
+            stageMaterializationService.resolveStageId(stageId, transactionId)),
         namespace,
         table,
         finalResponse == null ? null : finalResponse.metadata());
@@ -356,6 +364,7 @@ public class TableCommitService {
       ResourceId catalogId,
       ResourceId namespaceId,
       String idempotencyKey,
+      String stageId,
       String transactionId,
       TableRequests.Commit request,
       TableGatewaySupport tableSupport) {}

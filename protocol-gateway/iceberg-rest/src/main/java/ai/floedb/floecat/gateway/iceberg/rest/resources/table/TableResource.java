@@ -108,12 +108,13 @@ public class TableResource {
   public Response create(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
+      @HeaderParam("X-Iceberg-Access-Delegation") String accessDelegationMode,
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       @HeaderParam("Iceberg-Transaction-Id") String transactionId,
       TableRequests.Create req) {
     NamespaceRequestContext namespaceContext = requestContextFactory.namespace(prefix, namespace);
     return tableCreateService.create(
-        namespaceContext, idempotencyKey, transactionId, req, tableSupport);
+        namespaceContext, accessDelegationMode, idempotencyKey, transactionId, req, tableSupport);
   }
 
   @Path("/tables/{table}")
@@ -123,9 +124,11 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       @QueryParam("snapshots") String snapshots,
+      @HeaderParam("X-Iceberg-Access-Delegation") String accessDelegationMode,
       @HeaderParam("If-None-Match") String ifNoneMatch) {
     TableRequestContext tableContext = requestContextFactory.table(prefix, namespace, table);
-    return tableLoadService.load(tableContext, table, snapshots, ifNoneMatch, tableSupport);
+    return tableLoadService.load(
+        tableContext, table, snapshots, accessDelegationMode, ifNoneMatch, tableSupport);
   }
 
   @Path("/tables/{table}")
@@ -144,6 +147,7 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
+      @HeaderParam("Idempotency-Key") String idempotencyKey,
       @QueryParam("purgeRequested") Boolean purgeRequested) {
     TableRequestContext tableContext = requestContextFactory.table(prefix, namespace, table);
     return tableDeleteService.delete(tableContext, table, purgeRequested, tableSupport);
@@ -169,6 +173,7 @@ public class TableResource {
             namespaceContext.catalogId(),
             namespaceContext.namespaceId(),
             idempotencyKey,
+            null,
             transactionId,
             req,
             tableSupport));
@@ -180,6 +185,7 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
+      @HeaderParam("Idempotency-Key") String idempotencyKey,
       PlanRequests.Plan rawRequest) {
     TableRequestContext tableContext = requestContextFactory.table(prefix, namespace, table);
     return tablePlanOrchestrationService.plan(tableContext, rawRequest, tableSupport);
@@ -213,6 +219,7 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
+      @HeaderParam("Idempotency-Key") String idempotencyKey,
       TaskRequests.Fetch request) {
     if (request == null || request.planTask() == null || request.planTask().isBlank()) {
       return IcebergErrorResponses.validation("plan-task is required");

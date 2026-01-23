@@ -26,7 +26,6 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesResponse;
@@ -49,24 +48,19 @@ class NamespaceResourceTest extends AbstractRestResourceTest {
   void createsNamespace() {
     ResourceId nsId = ResourceId.newBuilder().setId("foo:analytics").build();
     Namespace created =
-        Namespace.newBuilder()
-            .setResourceId(nsId)
-            .setDisplayName("analytics")
-            .setDescription("desc")
-            .build();
+        Namespace.newBuilder().setResourceId(nsId).setDisplayName("analytics").build();
 
     when(namespaceStub.createNamespace(any()))
         .thenReturn(CreateNamespaceResponse.newBuilder().setNamespace(created).build());
 
     given()
-        .body("{\"namespace\":\"analytics\",\"description\":\"desc\"}")
+        .body("{\"namespace\":\"analytics\"}")
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces")
         .then()
-        .statusCode(201)
-        .body("namespace[0]", equalTo("analytics"))
-        .body("properties.description", equalTo("desc"));
+        .statusCode(200)
+        .body("namespace[0]", equalTo("analytics"));
   }
 
   @Test
@@ -84,7 +78,7 @@ class NamespaceResourceTest extends AbstractRestResourceTest {
 
     given()
         .when()
-        .get("/v1/foo/namespaces?recursive=true&pageSize=5")
+        .get("/v1/foo/namespaces?pageSize=5")
         .then()
         .statusCode(200)
         .body("namespaces[0][0]", equalTo("analytics"))
@@ -101,23 +95,6 @@ class NamespaceResourceTest extends AbstractRestResourceTest {
         ArgumentCaptor.forClass(ListNamespacesRequest.class);
     verify(namespaceStub).listNamespaces(req.capture());
     assertEquals(5, req.getValue().getPage().getPageSize());
-    assertEquals(true, req.getValue().getRecursive());
-  }
-
-  @Test
-  void headNamespaceChecksExistence() {
-    ResourceId nsId = ResourceId.newBuilder().setId("foo:analytics").build();
-    when(directoryStub.resolveNamespace(any()))
-        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
-    Namespace ns = Namespace.newBuilder().setResourceId(nsId).setDisplayName("analytics").build();
-    when(namespaceStub.getNamespace(any()))
-        .thenReturn(GetNamespaceResponse.newBuilder().setNamespace(ns).build());
-
-    given().when().head("/v1/foo/namespaces/analytics").then().statusCode(204);
-
-    ArgumentCaptor<GetNamespaceRequest> req = ArgumentCaptor.forClass(GetNamespaceRequest.class);
-    verify(namespaceStub).getNamespace(req.capture());
-    assertEquals(nsId, req.getValue().getNamespaceId());
   }
 
   @Test

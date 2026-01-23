@@ -51,7 +51,8 @@ public class TransactionCommitService {
     if (accountId == null || accountId.isBlank()) {
       return IcebergErrorResponses.validation("account context is required");
     }
-    List<TransactionCommitRequest.TableChange> changes = request.resolvedTableChanges();
+    List<TransactionCommitRequest.TableChange> changes =
+        request == null || request.tableChanges() == null ? List.of() : request.tableChanges();
     if (changes.isEmpty()) {
       return IcebergErrorResponses.validation("table-changes are required");
     }
@@ -65,14 +66,7 @@ public class TransactionCommitService {
       String namespace = namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
       ResourceId namespaceId = tableLifecycleService.resolveNamespaceId(catalogName, namespacePath);
       TableRequests.Commit commitReq =
-          new TableRequests.Commit(
-              null,
-              namespacePath,
-              null,
-              null,
-              change.stageId(),
-              change.requirements(),
-              change.updates());
+          new TableRequests.Commit(change.requirements(), change.updates());
       Response tableResponse =
           tableCommitService.commit(
               new TableCommitService.CommitCommand(
@@ -84,6 +78,7 @@ public class TransactionCommitService {
                   catalogId,
                   namespaceId,
                   idempotencyKey,
+                  change.stageId(),
                   transactionId,
                   commitReq,
                   tableSupport));

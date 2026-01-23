@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.resources.system;
 
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CatalogConfigDto;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.inject.Inject;
@@ -40,13 +41,16 @@ public class ConfigResource {
 
   @GET
   public Response getConfig(@QueryParam("warehouse") String warehouse) {
+    String prefix = warehouse == null || warehouse.isBlank() ? defaultPrefix() : warehouse.trim();
+    String catalogName = CatalogResolver.resolveCatalog(config, prefix);
     Map<String, String> defaults =
         Map.of(
             "client.poll-interval-ms", "100",
             "client.retry.initial-timeout-ms", "200",
-            "catalog-name", resolvePrefix(warehouse));
+            "namespace-separator", "%1F",
+            "catalog-name", catalogName);
 
-    Map<String, String> overrides = Map.of("prefix", resolvePrefix(warehouse));
+    Map<String, String> overrides = Map.of("prefix", prefix);
 
     List<String> endpoints =
         List.of(
@@ -63,6 +67,7 @@ public class ConfigResource {
             "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}",
             "HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}",
             "POST /v1/{prefix}/namespaces/{namespace}/register",
+            "POST /v1/{prefix}/namespaces/{namespace}/register-view",
             "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan",
             "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{planId}",
             "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{planId}",
@@ -89,7 +94,10 @@ public class ConfigResource {
     return Response.ok(payload).build();
   }
 
-  private String resolvePrefix(String warehouse) {
+  private String defaultPrefix() {
+    if (config == null) {
+      return "floecat";
+    }
     return config.defaultPrefix().filter(p -> p != null && !p.isBlank()).orElse("floecat");
   }
 

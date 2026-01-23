@@ -21,6 +21,7 @@ import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
@@ -38,6 +39,7 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -68,8 +70,7 @@ public class TableRegisterService {
     String metadataLocation = req.metadataLocation().trim();
     String tableName = req.name().trim();
 
-    Map<String, String> ioProperties =
-        req.properties() == null ? new LinkedHashMap<>() : new LinkedHashMap<>(req.properties());
+    Map<String, String> ioProperties = new LinkedHashMap<>();
     ImportedMetadata importedMetadata;
     try {
       importedMetadata = tableMetadataImportService.importMetadata(metadataLocation, ioProperties);
@@ -161,7 +162,7 @@ public class TableRegisterService {
                 tableSupport.defaultCredentials()));
     String etagValue = metadataLocation(created, metadata);
     if (etagValue != null) {
-      builder.tag(etagValue);
+      builder.header(HttpHeaders.ETAG, IcebergHttpUtil.etagForMetadataLocation(etagValue));
     }
     return builder.build();
   }
@@ -181,7 +182,7 @@ public class TableRegisterService {
       existing = tableLifecycleService.getTable(tableId);
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
-        return IcebergErrorResponses.notFound(
+        return IcebergErrorResponses.noSuchTable(
             "Table "
                 + String.join(".", namespaceContext.namespacePath())
                 + "."
@@ -294,7 +295,7 @@ public class TableRegisterService {
                 tableSupport.defaultCredentials()));
     String etagValue = metadataLocation(updated, metadata);
     if (etagValue != null) {
-      builder.tag(etagValue);
+      builder.header(HttpHeaders.ETAG, IcebergHttpUtil.etagForMetadataLocation(etagValue));
     }
     return builder.build();
   }

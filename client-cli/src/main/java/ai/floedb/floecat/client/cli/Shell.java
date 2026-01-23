@@ -2548,6 +2548,9 @@ public class Shell implements Runnable {
           file.getFileSizeInBytes(),
           file.getRecordCount(),
           content);
+      if (!file.getDeleteFileIndicesList().isEmpty()) {
+        out.printf("    delete_file_indices: %s%n", file.getDeleteFileIndicesList());
+      }
       if (!file.getPartitionDataJson().isBlank()) {
         out.printf(
             "    partition_data: %s (spec_id=%d)%n",

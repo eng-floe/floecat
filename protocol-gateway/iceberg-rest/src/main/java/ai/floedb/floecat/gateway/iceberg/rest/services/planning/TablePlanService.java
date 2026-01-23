@@ -156,7 +156,9 @@ public class TablePlanService {
         deleteFiles.add(toContentFile(delete));
       }
       for (ScanFile file : bundle.getDataFilesList()) {
-        tasks.add(new FileScanTaskDto(toContentFile(file), List.of(), null));
+        List<Integer> deleteRefs =
+            file.getDeleteFileIndicesCount() > 0 ? file.getDeleteFileIndicesList() : List.of();
+        tasks.add(new FileScanTaskDto(toContentFile(file), deleteRefs, null));
       }
     }
     return new TablePlanTasksResponseDto(List.of(), tasks, deleteFiles);
@@ -254,11 +256,16 @@ public class TablePlanService {
           parseFilterExpression(child, caseSensitive, out);
         }
       }
-      case "always_true" -> {}
-      case "always_false", "or", "not" -> {
-        throw new IllegalArgumentException("filter type " + type + " is not supported");
+      case "true", "always-true" -> {}
+      case "false", "always-false", "or", "not" -> {
+        // Skip unsupported logical types to keep filtering conservative.
       }
-      default -> out.add(buildLeafPredicate(type, expr, caseSensitive));
+      default -> {
+        Predicate predicate = buildLeafPredicate(type, expr, caseSensitive);
+        if (predicate != null) {
+          out.add(predicate);
+        }
+      }
     }
   }
 
@@ -275,23 +282,23 @@ public class TablePlanService {
         values = literalValues(expr, "literal", "value");
         op = Operator.OP_EQ;
       }
-      case "neq", "not_equal", "!=" -> {
+      case "not-eq", "neq", "not-equal", "not_equal", "!=" -> {
         values = literalValues(expr, "literal", "value");
         op = Operator.OP_NEQ;
       }
-      case "lt", "less_than", "<" -> {
+      case "lt", "less-than", "less_than", "<" -> {
         values = literalValues(expr, "literal", "value");
         op = Operator.OP_LT;
       }
-      case "lte", "less_than_or_equal", "<=" -> {
+      case "lt-eq", "lte", "less-than-or-equal", "less_than_or_equal", "<=" -> {
         values = literalValues(expr, "literal", "value");
         op = Operator.OP_LTE;
       }
-      case "gt", "greater_than", ">" -> {
+      case "gt", "greater-than", "greater_than", ">" -> {
         values = literalValues(expr, "literal", "value");
         op = Operator.OP_GT;
       }
-      case "gte", "greater_than_or_equal", ">=" -> {
+      case "gt-eq", "gte", "greater-than-or-equal", "greater_than_or_equal", ">=" -> {
         values = literalValues(expr, "literal", "value");
         op = Operator.OP_GTE;
       }
@@ -319,7 +326,7 @@ public class TablePlanService {
         op = Operator.OP_IS_NULL;
         values = List.of();
       }
-      case "is_not_null", "not_null", "not-null" -> {
+      case "not-null", "not_null", "is-not-null", "is_not_null" -> {
         op = Operator.OP_IS_NOT_NULL;
         values = List.of();
       }
@@ -327,7 +334,12 @@ public class TablePlanService {
         values = literalValues(expr, "literals", "values");
         op = Operator.OP_IN;
       }
-      default -> throw new IllegalArgumentException("filter type " + type + " is not supported");
+      case "not-in", "starts-with", "not-starts-with", "is-nan", "not-nan" -> {
+        return null;
+      }
+      default -> {
+        return null;
+      }
     }
     if (requiresLiteral(op) && values.isEmpty()) {
       throw new IllegalArgumentException(type + " filter requires a literal value");
@@ -371,7 +383,7 @@ public class TablePlanService {
     if (raw == null) {
       return null;
     }
-    return raw.trim().toLowerCase(Locale.ROOT).replace('-', '_');
+    return raw.trim().toLowerCase(Locale.ROOT).replace('_', '-');
   }
 
   private String resolveColumn(Object termNode, boolean caseSensitive) {
@@ -381,6 +393,9 @@ public class TablePlanService {
     } else {
       Map<String, Object> term = asObjectMap(termNode);
       if (term != null) {
+        if (term.containsKey("term")) {
+          return resolveColumn(term.get("term"), caseSensitive);
+        }
         column = asString(term.get("ref"));
         if (column == null || column.isBlank()) {
           column = asString(term.get("name"));

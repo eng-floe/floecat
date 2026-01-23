@@ -51,6 +51,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImp
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitSideEffectService.PostCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;
 import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
@@ -211,10 +213,9 @@ class TableCommitServiceTest {
     TableRequests.Create createRequest =
         new TableRequests.Create(
             "orders",
-            FIXTURE.table().getSchemaJson(),
-            null,
+            schemaFromJson(FIXTURE.table().getSchemaJson()),
             "s3://warehouse/db/orders",
-            Map.of(),
+            Map.of("metadata-location", "s3://stage/orders/metadata/00001-abc.metadata.json"),
             null,
             null,
             true);
@@ -284,15 +285,9 @@ class TableCommitServiceTest {
 
     TableRequests.Commit request =
         new TableRequests.Commit(
-            "orders",
-            List.of("db"),
-            null,
-            null,
-            "stage-commit",
-            List.of(),
-            List.of(Map.of("action", "remove-snapshots", "snapshot-ids", List.of(1L))));
+            List.of(), List.of(Map.of("action", "remove-snapshots", "snapshot-ids", List.of(1L))));
 
-    Response response = service.commit(command(request));
+    Response response = service.commit(command(request, "stage-commit"));
 
     CommitTableResponseDto dto = (CommitTableResponseDto) response.getEntity();
     assertEquals(catalogMetadataLocation, dto.metadataLocation());
@@ -315,30 +310,30 @@ class TableCommitServiceTest {
             any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
         .thenReturn(null);
 
-    String requested = "s3://requested/orders/metadata/00001-abc.metadata.json";
     TableRequests.Commit request =
         new TableRequests.Commit(
-            "orders",
-            List.of("db"),
-            null,
-            Map.of("metadata-location", requested),
-            null,
             List.of(),
-            List.of());
+            List.of(
+                Map.of(
+                    "action",
+                    "set-properties",
+                    "updates",
+                    Map.of(
+                        "metadata-location",
+                        "s3://requested/orders/metadata/00001-abc.metadata.json"))));
 
     Response response = service.commit(command(request));
 
     CommitTableResponseDto dto = (CommitTableResponseDto) response.getEntity();
-    assertEquals(requested, dto.metadataLocation());
+    assertEquals(FIXTURE.metadataLocation(), dto.metadataLocation());
   }
 
   private TableRequests.Commit emptyCommitRequest() {
-    return new TableRequests.Commit(null, List.of("db"), null, null, null, List.of(), List.of());
+    return new TableRequests.Commit(List.of(), List.of());
   }
 
   private TableRequests.Commit stageCommitRequest() {
-    return new TableRequests.Commit(
-        "orders", List.of("db"), null, null, "stage-commit", List.of(), List.of());
+    return new TableRequests.Commit(List.of(), List.of());
   }
 
   private Table tableRecord(String id, String metadataLocation) {
@@ -364,6 +359,10 @@ class TableCommitServiceTest {
   }
 
   private TableCommitService.CommitCommand command(TableRequests.Commit request) {
+    return command(request, null);
+  }
+
+  private TableCommitService.CommitCommand command(TableRequests.Commit request, String stageId) {
     return new TableCommitService.CommitCommand(
         "foo",
         "db",
@@ -373,8 +372,20 @@ class TableCommitServiceTest {
         ResourceId.newBuilder().setId("cat").build(),
         ResourceId.newBuilder().setId("cat:db").build(),
         "idem",
+        stageId,
         "txn",
         request,
         tableSupport);
+  }
+
+  private static JsonNode schemaFromJson(String schemaJson) {
+    if (schemaJson == null || schemaJson.isBlank()) {
+      throw new IllegalStateException("schema-json is required for fixture");
+    }
+    try {
+      return new ObjectMapper().readTree(schemaJson);
+    } catch (Exception e) {
+      throw new IllegalStateException("Failed to parse schema-json", e);
+    }
   }
 }

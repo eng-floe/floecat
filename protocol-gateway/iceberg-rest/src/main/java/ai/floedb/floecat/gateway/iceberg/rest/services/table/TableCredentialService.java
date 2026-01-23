@@ -17,10 +17,13 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CredentialsResponseDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.ws.rs.core.Response;
+import java.util.List;
 
 @ApplicationScoped
 public class TableCredentialService {
@@ -28,6 +31,12 @@ public class TableCredentialService {
   public Response load(
       TableRequestContext tableContext, String planId, TableGatewaySupport tableSupport) {
     // hook for future credential resolution per plan/table context
-    return Response.ok(new CredentialsResponseDto(tableSupport.defaultCredentials())).build();
+    List<StorageCredentialDto> credentials;
+    try {
+      credentials = tableSupport.credentialsForAccessDelegation("vended-credentials");
+    } catch (IllegalArgumentException e) {
+      return IcebergErrorResponses.validation(e.getMessage());
+    }
+    return Response.ok(new CredentialsResponseDto(credentials)).build();
   }
 }
