@@ -480,6 +480,7 @@ public class SeedRunner {
 
   private Map<String, String> connectorProperties(FixtureConfig fixture, String fixtureRoot) {
     Map<String, String> props = new LinkedHashMap<>();
+    props.put("iceberg.source", "filesystem");
     props.put("external.metadata-location", fixture.metadataLocation());
     props.put("external.namespace", fixture.sourceNamespace());
     props.put("external.table-name", fixture.tableName());

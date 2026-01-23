@@ -26,7 +26,6 @@ import ai.floedb.floecat.common.rpc.Operator;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.query.rpc.*;
 
@@ -452,7 +451,7 @@ class FloecatSplitManagerTest {
         @Override
         public void fetchScanBundle(
             FetchScanBundleRequest request,
-            StreamObserver<FetchScanBundleResponse> responseObserver) {
+            StreamObserver<ScanFile> responseObserver) {
             this.lastFetch = request;
             ScanFile.Builder f =
                 ScanFile.newBuilder()
@@ -462,12 +461,7 @@ class FloecatSplitManagerTest {
                     .setRecordCount(1);
             if (partitionDataJson != null)
                 f.setPartitionDataJson(partitionDataJson);
-            ScanBundle bundle =
-                ScanBundle.newBuilder().addDataFiles(f.build()).build();
-            responseObserver.onNext(
-                FetchScanBundleResponse.newBuilder()
-                    .setBundle(bundle)
-                    .build());
+            responseObserver.onNext(f.build());
             responseObserver.onCompleted();
         }
     }

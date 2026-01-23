@@ -56,7 +56,6 @@ import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
 import ai.floedb.floecat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.floecat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
-import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
@@ -69,7 +68,6 @@ import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.floecat.query.rpc.GetQueryResponse;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
 import com.google.protobuf.util.Timestamps;
@@ -890,11 +888,9 @@ class TableResourceTest extends AbstractRestResourceTest {
             .setRecordCount(5)
             .build();
     QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-1").build();
-    ScanBundle bundle = ScanBundle.newBuilder().addDataFiles(file).build();
     when(queryStub.beginQuery(any()))
         .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
-    when(queryScanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+    when(queryScanStub.fetchScanBundle(any())).thenReturn(List.of(file).iterator());
 
     given()
         .body("{\"snapshot-id\":7}")
@@ -941,9 +937,7 @@ class TableResourceTest extends AbstractRestResourceTest {
             .setFileSizeInBytes(20)
             .setRecordCount(10)
             .build();
-    ScanBundle bundle = ScanBundle.newBuilder().addDataFiles(file).build();
-    when(queryScanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+    when(queryScanStub.fetchScanBundle(any())).thenReturn(List.of(file).iterator());
 
     given()
         .body("{\"snapshot-id\":7}")
@@ -982,9 +976,7 @@ class TableResourceTest extends AbstractRestResourceTest {
     when(queryStub.getQuery(any()))
         .thenReturn(GetQueryResponse.newBuilder().setQuery(descriptor).build());
 
-    ScanBundle bundle = ScanBundle.newBuilder().build();
-    when(queryScanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+    when(queryScanStub.fetchScanBundle(any())).thenReturn(List.<ScanFile>of().iterator());
 
     String body =
         """
@@ -1046,9 +1038,7 @@ class TableResourceTest extends AbstractRestResourceTest {
             .setFileSizeInBytes(20)
             .setRecordCount(10)
             .build();
-    ScanBundle bundle = ScanBundle.newBuilder().addDataFiles(file).build();
-    when(queryScanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+    when(queryScanStub.fetchScanBundle(any())).thenReturn(List.of(file).iterator());
 
     given()
         .body("{}")

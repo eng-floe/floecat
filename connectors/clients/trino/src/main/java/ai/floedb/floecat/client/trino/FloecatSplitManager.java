@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.execution.rpc.ScanFile;
+import ai.floedb.floecat.execution.rpc.ScanFileContent;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
@@ -162,10 +163,17 @@ public class FloecatSplitManager implements ConnectorSplitManager {
             .addAllPredicates(predicates)
             .build();
 
-    var fetchResp = scan.fetchScanBundle(fetchReq);
-
-    List<ScanFile> dataFiles = fetchResp.getBundle().getDataFilesList();
-    List<ScanFile> deleteScanFiles = fetchResp.getBundle().getDeleteFilesList();
+    var fetchStream = scan.fetchScanBundle(fetchReq);
+    List<ScanFile> dataFiles = new ArrayList<>();
+    List<ScanFile> deleteScanFiles = new ArrayList<>();
+    while (fetchStream.hasNext()) {
+      ScanFile file = fetchStream.next();
+      if (isDeleteFile(file)) {
+        deleteScanFiles.add(file);
+      } else {
+        dataFiles.add(file);
+      }
+    }
     List<DeleteFile> deleteFiles = toDeleteFiles(deleteScanFiles);
 
     String partitionSpecJson =
@@ -202,6 +210,12 @@ public class FloecatSplitManager implements ConnectorSplitManager {
     }
 
     return new FixedSplitSource(splits);
+  }
+
+  private static boolean isDeleteFile(ScanFile file) {
+    ScanFileContent content = file.getFileContent();
+    return content == ScanFileContent.SCAN_FILE_CONTENT_EQUALITY_DELETES
+        || content == ScanFileContent.SCAN_FILE_CONTENT_POSITION_DELETES;
   }
 
   private static IcebergFileFormat toIcebergFormat(String format) {

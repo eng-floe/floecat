@@ -43,7 +43,12 @@ final class LocalFileSystemClient implements FileIO {
 
   @Override
   public InputFile newInputFile(String path, long fileSize) {
-    return new LocalInputFile(resolvePath(path), toLocalPath(path));
+    String resolved = resolvePath(path);
+    Path local = toLocalPath(path);
+    if (isMissingCheckpoint(local, resolved)) {
+      return new MissingInputFile(resolved);
+    }
+    return new LocalInputFile(resolved, local);
   }
 
   @Override
@@ -188,6 +193,10 @@ final class LocalFileSystemClient implements FileIO {
     return new S3Location(bucket, key);
   }
 
+  private static boolean isMissingCheckpoint(Path local, String resolvedPath) {
+    return resolvedPath.endsWith("/_last_checkpoint") && !Files.exists(local);
+  }
+
   private record S3Location(String bucket, String key) {}
 
   private static final class LocalInputFile implements InputFile {
@@ -222,6 +231,65 @@ final class LocalFileSystemClient implements FileIO {
     public String path() {
       return path;
     }
+  }
+
+  private static final class MissingInputFile implements InputFile {
+    private final String path;
+
+    private MissingInputFile(String path) {
+      this.path = path;
+    }
+
+    @Override
+    public SeekableInputStream newStream() {
+      return new MissingSeekableInputStream(path);
+    }
+
+    @Override
+    public long length() {
+      return 0L;
+    }
+
+    @Override
+    public String path() {
+      return path;
+    }
+  }
+
+  private static final class MissingSeekableInputStream extends SeekableInputStream {
+    private final String path;
+
+    private MissingSeekableInputStream(String path) {
+      this.path = path;
+    }
+
+    @Override
+    public int read() throws IOException {
+      throw new java.io.FileNotFoundException("File not found: " + path);
+    }
+
+    @Override
+    public int read(byte[] b, int off, int len) throws IOException {
+      throw new java.io.FileNotFoundException("File not found: " + path);
+    }
+
+    @Override
+    public void readFully(byte[] b, int off, int len) throws IOException {
+      throw new java.io.FileNotFoundException("File not found: " + path);
+    }
+
+    @Override
+    public void seek(long newPos) throws IOException {
+      throw new java.io.FileNotFoundException("File not found: " + path);
+    }
+
+    @Override
+    public long getPos() throws IOException {
+      return 0L;
+    }
+
+    @Override
+    public void close() {}
   }
 
   private static final class LocalSeekableInputStream extends SeekableInputStream {

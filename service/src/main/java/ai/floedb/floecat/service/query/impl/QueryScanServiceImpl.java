@@ -17,13 +17,14 @@
 package ai.floedb.floecat.service.query.impl;
 
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
+import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.execution.rpc.ScanBundle;
+import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.floecat.query.rpc.QueryScanService;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
+import ai.floedb.floecat.service.common.GrpcContextUtil;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.ScanPruningUtils;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -33,9 +34,14 @@ import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.grpc.GrpcService;
-import io.smallrye.mutiny.Uni;
+import io.smallrye.mutiny.Multi;
+import io.smallrye.mutiny.infrastructure.Infrastructure;
+import jakarta.enterprise.context.control.ActivateRequestContext;
 import jakarta.inject.Inject;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.jboss.logging.Logger;
 
 /**
@@ -73,54 +79,71 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
    * pruning. Query status is updated based on success or failure.
    */
   @Override
-  public Uni<FetchScanBundleResponse> fetchScanBundle(FetchScanBundleRequest request) {
+  @ActivateRequestContext
+  public Multi<ScanFile> fetchScanBundle(FetchScanBundleRequest request) {
     var L = LogHelper.start(LOG, "FetchScanBundle");
+    GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
 
-    return mapFailures(
-            run(
-                () -> {
-                  var principalContext = principal.get();
-                  var correlationId = principalContext.getCorrelationId();
+    return Multi.createFrom()
+        .<ScanFile>deferred(
+            () ->
+                grpcCtx.call(
+                    () -> {
+                      var principalContext = principal.get();
+                      var correlationId = principalContext.getCorrelationId();
 
-                  authz.require(principalContext, "catalog.read");
+                      authz.require(principalContext, "catalog.read");
 
-                  String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+                      String queryId =
+                          mustNonEmpty(request.getQueryId(), "query_id", correlationId);
 
-                  if (!request.hasTableId()) {
-                    throw GrpcErrors.invalidArgument(
-                        correlationId, "query.table_id.required", Map.of("query_id", queryId));
-                  }
+                      if (!request.hasTableId()) {
+                        throw GrpcErrors.invalidArgument(
+                            correlationId, "query.table_id.required", Map.of("query_id", queryId));
+                      }
 
-                  var ctxOpt = queryStore.get(queryId);
-                  if (ctxOpt.isEmpty()) {
-                    throw GrpcErrors.notFound(
-                        correlationId, "query.not_found", Map.of("query_id", queryId));
-                  }
-                  var ctx = ctxOpt.get();
+                      var ctxOpt = queryStore.get(queryId);
+                      if (ctxOpt.isEmpty()) {
+                        throw GrpcErrors.notFound(
+                            correlationId, "query.not_found", Map.of("query_id", queryId));
+                      }
+                      var ctx = ctxOpt.get();
 
-                  ResourceId tableId = request.getTableId();
-                  var pin = ctx.requireSnapshotPin(tableId, correlationId);
+                      ResourceId tableId = request.getTableId();
+                      var pin = ctx.requireSnapshotPin(tableId, correlationId);
+                      Set<String> requiredColumns =
+                          request.getRequiredColumnsCount() == 0
+                              ? Set.of()
+                              : new HashSet<>(request.getRequiredColumnsList());
+                      List<Predicate> predicates = request.getPredicatesList();
 
-                  try {
-                    var raw = scanBundles.fetch(correlationId, request.getTableId(), pin, stats);
+                      try {
+                        Iterable<ScanFile> raw =
+                            scanBundles.stream(correlationId, tableId, pin, stats);
 
-                    ScanBundle pruned =
-                        ScanPruningUtils.pruneBundle(
-                            raw, request.getRequiredColumnsList(), request.getPredicatesList());
-
-                    ctx.markPlanningCompleted();
-
-                    return FetchScanBundleResponse.newBuilder().setBundle(pruned).build();
-
-                  } catch (RuntimeException e) {
-                    ctx.markPlanningFailed();
-                    throw e;
-                  }
-                }),
-            correlationId())
+                        return Multi.createFrom()
+                            .iterable(raw)
+                            .onItem()
+                            .transform(
+                                file ->
+                                    ScanPruningUtils.pruneFile(file, requiredColumns, predicates))
+                            .select()
+                            .where(file -> file != null)
+                            .onFailure()
+                            .invoke(ctx::markPlanningFailed)
+                            .onFailure()
+                            .transform(t -> toStatus(t, correlationId))
+                            .onCompletion()
+                            .invoke(ctx::markPlanningCompleted);
+                      } catch (RuntimeException e) {
+                        ctx.markPlanningFailed();
+                        throw toStatus(e, correlationId);
+                      }
+                    }))
+        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
         .onFailure()
         .invoke(L::fail)
-        .onItem()
+        .onCompletion()
         .invoke(L::ok);
   }
 }
