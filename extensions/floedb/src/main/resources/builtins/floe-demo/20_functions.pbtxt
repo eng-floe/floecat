@@ -12,10 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# ######################
-# TODO: PORT PG Catalog
-# ######################
-
 functions {
   name { name: "int4_abs" path: "pg_catalog" }
   argument_types { name: "int4" path: "pg_catalog" }
@@ -33,6 +29,10 @@ functions {
       proiswindow: false
       provolatile: "i"
       prosrc: "int4_abs"
+      pronargs: 1
+      prorettype: 23
+      proargtypes: 23
+      proargtypelen: 1
     }
   }
 }
@@ -59,6 +59,10 @@ functions {
       proisagg: false
       provolatile: "v"
       prosrc: "text_upper"
+      pronargs: 1
+      prorettype: 25
+      proargtypes: 25
+      proargtypelen: 1
     }
   }
 }
@@ -87,12 +91,18 @@ functions {
     payload_type: "floe.function+proto"
     min_version: "9.5"
     [floe.ext.floe_function] {
+      oid: 1252
       proname: "sum_int4_state"
       prolang: 12
       proisstrict: true
       proisagg: true
       provolatile: "i"
       prosrc: "sum_int4_state"
+      pronargs: 2
+      prorettype: 20
+      proargtypes: 20
+      proargtypes: 23
+      proargtypelen: 2
     }
   }
 }
@@ -106,12 +116,17 @@ functions {
     payload_type: "floe.function+proto"
     min_version: "9.5"
     [floe.ext.floe_function] {
+      oid: 1253
       proname: "sum_int4_final"
       prolang: 12
       proisstrict: true
       proisagg: true
       provolatile: "i"
       prosrc: "sum_int4_final"
+      pronargs: 1
+      prorettype: 20
+      proargtypes: 20
+      proargtypelen: 1
     }
   }
 }
@@ -125,12 +140,17 @@ functions {
     min_version: "1.0"
     max_version: "2.0"
     [floe.ext.floe_function] {
+      oid: 4000
       proname: "engine_specific_test"
       prolang: 12
       proisstrict: false
       proisagg: false
       provolatile: "i"
       prosrc: "engine_specific_test"
+      pronargs: 1
+      prorettype: 23
+      proargtypes: 23
+      proargtypelen: 1
     }
   }
 }

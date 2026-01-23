@@ -22,6 +22,11 @@ import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogValidationFormatter;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogValidator;
 import ai.floedb.floecat.systemcatalog.registry.SystemObjectsRegistryMerger;
+import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
+import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
+import ai.floedb.floecat.systemcatalog.validation.Severity;
+import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
+import ai.floedb.floecat.systemcatalog.validation.ValidationIssueFormatter;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.TextFormat;
 import java.io.IOException;
@@ -31,6 +36,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.ServiceLoader;
 
 /**
  * Standalone command line validator for builtin catalog protobuf files. The CLI intentionally
@@ -96,7 +102,16 @@ public final class SystemObjectsValidatorCli {
 
     SystemCatalogData catalog;
     try {
-      catalog = loadCatalog(options.catalogPath());
+      if (options.engineKind() != null
+          && !options.engineKind().isBlank()
+          && options.catalogPath() == null) {
+        catalog = loadCatalogFromEngine(options.engineKind());
+      } else {
+        if (options.catalogPath() == null) {
+          throw new IOException("Catalog file path is required unless --engine is provided");
+        }
+        catalog = loadCatalog(options.catalogPath());
+      }
     } catch (IOException e) {
       err.println("ERROR: " + e.getMessage());
       return 1;
@@ -104,16 +119,48 @@ public final class SystemObjectsValidatorCli {
 
     var errors = SystemCatalogValidator.validate(catalog);
     var warnings = List.<String>of();
+    List<ValidationIssue> engineIssues = List.of();
+    if (options.engineKind() != null && !options.engineKind().isBlank()) {
+      try {
+        engineIssues = validateWithEngine(options.engineKind(), catalog);
+      } catch (RuntimeException e) {
+        err.println("ERROR: engine validation failed: " + e.getMessage());
+        return 1;
+      }
+    }
     var stats = CatalogStats.from(catalog);
-    boolean valid = errors.isEmpty() && (warnings.isEmpty() || !options.strict());
-    boolean shouldFail = !errors.isEmpty() || (options.strict() && !warnings.isEmpty());
+    int engineErrorCount =
+        (int)
+            engineIssues.stream().filter(i -> i != null && i.severity() == Severity.ERROR).count();
+    int engineWarningCount =
+        (int)
+            engineIssues.stream()
+                .filter(i -> i != null && i.severity() == Severity.WARNING)
+                .count();
+    int engineInfoCount =
+        (int) engineIssues.stream().filter(i -> i != null && i.severity() == Severity.INFO).count();
 
-    String catalogLabel = options.catalogPath().getFileName().toString();
+    boolean valid =
+        errors.isEmpty()
+            && engineErrorCount == 0
+            && (warnings.isEmpty() || !options.strict())
+            && (engineWarningCount == 0 || !options.strict());
+    boolean shouldFail =
+        !errors.isEmpty()
+            || engineErrorCount > 0
+            || (options.strict() && (!warnings.isEmpty() || engineWarningCount > 0));
+
+    String catalogLabel =
+        options.catalogPath() != null
+            ? options.catalogPath().getFileName().toString()
+            : ("<engine:"
+                + EngineContextNormalizer.normalizeEngineKind(options.engineKind())
+                + ">");
 
     if (options.json()) {
-      emitJson(out, catalogLabel, stats, errors, warnings, valid);
+      emitJson(out, catalogLabel, stats, errors, warnings, engineIssues, valid);
     } else {
-      emitHumanReadable(out, catalogLabel, stats, errors, warnings, valid);
+      emitHumanReadable(out, catalogLabel, stats, errors, warnings, engineIssues, valid);
     }
 
     return shouldFail ? 1 : 0;
@@ -126,6 +173,7 @@ public final class SystemObjectsValidatorCli {
       CatalogStats stats,
       List<String> errors,
       List<String> warnings,
+      List<ValidationIssue> engineIssues,
       boolean valid) {
     if (valid) {
       out.printf("%sLoaded builtin catalog: %s%n", successPrefix, catalogLabel);
@@ -136,6 +184,9 @@ public final class SystemObjectsValidatorCli {
       out.printf("%sCollations: %d OK%n", successPrefix, stats.collations());
       out.printf("%sAggregates: %d OK%n", successPrefix, stats.aggregates());
       out.println();
+      if (engineIssues != null && !engineIssues.isEmpty()) {
+        out.printf("%sEngine validation: %d issues%n", successPrefix, engineIssues.size());
+      }
       out.println(colored("ALL CHECKS PASSED.", AnsiColor.GREEN_BOLD));
       return;
     }
@@ -143,19 +194,40 @@ public final class SystemObjectsValidatorCli {
     errors.stream()
         .map(SystemCatalogValidationFormatter::describeError)
         .forEach(err -> out.println(errorPrefix + colored(err, AnsiColor.RED_BOLD)));
+    if (engineIssues != null && !engineIssues.isEmpty()) {
+      for (ValidationIssue issue : engineIssues) {
+        if (issue == null) {
+          continue;
+        }
+        String rendered = ValidationIssueFormatter.format(issue);
+        if (issue.severity() == Severity.ERROR) {
+          out.println(errorPrefix + colored(rendered, AnsiColor.RED_BOLD));
+        } else if (issue.severity() == Severity.WARNING) {
+          out.println(colored("WARN: " + rendered, AnsiColor.YELLOW));
+        } else {
+          out.println("INFO: " + rendered);
+        }
+      }
+    }
     warnings.stream()
         .map(SystemObjectsValidatorCli::describeWarning)
         .forEach(warning -> out.println(colored("WARN: " + warning, AnsiColor.YELLOW)));
     out.println();
-    out.printf(
-        "%s%n",
-        colored(
-            "VALIDATION FAILED ("
-                + errors.size()
-                + " errors"
-                + (warnings.isEmpty() ? "" : " + " + warnings.size() + " warnings")
-                + ")",
-            AnsiColor.RED_BOLD));
+    StringBuilder summary = new StringBuilder();
+    summary.append("VALIDATION FAILED (");
+    summary.append(errors.size()).append(" core errors");
+    if (!warnings.isEmpty()) {
+      summary.append(" + ").append(warnings.size()).append(" core warnings");
+    }
+    EngineIssueCounts counts = tallyEngineIssues(engineIssues);
+    if (counts.errorCount > 0) {
+      summary.append(" + ").append(counts.errorCount).append(" engine errors");
+    }
+    if (counts.warningCount > 0) {
+      summary.append(" + ").append(counts.warningCount).append(" engine warnings");
+    }
+    summary.append(")");
+    out.println(colored(summary.toString(), AnsiColor.RED_BOLD));
   }
 
   /** Emits machine readable JSON output for automation. */
@@ -165,7 +237,9 @@ public final class SystemObjectsValidatorCli {
       CatalogStats stats,
       List<String> errors,
       List<String> warnings,
+      List<ValidationIssue> engineIssues,
       boolean valid) {
+    EngineIssueCounts counts = tallyEngineIssues(engineIssues);
     var builder = new StringBuilder();
     builder.append("{\n");
     builder.append("  \"catalog\": \"").append(escapeJson(catalogLabel)).append("\",\n");
@@ -178,6 +252,26 @@ public final class SystemObjectsValidatorCli {
         .append("  \"warnings\": ")
         .append(asJsonArray(warnings, SystemObjectsValidatorCli::describeWarning))
         .append(",\n");
+    builder
+        .append("  \"engine_issues\": ")
+        .append(asJsonArrayEngineIssues(engineIssues))
+        .append(",\n");
+    builder.append("  \"engine_error_count\": ").append(counts.errorCount).append(",\n");
+    builder.append("  \"engine_warning_count\": ").append(counts.warningCount).append(",\n");
+    builder.append("  \"engine_info_count\": ").append(counts.infoCount).append(",\n");
+    int engineErrorCount =
+        (int)
+            engineIssues.stream().filter(i -> i != null && i.severity() == Severity.ERROR).count();
+    int engineWarningCount =
+        (int)
+            engineIssues.stream()
+                .filter(i -> i != null && i.severity() == Severity.WARNING)
+                .count();
+    int engineInfoCount =
+        (int) engineIssues.stream().filter(i -> i != null && i.severity() == Severity.INFO).count();
+    builder.append("  \"engine_error_count\": ").append(engineErrorCount).append(",\n");
+    builder.append("  \"engine_warning_count\": ").append(engineWarningCount).append(",\n");
+    builder.append("  \"engine_info_count\": ").append(engineInfoCount).append(",\n");
     builder.append("  \"stats\": {\n");
     builder.append("    \"types\": ").append(stats.types()).append(",\n");
     builder.append("    \"functions\": ").append(stats.functions()).append(",\n");
@@ -198,6 +292,42 @@ public final class SystemObjectsValidatorCli {
     }
     return "[" + String.join(", ", mapped) + "]";
   }
+
+  private static String asJsonArrayEngineIssues(List<ValidationIssue> issues) {
+    if (issues == null || issues.isEmpty()) {
+      return "[]";
+    }
+    var mapped = new ArrayList<String>(issues.size());
+    for (ValidationIssue issue : issues) {
+      if (issue == null) {
+        continue;
+      }
+      mapped.add("\"" + escapeJson(ValidationIssueFormatter.format(issue)) + "\"");
+    }
+    return "[" + String.join(", ", mapped) + "]";
+  }
+
+  private static EngineIssueCounts tallyEngineIssues(List<ValidationIssue> issues) {
+    if (issues == null || issues.isEmpty()) {
+      return new EngineIssueCounts(0, 0, 0);
+    }
+    int errors = 0;
+    int warnings = 0;
+    int infos = 0;
+    for (ValidationIssue issue : issues) {
+      if (issue == null) {
+        continue;
+      }
+      switch (issue.severity()) {
+        case ERROR -> errors++;
+        case WARNING -> warnings++;
+        case INFO -> infos++;
+      }
+    }
+    return new EngineIssueCounts(errors, warnings, infos);
+  }
+
+  private record EngineIssueCounts(int errorCount, int warningCount, int infoCount) {}
 
   private static String escapeJson(String value) {
     if (value == null) {
@@ -329,7 +459,61 @@ public final class SystemObjectsValidatorCli {
 
   /** Prints the expected CLI arguments. */
   private void printUsage(PrintStream out) {
-    out.println("Usage: java -jar builtin-validator.jar <catalog.pb|pbtxt> [--strict] [--json]");
+    out.println(
+        "Usage:\n"
+            + "  java -jar builtin-validator.jar <catalog.pb|pbtxt|dir|_index.txt> [--strict] [--json]\n"
+            + "  java -jar builtin-validator.jar --engine <engineKind> [--strict] [--json]\n"
+            + "  java -jar builtin-validator.jar <catalog...> --engine <engineKind> [--strict] [--json]\n"
+            + "\n"
+            + "Notes:\n"
+            + "  --engine loads the EngineSystemCatalogExtension via ServiceLoader.\n"
+            + "  The extension implementation must be on the classpath.");
+  }
+
+  private static SystemCatalogData loadCatalogFromEngine(String engineKind) throws IOException {
+    String normalized = EngineContextNormalizer.normalizeEngineKind(engineKind);
+    if (normalized.isBlank()) {
+      throw new IOException("Engine kind is blank");
+    }
+    EngineSystemCatalogExtension ext = findEngineExtension(normalized);
+    if (ext == null) {
+      throw new IOException("No EngineSystemCatalogExtension found for engine_kind=" + normalized);
+    }
+    try {
+      return ext.loadSystemCatalog();
+    } catch (RuntimeException e) {
+      throw new IOException("Failed to load catalog from engine extension: " + normalized, e);
+    }
+  }
+
+  private static List<ValidationIssue> validateWithEngine(
+      String engineKind, SystemCatalogData catalog) {
+    String normalized = EngineContextNormalizer.normalizeEngineKind(engineKind);
+    if (normalized.isBlank()) {
+      return List.of();
+    }
+    EngineSystemCatalogExtension ext = findEngineExtension(normalized);
+    if (ext == null) {
+      return List.of(
+          new ValidationIssue(
+              "cli.engine_extension.not_found",
+              Severity.ERROR,
+              "engine_kind=" + normalized,
+              null,
+              List.of()));
+    }
+    return ext.validate(catalog);
+  }
+
+  private static EngineSystemCatalogExtension findEngineExtension(String normalizedEngineKind) {
+    for (EngineSystemCatalogExtension ext :
+        ServiceLoader.load(EngineSystemCatalogExtension.class)) {
+      String extKind = EngineContextNormalizer.normalizeEngineKind(ext.engineKind());
+      if (normalizedEngineKind.equals(extKind)) {
+        return ext;
+      }
+    }
+    return null;
   }
 
   private String colored(String text, AnsiColor color) {
@@ -354,16 +538,18 @@ public final class SystemObjectsValidatorCli {
   }
 
   /** Parsed CLI flags shared between the entry point and tests. */
-  private record CliOptions(Path catalogPath, boolean strict, boolean json) {
+  private record CliOptions(Path catalogPath, String engineKind, boolean strict, boolean json) {
     static CliOptions parse(String[] args) {
       if (args == null || args.length == 0) {
-        throw new IllegalArgumentException("Catalog file path is required");
+        throw new IllegalArgumentException("Catalog file path or --engine is required");
       }
       Path path = null;
+      String engine = null;
       boolean strict = false;
       boolean json = false;
 
-      for (String arg : args) {
+      for (int i = 0; i < args.length; i++) {
+        String arg = args[i];
         if (arg == null || arg.isBlank()) {
           continue;
         }
@@ -372,6 +558,17 @@ public final class SystemObjectsValidatorCli {
           strict = true;
         } else if (value.equals("--json")) {
           json = true;
+        } else if (value.equals("--engine")) {
+          if (i + 1 >= args.length) {
+            throw new IllegalArgumentException("--engine requires a value");
+          }
+          engine = args[++i];
+          if (engine == null) {
+            engine = "";
+          }
+          engine = engine.trim();
+        } else if (value.startsWith("--engine=")) {
+          engine = value.substring("--engine=".length()).trim();
         } else if (value.equals("--help") || value.equals("-h")) {
           throw new HelpRequested();
         } else if (value.startsWith("--")) {
@@ -383,10 +580,11 @@ public final class SystemObjectsValidatorCli {
         }
       }
 
-      if (path == null) {
-        throw new IllegalArgumentException("Catalog file path is required");
+      if (path == null && (engine == null || engine.isBlank())) {
+        throw new IllegalArgumentException(
+            "Catalog file path is required unless --engine is provided");
       }
-      return new CliOptions(path, strict, json);
+      return new CliOptions(path, engine, strict, json);
     }
   }
 

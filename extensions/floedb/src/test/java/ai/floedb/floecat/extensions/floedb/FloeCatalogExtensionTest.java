@@ -48,7 +48,7 @@ class FloeCatalogExtensionTest {
   }
 
   @Test
-  void flaoDemoLoadsAndValidates() {
+  void floeDemoLoadsAndValidates() {
     var extension = new FloeCatalogExtension.FloeDemo();
 
     assert "floe-demo".equals(extension.engineKind());
@@ -143,14 +143,14 @@ class FloeCatalogExtensionTest {
     var floeDemo = new FloeCatalogExtension.FloeDemo();
 
     SystemCatalogData testCatalogData = testCatalog.loadSystemCatalog();
-    SystemCatalogData flaoDemoCatalog = floeDemo.loadSystemCatalog();
+    SystemCatalogData floeDemoCatalog = floeDemo.loadSystemCatalog();
 
     // Both should have types, functions, etc (may have different counts)
     assert !testCatalogData.types().isEmpty();
-    assert !flaoDemoCatalog.types().isEmpty();
+    assert !floeDemoCatalog.types().isEmpty();
 
     assert !testCatalogData.functions().isEmpty();
-    assert !flaoDemoCatalog.functions().isEmpty();
+    assert !floeDemoCatalog.functions().isEmpty();
   }
 
   @Test
@@ -289,9 +289,10 @@ class FloeCatalogExtensionTest {
     assert payloadTypes.containsAll(expected) : "Missing Floe registry payloads " + expected;
 
     for (EngineSpecificRule hint : hints) {
-      if (!hint.payloadType().isBlank()) {
-        assert hint.hasExtensionPayload() : "Payload " + hint.payloadType() + " must carry bytes";
-        assert hint.extensionPayload().length > 0 : "Payload bytes must be non-empty";
+      if (!hint.payloadType().isEmpty() && hint.payloadType().startsWith("floe.")) {
+        assert hint.hasExtensionPayload() : "Expected payload bytes for " + hint.payloadType();
+        assert hint.extensionPayload().length > 0
+            : "Payload bytes must be non-empty for " + hint.payloadType();
       }
     }
   }
@@ -308,7 +309,7 @@ class FloeCatalogExtensionTest {
   }
 
   @Test
-  void flaoDemoResourceDirFollowsConvention() {
+  void floeDemoResourceDirFollowsConvention() {
     var extension = new FloeCatalogExtension.FloeDemo();
 
     String dir = extension.getResourceDir();
@@ -351,14 +352,14 @@ class FloeCatalogExtensionTest {
 
     // Both should be loadable and distinct
     SystemCatalogData catalogData = catalog.loadSystemCatalog();
-    SystemCatalogData flaoDemoCatalog = floeDemo.loadSystemCatalog();
+    SystemCatalogData floeDemoCatalog = floeDemo.loadSystemCatalog();
 
     // Verify they're different engines
     assert catalog.engineKind().equals("test-catalog");
     assert floeDemo.engineKind().equals("floe-demo");
 
     // May have different object counts (demo might be subset)
-    assert catalogData != null && flaoDemoCatalog != null;
+    assert catalogData != null && floeDemoCatalog != null;
   }
 
   @Test

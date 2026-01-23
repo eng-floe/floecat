@@ -22,6 +22,8 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.extensions.floedb.proto.*;
 import ai.floedb.floecat.extensions.floedb.sinks.FloeEngineSpecificDecorator;
 import ai.floedb.floecat.extensions.floedb.utils.PayloadDescriptor;
+import ai.floedb.floecat.extensions.floedb.validation.FloeSystemCatalogValidator;
+import ai.floedb.floecat.extensions.floedb.validation.ValidationScope;
 import ai.floedb.floecat.query.rpc.*;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
@@ -32,6 +34,7 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
 import com.google.protobuf.ExtensionRegistry;
 import com.google.protobuf.Message;
 import com.google.protobuf.TextFormat;
@@ -366,6 +369,11 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
   @Override
   public Optional<EngineMetadataDecorator> decorator() {
     return Optional.of(FloeEngineSpecificDecorator.INSTANCE);
+  }
+
+  @Override
+  public List<ValidationIssue> validate(SystemCatalogData catalog) {
+    return FloeSystemCatalogValidator.validate(catalog, new ValidationScope(engineKind()));
   }
 
   /** Concrete implementation for the main FloeDB engine. */

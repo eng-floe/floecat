@@ -19,10 +19,11 @@ aggregates {
   return_type { name: "int8" path: "pg_catalog" }
   engine_specific {
     payload_type: "floe.aggregate+proto"
+    min_version: "9.5"
     [floe.ext.floe_aggregate] {
-      aggfnoid: 0
-      aggtransfn: 0
-      aggfinalfn: 0
+      aggfnoid: 1252
+      aggtransfn: 1252
+      aggfinalfn: 1253
       aggmtransfn: 0
       aggmfinalfn: 0
     }
