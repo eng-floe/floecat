@@ -43,9 +43,16 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
   int waitSeconds;
 
   public void ensureTableExists(String tableName, boolean withTtl) {
-    ensureTableExists(tableName);
-    if (withTtl) {
-      ensureTtlEnabled(tableName, ATTR_TTL);
+    try {
+      ensureTableExists(tableName);
+      if (withTtl) {
+        ensureTtlEnabled(tableName, ATTR_TTL);
+      }
+    } catch (ResourceInUseException rie) {
+      log.warn(
+          "DynamoDB table bootstrap found table already exists for {}: {}",
+          tableName,
+          rie.toString());
     }
   }
 
