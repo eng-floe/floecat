@@ -98,16 +98,16 @@ class NamespaceResourceTest extends AbstractRestResourceTest {
   }
 
   @Test
-  void deletesNamespaceHonorsRequireEmpty() {
+  void deletesNamespaceRequiresEmpty() {
     ResourceId nsId = ResourceId.newBuilder().setId("foo:analytics").build();
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
 
-    given().when().delete("/v1/foo/namespaces/analytics?requireEmpty=false").then().statusCode(204);
+    given().when().delete("/v1/foo/namespaces/analytics").then().statusCode(204);
 
     ArgumentCaptor<DeleteNamespaceRequest> req =
         ArgumentCaptor.forClass(DeleteNamespaceRequest.class);
     verify(namespaceStub).deleteNamespace(req.capture());
-    assertEquals(false, req.getValue().getRequireEmpty());
+    assertEquals(true, req.getValue().getRequireEmpty());
   }
 }

@@ -95,11 +95,9 @@ public class NamespaceResource {
   @Path("/{namespace}")
   @DELETE
   public Response delete(
-      @PathParam("prefix") String prefix,
-      @PathParam("namespace") String namespace,
-      @QueryParam("requireEmpty") Boolean requireEmpty) {
+      @PathParam("prefix") String prefix, @PathParam("namespace") String namespace) {
     NamespaceRequestContext namespaceContext = requestContextFactory.namespace(prefix, namespace);
-    return namespaceDeleteService.delete(namespaceContext, requireEmpty);
+    return namespaceDeleteService.delete(namespaceContext);
   }
 
   @Path("/{namespace}/properties")

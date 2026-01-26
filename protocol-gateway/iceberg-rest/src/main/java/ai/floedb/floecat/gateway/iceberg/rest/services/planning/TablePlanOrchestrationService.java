@@ -20,8 +20,10 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ContentFileDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FailedPlanningResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FileScanTaskDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanResponseDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.PlanRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
@@ -115,8 +117,7 @@ public class TablePlanOrchestrationService {
       if (message == null || message.isBlank()) {
         message = "Scan planning failed";
       }
-      return IcebergErrorResponses.failure(
-          message, "InternalServerError", Response.Status.INTERNAL_SERVER_ERROR);
+      return failedPlanning(message, Response.Status.INTERNAL_SERVER_ERROR);
     }
   }
 
@@ -126,10 +127,8 @@ public class TablePlanOrchestrationService {
         .map(
             descriptor -> {
               if ("failed".equals(descriptor.status().value())) {
-                return IcebergErrorResponses.failure(
-                    "Scan planning failed",
-                    "InternalServerError",
-                    Response.Status.INTERNAL_SERVER_ERROR);
+                return failedPlanning(
+                    "Scan planning failed", Response.Status.INTERNAL_SERVER_ERROR);
               }
               return Response.ok(toPlanResponse(descriptor, false)).build();
             })
@@ -186,5 +185,10 @@ public class TablePlanOrchestrationService {
       return List.of();
     }
     return List.copyOf(values);
+  }
+
+  private static Response failedPlanning(String message, Response.Status status) {
+    IcebergError error = new IcebergError(message, "InternalServerError", status.getStatusCode());
+    return Response.status(status).entity(new FailedPlanningResultDto("failed", error)).build();
   }
 }

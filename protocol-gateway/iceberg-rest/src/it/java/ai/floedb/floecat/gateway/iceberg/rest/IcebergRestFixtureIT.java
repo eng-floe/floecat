@@ -1348,7 +1348,7 @@ class IcebergRestFixtureIT {
     given()
         .spec(spec)
         .when()
-        .delete("/v1/" + CATALOG + "/namespaces/" + namespace + "?requireEmpty=false")
+        .delete("/v1/" + CATALOG + "/namespaces/" + namespace)
         .then()
         .statusCode(anyOf(is(204), is(404)));
   }
