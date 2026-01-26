@@ -6,7 +6,7 @@ logic that checks those fragments against the proto contracts, and the build hoo
 
 ## What lives here
 
-- **pbs resources**: `src/main/resources/builtins/floedb/*.pbtxt` (types, functions, operators, etc.).
+- **pbtxt resources**: `src/test/resources/builtins/floedb/*.pbtxt` (types, functions, operators, etc.).
 - **Validators**: `src/main/java/ai/floedb/floecat/extensions/floedb/validation`, which enforces typed OIDs,
   registry completeness, and consistent signatures for Floe-specific builtin data.
 - **Build integration**: `pom.xml` wires `process-resources` to rebuild and validate the catalog as part of the
@@ -29,18 +29,22 @@ python3 tools/floedb/csv-importer/main.py \
 - `--debug-drops`: logs the first dropped rows with a reason (missing dependencies,
   namespace filtering, unsupported OID, etc.).
 - The importer emits files like `10_types.pbtxt`, `20_functions.pbtxt`, and
-  `registries.pbtxt` under `tools/floedb/csv-importer/out/`.
+  `00_registry.pbtxt` under `tools/floedb/csv-importer/out/`.
 
 ### 2. Review and publish
 
 1. Copy the generated pbtxts from `tools/floedb/csv-importer/out/` into
-   `extensions/floedb/src/main/resources/builtins/floedb/` (replace or merge).
+   `extensions/floedb/src/test/resources/builtins/floedb/` (replace or merge).
 2. Preserve the numbering scheme (00 registry, 10 types, 20 functions, …) so the build
    knows the ordering.
 
 ### 3. Validate the catalog
 
 ```bash
+# Build+install the module and its reactor dependencies so the tool classpath is available
+mvn -q -pl :floecat-extension-floedb -am -DskipTests install
+
+# Run the validator from the module POM (so exec:java@validate-builtin is defined)
 mvn -q -f extensions/floedb/pom.xml test-compile exec:java@validate-builtin \
   -Dexec.args="--engine=floedb"
 ```
@@ -57,6 +61,10 @@ mvn -q -f extensions/floedb/pom.xml test-compile exec:java@validate-builtin \
 
 
 ```bash
+# Build+install the module and its reactor dependencies so the tool classpath is available
+mvn -q -pl :floecat-extension-floedb -am -DskipTests install
+
+# Run the formatter from the module POM (so exec:java@format-pbtxt is defined)
 mvn -q -f extensions/floedb/pom.xml test-compile exec:java@format-pbtxt \
   -Dexec.args="--engine=floedb --apply"
 ```
@@ -65,7 +73,9 @@ mvn -q -f extensions/floedb/pom.xml test-compile exec:java@format-pbtxt \
   preserves the comment/header preamble, and inserts blank lines between top-level blocks for readability.
 - Use `--apply` when you want the formatter to rewrite the files, and `--check` when you just want to verify the current formatting without changes:
   ```bash
-  mvn -pl extensions/floedb exec:java@format-pbtxt \
+  mvn -q -pl :floecat-extension-floedb -am -DskipTests install
+
+  mvn -q -f extensions/floedb/pom.xml test-compile exec:java@format-pbtxt \
     -Dexec.args="--engine=floedb --check"
   ```
 - Formatter failures explain the offending files and point to the command above so you can fix or reformat before committing.

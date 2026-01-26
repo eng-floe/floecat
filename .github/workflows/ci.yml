@@ -110,6 +110,12 @@ jobs:
           java-version: "25"
           cache: maven
 
+      # Build+install the module + its reactor deps so test-scope tools can run
+      - name: "FloeDB: Build test classpath"
+        run: |
+          set -euo pipefail
+          mvn -q -pl :floecat-extension-floedb -am -DskipTests install
+
       - name: "FloeDB: PBtxt format check"
         run: |
           set -euo pipefail
@@ -128,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           mvn -q -f extensions/floedb/pom.xml test-compile exec:java@validate-builtin \
-            -Dexec.args="--engine=floedb" || {
+              -Dexec.args="--engine=floedb" || {
             echo ""
             echo "❌ Builtin catalog validation failed."
             echo ""
