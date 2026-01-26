@@ -562,7 +562,7 @@ public final class TestS3Fixtures {
         if (!name.startsWith(prefix)) {
           continue;
         }
-        Path target = tempRoot.resolve(name);
+        Path target = safeResolve(tempRoot, name);
         if (entry.isDirectory()) {
           Files.createDirectories(target);
         } else {
@@ -576,6 +576,14 @@ public final class TestS3Fixtures {
       throw new UncheckedIOException("Failed to extract fixture resources", e);
     }
     return targetRoot;
+  }
+
+  private static Path safeResolve(Path root, String entryName) {
+    Path target = root.resolve(entryName).normalize();
+    if (!target.startsWith(root)) {
+      throw new IllegalStateException("Blocked invalid jar entry: " + entryName);
+    }
+    return target;
   }
 
   private static JarFile openJarFile(URL url) throws IOException {

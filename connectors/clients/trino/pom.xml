@@ -35,7 +35,7 @@
     <maven.compiler.source>21</maven.compiler.source>
     <maven.compiler.target>21</maven.compiler.target>
     <trino.version>476</trino.version>
-    <trino.grpc.version>1.54.1</trino.grpc.version>
+    <trino.grpc.version>1.78.0</trino.grpc.version>
     <protobuf.version>4.32.1</protobuf.version>
     <proto.source.dir>${project.basedir}/../../../core/proto/src/main/proto</proto.source.dir>
   </properties>
@@ -61,6 +61,16 @@
       <groupId>io.trino</groupId>
       <artifactId>trino-filesystem-manager</artifactId>
       <version>${trino.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>io.grpc</groupId>
+          <artifactId>grpc-api</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.grpc</groupId>
+          <artifactId>grpc-core</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>io.trino</groupId>
@@ -131,7 +141,7 @@
     <dependency>
       <groupId>io.grpc</groupId>
       <artifactId>grpc-inprocess</artifactId>
-      <version>1.70.0</version>
+      <version>${trino.grpc.version}</version>
       <scope>test</scope>
     </dependency>
 
