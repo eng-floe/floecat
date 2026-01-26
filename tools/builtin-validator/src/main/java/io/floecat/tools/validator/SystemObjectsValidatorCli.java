@@ -401,7 +401,7 @@ public final class SystemObjectsValidatorCli {
     }
 
     SystemObjectsRegistry.Builder builder = SystemObjectsRegistry.newBuilder();
-    TextFormat.Parser parser = TextFormat.Parser.newBuilder().setAllowUnknownFields(true).build();
+    TextFormat.Parser parser = TextFormat.Parser.newBuilder().build();
 
     for (String entry : entries) {
       if (entry.startsWith("/") || entry.startsWith("\\") || entry.contains("..")) {
@@ -461,9 +461,11 @@ public final class SystemObjectsValidatorCli {
   private void printUsage(PrintStream out) {
     out.println(
         "Usage:\n"
-            + "  java -jar builtin-validator.jar <catalog.pb|pbtxt|dir|_index.txt> [--strict] [--json]\n"
+            + "  java -jar builtin-validator.jar <catalog.pb|pbtxt|dir|_index.txt> [--strict]"
+            + " [--json]\n"
             + "  java -jar builtin-validator.jar --engine <engineKind> [--strict] [--json]\n"
-            + "  java -jar builtin-validator.jar <catalog...> --engine <engineKind> [--strict] [--json]\n"
+            + "  java -jar builtin-validator.jar <catalog...> --engine <engineKind> [--strict]"
+            + " [--json]\n"
             + "\n"
             + "Notes:\n"
             + "  --engine loads the EngineSystemCatalogExtension via ServiceLoader.\n"

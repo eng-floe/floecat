@@ -13,18 +13,7646 @@
 # limitations under the License.
 
 aggregates {
-  name { name: "sum" path: "pg_catalog" }
-  argument_types { name: "int4" path: "pg_catalog" }
-  state_type { name: "int8" path: "pg_catalog" }
-  return_type { name: "int8" path: "pg_catalog" }
+  name {
+    path: "pg_catalog"
+    name: "bit_and_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
   engine_specific {
-    payload_type: "floe.aggregate+proto"
     [floe.ext.floe_aggregate] {
-      aggfnoid: 0
-      aggtransfn: 0
-      aggfinalfn: 0
-      aggmtransfn: 0
-      aggmfinalfn: 0
+      aggfnoid: 4430
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
     }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "bit_or_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 4424
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "bit_xor"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 4426
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "bit_xor_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 4427
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "bool_and"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2517
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 58
+      aggtranstype: 16
+      aggtransspace: 0
+      aggmtranstype: 2281
+      aggmtransspace: 16
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "bool_or"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2518
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 59
+      aggtranstype: 16
+      aggtransspace: 0
+      aggmtranstype: 2281
+      aggmtransspace: 16
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "corr"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2829
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0,0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "covar_pop"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2827
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0,0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "covar_samp"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2828
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0,0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "every"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2519
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 58
+      aggtranstype: 16
+      aggtransspace: 0
+      aggmtranstype: 2281
+      aggmtransspace: 16
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "json_agg"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyelement"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "json"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3175
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "json_object_agg"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "any"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "any"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "json"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3197
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "jsonb_agg"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyelement"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3267
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "jsonb_object_agg"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "any"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "any"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3270
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "median"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3327
+      aggkind: "o"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 701
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "mode"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyelement"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyelement"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3984
+      aggkind: "o"
+      aggnumdirectargs: 0
+      aggfinalextra: true
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "array_agg"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anynonarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2335
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: true
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "array_agg"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anynonarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2335
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: true
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "average"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3320
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 48
+      aggmtranstype: 2281
+      aggmtransspace: 48
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "average"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3320
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1016
+      aggtransspace: 0
+      aggmtranstype: 1016
+      aggmtransspace: 0
+      agginitval: "{0,0}"
+      aggminitval: "{0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "average"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3320
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1016
+      aggtransspace: 0
+      aggmtranstype: 1016
+      aggmtransspace: 0
+      agginitval: "{0,0}"
+      aggminitval: "{0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "average"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3320
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "average"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3320
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "average"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3320
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "average"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_interval"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3320
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1187
+      aggtransspace: 0
+      aggmtranstype: 1187
+      aggmtransspace: 0
+      agginitval: "{0 second,0 second}"
+      aggminitval: "{0 second,0 second}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "avg"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2100
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 48
+      aggmtranstype: 2281
+      aggmtransspace: 48
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "avg"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2100
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1016
+      aggtransspace: 0
+      aggmtranstype: 1016
+      aggmtransspace: 0
+      agginitval: "{0,0}"
+      aggminitval: "{0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "avg"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2100
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1016
+      aggtransspace: 0
+      aggmtranstype: 1016
+      aggmtransspace: 0
+      agginitval: "{0,0}"
+      aggminitval: "{0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "avg"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2100
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "avg"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2100
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "avg"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2100
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "avg"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_interval"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2100
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1187
+      aggtransspace: 0
+      aggmtranstype: 1187
+      aggmtransspace: 0
+      agginitval: "{0 second,0 second}"
+      aggminitval: "{0 second,0 second}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "bit_and"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2236
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 21
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "bit_and"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2236
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 23
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "bit_and"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2236
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "bit_and"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "bit"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2236
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1560
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "bit_and"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2236
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "bit_or"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2237
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 21
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "bit_or"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2237
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 23
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "bit_or"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2237
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "bit_or"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "bit"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2237
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1560
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "bit_or"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2237
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "count"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "any"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2147
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 20
+      aggmtransspace: 0
+      agginitval: "0"
+      aggminitval: "0"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "count"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "any"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2147
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 20
+      aggmtransspace: 0
+      agginitval: "0"
+      aggminitval: "0"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "cume_dist"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3104
+      aggkind: "h"
+      aggnumdirectargs: 1
+      aggfinalextra: true
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "dense_rank"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3102
+      aggkind: "h"
+      aggnumdirectargs: 1
+      aggfinalextra: true
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 413
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 521
+      aggtranstype: 23
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 520
+      aggtranstype: 21
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 610
+      aggtranstype: 26
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 623
+      aggtranstype: 700
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 674
+      aggtranstype: 701
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "abstime"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 563
+      aggtranstype: 702
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1097
+      aggtranstype: 1082
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1112
+      aggtranstype: 1083
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "timetz"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1554
+      aggtranstype: 1266
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 2064
+      aggtranstype: 1114
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1324
+      aggtranstype: 1184
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1334
+      aggtranstype: 1186
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 666
+      aggtranstype: 25
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 666
+      aggtranstype: 1043
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1756
+      aggtranstype: 1700
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1073
+      aggtranstype: 2277
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1060
+      aggtranstype: 1042
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "tid"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 2800
+      aggtranstype: 27
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "anyenum"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3519
+      aggtranstype: 3500
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "inet"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1205
+      aggtranstype: 869
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "ipv4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3338
+      aggtranstype: 2893
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "ipv6"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3347
+      aggtranstype: 2894
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3369
+      aggtranstype: 388
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "macaddr"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1224
+      aggtranstype: 829
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1959
+      aggtranstype: 17
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 4467
+      aggtranstype: 14774
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "json"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 4438
+      aggtranstype: 114
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2050
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3243
+      aggtranstype: 3802
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 413
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 521
+      aggtranstype: 23
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 520
+      aggtranstype: 21
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 623
+      aggtranstype: 700
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 674
+      aggtranstype: 701
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1097
+      aggtranstype: 1082
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1112
+      aggtranstype: 1083
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 2064
+      aggtranstype: 1114
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1324
+      aggtranstype: 1184
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1334
+      aggtranstype: 1186
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 666
+      aggtranstype: 25
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 666
+      aggtranstype: 1043
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1756
+      aggtranstype: 1700
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1060
+      aggtranstype: 1042
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "ipv4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3338
+      aggtranstype: 2893
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "ipv6"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3347
+      aggtranstype: 2894
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3369
+      aggtranstype: 388
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "macaddr"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1224
+      aggtranstype: 829
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1959
+      aggtranstype: 17
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 4467
+      aggtranstype: 14774
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "json"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 4438
+      aggtranstype: 114
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "max_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3445
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3243
+      aggtranstype: 3802
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 412
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 97
+      aggtranstype: 23
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 95
+      aggtranstype: 21
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 609
+      aggtranstype: 26
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 622
+      aggtranstype: 700
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 672
+      aggtranstype: 701
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "abstime"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 562
+      aggtranstype: 702
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1095
+      aggtranstype: 1082
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1110
+      aggtranstype: 1083
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "timetz"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1552
+      aggtranstype: 1266
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 2062
+      aggtranstype: 1114
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1322
+      aggtranstype: 1184
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1332
+      aggtranstype: 1186
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 664
+      aggtranstype: 25
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 664
+      aggtranstype: 1043
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1754
+      aggtranstype: 1700
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1072
+      aggtranstype: 2277
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1058
+      aggtranstype: 1042
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "tid"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 2799
+      aggtranstype: 27
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "anyenum"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3518
+      aggtranstype: 3500
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "inet"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1203
+      aggtranstype: 869
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "ipv4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3337
+      aggtranstype: 2893
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "ipv6"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3346
+      aggtranstype: 2894
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3053
+      aggtranstype: 388
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "macaddr"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1222
+      aggtranstype: 829
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1957
+      aggtranstype: 17
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 4464
+      aggtranstype: 14774
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "json"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 4437
+      aggtranstype: 114
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2051
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3242
+      aggtranstype: 3802
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 412
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 97
+      aggtranstype: 23
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 95
+      aggtranstype: 21
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 622
+      aggtranstype: 700
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 672
+      aggtranstype: 701
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1095
+      aggtranstype: 1082
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1110
+      aggtranstype: 1083
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 2062
+      aggtranstype: 1114
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1322
+      aggtranstype: 1184
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1332
+      aggtranstype: 1186
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 664
+      aggtranstype: 25
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 664
+      aggtranstype: 1043
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1754
+      aggtranstype: 1700
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1058
+      aggtranstype: 1042
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "ipv4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3337
+      aggtranstype: 2893
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "ipv6"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3346
+      aggtranstype: 2894
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3053
+      aggtranstype: 388
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "macaddr"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1222
+      aggtranstype: 829
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 1957
+      aggtranstype: 17
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 4464
+      aggtranstype: 14774
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "json"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 4437
+      aggtranstype: 114
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "min_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3449
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 3242
+      aggtranstype: 3802
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "percent_rank"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3103
+      aggkind: "h"
+      aggnumdirectargs: 1
+      aggfinalextra: true
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "percentile_cont"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3974
+      aggkind: "o"
+      aggnumdirectargs: 1
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "percentile_cont"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3974
+      aggkind: "o"
+      aggnumdirectargs: 1
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "percentile_cont"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3974
+      aggkind: "o"
+      aggnumdirectargs: 1
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "percentile_cont"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3974
+      aggkind: "o"
+      aggnumdirectargs: 1
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "percentile_disc"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyelement"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyelement"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3972
+      aggkind: "o"
+      aggnumdirectargs: 1
+      aggfinalextra: true
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "percentile_disc"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "anyelement"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "anyelement"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3972
+      aggkind: "o"
+      aggnumdirectargs: 1
+      aggfinalextra: true
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "rank"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3101
+      aggkind: "h"
+      aggnumdirectargs: 1
+      aggfinalextra: true
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "st_union"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 14819
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2154
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2154
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 48
+      aggmtranstype: 2281
+      aggmtransspace: 48
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2154
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 48
+      aggmtranstype: 2281
+      aggmtransspace: 48
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2154
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2154
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2154
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev_pop"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2724
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev_pop"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2724
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 48
+      aggmtranstype: 2281
+      aggmtransspace: 48
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev_pop"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2724
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 48
+      aggmtranstype: 2281
+      aggmtransspace: 48
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev_pop"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2724
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev_pop"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2724
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev_pop"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2724
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev_samp"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2712
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev_samp"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2712
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 48
+      aggmtranstype: 2281
+      aggmtransspace: 48
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev_samp"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2712
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 48
+      aggmtranstype: 2281
+      aggmtransspace: 48
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev_samp"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2712
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev_samp"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2712
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "stddev_samp"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2712
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "string_agg"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "text"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "text"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3538
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "string_agg"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "text"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "text"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3538
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "sum"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2107
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 1016
+      aggmtransspace: 0
+      aggminitval: "{0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "sum"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2107
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 1016
+      aggmtransspace: 0
+      aggminitval: "{0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "sum"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2107
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 1016
+      aggmtransspace: 0
+      aggminitval: "{0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "sum"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2107
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 700
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "sum"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2107
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 701
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "sum"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2107
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1186
+      aggtransspace: 0
+      aggmtranstype: 1186
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "sum"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2107
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "sum_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 4109
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 1016
+      aggmtransspace: 0
+      aggminitval: "{0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "sum_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 4109
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 1016
+      aggmtransspace: 0
+      aggminitval: "{0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "sum_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 4109
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 1016
+      aggmtransspace: 0
+      aggminitval: "{0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "sum_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 4109
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 700
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "sum_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 4109
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 701
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "sum_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 4109
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1186
+      aggtransspace: 0
+      aggmtranstype: 1186
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "sum_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 4109
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "var_pop"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2718
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "var_pop"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2718
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 48
+      aggmtranstype: 2281
+      aggmtransspace: 48
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "var_pop"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2718
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 48
+      aggmtranstype: 2281
+      aggmtransspace: 48
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "var_pop"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2718
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "var_pop"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2718
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "var_pop"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2718
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "var_samp"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2641
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "var_samp"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2641
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 48
+      aggmtranstype: 2281
+      aggmtransspace: 48
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "var_samp"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2641
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 48
+      aggmtranstype: 2281
+      aggmtransspace: 48
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "var_samp"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2641
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "var_samp"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2641
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "var_samp"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2641
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "variance"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2148
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "variance"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2148
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 48
+      aggmtranstype: 2281
+      aggmtransspace: 48
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "variance"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2148
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 48
+      aggmtranstype: 2281
+      aggmtransspace: 48
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "variance"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2148
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "variance"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2148
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "variance"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2148
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 128
+      aggmtranstype: 2281
+      aggmtransspace: 128
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "regr_avgx"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2822
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0,0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "regr_avgy"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2823
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0,0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "regr_count"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2818
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "0"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "regr_intercept"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2826
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0,0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "regr_r2"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2824
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0,0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "regr_slope"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2825
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0,0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "regr_sxx"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2819
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0,0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "regr_sxy"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2821
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0,0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "regr_syy"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 2820
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 1022
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+      agginitval: "{0,0,0,0,0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "st_union_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 14840
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "string_agg_final"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "text"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "text"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 8538
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 2281
+      aggtransspace: 0
+      aggmtranstype: 0
+      aggmtransspace: 0
+    }
+    payload_type: "floe.aggregate+proto"
+  }
+}
+
+aggregates {
+  name {
+    path: "pg_catalog"
+    name: "sumcounts"
+  }
+  argument_types {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  return_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  state_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_aggregate] {
+      aggfnoid: 3333
+      aggkind: "n"
+      aggnumdirectargs: 0
+      aggfinalextra: false
+      aggmfinalextra: false
+      aggsortop: 0
+      aggtranstype: 20
+      aggtransspace: 0
+      aggmtranstype: 1016
+      aggmtransspace: 0
+      aggminitval: "{0,0}"
+    }
+    payload_type: "floe.aggregate+proto"
   }
 }

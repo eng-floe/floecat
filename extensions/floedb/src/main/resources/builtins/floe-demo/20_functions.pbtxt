@@ -28,7 +28,6 @@ functions {
       proisagg: false
       proiswindow: false
       provolatile: "i"
-      prosrc: "int4_abs"
       pronargs: 1
       prorettype: 23
       proargtypes: 23
@@ -58,7 +57,6 @@ functions {
       proiswindow: false
       proisagg: false
       provolatile: "v"
-      prosrc: "text_upper"
       pronargs: 1
       prorettype: 25
       proargtypes: 25
@@ -97,7 +95,6 @@ functions {
       proisstrict: true
       proisagg: true
       provolatile: "i"
-      prosrc: "sum_int4_state"
       pronargs: 2
       prorettype: 20
       proargtypes: 20
@@ -122,7 +119,6 @@ functions {
       proisstrict: true
       proisagg: true
       provolatile: "i"
-      prosrc: "sum_int4_final"
       pronargs: 1
       prorettype: 20
       proargtypes: 20
@@ -146,7 +142,6 @@ functions {
       proisstrict: false
       proisagg: false
       provolatile: "i"
-      prosrc: "engine_specific_test"
       pronargs: 1
       prorettype: 23
       proargtypes: 23

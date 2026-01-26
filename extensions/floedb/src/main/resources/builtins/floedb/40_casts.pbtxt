@@ -13,22 +13,8237 @@
 # limitations under the License.
 
 casts {
-  name { name: "text2int4" path: "pg_catalog" }
-  source_type { name: "text" path: "pg_catalog" }
-  target_type { name: "int4" path: "pg_catalog" }
+  name {
+    path: "pg_catalog"
+    name: "cast_bool_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
   method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 16
+      casttarget: 20
+      castfunc: 4274
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
 }
 
 casts {
-  name { name: "int42text" path: "pg_catalog" }
-  source_type { name: "int4" path: "pg_catalog" }
-  target_type { name: "text" path: "pg_catalog" }
+  name {
+    path: "pg_catalog"
+    name: "cast_bool_to_int2"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 16
+      casttarget: 21
+      castfunc: 4272
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bool_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 16
+      casttarget: 23
+      castfunc: 2558
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bool_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
   method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 16
+      casttarget: 25
+      castfunc: 2971
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
 }
 
 casts {
-  name { name: "int42_int4" path: "pg_catalog" }
-  source_type { name: "int4" path: "pg_catalog" }
-  target_type { name: "_int4" path: "pg_catalog" }
+  name {
+    path: "pg_catalog"
+    name: "cast_bool_to_float4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 16
+      casttarget: 700
+      castfunc: 4278
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bool_to_float8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 16
+      casttarget: 701
+      castfunc: 4280
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bool_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 16
+      casttarget: 1042
+      castfunc: 2971
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bool_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 16
+      casttarget: 1043
+      castfunc: 2971
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bool_to_numeric"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 16
+      casttarget: 1700
+      castfunc: 4276
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bytea_to_geography"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 17
+      casttarget: 14774
+      castfunc: 14799
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_char_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "char"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 18
+      casttarget: 23
+      castfunc: 77
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_char_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "char"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
   method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 18
+      casttarget: 25
+      castfunc: 946
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_char_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "char"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 18
+      casttarget: 1042
+      castfunc: 860
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_char_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "char"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 18
+      casttarget: 1043
+      castfunc: 946
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_name_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "name"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 19
+      casttarget: 25
+      castfunc: 406
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_name_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "name"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 19
+      casttarget: 1042
+      castfunc: 408
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_name_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "name"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 19
+      casttarget: 1043
+      castfunc: 1401
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_bool"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 16
+      castfunc: 4273
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_int2"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 21
+      castfunc: 714
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 23
+      castfunc: 480
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_regproc"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regproc"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 24
+      castfunc: 1287
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_oid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 26
+      castfunc: 1287
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_float4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 700
+      castfunc: 652
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_float8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 701
+      castfunc: 482
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_date"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 1082
+      castfunc: 4282
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_timestamp"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 1114
+      castfunc: 4379
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_timestamptz"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 1184
+      castfunc: 4381
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_bit"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bit"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 1560
+      castfunc: 2075
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_numeric"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 1700
+      castfunc: 1781
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_regprocedure"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regprocedure"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 2202
+      castfunc: 1287
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_regoper"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regoper"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 2203
+      castfunc: 1287
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_regoperator"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regoperator"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 2204
+      castfunc: 1287
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_regclass"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regclass"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 2205
+      castfunc: 1287
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_regtype"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regtype"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 2206
+      castfunc: 1287
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_regconfig"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regconfig"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 3734
+      castfunc: 1287
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_regdictionary"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regdictionary"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 3769
+      castfunc: 1287
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_regnamespace"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regnamespace"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 4089
+      castfunc: 1287
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int8_to_regrole"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regrole"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 20
+      casttarget: 4096
+      castfunc: 1287
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_bool"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 16
+      castfunc: 4271
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 20
+      castfunc: 754
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 23
+      castfunc: 313
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_regproc"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regproc"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 24
+      castfunc: 313
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_oid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 26
+      castfunc: 313
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_float4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 700
+      castfunc: 236
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_float8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 701
+      castfunc: 235
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_numeric"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 1700
+      castfunc: 1782
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_regprocedure"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regprocedure"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 2202
+      castfunc: 313
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_regoper"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regoper"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 2203
+      castfunc: 313
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_regoperator"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regoperator"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 2204
+      castfunc: 313
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_regclass"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regclass"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 2205
+      castfunc: 313
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_regtype"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regtype"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 2206
+      castfunc: 313
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_regconfig"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regconfig"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 3734
+      castfunc: 313
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_regdictionary"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regdictionary"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 3769
+      castfunc: 313
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_regnamespace"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regnamespace"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 4089
+      castfunc: 313
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int2_to_regrole"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regrole"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 21
+      casttarget: 4096
+      castfunc: 313
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_bool"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 16
+      castfunc: 2557
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_char"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "char"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 18
+      castfunc: 78
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 20
+      castfunc: 481
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_int2"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 21
+      castfunc: 314
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_regproc"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regproc"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 24
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_oid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 26
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_float4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 700
+      castfunc: 318
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_float8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 701
+      castfunc: 316
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_abstime"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "abstime"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 702
+      castcontext: "e"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_reltime"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "reltime"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 703
+      castcontext: "e"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_date"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 1082
+      castfunc: 4281
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_timestamp"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 1114
+      castfunc: 4378
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_timestamptz"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 1184
+      castfunc: 4380
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_bit"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bit"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 1560
+      castfunc: 1683
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_numeric"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 1700
+      castfunc: 1740
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_regprocedure"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regprocedure"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 2202
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_regoper"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regoper"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 2203
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_regoperator"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regoperator"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 2204
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_regclass"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regclass"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 2205
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_regtype"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regtype"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 2206
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_regconfig"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regconfig"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 3734
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_regdictionary"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regdictionary"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 3769
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_regnamespace"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regnamespace"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 4089
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_int4_to_regrole"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regrole"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 23
+      casttarget: 4096
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regproc_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regproc"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 24
+      casttarget: 20
+      castfunc: 1288
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regproc_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regproc"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 24
+      casttarget: 23
+      castcontext: "a"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regproc_to_oid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regproc"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 24
+      casttarget: 26
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regproc_to_regprocedure"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regproc"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regprocedure"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 24
+      casttarget: 2202
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_bool"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 16
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_char"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "char"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 18
+      castfunc: 944
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_name"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "name"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 19
+      castfunc: 407
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 20
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_int2"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 21
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 23
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_macaddr8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 388
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_float4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 700
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_float8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 701
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_macaddr"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "macaddr"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 829
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 1042
+      castfunc: 5446
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 1043
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_date"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 1082
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_time"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 1083
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_timestamp"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 1114
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_timestamptz"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 1184
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_interval"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 1186
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_numeric"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 1700
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_regclass"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regclass"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 2205
+      castfunc: 1079
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_ipv4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "ipv4"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 2893
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_ipv6"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "ipv6"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 2894
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_text_to_uuid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "uuid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 25
+      casttarget: 2950
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_oid_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 26
+      casttarget: 20
+      castfunc: 1288
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_oid_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 26
+      casttarget: 23
+      castcontext: "a"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_oid_to_regproc"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regproc"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 26
+      casttarget: 24
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_oid_to_regprocedure"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regprocedure"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 26
+      casttarget: 2202
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_oid_to_regoper"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regoper"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 26
+      casttarget: 2203
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_oid_to_regoperator"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regoperator"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 26
+      casttarget: 2204
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_oid_to_regclass"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regclass"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 26
+      casttarget: 2205
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_oid_to_regtype"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regtype"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 26
+      casttarget: 2206
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_oid_to_regconfig"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regconfig"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 26
+      casttarget: 3734
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_oid_to_regdictionary"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regdictionary"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 26
+      casttarget: 3769
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_oid_to_regnamespace"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regnamespace"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 26
+      casttarget: 4089
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_oid_to_regrole"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regrole"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 26
+      casttarget: 4096
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_json_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "json"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 114
+      casttarget: 25
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_json_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "json"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 114
+      casttarget: 1043
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_json_to_jsonb"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "json"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 114
+      casttarget: 3802
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_json_to_geography"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "json"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 114
+      casttarget: 14774
+      castfunc: 14865
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_pg_node_tree_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "pg_node_tree"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 194
+      casttarget: 25
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_macaddr8_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 388
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_macaddr8_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 388
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_macaddr8_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 388
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_cidr_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "cidr"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 650
+      casttarget: 25
+      castfunc: 730
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_cidr_to_inet"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "cidr"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "inet"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 650
+      casttarget: 869
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_cidr_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "cidr"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 650
+      casttarget: 1042
+      castfunc: 730
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_cidr_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "cidr"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 650
+      casttarget: 1043
+      castfunc: 730
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float4_to_bool"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 700
+      casttarget: 16
+      castfunc: 4277
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float4_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 700
+      casttarget: 20
+      castfunc: 653
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float4_to_int2"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 700
+      casttarget: 21
+      castfunc: 238
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float4_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 700
+      casttarget: 23
+      castfunc: 319
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float4_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 700
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float4_to_float8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 700
+      casttarget: 701
+      castfunc: 311
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float4_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 700
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float4_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 700
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float4_to_numeric"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 700
+      casttarget: 1700
+      castfunc: 1742
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float8_to_bool"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 701
+      casttarget: 16
+      castfunc: 4279
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float8_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 701
+      casttarget: 20
+      castfunc: 483
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float8_to_int2"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 701
+      casttarget: 21
+      castfunc: 237
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float8_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 701
+      casttarget: 23
+      castfunc: 317
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float8_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 701
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float8_to_float4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 701
+      casttarget: 700
+      castfunc: 312
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float8_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 701
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float8_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 701
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_float8_to_numeric"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 701
+      casttarget: 1700
+      castfunc: 1743
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_abstime_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "abstime"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 702
+      casttarget: 23
+      castcontext: "e"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_abstime_to_date"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "abstime"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 702
+      casttarget: 1082
+      castfunc: 1179
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_abstime_to_time"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "abstime"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 702
+      casttarget: 1083
+      castfunc: 1364
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_abstime_to_timestamp"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "abstime"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 702
+      casttarget: 1114
+      castfunc: 2023
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_abstime_to_timestamptz"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "abstime"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 702
+      casttarget: 1184
+      castfunc: 1173
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_reltime_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "reltime"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 703
+      casttarget: 23
+      castcontext: "e"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_reltime_to_interval"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "reltime"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 703
+      casttarget: 1186
+      castfunc: 1177
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_macaddr_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "macaddr"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 829
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_macaddr_to_macaddr8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "macaddr"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 829
+      casttarget: 388
+      castfunc: 143
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_macaddr_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "macaddr"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 829
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_macaddr_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "macaddr"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 829
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_inet_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "inet"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 869
+      casttarget: 25
+      castfunc: 730
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_inet_to_cidr"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "inet"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "cidr"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 869
+      casttarget: 650
+      castfunc: 1715
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_inet_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "inet"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 869
+      casttarget: 1042
+      castfunc: 730
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_inet_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "inet"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 869
+      casttarget: 1043
+      castfunc: 730
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_bool"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 16
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_char"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "char"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 18
+      castfunc: 944
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_name"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "name"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 19
+      castfunc: 409
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 20
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_int2"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 21
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 23
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 25
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_macaddr8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 388
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_float4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 700
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_float8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 701
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_macaddr"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "macaddr"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 829
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 1042
+      castfunc: 668
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 1043
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_date"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 1082
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_time"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 1083
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_timestamp"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 1114
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_timestamptz"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 1184
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_interval"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 1186
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_numeric"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 1700
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_ipv4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "ipv4"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 2893
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_ipv6"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "ipv6"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 2894
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bpchar_to_uuid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "uuid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1042
+      casttarget: 2950
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_bool"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 16
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_char"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "char"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 18
+      castfunc: 944
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_name"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "name"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 19
+      castfunc: 1400
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 20
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_int2"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 21
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 23
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 25
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_macaddr8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 388
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_float4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 700
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_float8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 701
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_macaddr"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "macaddr"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 829
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 1042
+      castfunc: 5446
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 1043
+      castfunc: 669
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_date"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 1082
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_time"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 1083
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_timestamp"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 1114
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_timestamptz"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 1184
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_interval"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 1186
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_numeric"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 1700
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_regclass"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regclass"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 2205
+      castfunc: 1079
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_ipv4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "ipv4"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 2893
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_ipv6"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "ipv6"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 2894
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varchar_to_uuid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "uuid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1043
+      casttarget: 2950
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_date_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1082
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_date_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1082
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_date_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1082
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_date_to_timestamp"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1082
+      casttarget: 1114
+      castfunc: 2024
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_date_to_timestamptz"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1082
+      casttarget: 1184
+      castfunc: 1174
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_time_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1083
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_time_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1083
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_time_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1083
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_time_to_time"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1083
+      casttarget: 1083
+      castfunc: 1968
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_time_to_interval"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1083
+      casttarget: 1186
+      castfunc: 1370
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_time_to_timetz"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timetz"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1083
+      casttarget: 1266
+      castfunc: 2047
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamp_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1114
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamp_to_abstime"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "abstime"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1114
+      casttarget: 702
+      castfunc: 2030
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamp_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1114
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamp_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1114
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamp_to_date"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1114
+      casttarget: 1082
+      castfunc: 2029
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamp_to_time"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1114
+      casttarget: 1083
+      castfunc: 1316
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamp_to_timestamp"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1114
+      casttarget: 1114
+      castfunc: 1961
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamp_to_timestamptz"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1114
+      casttarget: 1184
+      castfunc: 2028
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamptz_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1184
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamptz_to_abstime"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "abstime"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1184
+      casttarget: 702
+      castfunc: 1180
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamptz_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1184
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamptz_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1184
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamptz_to_date"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1184
+      casttarget: 1082
+      castfunc: 1178
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamptz_to_time"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1184
+      casttarget: 1083
+      castfunc: 2019
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamptz_to_timestamp"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1184
+      casttarget: 1114
+      castfunc: 2027
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamptz_to_timestamptz"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1184
+      casttarget: 1184
+      castfunc: 1967
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timestamptz_to_timetz"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timetz"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1184
+      casttarget: 1266
+      castfunc: 1388
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_interval_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1186
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_interval_to_reltime"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "reltime"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1186
+      casttarget: 703
+      castfunc: 1194
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_interval_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1186
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_interval_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1186
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_interval_to_time"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1186
+      casttarget: 1083
+      castfunc: 1419
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_interval_to_interval"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1186
+      casttarget: 1186
+      castfunc: 1200
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timetz_to_time"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timetz"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1266
+      casttarget: 1083
+      castfunc: 2046
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_timetz_to_timetz"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "timetz"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "timetz"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1266
+      casttarget: 1266
+      castfunc: 1969
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bit_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bit"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1560
+      casttarget: 20
+      castfunc: 2076
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bit_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bit"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1560
+      casttarget: 23
+      castfunc: 1684
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bit_to_bit"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bit"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bit"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1560
+      casttarget: 1560
+      castfunc: 1685
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_bit_to_varbit"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "bit"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varbit"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1560
+      casttarget: 1562
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varbit_to_bit"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varbit"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bit"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1562
+      casttarget: 1560
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_varbit_to_varbit"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "varbit"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varbit"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1562
+      casttarget: 1562
+      castfunc: 1687
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_numeric_to_bool"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1700
+      casttarget: 16
+      castfunc: 4275
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_numeric_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1700
+      casttarget: 20
+      castfunc: 1779
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_numeric_to_int2"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1700
+      casttarget: 21
+      castfunc: 1783
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_numeric_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1700
+      casttarget: 23
+      castfunc: 1744
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_numeric_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1700
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_numeric_to_float4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1700
+      casttarget: 700
+      castfunc: 1745
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_numeric_to_float8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1700
+      casttarget: 701
+      castfunc: 1746
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_numeric_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1700
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_numeric_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1700
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_numeric_to_numeric"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 1700
+      casttarget: 1700
+      castfunc: 1703
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regprocedure_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regprocedure"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2202
+      casttarget: 20
+      castfunc: 1288
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regprocedure_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regprocedure"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2202
+      casttarget: 23
+      castcontext: "a"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regprocedure_to_regproc"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regprocedure"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regproc"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2202
+      casttarget: 24
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regprocedure_to_oid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regprocedure"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2202
+      casttarget: 26
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regoper_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regoper"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2203
+      casttarget: 20
+      castfunc: 1288
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regoper_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regoper"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2203
+      casttarget: 23
+      castcontext: "a"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regoper_to_oid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regoper"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2203
+      casttarget: 26
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regoper_to_regoperator"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regoper"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regoperator"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2203
+      casttarget: 2204
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regoperator_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regoperator"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2204
+      casttarget: 20
+      castfunc: 1288
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regoperator_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regoperator"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2204
+      casttarget: 23
+      castcontext: "a"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regoperator_to_oid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regoperator"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2204
+      casttarget: 26
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regoperator_to_regoper"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regoperator"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "regoper"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2204
+      casttarget: 2203
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regclass_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regclass"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2205
+      casttarget: 20
+      castfunc: 1288
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regclass_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regclass"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2205
+      casttarget: 23
+      castcontext: "a"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regclass_to_oid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regclass"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2205
+      casttarget: 26
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regtype_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regtype"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2206
+      casttarget: 20
+      castfunc: 1288
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regtype_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regtype"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2206
+      casttarget: 23
+      castcontext: "a"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regtype_to_oid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regtype"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2206
+      casttarget: 26
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_ipv4_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "ipv4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2893
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_ipv4_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "ipv4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2893
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_ipv4_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "ipv4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2893
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_ipv4_to_ipv6"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "ipv4"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "ipv6"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2893
+      casttarget: 2894
+      castfunc: 4270
+      castcontext: "i"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_ipv6_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "ipv6"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2894
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_ipv6_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "ipv6"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2894
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_ipv6_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "ipv6"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2894
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_uuid_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "uuid"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2950
+      casttarget: 25
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_uuid_to_bpchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "uuid"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2950
+      casttarget: 1042
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_uuid_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "uuid"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 2950
+      casttarget: 1043
+      castcontext: "a"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regconfig_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regconfig"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3734
+      casttarget: 20
+      castfunc: 1288
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regconfig_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regconfig"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3734
+      casttarget: 23
+      castcontext: "a"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regconfig_to_oid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regconfig"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3734
+      casttarget: 26
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regdictionary_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regdictionary"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3769
+      casttarget: 20
+      castfunc: 1288
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regdictionary_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regdictionary"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3769
+      casttarget: 23
+      castcontext: "a"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regdictionary_to_oid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regdictionary"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3769
+      casttarget: 26
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_jsonb_to_bool"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3802
+      casttarget: 16
+      castfunc: 13591
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_jsonb_to_bytea"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3802
+      casttarget: 17
+      castcontext: "e"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_jsonb_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3802
+      casttarget: 20
+      castfunc: 13584
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_jsonb_to_int2"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3802
+      casttarget: 21
+      castfunc: 13582
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_jsonb_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3802
+      casttarget: 23
+      castfunc: 13583
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_jsonb_to_text"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3802
+      casttarget: 25
+      castfunc: 13590
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_jsonb_to_json"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "json"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3802
+      casttarget: 114
+      castcontext: "i"
+      castmethod: "i"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_jsonb_to_float4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3802
+      casttarget: 700
+      castfunc: 13586
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_jsonb_to_float8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3802
+      casttarget: 701
+      castfunc: 13587
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_jsonb_to_varchar"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3802
+      casttarget: 1043
+      castfunc: 13589
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_jsonb_to_numeric"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  method: "explicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3802
+      casttarget: 1700
+      castfunc: 13585
+      castcontext: "e"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_jsonb_to_geography"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 3802
+      casttarget: 14774
+      castfunc: 14800
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regnamespace_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regnamespace"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 4089
+      casttarget: 20
+      castfunc: 1288
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regnamespace_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regnamespace"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 4089
+      casttarget: 23
+      castcontext: "a"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regnamespace_to_oid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regnamespace"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 4089
+      casttarget: 26
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regrole_to_int8"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regrole"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 4096
+      casttarget: 20
+      castfunc: 1288
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regrole_to_int4"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regrole"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 4096
+      casttarget: 23
+      castcontext: "a"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_regrole_to_oid"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "regrole"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  method: "implicit"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 4096
+      casttarget: 26
+      castcontext: "i"
+      castmethod: "b"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_geography_to_bytea"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 14774
+      casttarget: 17
+      castfunc: 14823
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_geography_to_json"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "json"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 14774
+      casttarget: 114
+      castfunc: 14851
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
+}
+
+casts {
+  name {
+    path: "pg_catalog"
+    name: "cast_geography_to_jsonb"
+  }
+  source_type {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  target_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  method: "assignment"
+  engine_specific {
+    [floe.ext.floe_cast] {
+      castsource: 14774
+      casttarget: 3802
+      castfunc: 14866
+      castcontext: "a"
+      castmethod: "f"
+    }
+    payload_type: "floe.cast+proto"
+  }
 }

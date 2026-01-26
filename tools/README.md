@@ -104,7 +104,7 @@ and the JSON payload contains `engine_issues`, `engine_error_count`, and
 (under `service/src/main/resources/builtins/`) are validated automatically during
 `mvn test`.
 
-## Engine-specific validation
+### Engine-specific validation
 
 Passing `--engine <engine_kind>` (with or without a catalog path) loads the
 corresponding `EngineSystemCatalogExtension` via `ServiceLoader`. After the

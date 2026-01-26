@@ -167,7 +167,7 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
   }
 
   private TextFormat.Parser newParser() {
-    return TextFormat.Parser.newBuilder().setAllowUnknownFields(true).build();
+    return TextFormat.Parser.newBuilder().build();
   }
 
   private void mergeTextIntoBuilder(
