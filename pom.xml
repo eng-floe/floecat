@@ -144,6 +144,7 @@
         <version>0.17</version>
         <configuration>
           <inputExcludes>
+            <inputExclude>**/*.csv</inputExclude>
             <inputExclude>**/*.json</inputExclude>
             <inputExclude>**/*.avro</inputExclude>
             <inputExclude>**/*.log</inputExclude>

@@ -42,15 +42,8 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '25'
-
-      - name: Cache Maven
-        uses: actions/cache@v4
-        with:
-          path: ~/.m2/repository
-          key: maven-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
-          restore-keys: |
-            maven-${{ runner.os }}-
+          java-version: "25"
+          cache: maven
 
       - name: License Check
         run: mvn apache-rat:check
@@ -73,3 +66,80 @@ jobs:
 
       - name: Check formatting
         run: mvn -q fmt:check
+
+  detect-floedb-changes:
+    name: detect floedb changes
+    runs-on: ubuntu-latest
+    outputs:
+      floedb: ${{ steps.changes.outputs.floedb }}
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            floedb:
+              - 'extensions/floedb/**'
+              - 'core/proto/**'
+              - 'proto/**'
+
+  floedb-checks:
+    name: FloeDB specific checks
+    needs: detect-floedb-changes
+    if: needs.detect-floedb-changes.outputs.floedb == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-floedb
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+
+      # Build+install the module + its reactor deps so test-scope tools can run
+      - name: "FloeDB: Build test classpath"
+        run: |
+          set -euo pipefail
+          mvn -q -pl :floecat-extension-floedb -am -DskipTests install
+
+      - name: "FloeDB: PBtxt format check"
+        run: |
+          set -euo pipefail
+          mvn -q -f extensions/floedb/pom.xml test-compile exec:java@format-pbtxt \
+              -Dexec.args="--engine=floedb --check" || {
+            echo ""
+            echo "❌ PBtxt formatting check failed."
+            echo ""
+            echo "Fix locally with:"
+            echo "  mvn -q -f extensions/floedb/pom.xml test-compile exec:java@format-pbtxt -Dexec.args=\"--engine=floedb --apply\""
+            echo ""
+            exit 1
+          }
+
+      - name: "FloeDB: Builtin catalog validation"
+        run: |
+          set -euo pipefail
+          mvn -q -f extensions/floedb/pom.xml test-compile exec:java@validate-builtin \
+              -Dexec.args="--engine=floedb" || {
+            echo ""
+            echo "❌ Builtin catalog validation failed."
+            echo ""
+            echo "Re-run locally for full output:"
+            echo "  mvn -q -f extensions/floedb/pom.xml test-compile exec:java@validate-builtin -Dexec.args=\"--engine=floedb\""
+            echo ""
+            exit 1
+          }

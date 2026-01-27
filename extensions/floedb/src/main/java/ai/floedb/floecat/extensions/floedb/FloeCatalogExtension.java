@@ -22,21 +22,27 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.extensions.floedb.proto.*;
 import ai.floedb.floecat.extensions.floedb.sinks.FloeEngineSpecificDecorator;
 import ai.floedb.floecat.extensions.floedb.utils.PayloadDescriptor;
+import ai.floedb.floecat.extensions.floedb.validation.FloeSystemCatalogValidator;
+import ai.floedb.floecat.extensions.floedb.validation.ValidationScope;
 import ai.floedb.floecat.query.rpc.*;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
+import ai.floedb.floecat.systemcatalog.registry.SystemObjectsRegistryMerger;
 import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
 import com.google.protobuf.ExtensionRegistry;
 import com.google.protobuf.Message;
 import com.google.protobuf.TextFormat;
 import java.io.InputStream;
 import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -52,25 +58,31 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
 
   @Override
   public final SystemCatalogData loadSystemCatalog() {
-    String resourcePath = getResourcePath();
-    String rawText = loadResourceText(resourcePath);
-    SystemObjectsRegistry registry = parseSystemObjectsRegistry(rawText, resourcePath);
+    SystemObjectsRegistry registry = loadRegistryFromDirectory();
     SystemObjectsRegistry rewritten = rewriteFloeExtensions(registry);
     return SystemCatalogProtoMapper.fromProto(rewritten, engineKind());
   }
 
-  /**
-   * Returns the resource path to load (e.g., "/builtins/floedb.pbtxt"). Subclasses can override to
-   * use different files.
-   */
-  protected String getResourcePath() {
-    return "/builtins/" + engineKind() + ".pbtxt";
+  /** Returns the directory containing the pbtxt fragments for this engine. */
+  protected String getResourceDir() {
+    return "/builtins/" + engineKind();
+  }
+
+  protected String getIndexPath() {
+    return getResourceDir() + "/_index.txt";
   }
 
   protected String loadResourceText(String resourcePath) {
     InputStream in = getClass().getResourceAsStream(resourcePath);
     if (in == null) {
-      throw new IllegalStateException("Builtin file not found: " + resourcePath);
+      throw new IllegalStateException(
+          "Builtin file not found: "
+              + resourcePath
+              + " (engine="
+              + engineKind()
+              + ", index="
+              + getIndexPath()
+              + ")");
     }
     try (in) {
       return new String(in.readAllBytes(), StandardCharsets.UTF_8);
@@ -79,15 +91,93 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
     }
   }
 
+  private Optional<String> tryReadResourceText(String resourcePath) {
+    InputStream in = getClass().getResourceAsStream(resourcePath);
+    if (in == null) {
+      return Optional.empty();
+    }
+    try (in) {
+      return Optional.of(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+    } catch (Exception e) {
+      throw new IllegalStateException("Failed to load builtin file: " + resourcePath, e);
+    }
+  }
+
+  private SystemObjectsRegistry loadRegistryFromDirectory() {
+    List<String> fragments = loadCatalogFragments();
+    SystemObjectsRegistry.Builder accumulator = SystemObjectsRegistry.newBuilder();
+
+    TextFormat.Parser parser = newParser();
+    ExtensionRegistry extensionRegistry = newExtensionRegistry();
+
+    String dir = getResourceDir();
+    for (String file : fragments) {
+      if (file.startsWith("/")) {
+        throw new IllegalStateException(
+            "Index entries must be relative paths (got " + file + ") in " + getIndexPath());
+      }
+      String resourcePath = dir + "/" + file;
+
+      String rawText = loadResourceText(resourcePath);
+      SystemObjectsRegistry.Builder tmp = SystemObjectsRegistry.newBuilder();
+      mergeTextIntoBuilder(rawText, resourcePath, parser, extensionRegistry, tmp);
+      SystemObjectsRegistryMerger.append(accumulator, tmp.build());
+    }
+
+    return accumulator.build();
+  }
+
+  private List<String> loadCatalogFragments() {
+    Optional<String> indexText = tryReadResourceText(getIndexPath());
+    if (indexText.isEmpty()) {
+      throw new IllegalStateException(
+          "Builtin catalog index not found: " + getIndexPath() + " (engine=" + engineKind() + ")");
+    }
+
+    List<String> fragments = new ArrayList<>();
+    indexText
+        .get()
+        .lines()
+        .map(String::trim)
+        .filter(line -> !line.isEmpty())
+        .filter(line -> !line.startsWith("#"))
+        .forEach(fragments::add);
+
+    if (fragments.isEmpty()) {
+      throw new IllegalStateException(
+          "Catalog index "
+              + getIndexPath()
+              + " for engine "
+              + engineKind()
+              + " contains no entries (only comments/blank lines)");
+    }
+    return Collections.unmodifiableList(fragments);
+  }
+
   protected SystemObjectsRegistry parseSystemObjectsRegistry(String rawText, String resourcePath) {
+    SystemObjectsRegistry.Builder builder = SystemObjectsRegistry.newBuilder();
+    mergeTextIntoBuilder(rawText, resourcePath, newParser(), newExtensionRegistry(), builder);
+    return builder.build();
+  }
+
+  private ExtensionRegistry newExtensionRegistry() {
     ExtensionRegistry extensionRegistry = ExtensionRegistry.newInstance();
     EngineFloeExtensions.registerAllExtensions(extensionRegistry);
+    return extensionRegistry;
+  }
 
-    SystemObjectsRegistry.Builder builder = SystemObjectsRegistry.newBuilder();
-    var parser = TextFormat.Parser.newBuilder().setAllowUnknownFields(true).build();
+  private TextFormat.Parser newParser() {
+    return TextFormat.Parser.newBuilder().build();
+  }
+
+  private void mergeTextIntoBuilder(
+      String rawText,
+      String resourcePath,
+      TextFormat.Parser parser,
+      ExtensionRegistry extensionRegistry,
+      SystemObjectsRegistry.Builder builder) {
     try {
       parser.merge(new StringReader(rawText), extensionRegistry, builder);
-      return builder.build();
     } catch (Exception e) {
       throw new IllegalStateException("Failed to parse builtin file: " + resourcePath, e);
     }
@@ -279,6 +369,11 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
   @Override
   public Optional<EngineMetadataDecorator> decorator() {
     return Optional.of(FloeEngineSpecificDecorator.INSTANCE);
+  }
+
+  @Override
+  public List<ValidationIssue> validate(SystemCatalogData catalog) {
+    return FloeSystemCatalogValidator.validate(catalog, new ValidationScope(engineKind()));
   }
 
   /** Concrete implementation for the main FloeDB engine. */

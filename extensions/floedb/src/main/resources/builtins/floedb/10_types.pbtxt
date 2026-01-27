@@ -1,0 +1,4655 @@
+# Copyright 2026 Yellowbrick Data, Inc
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  category: "B"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 16
+      typname: "bool"
+      typnamespace: 11
+      typlen: 1
+      typbyval: true
+      typdelim: ","
+      typarray: 1000
+      typalign: "c"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 16
+      eq_op_oid: 91
+      btree_cmp_proc_oid: 1693
+      btree_lt_op_oid: 58
+      btree_gt_op_oid: 59
+      hash_proc_oid: 454
+      btree_opfamily_oid: 424
+      btree_opclass_oid: 10011
+      hash_opfamily_oid: 2222
+      hash_opclass_oid: 10055
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 17
+      typname: "bytea"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 1001
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 17
+      eq_op_oid: 1955
+      btree_cmp_proc_oid: 1954
+      btree_lt_op_oid: 1957
+      btree_gt_op_oid: 1959
+      hash_proc_oid: 456
+      btree_opfamily_oid: 428
+      btree_opclass_oid: 10014
+      hash_opfamily_oid: 2223
+      hash_opclass_oid: 10056
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "char"
+  }
+  category: "S"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 18
+      typname: "char"
+      typnamespace: 11
+      typlen: 1
+      typbyval: true
+      typdelim: ","
+      typarray: 1002
+      typalign: "c"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 18
+      eq_op_oid: 92
+      btree_cmp_proc_oid: 358
+      btree_lt_op_oid: 631
+      btree_gt_op_oid: 633
+      hash_proc_oid: 454
+      btree_opfamily_oid: 429
+      btree_opclass_oid: 10015
+      hash_opfamily_oid: 431
+      hash_opclass_oid: 10016
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "name"
+  }
+  category: "S"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 19
+      typname: "name"
+      typnamespace: 11
+      typlen: 129
+      typbyval: false
+      typdelim: ","
+      typarray: 1003
+      typalign: "c"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 19
+      eq_op_oid: 93
+      btree_cmp_proc_oid: 359
+      btree_lt_op_oid: 660
+      btree_gt_op_oid: 662
+      hash_proc_oid: 455
+      btree_opfamily_oid: 1986
+      btree_opclass_oid: 10033
+      hash_opfamily_oid: 1987
+      hash_opclass_oid: 10034
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  category: "N"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 20
+      typname: "int8"
+      typnamespace: 11
+      typlen: 8
+      typbyval: true
+      typdelim: ","
+      typarray: 1016
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 20
+      eq_op_oid: 410
+      btree_cmp_proc_oid: 2192
+      btree_lt_op_oid: 412
+      btree_gt_op_oid: 413
+      hash_proc_oid: 949
+      btree_opfamily_oid: 1976
+      btree_opclass_oid: 3124
+      hash_opfamily_oid: 1977
+      hash_opclass_oid: 10028
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  category: "N"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 21
+      typname: "int2"
+      typnamespace: 11
+      typlen: 2
+      typbyval: true
+      typdelim: ","
+      typarray: 1005
+      typalign: "s"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 21
+      eq_op_oid: 94
+      btree_cmp_proc_oid: 350
+      btree_lt_op_oid: 95
+      btree_gt_op_oid: 520
+      hash_proc_oid: 449
+      btree_opfamily_oid: 1976
+      btree_opclass_oid: 1979
+      hash_opfamily_oid: 1977
+      hash_opclass_oid: 10026
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "int2vector"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 22
+      typname: "int2vector"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 1006
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 22
+      hash_proc_oid: 398
+      hash_opfamily_oid: 2224
+      hash_opclass_oid: 10057
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  category: "N"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 23
+      typname: "int4"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 1007
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 23
+      eq_op_oid: 96
+      btree_cmp_proc_oid: 2190
+      btree_lt_op_oid: 97
+      btree_gt_op_oid: 521
+      hash_proc_oid: 450
+      btree_opfamily_oid: 1976
+      btree_opclass_oid: 1978
+      hash_opfamily_oid: 1977
+      hash_opclass_oid: 10027
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "regproc"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 24
+      typname: "regproc"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 1008
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "text"
+  }
+  category: "S"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 25
+      typname: "text"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 1009
+      typalign: "i"
+      typcollation: 100
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 25
+      eq_op_oid: 98
+      btree_cmp_proc_oid: 360
+      btree_lt_op_oid: 664
+      btree_gt_op_oid: 666
+      hash_proc_oid: 400
+      default_collation_oid: 100
+      btree_opfamily_oid: 1994
+      btree_opclass_oid: 3126
+      hash_opfamily_oid: 1995
+      hash_opclass_oid: 10041
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  category: "N"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 26
+      typname: "oid"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 1028
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 26
+      eq_op_oid: 607
+      btree_cmp_proc_oid: 356
+      btree_lt_op_oid: 609
+      btree_gt_op_oid: 610
+      hash_proc_oid: 453
+      btree_opfamily_oid: 1989
+      btree_opclass_oid: 1981
+      hash_opfamily_oid: 1990
+      hash_opclass_oid: 10036
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "tid"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 27
+      typname: "tid"
+      typnamespace: 11
+      typlen: 6
+      typbyval: false
+      typdelim: ","
+      typarray: 1010
+      typalign: "s"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 27
+      eq_op_oid: 387
+      btree_cmp_proc_oid: 2794
+      btree_lt_op_oid: 2799
+      btree_gt_op_oid: 2800
+      btree_opfamily_oid: 2789
+      btree_opclass_oid: 10058
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "xid"
+  }
+  category: "N"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 28
+      typname: "xid"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 1011
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 28
+      hash_proc_oid: 450
+      hash_opfamily_oid: 2225
+      hash_opclass_oid: 10059
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "cid"
+  }
+  category: "N"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 29
+      typname: "cid"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 1012
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 29
+      hash_proc_oid: 450
+      hash_opfamily_oid: 2226
+      hash_opclass_oid: 10060
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "oidvector"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 30
+      typname: "oidvector"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 1013
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 30
+      eq_op_oid: 649
+      btree_cmp_proc_oid: 404
+      btree_lt_op_oid: 645
+      btree_gt_op_oid: 646
+      hash_proc_oid: 457
+      btree_opfamily_oid: 1991
+      btree_opclass_oid: 10037
+      hash_opfamily_oid: 1992
+      hash_opclass_oid: 10038
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "pg_ddl_command"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 32
+      typname: "pg_ddl_command"
+      typnamespace: 11
+      typlen: 8
+      typbyval: true
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "pg_type"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 71
+      typname: "pg_type"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "pg_attribute"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 75
+      typname: "pg_attribute"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "json"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 114
+      typname: "json"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 199
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 114
+      eq_op_oid: 4435
+      btree_cmp_proc_oid: 4449
+      btree_lt_op_oid: 4437
+      btree_gt_op_oid: 4438
+      hash_proc_oid: 4450
+      btree_opfamily_oid: 4182
+      btree_opclass_oid: 10391
+      hash_opfamily_oid: 4183
+      hash_opclass_oid: 10392
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "pg_node_tree"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 194
+      typname: "pg_node_tree"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "i"
+      typcollation: 100
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 194
+      default_collation_oid: 100
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_json"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "json"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 199
+      typname: "_json"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 114
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "smgr"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 210
+      typname: "smgr"
+      typnamespace: 11
+      typlen: 2
+      typbyval: true
+      typdelim: ","
+      typalign: "s"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 388
+      typname: "macaddr8"
+      typnamespace: 11
+      typlen: 8
+      typbyval: true
+      typdelim: ","
+      typarray: 389
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 388
+      eq_op_oid: 3051
+      btree_cmp_proc_oid: 3443
+      btree_lt_op_oid: 3053
+      btree_gt_op_oid: 3369
+      hash_proc_oid: 3444
+      btree_opfamily_oid: 3438
+      btree_opclass_oid: 10159
+      hash_opfamily_oid: 3439
+      hash_opclass_oid: 10160
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_macaddr8"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "macaddr8"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 389
+      typname: "_macaddr8"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 388
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "cidr"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 650
+      typname: "cidr"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 651
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_cidr"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "cidr"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 651
+      typname: "_cidr"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 650
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  category: "N"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 700
+      typname: "float4"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 1021
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 700
+      eq_op_oid: 620
+      btree_cmp_proc_oid: 354
+      btree_lt_op_oid: 622
+      btree_gt_op_oid: 623
+      hash_proc_oid: 451
+      btree_opfamily_oid: 1970
+      btree_opclass_oid: 10020
+      hash_opfamily_oid: 1971
+      hash_opclass_oid: 10021
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  category: "N"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 701
+      typname: "float8"
+      typnamespace: 11
+      typlen: 8
+      typbyval: true
+      typdelim: ","
+      typarray: 1022
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 701
+      eq_op_oid: 670
+      btree_cmp_proc_oid: 2194
+      btree_lt_op_oid: 672
+      btree_gt_op_oid: 674
+      hash_proc_oid: 452
+      btree_opfamily_oid: 1970
+      btree_opclass_oid: 3123
+      hash_opfamily_oid: 1971
+      hash_opclass_oid: 10022
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "abstime"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 702
+      typname: "abstime"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 1023
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 702
+      eq_op_oid: 560
+      btree_cmp_proc_oid: 357
+      btree_lt_op_oid: 562
+      btree_gt_op_oid: 563
+      hash_proc_oid: 450
+      btree_opfamily_oid: 421
+      btree_opclass_oid: 10007
+      hash_opfamily_oid: 2227
+      hash_opclass_oid: 10061
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "reltime"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 703
+      typname: "reltime"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 1024
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 703
+      eq_op_oid: 566
+      btree_cmp_proc_oid: 380
+      btree_lt_op_oid: 568
+      btree_gt_op_oid: 569
+      hash_proc_oid: 450
+      btree_opfamily_oid: 2233
+      btree_opclass_oid: 10066
+      hash_opfamily_oid: 2228
+      hash_opclass_oid: 10062
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "tinterval"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 704
+      typname: "tinterval"
+      typnamespace: 11
+      typlen: 12
+      typbyval: false
+      typdelim: ","
+      typarray: 1025
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 704
+      eq_op_oid: 811
+      btree_cmp_proc_oid: 381
+      btree_lt_op_oid: 813
+      btree_gt_op_oid: 814
+      btree_opfamily_oid: 2234
+      btree_opclass_oid: 10067
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "unknown"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 705
+      typname: "unknown"
+      typnamespace: 11
+      typlen: -2
+      typbyval: false
+      typdelim: ","
+      typalign: "c"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "macaddr"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 829
+      typname: "macaddr"
+      typnamespace: 11
+      typlen: 8
+      typbyval: true
+      typdelim: ","
+      typarray: 1040
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 829
+      eq_op_oid: 1220
+      btree_cmp_proc_oid: 3453
+      btree_lt_op_oid: 1222
+      btree_gt_op_oid: 1224
+      hash_proc_oid: 3578
+      btree_opfamily_oid: 1984
+      btree_opclass_oid: 10031
+      hash_opfamily_oid: 1985
+      hash_opclass_oid: 10032
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "inet"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 869
+      typname: "inet"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 1041
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 869
+      eq_op_oid: 1201
+      btree_cmp_proc_oid: 926
+      btree_lt_op_oid: 1203
+      btree_gt_op_oid: 1205
+      hash_proc_oid: 422
+      btree_opfamily_oid: 1974
+      btree_opclass_oid: 10023
+      hash_opfamily_oid: 1975
+      hash_opclass_oid: 10024
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_bool"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "bool"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1000
+      typname: "_bool"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 16
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_bytea"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "bytea"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1001
+      typname: "_bytea"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 17
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_char"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "char"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1002
+      typname: "_char"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 18
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_name"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "name"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1003
+      typname: "_name"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 19
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_int2"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "int2"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1005
+      typname: "_int2"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 21
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_int2vector"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "int2vector"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1006
+      typname: "_int2vector"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 22
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_int4"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "int4"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1007
+      typname: "_int4"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 23
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_regproc"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "regproc"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1008
+      typname: "_regproc"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 24
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_text"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "text"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1009
+      typname: "_text"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 25
+      typalign: "i"
+      typcollation: 100
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 1009
+      default_collation_oid: 100
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_tid"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "tid"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1010
+      typname: "_tid"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 27
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_xid"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "xid"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1011
+      typname: "_xid"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 28
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_cid"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "cid"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1012
+      typname: "_cid"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 29
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_oidvector"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "oidvector"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1013
+      typname: "_oidvector"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 30
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_bpchar"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1014
+      typname: "_bpchar"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 1042
+      typalign: "i"
+      typcollation: 100
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 1014
+      default_collation_oid: 100
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_varchar"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1015
+      typname: "_varchar"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 1043
+      typalign: "i"
+      typcollation: 100
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 1015
+      default_collation_oid: 100
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_int8"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "int8"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1016
+      typname: "_int8"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 20
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_float4"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "float4"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1021
+      typname: "_float4"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 700
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_float8"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "float8"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1022
+      typname: "_float8"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 701
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_abstime"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "abstime"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1023
+      typname: "_abstime"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 702
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_reltime"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "reltime"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1024
+      typname: "_reltime"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 703
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_tinterval"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "tinterval"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1025
+      typname: "_tinterval"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 704
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_oid"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "oid"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1028
+      typname: "_oid"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 26
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "aclitem"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1033
+      typname: "aclitem"
+      typnamespace: 11
+      typlen: 16
+      typbyval: false
+      typdelim: ","
+      typarray: 1034
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 1033
+      hash_proc_oid: 329
+      hash_opfamily_oid: 2235
+      hash_opclass_oid: 10068
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_aclitem"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "aclitem"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1034
+      typname: "_aclitem"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 1033
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_macaddr"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "macaddr"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1040
+      typname: "_macaddr"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 829
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_inet"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "inet"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1041
+      typname: "_inet"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 869
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "bpchar"
+  }
+  category: "S"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1042
+      typname: "bpchar"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 1014
+      typalign: "i"
+      typcollation: 100
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 1042
+      eq_op_oid: 1054
+      btree_cmp_proc_oid: 1078
+      btree_lt_op_oid: 1058
+      btree_gt_op_oid: 1060
+      hash_proc_oid: 1080
+      default_collation_oid: 100
+      btree_opfamily_oid: 426
+      btree_opclass_oid: 10012
+      hash_opfamily_oid: 427
+      hash_opclass_oid: 10013
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "varchar"
+  }
+  category: "S"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1043
+      typname: "varchar"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 1015
+      typalign: "i"
+      typcollation: 100
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 1043
+      default_collation_oid: 100
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "date"
+  }
+  category: "D"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1082
+      typname: "date"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 1182
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 1082
+      eq_op_oid: 1093
+      btree_cmp_proc_oid: 1092
+      btree_lt_op_oid: 1095
+      btree_gt_op_oid: 1097
+      hash_proc_oid: 450
+      btree_opfamily_oid: 434
+      btree_opclass_oid: 3122
+      hash_opfamily_oid: 435
+      hash_opclass_oid: 10019
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "time"
+  }
+  category: "D"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1083
+      typname: "time"
+      typnamespace: 11
+      typlen: 8
+      typbyval: true
+      typdelim: ","
+      typarray: 1183
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 1083
+      eq_op_oid: 1108
+      btree_cmp_proc_oid: 1107
+      btree_lt_op_oid: 1110
+      btree_gt_op_oid: 1112
+      hash_proc_oid: 1688
+      btree_opfamily_oid: 1996
+      btree_opclass_oid: 10042
+      hash_opfamily_oid: 1997
+      hash_opclass_oid: 10043
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  category: "D"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1114
+      typname: "timestamp"
+      typnamespace: 11
+      typlen: 8
+      typbyval: true
+      typdelim: ","
+      typarray: 1115
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 1114
+      eq_op_oid: 2060
+      btree_cmp_proc_oid: 2344
+      btree_lt_op_oid: 2062
+      btree_gt_op_oid: 2064
+      hash_proc_oid: 2039
+      btree_opfamily_oid: 434
+      btree_opclass_oid: 3128
+      hash_opfamily_oid: 2040
+      hash_opclass_oid: 10050
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_timestamp"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "timestamp"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1115
+      typname: "_timestamp"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 1114
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_date"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "date"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1182
+      typname: "_date"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 1082
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_time"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "time"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1183
+      typname: "_time"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 1083
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  category: "D"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1184
+      typname: "timestamptz"
+      typnamespace: 11
+      typlen: 8
+      typbyval: true
+      typdelim: ","
+      typarray: 1185
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 1184
+      eq_op_oid: 1320
+      btree_cmp_proc_oid: 2357
+      btree_lt_op_oid: 1322
+      btree_gt_op_oid: 1324
+      hash_proc_oid: 2039
+      btree_opfamily_oid: 434
+      btree_opclass_oid: 3127
+      hash_opfamily_oid: 1999
+      hash_opclass_oid: 10044
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_timestamptz"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "timestamptz"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1185
+      typname: "_timestamptz"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 1184
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  category: "D"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1186
+      typname: "interval"
+      typnamespace: 11
+      typlen: 16
+      typbyval: false
+      typdelim: ","
+      typarray: 1187
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 1186
+      eq_op_oid: 1330
+      btree_cmp_proc_oid: 1315
+      btree_lt_op_oid: 1332
+      btree_gt_op_oid: 1334
+      hash_proc_oid: 1697
+      btree_opfamily_oid: 1982
+      btree_opclass_oid: 10029
+      hash_opfamily_oid: 1983
+      hash_opclass_oid: 10030
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_interval"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "interval"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1187
+      typname: "_interval"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 1186
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_numeric"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1231
+      typname: "_numeric"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 1700
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_cstring"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "cstring"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1263
+      typname: "_cstring"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 2275
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "timetz"
+  }
+  category: "D"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1266
+      typname: "timetz"
+      typnamespace: 11
+      typlen: 12
+      typbyval: false
+      typdelim: ","
+      typarray: 1270
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 1266
+      eq_op_oid: 1550
+      btree_cmp_proc_oid: 1358
+      btree_lt_op_oid: 1552
+      btree_gt_op_oid: 1554
+      hash_proc_oid: 1696
+      btree_opfamily_oid: 2000
+      btree_opclass_oid: 10045
+      hash_opfamily_oid: 2001
+      hash_opclass_oid: 10046
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_timetz"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "timetz"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1270
+      typname: "_timetz"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 1266
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "bit"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1560
+      typname: "bit"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 1561
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 1560
+      eq_op_oid: 1784
+      btree_cmp_proc_oid: 1596
+      btree_lt_op_oid: 1786
+      btree_gt_op_oid: 1787
+      btree_opfamily_oid: 423
+      btree_opclass_oid: 10010
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_bit"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "bit"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1561
+      typname: "_bit"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 1560
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "varbit"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1562
+      typname: "varbit"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 1563
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 1562
+      eq_op_oid: 1804
+      btree_cmp_proc_oid: 1672
+      btree_lt_op_oid: 1806
+      btree_gt_op_oid: 1807
+      btree_opfamily_oid: 2002
+      btree_opclass_oid: 10047
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_varbit"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "varbit"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1563
+      typname: "_varbit"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 1562
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "numeric"
+  }
+  category: "N"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1700
+      typname: "numeric"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 1231
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 1700
+      eq_op_oid: 1752
+      btree_cmp_proc_oid: 1769
+      btree_lt_op_oid: 1754
+      btree_gt_op_oid: 1756
+      hash_proc_oid: 432
+      btree_opfamily_oid: 1988
+      btree_opclass_oid: 3125
+      hash_opfamily_oid: 1998
+      hash_opclass_oid: 10035
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "refcursor"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 1790
+      typname: "refcursor"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 2201
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_refcursor"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "refcursor"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2201
+      typname: "_refcursor"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 1790
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "regprocedure"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2202
+      typname: "regprocedure"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 2207
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "regoper"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2203
+      typname: "regoper"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 2208
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "regoperator"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2204
+      typname: "regoperator"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 2209
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "regclass"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2205
+      typname: "regclass"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 2210
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "regtype"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2206
+      typname: "regtype"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 2211
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_regprocedure"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "regprocedure"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2207
+      typname: "_regprocedure"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 2202
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_regoper"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "regoper"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2208
+      typname: "_regoper"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 2203
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_regoperator"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "regoperator"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2209
+      typname: "_regoperator"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 2204
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_regclass"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "regclass"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2210
+      typname: "_regclass"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 2205
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_regtype"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "regtype"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2211
+      typname: "_regtype"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 2206
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "record"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2249
+      typname: "record"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 2287
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 2249
+      eq_op_oid: 2988
+      btree_cmp_proc_oid: 2987
+      btree_lt_op_oid: 2990
+      btree_gt_op_oid: 2991
+      btree_opfamily_oid: 2994
+      btree_opclass_oid: 10039
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "cstring"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2275
+      typname: "cstring"
+      typnamespace: 11
+      typlen: -2
+      typbyval: false
+      typdelim: ","
+      typarray: 1263
+      typalign: "c"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "any"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2276
+      typname: "any"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "anyarray"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2277
+      typname: "anyarray"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 2277
+      eq_op_oid: 1070
+      btree_cmp_proc_oid: 382
+      btree_lt_op_oid: 1072
+      btree_gt_op_oid: 1073
+      hash_proc_oid: 626
+      btree_opfamily_oid: 397
+      btree_opclass_oid: 10008
+      hash_opfamily_oid: 627
+      hash_opclass_oid: 10009
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "void"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2278
+      typname: "void"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "trigger"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2279
+      typname: "trigger"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "language_handler"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2280
+      typname: "language_handler"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "internal"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2281
+      typname: "internal"
+      typnamespace: 11
+      typlen: 8
+      typbyval: true
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "opaque"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2282
+      typname: "opaque"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "anyelement"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2283
+      typname: "anyelement"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_record"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "record"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2287
+      typname: "_record"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 2249
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "anynonarray"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2776
+      typname: "anynonarray"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "jsonpath"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2863
+      typname: "jsonpath"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 2864
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_jsonpath"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "jsonpath"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2864
+      typname: "_jsonpath"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 2863
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "ipv4"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2893
+      typname: "ipv4"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 2895
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 2893
+      eq_op_oid: 3342
+      btree_cmp_proc_oid: 3426
+      btree_lt_op_oid: 3337
+      btree_gt_op_oid: 3338
+      hash_proc_oid: 3427
+      btree_opfamily_oid: 3420
+      btree_opclass_oid: 10155
+      hash_opfamily_oid: 3421
+      hash_opclass_oid: 10156
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "ipv6"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2894
+      typname: "ipv6"
+      typnamespace: 11
+      typlen: 16
+      typbyval: false
+      typdelim: ","
+      typarray: 2896
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 2894
+      eq_op_oid: 3351
+      btree_cmp_proc_oid: 3434
+      btree_lt_op_oid: 3346
+      btree_gt_op_oid: 3347
+      hash_proc_oid: 3435
+      btree_opfamily_oid: 3429
+      btree_opclass_oid: 10157
+      hash_opfamily_oid: 3430
+      hash_opclass_oid: 10158
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_ipv4"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "ipv4"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2895
+      typname: "_ipv4"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 2893
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_ipv6"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "ipv6"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2896
+      typname: "_ipv6"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 2894
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_txid_snapshot"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "txid_snapshot"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2949
+      typname: "_txid_snapshot"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 2970
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "uuid"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2950
+      typname: "uuid"
+      typnamespace: 11
+      typlen: 16
+      typbyval: false
+      typdelim: ","
+      typarray: 2951
+      typalign: "c"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 2950
+      eq_op_oid: 2972
+      btree_cmp_proc_oid: 2960
+      btree_lt_op_oid: 2974
+      btree_gt_op_oid: 2975
+      hash_proc_oid: 2963
+      btree_opfamily_oid: 2968
+      btree_opclass_oid: 10103
+      hash_opfamily_oid: 2969
+      hash_opclass_oid: 10104
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_uuid"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "uuid"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2951
+      typname: "_uuid"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 2950
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "txid_snapshot"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 2970
+      typname: "txid_snapshot"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 2949
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "fdw_handler"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3115
+      typname: "fdw_handler"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "pg_lsn"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3220
+      typname: "pg_lsn"
+      typnamespace: 11
+      typlen: 8
+      typbyval: true
+      typdelim: ","
+      typarray: 3221
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 3220
+      eq_op_oid: 3222
+      btree_cmp_proc_oid: 3251
+      btree_lt_op_oid: 3224
+      btree_gt_op_oid: 3225
+      hash_proc_oid: 3252
+      btree_opfamily_oid: 3253
+      btree_opclass_oid: 10105
+      hash_opfamily_oid: 3254
+      hash_opclass_oid: 10106
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_pg_lsn"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "pg_lsn"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3221
+      typname: "_pg_lsn"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 3220
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "tsm_handler"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3310
+      typname: "tsm_handler"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "anyenum"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3500
+      typname: "anyenum"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 3500
+      eq_op_oid: 3516
+      btree_cmp_proc_oid: 3514
+      btree_lt_op_oid: 3518
+      btree_gt_op_oid: 3519
+      hash_proc_oid: 3515
+      btree_opfamily_oid: 3522
+      btree_opclass_oid: 10107
+      hash_opfamily_oid: 3523
+      hash_opclass_oid: 10108
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "tsvector"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3614
+      typname: "tsvector"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 3643
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 3614
+      eq_op_oid: 3629
+      btree_cmp_proc_oid: 3622
+      btree_lt_op_oid: 3627
+      btree_gt_op_oid: 3632
+      btree_opfamily_oid: 3626
+      btree_opclass_oid: 10109
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "tsquery"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3615
+      typname: "tsquery"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 3645
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 3615
+      eq_op_oid: 3676
+      btree_cmp_proc_oid: 3668
+      btree_lt_op_oid: 3674
+      btree_gt_op_oid: 3679
+      btree_opfamily_oid: 3683
+      btree_opclass_oid: 10112
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "gtsvector"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3642
+      typname: "gtsvector"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 3644
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_tsvector"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "tsvector"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3643
+      typname: "_tsvector"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 3614
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_gtsvector"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "gtsvector"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3644
+      typname: "_gtsvector"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 3642
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_tsquery"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "tsquery"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3645
+      typname: "_tsquery"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 3615
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "regconfig"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3734
+      typname: "regconfig"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 3735
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_regconfig"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "regconfig"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3735
+      typname: "_regconfig"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 3734
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "regdictionary"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3769
+      typname: "regdictionary"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 3770
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_regdictionary"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "regdictionary"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3770
+      typname: "_regdictionary"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 3769
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3802
+      typname: "jsonb"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 3807
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 3802
+      eq_op_oid: 3240
+      btree_cmp_proc_oid: 4044
+      btree_lt_op_oid: 3242
+      btree_gt_op_oid: 3243
+      hash_proc_oid: 4045
+      btree_opfamily_oid: 4033
+      btree_opclass_oid: 10121
+      hash_opfamily_oid: 4034
+      hash_opclass_oid: 10122
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_jsonb"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "jsonb"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3807
+      typname: "_jsonb"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 3802
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "anyrange"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3831
+      typname: "anyrange"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 3831
+      eq_op_oid: 3882
+      btree_cmp_proc_oid: 3870
+      btree_lt_op_oid: 3884
+      btree_gt_op_oid: 3887
+      hash_proc_oid: 3902
+      btree_opfamily_oid: 3901
+      btree_opclass_oid: 10114
+      hash_opfamily_oid: 3903
+      hash_opclass_oid: 10115
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "event_trigger"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3838
+      typname: "event_trigger"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "int4range"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3904
+      typname: "int4range"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 3905
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_int4range"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "int4range"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3905
+      typname: "_int4range"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 3904
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "numrange"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3906
+      typname: "numrange"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 3907
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_numrange"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "numrange"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3907
+      typname: "_numrange"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 3906
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "tsrange"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3908
+      typname: "tsrange"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 3909
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_tsrange"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "tsrange"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3909
+      typname: "_tsrange"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 3908
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "tstzrange"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3910
+      typname: "tstzrange"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 3911
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_tstzrange"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "tstzrange"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3911
+      typname: "_tstzrange"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 3910
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "daterange"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3912
+      typname: "daterange"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 3913
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_daterange"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "daterange"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3913
+      typname: "_daterange"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 3912
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "int8range"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3926
+      typname: "int8range"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typarray: 3927
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_int8range"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "int8range"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 3927
+      typname: "_int8range"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 3926
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "regnamespace"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 4089
+      typname: "regnamespace"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 4090
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_regnamespace"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "regnamespace"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 4090
+      typname: "_regnamespace"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 4089
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "regrole"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 4096
+      typname: "regrole"
+      typnamespace: 11
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typarray: 4097
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_regrole"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "regrole"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 4097
+      typname: "_regrole"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 4096
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "aclitemoid"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 4208
+      typname: "aclitemoid"
+      typnamespace: 11
+      typlen: 16
+      typbyval: false
+      typdelim: ","
+      typarray: 4209
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_aclitemoid"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "aclitemoid"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 4209
+      typname: "_aclitemoid"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typelem: 4208
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "information_schema"
+    name: "cardinal_number"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 8886
+      typname: "cardinal_number"
+      typnamespace: 10000
+      typlen: 4
+      typbyval: true
+      typdelim: ","
+      typalign: "i"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "information_schema"
+    name: "character_data"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 8887
+      typname: "character_data"
+      typnamespace: 10000
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "i"
+      typcollation: 100
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 8887
+      default_collation_oid: 100
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "information_schema"
+    name: "sql_identifier"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 8888
+      typname: "sql_identifier"
+      typnamespace: 10000
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "i"
+      typcollation: 100
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 8888
+      default_collation_oid: 100
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "information_schema"
+    name: "time_stamp"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 8889
+      typname: "time_stamp"
+      typnamespace: 10000
+      typlen: 8
+      typbyval: true
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "information_schema"
+    name: "yes_or_no"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 8890
+      typname: "yes_or_no"
+      typnamespace: 10000
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "i"
+      typcollation: 100
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 8890
+      default_collation_oid: 100
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "sys"
+    name: "wwwfdwoptions"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 8892
+      typname: "wwwfdwoptions"
+      typnamespace: 3300
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "sys"
+    name: "wwwfdwpostparameters"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 8894
+      typname: "wwwfdwpostparameters"
+      typnamespace: 3300
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "sys"
+    name: "vt_worker_roles"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 14159
+      typname: "vt_worker_roles"
+      typnamespace: 3300
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "sys"
+    name: "vt_worker_states"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 14160
+      typname: "vt_worker_states"
+      typnamespace: 3300
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "sys"
+    name: "vt_active_query_nodes"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 14166
+      typname: "vt_active_query_nodes"
+      typnamespace: 3300
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "sys"
+    name: "vt_active_query_node_stats"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 14168
+      typname: "vt_active_query_node_stats"
+      typnamespace: 3300
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "sys"
+    name: "vt_meminfo"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 14170
+      typname: "vt_meminfo"
+      typnamespace: 3300
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "sys"
+    name: "vt_view"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 14173
+      typname: "vt_view"
+      typnamespace: 3300
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "sys"
+    name: "vt_drives"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 14182
+      typname: "vt_drives"
+      typnamespace: 3300
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "sys"
+    name: "vt_bbfs"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 14184
+      typname: "vt_bbfs"
+      typnamespace: 3300
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "sys"
+    name: "vt_querystats"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 14206
+      typname: "vt_querystats"
+      typnamespace: 3300
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "sys"
+    name: "vt_rule_results"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 14210
+      typname: "vt_rule_results"
+      typnamespace: 3300
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "sys"
+    name: "vt_table_keys"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 14328
+      typname: "vt_table_keys"
+      typnamespace: 3300
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "sys"
+    name: "vt_bbfs_info"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 14335
+      typname: "vt_bbfs_info"
+      typnamespace: 3300
+      typlen: -1
+      typbyval: false
+      typdelim: ","
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  category: "U"
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 14774
+      typname: "geography"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ":"
+      typarray: 14775
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+  engine_specific {
+    [floe.ext.floe_type_planning_semantics] {
+      type_oid: 14774
+      eq_op_oid: 4462
+      btree_cmp_proc_oid: 14788
+      btree_lt_op_oid: 4464
+      btree_gt_op_oid: 4467
+      hash_proc_oid: 14837
+      btree_opfamily_oid: 4476
+      btree_opclass_oid: 2428
+      hash_opfamily_oid: 4477
+      hash_opclass_oid: 2429
+    }
+    payload_type: "floe.type.planning_semantics+proto"
+  }
+}
+
+types {
+  name {
+    path: "pg_catalog"
+    name: "_geography"
+  }
+  category: "A"
+  is_array: true
+  element_type {
+    path: "pg_catalog"
+    name: "geography"
+  }
+  engine_specific {
+    [floe.ext.floe_type] {
+      oid: 14775
+      typname: "_geography"
+      typnamespace: 11
+      typlen: -1
+      typbyval: false
+      typdelim: ":"
+      typelem: 14774
+      typalign: "d"
+    }
+    payload_type: "floe.type+proto"
+  }
+}

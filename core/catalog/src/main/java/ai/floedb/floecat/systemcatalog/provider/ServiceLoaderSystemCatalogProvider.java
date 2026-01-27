@@ -24,11 +24,15 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProv
 import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
+import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
+import ai.floedb.floecat.systemcatalog.validation.ValidationIssueFormatter;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.ServiceLoader;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.jboss.logging.Logger;
@@ -41,6 +45,7 @@ public final class ServiceLoaderSystemCatalogProvider
     implements SystemCatalogProvider, EngineMetadataDecoratorProvider {
 
   private static final Logger LOG = Logger.getLogger(ServiceLoaderSystemCatalogProvider.class);
+  private static final int VALIDATION_LOG_LIMIT = 50;
 
   private static final FloecatInternalProvider FLOECAT_INTERNAL_PROVIDER =
       new FloecatInternalProvider();
@@ -158,6 +163,11 @@ public final class ServiceLoaderSystemCatalogProvider
               + canonical.engineKind()
               + ")");
       catalog = ext.loadSystemCatalog();
+
+      List<ValidationIssue> extErrors = ext.validate(catalog);
+      if (!extErrors.isEmpty()) {
+        logValidationIssues(ext, extErrors);
+      }
     }
 
     String resolvedEngineKind =
@@ -181,5 +191,37 @@ public final class ServiceLoaderSystemCatalogProvider
       return Optional.empty();
     }
     return Optional.ofNullable(decorators.get(ctx.effectiveEngineKind()));
+  }
+
+  private static void logValidationIssues(
+      EngineSystemCatalogExtension ext, List<ValidationIssue> issues) {
+    LOG.warn(
+        "Engine extension emitted "
+            + issues.size()
+            + " validation issues for engine_kind="
+            + ext.engineKind());
+    int limit = Math.min(VALIDATION_LOG_LIMIT, issues.size());
+    for (int i = 0; i < limit; i++) {
+      LOG.warn("Engine validation: " + ValidationIssueFormatter.format(issues.get(i)));
+    }
+    if (issues.size() > VALIDATION_LOG_LIMIT) {
+      LOG.warn(
+          "Engine validation: results truncated (showing first "
+              + VALIDATION_LOG_LIMIT
+              + " of "
+              + issues.size()
+              + ")");
+    }
+
+    Map<String, Long> counts =
+        issues.stream()
+            .map(ValidationIssue::code)
+            .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()));
+
+    counts.entrySet().stream()
+        .sorted(Map.Entry.<String, Long>comparingByValue(Comparator.reverseOrder()))
+        .limit(5)
+        .forEach(
+            entry -> LOG.warnf("Engine validation count: %s=%d", entry.getKey(), entry.getValue()));
   }
 }

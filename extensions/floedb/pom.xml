@@ -126,7 +126,9 @@
 
                     <!-- Include shared proto directory from core proto module -->
                     <additionalProtoPathElements>
-                        <additionalProtoPathElement>${project.basedir}/../../core/proto/src/main/proto</additionalProtoPathElement>
+                        <additionalProtoPathElement>
+                            ${project.basedir}/../../core/proto/src/main/proto
+                        </additionalProtoPathElement>
                     </additionalProtoPathElements>
 
                     <!-- Floe plugin's local proto directory -->
@@ -142,7 +144,6 @@
                         </goals>
                     </execution>
                 </executions>
-
             </plugin>
 
             <!-- Package plugin with META-INF/services -->
@@ -152,9 +153,7 @@
                 <configuration>
                     <archive>
                         <manifestEntries>
-                            <Automatic-Module-Name>
-                                ai.floedb.floecat.extensions.floedb
-                            </Automatic-Module-Name>
+                            <Automatic-Module-Name>ai.floedb.floecat.extensions.floedb</Automatic-Module-Name>
                         </manifestEntries>
                     </archive>
                 </configuration>
@@ -165,6 +164,57 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.0.0</version>
+            </plugin>
+
+            <!-- Execute built-in tools -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.0</version>
+
+                <executions>
+                    <!-- Format fragments in-place -->
+                    <execution>
+                        <id>format-pbtxt</id>
+                        <phase>none</phase>
+                        <goals>
+                            <goal>java</goal>
+                        </goals>
+                        <configuration>
+                            <classpathScope>test</classpathScope>
+                            <mainClass>ai.floedb.floecat.extensions.floedb.tools.BuiltinPbtxtFormatter</mainClass>
+
+                            <!-- IMPORTANT: make tool paths stable when invoked from repo root -->
+                            <systemProperties>
+                                <systemProperty>
+                                    <key>module.basedir</key>
+                                    <value>${project.basedir}</value>
+                                </systemProperty>
+                            </systemProperties>
+                        </configuration>
+                    </execution>
+
+                    <!-- Validate catalog (same validator as runtime) -->
+                    <execution>
+                        <id>validate-builtin</id>
+                        <phase>none</phase>
+                        <goals>
+                            <goal>java</goal>
+                        </goals>
+                        <configuration>
+                            <classpathScope>test</classpathScope>
+                            <mainClass>ai.floedb.floecat.extensions.floedb.tools.BuiltinCatalogValidatorTool</mainClass>
+
+                            <!-- Same stability trick (useful if validator ever reads files) -->
+                            <systemProperties>
+                                <systemProperty>
+                                    <key>module.basedir</key>
+                                    <value>${project.basedir}</value>
+                                </systemProperty>
+                            </systemProperties>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
 
         </plugins>

@@ -36,7 +36,7 @@ final class SystemCatalogValidatorTest {
   }
 
   private static SystemTypeDef type(String name) {
-    return new SystemTypeDef(name(name), "scalar", false, null, List.of());
+    return new SystemTypeDef(name(name), "S", false, null, List.of());
   }
 
   // ---------------------------------------------------------------------------
@@ -138,6 +138,55 @@ final class SystemCatalogValidatorTest {
     assertThat(errors).contains("function.arg:f.type.unknown:missing");
   }
 
+  @Test
+  void validate_functionOverloadsAllowed() {
+    SystemFunctionDef intFn =
+        new SystemFunctionDef(
+            name("f"), List.of(name("int")), name("int"), false, false, List.of());
+    SystemFunctionDef textFn =
+        new SystemFunctionDef(
+            name("f"), List.of(name("text")), name("text"), false, false, List.of());
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(intFn, textFn),
+            List.of(),
+            List.of(type("int"), type("text")),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+
+    List<String> errors = SystemCatalogValidator.validate(catalog);
+    assertThat(errors).isEmpty();
+  }
+
+  @Test
+  void validate_functionDuplicateSignature() {
+    SystemFunctionDef fn =
+        new SystemFunctionDef(
+            name("f"), List.of(name("int")), name("int"), false, false, List.of());
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(fn, fn),
+            List.of(),
+            List.of(type("int")),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+
+    List<String> errors = SystemCatalogValidator.validate(catalog);
+    assertThat(errors).contains("function.duplicate:f(int)->int");
+  }
+
   // ---------------------------------------------------------------------------
   // Operators
   // ---------------------------------------------------------------------------
@@ -187,7 +236,7 @@ final class SystemCatalogValidatorTest {
             List.of());
 
     List<String> errors = SystemCatalogValidator.validate(catalog);
-    assertThat(errors).contains("cast.duplicate:c");
+    assertThat(errors).contains("cast.name.duplicate:c");
   }
 
   @Test

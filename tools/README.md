@@ -18,14 +18,26 @@ mvn -pl tools/builtin-validator package
 ### Usage
 
 ```bash
-java -jar tools/builtin-validator/target/builtin-validator.jar \
+java -jar tools/builtin-validator/target/floecat-builtin-validator.jar \
     /path/to/<engine_kind>.pb[txt] \
     [--json] [--strict]
 ```
 
+```bash
+java -jar tools/builtin-validator/target/floecat-builtin-validator.jar \
+    --engine <engine_kind> \
+    [--json] [--strict]
+```
+
+The CLI also accepts catalog directories that expose `_index.txt` under
+`service/src/main/resources/builtins/<engine_kind>/_index.txt`. When using
+`--engine`, the tool loads the matching `EngineSystemCatalogExtension` via
+`ServiceLoader` (the extension JAR must be on the classpath) and runs
+extension-specific validation in addition to the builtin catalog checks.
+
 - `--json` emits machine-readable results (`valid`, `stats`, `errors`,
-  `warnings`).
-- `--strict` makes warnings fail the run (currently reserved for future checks).
+  `warnings`, `engine_issues`, `engine_error_count`, `engine_warning_count`).
+- `--strict` makes warnings (core or engine) fail the run.
 - Output is colorized automatically when running in a terminal; set `NO_COLOR=1`
   to disable ANSI colors.
 
@@ -67,7 +79,7 @@ Output:
 ✖ ERROR: Function return type references unknown type 'pg_catalog.int5'
 ✖ ERROR: Duplicate collation 'pg_catalog.default'
 
-VALIDATION FAILED (2 errors)
+VALIDATION FAILED (2 core errors + 0 engine errors + 0 engine warnings)
 ```
 
 ### Checks Performed
@@ -85,6 +97,20 @@ VALIDATION FAILED (2 errors)
 | **Output & Behavior** | Prints all errors before exiting; exit code 0 on success, 1 on failure; `--strict` treats warnings as errors; `--json` emits machine-friendly output. |
 
 Failures are reported with human-friendly descriptions, and the process exits
-with status 1. All bundled catalogs (under
-`service/src/main/resources/builtins/`) are validated automatically during
+with status 1. The footer now reports core vs engine counts (for example:
+`VALIDATION FAILED (0 core errors + 11 engine errors + 0 engine warnings)`),
+and the JSON payload contains `engine_issues`, `engine_error_count`, and
+`engine_warning_count` when the engine extension path runs. All bundled catalogs
+(under `service/src/main/resources/builtins/`) are validated automatically during
 `mvn test`.
+
+### Engine-specific validation
+
+Passing `--engine <engine_kind>` (with or without a catalog path) loads the
+corresponding `EngineSystemCatalogExtension` via `ServiceLoader`. After the
+builtin catalog checks complete, the tool invokes the extension’s `validate`
+hook and returns any issues it emits alongside the core errors/warnings. Those
+issues appear in the console as `engine_issues` (with severity-aware coloring)
+and in JSON fields `engine_error_count`/`engine_warning_count`, letting you gate
+release pipelines on both core and engine-specific expectations from one CLI
+command.

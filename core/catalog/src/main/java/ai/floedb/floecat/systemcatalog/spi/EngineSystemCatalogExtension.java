@@ -19,6 +19,8 @@ package ai.floedb.floecat.systemcatalog.spi;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
+import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -40,6 +42,11 @@ public interface EngineSystemCatalogExtension extends SystemObjectScannerProvide
    */
   default void onLoadError(Exception e) {
     // default: no-op
+  }
+
+  /** Optional extension-specific validation that runs as soon as the catalog is loaded. */
+  default List<ValidationIssue> validate(SystemCatalogData catalog) {
+    return List.of();
   }
 
   /** Optional decorator for engine metadata sinks. */

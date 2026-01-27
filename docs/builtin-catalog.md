@@ -192,14 +192,33 @@ Located in `extensions/plugins/floedb/src/main/java/`, provides shared logic:
   - `FloeCatalogExtension.FloeDb` – "floedb" engine
   - `FloeCatalogExtension.FloeDemo` – "floe-demo" engine (test/demo)
 
-Both load from `builtins/{engineKind}.pbtxt` resources by default.
+These extensions now load from `builtins/{engineKind}/` directories. Each directory exposes
+an `_index.txt` that lists the pbtxt fragments to merge; fragments are merged in the order listed in `_index.txt`
+and typically focus on one repeated field (types, functions, operators, etc.).
 
 ### Resource Files
 
 Located in `extensions/plugins/floedb/src/main/resources/builtins/`:
 
-- **`floedb.pbtxt`** – Full production catalog
-- **`floe-demo.pbtxt`** – Filtered/demo catalog for testing
+- **`floedb/`** – Production directory (`_index.txt` plus `00_registry.pbtxt`, `10_types.pbtxt`, …)
+- **`floe-demo/`** – Fragmented demo catalog (same layout as above, but with a smaller subset)
+
+```
+resources/
+  builtins/
+    floedb/
+      _index.txt             # lists fragments in merge order
+      00_registry.pbtxt
+      10_types.pbtxt
+      20_functions.pbtxt
+      30_operators.pbtxt
+      40_casts.pbtxt
+      50_collations.pbtxt
+      60_aggregates.pbtxt
+```
+
+Each fragment independently defines just the repeated field it needs; the loader appends them to a
+single `SystemObjectsRegistry.Builder` before running `rewriteFloeExtensions()`.
 
 Format is human-readable protobuf text with embedded Floe-specific fields:
 
@@ -459,12 +478,12 @@ class FloeBuiltinExtensionTest {
   void floeDbLoadsAndValidates() {
     var extension = new FloeCatalogExtension.FloeDb();
     
-    // Load the floedb.pbtxt file
+    // Load the floedb catalog directory (`_index.txt` + fragments)
     SystemCatalogData catalog = extension.loadSystemCatalog();
     
     // Validate structural integrity
     var errors = SystemCatalogValidator.validate(catalog);
-    assert errors.isEmpty() : "floedb.pbtxt must pass validation, got: " + errors;
+    assert errors.isEmpty() : "floedb catalog must pass validation, got: " + errors;
   }
 
   @Test
