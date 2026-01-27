@@ -76,7 +76,6 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
             display,
             GraphNodeOrigin.USER,
             Map.of(),
-            Optional.empty(),
             Map.of());
 
     overlay.addNode(ns);

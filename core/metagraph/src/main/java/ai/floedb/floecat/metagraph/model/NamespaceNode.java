@@ -20,7 +20,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 /**
  * Immutable namespace node tracking hierarchy and optional children.
@@ -37,15 +36,12 @@ public record NamespaceNode(
     String displayName,
     GraphNodeOrigin origin,
     Map<String, String> properties,
-    Optional<List<ResourceId>> relationIds,
     Map<EngineHintKey, EngineHint> engineHints)
     implements GraphNode {
 
   public NamespaceNode {
     pathSegments = List.copyOf(pathSegments);
     properties = Map.copyOf(properties);
-    relationIds =
-        relationIds == null ? Optional.empty() : relationIds.map(list -> List.copyOf(list));
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
   }
 

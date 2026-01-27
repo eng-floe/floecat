@@ -107,6 +107,47 @@ class SystemObjectsValidatorCliTest {
     assertTrue(out.contains("ERROR"));
   }
 
+  @Test
+  void missingIndexFailsWithHelpfulMessage() throws Exception {
+    Path catalogDir = Files.createTempDirectory("builtin-index-missing");
+    catalogDir.toFile().deleteOnExit();
+    var stdout = new ByteArrayOutputStream();
+    var stderr = new ByteArrayOutputStream();
+
+    int exit =
+        new SystemObjectsValidatorCli()
+            .run(
+                new String[] {catalogDir.toString()},
+                new PrintStream(stdout),
+                new PrintStream(stderr));
+
+    assertEquals(1, exit);
+    String errors = stderr.toString(StandardCharsets.UTF_8);
+    assertTrue(errors.contains("Catalog index does not exist"));
+  }
+
+  @Test
+  void missingFragmentFailsWithHelpfulMessage() throws Exception {
+    Path catalogDir = Files.createTempDirectory("builtin-fragment-missing");
+    catalogDir.toFile().deleteOnExit();
+    Path index = catalogDir.resolve("_index.txt");
+    Files.writeString(index, "missing.pbtxt\n", StandardCharsets.UTF_8);
+    index.toFile().deleteOnExit();
+    var stdout = new ByteArrayOutputStream();
+    var stderr = new ByteArrayOutputStream();
+
+    int exit =
+        new SystemObjectsValidatorCli()
+            .run(
+                new String[] {catalogDir.toString()},
+                new PrintStream(stdout),
+                new PrintStream(stderr));
+
+    assertEquals(1, exit);
+    String errors = stderr.toString(StandardCharsets.UTF_8);
+    assertTrue(errors.contains("Catalog fragment does not exist"));
+  }
+
   private static Path writeBinaryCatalog(SystemObjectsRegistry catalog) throws IOException {
     Path tempFile = Files.createTempFile("builtin_catalog", ".pb");
     Files.write(tempFile, catalog.toByteArray());
@@ -280,6 +321,26 @@ class SystemObjectsValidatorCliTest {
     assertEquals(1, exit);
     String err = stderr.toString(StandardCharsets.UTF_8);
     assertTrue(err.contains("Catalog fragment does not exist"));
+  }
+
+  @Test
+  void invalidFragmentReportsParseError() throws Exception {
+    Path dir = Files.createTempDirectory("catalog-index-parse-error");
+    dir.toFile().deleteOnExit();
+    Path fragment = dir.resolve("broken.pbtxt");
+    Files.writeString(fragment, "invalid proto text", StandardCharsets.UTF_8);
+    writeIndex(dir, List.of("broken.pbtxt"));
+
+    var stdout = new ByteArrayOutputStream();
+    var stderr = new ByteArrayOutputStream();
+    int exit =
+        new SystemObjectsValidatorCli()
+            .run(new String[] {dir.toString()}, new PrintStream(stdout), new PrintStream(stderr));
+
+    assertEquals(1, exit);
+    String err = stderr.toString(StandardCharsets.UTF_8);
+    assertTrue(err.contains("Failed to parse catalog fragment"));
+    assertTrue(err.contains("broken.pbtxt"));
   }
 
   @Test

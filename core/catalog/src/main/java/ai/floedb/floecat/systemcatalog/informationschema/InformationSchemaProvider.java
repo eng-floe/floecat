@@ -17,13 +17,9 @@
 package ai.floedb.floecat.systemcatalog.informationschema;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.metagraph.model.TableBackendKind;
-import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
-import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
-import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -44,30 +40,7 @@ public final class InformationSchemaProvider implements SystemObjectScannerProvi
 
   @Override
   public List<SystemObjectDef> definitions() {
-    return List.of(
-        new SystemNamespaceDef(
-            NameRefUtil.name("information_schema"), "information_schema", List.of()),
-        new SystemTableDef(
-            NameRefUtil.name("information_schema", "tables"),
-            "tables",
-            TablesScanner.SCHEMA,
-            TableBackendKind.FLOECAT,
-            "tables_scanner",
-            List.of()),
-        new SystemTableDef(
-            NameRefUtil.name("information_schema", "columns"),
-            "columns",
-            ColumnsScanner.SCHEMA,
-            TableBackendKind.FLOECAT,
-            "columns_scanner",
-            List.of()),
-        new SystemTableDef(
-            NameRefUtil.name("information_schema", "schemata"),
-            "schemata",
-            SchemataScanner.SCHEMA,
-            TableBackendKind.FLOECAT,
-            "schemata_scanner",
-            List.of()));
+    return List.of();
   }
 
   @Override

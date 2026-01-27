@@ -22,13 +22,21 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.AggregateNode;
 import ai.floedb.floecat.metagraph.model.CastNode;
 import ai.floedb.floecat.metagraph.model.CollationNode;
+import ai.floedb.floecat.metagraph.model.EngineHint;
+import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
+import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.OperatorNode;
+import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
+import ai.floedb.floecat.metagraph.model.ViewNode;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCollationDef;
+import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
@@ -36,8 +44,10 @@ import ai.floedb.floecat.systemcatalog.def.SystemOperatorDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
+import ai.floedb.floecat.systemcatalog.engine.EngineHintsMapper;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificMatcher;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
@@ -45,14 +55,17 @@ import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import ai.floedb.floecat.systemcatalog.util.SystemSchemaMapper;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.stream.Collectors;
 import org.jboss.logging.Logger;
 
 /**
@@ -100,12 +113,20 @@ public class SystemNodeRegistry {
           "",
           "",
           "",
-          List.of(),
-          List.of(),
-          List.of(),
-          List.of(),
-          List.of(),
-          List.of(),
+          List.of(), // functions
+          List.of(), // operators
+          List.of(), // types
+          List.of(), // casts
+          List.of(), // collations
+          List.of(), // aggregates
+          List.of(), // namespaceNodes
+          List.of(), // tableNodes
+          List.of(), // viewNodes
+          Map.of(), // tablesByNamespace
+          Map.of(), // viewsByNamespace
+          Map.of(), // tableNames
+          Map.of(), // viewNames
+          Map.of(), // namespaceNames
           EMPTY_CATALOG);
 
   public List<String> engineKinds() {
@@ -130,6 +151,21 @@ public class SystemNodeRegistry {
     long version = versionFromFingerprint(catalog.fingerprint());
     String normalizedKind = canonical.normalizedKind();
     String normalizedVersion = canonical.normalizedVersion();
+    ResourceId catalogId = systemCatalogId(normalizedKind);
+
+    // --- Namespaces ---
+    List<SystemNamespaceDef> namespaceDefs =
+        catalog.namespaces().stream()
+            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
+            .map(def -> withNamespaceRules(def, normalizedKind, normalizedVersion))
+            .toList();
+
+    Map<String, ResourceId> namespaceIds =
+        namespaceDefs.stream()
+            .collect(
+                Collectors.toUnmodifiableMap(
+                    ns -> NameRefUtil.canonical(ns.name()),
+                    ns -> resourceId(normalizedKind, ResourceKind.RK_NAMESPACE, ns.name())));
 
     // --- Functions ---
     List<SystemFunctionDef> functionDefs =
@@ -138,7 +174,9 @@ public class SystemNodeRegistry {
             .map(def -> withFunctionRules(def, normalizedKind, normalizedVersion))
             .toList();
     List<FunctionNode> functionNodes =
-        functionDefs.stream().map(def -> toFunctionNode(normalizedKind, version, def)).toList();
+        functionDefs.stream()
+            .map(def -> toFunctionNode(normalizedKind, version, def, namespaceIds))
+            .toList();
 
     // --- Operators ---
     List<SystemOperatorDef> operatorDefs =
@@ -185,13 +223,6 @@ public class SystemNodeRegistry {
     List<AggregateNode> aggregateNodes =
         aggregateDefs.stream().map(def -> toAggregateNode(normalizedKind, version, def)).toList();
 
-    // --- Namespaces ---
-    List<SystemNamespaceDef> namespaceDefs =
-        catalog.namespaces().stream()
-            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
-            .map(def -> withNamespaceRules(def, normalizedKind, normalizedVersion))
-            .toList();
-
     // --- Tables ---
     List<SystemTableDef> tableDefs =
         catalog.tables().stream()
@@ -206,6 +237,139 @@ public class SystemNodeRegistry {
             .map(def -> withViewRules(def, normalizedKind, normalizedVersion))
             .toList();
 
+    Map<ResourceId, List<TableNode>> tablesByNamespace = new LinkedHashMap<>();
+    Map<ResourceId, List<ViewNode>> viewsByNamespace = new LinkedHashMap<>();
+    List<SystemTableNode> tableNodes = new ArrayList<>();
+    List<ViewNode> viewNodes = new ArrayList<>();
+    List<NamespaceNode> namespaceNodes = new ArrayList<>();
+    Map<String, ResourceId> tableNames = new LinkedHashMap<>();
+    Map<String, ResourceId> viewNames = new LinkedHashMap<>();
+    Map<String, ResourceId> namespaceNames = new LinkedHashMap<>();
+
+    for (SystemTableDef table : tableDefs) {
+      Optional<ResourceId> namespaceId = findNamespaceId(table.name(), namespaceIds);
+      if (namespaceId.isEmpty()) {
+        logMissingNamespace("table", table.name());
+        continue;
+      }
+      ResourceId tableId = resourceId(normalizedKind, ResourceKind.RK_TABLE, table.name());
+      Map<String, Map<EngineHintKey, EngineHint>> columnHints =
+          buildColumnHints(table.columns(), normalizedKind, normalizedVersion);
+      List<SchemaColumn> tableColumns = SystemSchemaMapper.toSchemaColumns(table.columns());
+      Map<EngineHintKey, EngineHint> tableHints =
+          EngineHintsMapper.toHints(normalizedKind, normalizedVersion, table.engineSpecific());
+      SystemTableNode node;
+      switch (table.backendKind()) {
+        case TABLE_BACKEND_KIND_FLOECAT ->
+            node =
+                new SystemTableNode.FloeCatSystemTableNode(
+                    tableId,
+                    version,
+                    Instant.EPOCH,
+                    normalizedVersion,
+                    table.displayName(),
+                    namespaceId.get(),
+                    tableColumns,
+                    columnHints,
+                    tableHints,
+                    table.scannerId());
+        case TABLE_BACKEND_KIND_STORAGE ->
+            node =
+                new SystemTableNode.StorageSystemTableNode(
+                    tableId,
+                    version,
+                    Instant.EPOCH,
+                    normalizedVersion,
+                    table.displayName(),
+                    namespaceId.get(),
+                    tableColumns,
+                    columnHints,
+                    tableHints,
+                    table.storagePath());
+        case TABLE_BACKEND_KIND_ENGINE ->
+            node =
+                new SystemTableNode.EngineSystemTableNode(
+                    tableId,
+                    version,
+                    Instant.EPOCH,
+                    normalizedVersion,
+                    table.displayName(),
+                    namespaceId.get(),
+                    tableColumns,
+                    columnHints,
+                    tableHints,
+                    table.engineLabel());
+        default ->
+            node =
+                new SystemTableNode.GenericSystemTableNode(
+                    tableId,
+                    version,
+                    Instant.EPOCH,
+                    normalizedVersion,
+                    table.displayName(),
+                    namespaceId.get(),
+                    tableColumns,
+                    columnHints,
+                    tableHints,
+                    table.backendKind());
+      }
+      tableNodes.add(node);
+      tablesByNamespace.computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>()).add(node);
+      tableNames.put(NameRefUtil.canonical(table.name()), tableId);
+    }
+
+    for (SystemViewDef view : viewDefs) {
+      Optional<ResourceId> namespaceId = findNamespaceId(view.name(), namespaceIds);
+      if (namespaceId.isEmpty()) {
+        logMissingNamespace("view", view.name());
+        continue;
+      }
+      ResourceId viewId = resourceId(normalizedKind, ResourceKind.RK_VIEW, view.name());
+      List<SchemaColumn> viewColumns = SystemSchemaMapper.toSchemaColumns(view.columns());
+      Map<EngineHintKey, EngineHint> viewHints =
+          EngineHintsMapper.toHints(normalizedKind, normalizedVersion, view.engineSpecific());
+      ViewNode node =
+          new ViewNode(
+              viewId,
+              version,
+              Instant.EPOCH,
+              catalogId,
+              namespaceId.get(),
+              view.displayName(),
+              view.sql(),
+              view.dialect(),
+              viewColumns,
+              List.of(),
+              List.of(),
+              Map.of(),
+              Optional.empty(),
+              viewHints);
+      viewNodes.add(node);
+      viewsByNamespace.computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>()).add(node);
+      viewNames.put(NameRefUtil.canonical(view.name()), viewId);
+    }
+
+    for (SystemNamespaceDef ns : namespaceDefs) {
+      ResourceId namespaceId = resourceId(normalizedKind, ResourceKind.RK_NAMESPACE, ns.name());
+      Map<EngineHintKey, EngineHint> namespaceHints =
+          EngineHintsMapper.toHints(normalizedKind, normalizedVersion, ns.engineSpecific());
+      NamespaceNode node =
+          new NamespaceNode(
+              namespaceId,
+              version,
+              Instant.EPOCH,
+              catalogId,
+              List.copyOf(ns.name().getPathList()),
+              ns.displayName(),
+              GraphNodeOrigin.SYSTEM,
+              Map.of(),
+              namespaceHints);
+      namespaceNodes.add(node);
+      namespaceNames.put(NameRefUtil.canonical(ns.name()), namespaceId);
+      tablesByNamespace.computeIfAbsent(namespaceId, ignored -> List.of());
+      viewsByNamespace.computeIfAbsent(namespaceId, ignored -> List.of());
+    }
+
     return new BuiltinNodes(
         normalizedKind,
         normalizedVersion,
@@ -216,6 +380,14 @@ public class SystemNodeRegistry {
         castNodes,
         collationNodes,
         aggregateNodes,
+        namespaceNodes,
+        tableNodes,
+        viewNodes,
+        freezeNamespaceMap(tablesByNamespace),
+        freezeNamespaceMap(viewsByNamespace),
+        tableNames,
+        viewNames,
+        namespaceNames,
         new SystemCatalogData(
             functionDefs,
             operatorDefs,
@@ -414,7 +586,14 @@ public class SystemNodeRegistry {
         matchingRules(def.engineSpecific(), engineKind, engineVersion);
 
     return new SystemTableDef(
-        def.name(), def.displayName(), def.columns(), def.backendKind(), def.scannerId(), matched);
+        def.name(),
+        def.displayName(),
+        def.columns(),
+        def.backendKind(),
+        def.scannerId(),
+        def.storagePath(),
+        def.engineLabel(),
+        matched);
   }
 
   private SystemViewDef withViewRules(SystemViewDef def, String engineKind, String engineVersion) {
@@ -430,13 +609,20 @@ public class SystemNodeRegistry {
   // Node Builders
   // =======================================================================
 
-  private FunctionNode toFunctionNode(String engineKind, long version, SystemFunctionDef def) {
+  private FunctionNode toFunctionNode(
+      String engineKind,
+      long version,
+      SystemFunctionDef def,
+      Map<String, ResourceId> namespaceIds) {
+
+    ResourceId nsId = findNamespaceId(def.name(), namespaceIds).orElse(null);
 
     return new FunctionNode(
         resourceId(engineKind, ResourceKind.RK_FUNCTION, def.name()),
         version,
         Instant.EPOCH,
         engineKind,
+        nsId,
         safeName(def.name()),
         def.argumentTypes().stream()
             .map(arg -> resourceId(engineKind, ResourceKind.RK_TYPE, arg))
@@ -660,6 +846,80 @@ public class SystemNodeRegistry {
     }
   }
 
+  private static Map<String, Map<EngineHintKey, EngineHint>> buildColumnHints(
+      List<SystemColumnDef> columns, String engineKind, String engineVersion) {
+    if (columns == null || columns.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, Map<EngineHintKey, EngineHint>> hints = new LinkedHashMap<>();
+    for (SystemColumnDef column : columns) {
+      Map<EngineHintKey, EngineHint> columnHints =
+          EngineHintsMapper.toHints(engineKind, engineVersion, column.engineSpecific());
+      if (!columnHints.isEmpty()) {
+        hints.put(column.name(), columnHints);
+      }
+    }
+    return hints.isEmpty() ? Map.of() : hints;
+  }
+
+  private static Optional<ResourceId> findNamespaceId(
+      NameRef name, Map<String, ResourceId> namespaceIds) {
+    if (name == null) {
+      return Optional.empty();
+    }
+    String canonical = NameRefUtil.canonical(name);
+    int idx = canonical.lastIndexOf('.');
+    if (idx < 0) {
+      return Optional.empty();
+    }
+    String namespaceKey = canonical.substring(0, idx);
+    if (namespaceKey.isBlank()) {
+      return Optional.empty();
+    }
+    return Optional.ofNullable(namespaceIds.get(namespaceKey));
+  }
+
+  private static void logMissingNamespace(String objectType, NameRef name) {
+    String canonical = name == null ? "<unknown>" : NameRefUtil.canonical(name);
+    String namespaceKey = "";
+    if (canonical != null) {
+      int dot = canonical.lastIndexOf('.');
+      if (dot > 0) {
+        namespaceKey = canonical.substring(0, dot);
+      }
+    }
+    if (namespaceKey.isBlank()) {
+      namespaceKey = "<root>";
+    }
+    LOG.warnf(
+        "Skipping system %s %s because namespace %s is missing",
+        objectType, canonical, namespaceKey);
+  }
+
+  private static ResourceId systemCatalogId(String engineKind) {
+    String id =
+        (engineKind == null || engineKind.isBlank())
+            ? EngineCatalogNames.FLOECAT_DEFAULT_CATALOG
+            : engineKind;
+    return ResourceId.newBuilder()
+        .setAccountId(SYSTEM_ACCOUNT)
+        .setKind(ResourceKind.RK_CATALOG)
+        .setId(id)
+        .build();
+  }
+
+  private static <T extends GraphNode> Map<ResourceId, List<T>> freezeNamespaceMap(
+      Map<ResourceId, List<T>> map) {
+    if (map == null || map.isEmpty()) {
+      return Map.of();
+    }
+    Map<ResourceId, List<T>> frozen = new LinkedHashMap<>();
+    for (Map.Entry<ResourceId, List<T>> entry : map.entrySet()) {
+      frozen.put(entry.getKey(), List.copyOf(entry.getValue()));
+    }
+    return Map.copyOf(frozen);
+  }
+
   public record BuiltinNodes(
       String engineKind,
       String engineVersion,
@@ -670,6 +930,14 @@ public class SystemNodeRegistry {
       List<CastNode> casts,
       List<CollationNode> collations,
       List<AggregateNode> aggregates,
+      List<NamespaceNode> namespaceNodes,
+      List<SystemTableNode> tableNodes,
+      List<ViewNode> viewNodes,
+      Map<ResourceId, List<TableNode>> tablesByNamespace,
+      Map<ResourceId, List<ViewNode>> viewsByNamespace,
+      Map<String, ResourceId> tableNames,
+      Map<String, ResourceId> viewNames,
+      Map<String, ResourceId> namespaceNames,
       SystemCatalogData catalogData) {
 
     public BuiltinNodes {
@@ -679,6 +947,14 @@ public class SystemNodeRegistry {
       casts = List.copyOf(casts);
       collations = List.copyOf(collations);
       aggregates = List.copyOf(aggregates);
+      namespaceNodes = List.copyOf(namespaceNodes);
+      tableNodes = List.copyOf(tableNodes);
+      viewNodes = List.copyOf(viewNodes);
+      tablesByNamespace = tablesByNamespace == null ? Map.of() : tablesByNamespace;
+      viewsByNamespace = viewsByNamespace == null ? Map.of() : viewsByNamespace;
+      tableNames = Map.copyOf(tableNames);
+      viewNames = Map.copyOf(viewNames);
+      namespaceNames = Map.copyOf(namespaceNames);
       catalogData = Objects.requireNonNull(catalogData);
     }
 

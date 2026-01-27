@@ -233,7 +233,6 @@ class SystemObjectScanContextTest {
             "n",
             GraphNodeOrigin.USER,
             Map.of(), // properties
-            Optional.empty(), // relationIds
             Map.of()); // engineHints
 
     TestCatalogOverlay view = new TestCatalogOverlay();

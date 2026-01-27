@@ -121,7 +121,7 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
       String rawText = loadResourceText(resourcePath);
       SystemObjectsRegistry.Builder tmp = SystemObjectsRegistry.newBuilder();
       mergeTextIntoBuilder(rawText, resourcePath, parser, extensionRegistry, tmp);
-      SystemObjectsRegistryMerger.append(accumulator, tmp.build());
+      SystemObjectsRegistryMerger.append(accumulator, tmp);
     }
 
     return accumulator.build();

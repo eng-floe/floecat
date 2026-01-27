@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.metagraph.model.TableBackendKind;
+import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.systemcatalog.def.*;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -101,7 +101,12 @@ final class SystemEngineCatalogTest {
   void table_lookupByCanonicalName() {
     SystemTableDef table =
         new SystemTableDef(
-            name("orders"), "orders", List.of(), TableBackendKind.FLOECAT, "scanner", List.of());
+            name("orders"),
+            "orders",
+            List.<SystemColumnDef>of(),
+            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            "scanner",
+            List.of());
 
     SystemCatalogData data =
         new SystemCatalogData(

@@ -29,6 +29,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
@@ -64,6 +65,8 @@ final class PgClassScannerTest {
     TableNode table =
         table(
             "my_table",
+            List.of(),
+            Map.of(),
             Map.of(
                 new EngineHintKey("floedb", "1.0", FloePayloads.RELATION.type()),
                 new EngineHint(
@@ -92,7 +95,7 @@ final class PgClassScannerTest {
   @Test
   void scan_fallsBack_whenPayloadMissing() {
 
-    TableNode table = table("no_payload", Map.of());
+    TableNode table = table("no_payload", List.of(), Map.of(), Map.of());
 
     SystemObjectScanContext ctx = contextWith(table);
 
@@ -122,7 +125,7 @@ final class PgClassScannerTest {
   @Test
   void scan_oidFallback_isStable() {
 
-    TableNode table = table("stable_oid", Map.of());
+    TableNode table = table("stable_oid", List.of(), Map.of(), Map.of());
 
     SystemObjectScanContext ctx = contextWith(table);
 
@@ -150,7 +153,6 @@ final class PgClassScannerTest {
         "pg_catalog",
         GraphNodeOrigin.SYSTEM,
         Map.of(),
-        Optional.empty(),
         Map.of());
   }
 
@@ -167,7 +169,11 @@ final class PgClassScannerTest {
     return new SystemObjectScanContext(overlay, null, catalogId(), ENGINE_CTX);
   }
 
-  private static TableNode table(String name, Map<EngineHintKey, EngineHint> hints) {
+  private static TableNode table(
+      String name,
+      List<SchemaColumn> columns,
+      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<EngineHintKey, EngineHint> hints) {
 
     ResourceId id =
         ResourceId.newBuilder()
@@ -176,16 +182,17 @@ final class PgClassScannerTest {
             .setId("pg:" + name)
             .build();
 
-    return new SystemTableNode(
+    return new SystemTableNode.FloeCatSystemTableNode(
         id,
         1,
         Instant.EPOCH,
         "15",
         name,
         pgCatalogNamespace().id(),
-        List.of(),
-        "scanner_id",
-        hints);
+        columns,
+        columnHints,
+        hints,
+        "scanner_id");
   }
 
   private static ViewNode view(String name, Map<EngineHintKey, EngineHint> hints) {

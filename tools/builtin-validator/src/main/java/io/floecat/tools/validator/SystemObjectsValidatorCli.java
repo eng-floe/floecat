@@ -423,7 +423,7 @@ public final class SystemObjectsValidatorCli {
         throw new IOException("Failed to parse catalog fragment: " + fragmentPath, parseFailure);
       }
 
-      SystemObjectsRegistryMerger.append(builder, fragmentBuilder.build());
+      SystemObjectsRegistryMerger.append(builder, fragmentBuilder);
     }
 
     return SystemCatalogProtoMapper.fromProto(builder.build(), inferEngineKindFromDirectory(dir));

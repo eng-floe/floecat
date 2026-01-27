@@ -24,11 +24,15 @@ import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
+import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
+import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -71,7 +75,21 @@ public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemO
   }
 
   private SystemObjectsRegistry fetchSystemObjects(EngineContext ctx) {
-    var nodes = nodeRegistry.nodesFor(ctx);
-    return SystemCatalogProtoMapper.toProto(nodes.toCatalogData());
+    BuiltinNodes nodes = nodeRegistry.nodesFor(ctx);
+    return SystemCatalogProtoMapper.toProto(sanitize(nodes.toCatalogData()));
+  }
+
+  private static SystemCatalogData sanitize(SystemCatalogData data) {
+    return new SystemCatalogData(
+        data.functions(),
+        data.operators(),
+        data.types(),
+        data.casts(),
+        data.collations(),
+        data.aggregates(),
+        List.of(),
+        List.of(),
+        List.of(),
+        data.registryEngineSpecific());
   }
 }

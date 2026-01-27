@@ -102,6 +102,8 @@ final class PgAttributeScannerTest {
     TableNode table =
         table(
             "t",
+            List.of(),
+            Map.of(),
             Map.of(
                 new EngineHintKey(
                     ENGINE.engineKind(), ENGINE.engineVersion(), FloePayloads.RELATION.type()),
@@ -165,7 +167,7 @@ final class PgAttributeScannerTest {
 
     TypeNode int4 =
         typeNode(NameRef.newBuilder().addPath("pg_catalog").setName("int4").build(), Map.of());
-    TableNode table = table("t", Map.of());
+    TableNode table = table("t", List.of(), Map.of(), Map.of());
 
     List<SchemaColumn> schema =
         List.of(
@@ -232,7 +234,6 @@ final class PgAttributeScannerTest {
             "pg_catalog",
             GraphNodeOrigin.SYSTEM,
             Map.of(),
-            Optional.empty(),
             Map.of());
 
     overlay.addNode(pg);
@@ -265,21 +266,28 @@ final class PgAttributeScannerTest {
         hints);
   }
 
-  private static TableNode table(String name, Map<EngineHintKey, EngineHint> hints) {
-    return new SystemTableNode(
+  private static TableNode table(
+      String name,
+      List<SchemaColumn> columns,
+      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<EngineHintKey, EngineHint> hints) {
+    ResourceId id =
         ResourceId.newBuilder()
             .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(ResourceKind.RK_TABLE)
             .setId("pg:" + name)
-            .build(),
+            .build();
+    return new SystemTableNode.FloeCatSystemTableNode(
+        id,
         1,
         Instant.EPOCH,
         "15",
         name,
         pgCatalogNamespace().id(),
-        List.of(),
-        "scanner",
-        hints);
+        columns,
+        columnHints,
+        hints,
+        "scanner");
   }
 
   private static NamespaceNode pgCatalogNamespace() {
@@ -296,7 +304,6 @@ final class PgAttributeScannerTest {
         "pg_catalog",
         GraphNodeOrigin.SYSTEM,
         Map.of(),
-        Optional.empty(),
         Map.of());
   }
 

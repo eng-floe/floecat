@@ -197,7 +197,9 @@ shares the same `QueryContext` as the other query RPCs and relies on `CatalogOve
 and view definitions without issuing a second RPC batch.
 Resolved tables/views also go through `QueryInputResolver` so their snapshot pins are merged into
 `QueryContext` before the response hits the planner—`FetchScanBundle` can therefore find the same
-pins later in the lifecycle. Builtins remain behind `GetSystemObjects`.
+pins later in the lifecycle. Builtins remain behind `GetSystemObjects`; the `information_schema`/`pg_catalog`
+relations are materialized in the engine-specific overlays for `_system` scans but do not appear in the RPC
+response to avoid exposing synthetic tables twice.
 
 ## Metrics
 The graph surfaces a couple of Micrometer gauges so operators can verify cache state at runtime:

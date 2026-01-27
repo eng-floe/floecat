@@ -23,11 +23,13 @@ import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
+import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @ApplicationScoped
 public final class SystemScannerResolver {
@@ -38,17 +40,15 @@ public final class SystemScannerResolver {
 
   public SystemObjectScanner resolve(String correlationId, ResourceId tableId) {
 
+    Optional<SystemTableNode.FloeCatSystemTableNode> nodeOptional =
+        resolveSystemTable(graph, tableId);
     var node =
-        graph
-            .resolve(tableId)
-            .filter(SystemTableNode.class::isInstance)
-            .map(SystemTableNode.class::cast)
-            .orElseThrow(
-                () ->
-                    GrpcErrors.invalidArgument(
-                        correlationId,
-                        "system.scan.not_system_table",
-                        Map.of("table_id", tableId.getId())));
+        nodeOptional.orElseThrow(
+            () ->
+                GrpcErrors.invalidArgument(
+                    correlationId,
+                    "system.scan.not_system_table",
+                    Map.of("table_id", tableId.getId())));
 
     String scannerId = node.scannerId();
     if (scannerId == null || scannerId.isBlank()) {
@@ -77,5 +77,33 @@ public final class SystemScannerResolver {
         "system.scan.scanner_not_found",
         Map.of(
             "scanner_id", scannerId, "engine_kind", engineKind, "engine_version", engineVersion));
+  }
+
+  private Optional<SystemTableNode.FloeCatSystemTableNode> resolveSystemTable(
+      CatalogOverlay graph, ResourceId tableId) {
+    Optional<SystemTableNode.FloeCatSystemTableNode> node =
+        graph
+            .resolve(tableId)
+            .filter(SystemTableNode.FloeCatSystemTableNode.class::isInstance)
+            .map(SystemTableNode.FloeCatSystemTableNode.class::cast);
+    if (node.isPresent() || tableId == null || tableId.getId() == null) {
+      return node;
+    }
+    String idPart = tableId.getId();
+    int colon = idPart.indexOf(':');
+    String suffix = colon < 0 ? idPart : idPart.substring(colon + 1);
+    if (suffix.isBlank()) {
+      return node;
+    }
+    ResourceId fallback =
+        ResourceId.newBuilder()
+            .setAccountId(tableId.getAccountId())
+            .setKind(tableId.getKind())
+            .setId(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG + ":" + suffix)
+            .build();
+    return graph
+        .resolve(fallback)
+        .filter(SystemTableNode.FloeCatSystemTableNode.class::isInstance)
+        .map(SystemTableNode.FloeCatSystemTableNode.class::cast);
   }
 }

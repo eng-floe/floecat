@@ -17,35 +17,35 @@
 package ai.floedb.floecat.systemcatalog.def;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import java.util.List;
 import java.util.Objects;
 
-public record SystemViewDef(
-    NameRef name,
-    String displayName,
-    String sql,
-    String dialect,
-    List<SystemColumnDef> outputColumns,
-    List<EngineSpecificRule> engineSpecific)
-    implements SystemObjectDef {
+/** Declarative metadata for a column inside a builtin relation. */
+public record SystemColumnDef(
+    String name,
+    NameRef type,
+    boolean nullable,
+    int ordinal,
+    Long id,
+    List<EngineSpecificRule> engineSpecific) {
 
-  public SystemViewDef {
-    name = Objects.requireNonNull(name, "name");
-    displayName = displayName == null ? "" : displayName;
-    sql = sql == null ? "" : sql;
-    dialect = dialect == null ? "" : dialect;
-    outputColumns = List.copyOf(outputColumns);
+  public SystemColumnDef {
+    name = Objects.requireNonNull(name, "name").trim();
+    type = Objects.requireNonNull(type, "type");
+    if (name.isBlank()) {
+      throw new IllegalArgumentException("name must not be blank");
+    }
+    if (ordinal <= 0) {
+      throw new IllegalArgumentException("ordinal must be 1-based and positive");
+    }
+    if (id != null && id <= 0) {
+      throw new IllegalArgumentException("id must be positive when provided");
+    }
     engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
   }
 
-  public List<SystemColumnDef> columns() {
-    return outputColumns;
-  }
-
-  @Override
-  public ResourceKind kind() {
-    return ResourceKind.RK_VIEW;
+  public boolean hasId() {
+    return id != null;
   }
 }

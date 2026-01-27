@@ -25,6 +25,7 @@ import ai.floedb.floecat.systemcatalog.provider.StaticSystemCatalogProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
@@ -69,11 +70,27 @@ public final class BuiltinTestSupport {
             engine, ResourceKind.RK_TYPE, NameRef.newBuilder().setName(retType).build());
 
     NameRef fn = nr(fullname);
+    String namespaceCanonical = NameRefUtil.namespaceFromCanonical(NameRefUtil.canonical(fn));
+    ResourceId namespaceId =
+        namespaceCanonical.isEmpty()
+            ? null
+            : SystemNodeRegistry.resourceId(
+                engine, ResourceKind.RK_NAMESPACE, NameRefUtil.fromCanonical(namespaceCanonical));
 
     ResourceId fnId = SystemNodeRegistry.resourceId(engine, ResourceKind.RK_FUNCTION, fn);
 
     return new FunctionNode(
-        fnId, 1L, Instant.EPOCH, "16.0", fullname, argIds, retId, false, false, Map.of());
+        fnId,
+        1L,
+        Instant.EPOCH,
+        "16.0",
+        namespaceId,
+        fullname,
+        argIds,
+        retId,
+        false,
+        false,
+        Map.of());
   }
 
   // --- Build operator nodes -----------------------------------------------

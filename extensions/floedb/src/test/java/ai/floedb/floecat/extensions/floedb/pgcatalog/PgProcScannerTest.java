@@ -34,7 +34,6 @@ import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -164,7 +163,6 @@ final class PgProcScannerTest {
             "pg_catalog",
             GraphNodeOrigin.SYSTEM,
             Map.of(),
-            Optional.empty(),
             Map.of());
 
     FunctionNode int4Abs =
@@ -173,6 +171,7 @@ final class PgProcScannerTest {
             1,
             Instant.EPOCH,
             "15",
+            namespaceId,
             "int4_abs",
             List.of(),
             null,
@@ -195,6 +194,7 @@ final class PgProcScannerTest {
             1,
             Instant.EPOCH,
             "15",
+            namespaceId,
             "text_length",
             List.of(),
             null,
@@ -208,6 +208,7 @@ final class PgProcScannerTest {
             1,
             Instant.EPOCH,
             "15",
+            namespaceId,
             "sum_int4_state",
             List.of(),
             null,
@@ -244,7 +245,6 @@ final class PgProcScannerTest {
             "pg_catalog",
             GraphNodeOrigin.SYSTEM,
             Map.of(),
-            Optional.empty(),
             Map.of());
 
     FunctionNode int4Abs =
@@ -253,6 +253,7 @@ final class PgProcScannerTest {
             1,
             Instant.EPOCH,
             "15",
+            namespaceId,
             "int4_abs",
             List.of(),
             null,
@@ -275,6 +276,7 @@ final class PgProcScannerTest {
             1,
             Instant.EPOCH,
             "15",
+            namespaceId,
             "text_length",
             List.of(),
             null,
@@ -288,6 +290,7 @@ final class PgProcScannerTest {
             1,
             Instant.EPOCH,
             "15",
+            namespaceId,
             "sum_int4_state",
             List.of(),
             null,
@@ -301,6 +304,7 @@ final class PgProcScannerTest {
             1,
             Instant.EPOCH,
             "15",
+            namespaceId,
             "my_window_fn",
             List.of(),
             null,

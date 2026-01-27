@@ -22,13 +22,16 @@ public final class SystemObjectsRegistryMerger {
   private SystemObjectsRegistryMerger() {}
 
   public static void append(
-      SystemObjectsRegistry.Builder accumulator, SystemObjectsRegistry parsed) {
+      SystemObjectsRegistry.Builder accumulator, SystemObjectsRegistry.Builder parsed) {
     accumulator.addAllFunctions(parsed.getFunctionsList());
     accumulator.addAllOperators(parsed.getOperatorsList());
     accumulator.addAllTypes(parsed.getTypesList());
     accumulator.addAllCasts(parsed.getCastsList());
     accumulator.addAllCollations(parsed.getCollationsList());
     accumulator.addAllAggregates(parsed.getAggregatesList());
+    accumulator.addAllSystemNamespaces(parsed.getSystemNamespacesList());
+    accumulator.addAllSystemTables(parsed.getSystemTablesList());
+    accumulator.addAllSystemViews(parsed.getSystemViewsList());
     accumulator.addAllEngineSpecific(parsed.getEngineSpecificList());
   }
 }

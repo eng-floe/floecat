@@ -28,7 +28,6 @@ import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 /** Test builder for function-based scanners (pg_catalog.pg_proc, aggregates, operators). */
 public final class TestFunctionScanContextBuilder extends AbstractTestScanContextBuilder {
@@ -64,7 +63,6 @@ public final class TestFunctionScanContextBuilder extends AbstractTestScanContex
             name,
             GraphNodeOrigin.SYSTEM,
             Map.of(),
-            Optional.empty(),
             Map.of());
 
     // Make it discoverable via overlay.listNamespaces()
@@ -89,6 +87,7 @@ public final class TestFunctionScanContextBuilder extends AbstractTestScanContex
             1,
             Instant.EPOCH,
             "15",
+            ns.id(),
             name,
             List.of(),
             null,
