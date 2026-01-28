@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.common;
 
+import ai.floedb.floecat.common.rpc.Error;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -29,11 +31,13 @@ import ai.floedb.floecat.storage.errors.StorageConflictException;
 import ai.floedb.floecat.storage.errors.StorageCorruptionException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.errors.StoragePreconditionFailedException;
+import com.google.protobuf.Any;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.protobuf.StatusProto;
 import io.smallrye.mutiny.Uni;
 import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.inject.Inject;
@@ -107,7 +111,11 @@ public abstract class BaseServiceImpl {
 
   protected StatusRuntimeException toStatus(Throwable t, String corrId) {
     if (t instanceof StatusRuntimeException sre) {
-      return sre;
+      if (containsFloecatError(sre)) {
+        return sre;
+      }
+      return GrpcErrors.build(
+          sre.getStatus(), errorCodeForStatus(sre.getStatus()), corrId, null, null, t);
     }
 
     if (t instanceof BaseResourceRepository.NameConflictException
@@ -415,6 +423,48 @@ public abstract class BaseServiceImpl {
       }
     }
     return out;
+  }
+
+  private static boolean containsFloecatError(StatusRuntimeException ex) {
+    var statusProto = StatusProto.fromThrowable(ex);
+    if (statusProto == null) {
+      return false;
+    }
+    for (Any detail : statusProto.getDetailsList()) {
+      if (detail.is(Error.class)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static ErrorCode errorCodeForStatus(io.grpc.Status status) {
+    switch (status.getCode()) {
+      case INVALID_ARGUMENT:
+        return ErrorCode.MC_INVALID_ARGUMENT;
+      case NOT_FOUND:
+        return ErrorCode.MC_NOT_FOUND;
+      case FAILED_PRECONDITION:
+        return ErrorCode.MC_PRECONDITION_FAILED;
+      case ALREADY_EXISTS:
+        return ErrorCode.MC_CONFLICT;
+      case PERMISSION_DENIED:
+        return ErrorCode.MC_PERMISSION_DENIED;
+      case UNAUTHENTICATED:
+        return ErrorCode.MC_UNAUTHENTICATED;
+      case RESOURCE_EXHAUSTED:
+        return ErrorCode.MC_RATE_LIMITED;
+      case UNAVAILABLE:
+        return ErrorCode.MC_UNAVAILABLE;
+      case DEADLINE_EXCEEDED:
+        return ErrorCode.MC_TIMEOUT;
+      case CANCELLED:
+        return ErrorCode.MC_CANCELLED;
+      case ABORTED:
+        return ErrorCode.MC_ABORT_RETRYABLE;
+      default:
+        return ErrorCode.MC_INTERNAL;
+    }
   }
 
   protected static String nullSafeId(ai.floedb.floecat.common.rpc.ResourceId rid) {

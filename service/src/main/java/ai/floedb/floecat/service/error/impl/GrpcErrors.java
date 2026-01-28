@@ -21,11 +21,17 @@ import static java.util.Objects.requireNonNullElse;
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import com.google.protobuf.Any;
+import com.google.rpc.BadRequest;
+import com.google.rpc.DebugInfo;
+import com.google.rpc.ErrorInfo;
 import com.google.rpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
+import java.util.MissingResourceException;
+import org.eclipse.microprofile.config.ConfigProvider;
 
 public final class GrpcErrors {
 
@@ -200,26 +206,7 @@ public final class GrpcErrors {
     }
 
     if (messageKey == null || messageKey.isBlank()) {
-      if (t != null) {
-        Throwable root = t;
-        while (root.getCause() != null && root.getCause() != root) {
-          root = root.getCause();
-        }
-        p.put("error_class", t.getClass().getName());
-        p.put("root_class", root.getClass().getName());
-        p.put("cause", root.getClass().getSimpleName());
-        String m = root.getMessage();
-        if (m != null && !m.isBlank()) {
-          p.putIfAbsent("root_message", m);
-        }
-      } else {
-        String inferred = p.getOrDefault("error_class", p.getOrDefault("root_class", "unknown"));
-        String simple =
-            inferred.equals("unknown")
-                ? "unknown"
-                : inferred.substring(inferred.lastIndexOf('.') + 1);
-        p.putIfAbsent("cause", simple);
-      }
+      annotateCause(p, t);
     }
 
     Error.Builder eb =
@@ -232,16 +219,203 @@ public final class GrpcErrors {
       eb.setMessageKey(messageKey);
     }
 
-    Error error = eb.build();
+    String resolvedMessage = resolveStatusMessage(eb, canonical, t, correlationId);
+    eb.setMessage(resolvedMessage);
 
-    Status st =
+    Status.Builder statusBuilder =
         Status.newBuilder()
             .setCode(canonical.getCode().value())
-            .addDetails(Any.pack(error))
-            .build();
+            .setMessage(resolvedMessage)
+            .addDetails(Any.pack(eb.build()));
 
+    addBadRequestDetail(statusBuilder, canonical, p, resolvedMessage);
+    statusBuilder.addDetails(Any.pack(buildErrorInfo(canonical, appCode, correlationId)));
+
+    if (debugDetailsEnabled() && t != null) {
+      statusBuilder.addDetails(Any.pack(buildDebugInfo(t)));
+    }
+
+    Status st = statusBuilder.build();
     StatusRuntimeException ex = StatusProto.toStatusRuntimeException(st);
-    if (t != null) ex.addSuppressed(t);
     return ex;
+  }
+
+  private static final Locale DEFAULT_LOCALE = Locale.ENGLISH;
+  private static final MessageCatalog DEFAULT_MESSAGE_CATALOG = new MessageCatalog(DEFAULT_LOCALE);
+  private static final String ERROR_DOMAIN = "ai.floedb.floecat";
+
+  private static boolean fetchDebugDetailsFlag() {
+    try {
+      return ConfigProvider.getConfig()
+          .getOptionalValue("floecat.errors.debug-details", Boolean.class)
+          .orElse(false);
+    } catch (Throwable e) {
+      return false;
+    }
+  }
+
+  private static boolean debugDetailsEnabled() {
+    return fetchDebugDetailsFlag();
+  }
+
+  private static void annotateCause(Map<String, String> params, Throwable t) {
+    if (t != null) {
+      Throwable root = rootCause(t);
+      params.put("error_class", t.getClass().getName());
+      params.put("root_class", root.getClass().getName());
+      params.put("cause", root.getClass().getSimpleName());
+      String m = root.getMessage();
+      if (m != null && !m.isBlank()) {
+        params.putIfAbsent("root_message", m);
+      }
+      return;
+    }
+
+    String inferred =
+        params.getOrDefault("error_class", params.getOrDefault("root_class", "unknown"));
+    String simple =
+        inferred.equals("unknown") ? "unknown" : inferred.substring(inferred.lastIndexOf('.') + 1);
+    params.putIfAbsent("cause", simple);
+  }
+
+  private static Throwable rootCause(Throwable t) {
+    Throwable root = t;
+    while (root != null && root.getCause() != null && root.getCause() != root) {
+      root = root.getCause();
+    }
+    return root == null ? t : root;
+  }
+
+  private static String resolveStatusMessage(
+      Error.Builder errorBuilder, io.grpc.Status canonical, Throwable t, String correlationId) {
+    if (shouldHideMessage(canonical) && !debugDetailsEnabled()) {
+      return safeInternalMessage(correlationId);
+    }
+    String renderedMessage =
+        renderCatalogMessage(
+            errorBuilder.getCode(), errorBuilder.getMessageKey(), errorBuilder.getParamsMap());
+    if (!renderedMessage.isBlank()) {
+      return renderedMessage;
+    }
+    String messageKey = errorBuilder.getMessageKey();
+    if (messageKey != null && !messageKey.isBlank()) {
+      return messageKey;
+    }
+    if (rootCauseAllowed(canonical)) {
+      String causeMessage = rootCauseMessage(t);
+      if (!causeMessage.isBlank()) {
+        return causeMessage;
+      }
+    }
+    String codeName = errorBuilder.getCode().name();
+    if (codeName != null && !codeName.isBlank()) {
+      return codeName;
+    }
+    return canonical.getCode().name();
+  }
+
+  private static String renderCatalogMessage(
+      ErrorCode code, String messageKey, Map<String, String> params) {
+    try {
+      Error.Builder preview =
+          Error.newBuilder().setCode(code).setCorrelationId("").putAllParams(params);
+      if (messageKey != null && !messageKey.isBlank()) {
+        preview.setMessageKey(messageKey);
+      }
+      return DEFAULT_MESSAGE_CATALOG.render(preview.build());
+    } catch (MissingResourceException mre) {
+      return "";
+    } catch (Throwable e) {
+      return "";
+    }
+  }
+
+  private static boolean shouldHideMessage(io.grpc.Status canonical) {
+    return switch (canonical.getCode()) {
+      case INVALID_ARGUMENT,
+          NOT_FOUND,
+          FAILED_PRECONDITION,
+          ALREADY_EXISTS,
+          PERMISSION_DENIED,
+          UNAUTHENTICATED,
+          RESOURCE_EXHAUSTED,
+          UNAVAILABLE,
+          DEADLINE_EXCEEDED,
+          ABORTED,
+          CANCELLED ->
+          false;
+      default -> true;
+    };
+  }
+
+  private static boolean rootCauseAllowed(io.grpc.Status canonical) {
+    return switch (canonical.getCode()) {
+      case INVALID_ARGUMENT, FAILED_PRECONDITION, NOT_FOUND -> true;
+      default -> false;
+    };
+  }
+
+  private static String rootCauseMessage(Throwable t) {
+    if (t == null) {
+      return "";
+    }
+    Throwable root = rootCause(t);
+    String msg = root.getMessage();
+    return msg == null ? "" : msg;
+  }
+
+  private static String safeInternalMessage(String corrId) {
+    if (corrId == null || corrId.isBlank()) {
+      return "Internal error.";
+    }
+    return "Internal error. correlation_id=" + corrId;
+  }
+
+  private static void addBadRequestDetail(
+      Status.Builder builder,
+      io.grpc.Status canonical,
+      Map<String, String> params,
+      String message) {
+    if (canonical.getCode() != io.grpc.Status.Code.INVALID_ARGUMENT) {
+      return;
+    }
+    String field = params.getOrDefault("field", "").trim();
+    if (field.isEmpty()) {
+      field = params.getOrDefault("header", "").trim();
+    }
+    if (field.isEmpty()) {
+      return;
+    }
+    BadRequest.FieldViolation fv =
+        BadRequest.FieldViolation.newBuilder().setField(field).setDescription(message).build();
+    BadRequest badRequest = BadRequest.newBuilder().addFieldViolations(fv).build();
+    builder.addDetails(Any.pack(badRequest));
+  }
+
+  private static ErrorInfo buildErrorInfo(
+      io.grpc.Status canonical, ErrorCode appCode, String correlationId) {
+    return ErrorInfo.newBuilder()
+        .setReason(appCode.name())
+        .setDomain(ERROR_DOMAIN)
+        .putMetadata("correlation_id", requireNonNullElse(correlationId, ""))
+        .putMetadata("grpc_status", canonical.getCode().name())
+        .build();
+  }
+
+  private static DebugInfo buildDebugInfo(Throwable t) {
+    Throwable root = rootCause(t);
+    DebugInfo.Builder builder =
+        DebugInfo.newBuilder().setDetail(root.getClass().getName() + ": " + safeRootMessage(root));
+    StackTraceElement[] stackTrace = root.getStackTrace();
+    int limit = Math.min(stackTrace.length, 5);
+    for (int i = 0; i < limit; i++) {
+      builder.addStackEntries(stackTrace[i].toString());
+    }
+    return builder.build();
+  }
+
+  private static String safeRootMessage(Throwable root) {
+    String msg = root.getMessage();
+    return msg == null ? "" : msg;
   }
 }

@@ -22,7 +22,7 @@ import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.query.rpc.SystemObjectsService;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.context.EngineContextProvider;
-import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.error.impl.RequestValidation;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
@@ -33,7 +33,6 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.List;
-import java.util.Map;
 
 /**
  * gRPC endpoint exposed to planners so they can fetch builtin metadata once per engine version.
@@ -52,22 +51,16 @@ public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemO
         run(
             () -> {
               EngineContext ctx = engineContextProvider.engineContext();
-              String engineVersion = ctx.engineVersion();
-              if (engineVersion.isBlank()) {
-                throw GrpcErrors.invalidArgument(
-                    correlationId(),
-                    "builtin.engine_version.required",
-                    Map.of("header", "x-engine-version"));
-              }
-
-              String engineKind = ctx.engineKind();
-              if (engineKind.isBlank()) {
-                throw GrpcErrors.invalidArgument(
-                    correlationId(),
-                    "builtin.engine_kind.required",
-                    Map.of("header", "x-engine-kind"));
-              }
-
+              RequestValidation.requireNonBlank(
+                  ctx.engineVersion(),
+                  "x-engine-version",
+                  correlationId(),
+                  "builtin.engine_version.required");
+              RequestValidation.requireNonBlank(
+                  ctx.engineKind(),
+                  "x-engine-kind",
+                  correlationId(),
+                  "builtin.engine_kind.required");
               SystemObjectsRegistry registry = fetchSystemObjects(ctx);
               return GetSystemObjectsResponse.newBuilder().setRegistry(registry).build();
             }),
