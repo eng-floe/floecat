@@ -36,160 +36,236 @@ import org.eclipse.microprofile.config.ConfigProvider;
 public final class GrpcErrors {
 
   public static StatusRuntimeException aborted(
-      String corrId, String messageKey, Map<String, String> params, Throwable t) {
-    return build(
-        io.grpc.Status.ABORTED, ErrorCode.MC_ABORT_RETRYABLE, corrId, params, messageKey, t);
+      String corrId, Map<String, String> params, Throwable t) {
+    return build(io.grpc.Status.ABORTED, ErrorCode.MC_ABORT_RETRYABLE, corrId, params, null, t);
   }
 
   public static StatusRuntimeException invalidArgument(
-      String corrId, String messageKey, Map<String, String> params, Throwable t) {
+      String corrId,
+      GeneratedErrorMessages.MessageKey key,
+      Map<String, String> params,
+      Throwable t) {
+    validateErrorCode("invalidArgument", key, ErrorCode.MC_INVALID_ARGUMENT);
     return build(
         io.grpc.Status.INVALID_ARGUMENT,
         ErrorCode.MC_INVALID_ARGUMENT,
         corrId,
         params,
-        messageKey,
+        suffix(key),
         t);
   }
 
   public static StatusRuntimeException notFound(
-      String corrId, String messageKey, Map<String, String> params, Throwable t) {
-    return build(io.grpc.Status.NOT_FOUND, ErrorCode.MC_NOT_FOUND, corrId, params, messageKey, t);
+      String corrId,
+      GeneratedErrorMessages.MessageKey key,
+      Map<String, String> params,
+      Throwable t) {
+    validateErrorCode("notFound", key, ErrorCode.MC_NOT_FOUND);
+    return build(io.grpc.Status.NOT_FOUND, ErrorCode.MC_NOT_FOUND, corrId, params, suffix(key), t);
   }
 
   public static StatusRuntimeException conflict(
-      String corrId, String messageKey, Map<String, String> params, Throwable t) {
-    return build(io.grpc.Status.ABORTED, ErrorCode.MC_CONFLICT, corrId, params, messageKey, t);
+      String corrId,
+      GeneratedErrorMessages.MessageKey key,
+      Map<String, String> params,
+      Throwable t) {
+    validateErrorCode("conflict", key, ErrorCode.MC_CONFLICT);
+    return build(io.grpc.Status.ABORTED, ErrorCode.MC_CONFLICT, corrId, params, suffix(key), t);
   }
 
   public static StatusRuntimeException preconditionFailed(
-      String corrId, String messageKey, Map<String, String> params, Throwable t) {
+      String corrId,
+      GeneratedErrorMessages.MessageKey key,
+      Map<String, String> params,
+      Throwable t) {
+    validateErrorCode("preconditionFailed", key, ErrorCode.MC_PRECONDITION_FAILED);
     return build(
         io.grpc.Status.FAILED_PRECONDITION,
         ErrorCode.MC_PRECONDITION_FAILED,
         corrId,
         params,
-        messageKey,
+        suffix(key),
         t);
   }
 
   public static StatusRuntimeException permissionDenied(
-      String corrId, String messageKey, Map<String, String> params, Throwable t) {
+      String corrId,
+      GeneratedErrorMessages.MessageKey key,
+      Map<String, String> params,
+      Throwable t) {
+    validateErrorCode("permissionDenied", key, ErrorCode.MC_PERMISSION_DENIED);
     return build(
         io.grpc.Status.PERMISSION_DENIED,
         ErrorCode.MC_PERMISSION_DENIED,
         corrId,
         params,
-        messageKey,
+        suffix(key),
         t);
   }
 
   public static StatusRuntimeException unauthenticated(
-      String corrId, String messageKey, Map<String, String> params, Throwable t) {
+      String corrId,
+      GeneratedErrorMessages.MessageKey key,
+      Map<String, String> params,
+      Throwable t) {
+    validateErrorCode("unauthenticated", key, ErrorCode.MC_UNAUTHENTICATED);
     return build(
         io.grpc.Status.UNAUTHENTICATED,
         ErrorCode.MC_UNAUTHENTICATED,
         corrId,
         params,
-        messageKey,
+        suffix(key),
         t);
   }
 
   public static StatusRuntimeException rateLimited(
-      String corrId, String messageKey, Map<String, String> params, Throwable t) {
+      String corrId,
+      GeneratedErrorMessages.MessageKey key,
+      Map<String, String> params,
+      Throwable t) {
+    validateErrorCode("rateLimited", key, ErrorCode.MC_RATE_LIMITED);
     return build(
         io.grpc.Status.RESOURCE_EXHAUSTED,
         ErrorCode.MC_RATE_LIMITED,
         corrId,
         params,
-        messageKey,
+        suffix(key),
         t);
   }
 
   public static StatusRuntimeException timeout(
-      String corrId, String messageKey, Map<String, String> params, Throwable t) {
+      String corrId,
+      GeneratedErrorMessages.MessageKey key,
+      Map<String, String> params,
+      Throwable t) {
+    validateErrorCode("timeout", key, ErrorCode.MC_TIMEOUT);
     return build(
-        io.grpc.Status.DEADLINE_EXCEEDED, ErrorCode.MC_TIMEOUT, corrId, params, messageKey, t);
+        io.grpc.Status.DEADLINE_EXCEEDED, ErrorCode.MC_TIMEOUT, corrId, params, suffix(key), t);
   }
 
   public static StatusRuntimeException unavailable(
-      String corrId, String messageKey, Map<String, String> params, Throwable t) {
+      String corrId,
+      GeneratedErrorMessages.MessageKey key,
+      Map<String, String> params,
+      Throwable t) {
+    validateErrorCode("unavailable", key, ErrorCode.MC_UNAVAILABLE);
     return build(
-        io.grpc.Status.UNAVAILABLE, ErrorCode.MC_UNAVAILABLE, corrId, params, messageKey, t);
+        io.grpc.Status.UNAVAILABLE, ErrorCode.MC_UNAVAILABLE, corrId, params, suffix(key), t);
   }
 
   public static StatusRuntimeException cancelled(
-      String corrId, String messageKey, Map<String, String> params, Throwable t) {
-    return build(io.grpc.Status.CANCELLED, ErrorCode.MC_CANCELLED, corrId, params, messageKey, t);
+      String corrId,
+      GeneratedErrorMessages.MessageKey key,
+      Map<String, String> params,
+      Throwable t) {
+    validateErrorCode("cancelled", key, ErrorCode.MC_CANCELLED);
+    return build(io.grpc.Status.CANCELLED, ErrorCode.MC_CANCELLED, corrId, params, suffix(key), t);
   }
 
   public static StatusRuntimeException internal(
-      String corrId, String messageKey, Map<String, String> params, Throwable t) {
-    return build(io.grpc.Status.INTERNAL, ErrorCode.MC_INTERNAL, corrId, params, messageKey, t);
+      String corrId,
+      GeneratedErrorMessages.MessageKey key,
+      Map<String, String> params,
+      Throwable t) {
+    validateErrorCode("internal", key, ErrorCode.MC_INTERNAL);
+    return build(io.grpc.Status.INTERNAL, ErrorCode.MC_INTERNAL, corrId, params, suffix(key), t);
   }
 
   public static StatusRuntimeException snapshotExpired(
-      String corrId, String messageKey, Map<String, String> params, Throwable t) {
+      String corrId,
+      GeneratedErrorMessages.MessageKey key,
+      Map<String, String> params,
+      Throwable t) {
+    validateErrorCode("snapshotExpired", key, ErrorCode.MC_SNAPSHOT_EXPIRED);
     return build(
         io.grpc.Status.FAILED_PRECONDITION,
         ErrorCode.MC_SNAPSHOT_EXPIRED,
         corrId,
         params,
-        messageKey,
+        suffix(key),
         t);
   }
 
-  public static StatusRuntimeException aborted(String c, String m, Map<String, String> p) {
-    return aborted(c, m, p, null);
+  public static StatusRuntimeException aborted(String corrId, Map<String, String> params) {
+    return aborted(corrId, params, null);
   }
 
-  public static StatusRuntimeException invalidArgument(String c, String m, Map<String, String> p) {
-    return invalidArgument(c, m, p, null);
+  public static StatusRuntimeException invalidArgument(
+      String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
+    return invalidArgument(corrId, key, params, null);
   }
 
-  public static StatusRuntimeException notFound(String c, String m, Map<String, String> p) {
-    return notFound(c, m, p, null);
+  public static StatusRuntimeException notFound(
+      String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
+    return notFound(corrId, key, params, null);
   }
 
-  public static StatusRuntimeException conflict(String c, String m, Map<String, String> p) {
-    return conflict(c, m, p, null);
+  public static StatusRuntimeException conflict(
+      String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
+    return conflict(corrId, key, params, null);
   }
 
   public static StatusRuntimeException preconditionFailed(
-      String c, String m, Map<String, String> p) {
-    return preconditionFailed(c, m, p, null);
+      String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
+    return preconditionFailed(corrId, key, params, null);
   }
 
-  public static StatusRuntimeException permissionDenied(String c, String m, Map<String, String> p) {
-    return permissionDenied(c, m, p, null);
+  public static StatusRuntimeException permissionDenied(
+      String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
+    return permissionDenied(corrId, key, params, null);
   }
 
-  public static StatusRuntimeException unauthenticated(String c, String m, Map<String, String> p) {
-    return unauthenticated(c, m, p, null);
+  public static StatusRuntimeException unauthenticated(
+      String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
+    return unauthenticated(corrId, key, params, null);
   }
 
-  public static StatusRuntimeException rateLimited(String c, String m, Map<String, String> p) {
-    return rateLimited(c, m, p, null);
+  public static StatusRuntimeException rateLimited(
+      String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
+    return rateLimited(corrId, key, params, null);
   }
 
-  public static StatusRuntimeException timeout(String c, String m, Map<String, String> p) {
-    return timeout(c, m, p, null);
+  public static StatusRuntimeException timeout(
+      String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
+    return timeout(corrId, key, params, null);
   }
 
-  public static StatusRuntimeException unavailable(String c, String m, Map<String, String> p) {
-    return unavailable(c, m, p, null);
+  public static StatusRuntimeException unavailable(
+      String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
+    return unavailable(corrId, key, params, null);
   }
 
-  public static StatusRuntimeException cancelled(String c, String m, Map<String, String> p) {
-    return cancelled(c, m, p, null);
+  public static StatusRuntimeException cancelled(
+      String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
+    return cancelled(corrId, key, params, null);
   }
 
-  public static StatusRuntimeException internal(String c, String m, Map<String, String> p) {
-    return internal(c, m, p, null);
+  public static StatusRuntimeException internal(
+      String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
+    return internal(corrId, key, params, null);
   }
 
-  public static StatusRuntimeException snapshotExpired(String c, String m, Map<String, String> p) {
-    return snapshotExpired(c, m, p, null);
+  public static StatusRuntimeException snapshotExpired(
+      String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
+    return snapshotExpired(corrId, key, params, null);
+  }
+
+  private static String suffix(GeneratedErrorMessages.MessageKey key) {
+    return key == null ? null : key.suffix();
+  }
+
+  private static void validateErrorCode(
+      String methodName, GeneratedErrorMessages.MessageKey key, ErrorCode expected) {
+    if (key != null && key.errorCode() != expected) {
+      throw new IllegalArgumentException(
+          "MessageKey "
+              + key.fullKey()
+              + " is not valid for "
+              + methodName
+              + " (expected error code: "
+              + expected
+              + ")");
+    }
   }
 
   public static StatusRuntimeException build(

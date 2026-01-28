@@ -27,7 +27,23 @@ import org.junit.jupiter.api.Test;
 
 class MessageCatalogTest {
   @Test
-  void everyErrorCodeRequiresAPropertyEntry() {
+  void everyMessageKeyExistsInBundle() {
+    final ResourceBundle bundle;
+    try {
+      bundle = ResourceBundle.getBundle("errors", Locale.ENGLISH);
+    } catch (MissingResourceException e) {
+      fail("errors_en.properties missing or unreadable", e);
+      return;
+    }
+    for (GeneratedErrorMessages.MessageKey key : GeneratedErrorMessages.MessageKey.values()) {
+      assertTrue(
+          bundle.containsKey(key.fullKey()),
+          () -> key.fullKey() + " missing in errors_en.properties");
+    }
+  }
+
+  @Test
+  void everyErrorCodeBaseKeyExistsInBundle() {
     final ResourceBundle bundle;
     try {
       bundle = ResourceBundle.getBundle("errors", Locale.ENGLISH);

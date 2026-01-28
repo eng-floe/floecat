@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.execution.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
@@ -56,7 +58,7 @@ public class ScanBundleService {
     long snapshotId = snapshotPin.getSnapshotId();
     if (snapshotId == 0L) {
       throw GrpcErrors.invalidArgument(
-          correlationId, "query.snapshot.required", Map.of("table_id", tableId.getId()));
+          correlationId, QUERY_SNAPSHOT_REQUIRED, Map.of("table_id", tableId.getId()));
     }
 
     // Build bundle based on statistics
@@ -65,7 +67,7 @@ public class ScanBundleService {
     if (bundle == null) {
       throw GrpcErrors.internal(
           correlationId,
-          "scanbundle.stats_unavailable",
+          SCANBUNDLE_STATS_UNAVAILABLE,
           Map.of(
               "table_id", tableId.getId(),
               "snapshot_id", Long.toString(snapshotId)));

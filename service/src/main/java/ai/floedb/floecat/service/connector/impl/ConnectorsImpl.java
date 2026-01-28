@@ -59,6 +59,7 @@ import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
+import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
@@ -180,7 +181,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                               () ->
                                   GrpcErrors.notFound(
                                       correlationId,
-                                      "connector",
+                                      GeneratedErrorMessages.MessageKey.CONNECTOR,
                                       Map.of("id", connectorId.getId())));
 
                   return GetConnectorResponse.newBuilder().setConnector(connector).build();
@@ -222,7 +223,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           && spec.getDestination().getCatalogDisplayName().isBlank())) {
                     throw GrpcErrors.invalidArgument(
                         corr,
-                        "connector.missing_destination_catalog",
+                        GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_DESTINATION_CATALOG,
                         Map.of("id", "destination.catalog_id|catalog_display_name"));
                   }
 
@@ -241,7 +242,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                             () -> {
                               throw GrpcErrors.notFound(
                                   corr,
-                                  "connector.destination_catalog_not_found",
+                                  GeneratedErrorMessages.MessageKey
+                                      .CONNECTOR_DESTINATION_CATALOG_NOT_FOUND,
                                   Map.of("display_name", dName));
                             });
                   }
@@ -257,7 +259,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                             .equals(dest.getCatalogId().getId())) {
                       throw GrpcErrors.invalidArgument(
                           corr,
-                          "connector.destination_catalog_mismatch",
+                          GeneratedErrorMessages.MessageKey.CONNECTOR_DESTINATION_CATALOG_MISMATCH,
                           Map.of(
                               "catalog_id",
                               dest.getCatalogId().getId(),
@@ -272,7 +274,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       || spec.getSource().getNamespace().getSegmentsCount() == 0) {
                     throw GrpcErrors.invalidArgument(
                         corr,
-                        "connector.missing_source_namespace",
+                        GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_SOURCE_NAMESPACE,
                         Map.of("field", "source.namespace"));
                   }
 
@@ -352,7 +354,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     var existing = connectorRepo.getByName(accountId, display);
                     if (existing.isPresent()) {
                       throw GrpcErrors.conflict(
-                          corr, "connector.already_exists", Map.of("display_name", display));
+                          corr,
+                          GeneratedErrorMessages.MessageKey.CONNECTOR_ALREADY_EXISTS,
+                          Map.of("display_name", display));
                     }
                     connectorRepo.create(connector);
                     var meta = connectorRepo.metaFor(connectorId);
@@ -384,7 +388,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                       }
                                       throw GrpcErrors.conflict(
                                           corr,
-                                          "connector.already_exists",
+                                          GeneratedErrorMessages.MessageKey
+                                              .CONNECTOR_ALREADY_EXISTS,
                                           Map.of("display_name", display));
                                     }
                                     return new IdempotencyGuard.CreateResult<>(
@@ -424,7 +429,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
-                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                    throw GrpcErrors.invalidArgument(
+                        corr, GeneratedErrorMessages.MessageKey.UPDATE_MASK_REQUIRED, Map.of());
                   }
 
                   var meta = connectorRepo.metaFor(connectorId);
@@ -437,7 +443,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
-                                      corr, "connector", Map.of("id", connectorId.getId())));
+                                      corr,
+                                      GeneratedErrorMessages.MessageKey.CONNECTOR,
+                                      Map.of("id", connectorId.getId())));
 
                   var desired =
                       applyConnectorSpecPatch(
@@ -455,7 +463,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
                       throw GrpcErrors.preconditionFailed(
                           corr,
-                          "version_mismatch",
+                          GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
                           Map.of(
                               "expected", Long.toString(meta.getPointerVersion()),
                               "actual", Long.toString(metaNoop.getPointerVersion())));
@@ -474,7 +482,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       var nowMeta = connectorRepo.metaForSafe(connectorId);
                       throw GrpcErrors.preconditionFailed(
                           corr,
-                          "version_mismatch",
+                          GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
                           Map.of(
                               "expected", Long.toString(meta.getPointerVersion()),
                               "actual", Long.toString(nowMeta.getPointerVersion())));
@@ -482,13 +490,13 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   } catch (BaseResourceRepository.NameConflictException nce) {
                     throw GrpcErrors.conflict(
                         corr,
-                        "connector.already_exists",
+                        GeneratedErrorMessages.MessageKey.CONNECTOR_ALREADY_EXISTS,
                         Map.of("display_name", desired.getDisplayName()));
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = connectorRepo.metaForSafe(connectorId);
                     throw GrpcErrors.preconditionFailed(
                         corr,
-                        "version_mismatch",
+                        GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
                         Map.of(
                             "expected", Long.toString(meta.getPointerVersion()),
                             "actual", Long.toString(nowMeta.getPointerVersion())));
@@ -532,7 +540,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
                     if (callerCares && safe.getPointerVersion() == 0L) {
                       throw GrpcErrors.notFound(
-                          corr, "connector", Map.of("id", connectorId.getId()));
+                          corr,
+                          GeneratedErrorMessages.MessageKey.CONNECTOR,
+                          Map.of("id", connectorId.getId()));
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, safe, request.getPrecondition());
@@ -705,7 +715,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
-                                  correlationId, "connector", Map.of("id", connectorId.getId())));
+                                  correlationId,
+                                  GeneratedErrorMessages.MessageKey.CONNECTOR,
+                                  Map.of("id", connectorId.getId())));
 
                   var jobId =
                       jobs.enqueue(
@@ -740,7 +752,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
-                                      correlationId, "job", Map.of("id", request.getJobId())));
+                                      correlationId,
+                                      GeneratedErrorMessages.MessageKey.JOB,
+                                      Map.of("id", request.getJobId())));
 
                   return GetReconcileJobResponse.newBuilder()
                       .setJobId(job.jobId)
@@ -819,11 +833,13 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
     var paths = normalizedMaskPaths(mask);
     if (paths.isEmpty()) {
-      throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+      throw GrpcErrors.invalidArgument(
+          corr, GeneratedErrorMessages.MessageKey.UPDATE_MASK_REQUIRED, Map.of());
     }
     for (var p : paths) {
       if (!CONNECTOR_MUTABLE_PATHS.contains(p)) {
-        throw GrpcErrors.invalidArgument(corr, "update_mask.path.invalid", Map.of("path", p));
+        throw GrpcErrors.invalidArgument(
+            corr, GeneratedErrorMessages.MessageKey.UPDATE_MASK_PATH_INVALID, Map.of("path", p));
       }
     }
 
@@ -831,7 +847,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
     if (maskTargets(mask, "display_name")) {
       if (!spec.hasDisplayName() || normalizeName(spec.getDisplayName()).isBlank()) {
-        throw GrpcErrors.invalidArgument(corr, "display_name.cannot_clear", Map.of());
+        throw GrpcErrors.invalidArgument(
+            corr, GeneratedErrorMessages.MessageKey.DISPLAY_NAME_CANNOT_CLEAR, Map.of());
       }
       b.setDisplayName(normalizeName(spec.getDisplayName()));
     }
@@ -846,14 +863,16 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
     if (maskTargets(mask, "kind")) {
       if (spec.getKind() == ConnectorKind.CK_UNSPECIFIED) {
-        throw GrpcErrors.invalidArgument(corr, "field", Map.of("field", "kind"));
+        throw GrpcErrors.invalidArgument(
+            corr, GeneratedErrorMessages.MessageKey.FIELD, Map.of("field", "kind"));
       }
       b.setKind(spec.getKind());
     }
 
     if (maskTargets(mask, "uri")) {
       if (!spec.hasUri() || spec.getUri().isBlank()) {
-        throw GrpcErrors.invalidArgument(corr, "uri.cannot_clear", Map.of());
+        throw GrpcErrors.invalidArgument(
+            corr, GeneratedErrorMessages.MessageKey.URI_CANNOT_CLEAR, Map.of());
       }
       b.setUri(spec.getUri());
     }
@@ -868,7 +887,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     if (maskTargets(mask, "source")) {
       if (!(inSrc.hasNamespace() && inSrc.getNamespace().getSegmentsCount() > 0)) {
         throw GrpcErrors.invalidArgument(
-            corr, "connector.missing_source_namespace", Map.of("field", "source.namespace"));
+            corr,
+            GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_SOURCE_NAMESPACE,
+            Map.of("field", "source.namespace"));
       }
       b.setSource(inSrc);
     } else if (maskTargetsUnder(mask, "source")) {
@@ -877,7 +898,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       if (maskTargets(mask, "source.namespace")) {
         if (!(inSrc.hasNamespace() && inSrc.getNamespace().getSegmentsCount() > 0)) {
           throw GrpcErrors.invalidArgument(
-              corr, "connector.missing_source_namespace", Map.of("field", "source.namespace"));
+              corr,
+              GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_SOURCE_NAMESPACE,
+              Map.of("field", "source.namespace"));
         }
         sb.setNamespace(inSrc.getNamespace());
       }
@@ -914,10 +937,15 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
       if (!hasCatalogRef) {
         throw GrpcErrors.invalidArgument(
-            corr, "connector.missing_destination_catalog", Map.of("field", "destination.catalog"));
+            corr,
+            GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_DESTINATION_CATALOG,
+            Map.of("field", "destination.catalog"));
       }
       if (!hasNamespaceRef) {
-        throw GrpcErrors.invalidArgument(corr, "field", Map.of("field", "destination.namespace"));
+        throw GrpcErrors.invalidArgument(
+            corr,
+            GeneratedErrorMessages.MessageKey.FIELD,
+            Map.of("field", "destination.namespace"));
       }
       if (inDst.hasCatalogId()) {
         ensureKind(
@@ -948,7 +976,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         if (!incomingHasCatalog) {
           throw GrpcErrors.invalidArgument(
               corr,
-              "connector.missing_destination_catalog",
+              GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_DESTINATION_CATALOG,
               Map.of("field", "destination.catalog"));
         }
         if (inDst.hasCatalogId()) {
@@ -968,7 +996,10 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
             inDst.hasNamespaceId()
                 || (inDst.hasNamespace() && inDst.getNamespace().getSegmentsCount() > 0);
         if (!incomingHasNs) {
-          throw GrpcErrors.invalidArgument(corr, "field", Map.of("field", "destination.namespace"));
+          throw GrpcErrors.invalidArgument(
+              corr,
+              GeneratedErrorMessages.MessageKey.FIELD,
+              Map.of("field", "destination.namespace"));
         }
         if (inDst.hasNamespaceId()) {
           ensureKind(
@@ -1074,12 +1105,17 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           d.hasCatalogId() || (d.hasCatalogDisplayName() && !d.getCatalogDisplayName().isBlank());
       if (!hasCatalogRef) {
         throw GrpcErrors.invalidArgument(
-            corr, "connector.missing_destination_catalog", Map.of("field", "destination.catalog"));
+            corr,
+            GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_DESTINATION_CATALOG,
+            Map.of("field", "destination.catalog"));
       }
       boolean hasNamespaceRef =
           d.hasNamespaceId() || (d.hasNamespace() && d.getNamespace().getSegmentsCount() > 0);
       if (!hasNamespaceRef) {
-        throw GrpcErrors.invalidArgument(corr, "field", Map.of("field", "destination.namespace"));
+        throw GrpcErrors.invalidArgument(
+            corr,
+            GeneratedErrorMessages.MessageKey.FIELD,
+            Map.of("field", "destination.namespace"));
       }
     }
 
@@ -1088,7 +1124,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       boolean hasNs = s.hasNamespace() && s.getNamespace().getSegmentsCount() > 0;
       if (!hasNs) {
         throw GrpcErrors.invalidArgument(
-            corr, "connector.missing_source_namespace", Map.of("field", "source.namespace"));
+            corr,
+            GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_SOURCE_NAMESPACE,
+            Map.of("field", "source.namespace"));
       }
     }
 

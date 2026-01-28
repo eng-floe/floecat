@@ -45,11 +45,16 @@ public final class RequestValidation {
       String fieldName, String correlationId, String messageKey) {
     Map<String, String> params = new LinkedHashMap<>();
     params.put("field", fieldName);
-    throw GrpcErrors.invalidArgument(
-        correlationId, fallbackMessageKey(messageKey, fieldName), params, null);
+    throw GrpcErrors.invalidArgument(correlationId, fallbackMessageKey(messageKey), params, null);
   }
 
-  private static String fallbackMessageKey(String messageKey, String fieldName) {
-    return (messageKey == null || messageKey.isBlank()) ? "field" : messageKey;
+  private static GeneratedErrorMessages.MessageKey fallbackMessageKey(String messageKey) {
+    if (messageKey != null && !messageKey.isBlank()) {
+      GeneratedErrorMessages.MessageKey key = GeneratedErrorMessages.findBySuffix(messageKey);
+      if (key != null) {
+        return key;
+      }
+    }
+    return GeneratedErrorMessages.MessageKey.FIELD;
   }
 }

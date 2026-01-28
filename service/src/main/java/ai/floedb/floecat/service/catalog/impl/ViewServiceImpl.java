@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.catalog.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.CreateViewResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteViewRequest;
@@ -94,7 +96,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                               () ->
                                   GrpcErrors.notFound(
                                       correlationId(),
-                                      "namespace",
+                                      NAMESPACE,
                                       Map.of("id", namespaceId.getId())));
 
                   var catalogId = namespace.getCatalogId();
@@ -143,7 +145,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
-                                      correlationId(), "view", Map.of("id", viewId.getId())));
+                                      correlationId(), VIEW, Map.of("id", viewId.getId())));
 
                   return GetViewResponse.newBuilder().setView(view).build();
                 }),
@@ -166,15 +168,15 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   authz.require(pc, "view.write");
 
                   if (!request.hasSpec()) {
-                    throw GrpcErrors.invalidArgument(corr, "view.missing_spec", Map.of());
+                    throw GrpcErrors.invalidArgument(corr, VIEW_MISSING_SPEC, Map.of());
                   }
                   var spec = request.getSpec();
 
                   if (!spec.hasCatalogId()) {
-                    throw GrpcErrors.invalidArgument(corr, "view.missing_catalog_id", Map.of());
+                    throw GrpcErrors.invalidArgument(corr, VIEW_MISSING_CATALOG_ID, Map.of());
                   }
                   if (!spec.hasNamespaceId()) {
-                    throw GrpcErrors.invalidArgument(corr, "view.missing_namespace_id", Map.of());
+                    throw GrpcErrors.invalidArgument(corr, VIEW_MISSING_NAMESPACE_ID, Map.of());
                   }
 
                   var catalogId = spec.getCatalogId();
@@ -183,8 +185,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                       .getById(catalogId)
                       .orElseThrow(
                           () ->
-                              GrpcErrors.notFound(
-                                  corr, "catalog", Map.of("id", catalogId.getId())));
+                              GrpcErrors.notFound(corr, CATALOG, Map.of("id", catalogId.getId())));
 
                   var namespaceId = spec.getNamespaceId();
                   ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", corr);
@@ -194,11 +195,11 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
-                                      corr, "namespace", Map.of("id", namespaceId.getId())));
+                                      corr, NAMESPACE, Map.of("id", namespaceId.getId())));
                   if (!namespace.getCatalogId().getId().equals(catalogId.getId())) {
                     throw GrpcErrors.invalidArgument(
                         corr,
-                        "namespace.catalog_mismatch",
+                        NAMESPACE_CATALOG_MISMATCH,
                         Map.of(
                             "namespace_id", namespaceId.getId(),
                             "namespace.catalog_id", namespace.getCatalogId().getId(),
@@ -242,7 +243,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                     if (existing.isPresent()) {
                       throw GrpcErrors.conflict(
                           corr,
-                          "view.already_exists",
+                          VIEW_ALREADY_EXISTS,
                           Map.of(
                               "display_name", normName,
                               "catalog_id", spec.getCatalogId().getId(),
@@ -284,7 +285,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                       }
                                       throw GrpcErrors.conflict(
                                           corr,
-                                          "view.already_exists",
+                                          VIEW_ALREADY_EXISTS,
                                           Map.of(
                                               "display_name", normName,
                                               "catalog_id", spec.getCatalogId().getId(),
@@ -328,7 +329,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
-                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                    throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
                   }
 
                   var spec = request.getSpec();
@@ -342,8 +343,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                       viewRepo
                           .getById(viewId)
                           .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(corr, "view", Map.of("id", viewId.getId())));
+                              () -> GrpcErrors.notFound(corr, VIEW, Map.of("id", viewId.getId())));
 
                   var desired = applyViewSpecPatch(current, spec, mask, corr);
 
@@ -353,7 +353,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                     if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
                       throw GrpcErrors.preconditionFailed(
                           corr,
-                          "version_mismatch",
+                          VERSION_MISMATCH,
                           Map.of(
                               "expected", Long.toString(meta.getPointerVersion()),
                               "actual", Long.toString(metaNoop.getPointerVersion())));
@@ -378,18 +378,18 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                       var nowMeta = viewRepo.metaForSafe(viewId);
                       throw GrpcErrors.preconditionFailed(
                           corr,
-                          "version_mismatch",
+                          VERSION_MISMATCH,
                           Map.of(
                               "expected", Long.toString(meta.getPointerVersion()),
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    throw GrpcErrors.conflict(corr, "view.already_exists", conflictInfo);
+                    throw GrpcErrors.conflict(corr, VIEW_ALREADY_EXISTS, conflictInfo);
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = viewRepo.metaForSafe(viewId);
                     throw GrpcErrors.preconditionFailed(
                         corr,
-                        "version_mismatch",
+                        VERSION_MISMATCH,
                         Map.of(
                             "expected", Long.toString(meta.getPointerVersion()),
                             "actual", Long.toString(nowMeta.getPointerVersion())));
@@ -428,8 +428,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                     var safe = viewRepo.metaForSafe(viewId);
                     boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
                     if (callerCares && safe.getPointerVersion() == 0L) {
-                      throw GrpcErrors.notFound(
-                          correlationId, "view", Map.of("id", viewId.getId()));
+                      throw GrpcErrors.notFound(correlationId, VIEW, Map.of("id", viewId.getId()));
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
@@ -460,11 +459,11 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   private static void validateViewMaskOrThrow(FieldMask mask, String corr) {
     var paths = normalizedMaskPaths(mask);
     if (paths.isEmpty()) {
-      throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+      throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
     }
     for (var p : paths) {
       if (!VIEW_MUTABLE_PATHS.contains(p)) {
-        throw GrpcErrors.invalidArgument(corr, "update_mask.path.invalid", Map.of("path", p));
+        throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_PATH_INVALID, Map.of("path", p));
       }
     }
   }
@@ -477,7 +476,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
     if (maskTargets(mask, "display_name")) {
       if (!spec.hasDisplayName()) {
-        throw GrpcErrors.invalidArgument(corr, "display_name.cannot_clear", Map.of());
+        throw GrpcErrors.invalidArgument(corr, DISPLAY_NAME_CANNOT_CLEAR, Map.of());
       }
       b.setDisplayName(mustNonEmpty(spec.getDisplayName(), "spec.display_name", corr));
     }
@@ -492,7 +491,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
     if (maskTargets(mask, "sql")) {
       if (!spec.hasSql()) {
-        throw GrpcErrors.invalidArgument(corr, "sql.cannot_clear", Map.of());
+        throw GrpcErrors.invalidArgument(corr, SQL_CANNOT_CLEAR, Map.of());
       }
       b.setSql(mustNonEmpty(spec.getSql(), "spec.sql", corr));
     }
@@ -506,34 +505,33 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
     if (maskTargets(mask, "catalog_id")) {
       if (!spec.hasCatalogId()) {
-        throw GrpcErrors.invalidArgument(corr, "catalog_id.cannot_clear", Map.of());
+        throw GrpcErrors.invalidArgument(corr, CATALOG_ID_CANNOT_CLEAR, Map.of());
       }
       var catId = spec.getCatalogId();
       ensureKind(catId, ResourceKind.RK_CATALOG, "spec.catalog_id", corr);
       catalogRepo
           .getById(catId)
-          .orElseThrow(() -> GrpcErrors.notFound(corr, "catalog", Map.of("id", catId.getId())));
+          .orElseThrow(() -> GrpcErrors.notFound(corr, CATALOG, Map.of("id", catId.getId())));
       b.setCatalogId(catId);
       catalogChanged = true;
     }
 
     if (maskTargets(mask, "namespace_id")) {
       if (!spec.hasNamespaceId()) {
-        throw GrpcErrors.invalidArgument(corr, "namespace_id.cannot_clear", Map.of());
+        throw GrpcErrors.invalidArgument(corr, NAMESPACE_ID_CANNOT_CLEAR, Map.of());
       }
       var nsId = spec.getNamespaceId();
       ensureKind(nsId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", corr);
       var ns =
           namespaceRepo
               .getById(nsId)
-              .orElseThrow(
-                  () -> GrpcErrors.notFound(corr, "namespace", Map.of("id", nsId.getId())));
+              .orElseThrow(() -> GrpcErrors.notFound(corr, NAMESPACE, Map.of("id", nsId.getId())));
 
       var effectiveCatalogId = catalogChanged ? b.getCatalogId() : current.getCatalogId();
       if (!ns.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
         throw GrpcErrors.invalidArgument(
             corr,
-            "namespace.catalog_mismatch",
+            NAMESPACE_CATALOG_MISMATCH,
             Map.of(
                 "namespace_id", nsId.getId(),
                 "namespace.catalog_id", ns.getCatalogId().getId(),
@@ -551,11 +549,11 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
               .orElseThrow(
                   () ->
                       GrpcErrors.notFound(
-                          corr, "namespace", Map.of("id", b.getNamespaceId().getId())));
+                          corr, NAMESPACE, Map.of("id", b.getNamespaceId().getId())));
       if (!ns.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
         throw GrpcErrors.invalidArgument(
             corr,
-            "namespace.catalog_mismatch",
+            NAMESPACE_CATALOG_MISMATCH,
             Map.of(
                 "namespace_id", b.getNamespaceId().getId(),
                 "namespace.catalog_id", ns.getCatalogId().getId(),

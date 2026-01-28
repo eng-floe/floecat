@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.query.resolver;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -47,13 +49,13 @@ public final class SystemScannerResolver {
             () ->
                 GrpcErrors.invalidArgument(
                     correlationId,
-                    "system.scan.not_system_table",
+                    SYSTEM_SCAN_NOT_SYSTEM_TABLE,
                     Map.of("table_id", tableId.getId())));
 
     String scannerId = node.scannerId();
     if (scannerId == null || scannerId.isBlank()) {
       throw GrpcErrors.internal(
-          correlationId, "system.scan.missing_scanner", Map.of("table_id", tableId.getId()));
+          correlationId, SYSTEM_SCAN_MISSING_SCANNER, Map.of("table_id", tableId.getId()));
     }
 
     EngineContext ctx = engine.engineContext();
@@ -74,7 +76,7 @@ public final class SystemScannerResolver {
 
     throw GrpcErrors.notFound(
         correlationId,
-        "system.scan.scanner_not_found",
+        SYSTEM_SCAN_SCANNER_NOT_FOUND,
         Map.of(
             "scanner_id", scannerId, "engine_kind", engineKind, "engine_version", engineVersion));
   }

@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.common;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -70,7 +72,7 @@ public final class IdempotencyGuard {
 
       if (!requestHash.equals(rec.getRequestHash())) {
         throw GrpcErrors.conflict(
-            corrId.get(), "idempotency_mismatch", Map.of("op", opName, "key", idempotencyKey));
+            corrId.get(), IDEMPOTENCY_MISMATCH, Map.of("op", opName, "key", idempotencyKey));
       }
 
       switch (rec.getStatus()) {
@@ -109,7 +111,7 @@ public final class IdempotencyGuard {
 
       if (!requestHash.equals(again.getRequestHash())) {
         throw GrpcErrors.conflict(
-            corrId.get(), "idempotency_mismatch", Map.of("op", opName, "key", idempotencyKey));
+            corrId.get(), IDEMPOTENCY_MISMATCH, Map.of("op", opName, "key", idempotencyKey));
       }
 
       switch (again.getStatus()) {

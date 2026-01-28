@@ -17,13 +17,16 @@
 package ai.floedb.floecat.service.error.impl;
 
 import com.google.rpc.Status;
+import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClasses;
+import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.lang.syntax.ArchRuleDefinition;
 import io.grpc.Metadata;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class GrpcErrorsContractArchTest {
@@ -74,6 +77,50 @@ class GrpcErrorsContractArchTest {
             .resideOutsideOfPackage("..service.error.impl..")
             .should()
             .callMethod(io.grpc.Status.class, "asRuntimeException", Metadata.class);
+    rule = rule.allowEmptyShould(true);
+    rule.check(CLASSES);
+  }
+
+  @Test
+  void classesOutsideErrorImplMustNotCallGrpcErrorsWithRawMessageKeys() {
+    Set<String> keyedMethods =
+        Set.of(
+            "aborted",
+            "invalidArgument",
+            "notFound",
+            "conflict",
+            "preconditionFailed",
+            "permissionDenied",
+            "unauthenticated",
+            "rateLimited",
+            "timeout",
+            "unavailable",
+            "cancelled",
+            "internal",
+            "snapshotExpired");
+    DescribedPredicate<JavaMethodCall> rawMessageKeyCall =
+        new DescribedPredicate<>("call GrpcErrors helper with non-MessageKey parameter") {
+          @Override
+          public boolean test(JavaMethodCall call) {
+            if (!call.getTarget().getOwner().getFullName().equals(GrpcErrors.class.getName())) {
+              return false;
+            }
+            if (!keyedMethods.contains(call.getTarget().getName())) {
+              return false;
+            }
+            return !call.getTarget()
+                .getRawParameterTypes()
+                .get(1)
+                .getFullName()
+                .equals(GeneratedErrorMessages.MessageKey.class.getName());
+          }
+        };
+    ArchRule rule =
+        ArchRuleDefinition.noClasses()
+            .that()
+            .resideOutsideOfPackage("..service.error.impl..")
+            .should()
+            .callMethodWhere(rawMessageKeyCall);
     rule = rule.allowEmptyShould(true);
     rule.check(CLASSES);
   }

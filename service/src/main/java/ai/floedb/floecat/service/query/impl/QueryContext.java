@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.query.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.QueryStatus;
@@ -276,7 +278,7 @@ public final class QueryContext {
 
     if (snapshotSet == null) {
       throw GrpcErrors.invalidArgument(
-          correlationId, "query.snapshots.missing", Map.of("query_id", queryId));
+          correlationId, QUERY_SNAPSHOTS_MISSING, Map.of("query_id", queryId));
     }
 
     SnapshotSet set = parseSnapshotSet(correlationId);
@@ -288,7 +290,7 @@ public final class QueryContext {
             () ->
                 GrpcErrors.notFound(
                     correlationId,
-                    "query.table.not_pinned",
+                    QUERY_TABLE_NOT_PINNED,
                     Map.of("query_id", queryId, "table_id", tableId.getId())));
   }
 
@@ -319,7 +321,7 @@ public final class QueryContext {
       return parsed;
     } catch (InvalidProtocolBufferException e) {
       throw GrpcErrors.internal(
-          correlationId, "query.snapshot.parse_failed", Map.of("query_id", queryId));
+          correlationId, QUERY_SNAPSHOT_PARSE_FAILED, Map.of("query_id", queryId));
     }
   }
 
@@ -343,7 +345,7 @@ public final class QueryContext {
       return java.util.Optional.of(Timestamp.parseFrom(asOfDefault));
     } catch (InvalidProtocolBufferException e) {
       throw GrpcErrors.internal(
-          correlationId, "query.as_of_default.parse_failed", Map.of("query_id", queryId));
+          correlationId, QUERY_AS_OF_DEFAULT_PARSE_FAILED, Map.of("query_id", queryId));
     }
   }
 

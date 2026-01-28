@@ -36,6 +36,7 @@ import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
+import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
@@ -98,7 +99,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                 () ->
                                     GrpcErrors.notFound(
                                         correlationId(),
-                                        "namespace",
+                                        GeneratedErrorMessages.MessageKey.NAMESPACE,
                                         Map.of("id", request.getNamespaceId().getId())));
                     catalogId = parent.getCatalogId();
                     parentPath = append(parent.getParentsList(), parent.getDisplayName());
@@ -109,13 +110,15 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                             () ->
                                 GrpcErrors.notFound(
                                     correlationId(),
-                                    "catalog",
+                                    GeneratedErrorMessages.MessageKey.CATALOG,
                                     Map.of("id", request.getCatalogId().getId())));
                     catalogId = request.getCatalogId();
                     parentPath = new ArrayList<>(request.getPathList());
                   } else {
                     throw GrpcErrors.invalidArgument(
-                        correlationId(), "selector.required", Map.of());
+                        correlationId(),
+                        GeneratedErrorMessages.MessageKey.SELECTOR_REQUIRED,
+                        Map.of());
                   }
 
                   final boolean recursive = request.getRecursive();
@@ -149,7 +152,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                               accountId, catalogId.getId(), parentPath, batch, cursor, next);
                     } catch (IllegalArgumentException badToken) {
                       throw GrpcErrors.invalidArgument(
-                          correlationId(), "page_token.invalid", Map.of("page_token", cursor));
+                          correlationId(),
+                          GeneratedErrorMessages.MessageKey.PAGE_TOKEN_INVALID,
+                          Map.of("page_token", cursor));
                     }
 
                     if (recursive) {
@@ -243,7 +248,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         page = namespaceRepo.list(accountId, catalogId, parentPath, 1000, cursor, next);
       } catch (IllegalArgumentException bad) {
         throw GrpcErrors.invalidArgument(
-            correlationId(), "page_token.invalid", Map.of("page_token", cursor));
+            correlationId(),
+            GeneratedErrorMessages.MessageKey.PAGE_TOKEN_INVALID,
+            Map.of("page_token", cursor));
       }
 
       for (var ns : page) {
@@ -337,7 +344,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
-                                      correlationId(), "namespace", Map.of("id", nsId.getId())));
+                                      correlationId(),
+                                      GeneratedErrorMessages.MessageKey.NAMESPACE,
+                                      Map.of("id", nsId.getId())));
                   return GetNamespaceResponse.newBuilder().setNamespace(ns).build();
                 }),
             correlationId())
@@ -371,7 +380,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           () ->
                               GrpcErrors.notFound(
                                   correlationId,
-                                  "catalog",
+                                  GeneratedErrorMessages.MessageKey.CATALOG,
                                   Map.of("id", spec.getCatalogId().getId())));
 
                   var tsNow = nowTs();
@@ -383,14 +392,18 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   final String display = normalizeName(displayWork);
                   if (display.isBlank()) {
                     throw GrpcErrors.invalidArgument(
-                        correlationId, "display_name.cannot_clear", Map.of());
+                        correlationId,
+                        GeneratedErrorMessages.MessageKey.DISPLAY_NAME_CANNOT_CLEAR,
+                        Map.of());
                   }
                   var normalizedParents = new ArrayList<String>(parentsWork.size());
                   for (String seg : parentsWork) {
                     var s = normalizeName(seg);
                     if (s.isBlank()) {
                       throw GrpcErrors.invalidArgument(
-                          correlationId, "path.segment.blank", Map.of());
+                          correlationId,
+                          GeneratedErrorMessages.MessageKey.PATH_SEGMENT_BLANK,
+                          Map.of());
                     }
                     normalizedParents.add(s);
                   }
@@ -407,7 +420,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     if (existing.isPresent()) {
                       throw GrpcErrors.conflict(
                           correlationId,
-                          "namespace.already_exists",
+                          GeneratedErrorMessages.MessageKey.NAMESPACE_ALREADY_EXISTS,
                           Map.of(
                               "display_name", display,
                               "catalog_id", spec.getCatalogId().getId(),
@@ -480,7 +493,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                       }
                                       throw GrpcErrors.conflict(
                                           correlationId,
-                                          "namespace.already_exists",
+                                          GeneratedErrorMessages.MessageKey
+                                              .NAMESPACE_ALREADY_EXISTS,
                                           Map.of(
                                               "display_name", display,
                                               "catalog_id", spec.getCatalogId().getId(),
@@ -522,7 +536,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     for (String segRaw : parents) {
       var seg = normalizeName(segRaw);
       if (seg.isBlank()) {
-        throw GrpcErrors.invalidArgument(corr, "path.segment.blank", Map.of());
+        throw GrpcErrors.invalidArgument(
+            corr, GeneratedErrorMessages.MessageKey.PATH_SEGMENT_BLANK, Map.of());
       }
       chain.add(seg);
       var existing = namespaceRepo.getByPath(accountId, catalogId.getId(), chain);
@@ -573,7 +588,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   ensureKind(nsId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
-                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                    throw GrpcErrors.invalidArgument(
+                        corr, GeneratedErrorMessages.MessageKey.UPDATE_MASK_REQUIRED, Map.of());
                   }
 
                   var meta = namespaceRepo.metaFor(nsId);
@@ -586,7 +602,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
-                                      corr, "namespace", Map.of("id", nsId.getId())));
+                                      corr,
+                                      GeneratedErrorMessages.MessageKey.NAMESPACE,
+                                      Map.of("id", nsId.getId())));
 
                   var desired =
                       applyNamespaceSpecPatch(
@@ -598,7 +616,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
                       throw GrpcErrors.preconditionFailed(
                           corr,
-                          "version_mismatch",
+                          GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
                           Map.of(
                               "expected", Long.toString(meta.getPointerVersion()),
                               "actual", Long.toString(metaNoop.getPointerVersion())));
@@ -622,18 +640,21 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       var nowMeta = namespaceRepo.metaForSafe(nsId);
                       throw GrpcErrors.preconditionFailed(
                           corr,
-                          "version_mismatch",
+                          GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
                           Map.of(
                               "expected", Long.toString(meta.getPointerVersion()),
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    throw GrpcErrors.conflict(corr, "namespace.already_exists", conflictInfo);
+                    throw GrpcErrors.conflict(
+                        corr,
+                        GeneratedErrorMessages.MessageKey.NAMESPACE_ALREADY_EXISTS,
+                        conflictInfo);
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = namespaceRepo.metaForSafe(nsId);
                     throw GrpcErrors.preconditionFailed(
                         corr,
-                        "version_mismatch",
+                        GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
                         Map.of(
                             "expected", Long.toString(meta.getPointerVersion()),
                             "actual", Long.toString(nowMeta.getPointerVersion())));
@@ -681,7 +702,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
                     if (callerCares && safe.getPointerVersion() == 0L) {
                       throw GrpcErrors.notFound(
-                          correlationId, "namespace", Map.of("id", namespaceId.getId()));
+                          correlationId,
+                          GeneratedErrorMessages.MessageKey.NAMESPACE,
+                          Map.of("id", namespaceId.getId()));
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
@@ -697,7 +720,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     var pretty =
                         prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
                     throw GrpcErrors.conflict(
-                        correlationId, "namespace.not_empty", Map.of("display_name", pretty));
+                        correlationId,
+                        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
+                        Map.of("display_name", pretty));
                   }
 
                   var parentPath = append(namespace.getParentsList(), namespace.getDisplayName());
@@ -706,17 +731,23 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     var pretty =
                         prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
                     throw GrpcErrors.conflict(
-                        correlationId, "namespace.not_empty", Map.of("display_name", pretty));
+                        correlationId,
+                        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
+                        Map.of("display_name", pretty));
                   }
 
                   if (!markerStore.advanceNamespaceMarker(namespaceId, markerVersion)) {
                     throw GrpcErrors.preconditionFailed(
-                        correlationId, "namespace.children_changed", Map.of());
+                        correlationId,
+                        GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
+                        Map.of());
                   }
                   var markerAfterAdvance = markerStore.namespaceMarkerVersion(namespaceId);
                   if (markerAfterAdvance != markerVersion + 1) {
                     throw GrpcErrors.preconditionFailed(
-                        correlationId, "namespace.children_changed", Map.of());
+                        correlationId,
+                        GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
+                        Map.of());
                   }
                   if (tableRepo.count(
                           catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())
@@ -724,14 +755,18 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     var pretty =
                         prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
                     throw GrpcErrors.conflict(
-                        correlationId, "namespace.not_empty", Map.of("display_name", pretty));
+                        correlationId,
+                        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
+                        Map.of("display_name", pretty));
                   }
                   if (hasImmediateChildren(
                       catalogId.getAccountId(), catalogId.getId(), parentPath)) {
                     var pretty =
                         prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
                     throw GrpcErrors.conflict(
-                        correlationId, "namespace.not_empty", Map.of("display_name", pretty));
+                        correlationId,
+                        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
+                        Map.of("display_name", pretty));
                   }
 
                   var meta =
@@ -803,17 +838,19 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
     var paths = normalizedMaskPaths(mask);
     if (paths.isEmpty()) {
-      throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+      throw GrpcErrors.invalidArgument(
+          corr, GeneratedErrorMessages.MessageKey.UPDATE_MASK_REQUIRED, Map.of());
     }
     for (var p : paths) {
       if (!NAMESPACE_MUTABLE_PATHS.contains(p)) {
-        throw GrpcErrors.invalidArgument(corr, "update_mask.path.invalid", Map.of("path", p));
+        throw GrpcErrors.invalidArgument(
+            corr, GeneratedErrorMessages.MessageKey.UPDATE_MASK_PATH_INVALID, Map.of("path", p));
       }
     }
     if (paths.contains("path") && paths.contains("display_name")) {
       throw GrpcErrors.invalidArgument(
           corr,
-          "update_mask.path.invalid",
+          GeneratedErrorMessages.MessageKey.UPDATE_MASK_PATH_INVALID,
           Map.of("path", "Cannot combine 'path' with 'display_name'"));
     }
 
@@ -821,23 +858,29 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
     if (maskTargets(mask, "catalog_id")) {
       if (!spec.hasCatalogId()) {
-        throw GrpcErrors.invalidArgument(corr, "catalog_id.cannot_clear", Map.of());
+        throw GrpcErrors.invalidArgument(
+            corr, GeneratedErrorMessages.MessageKey.CATALOG_ID_CANNOT_CLEAR, Map.of());
       }
       var cat = spec.getCatalogId();
       ensureKind(cat, ResourceKind.RK_CATALOG, "spec.catalog_id", corr);
       catalogRepo
           .getById(cat)
-          .orElseThrow(() -> GrpcErrors.notFound(corr, "catalog", Map.of("id", cat.getId())));
+          .orElseThrow(
+              () ->
+                  GrpcErrors.notFound(
+                      corr, GeneratedErrorMessages.MessageKey.CATALOG, Map.of("id", cat.getId())));
       b.setCatalogId(cat);
     }
 
     if (maskTargets(mask, "display_name")) {
       if (!spec.hasDisplayName()) {
-        throw GrpcErrors.invalidArgument(corr, "display_name.cannot_clear", Map.of());
+        throw GrpcErrors.invalidArgument(
+            corr, GeneratedErrorMessages.MessageKey.DISPLAY_NAME_CANNOT_CLEAR, Map.of());
       }
       var name = normalizeName(spec.getDisplayName());
       if (name.isBlank()) {
-        throw GrpcErrors.invalidArgument(corr, "display_name.cannot_clear", Map.of());
+        throw GrpcErrors.invalidArgument(
+            corr, GeneratedErrorMessages.MessageKey.DISPLAY_NAME_CANNOT_CLEAR, Map.of());
       }
       b.setDisplayName(name);
     }
@@ -862,7 +905,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
       for (var seg : path) {
         var s = normalizeName(seg);
         if (s.isBlank()) {
-          throw GrpcErrors.invalidArgument(corr, "path.segment.blank", Map.of());
+          throw GrpcErrors.invalidArgument(
+              corr, GeneratedErrorMessages.MessageKey.PATH_SEGMENT_BLANK, Map.of());
         }
         normalizedPath.add(s);
       }

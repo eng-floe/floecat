@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.query.catalog;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
 import ai.floedb.floecat.query.rpc.Origin;
@@ -52,7 +54,7 @@ public final class UserObjectBundleUtils {
       if (lookup.put(column.getName(), column) != null) {
         throw GrpcErrors.invalidArgument(
             correlationId,
-            "catalog_bundle.schema.duplicate_column",
+            CATALOG_BUNDLE_SCHEMA_DUPLICATE_COLUMN,
             Map.of("column", column.getName()));
       }
     }
@@ -60,7 +62,7 @@ public final class UserObjectBundleUtils {
       SchemaColumn column = lookup.get(name);
       if (column == null) {
         throw GrpcErrors.invalidArgument(
-            correlationId, "catalog_bundle.schema.unknown_column", Map.of("column", name));
+            correlationId, CATALOG_BUNDLE_SCHEMA_UNKNOWN_COLUMN, Map.of("column", name));
       }
       columns.add(column);
     }

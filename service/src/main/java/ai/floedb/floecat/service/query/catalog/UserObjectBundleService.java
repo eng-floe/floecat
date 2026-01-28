@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.query.catalog;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -124,7 +126,7 @@ public class UserObjectBundleService {
   private List<QueryInput> normalizeCandidates(
       String correlationId, TableReferenceCandidate candidate, String defaultCatalog) {
     if (candidate.getCandidatesCount() == 0) {
-      throw GrpcErrors.invalidArgument(correlationId, "catalog_bundle.candidate.missing", Map.of());
+      throw GrpcErrors.invalidArgument(correlationId, CATALOG_BUNDLE_CANDIDATE_MISSING, Map.of());
     }
     List<QueryInput> normalized = new ArrayList<>(candidate.getCandidatesCount());
     for (QueryInput input : candidate.getCandidatesList()) {
@@ -467,7 +469,7 @@ public class UserObjectBundleService {
     } catch (InvalidProtocolBufferException e) {
       throw GrpcErrors.internal(
           correlationId,
-          "catalog_bundle.snapshot.parse_failed",
+          CATALOG_BUNDLE_SNAPSHOT_PARSE_FAILED,
           Map.of("query_id", ctx.getQueryId(), "error", e.getMessage()));
     }
   }
@@ -730,7 +732,7 @@ public class UserObjectBundleService {
       pendingChunkPins = SnapshotSet.getDefaultInstance();
       if (updated.isEmpty()) {
         throw GrpcErrors.notFound(
-            correlationId, "query.not_found", Map.of("query_id", ctx.getQueryId()));
+            correlationId, QUERY_NOT_FOUND, Map.of("query_id", ctx.getQueryId()));
       }
     }
   }

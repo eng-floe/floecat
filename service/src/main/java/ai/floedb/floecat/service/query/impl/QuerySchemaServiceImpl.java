@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.query.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
@@ -75,7 +77,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                   var ctxOpt = queryStore.get(queryId);
                   if (ctxOpt.isEmpty()) {
                     throw GrpcErrors.notFound(
-                        correlationId(), "query.not_found", java.util.Map.of("query_id", queryId));
+                        correlationId(), QUERY_NOT_FOUND, java.util.Map.of("query_id", queryId));
                   }
                   var ctx = ctxOpt.get();
 
@@ -147,14 +149,14 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
           // an
           // internal invariant failure if it does.
           throw GrpcErrors.internal(
-              correlationId, "query.table_not_pinned", java.util.Map.of("table_id", rid.getId()));
+              correlationId, QUERY_TABLE_NOT_PINNED, java.util.Map.of("table_id", rid.getId()));
         }
         yield describeTable(correlationId, rid, pin);
       }
       case RK_VIEW -> describeView(correlationId, rid);
       default ->
           throw GrpcErrors.invalidArgument(
-              correlationId, "query.input.invalid", java.util.Map.of("resource_id", rid.getId()));
+              correlationId, QUERY_INPUT_INVALID, java.util.Map.of("resource_id", rid.getId()));
     };
   }
 
@@ -173,8 +175,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
             .map(ViewNode.class::cast)
             .orElseThrow(
                 () ->
-                    GrpcErrors.notFound(
-                        correlationId, "view", java.util.Map.of("id", rid.getId())));
+                    GrpcErrors.notFound(correlationId, VIEW, java.util.Map.of("id", rid.getId())));
 
     return SchemaDescriptor.newBuilder().addAllColumns(viewNode.outputColumns()).build();
   }

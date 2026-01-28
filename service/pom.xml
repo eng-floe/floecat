@@ -244,6 +244,24 @@
       </plugin>
 
       <plugin>
+        <groupId>ai.floedb.floecat</groupId>
+        <artifactId>floecat-error-messages-generator</artifactId>
+        <version>${project.version}</version>
+        <executions>
+          <execution>
+            <id>generate-error-messages</id>
+            <goals>
+              <goal>generate</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <resourcesDirectory>${project.basedir}/src/main/resources</resourcesDirectory>
+          <generatedSourcesDirectory>${project.build.directory}/generated-sources/error-messages</generatedSourcesDirectory>
+        </configuration>
+      </plugin>
+
+      <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.4</version>

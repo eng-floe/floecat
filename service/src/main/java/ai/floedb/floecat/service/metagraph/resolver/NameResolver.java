@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.metagraph.resolver;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -84,7 +86,7 @@ public final class NameResolver {
     return catalogRepository
         .getByName(accountId, catalogName)
         .map(Catalog::getResourceId)
-        .orElseThrow(() -> GrpcErrors.notFound(cid, "catalog", Map.of("id", catalogName)));
+        .orElseThrow(() -> GrpcErrors.notFound(cid, CATALOG, Map.of("id", catalogName)));
   }
 
   public ResourceId resolveNamespaceId(String cid, String accountId, NameRef ref) {
@@ -98,7 +100,7 @@ public final class NameResolver {
             () ->
                 GrpcErrors.notFound(
                     cid,
-                    "namespace.by_path_missing",
+                    NAMESPACE_BY_PATH_MISSING,
                     Map.of(
                         "catalog_id", catalog.getResourceId().getId(),
                         "path", String.join(".", fullPath))));
@@ -119,7 +121,7 @@ public final class NameResolver {
             () ->
                 GrpcErrors.notFound(
                     cid,
-                    "table.by_name_missing",
+                    TABLE_BY_NAME_MISSING,
                     Map.of(
                         "catalog", ref.getCatalog(),
                         "path", String.join(".", ref.getPathList()),
@@ -141,7 +143,7 @@ public final class NameResolver {
             () ->
                 GrpcErrors.notFound(
                     cid,
-                    "view.by_name_missing",
+                    VIEW_BY_NAME_MISSING,
                     Map.of(
                         "catalog", ref.getCatalog(),
                         "path", String.join(".", ref.getPathList()),
@@ -205,7 +207,7 @@ public final class NameResolver {
   private Catalog catalogByName(String cid, String accountId, String name) {
     return catalogRepository
         .getByName(accountId, name)
-        .orElseThrow(() -> GrpcErrors.notFound(cid, "catalog", Map.of("id", name)));
+        .orElseThrow(() -> GrpcErrors.notFound(cid, CATALOG, Map.of("id", name)));
   }
 
   private Namespace namespaceByPath(
@@ -217,7 +219,7 @@ public final class NameResolver {
             () ->
                 GrpcErrors.notFound(
                     cid,
-                    "namespace.by_path_missing",
+                    NAMESPACE_BY_PATH_MISSING,
                     Map.of(
                         "catalog_id", catalog.getResourceId().getId(),
                         "path", String.join(".", parents))));

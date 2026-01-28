@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.query.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.query.rpc.ColumnStatsBundleChunk;
 import ai.floedb.floecat.query.rpc.FetchColumnStatsRequest;
 import ai.floedb.floecat.query.rpc.PlannerStatsService;
@@ -70,14 +72,14 @@ public class PlannerStatsServiceImpl extends BaseServiceImpl implements PlannerS
                       var ctxOpt = queryStore.get(queryId);
                       if (ctxOpt.isEmpty()) {
                         throw GrpcErrors.notFound(
-                            correlationId, "query.not_found", Map.of("query_id", queryId));
+                            correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId));
                       }
 
                       QueryContext ctx = ctxOpt.get();
                       if (!ctx.isActive()) {
                         throw GrpcErrors.preconditionFailed(
                             correlationId,
-                            "query.not_active",
+                            QUERY_NOT_ACTIVE,
                             Map.of("query_id", queryId, "state", ctx.getState().name()));
                       }
 

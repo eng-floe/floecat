@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.query.resolver;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -88,7 +90,7 @@ public class QueryInputResolver {
   private void validateViewOverride(String correlationId, ResourceId viewId, SnapshotRef override) {
     if (override != null && override.hasSnapshotId()) {
       throw GrpcErrors.invalidArgument(
-          correlationId, "query.input.view.cannot_use_snapshot_id", Map.of("id", viewId.getId()));
+          correlationId, QUERY_INPUT_VIEW_CANNOT_USE_SNAPSHOT_ID, Map.of("id", viewId.getId()));
     }
   }
 
@@ -156,7 +158,7 @@ public class QueryInputResolver {
           addResolvedAndPins(correlationId, rid, override, asOfDefault, resolved, pinByTableId);
         }
 
-        default -> throw GrpcErrors.invalidArgument(correlationId, "query.input.invalid", Map.of());
+        default -> throw GrpcErrors.invalidArgument(correlationId, QUERY_INPUT_INVALID, Map.of());
       }
     }
 
@@ -181,7 +183,7 @@ public class QueryInputResolver {
       }
       default ->
           throw GrpcErrors.invalidArgument(
-              correlationId, "query.input.invalid", Map.of("resource_id", rid.getId()));
+              correlationId, QUERY_INPUT_INVALID, Map.of("resource_id", rid.getId()));
     };
   }
 

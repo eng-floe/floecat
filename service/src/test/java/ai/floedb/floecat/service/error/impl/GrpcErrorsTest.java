@@ -33,7 +33,10 @@ class GrpcErrorsTest {
   @Test
   void invalidArgumentAddsBadRequestAndMessage() {
     StatusRuntimeException ex =
-        GrpcErrors.invalidArgument("corr-id", "catalog.missing", Map.of("field", "catalog_id"));
+        GrpcErrors.invalidArgument(
+            "corr-id",
+            GeneratedErrorMessages.MessageKey.CATALOG_MISSING,
+            Map.of("field", "catalog_id"));
     Status statusProto = StatusProto.fromThrowable(ex);
     assertNotNull(statusProto, "expected rpc status in exception");
     assertEquals(

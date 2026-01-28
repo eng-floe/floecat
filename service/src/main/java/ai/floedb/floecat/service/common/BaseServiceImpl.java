@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.common;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -132,7 +134,7 @@ public abstract class BaseServiceImpl {
     }
     if (t instanceof BaseResourceRepository.AbortRetryableException
         || t instanceof StorageAbortRetryableException) {
-      return GrpcErrors.aborted(corrId, null, null, t);
+      return GrpcErrors.aborted(corrId, null, t);
     }
     if (t instanceof BaseResourceRepository.CorruptionException
         || t instanceof StorageCorruptionException) {
@@ -154,13 +156,13 @@ public abstract class BaseServiceImpl {
   protected void ensureKind(
       ResourceId resourceId, ResourceKind expected, String field, String correlationId) {
     if (resourceId == null || resourceId.getKind() != expected) {
-      throw GrpcErrors.invalidArgument(correlationId, "kind", Map.of("field", field));
+      throw GrpcErrors.invalidArgument(correlationId, KIND, Map.of("field", field));
     }
   }
 
   protected String mustNonEmpty(String inputString, String name, String corrId) {
     if (inputString == null || inputString.isBlank()) {
-      throw GrpcErrors.invalidArgument(corrId, "field", Map.of("field", name));
+      throw GrpcErrors.invalidArgument(corrId, FIELD, Map.of("field", name));
     }
     return inputString;
   }
@@ -179,7 +181,7 @@ public abstract class BaseServiceImpl {
     if (checkVer && metadata.getPointerVersion() != precondition.getExpectedVersion()) {
       throw GrpcErrors.preconditionFailed(
           correlationId,
-          "version_mismatch",
+          VERSION_MISMATCH,
           Map.of(
               "expected",
               Long.toString(precondition.getExpectedVersion()),
@@ -189,7 +191,7 @@ public abstract class BaseServiceImpl {
     if (checkTag && !metadata.getEtag().equals(precondition.getExpectedEtag())) {
       throw GrpcErrors.preconditionFailed(
           correlationId,
-          "etag_mismatch",
+          ETAG_MISMATCH,
           Map.of("expected", precondition.getExpectedEtag(), "actual", metadata.getEtag()));
     }
   }
@@ -277,16 +279,14 @@ public abstract class BaseServiceImpl {
       if (checkVer && meta.getPointerVersion() != p.getExpectedVersion()) {
         throw GrpcErrors.preconditionFailed(
             corr,
-            "version_mismatch",
+            VERSION_MISMATCH,
             Map.of(
                 "expected", Long.toString(p.getExpectedVersion()),
                 "actual", Long.toString(meta.getPointerVersion())));
       }
       if (checkTag && !Objects.equals(p.getExpectedEtag(), meta.getEtag())) {
         throw GrpcErrors.preconditionFailed(
-            corr,
-            "etag_mismatch",
-            Map.of("expected", p.getExpectedEtag(), "actual", meta.getEtag()));
+            corr, ETAG_MISMATCH, Map.of("expected", p.getExpectedEtag(), "actual", meta.getEtag()));
       }
     }
   }
@@ -374,7 +374,7 @@ public abstract class BaseServiceImpl {
 
   protected static String cleanUri(String uri) {
     if (uri == null) {
-      throw GrpcErrors.invalidArgument("?", null, Map.of("field", "uri"));
+      throw GrpcErrors.invalidArgument("?", FIELD, Map.of("field", "uri"));
     }
 
     String t = uri.trim();
